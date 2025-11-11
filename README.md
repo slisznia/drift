@@ -12,6 +12,10 @@ This specification defines the **core semantics, syntax, and safety model** of t
 It describes how values are owned, borrowed, and destroyed; how exceptions propagate structured diagnostic data; and how deterministic resource management (RAII) interacts with the type system and scoping rules.  
 Drift provides predictable lifetimes, explicit control of mutability and ownership, and strong compile-time guarantees — all without a garbage collector.
 
+<p align="center">
+  <img src="assets/drift.png" alt="Drift" width="260">
+</p>
+
 **Focus areas:**
 - **Deterministic ownership & move semantics (`x->`)**
 - **Explicit mutability (`mut`, `ref`, `ref mut`)**
