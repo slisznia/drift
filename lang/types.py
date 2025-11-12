@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, Iterable, Optional
+from typing import Dict, Optional
 
 from .ast import TypeExpr
 
@@ -26,18 +26,21 @@ BOTTOM = Type("⊥")
 
 _PRIMITIVES: Dict[str, Type] = {
     "Int64": I64,
-    "i64": I64,
     "Float64": F64,
-    "f64": F64,
     "Bool": BOOL,
-    "bool": BOOL,
     "String": STR,
-    "str": STR,
     "Void": UNIT,
-    "unit": UNIT,
     "Error": ERROR,
-    "error": ERROR,
     "ConsoleOut": CONSOLE_OUT,
+}
+
+_ALIAS_HINTS = {
+    "i64": "Int64",
+    "f64": "Float64",
+    "bool": "Bool",
+    "str": "String",
+    "unit": "Void",
+    "error": "Error",
 }
 
 _DISPLAYABLE_PRIMITIVES = frozenset({I64, F64, BOOL, STR, ERROR})
@@ -53,6 +56,11 @@ def resolve_type(type_expr: TypeExpr) -> Type:
         inner = ", ".join(arg.name for arg in type_expr.args)
         name = f"{type_expr.name}[{inner}]"
         return Type(name)
+    alias_hint = _ALIAS_HINTS.get(type_expr.name)
+    if alias_hint:
+        raise TypeSystemError(
+            f"Type '{type_expr.name}' is not defined. Use '{alias_hint}' instead."
+        )
     builtin = _PRIMITIVES.get(type_expr.name)
     if builtin:
         return builtin
@@ -70,3 +78,16 @@ class FunctionSignature:
 
 class TypeSystemError(Exception):
     pass
+
+
+def array_of(inner: Type) -> Type:
+    return Type(f"Array[{inner}]")
+
+
+def array_element_type(array_type: Type) -> Optional[Type]:
+    name = array_type.name
+    prefix = "Array["
+    if name.startswith(prefix) and name.endswith("]"):
+        inner = name[len(prefix) : -1]
+        return Type(inner)
+    return None

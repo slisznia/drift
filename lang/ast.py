@@ -58,7 +58,7 @@ class LetStmt(Stmt):
 @dataclass
 class AssignStmt(Stmt):
     loc: Located
-    name: str
+    target: "Expr"
     value: "Expr"
 
 
@@ -95,7 +95,6 @@ class FunctionDef:
     params: Sequence[Param]
     return_type: TypeExpr
     body: Block
-    thrown_domains: Optional[Sequence[str]]
     loc: Located
 
 
@@ -155,6 +154,19 @@ class Unary(Expr):
 class Move(Expr):
     loc: Located
     value: Expr
+
+
+@dataclass
+class Index(Expr):
+    loc: Located
+    value: Expr
+    index: Expr
+
+
+@dataclass
+class ArrayLiteral(Expr):
+    loc: Located
+    elements: List[Expr]
 
 
 @dataclass

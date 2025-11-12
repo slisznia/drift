@@ -120,6 +120,10 @@ class Interpreter:
             value = self._eval_expr(stmt.value, env)
             env.define(stmt.name, value)
             return
+        if isinstance(stmt, ast.AssignStmt):
+            value = self._eval_expr(stmt.value, env)
+            self._assign(stmt.target, value, env)
+            return
         if isinstance(stmt, ast.ReturnStmt):
             value = self._eval_expr(stmt.value, env) if stmt.value else None
             raise ReturnSignal(value)
@@ -156,6 +160,12 @@ class Interpreter:
             return self._resolve_attr(base, expr.attr)
         if isinstance(expr, ast.Move):
             return self._eval_expr(expr.value, env)
+        if isinstance(expr, ast.ArrayLiteral):
+            return [self._eval_expr(elem, env) for elem in expr.elements]
+        if isinstance(expr, ast.Index):
+            base = self._eval_expr(expr.value, env)
+            index = self._eval_expr(expr.index, env)
+            return base[index]
         if isinstance(expr, ast.Unary):
             value = self._eval_expr(expr.operand, env)
             if expr.op == "-":
@@ -222,6 +232,19 @@ class Interpreter:
         if isinstance(func, StructConstructor):
             return func(args, kwargs)
         raise RuntimeError(f"Object {func} is not callable")
+
+    def _assign(self, target: ast.Expr, value: object, env: Environment) -> None:
+        if isinstance(target, ast.Name):
+            env.set(target.ident, value)
+            return
+        if isinstance(target, ast.Index):
+            base = self._eval_expr(target.value, env)
+            index = self._eval_expr(target.index, env)
+            if not hasattr(base, "__setitem__"):
+                raise RuntimeError("Object is not indexable")
+            base[index] = value
+            return
+        raise RuntimeError("Unsupported assignment target")
 
 
 def run_program(checked: CheckedProgram, stdout=None) -> Interpreter:

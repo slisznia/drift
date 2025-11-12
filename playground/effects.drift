@@ -1,7 +1,7 @@
-fn fail() -> unit throws{fs} {
+fn fail() returns Void {
     throw error("boom", code="ENOENT")
 }
 
-fn main() -> unit throws{fs} {
+fn main() returns Void {
     fail()
 }

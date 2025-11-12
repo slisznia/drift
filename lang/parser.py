@@ -7,6 +7,8 @@ from typing import List, Optional
 from lark import Lark, Token, Tree
 
 from .ast import (
+    ArrayLiteral,
+    AssignStmt,
     Attr,
     Binary,
     Block,
@@ -24,6 +26,7 @@ from .ast import (
     Name,
     Param,
     Program,
+    Index,
     RaiseStmt,
     ReturnStmt,
     StructDef,
@@ -175,17 +178,12 @@ def _build_function(tree: Tree) -> FunctionDef:
     type_child = next(child for child in return_sig.children if isinstance(child, Tree))
     return_type = _build_type_expr(type_child)
     idx += 1
-    thrown: Optional[List[str]] = None
-    if idx < len(children) and _name(children[idx]) in {"throws_list", "no_throws"}:
-        thrown = _build_throws(children[idx])
-        idx += 1
     body = _build_block(children[idx])
     return FunctionDef(
         name=name_token.value,
         params=params,
         return_type=return_type,
         body=body,
-        thrown_domains=tuple(thrown) if thrown is not None else None,
         loc=loc,
     )
 
@@ -221,23 +219,14 @@ def _build_type_expr(tree: Tree) -> TypeExpr:
         args: List[TypeExpr] = []
         if len(tree.children) > 1:
             type_args = tree.children[1]
-            args = [_build_type_expr(arg) for arg in type_args.children]
+            args = [
+                _build_type_expr(arg) for arg in type_args.children if isinstance(arg, Tree)
+            ]
         return TypeExpr(name=name_token.value, args=args)
     # fallback for other wrappers
     if tree.children:
         return _build_type_expr(tree.children[-1])
     return TypeExpr(name="<unknown>")
-
-
-def _build_throws(tree: Tree) -> List[str]:
-    if _name(tree) == "no_throws":
-        return []
-    domain_node = next((child for child in tree.children if isinstance(child, Tree)), None)
-    if domain_node is None:
-        return []
-    return [child.value for child in domain_node.children]
-
-
 def _build_stmt(tree: Tree):
     kind = _name(tree)
     if kind == "stmt":
@@ -252,6 +241,8 @@ def _build_stmt(tree: Tree):
         stmt_kind = _name(target)
         if stmt_kind == "let_stmt":
             return _build_let_stmt(target)
+        if stmt_kind == "assign_stmt":
+            return _build_assign_stmt(target)
         if stmt_kind == "return_stmt":
             return _build_return_stmt(target)
         if stmt_kind == "raise_stmt":
@@ -265,6 +256,8 @@ def _build_stmt(tree: Tree):
         return _build_if_stmt(tree)
     if kind == "let_stmt":
         return _build_let_stmt(tree)
+    if kind == "assign_stmt":
+        return _build_assign_stmt(tree)
     if kind == "return_stmt":
         return _build_return_stmt(tree)
     if kind == "raise_stmt":
@@ -277,15 +270,33 @@ def _build_stmt(tree: Tree):
 def _build_let_stmt(tree: Tree) -> LetStmt:
     loc = _loc(tree)
     child_nodes = [child for child in tree.children if isinstance(child, Tree)]
-    binder_node = child_nodes.pop(0)
+    idx = 0
+    binder_node = child_nodes[idx]
+    idx += 1
     mutable = _binder_is_mutable(binder_node)
-    binding_node = child_nodes.pop(0)
+    binding_node = child_nodes[idx]
+    idx += 1
     name_token, capture = _parse_binding_name(binding_node)
-    type_expr = _build_type_expr(child_nodes.pop(0))
+    type_expr = None
+    if idx < len(child_nodes) and _name(child_nodes[idx]) == "type_spec":
+        type_spec_node = child_nodes[idx]
+        idx += 1
+        type_expr_node = next(
+            (
+                child
+                for child in type_spec_node.children
+                if isinstance(child, Tree) and _name(child) == "type_expr"
+            ),
+            None,
+        )
+        if type_expr_node is None:
+            raise ValueError("type_spec missing type expression")
+        type_expr = _build_type_expr(type_expr_node)
     capture_alias = None
-    if child_nodes and _name(child_nodes[0]) == "alias_clause":
-        capture_alias = _parse_alias(child_nodes.pop(0))
-    value_expr = _build_expr(child_nodes[0])
+    if idx < len(child_nodes) and _name(child_nodes[idx]) == "alias_clause":
+        capture_alias = _parse_alias(child_nodes[idx])
+        idx += 1
+    value_expr = _build_expr(child_nodes[idx])
     return LetStmt(
         loc=loc,
         name=name_token.value,
@@ -295,6 +306,25 @@ def _build_let_stmt(tree: Tree) -> LetStmt:
         capture=capture,
         capture_alias=capture_alias,
     )
+
+
+def _build_assign_stmt(tree: Tree) -> AssignStmt:
+    loc = _loc(tree)
+    tree_children = [child for child in tree.children if isinstance(child, Tree)]
+    target_node = next(child for child in tree_children if _name(child) == "assign_lhs")
+    value_node = next(child for child in reversed(tree_children) if child is not target_node)
+    target = _build_assign_target(target_node)
+    value = _build_expr(value_node)
+    return AssignStmt(loc=loc, target=target, value=value)
+
+
+def _build_assign_target(node: Tree) -> Expr:
+    name_token = next(child for child in node.children if isinstance(child, Token) and child.type == "NAME")
+    expr: Expr = Name(loc=_loc_from_token(name_token), ident=name_token.value)
+    for child in node.children:
+        if isinstance(child, Tree) and _name(child) == "index_suffix":
+            expr = _apply_index_suffix(expr, child)
+    return expr
 
 
 def _parse_binding_name(tree: Tree) -> tuple[Token, bool]:
@@ -329,8 +359,6 @@ def _binder_is_mutable(node: Tree) -> bool:
         if isinstance(child, Token):
             if child.type == "VAR":
                 return True
-        elif isinstance(child, Tree) and _name(child) == "mut_clause":
-            return True
     return False
 
 
@@ -469,9 +497,27 @@ def _build_expr(node) -> Expr:
         return Literal(loc=_loc(node), value=True)
     if name == "false_lit":
         return Literal(loc=_loc(node), value=False)
+    if name == "array_literal":
+        return _build_array_literal(node)
     if node.children:
         return _build_expr(node.children[0])
     raise ValueError(f"Unsupported expression node: {name}")
+
+
+def _build_array_literal(tree: Tree) -> ArrayLiteral:
+    elements = [_build_expr(child) for child in tree.children if isinstance(child, Tree)]
+    return ArrayLiteral(loc=_loc(tree), elements=elements)
+
+
+def _apply_index_suffix(base: Expr, suffix_node: Tree) -> Index:
+    index_expr = None
+    for child in suffix_node.children:
+        if isinstance(child, Tree):
+            index_expr = _build_expr(child)
+            break
+    if index_expr is None:
+        raise ValueError("index suffix missing expression")
+    return Index(loc=_loc(suffix_node), value=base, index=index_expr)
 
 
 def _fold_chain(tree: Tree, tail_name: str) -> Expr:
@@ -534,6 +580,8 @@ def _build_postfix(tree: Tree) -> Expr:
             expr = Attr(loc=_loc(child), value=expr, attr=attr_token.value)
         elif child_name == "move_suffix":
             expr = Move(loc=_loc(child), value=expr)
+        elif child_name == "index_suffix":
+            expr = _apply_index_suffix(expr, child)
         else:
             raise ValueError(f"Unexpected postfix child: {child_name}")
     return expr

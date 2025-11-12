@@ -1,10 +1,12 @@
-let mut global_counter: i64 = 0
+import sys.console.out
 
-fn banner() -> str !throws {
-    let base: str = "mut bindings exist even before assignment semantics"
+fn banner() returns String {
+    val base: String = "var bindings opt into future mutation"
     return base
 }
 
-fn main() -> unit !throws {
-    print(banner())
+fn main() returns Void {
+    var counter: Int64 = 0
+    out.writeln(banner())
+    out.writeln(counter)
 }

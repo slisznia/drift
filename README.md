@@ -21,6 +21,7 @@ Drift provides predictable lifetimes, explicit control of mutability and ownersh
 - **Memory-safe access primitives (`Volatile`, `Mutable`)**
 - **Imports and system I/O (`import sys.console.out`)**
 - **C-family block syntax with predictable scopes and lifetimes**
+- **Generic arrays via `lang.array.Array<T>` with literal syntax `[a, b, ...]`**
 
 **Struct design at a glance:**
 - Drift exposes only `struct` for user-defined data; no record/class split.
@@ -42,6 +43,8 @@ Drift provides predictable lifetimes, explicit control of mutability and ownersh
 | Interior mutability | `Mutable<T>` | Mutate specific fields inside const objects |
 | Volatile access | `Volatile<T>` | Explicit MMIO load/store operations |
 | **Blocks & scopes** | `{ ... }` | Define scope boundaries for RAII and deterministic lifetimes |
+
+`val`/`var` bindings may omit the type annotation when the right-hand expression makes the type unambiguous. For example, `val greeting = "hello"` infers `String`, while `val nums = [1, 2, 3]` infers `Array<Int64>`. Add an explicit `: Type` when inference fails or when you want to document the intent.
 
 #### Struct syntax variants
 
@@ -253,6 +256,192 @@ fn main() returns Void {
 
 This model allows concise I/O while keeping imports explicit and predictable.  
 The objects `out`, `err`, and `in` are references to standard I/O stream instances.
+
+
+## 6. `lang.array` and Array Literals
+
+`lang.array` is the standard module for homogeneous sequences. It exposes the generic type `Array<T>` plus builder helpers. `Array` is always in scope for type annotations, so you can write:
+
+```drift
+import sys.console.out
+
+fn main() returns Void {
+    val names: Array<String> = ["Bob", "Alice", "Ada"]
+    out.writeln("names ready")
+}
+```
+
+Array literals follow the same ownership and typing rules as other expressions:
+
+```drift
+val nums = [1, 2, 3]            // infers Array<Int64>
+val names = ["Bob", "Alice"]     // infers Array<String>
+
+val explicit: Array<Int64> = [1, 2, 3]  // annotation still allowed when desired
+```
+
+- `[expr1, expr2, ...]` constructs an `Array<T>` where every element shares the same type `T`. The compiler infers `T` from the elements.
+- Mixed-type literals (`[1, "two"]`) are rejected at parse-time.
+- Empty literals are reserved for a future constructor; for now, call the stdlib helper once it lands.
+
+`Array<T>` integrates with the broader language design — it moves with `->`, can be captured with `^`, and will participate in trait implementations like `Display` once the stdlib grows. The literal syntax keeps sample programs succinct while we flesh out higher-level APIs.
+
+### 6.1 Indexing and mutation
+
+Use square brackets to read an element:
+
+```drift
+val nums = [1, 2, 3]
+val first = nums[0]
+```
+
+Assignments through an index require the binding to be mutable:
+
+```drift
+var mutable_values: Array<Int64> = [5, 10, 15]
+mutable_values[1] = 42      // ok
+
+val frozen = [7, 8, 9]
+frozen[0] = 1               // compile error: cannot assign through immutable binding
+```
+
+Nested indexing works as expected (e.g., `matrix[row][col]`) as long as the root binding is declared with `var`.
+
+
+## 7. Variant Types (`variant`)
+
+Drift’s `variant` keyword defines **tagged unions**: a value that is exactly one of several named alternatives (variants). Each alternative may carry its own fields, and the compiler enforces exhaustive handling when you `match` on the value.
+
+### 7.1 Syntax
+
+```drift
+variant Result<T, E> {
+    Ok(value: T)
+    Err(error: E)
+}
+```
+
+- `variant` introduces a top-level type definition.
+- The type name uses UpperCamel case and may declare generic parameters (`<T, E>`).
+- Each variant uses UpperCamel case and may include a field list `(field: Type, ...)`.
+- At least one variant must be declared, and names must be unique within the type.
+
+### 7.2 Semantics and representation
+
+A `variant` value stores:
+
+1. A hidden **tag** indicating which alternative is active.
+2. The **payload** for that variant’s fields.
+
+Only the active variant’s fields may be accessed. This is enforced statically by pattern matching.
+
+### 7.3 Construction
+
+Each variant behaves like a constructor:
+
+```drift
+val success: Result<Int64, String> = Ok(value = 42)
+val failure = Err(error = "oops")            // type inference fills in `<Int64, String>`
+```
+
+Named arguments are required when a variant has multiple fields; single-field variants may support positional construction, though the explicit form is always accepted.
+
+### 7.4 Pattern matching and exhaustiveness
+
+`match` is used to consume a variant. All variants must be covered (or you must use future catch-all syntax once it exists).
+
+```drift
+fn describe(result: Result<Int64, String>) returns String {
+    match result {
+        Ok(value) => {
+            return "ok: " + value.to_string()
+        }
+        Err(error) => {
+            return "error: " + error
+        }
+    }
+}
+```
+
+Matches can be nested or composed with other `variant` types:
+
+```drift
+variant Option<T> {
+    Some(value: T)
+    None
+}
+
+variant DbError {
+    ConnectionLost
+    QueryFailed(message: String)
+}
+
+variant LookupResult<T> {
+    Found(value: T)
+    Missing
+    Error(err: DbError)
+}
+
+fn describe_lookup(id: Int64, r: LookupResult<String>) returns String {
+    match r {
+        Found(value) => "Record " + id.to_string() + ": " + value
+        Missing      => "No record for id " + id.to_string()
+        Error(err)   => match err {
+            ConnectionLost       => "Database connection lost"
+            QueryFailed(message) => "Query failed: " + message
+        }
+    }
+}
+```
+
+### 7.5 Recursive data
+
+Variants are ideal for ASTs and other recursive shapes:
+
+```drift
+variant Expr {
+    Literal(value: Int64)
+    Add(lhs: ref Expr, rhs: ref Expr)
+    Neg(inner: ref Expr)
+}
+
+fn eval(expr: ref Expr) returns Int64 {
+    match expr {
+        Literal(value) => value
+        Add(lhs, rhs) => eval(lhs) + eval(rhs)
+        Neg(inner) => -eval(inner)
+    }
+}
+```
+
+### 7.6 Generics
+
+Variants support type parameters exactly like `struct` or `fn` declarations:
+
+```drift
+variant PairOrError<T, E> {
+    Pair(first: T, second: T)
+    Error(error: E)
+}
+
+fn make_pair<T>(x: T, y: T) returns PairOrError<T, String> {
+    if x == y {
+        return Error(error = "values must differ")
+    }
+    return Pair(first = x, second = y)
+}
+```
+
+### 7.7 Value semantics and equality
+
+Variants follow Drift’s value semantics: they are copied/moved by value, and their equality/ordering derive from their payloads. Two `Result` values are equal only if they hold the same variant *and* the corresponding fields are equal.
+
+### 7.8 Evolution considerations
+
+- Adding a new variant is a **breaking change** because every `match` must handle it explicitly.
+- Library authors should document variant additions clearly or provide fallback variants when forward compatibility matters.
+
+Variants underpin key library types such as `Result<T, E>` and `Option<T>`, enabling safe, expressive modeling of operations with multiple outcomes.
 
 
 ## 11. Exceptions and Context Capture

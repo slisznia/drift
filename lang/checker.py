@@ -16,6 +16,8 @@ from .types import (
     Type,
     TypeSystemError,
     UNIT,
+    array_of,
+    array_element_type,
     is_displayable,
     resolve_type,
 )
@@ -32,7 +34,6 @@ class VarInfo:
 class FunctionInfo:
     signature: FunctionSignature
     node: Optional[ast.FunctionDef]
-    effects: frozenset[str]
 
 
 @dataclass
@@ -85,18 +86,13 @@ class FunctionContext:
     name: str
     signature: FunctionSignature
     scope: Scope
-    effects: Set[str]
     allow_returns: bool
-
-    @property
-    def allowed_effects(self) -> Optional[frozenset[str]]:
-        return self.signature.effects
 
 
 class Checker:
     def __init__(self, builtin_functions: Dict[str, FunctionSignature]) -> None:
         self.function_infos: Dict[str, FunctionInfo] = {
-            name: FunctionInfo(signature=sig, node=None, effects=sig.effects or frozenset())
+            name: FunctionInfo(signature=sig, node=None)
             for name, sig in builtin_functions.items()
         }
         self.struct_infos: Dict[str, StructInfo] = {}
@@ -112,7 +108,6 @@ class Checker:
                 name="<module>", params=(), return_type=UNIT, effects=None
             ),
             scope=global_scope,
-            effects=set(),
             allow_returns=False,
         )
         for stmt in program.statements:
@@ -135,16 +130,13 @@ class Checker:
                 return_type = resolve_type(fn.return_type)
             except TypeSystemError as exc:
                 raise CheckError(str(exc)) from exc
-            effects = None
-            if fn.thrown_domains is not None:
-                effects = frozenset(fn.thrown_domains)
             signature = FunctionSignature(
                 name=fn.name,
                 params=param_types,
                 return_type=return_type,
-                effects=effects,
+                effects=None,
             )
-            self.function_infos[fn.name] = FunctionInfo(signature=signature, node=fn, effects=frozenset())
+            self.function_infos[fn.name] = FunctionInfo(signature=signature, node=fn)
 
     def _register_structs(self, structs: List[ast.StructDef]) -> None:
         for struct in structs:
@@ -173,7 +165,7 @@ class Checker:
                 return_type=Type(struct.name),
                 effects=None,
             )
-            self.function_infos[struct.name] = FunctionInfo(signature=signature, node=None, effects=frozenset())
+            self.function_infos[struct.name] = FunctionInfo(signature=signature, node=None)
 
     def _check_function(self, fn: ast.FunctionDef, global_scope: Scope) -> None:
         info = self.function_infos[fn.name]
@@ -184,32 +176,28 @@ class Checker:
             name=fn.name,
             signature=info.signature,
             scope=scope,
-            effects=set(),
             allow_returns=True,
         )
         for stmt in fn.body.statements:
             self._check_stmt(stmt, ctx)
-        if ctx.allowed_effects is not None and not ctx.effects.issubset(ctx.allowed_effects):
-            diff = ", ".join(sorted(ctx.effects - ctx.allowed_effects))
-            raise CheckError(
-                f"{fn.loc.line}:{fn.loc.column}: function '{fn.name}' may throw {{ {diff} }} but only declares {sorted(ctx.allowed_effects)}"
-            )
         self.function_infos[fn.name] = FunctionInfo(
             signature=info.signature,
             node=fn,
-            effects=frozenset(ctx.effects),
         )
 
     def _check_stmt(self, stmt: ast.Stmt, ctx: FunctionContext) -> None:
         if isinstance(stmt, ast.LetStmt):
-            if stmt.type_expr is None:
-                raise CheckError(f"{stmt.loc.line}:{stmt.loc.column}: Type annotation required")
-            try:
-                decl_type = resolve_type(stmt.type_expr)
-            except TypeSystemError as exc:
-                raise CheckError(f"{stmt.loc.line}:{stmt.loc.column}: {exc}") from exc
+            decl_type = None
+            if stmt.type_expr is not None:
+                try:
+                    decl_type = resolve_type(stmt.type_expr)
+                except TypeSystemError as exc:
+                    raise CheckError(f"{stmt.loc.line}:{stmt.loc.column}: {exc}") from exc
             value_type = self._check_expr(stmt.value, ctx)
-            self._expect_type(value_type, decl_type, stmt.loc)
+            if decl_type is None:
+                decl_type = value_type
+            else:
+                self._expect_type(value_type, decl_type, stmt.loc)
             capture_key = None
             if stmt.capture:
                 capture_key = stmt.capture_alias or stmt.name
@@ -219,6 +207,11 @@ class Checker:
                 stmt.loc,
                 capture_key=capture_key,
             )
+            return
+        if isinstance(stmt, ast.AssignStmt):
+            expected_type = self._check_assignment_target(stmt.target, ctx)
+            value_type = self._check_expr(stmt.value, ctx)
+            self._expect_type(value_type, expected_type, stmt.value.loc)
             return
         if isinstance(stmt, ast.ReturnStmt):
             if not ctx.allow_returns:
@@ -232,8 +225,6 @@ class Checker:
         if isinstance(stmt, ast.RaiseStmt):
             value_type = self._check_expr(stmt.value, ctx)
             self._expect_type(value_type, ERROR, stmt.loc)
-            if stmt.domain is not None:
-                ctx.effects.add(stmt.domain)
             return
         if isinstance(stmt, ast.ExprStmt):
             self._check_expr(stmt.value, ctx)
@@ -273,6 +264,10 @@ class Checker:
             return self._resolve_attr_type(base_type, expr)
         if isinstance(expr, ast.Move):
             return self._check_expr(expr.value, ctx)
+        if isinstance(expr, ast.ArrayLiteral):
+            return self._check_array_literal(expr, ctx)
+        if isinstance(expr, ast.Index):
+            return self._check_index_expr(expr, ctx)
         if isinstance(expr, ast.Unary):
             operand_type = self._check_expr(expr.operand, ctx)
             if expr.op == "-":
@@ -285,6 +280,28 @@ class Checker:
         if isinstance(expr, ast.Binary):
             return self._check_binary(expr, ctx)
         raise CheckError(f"{expr.loc.line}:{expr.loc.column}: Unsupported expression {expr}")
+
+    def _check_array_literal(self, expr: ast.ArrayLiteral, ctx: FunctionContext) -> Type:
+        if not expr.elements:
+            raise CheckError(
+                f"{expr.loc.line}:{expr.loc.column}: Cannot infer type of empty array literal"
+            )
+        first_type = self._check_expr(expr.elements[0], ctx)
+        for element in expr.elements[1:]:
+            actual = self._check_expr(element, ctx)
+            self._expect_type(actual, first_type, element.loc)
+        return array_of(first_type)
+
+    def _check_index_expr(self, expr: ast.Index, ctx: FunctionContext) -> Type:
+        container_type = self._check_expr(expr.value, ctx)
+        element_type = array_element_type(container_type)
+        if element_type is None:
+            raise CheckError(
+                f"{expr.loc.line}:{expr.loc.column}: Type {container_type} is not indexable"
+            )
+        index_type = self._check_expr(expr.index, ctx)
+        self._expect_type(index_type, I64, expr.index.loc)
+        return element_type
 
     def _check_call(self, expr: ast.Call, ctx: FunctionContext) -> Type:
         callee_name = self._resolve_callee(expr.func, ctx)
@@ -309,8 +326,6 @@ class Checker:
         for arg_expr, expected in zip(expr.args, sig.params):
             actual = self._check_expr(arg_expr, ctx)
             self._expect_type(actual, expected, arg_expr.loc)
-        if sig.effects is not None:
-            ctx.effects.update(sig.effects)
         return sig.return_type
 
     def _check_struct_constructor(self, expr: ast.Call, info: StructInfo, ctx: FunctionContext) -> None:
@@ -412,3 +427,41 @@ class Checker:
             raise CheckError(
                 f"{loc.line}:{loc.column}: Expected type {expected}, got {actual}"
             )
+
+    def _check_assignment_target(self, target: ast.Expr, ctx: FunctionContext) -> Type:
+        if isinstance(target, ast.Name):
+            info = ctx.scope.lookup(target.ident, target.loc)
+            if not info.mutable:
+                raise CheckError(
+                    f"{target.loc.line}:{target.loc.column}: '{target.ident}' is immutable"
+                )
+            return info.type
+        if isinstance(target, ast.Index):
+            self._ensure_mutable_root(target.value, ctx)
+            container_type = self._check_expr(target.value, ctx)
+            element_type = array_element_type(container_type)
+            if element_type is None:
+                raise CheckError(
+                    f"{target.loc.line}:{target.loc.column}: Type {container_type} is not indexable"
+                )
+            index_type = self._check_expr(target.index, ctx)
+            self._expect_type(index_type, I64, target.index.loc)
+            return element_type
+        raise CheckError(
+            f"{target.loc.line}:{target.loc.column}: Unsupported assignment target"
+        )
+
+    def _ensure_mutable_root(self, expr: ast.Expr, ctx: FunctionContext) -> None:
+        if isinstance(expr, ast.Name):
+            info = ctx.scope.lookup(expr.ident, expr.loc)
+            if not info.mutable:
+                raise CheckError(
+                    f"{expr.loc.line}:{expr.loc.column}: '{expr.ident}' is immutable"
+                )
+            return
+        if isinstance(expr, ast.Index):
+            self._ensure_mutable_root(expr.value, ctx)
+            return
+        raise CheckError(
+            f"{expr.loc.line}:{expr.loc.column}: Assignment target must be a variable or array element"
+        )

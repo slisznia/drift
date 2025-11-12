@@ -1,8 +1,11 @@
-fn is_voter(age: i64) -> bool !throws {
+import sys.console.out
+
+fn is_voter(age: Int64) returns Bool {
     return (age >= 18 and age < 130) or age == 0
 }
 
-fn main() -> unit !throws {
-    let statement: str = "boolean expressions short-circuit"
-    print(statement)
+fn main() returns Void {
+    val statement: String = "boolean expressions short-circuit"
+    out.writeln(statement)
+    out.writeln(is_voter(21))
 }

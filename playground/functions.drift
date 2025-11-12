@@ -1,14 +1,16 @@
-fn greet(name: str) -> str !throws {
+import sys.console.out
+
+fn greet(name: String) returns String {
     return "hi " + name
 }
 
-fn call_twice(name: str) -> str !throws {
-    let first: str = greet(name)
-    let second: str = greet("Drift")
+fn call_twice(name: String) returns String {
+    val first: String = greet(name)
+    val second: String = greet("Drift")
     return first + " & " + second
 }
 
-fn main() -> unit !throws {
-    let message: str = call_twice("Ada")
-    print(message)
+fn main() returns Void {
+    val message: String = call_twice("Ada")
+    out.writeln(message)
 }
