@@ -308,11 +308,157 @@ frozen[0] = 1               // compile error: cannot assign through immutable bi
 Nested indexing works as expected (e.g., `matrix[row][col]`) as long as the root binding is declared with `var`.
 
 
-## 7. Variant Types (`variant`)
+## 7. Collection Literals (Arrays and Maps)
+
+Drift includes literal syntax for homogeneous arrays (`[a, b, ...]`) and maps (`{ key: value, ... }`).
+The syntax is part of the language grammar, but **literals never hard-wire a concrete container type**.
+Instead, they are desugared through capability interfaces so projects can pick any backing collection.
+
+### 7.1 Goals
+
+1. **Ergonomics** — trivial programs should be able to write `val xs = [1, 2, 3]` without ceremony.
+2. **Flexibility** — large systems must be free to route literals into custom containers, including
+   arena-backed vectors, small-capacity stacks, or persistent maps.
+
+### 7.2 Syntax
+
+#### 7.2.1 Array literal
+
+```
+ArrayLiteral ::= "[" (Expr ("," Expr)*)? "]"
+```
+
+Example: `val xs = [1, 2, 3]`.
+
+#### 7.2.2 Map literal
+
+```
+MapLiteral ::= "{" (MapEntry ("," MapEntry)*)? "}"
+MapEntry   ::= Expr ":" Expr
+```
+
+Example: `val user = { "name": "Ada", "age": 38 }`.
+
+Duplicate keys are allowed syntactically; the target type decides whether to keep the first value, last
+value, or reject duplicates.
+
+### 7.3 Type resolution
+
+A literal `[exprs...]` or `{k: v, ...}` requires a *target* type `C`. Resolution happens in two phases:
+
+1. Infer the element type(s) from the literal body. Array literals require all expressions to unify to a
+   single element type `T`. Map literals infer key type `K` and value type `V` from their entries.
+2. Determine the target container type `C` from context. If no context constrains the literal, the
+   compiler falls back to the standard prelude types (`Array<T>` and `Map<K, V>`).
+
+#### 7.3.1 `FromArrayLiteral`
+
+A type `C` may accept array literals by implementing:
+
+```drift
+interface FromArrayLiteral<Element> {
+    static fn from_array_literal(items: Array<Element>) returns Self
+}
+```
+
+Desugaring of `[e1, e2, ...]` becomes:
+
+```drift
+C.from_array_literal(tmp_array)
+```
+
+Where `tmp_array` is an ephemeral `Array<T>` built by the compiler. If `C` does not implement the
+interface, the literal fails to type-check.
+
+#### 7.3.2 `FromMapLiteral`
+
+Map literals use a similar interface:
+
+```drift
+interface FromMapLiteral<Key, Value> {
+    static fn from_map_literal(entries: Array<(Key, Value)>) returns Self
+}
+```
+
+The compiler converts `{k1: v1, ...}` into `C.from_map_literal(tmp_entries)` where `tmp_entries` is an
+`Array<(K, V)>`.
+
+### 7.4 Standard implementations
+
+The prelude wires literals to the default collections:
+
+```drift
+implement<T> FromArrayLiteral<T> for Array<T> {
+    static fn from_array_literal(items: Array<T>) returns Array<T> {
+        return items
+    }
+}
+
+implement<K, V> FromMapLiteral<K, V> for Map<K, V> {
+    static fn from_map_literal(entries: Array<(K, V)>) returns Map<K, V> {
+        val m = Map<K, V>()
+        for (k, v) in entries {
+            m.insert(k, v)
+        }
+        return m
+    }
+}
+```
+
+This keeps “hello world” code terse:
+
+```drift
+fn main() returns Void {
+    val xs = [1, 2, 3]
+    val cfg = { "mode": "debug" }
+}
+```
+
+### 7.5 Strict mode and overrides
+
+Projects may opt into a strict mode that disables implicit prelude imports. In that configuration:
+
+- Literal syntax still parses.
+- You must import the concrete collection types you want to accept literals.
+- If no suitable `FromArrayLiteral`/`FromMapLiteral` implementation is in scope, the literal fails.
+
+Custom containers can opt in by providing their own implementations:
+
+```drift
+struct SmallVec<T> { /* ... */ }
+
+implement<T> FromArrayLiteral<T> for SmallVec<T> {
+    static fn from_array_literal(items: Array<T>) returns SmallVec<T> {
+        var sv = SmallVec<T>()
+        for v in items { sv.push(v) }
+        return sv
+    }
+}
+
+val fast: SmallVec<Int> = [1, 2, 3]
+```
+
+The same pattern applies to alternative map implementations.
+
+### 7.6 Diagnostics
+
+- `[1, "two"]` → error: element types do not unify.
+- `{}` without a target type → error when no default map is in scope.
+- `val s: SortedSet<Int> = [1, 2, 3]` → error unless `SortedSet<Int>` implements `FromArrayLiteral<Int>`.
+
+### 7.7 Summary
+
+- Literal syntax is fixed in the language, but its meaning is delegated to interfaces.
+- The prelude provides ergonomic defaults (`Array`, `Map`).
+- Strict mode and custom containers can override the target type.
+- Errors are clear when element types disagree or no implementation is available.
+
+
+## 8. Variant Types (`variant`)
 
 Drift’s `variant` keyword defines **tagged unions**: a value that is exactly one of several named alternatives (variants). Each alternative may carry its own fields, and the compiler enforces exhaustive handling when you `match` on the value.
 
-### 7.1 Syntax
+### 8.1 Syntax
 
 ```drift
 variant Result<T, E> {
@@ -326,7 +472,7 @@ variant Result<T, E> {
 - Each variant uses UpperCamel case and may include a field list `(field: Type, ...)`.
 - At least one variant must be declared, and names must be unique within the type.
 
-### 7.2 Semantics and representation
+### 8.2 Semantics and representation
 
 A `variant` value stores:
 
@@ -335,7 +481,7 @@ A `variant` value stores:
 
 Only the active variant’s fields may be accessed. This is enforced statically by pattern matching.
 
-### 7.3 Construction
+### 8.3 Construction
 
 Each variant behaves like a constructor:
 
@@ -346,7 +492,7 @@ val failure = Err(error = "oops")            // type inference fills in `<Int64,
 
 Named arguments are required when a variant has multiple fields; single-field variants may support positional construction, though the explicit form is always accepted.
 
-### 7.4 Pattern matching and exhaustiveness
+### 8.4 Pattern matching and exhaustiveness
 
 `match` is used to consume a variant. All variants must be covered (or you must use future catch-all syntax once it exists).
 
@@ -394,7 +540,7 @@ fn describe_lookup(id: Int64, r: LookupResult<String>) returns String {
 }
 ```
 
-### 7.5 Recursive data
+### 8.5 Recursive data
 
 Variants are ideal for ASTs and other recursive shapes:
 
@@ -414,7 +560,7 @@ fn eval(expr: ref Expr) returns Int64 {
 }
 ```
 
-### 7.6 Generics
+### 8.6 Generics
 
 Variants support type parameters exactly like `struct` or `fn` declarations:
 
@@ -432,11 +578,11 @@ fn make_pair<T>(x: T, y: T) returns PairOrError<T, String> {
 }
 ```
 
-### 7.7 Value semantics and equality
+### 8.7 Value semantics and equality
 
 Variants follow Drift’s value semantics: they are copied/moved by value, and their equality/ordering derive from their payloads. Two `Result` values are equal only if they hold the same variant *and* the corresponding fields are equal.
 
-### 7.8 Evolution considerations
+### 8.8 Evolution considerations
 
 - Adding a new variant is a **breaking change** because every `match` must handle it explicitly.
 - Library authors should document variant additions clearly or provide fallback variants when forward compatibility matters.
@@ -444,12 +590,12 @@ Variants follow Drift’s value semantics: they are copied/moved by value, and t
 Variants underpin key library types such as `Result<T, E>` and `Option<T>`, enabling safe, expressive modeling of operations with multiple outcomes.
 
 
-## 11. Exceptions and Context Capture
+## 9. Exceptions and Context Capture
 
 Drift provides structured exception handling through a unified `Error` type and the `^` capture modifier.  
 This enables precise contextual diagnostics without boilerplate logging or manual tracing.
 
-### 11.1 Exception model
+### 9.1 Exception model
 
 All exceptions share a single type:
 
@@ -465,7 +611,7 @@ struct Error {
 
 Each function frame can contribute contextual data via the `^` capture syntax. If you omit the `as "alias"` clause, the compiler derives a key from the enclosing scope (e.g., `parse_date.input`). Duplicate keys inside the same lexical scope are rejected at compile time (`E3510`).
 
-### 11.2 Capturing local context
+### 9.2 Capturing local context
 
 ```drift
 val ^input: String as "record.field" = msg["startDate"]
@@ -489,13 +635,13 @@ Captured context frames appear in order from the throw site outward, e.g.:
 }
 ```
 
-### 11.3 Runtime behavior
+### 9.3 Runtime behavior
 
 - Each captured variable (`^x`) adds its name and optional alias to the current frame context.
 - Context maps are stacked per function frame.
 - The runtime merges and serializes this information into the `Error` object when unwinding.
 
-### 11.4 Design goals
+### 9.4 Design goals
 
 - **Automatic context:** No need for explicit `try/catch` scaffolding.
 - **Deterministic structure:** The captured state is reproducible and bounded.
@@ -504,12 +650,12 @@ Captured context frames appear in order from the throw site outward, e.g.:
 
 ---
 
-## 12. Mutators, Transformers, and Finalizers
+## 10. Mutators, Transformers, and Finalizers
 
 In Drift, a function’s **parameter ownership mode** communicates its **lifecycle role** in a data flow.  
 This distinction becomes especially clear in pipelines (`>>`), where each stage expresses how it interacts with its input.
 
-### 12.1 Function roles
+### 10.1 Function roles
 
 | Role | Parameter type | Return type | Ownership semantics | Typical usage |
 |------|----------------|--------------|---------------------|----------------|
@@ -517,7 +663,7 @@ This distinction becomes especially clear in pipelines (`>>`), where each stage 
 | **Transformer** | `T` | `U` (often `T`) | Consumes its input and returns a new owned value. Ownership transfers into the call and out again. | `compress`, `clone`, `serialize`. |
 | **Finalizer / Sink** | `T` | `Void` | Consumes the value completely. Ownership ends here; the resource is destroyed or released at function return. | `finalize`, `close`, `free`, `commit`. |
 
-### 12.2 Pipeline behavior
+### 10.2 Pipeline behavior
 
 The pipeline operator `>>` is **ownership-aware**.  
 It automatically determines how each stage interacts based on the callee’s parameter type:
@@ -539,7 +685,7 @@ open("x")
 
 At the end of scope, if the value is still owned (not consumed by a finalizer), RAII automatically calls its destructor.
 
-### 12.3 Rationale
+### 10.3 Rationale
 
 This mirrors real-world resource lifecycles:
 1. Creation — ownership established.  
@@ -549,7 +695,7 @@ This mirrors real-world resource lifecycles:
 
 Explicit parameter types make these transitions visible and verifiable at compile time.
 
-### 12.4 RAII interaction
+### 10.4 RAII interaction
 
 All owned resources obey RAII: their destructors run automatically at scope end.  
 Finalizers are **optional** unless early release, explicit error handling, or shared-handle semantics require them.
@@ -571,7 +717,7 @@ Finalizers are **optional** unless early release, explicit error handling, or sh
 
 In both cases, the file handle is safely released exactly once.
 
-## 13. Grammar (EBNF excerpt)
+## 11. Grammar (EBNF excerpt)
 
 *(Trait/`implement`/`where` grammar is summarized in Appendix B.)*
 
@@ -626,25 +772,25 @@ process(j)    // error: use of moved value
 
 ---
 
-## 13. Null Safety & Optional Values
+## 12. Null Safety & Optional Values
 
 Drift is **null-free**. There is no `null` literal. A value is either present (`T`) or explicitly optional (`Optional<T>`). The compiler never promotes `Optional<T>` to `T` implicitly.
 
-### 13.1 Types
+### 12.1 Types
 
 | Type | Meaning |
 |------|---------|
 | `T` | Non-optional; always initialized. |
 | `Optional<T>` | Possibly empty; either a value or nothing. |
 
-### 13.2 Construction
+### 12.2 Construction
 
 ```drift
 val present: Optional<Int64> = Optional.of(42)
 val empty: Optional<Int64> = Optional.none()
 ```
 
-### 13.3 Interface
+### 12.3 Interface
 
 ```drift
 interface Optional<T> {
@@ -670,7 +816,7 @@ module Optional {
 - `if_present` calls the block with a borrow (`ref T`) to avoid moving.
 - `if_none` runs a block when empty.
 
-### 13.4 Control flow
+### 12.4 Control flow
 
 ```drift
 if qty.present() {
@@ -688,7 +834,7 @@ qty.if_present(ref q: {
 
 There is no safe-navigation operator (`?.`). Access requires explicit helpers.
 
-### 13.5 Parameters & returns
+### 12.5 Parameters & returns
 
 - A parameter of type `T` cannot receive `Optional.none()`.
 - Use `Optional<T>` for “maybe” values.
@@ -704,22 +850,22 @@ if sku.none() {
 }
 ```
 
-### 13.6 Ownership
+### 12.6 Ownership
 
 `if_present` borrows (`ref T`) by default. No move occurs unless you explicitly consume `T` inside the block.
 
-### 13.7 Diagnostics (illustrative)
+### 12.7 Diagnostics (illustrative)
 
 - **E2400**: cannot assign `Optional.none()` to non-optional type `T`.
 - **E2401**: attempted member/method use on `Optional<T>` without `map`/`unwrap`/`if_present`.
 - **E2402**: `unwrap()` on empty optional.
 - **E2403**: attempted implicit conversion `Optional<T>` → `T`.
 
-### 13.8 End-to-end example
+### 12.8 End-to-end example
 
 ```drift
 
-### 13.9 Tuple structs & tuple returns
+### 12.9 Tuple structs & tuple returns
 
 - **Tuple structs:** `struct Point(x: Int64, y: Int64)` is a compact header that desugars to the standard block struct. Construction may be positional (`Point(10, 20)`) or named (`Point(x = 10, y = 20)`), dot access remains (`point.x`).
 
@@ -756,14 +902,14 @@ fn main() returns Void {
 ```
 
 ---
-## 14 Traits and Compile-Time Capabilities
+## 13 Traits and Compile-Time Capabilities
 
 (*Conforms to Drift Spec Rev. 2025-11 (Rev 4)*)  
 (*Fully consistent with the `require` + `is` syntax finalized in design discussions.*)
 
 ---
 
-### 14.1. Overview
+### 13.1. Overview
 
 Traits in Drift describe **capabilities** a type *is capable of*.  
 They are compile-time contracts, not inheritance hierarchies and not runtime polymorphism.
@@ -785,7 +931,7 @@ Traits unify:
 
 ---
 
-### 14.2. Defining Traits
+### 13.2. Defining Traits
 
 A trait defines a set of functions that a type must provide to be considered capable of that trait.
 
@@ -812,7 +958,7 @@ Rules:
 
 ---
 
-### 14.3. Implementing Traits
+### 13.3. Implementing Traits
 
 An implementation attaches the capability to a type.
 
@@ -845,7 +991,7 @@ implement Debuggable for Box<T>
 
 ---
 
-### 14.4. Type-Level Trait Requirements (`require`)
+### 13.4. Type-Level Trait Requirements (`require`)
 
 A type may declare that it cannot exist unless certain traits are implemented.
 
@@ -891,7 +1037,7 @@ Constraints:
 
 ---
 
-### 14.5. Function-Level Trait Requirements
+### 13.5. Function-Level Trait Requirements
 
 Functions may restrict their usage to specific capabilities:
 
@@ -921,7 +1067,7 @@ Using a function with unmet trait requirements triggers a compile-time error.
 
 ---
 
-### 14.6. Trait Guards (`if T is TraitName`)
+### 13.6. Trait Guards (`if T is TraitName`)
 
 Trait guards allow functions to adapt behavior based on whether a type implements a trait.
 
@@ -961,7 +1107,7 @@ Trait guards prevent combinatorial explosion of overloaded functions.
 
 ---
 
-### 14.7. Trait Expressions (Boolean Logic)
+### 13.7. Trait Expressions (Boolean Logic)
 
 Trait requirements and guards allow boolean trait expressions:
 
@@ -988,7 +1134,7 @@ Traits become composable *properties* of types.
 
 ---
 
-### 14.8. Trait Dependencies (Traits requiring Traits)
+### 13.8. Trait Dependencies (Traits requiring Traits)
 
 Traits themselves may declare capabilities they depend upon:
 
@@ -1006,7 +1152,7 @@ Any type that implements `Printable` must also implement `Debuggable` and `Displ
 
 ---
 
-### 14.9. RAII and the `Destructible` Trait
+### 13.9. RAII and the `Destructible` Trait
 
 Destruction is expressed as a trait:
 
@@ -1043,7 +1189,7 @@ This integrates seamlessly with move semantics and deterministic lifetimes.
 
 ---
 
-### 14.10. Overloading and Specialization by Trait
+### 13.10. Overloading and Specialization by Trait
 
 Functions may overload based on trait requirements:
 
@@ -1067,7 +1213,7 @@ Rules:
 
 ---
 
-### 14.11. Complete Syntax Summary
+### 13.11. Complete Syntax Summary
 
 #### Defining a trait
 
@@ -1120,7 +1266,7 @@ require T is Clonable and not Destructible
 
 ---
 
-### 14.12. Design Rationale
+### 13.12. Design Rationale
 
 Traits are designed to:
 
@@ -1143,7 +1289,7 @@ The trio of:
 forms a coherent, expressive, zero‑overhead system.
 
 ---
-# 15. Interfaces & Dynamic Dispatch
+## 14. Interfaces & Dynamic Dispatch
 
 Drift supports **runtime polymorphism** through *interfaces*.  
 Interfaces allow multiple **different concrete types** to be treated as one unified abstract type at runtime.  
@@ -1159,7 +1305,7 @@ Both systems integrate cleanly with Drift’s ownership, RAII, and borrowing rul
 
 ---
 
-# 15.1 Interface Definitions
+### 14.1 Interface Definitions
 
 Interfaces define a set of functions callable on any implementing type.
 
@@ -1178,7 +1324,7 @@ interface OutputStream {
 - A function that receives an `OutputStream` may be passed any object that implements that interface.
 - The method signatures inside an interface show the receiver type explicitly (`self: ref OutputStream`).
 
-## Receiver rules (`self`)
+### 14.2 Receiver rules (`self`)
 
 Drift differentiates between **methods** (eligible for dot-call syntax) and **free functions**.
 
@@ -1216,7 +1362,7 @@ This rule set makes the receiver’s ownership mode explicit and prevents implic
 
 ---
 
-# 15.2 Implementing Interfaces
+### 14.3 Implementing Interfaces
 
 A concrete type implements an interface through an `implement` block:
 
@@ -1249,7 +1395,7 @@ Rules:
 
 ---
 
-# 15.3 Using Interface Values
+### 14.4 Using Interface Values
 
 Interfaces may be used anywhere that types may appear.
 
@@ -1289,7 +1435,7 @@ Each element may be a different type implementing the same interface.
 
 ---
 
-# 15.4 Dynamic Dispatch Semantics
+### 14.5 Dynamic Dispatch Semantics
 
 A value of interface type is represented as a **fat pointer**, containing:
 
@@ -1312,7 +1458,7 @@ This ensures fully dynamic runtime dispatch with minimal overhead.
 
 ---
 
-# 15.5 Interfaces vs Traits
+### 14.6 Interfaces vs Traits
 
 Characteristic | **Trait** | **Interface**
 ---------------|-----------|-------------
@@ -1330,7 +1476,7 @@ The two systems are orthogonal by design.
 
 ---
 
-# 15.6 Shape Example
+### 14.7 Shape Example
 
 ### Define the interface
 
@@ -1383,7 +1529,7 @@ all.push(Rect(w = 3.0, h = 5.0))
 
 ---
 
-# 15.7 Ownership & RAII for Interface Values
+### 14.8 Ownership & RAII for Interface Values
 
 Interface values follow Drift ownership and move semantics.
 
@@ -1415,7 +1561,7 @@ No double‑destroy is possible because `destroy(self)` consumes the value.
 
 ---
 
-# 15.8 Multiple Interfaces
+### 14.9 Multiple Interfaces
 
 A type may implement several interfaces:
 
@@ -1436,7 +1582,7 @@ There is no conflict unless the implementing type violates signature constraints
 
 ---
 
-# 15.9 Interfaces + Traits Together
+### 14.10 Interfaces + Traits Together
 
 These systems complement each other:
 
@@ -1461,7 +1607,7 @@ This pattern is central to building logging, serialization, and plugin systems.
 
 ---
 
-# 15.10 Error Handling Across Interfaces
+### 14.11 Error Handling Across Interfaces
 
 Interface method calls participate in normal exception propagation:
 
@@ -1480,7 +1626,7 @@ Thrown errors travel unchanged across interface boundaries, preserving `^`-captu
 
 ---
 
-# 15.11 Summary
+### 14.12 Summary
 
 Interfaces provide:
 
@@ -1506,23 +1652,23 @@ Together they form a flexible dual system:
 
 ---
 
-# 16. Memory Model
+## 15. Memory Model
 
 This chapter defines Drift's rules for value storage, initialization, destruction, and dynamic allocation. The goal is predictable semantics for user code while relegating low-level memory manipulation to the standard library and `lang.abi`.
 
 Drift deliberately hides raw pointers, pointer arithmetic, and untyped memory. Those operations exist only inside sealed, `@unsafe` library internals. User-visible code works with typed values, references, and safe containers like `Array<T>`.
 
-## 16.1 Value storage
+### 15.1 Value storage
 
 Every sized type `T` occupies `size_of<T>()` bytes. Sized types include primitives, structs whose fields are all sized, and generic instantiations where each argument is sized. These values may live in locals, struct fields, containers, or temporaries. The compiler chooses the actual storage (registers vs stack) and that choice is unobservable.
 
-### 16.1.1 Initialization & destruction
+#### 15.1.1 Initialization & destruction
 
 - A value must be initialized exactly once before use.
 - A value must be destroyed exactly once when it leaves scope or is overwritten.
 - Types with destructors run them during destruction; other types are dropped with no action.
 
-### 16.1.2 Uninitialized memory
+#### 15.1.2 Uninitialized memory
 
 User code never manipulates uninitialized memory. Library internals rely on two sealed helpers:
 
@@ -1531,11 +1677,11 @@ User code never manipulates uninitialized memory. Library internals rely on two 
 
 Only standard library `@unsafe` code touches these helpers.
 
-## 16.2 Raw storage
+### 15.2 Raw storage
 
 `lang.abi` defines an opaque `RawBuffer` representing raw bytes that are not yet interpreted as typed values. Only allocator intrinsics can produce or consume a `RawBuffer`; user code cannot observe its address or layout. Growable containers use `RawBuffer` to reserve contiguous storage for multiple elements of the same type.
 
-## 16.3 Allocation & deallocation
+### 15.3 Allocation & deallocation
 
 The runtime exposes three allocation primitives to the standard library:
 
@@ -1559,7 +1705,7 @@ struct Layout { size: Int, align: Int }
 
 Only containers and other stdlib internals call these functions; user code cannot.
 
-## 16.4 Layout of contiguous elements
+### 15.4 Layout of contiguous elements
 
 Containers such as `Array<T>` store `cap` elements of type `T` in a contiguous region computed as:
 
@@ -1575,13 +1721,13 @@ Guarantees:
 - If `cap > 0`, the container holds a `RawBuffer` allocated with `layout_for<T>(cap)`.
 - That buffer may only be resized or freed via `realloc`/`dealloc`.
 
-## 16.5 Growth of containers
+### 15.5 Growth of containers
 
-### 16.5.1 Overview
+#### 15.5.1 Overview
 
 Growable containers track both `len` (initialized elements) and `cap` (reserved slots). When `len == cap`, they obtain a larger `RawBuffer` and move existing elements—this is capacity growth.
 
-### 16.5.2 Array layout
+#### 15.5.2 Array layout
 
 ```drift
 struct Array<T> {
@@ -1593,7 +1739,7 @@ struct Array<T> {
 
 Invariant: indices `0 .. len` are initialized; `len .. cap` are uninitialized slots ready for construction. Growth occurs before inserting when `len == cap`.
 
-### 16.5.3 Growth algorithm
+#### 15.5.3 Growth algorithm
 
 ```
 fn grow<T>(ref mut self: Array<T>) @unsafe {
@@ -1616,7 +1762,7 @@ fn grow<T>(ref mut self: Array<T>) @unsafe {
 
 If `realloc` moves the allocation, the old buffer is later released with `dealloc`.
 
-### 16.5.4 Moving elements
+#### 15.5.4 Moving elements
 
 Initialized elements move slot-by-slot:
 
@@ -1630,19 +1776,19 @@ for i in 0 .. self.len {
 
 `slot_at` and `move_slot_to_slot` are sealed helpers that perform placement moves without exposing raw pointers to user code.
 
-### 16.5.5 Initializing new slots
+#### 15.5.5 Initializing new slots
 
 After growth, indices `len .. cap` become `Uninit<T>` slots. Public methods (e.g., `push`, `spare_capacity_mut`) safely initialize them.
 
-## 16.6 Stability & relocation
+### 15.6 Stability & relocation
 
 Because `realloc` may relocate a `RawBuffer`, any references, slices, or views derived from a container become invalid after growth. Users must treat such views as ephemeral. Only the container itself may assume addresses remain stable between growth events.
 
-## 16.7 Stack vs dynamic storage
+### 15.7 Stack vs dynamic storage
 
 Drift does not expose stack vs heap distinctions. Local variables and temporaries are compiler-managed; growable containers always use the allocator APIs above. This abstraction lets the backend optimize placement without affecting semantics.
 
-## 16.8 Summary
+### 15.8 Summary
 
 The memory model rests on:
 
