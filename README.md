@@ -1501,8 +1501,159 @@ Drift separates these two forms of polymorphism to preserve clarity, predictabil
 
 Together they form a flexible dual system:
 
-- **Traits for compile‑time adaptability**
+- **Traits for compile-time adaptability**
 - **Interfaces for runtime flexibility**
+
+---
+
+# 16. Memory Model
+
+This chapter defines Drift's rules for value storage, initialization, destruction, and dynamic allocation. The goal is predictable semantics for user code while relegating low-level memory manipulation to the standard library and `lang.abi`.
+
+Drift deliberately hides raw pointers, pointer arithmetic, and untyped memory. Those operations exist only inside sealed, `@unsafe` library internals. User-visible code works with typed values, references, and safe containers like `Array<T>`.
+
+## 16.1 Value storage
+
+Every sized type `T` occupies `size_of<T>()` bytes. Sized types include primitives, structs whose fields are all sized, and generic instantiations where each argument is sized. These values may live in locals, struct fields, containers, or temporaries. The compiler chooses the actual storage (registers vs stack) and that choice is unobservable.
+
+### 16.1.1 Initialization & destruction
+
+- A value must be initialized exactly once before use.
+- A value must be destroyed exactly once when it leaves scope or is overwritten.
+- Types with destructors run them during destruction; other types are dropped with no action.
+
+### 16.1.2 Uninitialized memory
+
+User code never manipulates uninitialized memory. Library internals rely on two sealed helpers:
+
+- `Slot<T>` — typed storage for one `T`.
+- `Uninit<T>` — marker used to construct a `T` inside a slot.
+
+Only standard library `@unsafe` code touches these helpers.
+
+## 16.2 Raw storage
+
+`lang.abi` defines an opaque `RawBuffer` representing raw bytes that are not yet interpreted as typed values. Only allocator intrinsics can produce or consume a `RawBuffer`; user code cannot observe its address or layout. Growable containers use `RawBuffer` to reserve contiguous storage for multiple elements of the same type.
+
+## 16.3 Allocation & deallocation
+
+The runtime exposes three allocation primitives to the standard library:
+
+```drift
+module lang.abi
+
+struct RawBuffer { /* opaque */ }
+struct Layout { size: Int, align: Int }
+
+@intrinsic fn size_of<T>() returns Int
+@intrinsic fn align_of<T>() returns Int
+
+@unsafe fn alloc(layout: Layout) returns RawBuffer
+@unsafe fn realloc(buf: RawBuffer, old: Layout, new: Layout) returns RawBuffer
+@unsafe fn dealloc(buf: RawBuffer, layout: Layout) returns Void
+```
+
+- `alloc` returns uninitialized storage for a layout.
+- `realloc` resizes an existing allocation, preserving contents when possible.
+- `dealloc` releases storage.
+
+Only containers and other stdlib internals call these functions; user code cannot.
+
+## 16.4 Layout of contiguous elements
+
+Containers such as `Array<T>` store `cap` elements of type `T` in a contiguous region computed as:
+
+```
+layout_for<T>(cap):
+    size = size_of<T>() * cap
+    align = align_of<T>()
+```
+
+Guarantees:
+
+- If `cap == 0`, a distinguished empty buffer may be used.
+- If `cap > 0`, the container holds a `RawBuffer` allocated with `layout_for<T>(cap)`.
+- That buffer may only be resized or freed via `realloc`/`dealloc`.
+
+## 16.5 Growth of containers
+
+### 16.5.1 Overview
+
+Growable containers track both `len` (initialized elements) and `cap` (reserved slots). When `len == cap`, they obtain a larger `RawBuffer` and move existing elements—this is capacity growth.
+
+### 16.5.2 Array layout
+
+```drift
+struct Array<T> {
+    len: Int      // initialized elements
+    cap: Int      // reserved slots
+    buf: RawBuffer
+}
+```
+
+Invariant: indices `0 .. len` are initialized; `len .. cap` are uninitialized slots ready for construction. Growth occurs before inserting when `len == cap`.
+
+### 16.5.3 Growth algorithm
+
+```
+fn grow<T>(ref mut self: Array<T>) @unsafe {
+    old_cap = self.cap
+    new_cap = max(1, old_cap * 2)
+
+    old_layout = layout_for<T>(old_cap)
+    new_layout = layout_for<T>(new_cap)
+
+    new_buf = if old_cap == 0 {
+        alloc(new_layout)
+    } else {
+        realloc(self.buf, old_layout, new_layout)
+    }
+
+    self.buf = new_buf
+    self.cap = new_cap
+}
+```
+
+If `realloc` moves the allocation, the old buffer is later released with `dealloc`.
+
+### 16.5.4 Moving elements
+
+Initialized elements move slot-by-slot:
+
+```
+for i in 0 .. self.len {
+    src = slot_at<T>(old_buf, i)
+    dst = slot_at<T>(new_buf, i)
+    move_slot_to_slot(src, dst)
+}
+```
+
+`slot_at` and `move_slot_to_slot` are sealed helpers that perform placement moves without exposing raw pointers to user code.
+
+### 16.5.5 Initializing new slots
+
+After growth, indices `len .. cap` become `Uninit<T>` slots. Public methods (e.g., `push`, `spare_capacity_mut`) safely initialize them.
+
+## 16.6 Stability & relocation
+
+Because `realloc` may relocate a `RawBuffer`, any references, slices, or views derived from a container become invalid after growth. Users must treat such views as ephemeral. Only the container itself may assume addresses remain stable between growth events.
+
+## 16.7 Stack vs dynamic storage
+
+Drift does not expose stack vs heap distinctions. Local variables and temporaries are compiler-managed; growable containers always use the allocator APIs above. This abstraction lets the backend optimize placement without affecting semantics.
+
+## 16.8 Summary
+
+The memory model rests on:
+
+1. No raw pointers in user code.
+2. Typed storage abstractions (`Slot<T>`, `Uninit<T>`).
+3. Strict init/destroy rules.
+4. All dynamic allocation routed through `lang.abi`.
+5. Predictable contiguous container semantics with explicit growth.
+6. Backend freedom for placing locals/temporaries.
+
+These rules scale to arrays, strings, maps, trait objects, and future higher-level abstractions using the same mechanisms.
 
 ---
 
