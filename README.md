@@ -1176,6 +1176,43 @@ interface OutputStream {
 - Interfaces may not define fields — pure behavior only.
 - Interfaces are **first‑class types** (unlike traits).
 - A function that receives an `OutputStream` may be passed any object that implements that interface.
+- The method signatures inside an interface show the receiver type explicitly (`self: ref OutputStream`).
+
+## Receiver rules (`self`)
+
+Drift differentiates between **methods** (eligible for dot-call syntax) and **free functions**.
+
+- **Only functions defined inside an `implement Type { ... }` block become methods.**
+- Inside such a block, the first parameter **must** be spelled `self`, with an explicit mode:
+  - `self` → pass by value
+  - `ref self` → shared borrow
+  - `ref mut self` → exclusive/mutable borrow
+  - (future) `move self` → consuming receiver
+- The receiver’s type is implied by the `implement` header, so you never annotate it (`ref self`, not `self: ref File`).
+- Outside an `implement` block every function is a free function. A free function may take any parameters (including an explicit `ref File`), but it is invoked with ordinary call syntax (`translate(ref point, 1, 2)`), not `point.translate(...)`.
+
+Example:
+
+```drift
+struct Point { x: Int64, y: Int64 }
+
+implement Point {
+    fn move_by(ref mut self, dx: Int64, dy: Int64) returns Void {
+        self.x += dx
+        self.y += dy
+    }
+}
+
+fn translate(ref p: Point, dx: Int64, dy: Int64) returns Void {
+    p.x += dx
+    p.y += dy
+}
+
+point.move_by(1, 2)       // method call (inside `implement`)
+translate(ref point, 3, 4) // free function call
+```
+
+This rule set makes the receiver’s ownership mode explicit and prevents implicit, C++-style magic receivers.
 
 ---
 
@@ -1189,15 +1226,15 @@ struct File {
 }
 
 implement OutputStream for File {
-    fn write(self: ref File, bytes: Bytes) returns Void {
+    fn write(ref self, bytes: Bytes) returns Void {
         sys_write(self.fd, bytes)
     }
 
-    fn writeln(self: ref File, text: String) returns Void {
+    fn writeln(ref self, text: String) returns Void {
         self.write((text + "\n").to_bytes())
     }
 
-    fn flush(self: ref File) returns Void {
+    fn flush(ref self) returns Void {
         sys_flush(self.fd)
     }
 }
@@ -1206,7 +1243,7 @@ implement OutputStream for File {
 Rules:
 
 1. All interface functions must be provided.
-2. Methods receive a reference to the **concrete type** (`ref File`), not the interface.
+2. Method signatures begin with an explicit receiver (`ref self` here); the type (`File`) is implied by the `implement` header.
 3. A type may implement multiple interfaces.
 4. Implementations may appear in any module.
 
@@ -1310,13 +1347,13 @@ struct Circle { radius: Float64 }
 struct Rect   { w: Float64, h: Float64 }
 
 implement Shape for Circle {
-    fn area(self: ref Circle) returns Float64 {
+    fn area(ref self) returns Float64 {
         return 3.14159265 * self.radius * self.radius
     }
 }
 
 implement Shape for Rect {
-    fn area(self: ref Rect) returns Float64 {
+    fn area(ref self) returns Float64 {
         return self.w * self.h
     }
 }
