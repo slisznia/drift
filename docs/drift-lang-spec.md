@@ -5,8 +5,6 @@
 
 ## 1. Overview
 
-<img src="assets/drift.png" alt="Drift" width="240" align="right" />
-
 **Drift** is a statically typed, compiled systems language designed for clarity, safety, and mechanical predictability.  
 It merges **C++ ownership semantics** (RAII, deterministic destruction, const-correctness) with the **type safety and borrowing model of Rust**, within a concise, modern syntax.
 

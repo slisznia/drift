@@ -1,5 +1,7 @@
 # Drift
 
+<img src="assets/drift.png" alt="Drift" width="240" align="right" />
+
 Drift is a systems programming language focused on deterministic resource management, explicit ownership, and ergonomic concurrency. It combines C++-style RAII with Rust-like borrowing rules, while keeping the syntax compact and readable.
 
 - **Predictable lifetimes** – values are dropped exactly once; `val` and `var` communicate ownership.
