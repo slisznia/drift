@@ -2050,6 +2050,6 @@ TraitExpr  ::= TraitTerm ( ("and" | "or") TraitTerm )*
 TraitTerm  ::= "not"? Ident | "(" TraitExpr ")"
 ```
 
-These forms defer to the existing `where` machinery described in Section 14.
+These forms defer to the existing `where` machinery described in Section 13.
 
 ### End of Drift Language Specification
