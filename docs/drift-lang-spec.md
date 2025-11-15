@@ -27,7 +27,7 @@ Drift provides predictable lifetimes, explicit control of mutability and ownersh
 
 ---
 
-## 2. Variable and Reference Qualifiers
+## 2. Variable and reference qualifiers
 
 | Concept | Keyword / Syntax | Meaning |
 |---|---|---|
@@ -58,7 +58,7 @@ The tuple-style header desugars to the block form. Field names remain available 
 ---
 
 
-## 3. Ownership and Move Semantics (`x->`)
+## 3. Ownership and move semantics (`x->`)
 
 `x->` transfers ownership of `x` without copying. After a move, `x` becomes invalid. Equivalent intent to `std::move(x)` in C++ but lighter and explicit.
 
@@ -142,7 +142,7 @@ This pattern distinguishes cheap, implicit copies (`Copy`) from explicit, potent
 
 ---
 
-### 3.6 Example — Copy vs Move
+### 3.6 Example — copy vs move
 
 ```drift
 struct Job { id: Int }
@@ -160,7 +160,7 @@ process(j)    // ❌ error: j was moved
 
 ---
 
-### 3.7 Example — Non-copyable type
+### 3.7 Example — non-copyable type
 
 ```drift
 struct File { /* non-copyable handle */ }
@@ -176,7 +176,7 @@ upload(f)     // ❌ cannot copy non-copyable type
 
 ---
 
-### 3.8 Example — Borrowing instead of moving
+### 3.8 Example — borrowing instead of moving
 
 ```drift
 fn inspect(f: ref File) returns Void {
@@ -190,7 +190,7 @@ upload(f->)       // later move ownership away
 
 ---
 
-### 3.9 Example — Mut borrow vs move
+### 3.9 Example — mut borrow vs move
 
 ```drift
 fn fill(f: ref mut File) returns Void { /* writes data */ }
@@ -204,7 +204,7 @@ Borrow lifetimes are scoped to braces; once the borrow ends, moving is allowed a
 
 ---
 
-### 3.10 Example — Move return values
+### 3.10 Example — move return values
 
 ```drift
 fn open(name: String) returns File {
@@ -221,7 +221,7 @@ Ownership flows *out* of the function; RAII ensures destruction if not returned.
 
 ---
 
-### 3.11 Example — Composition of moves
+### 3.11 Example — composition of moves
 
 ```drift
 fn take(a: Array<Job>) returns Void { /* consumes array */ }
@@ -243,7 +243,7 @@ take(jobs)      // ❌ jobs invalid after move
 - No garbage collection — **destruction is deterministic** (RAII).
 
 ---
-## 4. Imports and Standard I/O
+## 4. Imports and standard I/O
 
 Drift uses explicit imports — no global or magic identifiers.  
 Console output is available through the `std.console` module.
@@ -272,7 +272,7 @@ QualifiedName ::= Ident ('.' Ident)*
 - If it resolves to an **exported symbol** inside a module (e.g., `std.console.out`), the import binds that symbol directly into the local scope under its own name (or the `as` alias).  
 - Ambiguities between module and symbol names must be disambiguated with `as` or avoided.
 
-## 5. Standard I/O Design
+## 5. Standard I/O design
 
 ### `std.io` module
 
@@ -316,7 +316,7 @@ This model allows concise I/O while keeping imports explicit and predictable.
 The objects `out`, `err`, and `in` are references to standard I/O stream instances.
 
 
-## 6. `lang.array` and Array Literals
+## 6. `lang.array` and array literals
 
 `lang.array` is the standard module for homogeneous sequences. It exposes the generic type `Array<T>` plus builder helpers. `Array` is always in scope for type annotations, so you can write:
 
@@ -366,7 +366,7 @@ frozen[0] = 1               // compile error: cannot assign through immutable bi
 Nested indexing works as expected (e.g., `matrix[row][col]`) as long as the root binding is declared with `var`.
 
 
-## 7. Collection Literals (Arrays and Maps)
+## 7. Collection literals (arrays and maps)
 
 Drift includes literal syntax for homogeneous arrays (`[a, b, ...]`) and maps (`{ key: value, ... }`).
 The syntax is part of the language grammar, but **literals never hard-wire a concrete container type**.
@@ -512,7 +512,7 @@ The same pattern applies to alternative map implementations.
 - Errors are clear when element types disagree or no implementation is available.
 
 
-## 8. Variant Types (`variant`)
+## 8. Variant types (`variant`)
 
 Drift’s `variant` keyword defines **tagged unions**: a value that is exactly one of several named alternatives (variants). Each alternative may carry its own fields, and the compiler enforces exhaustive handling when you `match` on the value.
 
@@ -648,7 +648,7 @@ Variants follow Drift’s value semantics: they are copied/moved by value, and t
 Variants underpin key library types such as `Result<T, E>` and `Option<T>`, enabling safe, expressive modeling of operations with multiple outcomes.
 
 
-## 9. Exceptions and Context Capture
+## 9. Exceptions and context capture
 
 Drift provides structured exception handling through a unified `Error` type and the `^` capture modifier.  
 This enables precise contextual diagnostics without boilerplate logging or manual tracing.
@@ -708,7 +708,7 @@ Captured context frames appear in order from the throw site outward, e.g.:
 
 ---
 
-## 10. Mutators, Transformers, and Finalizers
+## 10. Mutators, transformers, and finalizers
 
 In Drift, a function’s **parameter ownership mode** communicates its **lifecycle role** in a data flow.  
 This distinction becomes especially clear in pipelines (`>>`), where each stage expresses how it interacts with its input.
@@ -775,7 +775,7 @@ Finalizers are **optional** unless early release, explicit error handling, or sh
 
 In both cases, the file handle is safely released exactly once.
 
-## 12. Null Safety & Optional Values
+## 12. Null safety & optional values
 
 Drift is **null-free**. There is no `null` literal. A value is either present (`T`) or explicitly optional (`Optional<T>`). The compiler never promotes `Optional<T>` to `T` implicitly.
 
@@ -905,14 +905,14 @@ fn main() returns Void {
 ```
 
 ---
-## 13 Traits and Compile-Time Capabilities
+## 13 Traits and compile-time capabilities
 
 (*Conforms to Drift Spec Rev. 2025-11 (Rev 4)*)  
 (*Fully consistent with the `require` + `is` syntax finalized in design discussions.*)
 
 ---
 
-### 13.1. Overview
+### 13.1 Overview
 
 Traits in Drift describe **capabilities** a type *is capable of*.  
 They are compile-time contracts, not inheritance hierarchies and not runtime polymorphism.
@@ -934,7 +934,7 @@ Traits unify:
 
 ---
 
-### 13.2. Defining Traits
+### 13.2 Defining traits
 
 A trait defines a set of functions that a type must provide to be considered capable of that trait.
 
@@ -961,7 +961,7 @@ Rules:
 
 ---
 
-### 13.3. Implementing Traits
+### 13.3 Implementing traits
 
 An implementation attaches the capability to a type.
 
@@ -994,7 +994,7 @@ implement Debuggable for Box<T>
 
 ---
 
-### 13.4. Type-Level Trait Requirements (`require`)
+### 13.4 Type-level trait requirements (`require`)
 
 A type may declare that it cannot exist unless certain traits are implemented.
 
@@ -1040,7 +1040,7 @@ Constraints:
 
 ---
 
-### 13.5. Function-Level Trait Requirements
+### 13.5 Function-level trait requirements
 
 Functions may restrict their usage to specific capabilities:
 
@@ -1070,7 +1070,7 @@ Using a function with unmet trait requirements triggers a compile-time error.
 
 ---
 
-### 13.6. Trait Guards (`if T is TraitName`)
+### 13.6 Trait guards (`if T is TraitName`)
 
 Trait guards allow functions to adapt behavior based on whether a type implements a trait.
 
@@ -1110,7 +1110,7 @@ Trait guards prevent combinatorial explosion of overloaded functions.
 
 ---
 
-### 13.7. Trait Expressions (Boolean Logic)
+### 13.7 Trait expressions (boolean logic)
 
 Trait requirements and guards allow boolean trait expressions:
 
@@ -1137,7 +1137,7 @@ Traits become composable *properties* of types.
 
 ---
 
-### 13.8. Trait Dependencies (Traits requiring Traits)
+### 13.8 Trait dependencies (traits requiring traits)
 
 Traits themselves may declare capabilities they depend upon:
 
@@ -1155,7 +1155,7 @@ Any type that implements `Printable` must also implement `Debuggable` and `Displ
 
 ---
 
-### 13.9. RAII and the `Destructible` Trait
+### 13.9 RAII and the `Destructible` trait
 
 Destruction is expressed as a trait:
 
@@ -1192,7 +1192,7 @@ This integrates seamlessly with move semantics and deterministic lifetimes.
 
 ---
 
-### 13.10. Overloading and Specialization by Trait
+### 13.10 Overloading and specialization by trait
 
 Functions may overload based on trait requirements:
 
@@ -1216,7 +1216,7 @@ Rules:
 
 ---
 
-### 13.11. Complete Syntax Summary
+### 13.11 Complete syntax summary
 
 #### Defining a trait
 
@@ -1269,7 +1269,7 @@ require T is Clonable and not Destructible
 
 ---
 
-### 13.13. Thread-Safety Marker Traits (`Send`, `Sync`)
+### 13.13 Thread-safety marker traits (`Send`, `Sync`)
 
 Certain libraries (notably `std.concurrent`) rely on two marker traits that express thread-safety:
 
@@ -1313,7 +1313,7 @@ The trio of:
 forms a coherent, expressive, zero‑overhead system.
 
 ---
-## 14. Interfaces & Dynamic Dispatch
+## 14. Interfaces & dynamic dispatch
 
 Drift supports **runtime polymorphism** through *interfaces*.  
 Interfaces allow multiple **different concrete types** to be treated as one unified abstract type at runtime.  
@@ -1329,7 +1329,7 @@ Both systems integrate cleanly with Drift’s ownership, RAII, and borrowing rul
 
 ---
 
-### 14.1 Interface Definitions
+### 14.1 Interface definitions
 
 Interfaces define a set of functions callable on any implementing type.
 
@@ -1386,7 +1386,7 @@ This rule set makes the receiver’s ownership mode explicit and prevents implic
 
 ---
 
-### 14.3 Implementing Interfaces
+### 14.3 Implementing interfaces
 
 A concrete type implements an interface through an `implement` block:
 
@@ -1419,7 +1419,7 @@ Rules:
 
 ---
 
-### 14.4 Using Interface Values
+### 14.4 Using interface values
 
 Interfaces may be used anywhere that types may appear.
 
@@ -1459,7 +1459,7 @@ Each element may be a different type implementing the same interface.
 
 ---
 
-### 14.5 Dynamic Dispatch Semantics
+### 14.5 Dynamic dispatch semantics
 
 A value of interface type is represented as a **fat pointer**, containing:
 
@@ -1482,7 +1482,7 @@ This ensures fully dynamic runtime dispatch with minimal overhead.
 
 ---
 
-### 14.6 Interfaces vs Traits
+### 14.6 Interfaces vs traits
 
 Characteristic | **Trait** | **Interface**
 ---------------|-----------|-------------
@@ -1500,7 +1500,7 @@ The two systems are orthogonal by design.
 
 ---
 
-### 14.7 Shape Example
+### 14.7 Shape example
 
 ### Define the interface
 
@@ -1553,7 +1553,7 @@ all.push(Rect(w = 3.0, h = 5.0))
 
 ---
 
-### 14.8 Ownership & RAII for Interface Values
+### 14.8 Ownership & RAII for interface values
 
 Interface values follow Drift ownership and move semantics.
 
@@ -1585,7 +1585,7 @@ No double‑destroy is possible because `destroy(self)` consumes the value.
 
 ---
 
-### 14.9 Multiple Interfaces
+### 14.9 Multiple interfaces
 
 A type may implement several interfaces:
 
@@ -1606,7 +1606,7 @@ There is no conflict unless the implementing type violates signature constraints
 
 ---
 
-### 14.10 Interfaces + Traits Together
+### 14.10 Interfaces + traits together
 
 These systems complement each other:
 
@@ -1631,7 +1631,7 @@ This pattern is central to building logging, serialization, and plugin systems.
 
 ---
 
-### 14.11 Error Handling Across Interfaces
+### 14.11 Error handling across interfaces
 
 Interface method calls participate in normal exception propagation:
 
@@ -1676,7 +1676,7 @@ Together they form a flexible dual system:
 
 ---
 
-## 15. Memory Model
+## 15. Memory model
 
 This chapter defines Drift's rules for value storage, initialization, destruction, and dynamic allocation. The goal is predictable semantics for user code while relegating low-level memory manipulation to the standard library and `lang.abi`.
 
@@ -1827,7 +1827,7 @@ These rules scale to arrays, strings, maps, trait objects, and future higher-lev
 
 ---
 
-## 16. Concurrency & Virtual Threads
+## 16. Concurrency & virtual threads
 
 Drift offers structured, scalable concurrency via **virtual threads**: lightweight, stackful execution contexts scheduled on a pool of operating-system carrier threads. Programmers write synchronous-looking code without explicit `async`/`await`, yet the runtime multiplexes potentially millions of virtual threads.
 
@@ -1861,13 +1861,15 @@ Spawn operations return a handle whose `join()` parks the caller until completio
 Developers may target a specific executor policy:
 
 ```drift
-val exec = ExecutorPolicy.builder()
+val policy = ExecutorPolicy.builder()
     .min_threads(4)
     .max_threads(32)
     .queue_limit(5000)
     .timeout(2.seconds)
     .on_saturation(Policy.RETURN_BUSY)
-    .build_executor()
+    .build()
+
+val exec = conc.make_executor(policy)
 
 val t = conc.spawn_on(exec, fn() returns Void {
     handle_connection()
@@ -1897,13 +1899,15 @@ If any child fails, the scope cancels the remaining children and propagates the 
 Carrier threads are managed by executors configured via a fluent `ExecutorPolicy` builder:
 
 ```drift
-val exec = ExecutorPolicy.builder()
+val policy = ExecutorPolicy.builder()
     .min_threads(2)
     .max_threads(64)
     .queue_limit(10000)
     .timeout(250.millis)
     .on_saturation(Policy.BLOCK)
-    .build_executor()
+    .build()
+
+val exec = conc.make_executor(policy)
 ```
 
 Policy fields:
