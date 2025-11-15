@@ -1995,6 +1995,129 @@ This pattern mirrors `try/finally`: if any child throws, the scope cancels the r
 - Structured concurrency scopes offer deterministic cancellation and cleanup.
 - Only a handful of `lang.thread` intrinsics underpin the model; user-facing code resides in `std.concurrent`.
 
+## 17. Pointer-free surface and ABI boundaries
+
+Drift deliberately keeps raw pointer syntax out of the language surface. Low-level memory manipulation and FFI plumbing are funneled through sealed standard-library modules so typical programs interact with typed handles rather than `*mut T` tokens.
+
+### 17.1 Policy: no raw pointer tokens
+
+- No `*mut T` / `*const T` syntax exists in Drift.
+- User-visible pointer arithmetic and casts are forbidden.
+- Untyped byte operations live behind `@unsafe` internals such as `lang.abi` and `lang.internals`.
+
+### 17.2 Slots and uninitialized handles
+
+To enable placement construction without exposing addresses, the runtime uses opaque helpers (see Section 15.1.2):
+
+- `Slot<T>` — a typed storage location capable of holding one `T`.
+- `Uninit<T>` — a marker denoting “not constructed yet.”
+
+Internal APIs operate on these handles:
+
+```drift
+slot.write(value: T)         // move/copy into the slot
+slot.emplace(args…)         // construct in place from arguments
+slot.assume_init() @unsafe  // produce a normal reference once initialized
+```
+
+Typical code never manipulates the underlying addresses—only these safe handles.
+
+### 17.3 Guarded builders for container growth
+
+Growable containers expose builder objects instead of raw capacity math. Example:
+
+```drift
+var xs = Array<Line>()
+xs.reserve(100)
+
+var builder = xs.begin_uninit(3)
+builder.emplace(/* args for element 0 */)
+builder.emplace(/* args for element 1 */)
+builder.emplace(/* args for element 2 */)
+builder.finish()                 // commits len += 3; rollback if dropped early
+```
+
+- `UninitBuilder<T>` only exposes `emplace`, `write`, `len_built`, and `finish`.
+- Dropping the builder without `finish()` destroys partially built elements and leaves `len` unchanged.
+- No pointer arithmetic leaks outside.
+
+### 17.4 `RawBuffer` internals
+
+Containers rely on `lang.abi::RawBuffer` for contiguous storage, but the public surface offers only safe operations:
+
+```drift
+struct RawBuffer<T> { /* opaque */ }
+
+fn capacity(ref self) returns Int
+fn slot_at(ref self, i: Int) returns Slot<T> @unsafe
+fn reallocate(ref mut self, new_cap: Int) @unsafe
+```
+
+`Array<T>` and similar types use these hooks internally; ordinary programs never touch the raw bytes.
+
+### 17.5 FFI via `lang.abi`
+
+Interop lives in `lang.abi`, which exposes opaque pointer/slice types instead of raw addresses:
+
+- `abi.CPtr<T>` / `abi.MutCPtr<T>` — handles that represent foreign pointers; they can be passed around but not dereferenced directly.
+- `abi.Slice<T>` / `abi.MutSlice<T>` — safe views that lower to `(ptr, len)` at the ABI boundary.
+- `extern "C" struct` / `extern "C" fn` map to C layouts and calls.
+
+Only `lang.abi` knows how to construct these handles from actual addresses. Example:
+
+```drift
+import lang.abi as abi
+
+extern "C" struct Point { x: Int32, y: Int32 }
+extern "C" fn draw(points: abi.Slice<Point>) returns Int32
+
+fn render(points: Array<Point>) returns Int32 {
+    return draw(points.as_slice())     // no raw pointers in user code
+}
+```
+
+### 17.6 Unsafe modules (`lang.internals`)
+
+Truly low-level helpers (`Slot<T>`, unchecked length changes, raw buffer manipulation) live in sealed modules such as `lang.internals`. Importing them requires explicit opt-in (feature flag + `@unsafe` annotations). Most applications never import these modules; the standard library and advanced crates do so when implementing containers or FFI shims.
+
+### 17.7 Examples
+
+**Placement without pointers**
+
+```drift
+var arr = Array<UserType>.with_capacity(10)
+
+var value = UserType(...)
+arr.push(value)                      // standard path
+
+var builder = arr.begin_uninit(1)
+builder.write(value)
+builder.finish()
+```
+
+**FFI call**
+
+```drift
+import lang.abi as abi
+
+extern "C" struct Buf { data: abi.CPtr<U8>, len: Int32 }
+extern "C" fn send(buf: abi.Slice<U8>) returns Int32
+
+fn transmit(bytes: Array<U8>) returns Int32 {
+    return send(bytes.as_slice())
+}
+```
+
+### 17.8 Summary
+
+- The surface language never exposes raw pointer syntax or arithmetic.
+- Constructors, builders, and slices provide placement-new semantics without revealing addresses.
+- FFI always flows through `lang.abi` with opaque handles.
+- Unsafe helpers live behind `lang.internals` and require explicit opt-in.
+- Programmers still achieve zero-cost interop and efficient container implementations while keeping the foot-guns sealed away.
+
+---
+
 ---
 
 ## Appendix A — Ownership Examples
