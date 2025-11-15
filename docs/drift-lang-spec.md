@@ -274,7 +274,7 @@ QualifiedName ::= Ident ('.' Ident)*
 - If it resolves to an **exported symbol** inside a module (e.g., `std.console.out`), the import binds that symbol directly into the local scope under its own name (or the `as` alias).  
 - Ambiguities between module and symbol names must be disambiguated with `as` or avoided.
 
-## 5 Standard I/O Design
+## 5. Standard I/O Design
 
 ### `std.io` module
 
@@ -1425,7 +1425,7 @@ Rules:
 
 Interfaces may be used anywhere that types may appear.
 
-### As parameters
+#### 14.4.1 Parameters
 
 ```drift
 fn write_header(out: OutputStream) returns Void {
@@ -1433,7 +1433,7 @@ fn write_header(out: OutputStream) returns Void {
 }
 ```
 
-### As return values
+#### 14.4.2 Return values
 
 ```drift
 fn open_log(path: String) returns OutputStream {
@@ -1442,14 +1442,14 @@ fn open_log(path: String) returns OutputStream {
 }
 ```
 
-### As locals
+#### 14.4.3 Locals
 
 ```drift
 var out: OutputStream = std.console.out
 out.writeln("ready")
 ```
 
-### In heterogeneous arrays
+#### 14.4.4 Heterogeneous arrays
 
 ```drift
 var sinks: Array<OutputStream> = []
