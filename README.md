@@ -2,7 +2,7 @@
 
 <img src="assets/drift.svg" alt="Drift" width="240" align="right" />
 
-Drift is a systems programming language focused on deterministic resource management, explicit ownership, and ergonomic concurrency. It combines C++-style RAII with Rust-like borrowing rules, while keeping the syntax compact and readable.
+Drift is a systems programming language focused on deterministic resource management, explicit ownership, and scalable concurrency. It combines C++-style RAII with Rust-like borrowing rules, while keeping the syntax compact and readable.
 
 - **Safety-first design** – deterministic ownership, explicit moves, and no raw pointers in userland.
 - **Escape hatches on demand** – you opt into `lang.abi` / `@unsafe` only when you really need low-level control.

@@ -7,7 +7,7 @@ Drift is a modern systems language built on a simple premise: programming should
 
 Most languages pick a side:
 
-- High-level and ergonomic, but slow when you push the limits.
+- High-level and comfortable, but slow when you push the limits.
 - Low-level and risky, but fast if you fight the compiler hard enough.
 
 Drift rejects that binary. You get a single language that works across the entire performance spectrum.
@@ -541,7 +541,7 @@ The same pattern applies to alternative map implementations.
 ### 7.7 Summary
 
 - Literal syntax is fixed in the language, but its meaning is delegated to interfaces.
-- The prelude provides ergonomic defaults (`Array`, `Map`).
+- The prelude provides ready-to-use defaults (`Array`, `Map`).
 - Strict mode and custom containers can override the target type.
 - Errors are clear when element types disagree or no implementation is available.
 
@@ -1876,7 +1876,7 @@ Virtual threads borrow a carrier thread while running, but yield it whenever the
 
 ### 16.2 `std.concurrent` API surface
 
-Drift’s standard concurrency module exposes ergonomic helpers:
+Drift’s standard concurrency module exposes straightforward helpers:
 
 ```drift
 import std.concurrent as conc
@@ -1992,7 +1992,7 @@ module lang.thread
 @intrinsic fn register_timer(when: Timestamp, thread: VirtualThreadHandle)
 ```
 
-Library code such as `std.concurrent` is responsible for presenting ergonomic APIs; user programs never touch these intrinsics directly.
+Library code such as `std.concurrent` is responsible for presenting straightforward APIs; user programs never touch these intrinsics directly.
 
 ### 16.8 Scoped virtual threads
 
