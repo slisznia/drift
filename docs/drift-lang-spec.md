@@ -2366,6 +2366,255 @@ Signed DMIR gives Drift a portable, semantically precise unit of distribution wh
 ---
 
 
+
+## 19. Dynamic plugins (Drift→Drift ABI)
+
+### 19.1 Overview
+
+Dynamic Drift plugins let separately compiled Drift modules be loaded at runtime as shared libraries (`.so`, `.dll`, `.dylib`). The plugin ABI sits on top of the core ABI—it does not modify existing rules, but specifies how Drift↔Drift dynamic linking works.
+
+Plugins interact with the host solely through:
+
+- Interfaces (runtime-dispatched fat pointers).
+- Values crossing the boundary via the standard Drift ABI.
+- Structured errors carried by the unified `Error` type.
+- The `Result<T, Error>` convention that all Drift functions already obey.
+
+A plugin is simply a module that exports a single C-ABI entry point returning an implementation of an agreed-upon interface.
+
+### 19.2 Goals
+
+The plugin ABI is designed to:
+
+1. Allow separate compilation and runtime loading.
+2. Provide a small, predictable ABI surface for linking Drift binaries.
+3. Permit bidirectional calls using interfaces.
+4. Ensure errors cross the boundary only as values, not control flow.
+5. Prevent exception unwinding from crossing between host and plugin.
+6. Guarantee stable interface object layouts (fat pointers).
+7. Maintain forward compatibility through explicit ABI versioning.
+
+### 19.3 Core rule: all functions return `Result<T, Error>`
+
+Drift semantics treat every function as conceptually:
+
+```drift
+fn foo(...) returns T
+```
+
+which lowers to:
+
+```drift
+fn foo(...) returns Result<T, Error>
+```
+
+using the variant described in Chapter 9:
+
+```drift
+variant Result<T, E> {
+    Ok(value: T)
+    Err(error: E)
+}
+```
+
+This applies globally, so plugin APIs need no extra wrappers: the ABI already standardizes on `Result<T, Error>` as the universal return type.
+
+### 19.4 No cross-boundary unwinding
+
+Drift implementations may use stack unwinding to realize `throw`, but:
+
+> Unwinding must never cross the plugin boundary.
+
+If code inside a plugin throws, the implementation must intercept the unwind before control returns to the host. At the ABI boundary:
+
+- Success must produce `Result<T, Error>.Ok(value)`.
+- Failure must produce `Result<T, Error>.Err(error)`.
+
+Host callbacks passed into a plugin obey the same rule. Violations lead to undefined behavior; implementations should abort if they detect cross-boundary unwinding.
+
+### 19.5 Interface object representation
+
+Plugins and hosts communicate through interfaces that use the standard Drift fat-pointer representation.
+
+#### 19.5.1 ABI layout
+
+Conceptually:
+
+```drift
+struct InterfaceObject {
+    data: abi.CPtr<Opaque>
+    vtable: abi.CPtr<Opaque>
+}
+```
+
+where `data` points to the concrete storage of the implementing type and `vtable` points to the method table for that type/interface pair.
+
+Rules:
+
+- Both sides must compile against the same interface definition.
+- Method ordering in vtables follows source declaration order.
+- The underlying concrete type remains opaque.
+
+### 19.6 Plugin entry point
+
+Every plugin exports exactly one unmangled C-ABI function:
+
+```drift
+extern "C" fn drift_plugin_entry(host: ref PluginHostApi)
+    returns Result<PluginHandle, Error>
+```
+
+#### 19.6.1 `PluginHandle`
+
+```drift
+struct PluginHandle {
+    abi_version: Int32,
+    name: String,
+    version: String,
+    instance: Plugin  // interface object
+}
+```
+
+Fields:
+
+- `abi_version`: plugin ABI version required by the plugin.
+- `name` / `version`: metadata for logging or UX.
+- `instance`: an implementation of the `Plugin` interface returned to the host.
+
+### 19.7 The `Plugin` interface
+
+The host defines the primary plugin interface:
+
+```drift
+interface Plugin {
+    fn name(self: ref Plugin) returns String
+    fn version(self: ref Plugin) returns String
+
+    fn initialize(self: ref Plugin, config: PluginConfig)
+        returns Result<Void, Error>
+
+    fn shutdown(self: ref Plugin)
+        returns Result<Void, Error>
+}
+```
+
+Plugins implement this interface with any concrete type:
+
+```drift
+struct MyPlugin { /* fields */ }
+
+implement Plugin for MyPlugin {
+    fn name(ref self) returns String { ... }
+    fn version(ref self) returns String { ... }
+    fn initialize(ref self, config: PluginConfig)
+        returns Result<Void, Error> { ... }
+    fn shutdown(ref self)
+        returns Result<Void, Error> { ... }
+}
+```
+
+`PluginConfig` is a host-defined struct (often deserialized from JSON or a config map). Hosts may extend it freely because it never crosses the ABI boundary without coordination.
+
+### 19.8 Host API passed into the plugin
+
+The host supplies services via another interface:
+
+```drift
+interface PluginHostApi {
+    fn abi_version(self: ref PluginHostApi) returns Int32
+
+    fn log(self: ref PluginHostApi,
+           level: LogLevel,
+           message: String) returns Void
+
+    fn load_resource(self: ref PluginHostApi,
+                     path: String) returns Result<Bytes, Error>
+
+    fn get_config(self: ref PluginHostApi,
+                  key: String) returns Result<String, Error>
+}
+```
+
+`LogLevel` is typically an enum defined by the host. The plugin receives an implementation of `PluginHostApi` through the entry point and may retain it for its lifetime.
+
+### 19.9 Versioning
+
+Version compatibility is enforced by comparing:
+
+```drift
+host_abi_version == plugin_handle.abi_version
+```
+
+On mismatch, the host should attempt `instance.shutdown()` if the plugin initialized successfully, then reject and unload the module.
+
+### 19.10 Plugin lifecycle
+
+1. Host loads the shared library via the OS loader.
+2. Host resolves `drift_plugin_entry` by unmangled C name.
+3. Host invokes the entry point, passing a `PluginHostApi` instance.
+4. Plugin returns `Result<PluginHandle, Error>`.
+   - On `Err(error)`, the host logs and unloads the plugin.
+5. Host compares ABI versions.
+6. Host calls `initialize()` if initialization is required.
+7. Host invokes plugin methods via interface dispatch for normal work.
+8. On unload, host calls `shutdown()` and releases all interface objects before unloading the library.
+
+### 19.11 Error handling conventions
+
+Errors crossing the boundary must always be represented as:
+
+```drift
+Result<T, Error>.Err(error)
+```
+
+where `Error` is the Chapter 9 layout:
+
+```drift
+struct Error {
+    event: String,
+    args: Map<String, String>,
+    ctx_frames: Array<CtxFrame>,
+    stack: BacktraceHandle
+}
+```
+
+Rules:
+
+- Event names plus args are stable and may be switched on by the host.
+- `ctx_frames` and `stack` are diagnostic—it is acceptable if the host cannot interpret them.
+- Unknown events must be treated as opaque identifiers.
+
+### 19.12 Memory and ownership across the boundary
+
+- Ownership rules follow normal Drift semantics.
+- Strings, arrays, maps, and interface values may cross freely.
+- Neither side should free memory allocated by the other except through normal Drift destructors.
+- Both plugin and host must assume container storage may relocate unless pinned via RAII scope.
+- All loaded modules must share a compatible allocator (usually the process-wide allocator provided by the runtime).
+
+### 19.13 Safety constraints
+
+To keep the boundary predictable:
+
+- A plugin must not retain references to host-owned objects after `shutdown()`.
+- The host must not use plugin objects after unload.
+- Passing non-`Send` values between threads continues to follow the trait-based rules from Chapter 13.
+- Vtables must not be mutated after creation.
+
+### 19.14 Summary
+
+Dynamic plugins provide:
+
+- A stable, vtable-based ABI for host↔plugin interaction.
+- A uniform `Result<T, Error>` error model.
+- A guarantee against cross-boundary unwinding.
+- Deterministic lifetime rules for interface objects.
+- Explicit versioning for forward compatibility.
+
+This design keeps the plugin surface minimal while leveraging the language’s existing safety guarantees.
+
+
+
 ## Appendix A — Ownership Examples
 
 ```drift
