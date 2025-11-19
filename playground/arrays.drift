@@ -13,5 +13,5 @@ fn main() returns Void {
 
     out.writeln("inferred arrays ready")
     out.writeln("explicit array ready")
-    out.writeln("indexing works (first=" + "captured" + ")")
+    out.writeln("indexing works (first=" + first.to_string() + ")")
 }
