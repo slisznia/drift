@@ -1,5 +1,7 @@
 import sys.console.out
 
+exception InvalidOrder(order_id: Int64, code: String)
+
 struct Order {
 	id: Int64,
 	sku: String,
@@ -19,7 +21,7 @@ fn ship(order: Order) returns Void {
 		out.writeln("order tracking# " + shipping_id)
 	}
 	else {
-		throw error("invalid-order", code="order.invalid")
+		throw InvalidOrder(order_id = order.id, code = "order.invalid")
 	}
 }
 

@@ -76,6 +76,18 @@ All modules compile down to a canonical Drift Module IR (DMIR) that can be crypt
 
 `val`/`var` bindings may omit the type annotation when the right-hand expression makes the type unambiguous. For example, `val greeting = "hello"` infers `String`, while `val nums = [1, 2, 3]` infers `Array<Int64>`. Add an explicit `: Type` when inference fails or when you want to document the intent.
 
+#### Primitive palette (partial)
+
+| Type  | Description |
+|-------|-------------|
+| `Bool` | Logical true/false. |
+| `Int64`, `UInt64`, … | Fixed-width signed/unsigned integers. |
+| `Float64`, `Float32` | IEEE-754 floating point. |
+| `Byte` | Unsigned 8-bit value (`UInt8` under the hood); used for byte buffers and FFI. |
+| `String` | UTF-8 immutable rope. |
+
+`Byte` gives Drift APIs a canonical scalar for binary data. Use `Array<Byte>` (or the dedicated buffer types described in Chapters 6–7) when passing contiguous byte ranges.
+
 #### Struct syntax variants
 
 ```drift
@@ -159,7 +171,7 @@ Copying still respects ownership rules: `ref self` indicates the value is borrow
 If a move-only type wants to offer a deliberate, potentially expensive duplicate, it can expose an explicit method (e.g., `clone`). Assignment still will not copy—callers must opt in:
 
 ```drift
-struct Buffer { data: Bytes }   // move-only
+struct Buffer { data: ByteBuffer }   // move-only
 
 implement Buffer {
     fn clone(ref self) returns Buffer {
@@ -314,13 +326,13 @@ QualifiedName ::= Ident ('.' Ident)*
 module std.io
 
 interface OutputStream {
-    fn write(self: ref OutputStream, bytes: Bytes) returns Void
+    fn write(self: ref OutputStream, bytes: ByteSlice) returns Void
     fn writeln(self: ref OutputStream, text: String) returns Void
     fn flush(self: ref OutputStream) returns Void
 }
 
 interface InputStream {
-    fn read(self: ref InputStream, buffer: ref mut Bytes) returns Int
+    fn read(self: ref InputStream, buffer: MutByteSlice) returns Int64
 }
 ```
 
@@ -350,9 +362,9 @@ This model allows concise I/O while keeping imports explicit and predictable.
 The objects `out`, `err`, and `in` are references to standard I/O stream instances.
 
 
-## 6. `lang.array` and array literals
+## 6. `lang.array`, `ByteBuffer`, and array literals
 
-`lang.array` is the standard module for homogeneous sequences. It exposes the generic type `Array<T>` plus builder helpers. `Array` is always in scope for type annotations, so you can write:
+`lang.array` is the standard module for homogeneous sequences. It exposes the generic type `Array<T>` plus builder helpers and the binary-centric `ByteBuffer`. `Array` is always in scope for type annotations, so you can write:
 
 ```drift
 import sys.console.out
@@ -378,7 +390,71 @@ val explicit: Array<Int64> = [1, 2, 3]  // annotation still allowed when desired
 
 `Array<T>` integrates with the broader language design — it moves with `->`, can be captured with `^`, and will participate in trait implementations like `Display` once the stdlib grows. The literal syntax keeps sample programs succinct while we flesh out higher-level APIs.
 
-### 6.1 Indexing and mutation
+### 6.1 ByteBuffer, ByteSlice, and MutByteSlice
+
+#### 6.1.1 Borrowing rules and zero-copy interop
+
+`ByteSlice`/`MutByteSlice` behave like other Drift borrows:
+
+- A `ByteSlice` (`ref ByteSlice`) is a shared view: multiple readers may coexist, but none may mutate.
+- A `MutByteSlice` (`ref MutByteSlice`) is an exclusive view: while it exists, no other references (mutable or shared) to the same range are allowed.
+- Views never own memory. They rely on the original owner (often a `ByteBuffer` or foreign allocation) to outlive the slice’s scope. Moving the owner invalidates outstanding slices, just like any other borrow.
+
+These rules integrate with `Send`/`Sync` (Section 13.13): a `ByteSlice` is `Send`/`Sync` because it is immutable metadata; a `MutByteSlice` is neither, so you cannot share a mutable view across threads without additional synchronization.
+
+This design yields zero-copy interop: host code can wrap foreign `(ptr, len)` pairs in `ByteSlice`, pass them through Drift APIs, and guarantee the callee sees the original bytes without copying. Likewise, `ByteBuffer.as_mut_slice()` hands a shared library a raw view to fill without reallocations. Lifetimes stay explicit and deterministic, avoiding GC-style surprises.
+
+
+Binary APIs use three closely related stdlib types:
+
+| Type | Role |
+|------|------|
+| `ByteBuffer` | Owning, growable buffer of contiguous `Byte` values (move-only). |
+| `ByteSlice` | Immutable borrowed view into existing bytes (`len`, `data_ptr`). |
+| `MutByteSlice` | Exclusive borrowed view for writing bytes in place. |
+
+`ByteBuffer` lives in `lang.array.byte` and follows the same ownership rules as other containers. Constructors include:
+
+```drift
+var buf = ByteBuffer.with_capacity(4096)
+val literal = ByteBuffer.from_array([0x48, 0x69])
+val from_utf8 = ByteBuffer.from_string("drift")
+```
+
+Core operations:
+
+- `fn len(self: ref ByteBuffer) returns Int64` — number of initialized bytes.
+- `fn capacity(self: ref ByteBuffer) returns Int64` — reserved storage.
+- `fn clear(self: ref mut ByteBuffer) returns Void` — resets `len` to zero without freeing.
+- `fn push(self: ref mut ByteBuffer, b: Byte) returns Void`
+- `fn extend(self: ref mut ByteBuffer, slice: ByteSlice) returns Void`
+- `fn as_slice(self: ref ByteBuffer) returns ByteSlice`
+- `fn slice(self: ref ByteBuffer, start: Int64, len: Int64) returns ByteSlice`
+- `fn as_mut_slice(self: ref mut ByteBuffer) returns MutByteSlice`
+- `fn reserve(self: ref mut ByteBuffer, additional: Int64) returns Void`
+
+`ByteSlice`/`MutByteSlice` are lightweight descriptors (`{ ptr, len }`). They do not own memory; borrow rules ensure the referenced storage stays alive for the duration of the borrow. `MutByteSlice` provides exclusive access, so you cannot obtain a second mutable slice while one is active.
+
+Typical I/O pattern:
+
+```drift
+fn copy_stream(src: InputStream, dst: OutputStream) returns Void {
+    var scratch = ByteBuffer.with_capacity(4096)
+
+    loop {
+        scratch.clear()
+        let filled = src.read(scratch.as_mut_slice())
+        if filled == 0 { break }
+
+        let chunk = scratch.slice(0, filled)
+        dst.write(chunk)
+    }
+}
+```
+
+`read` writes into the provided mutable slice and returns the number of bytes initialized; `slice` then produces a read-only view of that prefix without copying. FFI helpers in `lang.abi` can also manufacture `ByteSlice`/`MutByteSlice` wrappers around raw pointers for zero-copy interop.
+
+### 6.2 Indexing and mutation
 
 Use square brackets to read an element:
 
@@ -1358,11 +1434,11 @@ Functions may overload based on trait requirements:
 ```drift
 fn save<T>
     require T is Serializable
-(value: T) returns Bytes {
+(value: T) returns ByteBuffer {
     return value.serialize()
 }
 
-fn save<T>(value: T) returns Bytes {
+fn save<T>(value: T) returns ByteBuffer {
     return reflect::dump(value)
 }
 ```
@@ -1494,7 +1570,7 @@ Interfaces define a set of functions callable on any implementing type.
 
 ```drift
 interface OutputStream {
-    fn write(self: ref OutputStream, bytes: Bytes) returns Void
+    fn write(self: ref OutputStream, bytes: ByteSlice) returns Void
     fn writeln(self: ref OutputStream, text: String) returns Void
     fn flush(self: ref OutputStream) returns Void
 }
@@ -1555,7 +1631,7 @@ struct File {
 }
 
 implement OutputStream for File {
-    fn write(ref self, bytes: Bytes) returns Void {
+    fn write(ref self, bytes: ByteSlice) returns Void {
         sys_write(self.fd, bytes)
     }
 
@@ -1749,8 +1825,8 @@ No double‑destroy is possible because `destroy(self)` consumes the value.
 A type may implement several interfaces:
 
 ```drift
-interface Readable  { fn read(self: ref Readable) returns Bytes }
-interface Writable  { fn write(self: ref Writable, b: Bytes) returns Void }
+interface Readable  { fn read(self: ref Readable) returns ByteBuffer }
+interface Writable  { fn write(self: ref Writable, b: ByteSlice) returns Void }
 interface Duplex    { fn close(self: ref Duplex) returns Void }
 
 struct Stream { ... }
@@ -1796,9 +1872,10 @@ Interface method calls participate in normal exception propagation:
 
 ```drift
 fn dump(src: InputStream, dst: OutputStream) returns Void {
-    var buf = Bytes(4096)
+    var buf = ByteBuffer.with_capacity(4096)
     loop {
-        val n = src.read(ref buf)
+        buf.clear()
+        val n = src.read(buf.as_mut_slice())
         if n == 0 { break }
         dst.write(buf.slice(0, n))
     }
@@ -2528,7 +2605,7 @@ interface PluginHostApi {
            message: String) returns Void
 
     fn load_resource(self: ref PluginHostApi,
-                     path: String) returns Result<Bytes, Error>
+                     path: String) returns Result<ByteBuffer, Error>
 
     fn get_config(self: ref PluginHostApi,
                   key: String) returns Result<String, Error>
