@@ -103,6 +103,30 @@ fn main() returns Void { ... }
 
 Block comments may span multiple lines but do not nest. Comments are ignored by the parser, so indentation/terminator rules treat them as whitespace.
 
+#### Source location helper
+
+Diagnostics frequently need to record where they were emitted. Drift exposes a standard helper:
+
+```drift
+fn source_location() returns SourceLocation
+
+struct SourceLocation {
+    file: String,
+    line: Int64
+}
+```
+
+`source_location()` is a pure, zero-cost intrinsic that the compiler lowers to the current file/line at the callsite. Typical usage:
+
+```drift
+val ^log_site: SourceLocation as "log.site" = source_location()
+logger.warn("slow write", site = log_site)
+
+throw InvalidOrder(site = source_location(), order_id = order.id)
+```
+
+Because the helper returns a regular struct, you can store it in locals, pass it to `^` captures, or include it in exception arguments. Future logging APIs can accept `SourceLocation` explicitly, keeping site metadata opt-in instead of hard-wired into the runtime.
+
 #### Struct syntax variants
 
 ```drift
