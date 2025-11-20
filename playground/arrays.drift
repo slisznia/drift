@@ -1,5 +1,8 @@
 import sys.console.out
 
+// Array literals default to Array<T>; implement FromArrayLiteral to redirect to
+// a custom collection.
+
 fn main() returns Void {
 	val nums = [1, 2, 3]
 	val names = ["Bob", "Alice"]

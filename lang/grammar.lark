@@ -36,8 +36,12 @@ IF: "if"
 ELSE: "else"
 MOVE: "->"
 EXCEPTION: "exception"
+LINE_COMMENT: /\/\/[^\n]*/
+BLOCK_COMMENT: /\/\*([^*]|\*(?!\/))*\*\//
 
 %ignore WS_INLINE
+%ignore LINE_COMMENT
+%ignore BLOCK_COMMENT
 
 program: (item | TERMINATOR)*
 

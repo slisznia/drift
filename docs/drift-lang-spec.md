@@ -88,6 +88,21 @@ All modules compile down to a canonical Drift Module IR (DMIR) that can be crypt
 
 `Byte` gives Drift APIs a canonical scalar for binary data. Use `Array<Byte>` (or the dedicated buffer types described in Chapters 6–7) when passing contiguous byte ranges.
 
+#### Comments
+
+Drift supports two comment forms:
+
+```drift
+// Single-line comment through the newline
+val greeting = "hello"
+
+/* Multi-line
+   block comment */
+fn main() returns Void { ... }
+```
+
+Block comments may span multiple lines but do not nest. Comments are ignored by the parser, so indentation/terminator rules treat them as whitespace.
+
 #### Struct syntax variants
 
 ```drift
@@ -454,7 +469,22 @@ fn copy_stream(src: InputStream, dst: OutputStream) returns Void {
 
 `read` writes into the provided mutable slice and returns the number of bytes initialized; `slice` then produces a read-only view of that prefix without copying. FFI helpers in `lang.abi` can also manufacture `ByteSlice`/`MutByteSlice` wrappers around raw pointers for zero-copy interop.
 
-### 6.2 Indexing and mutation
+
+### 6.2 Indexing, mutation, and borrowing
+#### Borrowed element references
+
+To avoid copying and let other APIs operate on a specific slot, `Array<T>` exposes helper methods:
+
+```drift
+fn ref_at(self: ref Array<T>, index: Int64) returns ref T
+fn ref_mut_at(self: ref mut Array<T>, index: Int64) returns ref mut T
+```
+
+- `ref_at` borrows the array immutably and returns an immutable `ref T` to element `index`. Multiple `ref_at` calls may coexist, and the array remains usable for other reads while the borrow lives.
+- `ref_mut_at` requires an exclusive `ref mut Array<T>` borrow and yields an exclusive `ref mut T`. While the returned reference lives, no other borrows of the same element (or the array) are allowed; this enforces the usual aliasing rules.
+
+Bounds checks mirror simple indexing: out-of-range indices raise `IndexError(container = "Array", index = i)`. These APIs make it easy to hand a callee a view of part of the array—e.g., pass `ref_mut_at` into a mutator function that expects `ref mut T`—without copying the element or exposing the entire container.
+
 
 Use square brackets to read an element:
 
@@ -784,6 +814,8 @@ struct Error {
     ctx_frames: Array<CtxFrame>,
     stack: BacktraceHandle
 }
+
+exception IndexError(container: String, index: Int64)
 ```
 
 #### 9.2.1 event
