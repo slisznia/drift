@@ -948,6 +948,25 @@ catch e {
 
 Ownership moves back to unwinder.
 
+#### 9.5.3 Inline catch-all shorthand
+
+For a single call where you just want a fallback value, use the one-liner form:
+
+```drift
+val date = try parse_date(input) else default_date
+```
+
+This is sugar for a catch-all handler:
+
+```drift
+val date = {
+    try { parse_date(input) }
+    catch _ { default_date }
+}
+```
+
+The `else` expression must produce the same type as the `try` expression. Exception context (`event`, args, captured locals, stack) is still recorded before control flows into the `else` arm.
+
 ---
 
 ### 9.6 Internal Result<T, Error> semantics
