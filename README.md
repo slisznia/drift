@@ -13,6 +13,10 @@ Drift is a systems programming language focused on deterministic resource manage
 
 📖 **Full specification:** [docs/drift-lang-spec.md](docs/drift-lang-spec.md)
 
+## References
+
+- Error handling comparison for Rustaceans: [docs/drift_vs_rust_error_handling.md](docs/drift_vs_rust_error_handling.md)
+
 ## Quick Tour
 
 ### Hello Drift
