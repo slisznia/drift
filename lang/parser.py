@@ -13,6 +13,7 @@ from .ast import (
     Binary,
     Block,
     Call,
+    CatchClause,
     ExceptionArg,
     ExceptionDef,
     Expr,
@@ -34,6 +35,8 @@ from .ast import (
     StructDef,
     StructField,
     TypeExpr,
+    TryExpr,
+    TryStmt,
     Unary,
 )
 
@@ -268,7 +271,7 @@ def _build_stmt(tree: Tree):
         for child in tree.children:
             if isinstance(child, Tree):
                 inner_kind = _name(child)
-                if inner_kind == "simple_stmt" or inner_kind == "if_stmt":
+                if inner_kind == "simple_stmt" or inner_kind == "if_stmt" or inner_kind == "try_stmt":
                     return _build_stmt(child)
         return None
     if kind == "simple_stmt":
@@ -289,6 +292,8 @@ def _build_stmt(tree: Tree):
         return None
     if kind == "if_stmt":
         return _build_if_stmt(tree)
+    if kind == "try_stmt":
+        return _build_try_stmt(tree)
     if kind == "let_stmt":
         return _build_let_stmt(tree)
     if kind == "assign_stmt":
@@ -488,6 +493,49 @@ def _build_if_stmt(tree: Tree) -> IfStmt:
     return IfStmt(loc=loc, condition=condition, then_block=then_block, else_block=else_block)
 
 
+def _build_try_stmt(tree: Tree) -> TryStmt:
+    loc = _loc(tree)
+    try_block = None
+    catches: list[CatchClause] = []
+    for child in tree.children:
+        if not isinstance(child, Tree):
+            continue
+        name = _name(child)
+        if name == "block" and try_block is None:
+            try_block = _build_block(child)
+        elif name == "catch_clause":
+            catches.append(_build_catch_clause(child))
+    if try_block is None:
+        raise ValueError("try statement missing body")
+    if not catches:
+        raise ValueError("try statement requires at least one catch clause")
+    return TryStmt(loc=loc, body=try_block, catches=catches)
+
+
+def _build_catch_clause(tree: Tree) -> CatchClause:
+    event: str | None = None
+    binder: str | None = None
+    block_node = None
+    for child in tree.children:
+        if isinstance(child, Tree):
+            name = _name(child)
+            if name in {"catch_pattern", "catch_event", "catch_all"}:
+                tokens = [tok for tok in child.children if isinstance(tok, Token) and tok.type == "NAME"]
+                if len(tokens) == 2:
+                    event = tokens[0].value
+                    binder = tokens[1].value
+                elif len(tokens) == 1:
+                    binder = tokens[0].value
+                else:
+                    raise ValueError("invalid catch pattern")
+            elif name == "block":
+                block_node = child
+    if block_node is None:
+        raise ValueError("catch clause missing block")
+    block = _build_block(block_node)
+    return CatchClause(event=event, binder=binder, block=block)
+
+
 def _build_expr(node) -> Expr:
     if isinstance(node, Tree):
         name = _name(node)
@@ -496,6 +544,8 @@ def _build_expr(node) -> Expr:
 
     if name == "logic_or":
         return _fold_chain(node, "logic_or_tail")
+    if name == "try_expr":
+        return _build_try_expr(node)
     if name == "pipeline":
         return _build_pipeline(node)
     if name == "logic_and":
@@ -588,6 +638,15 @@ def _build_pipeline(tree: Tree) -> Expr:
         idx += 1
         result = Binary(loc=_loc_from_token(token), op=token.value, left=result, right=right)
     return result
+
+
+def _build_try_expr(tree: Tree) -> TryExpr:
+    children = [child for child in tree.children if isinstance(child, Tree)]
+    if len(children) != 2:
+        raise ValueError("try_expr expects expression and fallback")
+    expr = _build_expr(children[0])
+    fallback = _build_expr(children[1])
+    return TryExpr(loc=_loc(tree), expr=expr, fallback=fallback)
 
 
 def _build_postfix(tree: Tree) -> Expr:

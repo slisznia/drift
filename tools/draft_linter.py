@@ -48,7 +48,7 @@ def _parse_args() -> argparse.Namespace:
     ap.add_argument(
         "paths",
         nargs="*",
-        default=["playground", "examples"],
+        default=["playground", "examples", "tests/programs"],
         help="files or directories to lint",
     )
     ap.add_argument(
@@ -129,6 +129,12 @@ def _lint_stmt(path: Path, stmt: ast.Stmt, errors: List[str]) -> None:
         _lint_expr(path, stmt.value, errors)
     elif isinstance(stmt, ast.ExprStmt):
         _lint_expr(path, stmt.value, errors)
+    elif isinstance(stmt, ast.TryStmt):
+        _lint_block(path, stmt.body, errors)
+        for clause in stmt.catches:
+            if clause.binder:
+                _expect_snake(path, stmt.loc, clause.binder, "catch binding", errors)
+            _lint_block(path, clause.block, errors)
 
 
 def _lint_expr(path: Path, expr: ast.Expr, errors: List[str]) -> None:
@@ -137,6 +143,9 @@ def _lint_expr(path: Path, expr: ast.Expr, errors: List[str]) -> None:
             _lint_expr(path, arg, errors)
         for kw in expr.kwargs:
             _lint_expr(path, kw.value, errors)
+    elif isinstance(expr, ast.TryExpr):
+        _lint_expr(path, expr.expr, errors)
+        _lint_expr(path, expr.fallback, errors)
     elif isinstance(expr, ast.ArrayLiteral):
         for element in expr.elements:
             _lint_expr(path, element, errors)

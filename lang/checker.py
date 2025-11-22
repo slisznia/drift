@@ -272,6 +272,27 @@ class Checker:
                 for inner in stmt.else_block.statements:
                     self._check_stmt(inner, ctx)
             return
+        if isinstance(stmt, ast.TryStmt):
+            for inner in stmt.body.statements:
+                self._check_stmt(inner, ctx)
+            for clause in stmt.catches:
+                catch_scope = Scope(parent=ctx.scope)
+                binder_name = clause.binder
+                catch_ctx = FunctionContext(
+                    name=ctx.name,
+                    signature=ctx.signature,
+                    scope=catch_scope,
+                    allow_returns=ctx.allow_returns,
+                )
+                if binder_name:
+                    catch_scope.define(
+                        binder_name,
+                        VarInfo(type=ERROR, mutable=False),
+                        stmt.loc,
+                    )
+                for inner in clause.block.statements:
+                    self._check_stmt(inner, catch_ctx)
+            return
         raise CheckError(f"{stmt.loc.line}:{stmt.loc.column}: Unsupported statement {stmt}")
 
     def _check_expr(self, expr: ast.Expr, ctx: FunctionContext) -> Type:
@@ -300,6 +321,8 @@ class Checker:
             return self._check_array_literal(expr, ctx)
         if isinstance(expr, ast.Index):
             return self._check_index_expr(expr, ctx)
+        if isinstance(expr, ast.TryExpr):
+            return self._check_try_expr(expr, ctx)
         if isinstance(expr, ast.Unary):
             operand_type = self._check_expr(expr.operand, ctx)
             if expr.op == "-":
@@ -312,6 +335,12 @@ class Checker:
         if isinstance(expr, ast.Binary):
             return self._check_binary(expr, ctx)
         raise CheckError(f"{expr.loc.line}:{expr.loc.column}: Unsupported expression {expr}")
+
+    def _check_try_expr(self, expr: ast.TryExpr, ctx: FunctionContext) -> Type:
+        attempt_type = self._check_expr(expr.expr, ctx)
+        fallback_type = self._check_expr(expr.fallback, ctx)
+        self._expect_type(fallback_type, attempt_type, expr.fallback.loc)
+        return attempt_type
 
     def _check_array_literal(self, expr: ast.ArrayLiteral, ctx: FunctionContext) -> Type:
         if not expr.elements:

@@ -36,6 +36,8 @@ IF: "if"
 ELSE: "else"
 MOVE: "->"
 EXCEPTION: "exception"
+TRY: "try"
+CATCH: "catch"
 LINE_COMMENT: /\/\/[^\n]*/
 BLOCK_COMMENT: /\/\*([^*]|\*(?!\/))*\*\//
 
@@ -67,6 +69,7 @@ angle_type_args: "<" type_expr (COMMA type_expr)* ">"
 block: "{" (stmt | TERMINATOR)* "}"
 
 stmt: if_stmt
+    | try_stmt
     | simple_stmt TERMINATOR
 
 simple_stmt: let_stmt
@@ -76,10 +79,16 @@ simple_stmt: let_stmt
            | expr_stmt
            | import_stmt
 
+try_stmt: TRY block terminator_opt catch_clause (terminator_opt catch_clause)* terminator_opt
+catch_clause: CATCH catch_pattern block
+catch_pattern: NAME "(" NAME ")"   -> catch_event
+             | NAME                -> catch_all
+
 assign_stmt: assign_lhs EQUAL expr
 assign_lhs: NAME index_suffix*
 
-if_stmt: IF expr terminator_opt block (terminator_opt ELSE terminator_opt block)?
+if_stmt: IF expr terminator_opt block else_clause? terminator_opt
+else_clause: terminator_opt ELSE terminator_opt block
 terminator_opt: TERMINATOR*
 
 let_stmt: binder binding_name type_spec? alias_clause? EQUAL expr
@@ -114,7 +123,10 @@ exception_param: NAME COLON type_expr
 
 domain_clause: "domain" NAME
 
-?expr: pipeline
+?expr: try_expr
+     | pipeline
+
+try_expr: TRY expr ELSE expr
 
 ?pipeline: logic_or (PIPE logic_or)*
 

@@ -149,6 +149,23 @@ class Interpreter:
             if branch:
                 self._execute_block(branch.statements, env)
             return
+        if isinstance(stmt, ast.TryStmt):
+            try:
+                self._execute_block(stmt.body.statements, env)
+            except RaiseSignal as exc:
+                handled = False
+                for clause in stmt.catches:
+                    if clause.event is not None and clause.event != exc.error.message:
+                        continue
+                    catch_env = Environment(parent=env)
+                    if clause.binder:
+                        catch_env.define(clause.binder, exc.error)
+                    self._execute_block(clause.block.statements, catch_env)
+                    handled = True
+                    break
+                if not handled:
+                    raise
+            return
         raise RuntimeError(f"Unsupported statement {stmt}")
 
     def _eval_expr(self, expr: ast.Expr, env: Environment) -> object:
@@ -172,6 +189,11 @@ class Interpreter:
             base = self._eval_expr(expr.value, env)
             index = self._eval_expr(expr.index, env)
             return base[index]
+        if isinstance(expr, ast.TryExpr):
+            try:
+                return self._eval_expr(expr.expr, env)
+            except RaiseSignal:
+                return self._eval_expr(expr.fallback, env)
         if isinstance(expr, ast.Unary):
             value = self._eval_expr(expr.operand, env)
             if expr.op == "-":

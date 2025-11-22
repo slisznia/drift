@@ -194,3 +194,24 @@ class Program:
 class ImportStmt(Stmt):
     loc: Located
     path: List[str]
+
+
+@dataclass
+class CatchClause:
+    event: Optional[str]
+    binder: Optional[str]
+    block: Block
+
+
+@dataclass
+class TryStmt(Stmt):
+    loc: Located
+    body: Block
+    catches: List[CatchClause]
+
+
+@dataclass
+class TryExpr(Expr):
+    loc: Located
+    expr: Expr
+    fallback: Expr
