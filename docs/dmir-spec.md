@@ -122,6 +122,19 @@ raise Invalid
   - Drops/destructors inserted based on SSA liveness/ownership analysis.
   - Error edges become explicit basic blocks carrying the `Error`.
 
+## SSA MIR control-flow model
+- Functions are CFGs of basic blocks.
+- Block parameters represent φ-nodes (values incoming from predecessors).
+- Terminators:
+  - `br target(args)` — unconditional branch, passing block params.
+  - `condbr cond, then(args), else(args)` — conditional branch.
+  - `return value` — normal return.
+  - `raise error` — exceptional return carrying `Error`.
+- Calls:
+  - Direct calls; each call has two successors: a normal edge and an error edge (both receive block params). The error edge carries the `Error` value and aligns with the `raise` path.
+  - Builtins/constructors follow the same call shape for uniformity.
+- All control paths end in `return` or `raise`; no implicit fallthrough.
+
 ## Signing
 - The canonical serialized DMIR is hashed and signed.
 - Signature scope includes: DMIR version, module metadata, and full DMIR body.
