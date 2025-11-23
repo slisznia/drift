@@ -78,6 +78,20 @@ See also: `docs/design-first-afm-then-ssa.md` for the design path that led to th
 - Drops are explicit MIR instructions; inserted post-liveness; verifier enforces at-most-once drop per owned value.
 - Calls/ops can raise; error edges carry the `Error` value. `raise` terminates the function with the error path.
 
+## SSA MIR instruction set (typed, SSA)
+- `const <value>` — literals (ints/floats/bools/strings).
+- `move <v>` — consumes `v`; using `v` afterward is invalid.
+- `copy <v>` — only for copyable types (primitives/`Copy` structs).
+- `call <fn>(args) normal bbN(args) error bbE(err)` — direct call with explicit normal and error successors; builtins/constructors follow the same shape.
+- `struct_init <Type>(args)` — positional args in field order.
+- `field_get <base>.<field>` — read-only access to struct field.
+- `array_init [v0, v1, ...]` — arrays are values; element type is concrete.
+- `array_get base, index` — includes bounds check that raises `Error` on OOB.
+- `array_set base, index, value` — bounds check then write; only on mutable arrays.
+- `unary <op> v` and `binary <op> lhs, rhs` — typed arithmetic/logic.
+- `drop <v>` — explicit destructor/drop; inserted after liveness.
+- Terminators (`br`, `condbr`, `return`, `raise`) and block params act as φ-nodes; no separate φ instruction.
+
 ## Serialization
 - Textual, deterministic format (one binding/stmt per line, ordered declarations). Binary envelope may wrap it for signing, but the textual form is canonical for hashing.
 - Includes DMIR version in the header so verifiers can enforce compatibility.

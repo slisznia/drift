@@ -3,16 +3,6 @@
 ## Frontend and IR
 - Pre-req:
 	- Decide the SSA MIR instruction set and control-flow shape (blocks, φ, call, raise/return, drop, alloc?).
-		- Core instructions (typed):
-			- const (ints/floats/bools/strings)
-			- move (ownership transfer)
-			- copy (for copyable types)
-			- call (direct), with explicit normal target block and error target block or a returned Error edge
-            - struct_init, field_get, field_set (if mutable)
-            - array_init, array_get, array_set (with bounds checking policy)
-            - alloc/stack_alloc for locals if needed (or treat all as values)
-            - drop (inserted by ownership/liveness analysis)
-            - unary/binary ops
         - Modules/interop: For now, intra-module; cross-module later.
         - Verifier: Check SSA form (definitions dominate uses), type consistency, correct block params arity, no use-after-move, drop rules, and that all control-flow paths end in return or raise.
     - Sketch one or two end-to-end examples (surface → DMIR → SSA MIR) to validate the design.
