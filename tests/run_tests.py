@@ -8,8 +8,10 @@ from pathlib import Path
 from typing import Dict
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 PROGRAMS_DIR = ROOT / "tests" / "programs"
 EXPECTATIONS_DIR = ROOT / "tests" / "expectations"
+MIR_CASES_DIR = ROOT / "tests" / "mir_lowering"
 
 
 def load_expectation(name: str) -> Dict[str, object]:
@@ -30,6 +32,13 @@ def run_program(path: Path) -> tuple[int, str, str]:
 
 
 def main() -> int:
+    failures = 0
+    failures += _run_runtime_tests()
+    failures += _run_mir_tests()
+    return 1 if failures else 0
+
+
+def _run_runtime_tests() -> int:
     failures = 0
     for program in sorted(PROGRAMS_DIR.glob("*.drift")):
         name = program.stem
@@ -67,7 +76,39 @@ def main() -> int:
             print(f"[ok] {program}")
         else:
             failures += 1
-    return 1 if failures else 0
+    return failures
+
+
+def _run_mir_tests() -> int:
+    from lang import parser, checker
+    from lang.runtime import builtin_signatures
+    from lang.lower_to_mir import lower_straightline
+    from lang.mir_printer import format_program
+
+    failures = 0
+    for source_path in sorted(MIR_CASES_DIR.glob("*.drift")):
+        name = source_path.stem
+        expected_path = MIR_CASES_DIR / f"{name}.mir"
+        if not expected_path.exists():
+            print(f"[missing] {source_path}: expected MIR {expected_path} not found", file=sys.stderr)
+            failures += 1
+            continue
+        source = source_path.read_text()
+        prog = parser.parse_program(source)
+        checked = checker.Checker(builtin_signatures()).check(prog)
+        mir_prog = lower_straightline(checked)
+        rendered = format_program(mir_prog)
+        expected = expected_path.read_text().rstrip()
+        if rendered.strip() != expected.strip():
+            failures += 1
+            print(f"[fail] MIR {name}: mismatch", file=sys.stderr)
+            print("=== expected ===", file=sys.stderr)
+            print(expected, file=sys.stderr)
+            print("=== got ===", file=sys.stderr)
+            print(rendered, file=sys.stderr)
+        else:
+            print(f"[ok] MIR {name}")
+    return failures
 
 
 if __name__ == "__main__":

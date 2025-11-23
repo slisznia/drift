@@ -27,4 +27,5 @@
 - Added CFG reachability and edge/arg/param/type checks in the MIR verifier (ensuring edge args are defined in source blocks and match dest param types where known).
 - Added incoming edge arg/param validation to the MIR verifier to align predecessor args with block params across the CFG.
 - Relaxed the MIR call shape to allow optional normal/error edges; updated printer/verifier accordingly to ease initial lowering.
+- Added a MIR printer (`lang/mir_printer.py`) and a minimal straight-line lowering path (`lang/lower_to_mir.py`) with a MIR golden test wired into `tests/run_tests.py`.
 - Added initial MIR data structures (`lang/mir.py`) to model SSA blocks, instructions, edges, and programs; tests still pass.
