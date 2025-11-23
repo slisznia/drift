@@ -1,10 +1,12 @@
 # Drift TODO
 
 ## Frontend and IR
-- Implement remaining MIR verifier checks:
-    - Cross-block dominance/phi validation (uses dominated by defs across the CFG).
-    - Full type checking (operand/result types, copyability).
+- MIR verifier:
+  - Extend the MIR verifier to handle cross-block dominance/phi validation (ensure block params are consistent with predecessor args, and defs dominate uses across the CFG).
+  - Add deeper type checks: enforce operand/result types for all instructions, and verify copy only on Copy types (you may need a type environment or Copy-trait info).
 - Choose a serialization format. 
+- Add a simple MIR serializer/printer to aid debugging and golden tests.
+- Start DMIR→MIR lowering for a small subset (e.g., straight-line functions without control flow) with golden tests.
 - Add tests/lowering from DMIR.
 - Modules/interop: Cross-module support adds a few complexities. It’s an ABI and tooling problem: agreeing on data layouts (field layout/alignment/ownership), calling conventions, and error/backtrace representation so modules built separately can interoperate safely. That’s why it’s deferred until we’ve locked the single-module MIR.
 		- Error propagation ABI: errors need a stable, module-independent representation (layout, ownership rules) so they can cross boundaries without being interpreted incorrectly.
