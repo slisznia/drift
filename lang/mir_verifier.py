@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Set
 
 from . import mir
-from .types import ERROR
+from .types import ERROR, array_of, Type
 
 
 @dataclass
@@ -20,6 +20,7 @@ class State:
         self.defined: Set[str] = set()
         self.moved: Set[str] = set()
         self.dropped: Set[str] = set()
+        self.types: Dict[str, Type] = {}
 
     def define(self, name: str) -> None:
         self.defined.add(name)
@@ -39,20 +40,26 @@ class State:
     def is_dropped(self, name: str) -> bool:
         return name in self.dropped
 
+    def set_type(self, name: str, typ: Type) -> None:
+        self.types[name] = typ
+
+    def get_type(self, name: str) -> Optional[Type]:
+        return self.types.get(name)
+
 
 def verify_program(program: mir.Program) -> None:
     for fn in program.functions.values():
-        verify_function(fn)
+        verify_function(fn, program)
 
 
-def verify_function(fn: mir.Function) -> None:
+def verify_function(fn: mir.Function, program: mir.Program | None = None) -> None:
     if fn.entry not in fn.blocks:
         raise VerificationError(f"{fn.name}: entry block '{fn.entry}' missing")
     for name, block in fn.blocks.items():
         if block.terminator is None:
             raise VerificationError(f"{fn.name}:{name}: missing terminator")
     for block in fn.blocks.values():
-        _verify_block(fn, block)
+        _verify_block(fn, block, program)
 
 
 def _verify_block(fn: mir.Function, block: mir.BasicBlock) -> None:

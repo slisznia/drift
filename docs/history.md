@@ -23,4 +23,5 @@
 - Clarified dominance in the SSA terminology (defs must appear on every path to their uses).
 - Documented the verifier implementation sketch (input, steps, output) in the DMIR spec.
 - Enriched MIR nodes with source locations and wired the verifier to report locations on errors.
+- Extended the MIR verifier with partial type tracking (propagating known types, checking calls against known function signatures, return/raise types) while still passing existing tests.
 - Added initial MIR data structures (`lang/mir.py`) to model SSA blocks, instructions, edges, and programs; tests still pass.
