@@ -1,4 +1,4 @@
-# Drift TODO / Next Steps
+# Drift TODO
 
 ## Runtime and semantics
 - Wire `^` capture so unwinding records per-frame locals and backtrace handles in `Error`.
@@ -12,10 +12,6 @@
 - Prototype simple IR passes (dead code, copy elision/move tightening).
 - Draft SSA MIR schema (instructions, φ, error edges, drops) and map DMIR → SSA lowering.
 
-## Tooling
-- Add a `just test` target if desired and/or wire the test runner into CI.
-
 ## Docs
-- Keep `docs/history.md` updated as features land.
 - Add short “how to read IR” note once the IR spec is drafted.
 - Expand DMIR spec with canonicalization rules (naming, ordering) and examples.
