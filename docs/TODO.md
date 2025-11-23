@@ -4,8 +4,10 @@
 - MIR verifier:
   - Add cross-block dominance/phi validation (propagate defs/types across CFG; ensure block params align with predecessor args and uses are dominated by defs). [partially done: edge arg/param validation; still need full dominance/dataflow]
   - Add deeper type checks: enforce operand/result types for all instructions, and verify copy only on Copy types (you may need a type environment or Copy-trait info).
-- Choose a serialization format. 
-- Add a simple MIR serializer/printer to aid debugging and golden tests.
+	To enforce it properly we need a small dataflow pass: compute in/out def/type sets per block via the params, iterate to a fixed point across predecessors, and then validate that every use is either defined in the block or comes through its params (and that all predecessors supply matching args for each param).
+- Serialization:
+  - DMIR (ANF-like, structured) serializer for signing (canonical, deterministic).
+  - SSA MIR printer/serializer for debugging and golden tests (internal use, not signed).
 - Start DMIR→MIR lowering for a small subset (e.g., straight-line functions without control flow) with golden tests.
 - Add tests/lowering from DMIR.
 - Modules/interop: Cross-module support adds a few complexities. It’s an ABI and tooling problem: agreeing on data layouts (field layout/alignment/ownership), calling conventions, and error/backtrace representation so modules built separately can interoperate safely. That’s why it’s deferred until we’ve locked the single-module MIR.
