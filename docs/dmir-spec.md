@@ -49,7 +49,15 @@ See also: `docs/design-first-afm-then-ssa.md` for the design path that led to th
 - Left-to-right evaluation; every intermediate bound via `let`.
 - Keyword arguments reordered to the function’s parameter order.
 - Capture/ownership: moves explicit; no implicit copies introduced.
-- Names are unique per scope (α-renamed if needed). Stable, deterministic naming scheme (e.g., `_t1`, `_t2`, …) to ensure hashing/signing reproducibility.
+- Names are unique per scope (α-renamed if needed). Stable, deterministic naming scheme:
+  - User locals keep their spelled identifiers when unique.
+  - Compiler-introduced temps use `_t{n}` numbering per function/block in first-appearance order.
+  - No gaps in numbering; renumber after desugaring to keep order deterministic.
+- Ordering:
+  - Declarations (structs, exceptions, functions) serialized in source order after imports.
+  - Fields/params listed in declared order.
+  - Catch clauses serialized in source order.
+- Keyword arguments are reordered to positional order based on the callee’s parameter list; duplicate/missing args are already rejected by the typechecker.
 - Dead-code removal is not part of canonicalization; keep all user-visible semantics intact.
 
 ## Errors & exceptions
