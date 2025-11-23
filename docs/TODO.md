@@ -23,7 +23,6 @@
 		- Symbol resolution: calls across modules may need indirection (import tables) and consistent naming/versioning for functions/structs/exceptions.
 		- Codegen/linking: MIR → LLVM may need to emit module exports/imports, and ensure calling conventions/ownership semantics match across modules.
 		- Verification: cross-module calls need type/ABI checks; error edges must be compatible across module versions.
-- Lower the current AST/typechecker output into the IR; add golden tests for the lowering.
 - Prototype simple IR passes (dead code, copy elision/move tightening).
 - Plan cross-module error propagation: define backtrace handle format and how `Error` travels across module boundaries during SSA/LLVM work.
 - Wire `^` capture so unwinding records per-frame locals and backtrace handles in `Error`
