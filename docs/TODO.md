@@ -8,7 +8,6 @@
 				- Symbol resolution: calls across modules may need indirection (import tables) and consistent naming/versioning for functions/structs/exceptions.
 				- Codegen/linking: MIR → LLVM may need to emit module exports/imports, and ensure calling conventions/ownership semantics match across modules.
 				- Verification: cross-module calls need type/ABI checks; error edges must be compatible across module versions.
-    - Verifier: Check SSA form (definitions dominate uses), type consistency, correct block params arity, no use-after-move, drop rules, and that all control-flow paths end in return or raise.
 - Define a minimal typed IR (ownership, moves, error edges) with a verifier.
 - Lower the current AST/typechecker output into the IR; add golden tests for the lowering.
 - Prototype simple IR passes (dead code, copy elision/move tightening).

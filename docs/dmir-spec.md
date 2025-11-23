@@ -164,6 +164,11 @@ raise Invalid
 - Types are concrete, monomorphized; `Error` is a concrete type on error edges.
 - Ownership: `move` consumes, `copy` only for copyable types, `drop` explicit.
 - No implicit fallthrough; every block ends in a terminator.
+- Verifier expectations:
+  - SSA form: each use dominated by its def; block params match predecessor arguments.
+  - Type consistency: instruction and operand types align; call args match callee signature; block params typed.
+  - Ownership: no use-after-move; `copy` only on copyable types; `drop` at most once per owned value.
+  - Control flow: every block ends in `br`/`condbr`/`return`/`raise`; functions have at least one `return` or `raise` path.
 
 ## Signing
 - The canonical serialized DMIR is hashed and signed.
