@@ -58,14 +58,96 @@ def verify_function(fn: mir.Function, program: mir.Program | None = None) -> Non
     for name, block in fn.blocks.items():
         if block.terminator is None:
             raise VerificationError(f"{fn.name}:{name}: missing terminator")
+    defs, types = _compute_defs_and_types(fn, program)
+    _verify_cfg(fn, defs, types)
     for block in fn.blocks.values():
         _verify_block(fn, block, program)
 
 
-def _verify_block(fn: mir.Function, block: mir.BasicBlock) -> None:
+def _compute_defs_and_types(fn: mir.Function, program: mir.Program | None) -> tuple[Dict[str, Set[str]], Dict[str, Dict[str, Type]]]:
+    defs: Dict[str, Set[str]] = {}
+    types: Dict[str, Dict[str, Type]] = {}
+    for block in fn.blocks.values():
+        defined: Set[str] = set()
+        type_map: Dict[str, Type] = {}
+        for param in block.params:
+            defined.add(param.name)
+            type_map[param.name] = param.type
+        for instr in block.instructions:
+            if isinstance(instr, mir.Const):
+                defined.add(instr.dest)
+                type_map[instr.dest] = instr.type
+            elif isinstance(instr, (mir.Move, mir.Copy)):
+                defined.add(instr.dest)
+                src_ty = type_map.get(instr.source)
+                if src_ty:
+                    type_map[instr.dest] = src_ty
+            elif isinstance(instr, mir.Call):
+                defined.add(instr.dest)
+                if program and instr.callee in program.functions:
+                    type_map[instr.dest] = program.functions[instr.callee].return_type
+            elif isinstance(instr, mir.StructInit):
+                defined.add(instr.dest)
+                type_map[instr.dest] = instr.type
+            elif isinstance(instr, mir.FieldGet):
+                defined.add(instr.dest)
+            elif isinstance(instr, mir.ArrayInit):
+                defined.add(instr.dest)
+                type_map[instr.dest] = array_of(instr.element_type)
+            elif isinstance(instr, mir.ArrayGet):
+                defined.add(instr.dest)
+            elif isinstance(instr, mir.Unary):
+                defined.add(instr.dest)
+            elif isinstance(instr, mir.Binary):
+                defined.add(instr.dest)
+            # ArraySet/Drop produce no new defs
+        defs[block.name] = defined
+        types[block.name] = type_map
+    return defs, types
+
+
+def _verify_cfg(fn: mir.Function, defs: Dict[str, Set[str]], types: Dict[str, Dict[str, Type]]) -> None:
+    blocks = fn.blocks
+    entry = fn.entry
+    seen: Set[str] = set()
+
+    def walk(name: str) -> None:
+        if name in seen:
+            return
+        if name not in blocks:
+            raise VerificationError(f"{fn.name}: edge to unknown block '{name}'")
+        seen.add(name)
+        term = blocks[name].terminator
+        if isinstance(term, mir.Br):
+            _ensure_edge(fn, term.target, blocks[name], defs, types, name)
+            walk(term.target.target)
+        elif isinstance(term, mir.CondBr):
+            _ensure_edge(fn, term.then, blocks[name], defs, types, name)
+            _ensure_edge(fn, term.els, blocks[name], defs, types, name)
+            walk(term.then.target)
+            walk(term.els.target)
+        elif isinstance(term, (mir.Return, mir.Raise)):
+            return
+        else:
+            raise VerificationError(f"{fn.name}:{name}: unsupported terminator")
+
+    walk(entry)
+    if len(seen) != len(blocks):
+        missing = set(blocks.keys()) - seen
+        raise VerificationError(f"{fn.name}: unreachable blocks: {', '.join(sorted(missing))}")
+    for block in fn.blocks.values():
+        if isinstance(block.terminator, mir.Br):
+            _ensure_edge(fn, block.terminator.target, block)
+        elif isinstance(block.terminator, mir.CondBr):
+            _ensure_edge(fn, block.terminator.then, block)
+            _ensure_edge(fn, block.terminator.els, block)
+
+
+def _verify_block(fn: mir.Function, block: mir.BasicBlock, program: mir.Program | None = None) -> None:
     state = State()
     for param in block.params:
         state.define(param.name)
+        state.set_type(param.name, param.type)
     for instr in block.instructions:
         if isinstance(instr, mir.Const):
             _ensure_not_defined(state, instr.dest, block, "const")
@@ -87,8 +169,8 @@ def _verify_block(fn: mir.Function, block: mir.BasicBlock) -> None:
                 _ensure_not_moved_or_dropped(state, arg, block, "call")
             _ensure_not_defined(state, instr.dest, block, "call")
             state.define(instr.dest)
-            _ensure_edge(fn, instr.normal, block, error=False)
-            _ensure_edge(fn, instr.error, block, error=True)
+            _ensure_edge(fn, instr.normal, block, defs={}, types={}, source_block=block.name, error=False)
+            _ensure_edge(fn, instr.error, block, defs={}, types={}, source_block=block.name, error=True)
         elif isinstance(instr, mir.StructInit):
             for arg in instr.args:
                 _ensure_defined(state, arg, block, "struct_init")
@@ -141,12 +223,12 @@ def _verify_block(fn: mir.Function, block: mir.BasicBlock) -> None:
 
     term = block.terminator
     if isinstance(term, mir.Br):
-        _ensure_edge(fn, term.target, block)
+        _ensure_edge(fn, term.target, block, defs={}, types={}, source_block=block.name)
     elif isinstance(term, mir.CondBr):
         _ensure_defined(state, term.cond, block, "condbr", term.loc)
         _ensure_not_moved_or_dropped(state, term.cond, block, "condbr", term.loc)
-        _ensure_edge(fn, term.then, block)
-        _ensure_edge(fn, term.els, block)
+        _ensure_edge(fn, term.then, block, defs={}, types={}, source_block=block.name)
+        _ensure_edge(fn, term.els, block, defs={}, types={}, source_block=block.name)
     elif isinstance(term, mir.Return):
         if term.value is not None:
             _ensure_defined(state, term.value, block, "return", term.loc)
@@ -181,7 +263,15 @@ def _ensure_not_moved_or_dropped(state: State, name: str, block: mir.BasicBlock,
         raise VerificationError(f"{block.name}: {ctx}: '{name}' was dropped at {_loc_for(block, loc)}")
 
 
-def _ensure_edge(fn: mir.Function, edge: mir.Edge, block: mir.BasicBlock, error: bool = False) -> None:
+def _ensure_edge(
+    fn: mir.Function,
+    edge: mir.Edge,
+    block: mir.BasicBlock,
+    defs: Dict[str, Set[str]],
+    types: Dict[str, Dict[str, Type]],
+    source_block: str,
+    error: bool = False,
+) -> None:
     if edge.target not in fn.blocks:
         raise VerificationError(f"{fn.name}:{block.name}: edge to unknown block '{edge.target}'")
     dest_params = fn.blocks[edge.target].params
@@ -189,7 +279,19 @@ def _ensure_edge(fn: mir.Function, edge: mir.Edge, block: mir.BasicBlock, error:
         raise VerificationError(
             f"{fn.name}:{block.name}: edge to '{edge.target}' expects {len(dest_params)} args, got {len(edge.args)}"
         )
-    # Type checks are deferred; verifier can be extended to check types when available.
+    # Ensure args are defined in the source block
+    defined = defs.get(source_block, set())
+    for arg in edge.args:
+        if arg not in defined:
+            raise VerificationError(f"{fn.name}:{block.name}: edge to '{edge.target}' references undefined '{arg}'")
+    # Type checks when available
+    src_types = types.get(source_block, {})
+    for arg, param in zip(edge.args, dest_params):
+        arg_ty = src_types.get(arg)
+        if arg_ty and arg_ty != param.type:
+            raise VerificationError(
+                f"{fn.name}:{block.name}: edge to '{edge.target}' param '{param.name}' type mismatch"
+            )
     if error:
         # Error edges must carry an Error value in the first arg if present.
         if edge.args and dest_params:

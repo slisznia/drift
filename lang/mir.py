@@ -10,6 +10,13 @@ Value = str
 
 
 @dataclass(frozen=True)
+class Location:
+    file: str = "<unknown>"
+    line: int = 0
+    column: int = 0
+
+
+@dataclass(frozen=True)
 class Param:
     name: str
     type: Type
