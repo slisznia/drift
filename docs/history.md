@@ -16,3 +16,4 @@
 - Added a CFG block notation alongside the ternary SSA example to visualize control flow and φ-like params.
 - Added CFG notation to the try/else SSA example for readability.
 - Added verifier expectations to the SSA MIR terminology section (SSA dominance, types, ownership, drops, terminators).
+- Added initial MIR data structures (`lang/mir.py`) to model SSA blocks, instructions, edges, and programs; tests still pass.
