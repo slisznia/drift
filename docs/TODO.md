@@ -2,7 +2,7 @@
 
 ## Frontend and IR
 - MIR verifier:
-  - Add cross-block dominance/phi validation (propagate defs/types across CFG; ensure block params align with predecessor args and uses are dominated by defs).
+  - Add cross-block dominance/phi validation (propagate defs/types across CFG; ensure block params align with predecessor args and uses are dominated by defs). [partially done: edge arg/param validation; still need full dominance/dataflow]
   - Add deeper type checks: enforce operand/result types for all instructions, and verify copy only on Copy types (you may need a type environment or Copy-trait info).
 - Choose a serialization format. 
 - Add a simple MIR serializer/printer to aid debugging and golden tests.

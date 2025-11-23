@@ -59,9 +59,10 @@ def verify_function(fn: mir.Function, program: mir.Program | None = None) -> Non
         if block.terminator is None:
             raise VerificationError(f"{fn.name}:{name}: missing terminator")
     defs, types = _compute_defs_and_types(fn, program)
-    _verify_cfg(fn, defs, types)
+    incoming = _compute_incoming_args(fn, defs, types)
+    _verify_cfg(fn, defs, types, incoming)
     for block in fn.blocks.values():
-        _verify_block(fn, block, program)
+        _verify_block(fn, block, program, incoming)
 
 
 def _compute_defs_and_types(fn: mir.Function, program: mir.Program | None) -> tuple[Dict[str, Set[str]], Dict[str, Dict[str, Type]]]:
@@ -106,7 +107,32 @@ def _compute_defs_and_types(fn: mir.Function, program: mir.Program | None) -> tu
     return defs, types
 
 
-def _verify_cfg(fn: mir.Function, defs: Dict[str, Set[str]], types: Dict[str, Dict[str, Type]]) -> None:
+def _compute_incoming_args(
+    fn: mir.Function, defs: Dict[str, Set[str]], types: Dict[str, Dict[str, Type]]
+) -> Dict[str, List[tuple[List[str], List[Type]]]]:
+    incoming: Dict[str, List[tuple[List[str], List[Type]]]] = {name: [] for name in fn.blocks}
+    for source_name, block in fn.blocks.items():
+        term = block.terminator
+        if isinstance(term, mir.Br):
+            args = term.target.args
+            arg_types = [types.get(source_name, {}).get(arg) for arg in args]
+            incoming[term.target.target].append((args, arg_types))
+        elif isinstance(term, mir.CondBr):
+            args_then = term.then.args
+            arg_types_then = [types.get(source_name, {}).get(arg) for arg in args_then]
+            incoming[term.then.target].append((args_then, arg_types_then))
+            args_else = term.els.args
+            arg_types_else = [types.get(source_name, {}).get(arg) for arg in args_else]
+            incoming[term.els.target].append((args_else, arg_types_else))
+    return incoming
+
+
+def _verify_cfg(
+    fn: mir.Function,
+    defs: Dict[str, Set[str]],
+    types: Dict[str, Dict[str, Type]],
+    incoming: Dict[str, List[tuple[List[str], List[Type]]]],
+) -> None:
     blocks = fn.blocks
     entry = fn.entry
     seen: Set[str] = set()
@@ -135,6 +161,20 @@ def _verify_cfg(fn: mir.Function, defs: Dict[str, Set[str]], types: Dict[str, Di
     if len(seen) != len(blocks):
         missing = set(blocks.keys()) - seen
         raise VerificationError(f"{fn.name}: unreachable blocks: {', '.join(sorted(missing))}")
+
+    # Validate incoming args vs block params
+    for block_name, block in blocks.items():
+        param_types = [p.type for p in block.params]
+        for args, arg_types in incoming.get(block_name, []):
+            if len(args) != len(param_types):
+                raise VerificationError(
+                    f"{fn.name}:{block_name}: predecessor passed {len(args)} args, expected {len(param_types)}"
+                )
+            for idx, (a_ty, p_ty) in enumerate(zip(arg_types, param_types)):
+                if a_ty is not None and a_ty != p_ty:
+                    raise VerificationError(
+                        f"{fn.name}:{block_name}: arg {idx} type mismatch from predecessor"
+                    )
     for block in fn.blocks.values():
         if isinstance(block.terminator, mir.Br):
             _ensure_edge(fn, block.terminator.target, block)
