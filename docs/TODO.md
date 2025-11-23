@@ -8,7 +8,11 @@
 - Serialization:
   - DMIR (ANF-like, structured) serializer for signing (canonical, deterministic).
   - SSA MIR printer/serializer for debugging and golden tests (internal use, not signed).
-- Start DMIR→MIR lowering for a small subset (e.g., straight-line functions without control flow) with golden tests.
+- Start DMIR→MIR lowering (incremental):
+  - Add a MIR printer for golden tests/debugging.
+  - Lower straight-line functions (params, literals, moves, calls, struct/exception/array init, return) with no control flow; add golden tests.
+  - Extend lowering to conditionals/ternary and try/else once the verifier is richer.
+  - Add lowering for array/field get/set, raises, and try/catch.
 - Add tests/lowering from DMIR.
 - Modules/interop: Cross-module support adds a few complexities. It’s an ABI and tooling problem: agreeing on data layouts (field layout/alignment/ownership), calling conventions, and error/backtrace representation so modules built separately can interoperate safely. That’s why it’s deferred until we’ve locked the single-module MIR.
 		- Error propagation ABI: errors need a stable, module-independent representation (layout, ownership rules) so they can cross boundaries without being interpreted incorrectly.
