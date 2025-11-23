@@ -39,6 +39,20 @@ Drift’s abstractions compile down to what you would hand-write. Ownership, tra
 
 The language ships meaningful tools (structured errors, virtual threads, collection literals) without magic or implicit globals. Everything is imported explicitly.
 
+## 2. Expressions (surface summary)
+
+Drift expressions largely follow a C-style surface with explicit ownership rules:
+
+- Function calls: `f(x, y)`
+- Attribute access: `point.x`
+- Indexing: `arr[0]`
+- Unary operators: `-x`, `not x`, `!x`
+- Binary operators: `+`, `-`, `*`, `/`, comparisons (`<`, `<=`, `>`, `>=`, `==`, `!=`), boolean (`and`, `or`)
+- Ternary conditional: `cond ? then_expr : else_expr` (lower precedence than `or`; `cond` must be `Bool`, and both arms must have the same type)
+- Move operator: `x->` moves ownership
+- Array literals: `[1, 2, 3]`
+- String concatenation uses `+`
+
 ### 1.6 Predictable interop
 
 Precise binary layouts, opaque ABI types, and sealed unsafe modules keep foreign calls predictable without exposing raw pointers.
