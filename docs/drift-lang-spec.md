@@ -1661,7 +1661,25 @@ This is the dynamic counterpart to compile‑time polymorphism provided by *trai
 - Syntax: `|params| => expr` for expression-bodied closures (result is the expression; no `return`). A block form may be added; block-bodied closures follow normal function rules (explicit `return`).
 - Capture modes are explicit per name to keep ownership obvious: default is by-value **move** (`x`), which consumes the binding; use the `copy x` expression to duplicate a `Copy` value and keep using the original. Borrow captures (`ref x`, `ref mut x`) are planned once borrow/lifetime checking is available; initial closures may ship without borrow captures to keep lifetimes simple. Non-capturing closures are just thin function pointers.
 - Runtime shape: capturing closures lower to a fat object `{ env_ptr, call_ptr }` with an env box holding captured values under their capture modes; the env has a single destructor. Non-capturing closures lower to thin function pointers.
-- Interfaces: closures can automatically implement callable interfaces (`Fn`/`FnMut`/`FnOnce` style) based on their capture mutability/consumption so they can be passed where a callable interface is expected.
+- Callable interface: closures can present a single callable interface; how you pass it controls allowed usage:
+  - `ref Callable<Args, R>` — immutable borrow; callable expected not to mutate its env; can be invoked multiple times while the borrow is held.
+  - `ref mut Callable<Args, R>` — mutable borrow; callable may mutate its env across calls; exclusive while borrowed.
+  - `Callable<Args, R>` by value — moves/consumes the callable; caller may invoke once and drop it. Passing a `Copy` callable here duplicates it; passing a move-only callable makes it single-use.
+  Examples:
+  ```drift
+  fn apply_twice(cb: ref Callable<Int, Int>, x: Int) returns Int {
+      return cb.call(x) + cb.call(x)
+  }
+
+  fn accumulate(cb: ref mut Callable<Int, Void>, xs: Array<Int>) returns Void {
+      var i = 0
+      while i < xs.len() { cb.call(xs[i]); i = i + 1 }
+  }
+
+  fn run_once(cb: Callable<Void, Int>) returns Int {   // consumes cb
+      return cb.call()
+  }
+  ```
 
 **In short:**
 
