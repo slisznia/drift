@@ -22,3 +22,10 @@ test-codegen:
 	clang-15 -c tools/test-llvm/main.c -o tools/test-llvm/out/main.o
 	clang-15 tools/test-llvm/out/main.o tools/test-llvm/out/add.o -o tools/test-llvm/out/add_test
 	./tools/test-llvm/out/add_test
+
+mir-codegen:
+	mkdir -p tests/mir_lowering/out
+	PYTHONPATH=./ ./.venv/bin/python3 -m lang.driftc tests/mir_lowering/add.drift -o tests/mir_lowering/out/add.o --emit-ir
+	clang-15 -c tests/mir_lowering/main.c -o tests/mir_lowering/out/main.o
+	clang-15 tests/mir_lowering/out/main.o tests/mir_lowering/out/add.o -o tests/mir_lowering/out/add_mir_test
+	./tests/mir_lowering/out/add_mir_test

@@ -28,4 +28,7 @@
 - Added incoming edge arg/param validation to the MIR verifier to align predecessor args with block params across the CFG.
 - Relaxed the MIR call shape to allow optional normal/error edges; updated printer/verifier accordingly to ease initial lowering.
 - Added a MIR printer (`lang/mir_printer.py`) and a minimal straight-line lowering path (`lang/lower_to_mir.py`) with a MIR golden test wired into `tests/run_tests.py`.
+- Added a minimal MIR→LLVM emitter (`lang/mir_to_llvm.py`) for straight-line functions and a `mir-codegen` just target that lowers `tests/mir_lowering/add.drift` to an object and links/runs it via clang-15/llvmlite.
+- Introduced `lang/driftc.py` as a minimal Drift→MIR→LLVM driver (straight-line subset) and moved the MIR codegen harness out of `tools/test-llvm/` into `tests/mir_lowering/`.
+- Fixed import shadowing (lang/types vs stdlib types) by adjusting `lang/driftc.py` sys.path handling and invoking it as a module; `just mir-codegen` now runs end-to-end producing and running a native binary.
 - Added initial MIR data structures (`lang/mir.py`) to model SSA blocks, instructions, edges, and programs; tests still pass.

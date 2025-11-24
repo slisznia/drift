@@ -20,6 +20,10 @@ Drift is a systems programming language focused on deterministic resource manage
 - DMIR specification: [docs/dmir-spec.md](docs/dmir-spec.md)
 - Development history: [docs/history.md](docs/history.md)
 - Project TODO/roadmap: [docs/TODO.md](docs/TODO.md)
+- Minimal toolchain (prototype):
+  - `lang/driftc.py` — straight-line Drift → MIR → LLVM driver (emits LLVM IR/object via llvmlite/LLVM 15).
+  - `lang/mir_to_llvm.py` — MIR → LLVM emitter for the straight-line subset (single-block, const/move/copy/binary/return).
+  - `just mir-codegen` — lowers `tests/mir_lowering/add.drift` to an object, links with clang-15, and runs the binary.
 
 ## Quick Tour
 
