@@ -97,6 +97,7 @@ def _run_mir_tests() -> int:
         prog = parser.parse_program(source)
         checked = checker.Checker(builtin_signatures()).check(prog)
         mir_prog = lower_straightline(checked)
+        # Emit MIR text
         rendered = format_program(mir_prog)
         expected = expected_path.read_text().rstrip()
         if rendered.strip() != expected.strip():

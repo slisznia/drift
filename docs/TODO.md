@@ -13,7 +13,7 @@
   - Straight-line lowering:
     - Implement minimal AST/DMIR → MIR lowering for params, literals, moves, calls, struct/exception/array init, return (no control flow). [basic add case done]
     - Add MIR golden tests via the MIR printer (e.g., simple add function). [add case done]
-  - Add a minimal MIR→LLVM emitter stub for that subset (ints, calls, return, basic error edge handling) to prove end-to-end.
+  - Add a minimal MIR→LLVM emitter stub for that subset (ints, calls, return, basic error edge handling) to prove end-to-end. [blocked: need llvmlite or alternative emitter]
   - Extend lowering to conditionals/ternary and try/else once the verifier is richer.
   - Add lowering for array/field get/set, raises, and try/catch.
 - Add tests/lowering from DMIR.
