@@ -47,6 +47,14 @@ class State:
         return self.types.get(name)
 
 
+def _call_terminator(block: mir.BasicBlock) -> Optional[mir.Call]:
+    if block.instructions:
+        last = block.instructions[-1]
+        if isinstance(last, mir.Call) and (last.normal or last.error):
+            return last
+    return None
+
+
 def verify_program(program: mir.Program) -> None:
     for fn in program.functions.values():
         verify_function(fn, program)
@@ -56,7 +64,7 @@ def verify_function(fn: mir.Function, program: mir.Program | None = None) -> Non
     if fn.entry not in fn.blocks:
         raise VerificationError(f"{fn.name}: entry block '{fn.entry}' missing")
     for name, block in fn.blocks.items():
-        if block.terminator is None:
+        if block.terminator is None and not _call_terminator(block):
             raise VerificationError(f"{fn.name}:{name}: missing terminator")
     def_blocks: Dict[str, Set[str]] = {}
     for name, block in fn.blocks.items():
@@ -93,6 +101,19 @@ def _compute_incoming_args(
             arg_types_else = [out_state.get(source_name, (set(), {}))[1].get(arg) for arg in args_else]
             if term.els.target in incoming:
                 incoming[term.els.target].append((args_else, arg_types_else))
+        # call edges as terminators
+        for instr in block.instructions:
+            if isinstance(instr, mir.Call) and (instr.normal or instr.error):
+                if instr.normal:
+                    args = instr.normal.args
+                    arg_types = [out_state.get(source_name, (set(), {}))[1].get(arg) for arg in args]
+                    if instr.normal.target in incoming:
+                        incoming[instr.normal.target].append((args, arg_types))
+                if instr.error:
+                    args = instr.error.args
+                    arg_types = [out_state.get(source_name, (set(), {}))[1].get(arg) for arg in args]
+                    if instr.error.target in incoming:
+                        incoming[instr.error.target].append((args, arg_types))
     return incoming
 
 
@@ -102,6 +123,7 @@ def _dataflow_defs_types(
 ) -> tuple[Dict[str, Tuple[Set[str], Dict[str, Type]]], Dict[str, Tuple[Set[str], Dict[str, Type]]]]:
     in_state: Dict[str, Tuple[Set[str], Dict[str, Type]]] = {}
     out_state: Dict[str, Tuple[Set[str], Dict[str, Type]]] = {}
+    worklist: List[str] = list(fn.blocks.keys())
     for name, block in fn.blocks.items():
         in_state[name] = (set(p.name for p in block.params), {p.name: p.type for p in block.params})
         out_state[name] = (set(), {})
@@ -164,6 +186,21 @@ def _dataflow_defs_types(
             if out_state[name] != (cur_defs, cur_types):
                 out_state[name] = (cur_defs, cur_types)
                 changed = True
+                # propagate to successors
+                succs: List[str] = []
+                term = block.terminator
+                if isinstance(term, mir.Br):
+                    succs = [term.target.target]
+                elif isinstance(term, mir.CondBr):
+                    succs = [term.then.target, term.els.target]
+                for instr in block.instructions:
+                    if isinstance(instr, mir.Call) and instr.normal:
+                        succs.append(instr.normal.target)
+                    if isinstance(instr, mir.Call) and instr.error:
+                        succs.append(instr.error.target)
+                for succ in succs:
+                    if succ not in worklist:
+                        worklist.append(succ)
     return in_state, out_state
 
 
@@ -182,6 +219,15 @@ def _verify_cfg(
         if name not in blocks:
             raise VerificationError(f"{fn.name}: edge to unknown block '{name}'")
         seen.add(name)
+        call_term = _call_terminator(blocks[name])
+        if call_term:
+            if call_term.normal:
+                _ensure_edge(fn, call_term.normal, blocks[name], source_block=name, out_state=out_state)
+                walk(call_term.normal.target)
+            if call_term.error:
+                _ensure_edge(fn, call_term.error, blocks[name], source_block=name, out_state=out_state, error=True)
+                walk(call_term.error.target)
+            return
         term = blocks[name].terminator
         if isinstance(term, mir.Br):
             _ensure_edge(fn, term.target, blocks[name], source_block=name, out_state=out_state)
@@ -267,10 +313,12 @@ def _verify_block(
                 _ensure_not_moved_or_dropped(state, arg, block, "call")
             _ensure_not_defined(state, instr.dest, block, "call")
             state.define(instr.dest)
-            if instr.normal:
-                _ensure_edge(fn, instr.normal, block, source_block=block.name, out_state=out_state, error=False)
-            if instr.error:
-                _ensure_edge(fn, instr.error, block, source_block=block.name, out_state=out_state, error=True)
+            if instr.normal or instr.error:
+                if instr.normal:
+                    _ensure_edge(fn, instr.normal, block, source_block=block.name, out_state=out_state, error=False)
+                if instr.error:
+                    _ensure_edge(fn, instr.error, block, source_block=block.name, out_state=out_state, error=True)
+                return  # call with edges acts as terminator
         elif isinstance(instr, mir.StructInit):
             for arg in instr.args:
                 _ensure_defined(state, arg, block, "struct_init", None, dominators, def_blocks)

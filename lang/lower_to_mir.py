@@ -94,6 +94,11 @@ def lower_straightline(checked: CheckedProgram) -> mir.Program:
 
             temp_types[phi_name] = ty_then
             return phi_name, ty_then, join_block
+        if isinstance(expr, ast.TryExpr):
+            # Minimal lowering: evaluate the attempt expression; fallback is ignored for now.
+            # TODO: extend once call/error edges are lowered.
+            val, ty, current_block = lower_expr(expr.expr, current_block, temp_types)
+            return val, ty, current_block
         raise LoweringError(f"unsupported expression: {expr}")
 
     def lower_stmt(stmt: ast.Stmt, current_block: mir.BasicBlock, temp_types: Dict[str, Type]) -> Optional[mir.BasicBlock]:

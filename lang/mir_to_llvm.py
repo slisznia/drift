@@ -9,7 +9,7 @@ from .types import BOOL, ERROR, F64, I64, STR, Type
 
 def lower_function(fn: mir.Function) -> tuple[str, bytes]:
     """
-    MIR → LLVM lowering (supports branches/phi via block params; no raise/try yet).
+    MIR → LLVM lowering (supports branches/phi via block params; calls with normal/error edges lower to conditional branches; no real error payload lowering yet).
     """
     llvm.initialize()
     llvm.initialize_native_target()
@@ -67,6 +67,32 @@ def lower_function(fn: mir.Function) -> tuple[str, bytes]:
                 env[instr.dest] = env[instr.source]
             elif isinstance(instr, mir.Binary):
                 env[instr.dest] = _lower_binary(builder, instr, env)
+            elif isinstance(instr, mir.Call):
+                # Direct call; model success as nonzero return for now; no real error value yet.
+                callee = llvm_module.globals.get(instr.callee)
+                if callee is None or not isinstance(callee, ir.Function):
+                    # Declare external callee with i64 return for now (placeholder)
+                    callee_ty = ir.FunctionType(ir.IntType(64), [ir.IntType(64) for _ in instr.args])
+                    callee = ir.Function(llvm_module, callee_ty, name=instr.callee)
+                arg_vals = [env[a] for a in instr.args]
+                call_val = builder.call(callee, arg_vals, name=instr.dest)
+                env[instr.dest] = call_val
+                # Branch to normal/error successors if provided; otherwise fall through.
+                if instr.normal or instr.error:
+                    # Compare call result to zero as a placeholder "success" check; real ABI TBD.
+                    ok = builder.icmp_signed("!=", call_val, ir.Constant(call_val.type, 0))
+                    if instr.normal:
+                        _add_phi_incoming(phi_nodes, instr.normal, env, llvm_blocks[bname])
+                    if instr.error:
+                        _add_phi_incoming(phi_nodes, instr.error, env, llvm_blocks[bname])
+                    then_bb = llvm_blocks[instr.normal.target] if instr.normal else llvm_blocks[bname]
+                    else_bb = llvm_blocks[instr.error.target] if instr.error else llvm_blocks[bname]
+                    builder.cbranch(ok, then_bb, else_bb)
+                    if instr.normal:
+                        worklist.append(instr.normal.target)
+                    if instr.error:
+                        worklist.append(instr.error.target)
+                    break  # terminates this block
             else:
                 raise NotImplementedError(f"unsupported instruction: {instr}")
         term = block.terminator
