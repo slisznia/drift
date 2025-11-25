@@ -126,7 +126,7 @@ See also: `docs/design-first-afm-then-ssa.md` for the design path that led to th
 - `domain` is an optional namespace for the event (e.g., `net`, `net.ip6`, `io.fs`); if absent, it may be `NULL`. Exception definitions can supply a default domain; throw sites may override via a `domain` kwarg; builtin/runtime errors use a fixed domain (e.g., `runtime`).
 - Ownership: constructors/`raise` allocate `DriftError` on the heap; ownership passes to the caller/handler. Handlers either propagate the pointer along an error edge or free exactly once via `free_fn(err)` (or a standard `error_free(err)` entry point). Uncaught errors are freed at the top-level entry after reporting.
 - Canonicalization: attrs are stored in deterministic order; strings are null-terminated; the struct alignment/layout is fixed for signing/backcompat. No external C libraries are required; the header is self-contained and C-ABI safe.
-- Helper APIs (C ABI): `error_new(event, domain, attrs, attr_count, frames, frame_count) -> Error*`, `error_to_cstr(Error*) -> const char*` (preformatted diagnostic), `error_free(Error*)`.
+- Helper APIs (C ABI): `error_new(event, domain, attrs, attr_count, frames, frame_count) -> Error*`, `error_to_cstr(Error*) -> const char*` (preformatted diagnostic stored in the error), `error_free(Error*)`. The `error_to_cstr` result is owned by the error object, valid until `error_free`, and must not be freed by callers (thread-safe to read; no static buffer).
 - `throw Event(args...)` lowers to construction of this `Error*`; `try/catch` moves the pointer along error edges; calls/ops can raise; `raise` terminates the function with the error path. Error edges carry the `Error*` value; handlers decide whether to free or propagate.
 
 ## Serialization
