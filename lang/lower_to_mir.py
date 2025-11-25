@@ -4,7 +4,7 @@ from typing import Dict, Tuple, List, Optional
 
 from . import ast, mir
 from .checker import CheckedProgram
-from .types import BOOL, F64, I64, STR, Type
+from .types import BOOL, F64, I64, STR, ERROR, Type
 
 
 class LoweringError(Exception):
@@ -132,6 +132,7 @@ def lower_straightline(checked: CheckedProgram) -> mir.Program:
             blocks[err_name] = err_block
             blocks[join_name] = join_block
             # Emit call as terminator-like with edges
+            err_tmp = None
             call_dest = fresh_val()
             current_block.instructions.append(
                 mir.Call(
@@ -139,7 +140,7 @@ def lower_straightline(checked: CheckedProgram) -> mir.Program:
                     callee=expr.expr.func.ident,
                     args=call_args,
                     normal=mir.Edge(target=norm_name, args=[call_dest]),
-                    error=mir.Edge(target=err_name),
+                    error=mir.Edge(target=err_name, args=[]),
                 )
             )
             # normal path: forward call result
@@ -150,6 +151,7 @@ def lower_straightline(checked: CheckedProgram) -> mir.Program:
             join_block.params[0] = mir.Param(name=join_param.name, type=call_type)
             temp_types[join_param.name] = call_type
             # error path: evaluate fallback, branch to join
+            # If we later propagate Error*, we will thread it via err_tmp.
             fb_val, fb_ty, err_block = lower_expr(expr.fallback, err_block, temp_types.copy())
             err_block.terminator = mir.Br(target=mir.Edge(target=join_name, args=[fb_val]))
             return join_param.name, temp_types[call_dest], join_block
@@ -165,6 +167,10 @@ def lower_straightline(checked: CheckedProgram) -> mir.Program:
             return None
         if isinstance(stmt, ast.IfStmt):
             return _lower_if(stmt, current_block, temp_types)
+        if isinstance(stmt, ast.RaiseStmt):
+            val, _, current_block = lower_expr(stmt.value, current_block, temp_types)
+            current_block.terminator = mir.Raise(error=val)
+            return None
         raise LoweringError(f"unsupported statement: {stmt}")
 
     def lower_block(stmts: List[ast.Stmt], current_block: mir.BasicBlock, temp_types: Dict[str, Type]) -> Optional[mir.BasicBlock]:

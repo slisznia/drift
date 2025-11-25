@@ -66,6 +66,9 @@ def verify_function(fn: mir.Function, program: mir.Program | None = None) -> Non
     for name, block in fn.blocks.items():
         if block.terminator is None and not _call_terminator(block):
             raise VerificationError(f"{fn.name}:{name}: missing terminator")
+        if isinstance(block.terminator, mir.Raise) and fn.return_type != ERROR:
+            # Functions that can raise should use pair return; warning here until ABI is uniform.
+            pass
     def_blocks: Dict[str, Set[str]] = {}
     for name, block in fn.blocks.items():
         for p in block.params:
@@ -142,6 +145,11 @@ def _dataflow_defs_types(
                     edges = [term.target]
                 elif isinstance(term, mir.CondBr):
                     edges = [term.then, term.els]
+                for instr in pred_block.instructions:
+                    if isinstance(instr, mir.Call) and instr.normal:
+                        edges.append(instr.normal)
+                    if isinstance(instr, mir.Call) and instr.error:
+                        edges.append(instr.error)
                 for edge in edges:
                     if edge.target == name:
                         pred_out_defs, pred_out_types = out_state.get(pred_name, (set(), {}))

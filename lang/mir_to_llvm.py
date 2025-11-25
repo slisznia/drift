@@ -7,7 +7,7 @@ from . import mir
 from .types import BOOL, ERROR, F64, I64, STR, Type
 
 
-def lower_function(fn: mir.Function) -> tuple[str, bytes]:
+def lower_function(fn: mir.Function, func_map: dict[str, ir.Function] | None = None) -> tuple[str, bytes]:
     """
     MIR → LLVM lowering (supports branches/phi via block params; calls with normal/error edges lower to conditional branches; no real error payload lowering yet).
     """
@@ -22,8 +22,12 @@ def lower_function(fn: mir.Function) -> tuple[str, bytes]:
     llvm_module.data_layout = tm.target_data
 
     param_types = [_llvm_type(p.type) for p in fn.params]
-    func_ty = ir.FunctionType(_llvm_type(fn.return_type), param_types)
-    llvm_fn = ir.Function(llvm_module, func_ty, name=fn.name)
+    ret_ty = _llvm_type(fn.return_type)
+    func_ty = ir.FunctionType(ir.LiteralStructType([ret_ty, _llvm_type(ERROR)]), param_types)
+    if func_map is not None and fn.name in func_map:
+        llvm_fn = func_map[fn.name]
+    else:
+        llvm_fn = ir.Function(llvm_module, func_ty, name=fn.name)
 
     llvm_blocks = {name: llvm_fn.append_basic_block(name=name) for name in fn.blocks}
     phi_nodes: dict[str, dict[str, ir.PhiInstr]] = {}
@@ -68,53 +72,41 @@ def lower_function(fn: mir.Function) -> tuple[str, bytes]:
             elif isinstance(instr, mir.Binary):
                 env[instr.dest] = _lower_binary(builder, instr, env)
             elif isinstance(instr, mir.Call):
-                # Direct call; assume the callee returns either a value or an Error* via a pair (val, err) modeled as struct { T, Error* }.
-                # For now, if return type is Error, treat it as pure Error return; otherwise assume a pair (val, err).
+                # Direct call returning {val, err*} if needed.
                 callee = llvm_module.globals.get(instr.callee)
                 if callee is None or not isinstance(callee, ir.Function):
-                    # Declare external callee with opaque signature: returns { val, err* } when not Error; returns Error* when Error.
-                    if instr.normal or instr.error:
-                        ret_ty = _llvm_type(fn.return_type) if fn.return_type != ERROR else _llvm_type(ERROR)
-                        if fn.return_type == ERROR:
-                            callee_ty = ir.FunctionType(ret_ty, [_llvm_type(_lookup_type_placeholder(a, fn, env)) for a in instr.args])
-                        else:
-                            pair_ty = ir.LiteralStructType([ret_ty, _llvm_type(ERROR)])
-                            callee_ty = ir.FunctionType(pair_ty, [_llvm_type(_lookup_type_placeholder(a, fn, env)) for a in instr.args])
-                    else:
-                        callee_ty = ir.FunctionType(_llvm_type(fn.return_type), [_llvm_type(_lookup_type_placeholder(a, fn, env)) for a in instr.args])
-                    callee = ir.Function(llvm_module, callee_ty, name=instr.callee)
-                arg_vals = [env[a] for a in instr.args]
-                call_val = builder.call(callee, arg_vals, name=instr.dest)
-                # Branch to normal/error successors if provided
-                if instr.normal or instr.error:
-                    if fn.return_type == ERROR:
-                        err_ptr = call_val
-                        is_err = builder.icmp_signed("!=", err_ptr, ir.Constant(err_ptr.type, None))
-                        if instr.error:
-                            _add_phi_incoming(phi_nodes, instr.error, env, llvm_blocks[bname])
-                            builder.branch(llvm_blocks[instr.error.target])
-                            worklist.append(instr.error.target)
-                        else:
-                            builder.branch(llvm_blocks[bname])
+                    # Fall back to a pair return; if func_map provided, use that for signature.
+                    if func_map and instr.callee in func_map:
+                        callee = func_map[instr.callee]
                     else:
                         ret_ty = _llvm_type(fn.return_type)
-                        if not isinstance(call_val.type, ir.LiteralStructType):
-                            raise NotImplementedError("expected pair return for call with error edges")
-                        val = builder.extract_value(call_val, 0, name=instr.dest)
-                        err = builder.extract_value(call_val, 1, name=f"{instr.dest}_err")
-                        env[instr.dest] = val
-                        is_ok = builder.icmp_signed("==", err, ir.Constant(err.type, None))
-                        if instr.normal:
-                            _add_phi_incoming(phi_nodes, instr.normal, env, llvm_blocks[bname])
-                        if instr.error:
-                            _add_phi_incoming(phi_nodes, instr.error, env, llvm_blocks[bname])
-                        then_bb = llvm_blocks[instr.normal.target] if instr.normal else llvm_blocks[bname]
-                        else_bb = llvm_blocks[instr.error.target] if instr.error else llvm_blocks[bname]
-                        builder.cbranch(is_ok, then_bb, else_bb)
-                        if instr.normal:
-                            worklist.append(instr.normal.target)
-                        if instr.error:
-                            worklist.append(instr.error.target)
+                        pair_ty = ir.LiteralStructType([ret_ty, _llvm_type(ERROR)])
+                        arg_tys = [env[a].type for a in instr.args]
+                        callee_ty = ir.FunctionType(pair_ty, arg_tys)
+                        callee = ir.Function(llvm_module, callee_ty, name=instr.callee)
+                arg_vals = [env[a] for a in instr.args]
+                call_val = builder.call(callee, arg_vals, name=instr.dest)
+                if instr.normal or instr.error:
+                    if not isinstance(call_val.type, ir.LiteralStructType):
+                        raise NotImplementedError("expected pair return for call with error edges")
+                    val = builder.extract_value(call_val, 0, name=instr.dest)
+                    err = builder.extract_value(call_val, 1, name=f"{instr.dest}_err")
+                    env[instr.dest] = val
+                    is_ok = builder.icmp_signed("==", err, ir.Constant(err.type, None))
+                    if instr.normal:
+                        _add_phi_incoming(phi_nodes, instr.normal, env, llvm_blocks[bname])
+                    if instr.error:
+                        # On error edge, pass the Error*; create a temp binding for clarity.
+                        env["_err"] = err
+                        instr.error.args = [ "_err" ]
+                        _add_phi_incoming(phi_nodes, instr.error, env, llvm_blocks[bname])
+                    then_bb = llvm_blocks[instr.normal.target] if instr.normal else llvm_blocks[bname]
+                    else_bb = llvm_blocks[instr.error.target] if instr.error else llvm_blocks[bname]
+                    builder.cbranch(is_ok, then_bb, else_bb)
+                    if instr.normal:
+                        worklist.append(instr.normal.target)
+                    if instr.error:
+                        worklist.append(instr.error.target)
                     break  # terminates this block
                 env[instr.dest] = call_val
             else:
@@ -130,10 +122,21 @@ def lower_function(fn: mir.Function) -> tuple[str, bytes]:
             builder.cbranch(env[term.cond], llvm_blocks[term.then.target], llvm_blocks[term.els.target])
             worklist.extend([term.then.target, term.els.target])
         elif isinstance(term, mir.Return):
-            retval = env[term.value] if term.value else None
-            builder.ret(retval)
+            val = env[term.value] if term.value else ir.Constant(_llvm_type(fn.return_type), None)
+            zero_err = ir.Constant(_llvm_type(ERROR), None)
+            pair_ty = ir.LiteralStructType([_llvm_type(fn.return_type), _llvm_type(ERROR)])
+            agg = ir.Constant(pair_ty, ir.Undefined)
+            agg = builder.insert_value(agg, val, 0)
+            agg = builder.insert_value(agg, zero_err, 1)
+            builder.ret(agg)
         elif isinstance(term, mir.Raise):
-            raise NotImplementedError("raise not supported in MIR→LLVM yet")
+            err_val = env[term.error]
+            # For Error return type, return err directly; otherwise return {undef, err}
+            pair_ty = ir.LiteralStructType([_llvm_type(fn.return_type), _llvm_type(ERROR)])
+            undef_val = ir.Constant(_llvm_type(fn.return_type), None)
+            agg = builder.insert_value(ir.Constant(pair_ty, ir.Undefined), undef_val, 0)
+            agg = builder.insert_value(agg, err_val, 1)
+            builder.ret(agg)
         else:
             raise NotImplementedError("missing terminator")
         envs[bname] = env
