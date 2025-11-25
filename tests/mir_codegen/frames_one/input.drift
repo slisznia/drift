@@ -1,0 +1,9 @@
+exception Boom(msg: String)
+
+fn level1() returns Int64 {
+    try {
+        throw Boom(msg = "L1")
+    } catch Boom(err) {
+        return 1
+    }
+}
