@@ -35,6 +35,7 @@ def main() -> int:
     failures = 0
     failures += _run_runtime_tests()
     failures += _run_mir_tests()
+    failures += _run_verifier_negative_tests()
     return 1 if failures else 0
 
 
@@ -116,6 +117,247 @@ def _run_mir_tests() -> int:
             print(rendered, file=sys.stderr)
         else:
             print(f"[ok] MIR {name}")
+    return failures
+
+
+def _run_verifier_negative_tests() -> int:
+    """Manually construct small MIR fragments that should fail verification."""
+    from lang import mir
+    from lang.mir_verifier import verify_function, VerificationError
+    from lang.types import I64, BOOL
+
+    failures = 0
+
+    # Case: use-before-def in a single block.
+    fn1 = mir.Function(
+        name="bad_use",
+        params=[],
+        return_type=I64,
+        entry="bb0",
+        blocks={
+            "bb0": mir.BasicBlock(
+                name="bb0",
+                instructions=[
+                    mir.Binary(dest="_t1", op="+", left="x", right="y"),  # x, y undefined
+                ],
+                terminator=mir.Return(value="_t1"),
+            )
+        },
+    )
+
+    # Case: edge arg mismatch (passes wrong arity to successor).
+    bb1 = mir.BasicBlock(name="bb1", terminator=mir.Return())
+    bb2 = mir.BasicBlock(name="bb2", params=[mir.Param(name="p", type=I64)], terminator=mir.Return(value="p"))
+    fn2 = mir.Function(
+        name="bad_edge",
+        params=[mir.Param(name="x", type=I64)],
+        return_type=I64,
+        entry="bb1",
+        blocks={
+            "bb1": mir.BasicBlock(
+                name="bb1",
+                params=[mir.Param(name="x", type=I64)],
+                terminator=mir.Br(target=mir.Edge(target="bb2", args=[])),  # missing arg for bb2(p)
+            ),
+            "bb2": bb2,
+        },
+    )
+
+    # Case: dominance violation (use a value defined only in a non-dominating branch).
+    fn3 = mir.Function(
+        name="bad_dom",
+        params=[mir.Param(name="c", type=BOOL)],
+        return_type=I64,
+        entry="bb0",
+        blocks={
+            "bb0": mir.BasicBlock(
+                name="bb0",
+                params=[mir.Param(name="c", type=BOOL)],
+                instructions=[],
+                terminator=mir.CondBr(
+                    cond="c",
+                    then=mir.Edge(target="bb_then", args=[]),
+                    els=mir.Edge(target="bb_else", args=[]),
+                ),
+            ),
+            "bb_then": mir.BasicBlock(
+                name="bb_then",
+                instructions=[mir.Const(dest="x", type=I64, value=1)],
+                terminator=mir.Br(target=mir.Edge(target="bb_join", args=["x"])),
+            ),
+            "bb_else": mir.BasicBlock(
+                name="bb_else",
+                instructions=[],
+                terminator=mir.Br(target=mir.Edge(target="bb_join", args=[])),  # missing x
+            ),
+            "bb_join": mir.BasicBlock(
+                name="bb_join",
+                params=[mir.Param(name="x", type=I64)],
+                terminator=mir.Return(value="x"),
+            ),
+        },
+    )
+
+    # Case: type mismatch on edge argument.
+    fn4 = mir.Function(
+        name="bad_edge_type",
+        params=[mir.Param(name="c", type=BOOL)],
+        return_type=I64,
+        entry="bb0",
+        blocks={
+            "bb0": mir.BasicBlock(
+                name="bb0",
+                params=[mir.Param(name="c", type=BOOL)],
+                instructions=[mir.Const(dest="b", type=BOOL, value=True)],
+                terminator=mir.Br(target=mir.Edge(target="bb1", args=["b"])),  # bb1 expects Int
+            ),
+            "bb1": mir.BasicBlock(
+                name="bb1",
+                params=[mir.Param(name="x", type=I64)],
+                terminator=mir.Return(value="x"),
+            ),
+        },
+    )
+
+    # Case: edge references undefined value from source block.
+    fn5 = mir.Function(
+        name="bad_edge_undef_arg",
+        params=[],
+        return_type=I64,
+        entry="bb0",
+        blocks={
+            "bb0": mir.BasicBlock(
+                name="bb0",
+                instructions=[],
+                terminator=mir.Br(target=mir.Edge(target="bb1", args=["z"])),  # z not defined
+            ),
+            "bb1": mir.BasicBlock(
+                name="bb1",
+                params=[mir.Param(name="p", type=I64)],
+                terminator=mir.Return(value="p"),
+            ),
+        },
+    )
+
+    # Case: use-after-move.
+    fn6 = mir.Function(
+        name="bad_use_after_move",
+        params=[],
+        return_type=I64,
+        entry="bb0",
+        blocks={
+            "bb0": mir.BasicBlock(
+                name="bb0",
+                instructions=[
+                    mir.Const(dest="x", type=I64, value=1),
+                    mir.Move(dest="y", source="x"),
+                    mir.Binary(dest="z", op="+", left="x", right="y"),  # x was moved
+                ],
+                terminator=mir.Return(value="z"),
+            )
+        },
+    )
+
+    # Case: double-drop.
+    fn7 = mir.Function(
+        name="bad_double_drop",
+        params=[],
+        return_type=I64,
+        entry="bb0",
+        blocks={
+            "bb0": mir.BasicBlock(
+                name="bb0",
+                instructions=[
+                    mir.Const(dest="x", type=I64, value=1),
+                    mir.Drop(value="x"),
+                    mir.Drop(value="x"),  # double drop
+                ],
+                terminator=mir.Return(),
+            )
+        },
+    )
+
+    # Case: return with wrong type.
+    fn8 = mir.Function(
+        name="bad_return_type",
+        params=[],
+        return_type=I64,
+        entry="bb0",
+        blocks={
+            "bb0": mir.BasicBlock(
+                name="bb0",
+                instructions=[mir.Const(dest="b", type=BOOL, value=True)],
+                terminator=mir.Return(value="b"),  # returning Bool to Int function
+            )
+        },
+    )
+
+    # Case: error edge param type mismatch (first param not Error).
+    fn9 = mir.Function(
+        name="bad_error_edge",
+        params=[],
+        return_type=I64,
+        entry="bb0",
+        blocks={
+            "bb0": mir.BasicBlock(
+                name="bb0",
+                instructions=[mir.Const(dest="e", type=I64, value=1)],  # wrong type for error
+                terminator=mir.Raise(error="e"),
+            )
+        },
+    )
+
+    # Case: missing terminator.
+    fn10 = mir.Function(
+        name="bad_missing_term",
+        params=[],
+        return_type=I64,
+        entry="bb0",
+        blocks={
+            "bb0": mir.BasicBlock(
+                name="bb0",
+                instructions=[mir.Const(dest="x", type=I64, value=1)],
+                terminator=None,  # invalid
+            )
+        },
+    )
+
+    # Case: edge to unknown block.
+    fn11 = mir.Function(
+        name="bad_unknown_block",
+        params=[],
+        return_type=I64,
+        entry="bb0",
+        blocks={
+            "bb0": mir.BasicBlock(
+                name="bb0",
+                instructions=[],
+                terminator=mir.Br(target=mir.Edge(target="bb_missing", args=[])),
+            )
+        },
+    )
+
+    cases = [
+        ("use_before_def", fn1),
+        ("edge_arity_mismatch", fn2),
+        ("dominance_violation", fn3),
+        ("edge_type_mismatch", fn4),
+        ("edge_undef_arg", fn5),
+        ("use_after_move", fn6),
+        ("double_drop", fn7),
+        ("return_type_mismatch", fn8),
+        ("error_edge_type", fn9),
+        ("missing_terminator", fn10),
+        ("unknown_block", fn11),
+    ]
+
+    for name, fn in cases:
+        try:
+            verify_function(fn)
+            print(f"[fail] MIR verifier negative {name}: expected failure", file=sys.stderr)
+            failures += 1
+        except VerificationError:
+            print(f"[ok] MIR verifier negative {name}")
     return failures
 
 

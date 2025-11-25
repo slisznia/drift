@@ -20,6 +20,15 @@
 - Extended the MIR verifier’s dataflow: propagate defs/types across blocks and use propagated types for edge arg checking; CFG validation now uses out-state from the dataflow pass.
 - Wired the MIR verifier into MIR golden tests; fixed edge checking to use propagated out-state so branch/phi args and returns validate across blocks.
 - Integrated MIR verification into `driftc` so MIR is checked before LLVM codegen in the `mir-codegen` path.
+- Added negative verifier tests (use-before-def, edge arity mismatch) to the test runner to ensure the verifier rejects bad MIR.
+- Added a dominance-violation negative test (missing join arg) to the verifier suite to ensure defs must reach all predecessors.
+- Added an edge type-mismatch negative test to cover edge param type validation.
+- Added an edge undefined-arg negative test to ensure edges only reference values defined in the source block.
+- Added ownership negative tests (use-after-move, double-drop) to exercise the verifier’s ownership rules.
+- Added a return-type mismatch negative test to ensure returns match the function’s declared type.
+- Added an error-edge type negative test to ensure `raise` carries `Error` and error edges have correct types.
+- Added a missing-terminator negative test to enforce that every block ends in a terminator.
+- Added an unknown-block negative test to ensure edges cannot target nonexistent blocks.
 
 ## 2025-11-20
 - Captured the `lang.core.source_location` helper in the spec as a zero-cost intrinsic that lowers to the current file/line. Kept the data shape explicit (`SourceLocation` struct) so callsites can choose when to capture site metadata, thread it through `^` context bindings, or pass it into exceptions; avoided auto-injecting locations in the runtime to keep logging/telemetry opt-in. (Prototype interpreter still needs the intrinsic wired in.)

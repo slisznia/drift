@@ -58,11 +58,19 @@ def verify_function(fn: mir.Function, program: mir.Program | None = None) -> Non
     for name, block in fn.blocks.items():
         if block.terminator is None:
             raise VerificationError(f"{fn.name}:{name}: missing terminator")
+    def_blocks: Dict[str, Set[str]] = {}
+    for name, block in fn.blocks.items():
+        for p in block.params:
+            def_blocks.setdefault(p.name, set()).add(name)
+        for instr in block.instructions:
+            if isinstance(instr, (mir.Const, mir.Move, mir.Copy, mir.Call, mir.StructInit, mir.FieldGet, mir.ArrayInit, mir.ArrayGet, mir.Unary, mir.Binary)):
+                def_blocks.setdefault(getattr(instr, "dest", None), set()).add(name) if getattr(instr, "dest", None) else None
     in_state, out_state = _dataflow_defs_types(fn, program)
     incoming = _compute_incoming_args(fn, out_state)
     _verify_cfg(fn, out_state, incoming)
+    dominators = _compute_dominators(fn)
     for block in fn.blocks.values():
-        _verify_block(fn, block, program, incoming, in_state, out_state)
+        _verify_block(fn, block, program, incoming, in_state, out_state, dominators, def_blocks)
 
 
 def _compute_incoming_args(
@@ -74,14 +82,17 @@ def _compute_incoming_args(
         if isinstance(term, mir.Br):
             args = term.target.args
             arg_types = [out_state.get(source_name, (set(), {}))[1].get(arg) for arg in args]
-            incoming[term.target.target].append((args, arg_types))
+            if term.target.target in incoming:
+                incoming[term.target.target].append((args, arg_types))
         elif isinstance(term, mir.CondBr):
             args_then = term.then.args
             arg_types_then = [out_state.get(source_name, (set(), {}))[1].get(arg) for arg in args_then]
-            incoming[term.then.target].append((args_then, arg_types_then))
+            if term.then.target in incoming:
+                incoming[term.then.target].append((args_then, arg_types_then))
             args_else = term.els.args
             arg_types_else = [out_state.get(source_name, (set(), {}))[1].get(arg) for arg in args_else]
-            incoming[term.els.target].append((args_else, arg_types_else))
+            if term.els.target in incoming:
+                incoming[term.els.target].append((args_else, arg_types_else))
     return incoming
 
 
@@ -223,6 +234,8 @@ def _verify_block(
     incoming: Dict[str, List[tuple[List[str], List[Type]]]] | None = None,
     in_state: Dict[str, Tuple[Set[str], Dict[str, Type]]] | None = None,
     out_state: Dict[str, Tuple[Set[str], Dict[str, Type]]] | None = None,
+    dominators: Dict[str, Set[str]] | None = None,
+    def_blocks: Dict[str, Set[str]] | None = None,
 ) -> None:
     state = State()
     if in_state and block.name in in_state:
@@ -238,19 +251,19 @@ def _verify_block(
             _ensure_not_defined(state, instr.dest, block, "const")
             state.define(instr.dest)
         elif isinstance(instr, mir.Move):
-            _ensure_defined(state, instr.source, block, "move")
+            _ensure_defined(state, instr.source, block, "move", None, dominators, def_blocks)
             _ensure_not_moved_or_dropped(state, instr.source, block, "move")
             _ensure_not_defined(state, instr.dest, block, "move")
             state.define(instr.dest)
             state.move(instr.source)
         elif isinstance(instr, mir.Copy):
-            _ensure_defined(state, instr.source, block, "copy")
+            _ensure_defined(state, instr.source, block, "copy", None, dominators, def_blocks)
             _ensure_not_moved_or_dropped(state, instr.source, block, "copy")
             _ensure_not_defined(state, instr.dest, block, "copy")
             state.define(instr.dest)
         elif isinstance(instr, mir.Call):
             for arg in instr.args:
-                _ensure_defined(state, arg, block, "call")
+                _ensure_defined(state, arg, block, "call", None, dominators, def_blocks)
                 _ensure_not_moved_or_dropped(state, arg, block, "call")
             _ensure_not_defined(state, instr.dest, block, "call")
             state.define(instr.dest)
@@ -260,49 +273,49 @@ def _verify_block(
                 _ensure_edge(fn, instr.error, block, source_block=block.name, out_state=out_state, error=True)
         elif isinstance(instr, mir.StructInit):
             for arg in instr.args:
-                _ensure_defined(state, arg, block, "struct_init")
+                _ensure_defined(state, arg, block, "struct_init", None, dominators, def_blocks)
                 _ensure_not_moved_or_dropped(state, arg, block, "struct_init")
             _ensure_not_defined(state, instr.dest, block, "struct_init")
             state.define(instr.dest)
         elif isinstance(instr, mir.FieldGet):
-            _ensure_defined(state, instr.base, block, "field_get")
+            _ensure_defined(state, instr.base, block, "field_get", None, dominators, def_blocks)
             _ensure_not_moved_or_dropped(state, instr.base, block, "field_get")
             _ensure_not_defined(state, instr.dest, block, "field_get")
             state.define(instr.dest)
         elif isinstance(instr, mir.ArrayInit):
             for elem in instr.elements:
-                _ensure_defined(state, elem, block, "array_init")
+                _ensure_defined(state, elem, block, "array_init", None, dominators, def_blocks)
                 _ensure_not_moved_or_dropped(state, elem, block, "array_init")
             _ensure_not_defined(state, instr.dest, block, "array_init")
             state.define(instr.dest)
         elif isinstance(instr, mir.ArrayGet):
-            _ensure_defined(state, instr.base, block, "array_get")
+            _ensure_defined(state, instr.base, block, "array_get", None, dominators, def_blocks)
             _ensure_not_moved_or_dropped(state, instr.base, block, "array_get")
-            _ensure_defined(state, instr.index, block, "array_get")
+            _ensure_defined(state, instr.index, block, "array_get", None, dominators, def_blocks)
             _ensure_not_moved_or_dropped(state, instr.index, block, "array_get")
             _ensure_not_defined(state, instr.dest, block, "array_get")
             state.define(instr.dest)
         elif isinstance(instr, mir.ArraySet):
-            _ensure_defined(state, instr.base, block, "array_set")
+            _ensure_defined(state, instr.base, block, "array_set", None, dominators, def_blocks)
             _ensure_not_moved_or_dropped(state, instr.base, block, "array_set")
-            _ensure_defined(state, instr.index, block, "array_set")
+            _ensure_defined(state, instr.index, block, "array_set", None, dominators, def_blocks)
             _ensure_not_moved_or_dropped(state, instr.index, block, "array_set")
-            _ensure_defined(state, instr.value, block, "array_set")
+            _ensure_defined(state, instr.value, block, "array_set", None, dominators, def_blocks)
             _ensure_not_moved_or_dropped(state, instr.value, block, "array_set")
         elif isinstance(instr, mir.Unary):
-            _ensure_defined(state, instr.operand, block, "unary")
+            _ensure_defined(state, instr.operand, block, "unary", None, dominators, def_blocks)
             _ensure_not_moved_or_dropped(state, instr.operand, block, "unary")
             _ensure_not_defined(state, instr.dest, block, "unary")
             state.define(instr.dest)
         elif isinstance(instr, mir.Binary):
-            _ensure_defined(state, instr.left, block, "binary")
+            _ensure_defined(state, instr.left, block, "binary", None, dominators, def_blocks)
             _ensure_not_moved_or_dropped(state, instr.left, block, "binary")
-            _ensure_defined(state, instr.right, block, "binary")
+            _ensure_defined(state, instr.right, block, "binary", None, dominators, def_blocks)
             _ensure_not_moved_or_dropped(state, instr.right, block, "binary")
             _ensure_not_defined(state, instr.dest, block, "binary")
             state.define(instr.dest)
         elif isinstance(instr, mir.Drop):
-            _ensure_defined(state, instr.value, block, "drop")
+            _ensure_defined(state, instr.value, block, "drop", None, dominators, def_blocks)
             _ensure_not_moved_or_dropped(state, instr.value, block, "drop")
             state.drop(instr.value)
         else:
@@ -312,17 +325,26 @@ def _verify_block(
     if isinstance(term, mir.Br):
         _ensure_edge(fn, term.target, block, source_block=block.name, out_state=out_state)
     elif isinstance(term, mir.CondBr):
-        _ensure_defined(state, term.cond, block, "condbr", term.loc)
+        _ensure_defined(state, term.cond, block, "condbr", term.loc, dominators, def_blocks)
         _ensure_not_moved_or_dropped(state, term.cond, block, "condbr", term.loc)
         _ensure_edge(fn, term.then, block, source_block=block.name, out_state=out_state)
         _ensure_edge(fn, term.els, block, source_block=block.name, out_state=out_state)
     elif isinstance(term, mir.Return):
         if term.value is not None:
-            _ensure_defined(state, term.value, block, "return", term.loc)
+            _ensure_defined(state, term.value, block, "return", term.loc, dominators, def_blocks)
             _ensure_not_moved_or_dropped(state, term.value, block, "return", term.loc)
+            # type check
+            val_ty = out_state.get(block.name, (set(), {}))[1].get(term.value) if out_state else None
+            if val_ty and val_ty != fn.return_type:
+                raise VerificationError(
+                    f"{fn.name}:{block.name}: return type mismatch, expected {fn.return_type}, got {val_ty}"
+                )
     elif isinstance(term, mir.Raise):
-        _ensure_defined(state, term.error, block, "raise", term.loc)
+        _ensure_defined(state, term.error, block, "raise", term.loc, dominators, def_blocks)
         _ensure_not_moved_or_dropped(state, term.error, block, "raise", term.loc)
+        err_ty = out_state.get(block.name, (set(), {}))[1].get(term.error) if out_state else None
+        if err_ty and err_ty != ERROR:
+            raise VerificationError(f"{fn.name}:{block.name}: raise expects Error, got {err_ty}")
     else:
         raise VerificationError(f"{fn.name}:{block.name}: missing or unsupported terminator")
 
@@ -333,9 +355,50 @@ def _loc_for(block: mir.BasicBlock, loc: Optional[mir.Location]) -> str:
     return f"{src}:{line}"
 
 
-def _ensure_defined(state: State, name: str, block: mir.BasicBlock, ctx: str, loc: Optional[mir.Location] = None) -> None:
-    if not state.is_defined(name):
-        raise VerificationError(f"{block.name}: {ctx}: '{name}' is undefined at {_loc_for(block, loc)}")
+def _compute_dominators(fn: mir.Function) -> Dict[str, Set[str]]:
+    blocks = fn.blocks
+    dom: Dict[str, Set[str]] = {name: set(blocks.keys()) for name in blocks}
+    dom[fn.entry] = {fn.entry}
+    preds: Dict[str, Set[str]] = {name: set() for name in blocks}
+    for name, block in blocks.items():
+        term = block.terminator
+        if isinstance(term, mir.Br):
+            preds[term.target.target].add(name)
+        elif isinstance(term, mir.CondBr):
+            preds[term.then.target].add(name)
+            preds[term.els.target].add(name)
+
+    changed = True
+    while changed:
+        changed = False
+        for name in blocks:
+            if name == fn.entry:
+                continue
+            pred_sets = [dom[p] for p in preds[name]] or [set(blocks.keys())]
+            new_dom = set([name]).union(set.intersection(*pred_sets))
+            if new_dom != dom[name]:
+                dom[name] = new_dom
+                changed = True
+    return dom
+
+
+def _ensure_defined(
+    state: State,
+    name: str,
+    block: mir.BasicBlock,
+    ctx: str,
+    loc: Optional[mir.Location] = None,
+    dominators: Dict[str, Set[str]] | None = None,
+    def_blocks: Dict[str, Set[str]] | None = None,
+) -> None:
+    if state.is_defined(name):
+        return
+    if dominators and def_blocks and name in def_blocks:
+        defs = def_blocks[name]
+        doms = dominators.get(block.name, set())
+        if defs & doms:
+            return
+    raise VerificationError(f"{block.name}: {ctx}: '{name}' is undefined at {_loc_for(block, loc)}")
 
 
 def _ensure_not_defined(state: State, name: str, block: mir.BasicBlock, ctx: str, loc: Optional[mir.Location] = None) -> None:
