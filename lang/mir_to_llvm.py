@@ -109,6 +109,18 @@ def lower_function(fn: mir.Function, func_map: dict[str, ir.Function] | None = N
                     env[instr.dest] = val
                     if instr.err_dest:
                         env[instr.err_dest] = err
+                    # Append caller frame to error before branching on error edge.
+                    file_gv = _const(builder, STR, fn.name)  # using function name as a proxy for now
+                    func_gv = _const(builder, STR, fn.name)
+                    line_const = _const(builder, I64, 0)
+                    push_fn = llvm_module.globals.get("error_push_frame")
+                    if push_fn is None or not isinstance(push_fn, ir.Function):
+                        push_fn = ir.Function(
+                            llvm_module,
+                            ir.FunctionType(_llvm_type(ERROR), [ _llvm_type(ERROR), _llvm_type(STR), _llvm_type(STR), _llvm_type(I64)]),
+                            name="error_push_frame",
+                        )
+                    builder.call(push_fn, [err, file_gv, func_gv, line_const])
                     is_ok = builder.icmp_signed("==", err, ir.Constant(err.type, None))
                     if instr.normal:
                         _add_phi_incoming(phi_nodes, instr.normal, env, llvm_blocks[bname])

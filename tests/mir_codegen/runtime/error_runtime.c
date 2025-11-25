@@ -20,10 +20,25 @@ struct Error* drift_error_new(
     err->attr_count = attr_count;
     err->keys = keys;
     err->values = values;
-    err->frame_files = frame_files;
-    err->frame_funcs = frame_funcs;
-    err->frame_lines = frame_lines;
     err->frame_count = frame_count;
+    if (frame_count > 0 && frame_files && frame_funcs && frame_lines) {
+        err->frame_files = (DriftStr*)malloc(frame_count * sizeof(DriftStr));
+        err->frame_funcs = (DriftStr*)malloc(frame_count * sizeof(DriftStr));
+        err->frame_lines = (int64_t*)malloc(frame_count * sizeof(int64_t));
+        if (!err->frame_files || !err->frame_funcs || !err->frame_lines) {
+            free(err->frame_files);
+            free(err->frame_funcs);
+            free(err->frame_lines);
+            free(err->diag);
+            free(err);
+            return NULL;
+        }
+        for (size_t i = 0; i < frame_count; i++) {
+            err->frame_files[i] = frame_files[i];
+            err->frame_funcs[i] = frame_funcs[i];
+            err->frame_lines[i] = frame_lines[i];
+        }
+    }
     /* Build a diagnostic string including all attrs. */
     size_t total = 2; // {}
     for (size_t i = 0; i < attr_count; i++) {
@@ -61,6 +76,9 @@ const char* error_to_cstr(struct Error* err) {
 void error_free(struct Error* err) {
     if (!err) return;
     free(err->diag);
+    free(err->frame_files);
+    free(err->frame_funcs);
+    free(err->frame_lines);
     free(err);
 }
 
@@ -70,4 +88,23 @@ struct Error* error_new(const char* msg) {
     vals_arr[0] = msg ? msg : "unknown";
     /* Casting away const for simplicity; in real runtime we'd copy or enforce const. */
     return drift_error_new((DriftStr*)keys, (DriftStr*)vals_arr, 1, "Error", "main", NULL, NULL, NULL, 0);
+}
+
+struct Error* error_push_frame(struct Error* err, DriftStr file, DriftStr func, int64_t line) {
+    if (!err) return NULL;
+    size_t new_count = err->frame_count + 1;
+    DriftStr* new_files = (DriftStr*)realloc(err->frame_files, new_count * sizeof(DriftStr));
+    DriftStr* new_funcs = (DriftStr*)realloc(err->frame_funcs, new_count * sizeof(DriftStr));
+    int64_t* new_lines = (int64_t*)realloc(err->frame_lines, new_count * sizeof(int64_t));
+    if (!new_files || !new_funcs || !new_lines) {
+        return err; // best-effort; leave unchanged on alloc failure
+    }
+    err->frame_files = new_files;
+    err->frame_funcs = new_funcs;
+    err->frame_lines = new_lines;
+    err->frame_files[err->frame_count] = file ? file : "<unknown>";
+    err->frame_funcs[err->frame_count] = func ? func : "<unknown>";
+    err->frame_lines[err->frame_count] = line;
+    err->frame_count = new_count;
+    return err;
 }
