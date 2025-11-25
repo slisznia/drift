@@ -14,6 +14,7 @@ from lang import parser, checker  # type: ignore
 from lang.lower_to_mir import lower_straightline
 from lang.mir_to_llvm import lower_function
 from lang.runtime import builtin_signatures
+from lang.mir_verifier import verify_program
 
 
 def compile_file(source_path: Path, output_path: Path, emit_ir: bool) -> int:
@@ -21,6 +22,7 @@ def compile_file(source_path: Path, output_path: Path, emit_ir: bool) -> int:
     prog = parser.parse_program(source)
     checked = checker.Checker(builtin_signatures()).check(prog)
     mir_prog = lower_straightline(checked)
+    verify_program(mir_prog)
     fn = next(iter(mir_prog.functions.values()))
     llvm_ir, obj_bytes = lower_function(fn)
     if emit_ir:

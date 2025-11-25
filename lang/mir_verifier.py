@@ -58,121 +58,107 @@ def verify_function(fn: mir.Function, program: mir.Program | None = None) -> Non
     for name, block in fn.blocks.items():
         if block.terminator is None:
             raise VerificationError(f"{fn.name}:{name}: missing terminator")
-    defs, types = _compute_defs_and_types(fn, program)
-    incoming = _compute_incoming_args(fn, defs, types)
-    in_state, out_state = _dataflow_defs_types(fn, defs, types, incoming)
-    _verify_cfg(fn, defs, types, incoming)
+    in_state, out_state = _dataflow_defs_types(fn, program)
+    incoming = _compute_incoming_args(fn, out_state)
+    _verify_cfg(fn, out_state, incoming)
     for block in fn.blocks.values():
-        _verify_block(fn, block, program, incoming, in_state)
-
-
-def _compute_defs_and_types(fn: mir.Function, program: mir.Program | None) -> tuple[Dict[str, Set[str]], Dict[str, Dict[str, Type]]]:
-    defs: Dict[str, Set[str]] = {}
-    types: Dict[str, Dict[str, Type]] = {}
-    for block in fn.blocks.values():
-        defined: Set[str] = set()
-        type_map: Dict[str, Type] = {}
-        for param in block.params:
-            defined.add(param.name)
-            type_map[param.name] = param.type
-        for instr in block.instructions:
-            if isinstance(instr, mir.Const):
-                defined.add(instr.dest)
-                type_map[instr.dest] = instr.type
-            elif isinstance(instr, (mir.Move, mir.Copy)):
-                defined.add(instr.dest)
-                src_ty = type_map.get(instr.source)
-                if src_ty:
-                    type_map[instr.dest] = src_ty
-            elif isinstance(instr, mir.Call):
-                defined.add(instr.dest)
-                if program and instr.callee in program.functions:
-                    type_map[instr.dest] = program.functions[instr.callee].return_type
-            elif isinstance(instr, mir.StructInit):
-                defined.add(instr.dest)
-                type_map[instr.dest] = instr.type
-            elif isinstance(instr, mir.FieldGet):
-                defined.add(instr.dest)
-            elif isinstance(instr, mir.ArrayInit):
-                defined.add(instr.dest)
-                type_map[instr.dest] = array_of(instr.element_type)
-            elif isinstance(instr, mir.ArrayGet):
-                defined.add(instr.dest)
-            elif isinstance(instr, mir.Unary):
-                defined.add(instr.dest)
-            elif isinstance(instr, mir.Binary):
-                defined.add(instr.dest)
-            # ArraySet/Drop produce no new defs
-        defs[block.name] = defined
-        types[block.name] = type_map
-    return defs, types
+        _verify_block(fn, block, program, incoming, in_state, out_state)
 
 
 def _compute_incoming_args(
-    fn: mir.Function, defs: Dict[str, Set[str]], types: Dict[str, Dict[str, Type]]
+    fn: mir.Function, out_state: Dict[str, Tuple[Set[str], Dict[str, Type]]]
 ) -> Dict[str, List[tuple[List[str], List[Type]]]]:
     incoming: Dict[str, List[tuple[List[str], List[Type]]]] = {name: [] for name in fn.blocks}
     for source_name, block in fn.blocks.items():
         term = block.terminator
         if isinstance(term, mir.Br):
             args = term.target.args
-            arg_types = [types.get(source_name, {}).get(arg) for arg in args]
+            arg_types = [out_state.get(source_name, (set(), {}))[1].get(arg) for arg in args]
             incoming[term.target.target].append((args, arg_types))
         elif isinstance(term, mir.CondBr):
             args_then = term.then.args
-            arg_types_then = [types.get(source_name, {}).get(arg) for arg in args_then]
+            arg_types_then = [out_state.get(source_name, (set(), {}))[1].get(arg) for arg in args_then]
             incoming[term.then.target].append((args_then, arg_types_then))
             args_else = term.els.args
-            arg_types_else = [types.get(source_name, {}).get(arg) for arg in args_else]
+            arg_types_else = [out_state.get(source_name, (set(), {}))[1].get(arg) for arg in args_else]
             incoming[term.els.target].append((args_else, arg_types_else))
     return incoming
 
 
 def _dataflow_defs_types(
     fn: mir.Function,
-    defs: Dict[str, Set[str]],
-    types: Dict[str, Dict[str, Type]],
-    incoming: Dict[str, List[tuple[List[str], List[Type]]]],
+    program: mir.Program | None = None,
 ) -> tuple[Dict[str, Tuple[Set[str], Dict[str, Type]]], Dict[str, Tuple[Set[str], Dict[str, Type]]]]:
     in_state: Dict[str, Tuple[Set[str], Dict[str, Type]]] = {}
     out_state: Dict[str, Tuple[Set[str], Dict[str, Type]]] = {}
-    # initialize with params as in_state
     for name, block in fn.blocks.items():
         in_state[name] = (set(p.name for p in block.params), {p.name: p.type for p in block.params})
-        out_state[name] = (defs.get(name, set()).copy(), types.get(name, {}).copy())
+        out_state[name] = (set(), {})
 
     changed = True
     while changed:
         changed = False
         for name, block in fn.blocks.items():
+            # merge predecessors into in_state
+            merged_defs: Set[str] = set(p.name for p in block.params)
+            merged_types: Dict[str, Type] = {p.name: p.type for p in block.params}
+            for pred_name, pred_block in fn.blocks.items():
+                term = pred_block.terminator
+                edges: List[mir.Edge] = []
+                if isinstance(term, mir.Br):
+                    edges = [term.target]
+                elif isinstance(term, mir.CondBr):
+                    edges = [term.then, term.els]
+                for edge in edges:
+                    if edge.target == name:
+                        pred_out_defs, pred_out_types = out_state.get(pred_name, (set(), {}))
+                        merged_defs.update(pred_out_defs)
+                        if isinstance(pred_out_types, dict):
+                            merged_types.update(pred_out_types)
+            if (merged_defs, merged_types) != in_state[name]:
+                in_state[name] = (merged_defs, merged_types)
+                changed = True
+
             in_defs, in_types = in_state[name]
-            out_defs, out_types = out_state[name]
-            # merge predecessor out to this block via incoming args
-            pred_args = incoming.get(name, [])
-            if pred_args:
-                merged_defs: Set[str] = set()
-                merged_types: Dict[str, Type] = {}
-                for args, arg_types in pred_args:
-                    merged_defs.update(args)
-                    for a, t in zip(args, arg_types):
-                        if t:
-                            merged_types[a] = t
-                new_in_defs = set(block_param for block_param in in_defs) | merged_defs
-                new_in_types = dict(in_types)
-                new_in_types.update(merged_types)
-                if new_in_defs != in_defs or new_in_types != in_types:
-                    in_state[name] = (new_in_defs, new_in_types)
-                    changed = True
-            # propagate defs/types within block to out_state
-            if out_defs != defs.get(name, set()) or out_types != types.get(name, {}):
-                out_state[name] = (defs.get(name, set()).copy(), types.get(name, {}).copy())
+            cur_defs = set(in_defs)
+            cur_types = dict(in_types)
+            for instr in block.instructions:
+                if isinstance(instr, mir.Const):
+                    cur_defs.add(instr.dest)
+                    cur_types[instr.dest] = instr.type
+                elif isinstance(instr, (mir.Move, mir.Copy)):
+                    cur_defs.add(instr.dest)
+                    src_ty = cur_types.get(instr.source)
+                    if src_ty:
+                        cur_types[instr.dest] = src_ty
+                elif isinstance(instr, mir.Call):
+                    cur_defs.add(instr.dest)
+                    if program and instr.callee in program.functions:
+                        cur_types[instr.dest] = program.functions[instr.callee].return_type
+                elif isinstance(instr, mir.StructInit):
+                    cur_defs.add(instr.dest)
+                    cur_types[instr.dest] = instr.type
+                elif isinstance(instr, mir.FieldGet):
+                    cur_defs.add(instr.dest)
+                elif isinstance(instr, mir.ArrayInit):
+                    cur_defs.add(instr.dest)
+                    cur_types[instr.dest] = array_of(instr.element_type)
+                elif isinstance(instr, mir.ArrayGet):
+                    cur_defs.add(instr.dest)
+                elif isinstance(instr, mir.Unary):
+                    cur_defs.add(instr.dest)
+                elif isinstance(instr, mir.Binary):
+                    cur_defs.add(instr.dest)
+                # ArraySet/Drop produce no new defs
+            if out_state[name] != (cur_defs, cur_types):
+                out_state[name] = (cur_defs, cur_types)
+                changed = True
     return in_state, out_state
 
 
 def _verify_cfg(
     fn: mir.Function,
-    defs: Dict[str, Set[str]],
-    types: Dict[str, Dict[str, Type]],
+    out_state: Dict[str, Tuple[Set[str], Dict[str, Type]]],
     incoming: Dict[str, List[tuple[List[str], List[Type]]]],
 ) -> None:
     blocks = fn.blocks
@@ -187,11 +173,11 @@ def _verify_cfg(
         seen.add(name)
         term = blocks[name].terminator
         if isinstance(term, mir.Br):
-            _ensure_edge(fn, term.target, blocks[name], defs, types, name)
+            _ensure_edge(fn, term.target, blocks[name], source_block=name, out_state=out_state)
             walk(term.target.target)
         elif isinstance(term, mir.CondBr):
-            _ensure_edge(fn, term.then, blocks[name], defs, types, name)
-            _ensure_edge(fn, term.els, blocks[name], defs, types, name)
+            _ensure_edge(fn, term.then, blocks[name], source_block=name, out_state=out_state)
+            _ensure_edge(fn, term.els, blocks[name], source_block=name, out_state=out_state)
             walk(term.then.target)
             walk(term.els.target)
         elif isinstance(term, (mir.Return, mir.Raise)):
@@ -217,16 +203,17 @@ def _verify_cfg(
                     raise VerificationError(
                         f"{fn.name}:{block_name}: arg {idx} type mismatch from predecessor"
                     )
-        # Ensure block params are defined before use in the block
+        # Ensure block params are defined before use in the block (in_state seeds)
+        in_defs = out_state.get(block_name, (set(), {}))[0] if out_state else set()
         for param in block.params:
-            if param.name not in defs.get(block_name, set()):
+            if param.name not in in_defs:
                 raise VerificationError(f"{fn.name}:{block_name}: param '{param.name}' not available at block entry")
     for block in fn.blocks.values():
         if isinstance(block.terminator, mir.Br):
-            _ensure_edge(fn, block.terminator.target, block)
+            _ensure_edge(fn, block.terminator.target, block, source_block=block.name, out_state=out_state)
         elif isinstance(block.terminator, mir.CondBr):
-            _ensure_edge(fn, block.terminator.then, block)
-            _ensure_edge(fn, block.terminator.els, block)
+            _ensure_edge(fn, block.terminator.then, block, source_block=block.name, out_state=out_state)
+            _ensure_edge(fn, block.terminator.els, block, source_block=block.name, out_state=out_state)
 
 
 def _verify_block(
@@ -235,6 +222,7 @@ def _verify_block(
     program: mir.Program | None = None,
     incoming: Dict[str, List[tuple[List[str], List[Type]]]] | None = None,
     in_state: Dict[str, Tuple[Set[str], Dict[str, Type]]] | None = None,
+    out_state: Dict[str, Tuple[Set[str], Dict[str, Type]]] | None = None,
 ) -> None:
     state = State()
     if in_state and block.name in in_state:
@@ -267,9 +255,9 @@ def _verify_block(
             _ensure_not_defined(state, instr.dest, block, "call")
             state.define(instr.dest)
             if instr.normal:
-                _ensure_edge(fn, instr.normal, block, {}, {}, block.name, error=False)
+                _ensure_edge(fn, instr.normal, block, source_block=block.name, out_state=out_state, error=False)
             if instr.error:
-                _ensure_edge(fn, instr.error, block, {}, {}, block.name, error=True)
+                _ensure_edge(fn, instr.error, block, source_block=block.name, out_state=out_state, error=True)
         elif isinstance(instr, mir.StructInit):
             for arg in instr.args:
                 _ensure_defined(state, arg, block, "struct_init")
@@ -322,12 +310,12 @@ def _verify_block(
 
     term = block.terminator
     if isinstance(term, mir.Br):
-        _ensure_edge(fn, term.target, block, {}, {}, block.name)
+        _ensure_edge(fn, term.target, block, source_block=block.name, out_state=out_state)
     elif isinstance(term, mir.CondBr):
         _ensure_defined(state, term.cond, block, "condbr", term.loc)
         _ensure_not_moved_or_dropped(state, term.cond, block, "condbr", term.loc)
-        _ensure_edge(fn, term.then, block, {}, {}, block.name)
-        _ensure_edge(fn, term.els, block, {}, {}, block.name)
+        _ensure_edge(fn, term.then, block, source_block=block.name, out_state=out_state)
+        _ensure_edge(fn, term.els, block, source_block=block.name, out_state=out_state)
     elif isinstance(term, mir.Return):
         if term.value is not None:
             _ensure_defined(state, term.value, block, "return", term.loc)
@@ -366,9 +354,8 @@ def _ensure_edge(
     fn: mir.Function,
     edge: mir.Edge,
     block: mir.BasicBlock,
-    defs: Dict[str, Set[str]],
-    types: Dict[str, Dict[str, Type]],
     source_block: str,
+    out_state: Dict[str, Tuple[Set[str], Dict[str, Type]]] | None = None,
     error: bool = False,
 ) -> None:
     if edge.target not in fn.blocks:
@@ -379,12 +366,15 @@ def _ensure_edge(
             f"{fn.name}:{block.name}: edge to '{edge.target}' expects {len(dest_params)} args, got {len(edge.args)}"
         )
     # Ensure args are defined in the source block
-    defined = defs.get(source_block, set())
+    defined = out_state.get(source_block, (set(), {}))[0] if out_state else set()
     for arg in edge.args:
         if arg not in defined:
+            # Debug trace for unexpected misses
+            # (can be removed once verifier is stable)
+            # print(f"DEBUG edge from {source_block} to {edge.target}: defined={defined}, missing={arg}")
             raise VerificationError(f"{fn.name}:{block.name}: edge to '{edge.target}' references undefined '{arg}'")
     # Type checks when available
-    src_types = types.get(source_block, {})
+    src_types = out_state.get(source_block, (set(), {}))[1] if out_state else {}
     for arg, param in zip(edge.args, dest_params):
         arg_ty = src_types.get(arg)
         if arg_ty and arg_ty != param.type:

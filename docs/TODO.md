@@ -17,6 +17,8 @@
   - MIR/LLVM: represent non-capturing closures as thin pointers; capturing closures as fat pointers; ensure env drop is emitted once.
   - Callable interface wiring: desugar `cb.call(...)` and/or `cb(...)` to the callable thunk; honor `ref`/`ref mut`/by-value usage in the verifier.
   - Add borrow-capture support once borrow/lifetime checking is in place.
+- MIR verifier:
+  - Finish dominance/dataflow: ensure uses are dominated by defs across CFG, tighten block param/arg checks, and enforce type consistency with propagated info.
 - Modules/interop: Cross-module support adds a few complexities. It’s an ABI and tooling problem: agreeing on data layouts (field layout/alignment/ownership), calling conventions, and error/backtrace representation so modules built separately can interoperate safely. That’s why it’s deferred until we’ve locked the single-module MIR.
 		- Error propagation ABI: errors need a stable, module-independent representation (layout, ownership rules) so they can cross boundaries without being interpreted incorrectly.
 		- Backtrace/handles: stack info must survive module hops—either as an opaque handle or normalized form that can be merged/symbolicated later.
