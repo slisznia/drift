@@ -57,6 +57,7 @@ class ExceptionInfo:
     name: str
     arg_order: List[str]
     arg_types: Dict[str, Type]
+    domain: str | None = None
 
 
 class CheckError(Exception):
@@ -151,6 +152,7 @@ class Checker:
                 name=exc.name,
                 arg_order=arg_order,
                 arg_types=arg_types,
+                domain=exc.domain,
             )
 
     def _register_functions(self, functions: List[ast.FunctionDef]) -> None:

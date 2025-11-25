@@ -28,6 +28,7 @@ class ExceptionDef:
     name: str
     args: List[ExceptionArg]
     loc: "Located"
+    domain: Optional[str] = None
 
 
 @dataclass(frozen=True)

@@ -6,7 +6,7 @@ bb_catch2(err: Error):
   return _t10
 bb_try_body1:
   _t3 = const String bad
-  _t4 = const String None
+  _t4 = const String main
   _t5 = const String None
   _t6 = const Int64 0
   _t7 = const String None

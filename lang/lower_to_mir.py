@@ -187,19 +187,27 @@ def lower_straightline(checked: CheckedProgram) -> mir.Program:
                     attr_count_val = fresh_val()
                     # For now, serialize only the first msg kwarg/arg into {"msg":"..."}.
                     msg_expr = None
+                    domain_expr = None
                     for kw in stmt.value.kwargs:
-                        if kw.name == "msg":
+                        if kw.name == "msg" and msg_expr is None:
                             msg_expr = kw.value
-                            break
+                        if kw.name == "domain" and domain_expr is None:
+                            domain_expr = kw.value
                     if msg_expr is None and stmt.value.args:
                         msg_expr = stmt.value.args[0]
                     if msg_expr is None:
                         msg_expr = ast.Literal(loc=stmt.loc, value=exc_name)
                     msg_val, _, current_block = lower_expr(msg_expr, current_block, temp_types)
-                    # For now, treat event=msg, no domain, and empty attrs/frames (runtime will synthesize msg attr).
+                    # For now, treat event=message, domain from exception info or kw override, and empty attrs/frames (runtime will synthesize msg attr).
                     evt_val = msg_val
                     dom_val = fresh_val()
-                    current_block.instructions.append(mir.Const(dest=dom_val, type=STR, value=None))
+                    exc_domain = checked.exceptions[exc_name].domain if exc_name in checked.exceptions else None
+                    if domain_expr is not None:
+                        dom_val_res, _, current_block = lower_expr(domain_expr, current_block, temp_types)
+                        dom_val = dom_val_res
+                    else:
+                        domain_val = exc_domain if exc_domain is not None else "main"
+                        current_block.instructions.append(mir.Const(dest=dom_val, type=STR, value=domain_val))
                     temp_types[dom_val] = STR
                     attr_json_val = fresh_val()
                     attr_count_val = fresh_val()

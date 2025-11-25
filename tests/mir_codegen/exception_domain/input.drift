@@ -1,0 +1,5 @@
+exception NetError(msg: String, domain = "net")
+
+fn raise_net() returns Int64 {
+    throw NetError(msg = "down")
+}

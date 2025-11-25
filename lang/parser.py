@@ -186,13 +186,25 @@ def _build_exception_def(tree: Tree) -> ExceptionDef:
         (child for child in tree.children if isinstance(child, Tree) and _name(child) == "exception_params"),
         None,
     )
+    domain_node = next(
+        (child for child in tree.children if isinstance(child, Tree) and _name(child) == "exception_domain_param"),
+        None,
+    )
+    domain_val = None
+    if domain_node:
+        str_node = next((c for c in domain_node.children if isinstance(c, Token) and c.type == "STRING"), None)
+        if str_node:
+            domain_val = str_node.value
     if params_node:
-        args = [
-            _build_exception_arg(arg)
-            for arg in params_node.children
-            if isinstance(arg, Tree) and _name(arg) == "exception_param"
-        ]
-    return ExceptionDef(name=name_token.value, args=args, loc=loc)
+        args = []
+        for child in params_node.children:
+            if isinstance(child, Tree) and _name(child) == "exception_param":
+                args.append(_build_exception_arg(child))
+            if isinstance(child, Tree) and _name(child) == "exception_domain_param":
+                str_node = next((c for c in child.children if isinstance(c, Token) and c.type == "STRING"), None)
+                if str_node:
+                    domain_val = str_node.value
+    return ExceptionDef(name=name_token.value, args=args, loc=loc, domain=domain_val)
 
 
 def _build_exception_arg(tree: Tree) -> ExceptionArg:

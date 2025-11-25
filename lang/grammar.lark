@@ -122,6 +122,7 @@ block_field: struct_field [COMMA]
 exception_def: EXCEPTION NAME "(" [exception_params] ")"
 exception_params: exception_param (COMMA exception_param)*
 exception_param: NAME COLON type_expr
+                | "domain" EQUAL STRING -> exception_domain_param
 
 domain_clause: "domain" NAME
 
