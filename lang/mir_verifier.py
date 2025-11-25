@@ -176,6 +176,9 @@ def _dataflow_defs_types(
                     cur_defs.add(instr.dest)
                     if program and instr.callee in program.functions:
                         cur_types[instr.dest] = program.functions[instr.callee].return_type
+                    if instr.err_dest:
+                        cur_defs.add(instr.err_dest)
+                        cur_types[instr.err_dest] = ERROR
                 elif isinstance(instr, mir.StructInit):
                     cur_defs.add(instr.dest)
                     cur_types[instr.dest] = instr.type
@@ -194,21 +197,21 @@ def _dataflow_defs_types(
             if out_state[name] != (cur_defs, cur_types):
                 out_state[name] = (cur_defs, cur_types)
                 changed = True
-                # propagate to successors
-                succs: List[str] = []
-                term = block.terminator
-                if isinstance(term, mir.Br):
-                    succs = [term.target.target]
-                elif isinstance(term, mir.CondBr):
-                    succs = [term.then.target, term.els.target]
-                for instr in block.instructions:
-                    if isinstance(instr, mir.Call) and instr.normal:
-                        succs.append(instr.normal.target)
-                    if isinstance(instr, mir.Call) and instr.error:
-                        succs.append(instr.error.target)
-                for succ in succs:
-                    if succ not in worklist:
-                        worklist.append(succ)
+            # propagate to successors
+            succs: List[str] = []
+            term = block.terminator
+            if isinstance(term, mir.Br):
+                succs = [term.target.target]
+            elif isinstance(term, mir.CondBr):
+                succs = [term.then.target, term.els.target]
+            for instr in block.instructions:
+                if isinstance(instr, mir.Call) and instr.normal:
+                    succs.append(instr.normal.target)
+                if isinstance(instr, mir.Call) and instr.error:
+                    succs.append(instr.error.target)
+            for succ in succs:
+                if succ not in worklist:
+                    worklist.append(succ)
     return in_state, out_state
 
 
@@ -321,6 +324,10 @@ def _verify_block(
                 _ensure_not_moved_or_dropped(state, arg, block, "call")
             _ensure_not_defined(state, instr.dest, block, "call")
             state.define(instr.dest)
+            if instr.err_dest:
+                _ensure_not_defined(state, instr.err_dest, block, "call")
+                state.define(instr.err_dest)
+                state.set_type(instr.err_dest, ERROR)
             if instr.normal or instr.error:
                 if instr.normal:
                     _ensure_edge(fn, instr.normal, block, source_block=block.name, out_state=out_state, error=False)

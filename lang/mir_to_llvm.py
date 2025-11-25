@@ -92,14 +92,13 @@ def lower_function(fn: mir.Function, func_map: dict[str, ir.Function] | None = N
                     val = builder.extract_value(call_val, 0, name=instr.dest)
                     err = builder.extract_value(call_val, 1, name=f"{instr.dest}_err")
                     env[instr.dest] = val
+                    if instr.err_dest:
+                        env[instr.err_dest] = err
                     is_ok = builder.icmp_signed("==", err, ir.Constant(err.type, None))
                     if instr.normal:
                         _add_phi_incoming(phi_nodes, instr.normal, env, llvm_blocks[bname])
                     if instr.error:
-                        # On error edge, pass the Error* using a temporary SSA name.
-                        err_name = f"{instr.dest}_errptr"
-                        env[err_name] = err
-                        _add_phi_incoming(phi_nodes, mir.Edge(target=instr.error.target, args=[err_name]), env, llvm_blocks[bname])
+                        _add_phi_incoming(phi_nodes, instr.error, env, llvm_blocks[bname])
                     then_bb = llvm_blocks[instr.normal.target] if instr.normal else llvm_blocks[bname]
                     else_bb = llvm_blocks[instr.error.target] if instr.error else llvm_blocks[bname]
                     builder.cbranch(is_ok, then_bb, else_bb)

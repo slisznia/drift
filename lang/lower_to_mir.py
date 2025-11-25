@@ -68,13 +68,15 @@ def lower_straightline(checked: CheckedProgram) -> mir.Program:
                 if not isinstance(expr.func, ast.Name):
                     raise LoweringError("only simple name calls supported in minimal lowering")
                 dest = fresh_val()
+                err_dest = fresh_val()
                 arg_vals: List[str] = []
                 for a in expr.args:
                     v, _, current_block = lower_expr(a, current_block, temp_types)
                     arg_vals.append(v)
-                current_block.instructions.append(mir.Call(dest=dest, callee=expr.func.ident, args=arg_vals))
+                current_block.instructions.append(mir.Call(dest=dest, err_dest=err_dest, callee=expr.func.ident, args=arg_vals))
                 call_ty = _lookup_type(expr.func.ident, block_params, temp_types, checked)
                 temp_types[dest] = call_ty
+                temp_types[err_dest] = ERROR
                 return dest, call_ty, current_block
             if isinstance(expr, ast.Ternary):
                 cond_val, _, current_block = lower_expr(expr.condition, current_block, temp_types)
@@ -124,24 +126,28 @@ def lower_straightline(checked: CheckedProgram) -> mir.Program:
                 join_name = fresh_block("bb_join")
                 norm_param = mir.Param(name=fresh_val(), type=_type_of_literal(0))
                 norm_block = mir.BasicBlock(name=norm_name, params=[norm_param])
-                err_block = mir.BasicBlock(name=err_name)
+                err_param = mir.Param(name=fresh_val(), type=ERROR)
+                err_block = mir.BasicBlock(name=err_name, params=[err_param])
                 join_param = mir.Param(name=f"phi{temp_counter}", type=_type_of_literal(0))
                 join_block = mir.BasicBlock(name=join_name, params=[join_param])
                 blocks[norm_name] = norm_block
                 blocks[err_name] = err_block
                 blocks[join_name] = join_block
                 call_dest = fresh_val()
+                call_err = fresh_val()
                 current_block.instructions.append(
                     mir.Call(
                         dest=call_dest,
+                        err_dest=call_err,
                         callee=expr.expr.func.ident,
                         args=call_args,
                         normal=mir.Edge(target=norm_name, args=[call_dest]),
-                        error=mir.Edge(target=err_name, args=[]),
+                        error=mir.Edge(target=err_name, args=[call_err]),
                     )
                 )
                 call_type = _lookup_type(expr.expr.func.ident, block_params, temp_types, checked)
                 temp_types[call_dest] = call_type
+                temp_types[call_err] = ERROR
                 norm_block.params[0] = mir.Param(name=norm_param.name, type=call_type)
                 norm_block.terminator = mir.Br(target=mir.Edge(target=join_name, args=[norm_param.name]))
                 join_block.params[0] = mir.Param(name=join_param.name, type=call_type)
@@ -228,8 +234,11 @@ def _lookup_type(name: str, params, temps: Dict[str, Type], checked: CheckedProg
             return p.type
     if name in temps:
         return temps[name]
-    if checked and name in checked.functions:
-        return checked.functions[name].signature.return_type
+    if checked:
+        if name in checked.functions:
+            return checked.functions[name].signature.return_type
+        if name in checked.exceptions:
+            return ERROR
     return Type("<unknown>")
 
 
