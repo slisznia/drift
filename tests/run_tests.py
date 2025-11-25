@@ -12,6 +12,7 @@ sys.path.insert(0, str(ROOT))
 PROGRAMS_DIR = ROOT / "tests" / "programs"
 EXPECTATIONS_DIR = ROOT / "tests" / "expectations"
 MIR_CASES_DIR = ROOT / "tests" / "mir_lowering"
+CODEGEN_DIR = ROOT / "tests" / "mir_codegen"
 
 
 def load_expectation(name: str) -> Dict[str, object]:
@@ -36,6 +37,7 @@ def main() -> int:
     failures += _run_runtime_tests()
     failures += _run_mir_tests()
     failures += _run_verifier_negative_tests()
+    failures += _run_codegen_tests()
     return 1 if failures else 0
 
 
@@ -118,6 +120,96 @@ def _run_mir_tests() -> int:
         else:
             print(f"[ok] MIR {name}")
     return failures
+
+
+def _run_codegen_tests() -> int:
+    """End-to-end MIR -> LLVM -> clang-15 link/run tests."""
+    try:
+        from lang import parser, checker  # type: ignore
+        from lang.runtime import builtin_signatures  # type: ignore
+        from lang.lower_to_mir import lower_straightline  # type: ignore
+        from lang.mir_verifier import verify_program  # type: ignore
+        from lang.mir_to_llvm import lower_function  # type: ignore
+    except ModuleNotFoundError as exc:
+        print(f"[skip] codegen tests: {exc}", file=sys.stderr)
+        return 0
+
+    failures = 0
+    out_dir = CODEGEN_DIR / "out"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for case_dir in sorted(CODEGEN_DIR.iterdir()):
+        if not case_dir.is_dir():
+            continue
+        drift_path = case_dir / "input.drift"
+        expect_path = case_dir / "expect.json"
+        harness_path = case_dir / "main.c"
+        if not drift_path.exists() or not expect_path.exists() or not harness_path.exists():
+            continue
+        expected = json.loads(expect_path.read_text())
+        try:
+            llvm_ir, exe_path = _build_and_link(drift_path, harness_path, out_dir, case_dir.name)
+            exit_code, stdout, stderr = _run_exe(exe_path)
+        except FileNotFoundError as exc:
+            print(f"[skip] codegen {case_dir.name}: {exc}", file=sys.stderr)
+            continue
+        except Exception as exc:  # noqa: BLE001
+            failures += 1
+            print(f"[fail] codegen {case_dir.name}: {exc}", file=sys.stderr)
+            continue
+
+        ok = True
+        if expected.get("exit") is not None and exit_code != expected["exit"]:
+            ok = False
+            print(f"[fail] codegen {case_dir.name}: exit {exit_code} != {expected['exit']}", file=sys.stderr)
+        if expected.get("stdout") is not None and stdout != expected["stdout"]:
+            ok = False
+            print(f"[fail] codegen {case_dir.name}: stdout mismatch", file=sys.stderr)
+            print("=== expected ===", file=sys.stderr)
+            print(expected["stdout"], end="", file=sys.stderr)
+            print("=== got ===", file=sys.stderr)
+            print(stdout, end="", file=sys.stderr)
+        if expected.get("stderr") is not None and stderr != expected["stderr"]:
+            ok = False
+            print(f"[fail] codegen {case_dir.name}: stderr mismatch", file=sys.stderr)
+            print("=== expected ===", file=sys.stderr)
+            print(expected["stderr"], end="", file=sys.stderr)
+            print("=== got ===", file=sys.stderr)
+            print(stderr, end="", file=sys.stderr)
+
+        if ok:
+            print(f"[ok] codegen {case_dir.name}")
+        else:
+            failures += 1
+    return failures
+
+
+def _build_and_link(drift_path: Path, harness_path: Path, out_dir: Path, case: str) -> tuple[str, Path]:
+    from lang import parser, checker
+    from lang.runtime import builtin_signatures
+    from lang.lower_to_mir import lower_straightline
+    from lang.mir_verifier import verify_program
+    from lang.mir_to_llvm import lower_function
+    import subprocess
+
+    src = drift_path.read_text()
+    prog = parser.parse_program(src)
+    checked = checker.Checker(builtin_signatures()).check(prog)
+    mir_prog = lower_straightline(checked)
+    verify_program(mir_prog)
+    fn = next(iter(mir_prog.functions.values()))
+    llvm_ir, obj_bytes = lower_function(fn)
+    obj_path = out_dir / f"{case}.o"
+    obj_path.write_bytes(obj_bytes)
+    main_o = out_dir / f"{case}_main.o"
+    exe_path = out_dir / f"{case}_exe"
+    subprocess.run(["clang-15", "-c", str(harness_path), "-o", str(main_o)], check=True)
+    subprocess.run(["clang-15", str(main_o), str(obj_path), "-o", str(exe_path)], check=True)
+    return llvm_ir, exe_path
+
+
+def _run_exe(exe_path: Path) -> tuple[int, str, str]:
+    proc = subprocess.run([str(exe_path)], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    return proc.returncode, proc.stdout, proc.stderr
 
 
 def _run_verifier_negative_tests() -> int:

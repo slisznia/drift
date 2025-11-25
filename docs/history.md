@@ -29,6 +29,7 @@
 - Added an error-edge type negative test to ensure `raise` carries `Error` and error edges have correct types.
 - Added a missing-terminator negative test to enforce that every block ends in a terminator.
 - Added an unknown-block negative test to ensure edges cannot target nonexistent blocks.
+- Added an end-to-end MIR→LLVM→clang codegen test harness (`tests/mir_codegen/`), with a sample add case; harness is skipped when llvmlite/clang-15 are unavailable.
 
 ## 2025-11-20
 - Captured the `lang.core.source_location` helper in the spec as a zero-cost intrinsic that lowers to the current file/line. Kept the data shape explicit (`SourceLocation` struct) so callsites can choose when to capture site metadata, thread it through `^` context bindings, or pass it into exceptions; avoided auto-injecting locations in the runtime to keep logging/telemetry opt-in. (Prototype interpreter still needs the intrinsic wired in.)

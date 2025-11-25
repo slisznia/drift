@@ -3,3 +3,4 @@ lang/__pycache__/
 .venv
 tools/test-llvm/out
 tests/mir_lowering/out
+tests/mir_codegen/out
