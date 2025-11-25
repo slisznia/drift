@@ -446,6 +446,11 @@ class Checker:
             self._expect_type(actual, info.arg_types[arg_name], arg_expr.loc)
             used.append(arg_name)
         for kw in expr.kwargs:
+            if kw.name == "domain":
+                # Allow domain override even if not a declared field.
+                actual = self._check_expr(kw.value, ctx)
+                self._expect_type(actual, STR, kw.value.loc)
+                continue
             if kw.name not in info.arg_types:
                 raise CheckError(
                     f"{kw.value.loc.line}:{kw.value.loc.column}: Exception '{info.name}' has no field '{kw.name}'"

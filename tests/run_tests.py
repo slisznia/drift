@@ -191,7 +191,10 @@ def _build_and_link(drift_path: Path, harness_path: Path, out_dir: Path, case: s
     from lang.mir_to_llvm import lower_function
     import subprocess
 
-    src = drift_path.read_text()
+    # Allow an optional run.drift wrapper; otherwise use input.drift.
+    entry_path = drift_path
+    run_path = drift_path.parent / "run.drift"
+    src = entry_path.read_text()
     prog = parser.parse_program(src)
     checked = checker.Checker(builtin_signatures()).check(prog)
     mir_prog = lower_straightline(checked, source_name=str(drift_path))
