@@ -11,7 +11,7 @@ OUT_WRITELN_SIGNATURE = FunctionSignature(
 ERROR_NEW_SIGNATURE = FunctionSignature("error_new", (STR,), ERROR, effects=None)
 DRIFT_ERROR_NEW_SIGNATURE = FunctionSignature(
     "drift_error_new",
-    (STR, STR, DISPLAYABLE, I64, DISPLAYABLE, I64),
+    (DISPLAYABLE, DISPLAYABLE, I64, STR, STR),
     ERROR,
     effects=None,
 )

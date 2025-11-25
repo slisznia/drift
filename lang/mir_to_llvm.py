@@ -71,6 +71,17 @@ def lower_function(fn: mir.Function, func_map: dict[str, ir.Function] | None = N
                 env[instr.dest] = env[instr.source]
             elif isinstance(instr, mir.Binary):
                 env[instr.dest] = _lower_binary(builder, instr, env)
+            elif isinstance(instr, mir.ArrayInit):
+                if instr.element_type != STR:
+                    raise NotImplementedError("ArrayInit currently supports String elements only")
+                ptrs = [env[e] for e in instr.elements]
+                arr_ty = ir.ArrayType(ir.IntType(8).as_pointer(), len(ptrs))
+                unique_id = len(builder.module.globals)
+                gv = ir.GlobalVariable(builder.module, arr_ty, name=f".arr{unique_id}")
+                gv.linkage = "internal"
+                gv.global_constant = True
+                gv.initializer = ir.Constant(arr_ty, ptrs)
+                env[instr.dest] = gv.bitcast(ir.IntType(8).as_pointer())
             elif isinstance(instr, mir.Call):
                 arg_vals = [env[a] for a in instr.args]
                 if instr.normal or instr.error:
@@ -79,14 +90,10 @@ def lower_function(fn: mir.Function, func_map: dict[str, ir.Function] | None = N
                         if func_map and instr.callee in func_map:
                             callee = func_map[instr.callee]
                         else:
-                            if instr.callee == "drift_error_new":
-                                ret_ty = _llvm_type(ERROR)
-                                callee_ty = ir.FunctionType(ret_ty, [val.type for val in arg_vals])
-                            else:
-                                ret_ty = _llvm_type(fn.return_type)
-                                pair_ty = ir.LiteralStructType([ret_ty, _llvm_type(ERROR)])
-                                arg_tys = [val.type for val in arg_vals]
-                                callee_ty = ir.FunctionType(pair_ty, arg_tys)
+                            ret_ty = _llvm_type(fn.return_type)
+                            pair_ty = ir.LiteralStructType([ret_ty, _llvm_type(ERROR)])
+                            arg_tys = [val.type for val in arg_vals]
+                            callee_ty = ir.FunctionType(pair_ty, arg_tys)
                             callee = ir.Function(llvm_module, callee_ty, name=instr.callee)
                     call_val = builder.call(callee, arg_vals, name=instr.dest)
                     if not isinstance(call_val.type, ir.LiteralStructType):

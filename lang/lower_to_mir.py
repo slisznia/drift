@@ -183,9 +183,6 @@ def lower_straightline(checked: CheckedProgram) -> mir.Program:
                 ):
                     exc_name = stmt.value.func.ident
                     # Build attrs array from kwargs/positional (pos mapped to declared args).
-                    attr_json_val = fresh_val()
-                    attr_count_val = fresh_val()
-                    # For now, serialize only the first msg kwarg/arg into {"msg":"..."}.
                     msg_expr = None
                     domain_expr = None
                     for kw in stmt.value.kwargs:
@@ -198,7 +195,33 @@ def lower_straightline(checked: CheckedProgram) -> mir.Program:
                     if msg_expr is None:
                         msg_expr = ast.Literal(loc=stmt.loc, value=exc_name)
                     msg_val, _, current_block = lower_expr(msg_expr, current_block, temp_types)
-                    # For now, treat event=message, domain from exception info or kw override, and empty attrs/frames (runtime will synthesize msg attr).
+                    # Build deterministic attrs (keys/values) and count
+                    attrs: Dict[str, ast.Expr] = {}
+                    for kw in stmt.value.kwargs:
+                        if kw.name == "domain":
+                            continue
+                        attrs[kw.name] = kw.value
+                    if "msg" not in attrs:
+                        attrs["msg"] = msg_expr
+                    sorted_items = sorted(attrs.items(), key=lambda kv: kv[0])
+                    key_vals: List[str] = []
+                    val_vals: List[str] = []
+                    for k, vexpr in sorted_items:
+                        key_name = fresh_val()
+                        current_block.instructions.append(mir.Const(dest=key_name, type=STR, value=k))
+                        temp_types[key_name] = STR
+                        v_name, _, current_block = lower_expr(vexpr, current_block, temp_types)
+                        key_vals.append(key_name)
+                        val_vals.append(v_name)
+                    keys_arr = fresh_val()
+                    vals_arr = fresh_val()
+                    current_block.instructions.append(mir.ArrayInit(dest=keys_arr, elements=key_vals, element_type=STR))
+                    current_block.instructions.append(mir.ArrayInit(dest=vals_arr, elements=val_vals, element_type=STR))
+                    temp_types[keys_arr] = STR
+                    temp_types[vals_arr] = STR
+                    attr_count_val = fresh_val()
+                    current_block.instructions.append(mir.Const(dest=attr_count_val, type=I64, value=len(sorted_items)))
+                    temp_types[attr_count_val] = I64
                     evt_val = msg_val
                     dom_val = fresh_val()
                     exc_domain = checked.exceptions[exc_name].domain if exc_name in checked.exceptions else None
@@ -209,24 +232,12 @@ def lower_straightline(checked: CheckedProgram) -> mir.Program:
                         domain_val = exc_domain if exc_domain is not None else "main"
                         current_block.instructions.append(mir.Const(dest=dom_val, type=STR, value=domain_val))
                     temp_types[dom_val] = STR
-                    attr_json_val = fresh_val()
-                    attr_count_val = fresh_val()
-                    frames_val = fresh_val()
-                    frame_count_val = fresh_val()
-                    current_block.instructions.append(mir.Const(dest=attr_json_val, type=STR, value=None))
-                    current_block.instructions.append(mir.Const(dest=attr_count_val, type=I64, value=0))
-                    current_block.instructions.append(mir.Const(dest=frames_val, type=STR, value=None))
-                    current_block.instructions.append(mir.Const(dest=frame_count_val, type=I64, value=0))
-                    temp_types[attr_json_val] = STR
-                    temp_types[attr_count_val] = I64
-                    temp_types[frames_val] = STR
-                    temp_types[frame_count_val] = I64
                     err_tmp = fresh_val()
                     current_block.instructions.append(
                         mir.Call(
                             dest=err_tmp,
                             callee="drift_error_new",
-                            args=[evt_val, dom_val, attr_json_val, attr_count_val, frames_val, frame_count_val],
+                            args=[keys_arr, vals_arr, attr_count_val, evt_val, dom_val],
                         )
                     )
                     temp_types[err_tmp] = ERROR
