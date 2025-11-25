@@ -203,6 +203,7 @@ def lower_straightline(checked: CheckedProgram) -> mir.Program:
                         attrs[kw.name] = kw.value
                     if "msg" not in attrs:
                         attrs["msg"] = msg_expr
+                    # deterministically ordered by key
                     sorted_items = sorted(attrs.items(), key=lambda kv: kv[0])
                     key_vals: List[str] = []
                     val_vals: List[str] = []

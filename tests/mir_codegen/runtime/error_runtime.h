@@ -9,6 +9,7 @@ struct Error {
     DriftStr* keys;
     DriftStr* values;
     size_t attr_count;
+    char* diag;
 };
 
 struct Pair {

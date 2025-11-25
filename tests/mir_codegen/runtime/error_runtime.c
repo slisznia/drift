@@ -11,25 +11,43 @@ struct Error* drift_error_new(DriftStr* keys, DriftStr* values, size_t attr_coun
     err->attr_count = attr_count;
     err->keys = keys;
     err->values = values;
+    /* Build a diagnostic string including all attrs. */
+    size_t total = 2; // {}
+    for (size_t i = 0; i < attr_count; i++) {
+        const char* k = err->keys[i] ? err->keys[i] : "unknown";
+        const char* v = err->values[i] ? err->values[i] : "unknown";
+        total += strlen(k) + strlen(v) + 7; // quotes, colon, comma
+    }
+    err->diag = (char*)malloc(total + 1);
+    if (!err->diag) {
+        free(err);
+        return NULL;
+    }
+    char* p = err->diag;
+    *p++ = '{';
+    for (size_t i = 0; i < attr_count; i++) {
+        const char* k = err->keys[i] ? err->keys[i] : "unknown";
+        const char* v = err->values[i] ? err->values[i] : "unknown";
+        int n = snprintf(p, total - (p - err->diag), "\"%s\":\"%s\"", k, v);
+        p += n;
+        if (i + 1 < attr_count) {
+            *p++ = ',';
+        }
+    }
+    *p++ = '}';
+    *p = '\0';
     return err;
 }
 
 const char* error_to_cstr(struct Error* err) {
     if (!err) return NULL;
-    static char buf[256];
-    if (err->attr_count > 0 && err->keys && err->values) {
-        snprintf(buf, sizeof(buf), "{\"%s\":\"%s\"}", err->keys[0], err->values[0] ? err->values[0] : "unknown");
-        return buf;
-    }
-    if (err->event) {
-        snprintf(buf, sizeof(buf), "{\"msg\":\"%s\"}", err->event);
-        return buf;
-    }
+    if (err->diag) return err->diag;
     return "{\"msg\":\"unknown\"}";
 }
 
 void error_free(struct Error* err) {
     if (!err) return;
+    free(err->diag);
     free(err);
 }
 

@@ -1,0 +1,5 @@
+{
+  "exit": 1,
+  "stdout": "",
+  "stderr": "{\"a\":\"aa\",\"b\":\"bb\",\"c\":\"cc\",\"msg\":\"Attrs\"}\n"
+}
