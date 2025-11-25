@@ -6,6 +6,7 @@
 - Switched codegen to PIC/PIE: LLVM target machine uses `reloc="pic"`, C stubs/harness are built with `-fPIC`, and we link with `-pie` so we no longer need `-no-pie` or see text-relocation warnings.
 - Unskipped the error-path codegen test and added a success-path sibling (`tests/mir_codegen/error_path_ok`) so both error and non-error return flows are exercised end-to-end.
 - Defined a stable Error C ABI in the spec (UTF-8 strings, attrs/frames layout, ownership rules) and wired runtime stubs to match (`drift_error_new`, owned diagnostics, no static buffers). `throw` lowering now targets `drift_error_new`, and MIR→LLVM treats it as returning `Error*`. Added try/else and try/catch codegen cases and updated MIR goldens accordingly; all codegen tests pass.
+- Added frame-array plumbing: lowering captures throw-site frames (file basename, func, line) and passes them to `drift_error_new`; MIR→LLVM supports string/int64 array init; runtime stubs store frames and free them; added `error_push_frame` hook for future deeper stacks. Added attr-array codegen tests (including large sets) to validate deterministic attrs and frame handling. Spec now notes the hidden ctx must never affect the public C ABI.
 - Extended MIR lowering to handle `try/catch` statements: errors in the try body branch to a catch block (binder typed as `Error`), with a new MIR golden `tests/mir_lowering/try_catch.mir` covering the shape.
 
 ## 2025-11-24

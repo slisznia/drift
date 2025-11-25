@@ -50,8 +50,8 @@ class State:
 def _call_terminator(block: mir.BasicBlock) -> Optional[mir.Call]:
     if block.instructions:
         last = block.instructions[-1]
-        if isinstance(last, mir.Call) and (last.normal or last.error):
-            return last
+        if isinstance(last, (mir.Call, mir.CallWithCtx)) and (getattr(last, "normal", None) or getattr(last, "error", None)):
+            return last  # type: ignore[return-value]
     return None
 
 
@@ -74,7 +74,7 @@ def verify_function(fn: mir.Function, program: mir.Program | None = None) -> Non
         for p in block.params:
             def_blocks.setdefault(p.name, set()).add(name)
         for instr in block.instructions:
-            if isinstance(instr, (mir.Const, mir.Move, mir.Copy, mir.Call, mir.StructInit, mir.FieldGet, mir.ArrayInit, mir.ArrayGet, mir.Unary, mir.Binary)):
+            if isinstance(instr, (mir.Const, mir.Move, mir.Copy, mir.Call, mir.CallWithCtx, mir.StructInit, mir.FieldGet, mir.ArrayInit, mir.ArrayGet, mir.Unary, mir.Binary)):
                 def_blocks.setdefault(getattr(instr, "dest", None), set()).add(name) if getattr(instr, "dest", None) else None
     in_state, out_state = _dataflow_defs_types(fn, program)
     incoming = _compute_incoming_args(fn, out_state)
@@ -172,7 +172,7 @@ def _dataflow_defs_types(
                     src_ty = cur_types.get(instr.source)
                     if src_ty:
                         cur_types[instr.dest] = src_ty
-                elif isinstance(instr, mir.Call):
+                elif isinstance(instr, (mir.Call, mir.CallWithCtx)):
                     cur_defs.add(instr.dest)
                     if program and instr.callee in program.functions:
                         cur_types[instr.dest] = program.functions[instr.callee].return_type
@@ -318,7 +318,7 @@ def _verify_block(
             _ensure_not_moved_or_dropped(state, instr.source, block, "copy")
             _ensure_not_defined(state, instr.dest, block, "copy")
             state.define(instr.dest)
-        elif isinstance(instr, mir.Call):
+        elif isinstance(instr, (mir.Call, mir.CallWithCtx)):
             for arg in instr.args:
                 _ensure_defined(state, arg, block, "call", None, dominators, def_blocks)
                 _ensure_not_moved_or_dropped(state, arg, block, "call")

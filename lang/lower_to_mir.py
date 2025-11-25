@@ -73,7 +73,9 @@ def lower_straightline(checked: CheckedProgram, source_name: str | None = None) 
                 for a in expr.args:
                     v, _, current_block = lower_expr(a, current_block, temp_types)
                     arg_vals.append(v)
-                current_block.instructions.append(mir.Call(dest=dest, err_dest=err_dest, callee=expr.func.ident, args=arg_vals))
+                current_block.instructions.append(
+                    mir.Call(dest=dest, err_dest=err_dest, callee=expr.func.ident, args=arg_vals)
+                )
                 call_ty = _lookup_type(expr.func.ident, block_params, temp_types, checked)
                 temp_types[dest] = call_ty
                 temp_types[err_dest] = ERROR

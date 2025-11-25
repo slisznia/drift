@@ -128,6 +128,7 @@ See also: `docs/design-first-afm-then-ssa.md` for the design path that led to th
 - Canonicalization: attrs are stored in deterministic order; strings are null-terminated; the struct alignment/layout is fixed for signing/backcompat. No external C libraries are required; the header is self-contained and C-ABI safe.
 - Helper APIs (C ABI): `error_new(event, domain, attrs, attr_count, frames, frame_count) -> Error*`, `error_to_cstr(Error*) -> const char*` (preformatted diagnostic stored in the error), `error_free(Error*)`. The `error_to_cstr` result is owned by the error object, valid until `error_free`, and must not be freed by callers (thread-safe to read; no static buffer).
 - Encoding: all strings in `DriftError` (event, domain, attr keys/values, frames) are UTF-8, null-terminated. Callers must not assume any other encoding.
+- ABI separation: internal Drift→Drift calls may carry an extra context/error handle for frame capture, but external `extern "C"` exports keep the stable C ABI (`{T, Error*}` or `T`). The hidden ctx must never alter the published C interface.
 - `throw Event(args...)` lowers to construction of this `Error*`; `try/catch` moves the pointer along error edges; calls/ops can raise; `raise` terminates the function with the error path. Error edges carry the `Error*` value; handlers decide whether to free or propagate.
 
 ## Serialization

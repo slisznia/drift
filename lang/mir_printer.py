@@ -31,7 +31,7 @@ def format_instr(instr: mir.Instruction) -> str:
         return f"  {instr.dest} = move {instr.source}"
     if isinstance(instr, mir.Copy):
         return f"  {instr.dest} = copy {instr.source}"
-    if isinstance(instr, mir.Call):
+    if isinstance(instr, (mir.Call, mir.CallWithCtx)):
         args = ", ".join(instr.args)
         suffix = ""
         if instr.normal or instr.error:

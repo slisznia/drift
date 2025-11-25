@@ -32,6 +32,18 @@ class Edge:
 class Instruction:
     pass
 
+@dataclass(frozen=True)
+class CallWithCtx(Instruction):
+    dest: Value
+    ctx_dest: Value
+    callee: str
+    args: List[Value]
+    ctx_arg: Optional[Value] = None
+    err_dest: Optional[Value] = None
+    normal: Optional[Edge] = None
+    error: Optional[Edge] = None
+    loc: Location = Location()
+
 
 @dataclass(frozen=True)
 class Const(Instruction):
