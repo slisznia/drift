@@ -61,6 +61,7 @@ def lower_function(fn: mir.Function, func_map: dict[str, ir.Function] | None = N
         if bname != entry_name:
             for param in block.params:
                 env[param.name] = phi_nodes[bname][param.name]
+        call_terminator = None
         for instr in block.instructions:
             if isinstance(instr, mir.Const):
                 env[instr.dest] = _const(builder, instr.type, instr.value)
@@ -107,6 +108,7 @@ def lower_function(fn: mir.Function, func_map: dict[str, ir.Function] | None = N
                         worklist.append(instr.normal.target)
                     if instr.error:
                         worklist.append(instr.error.target)
+                    call_terminator = instr
                     break  # terminates this block
                 else:
                     callee = llvm_module.globals.get(instr.callee)
@@ -122,6 +124,9 @@ def lower_function(fn: mir.Function, func_map: dict[str, ir.Function] | None = N
                     env[instr.dest] = call_val
             else:
                 raise NotImplementedError(f"unsupported instruction: {instr}")
+        if call_terminator:
+            envs[bname] = env
+            continue
         term = block.terminator
         if isinstance(term, mir.Br):
             _add_phi_incoming(phi_nodes, term.target, env, llvm_blocks[bname])

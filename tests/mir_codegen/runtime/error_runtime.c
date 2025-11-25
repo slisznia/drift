@@ -1,10 +1,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
-
-struct Error {
-    char* json;
-};
+#include "error_runtime.h"
 
 struct Error* error_new(const char* msg) {
     struct Error* err = (struct Error*)malloc(sizeof(struct Error));

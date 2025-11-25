@@ -1,16 +1,7 @@
 #include <stdio.h>
-#include <stdint.h>
-#include <stdlib.h>
-
-struct Error;
-struct Pair {
-    int64_t val;
-    struct Error* err;
-};
+#include "../runtime/error_runtime.h"
 
 extern struct Pair maybe_fail(int64_t);
-extern const char* error_to_cstr(struct Error*);
-extern void error_free(struct Error*);
 
 int main(void) {
     struct Pair p = maybe_fail(0);

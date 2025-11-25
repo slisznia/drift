@@ -1,0 +1,10 @@
+exception Oops(msg: String)
+
+fn main() returns Int64 {
+    try {
+        throw Oops(msg = "bad")
+    } catch Oops(err) {
+        return 7
+    }
+    return 1
+}

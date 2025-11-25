@@ -157,7 +157,12 @@ def lower_straightline(checked: CheckedProgram) -> mir.Program:
                 return join_param.name, temp_types[call_dest], join_block
             raise LoweringError(f"unsupported expression: {expr}")
 
-        def lower_stmt(stmt: ast.Stmt, current_block: mir.BasicBlock, temp_types: Dict[str, Type]) -> Optional[mir.BasicBlock]:
+        def lower_stmt(
+            stmt: ast.Stmt,
+            current_block: mir.BasicBlock,
+            temp_types: Dict[str, Type],
+            err_target: str | None = None,
+        ) -> Optional[mir.BasicBlock]:
             if isinstance(stmt, ast.ReturnStmt):
                 if stmt.value is None:
                     current_block.terminator = mir.Return()
@@ -166,7 +171,9 @@ def lower_straightline(checked: CheckedProgram) -> mir.Program:
                     current_block.terminator = mir.Return(value=val)
                 return None
             if isinstance(stmt, ast.IfStmt):
-                return _lower_if(stmt, current_block, temp_types)
+                return _lower_if(stmt, current_block, temp_types, err_target)
+            if isinstance(stmt, ast.TryStmt):
+                return _lower_try(stmt, current_block, temp_types, err_target)
             if isinstance(stmt, ast.RaiseStmt):
                 # Special-case raising an exception constructor: build an Error* via error_new.
                 if (
@@ -197,22 +204,38 @@ def lower_straightline(checked: CheckedProgram) -> mir.Program:
                         mir.Call(dest=err_tmp, callee="error_new", args=[msg_val])
                     )
                     temp_types[err_tmp] = ERROR
-                    current_block.terminator = mir.Raise(error=err_tmp)
+                    if err_target:
+                        current_block.terminator = mir.Br(target=mir.Edge(target=err_target, args=[err_tmp]))
+                    else:
+                        current_block.terminator = mir.Raise(error=err_tmp)
                     return None
                 val, _, current_block = lower_expr(stmt.value, current_block, temp_types)
-                current_block.terminator = mir.Raise(error=val)
+                if err_target:
+                    current_block.terminator = mir.Br(target=mir.Edge(target=err_target, args=[val]))
+                else:
+                    current_block.terminator = mir.Raise(error=val)
                 return None
             raise LoweringError(f"unsupported statement: {stmt}")
 
-        def lower_block(stmts: List[ast.Stmt], current_block: mir.BasicBlock, temp_types: Dict[str, Type]) -> Optional[mir.BasicBlock]:
+        def lower_block(
+            stmts: List[ast.Stmt],
+            current_block: mir.BasicBlock,
+            temp_types: Dict[str, Type],
+            err_target: str | None = None,
+        ) -> Optional[mir.BasicBlock]:
             block = current_block
             for stmt in stmts:
-                block = lower_stmt(stmt, block, temp_types)
+                block = lower_stmt(stmt, block, temp_types, err_target=err_target)
                 if block is None:
                     return None
             return block
 
-        def _lower_if(stmt: ast.IfStmt, current_block: mir.BasicBlock, temp_types: Dict[str, Type]) -> Optional[mir.BasicBlock]:
+        def _lower_if(
+            stmt: ast.IfStmt,
+            current_block: mir.BasicBlock,
+            temp_types: Dict[str, Type],
+            err_target: str | None = None,
+        ) -> Optional[mir.BasicBlock]:
             cond_val, _, current_block = lower_expr(stmt.condition, current_block, temp_types)
             then_name = fresh_block("bb_then")
             else_name = fresh_block("bb_else")
@@ -222,8 +245,8 @@ def lower_straightline(checked: CheckedProgram) -> mir.Program:
             blocks[else_name] = else_block
             current_block.terminator = mir.CondBr(cond=cond_val, then=mir.Edge(target=then_name), els=mir.Edge(target=else_name))
 
-            end_then = lower_block(stmt.then_block.statements, then_block, temp_types.copy())
-            end_else = lower_block(stmt.else_block.statements, else_block, temp_types.copy()) if stmt.else_block else else_block
+            end_then = lower_block(stmt.then_block.statements, then_block, temp_types.copy(), err_target=err_target)
+            end_else = lower_block(stmt.else_block.statements, else_block, temp_types.copy(), err_target=err_target) if stmt.else_block else else_block
 
             if end_then is None and end_else is None:
                 return None
@@ -236,6 +259,51 @@ def lower_straightline(checked: CheckedProgram) -> mir.Program:
                 end_then.terminator = mir.Br(target=mir.Edge(target=join_name))
             if end_else is not None:
                 end_else.terminator = mir.Br(target=mir.Edge(target=join_name))
+            return join_block
+
+        def _lower_try(
+            stmt: ast.TryStmt,
+            current_block: mir.BasicBlock,
+            temp_types: Dict[str, Type],
+            outer_err_target: str | None = None,
+        ) -> Optional[mir.BasicBlock]:
+            body_name = fresh_block("bb_try_body")
+            body_block = mir.BasicBlock(name=body_name)
+            blocks[body_name] = body_block
+            current_block.terminator = mir.Br(target=mir.Edge(target=body_name))
+
+            # Build catch blocks; route errors to the first catch (no pattern matching yet).
+            catch_blocks: List[tuple[ast.CatchClause, mir.BasicBlock]] = []
+            for clause in stmt.catches:
+                cb_name = fresh_block("bb_catch")
+                binder = clause.binder or fresh_val()
+                params = [mir.Param(name=binder, type=ERROR)]
+                cb = mir.BasicBlock(name=cb_name, params=params)
+                blocks[cb_name] = cb
+                catch_blocks.append((clause, cb))
+
+            catch_entry = catch_blocks[0][1].name if catch_blocks else None
+            end_body = lower_block(stmt.body.statements, body_block, temp_types.copy(), err_target=catch_entry)
+
+            fallthroughs: List[mir.BasicBlock] = []
+            if end_body is not None:
+                fallthroughs.append(end_body)
+            for clause, cb in catch_blocks:
+                ct_types = temp_types.copy()
+                if clause.binder:
+                    ct_types[clause.binder] = ERROR
+                end_cb = lower_block(clause.block.statements, cb, ct_types, err_target=outer_err_target)
+                if end_cb is not None:
+                    fallthroughs.append(end_cb)
+
+            if not fallthroughs:
+                return None
+            join_name = fresh_block("bb_after_try")
+            join_block = mir.BasicBlock(name=join_name)
+            blocks[join_name] = join_block
+            for fb in fallthroughs:
+                if fb.terminator is None:
+                    fb.terminator = mir.Br(target=mir.Edge(target=join_name))
             return join_block
 
         temp_types: Dict[str, Type] = {}

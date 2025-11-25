@@ -196,11 +196,14 @@ def _build_and_link(drift_path: Path, harness_path: Path, out_dir: Path, case: s
     checked = checker.Checker(builtin_signatures()).check(prog)
     mir_prog = lower_straightline(checked)
     verify_program(mir_prog)
-    fn = next(iter(mir_prog.functions.values()))
-    llvm_ir, obj_bytes = lower_function(fn)
-    # Write generated object
-    obj_path = out_dir / f"{case}.o"
-    obj_path.write_bytes(obj_bytes)
+    llvm_ir = ""
+    obj_paths: list[Path] = []
+    for fn in mir_prog.functions.values():
+        ir_text, obj_bytes = lower_function(fn)
+        llvm_ir = ir_text  # keep last for logging
+        obj_path = out_dir / f"{case}_{fn.name}.o"
+        obj_path.write_bytes(obj_bytes)
+        obj_paths.append(obj_path)
     # Compile shared runtime stubs (PIC for PIE linking)
     runtime_dir = CODEGEN_DIR / "runtime"
     c_objects = []
@@ -215,7 +218,7 @@ def _build_and_link(drift_path: Path, harness_path: Path, out_dir: Path, case: s
         c_objects.append(str(c_obj))
     exe_path = out_dir / f"{case}_exe"
     # Link as PIE now that objects are PIC.
-    subprocess.run(["clang-15", "-pie", *c_objects, str(obj_path), "-o", str(exe_path)], check=True)
+    subprocess.run(["clang-15", "-pie", *c_objects, *(str(p) for p in obj_paths), "-o", str(exe_path)], check=True)
     return llvm_ir, exe_path
 
 

@@ -1,0 +1,12 @@
+exception Oops(msg: String)
+
+fn maybe_fail(x: Int64) returns Int64 {
+    return try foo(x) else 7
+}
+
+fn foo(x: Int64) returns Int64 {
+    if x == 0 {
+        throw Oops(msg = "bad")
+    }
+    return x + 1
+}
