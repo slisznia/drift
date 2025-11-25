@@ -8,6 +8,7 @@ from ..types import DISPLAYABLE, ERROR, STR, UNIT, FunctionSignature
 OUT_WRITELN_SIGNATURE = FunctionSignature(
     "out.writeln", (DISPLAYABLE,), UNIT, effects=None
 )
+ERROR_NEW_SIGNATURE = FunctionSignature("error_new", (STR,), ERROR, effects=None)
 
 
 @dataclass
@@ -76,6 +77,14 @@ def _builtin_error(ctx: RuntimeContext, args: Sequence[object], kwargs: Dict[str
     return ErrorValue(message=message, domain=domain, code=code, attrs=dict(attrs), stack=location)
 
 
+def _builtin_error_new(ctx: RuntimeContext, args: Sequence[object], kwargs: Dict[str, object]) -> object:
+    """Runtime stub for codegen parity; mirrors error_new C helper."""
+    message = args[0]
+    if not isinstance(message, str):
+        raise TypeError("error_new(message) requires a string message")
+    return ErrorValue(message=str(message))
+
+
 BUILTINS: Mapping[str, BuiltinFunction] = {
     "print": BuiltinFunction(
         signature=FunctionSignature("print", (DISPLAYABLE,), UNIT, effects=None),
@@ -90,6 +99,10 @@ BUILTINS: Mapping[str, BuiltinFunction] = {
             allowed_kwargs=frozenset({"domain", "code", "attrs"}),
         ),
         impl=_builtin_error,
+    ),
+    "error_new": BuiltinFunction(
+        signature=ERROR_NEW_SIGNATURE,
+        impl=_builtin_error_new,
     ),
 }
 

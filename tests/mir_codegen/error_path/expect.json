@@ -1,5 +1,5 @@
 {
   "exit": 1,
   "stdout": "",
-  "stderr": "bad\n"
+  "stderr": "{\"msg\":\"bad\"}\n"
 }

@@ -43,7 +43,8 @@ def lower_function(fn: mir.Function, func_map: dict[str, ir.Function] | None = N
             phi = builder.phi(_llvm_type(param.type), name=param.name)
             phi_nodes[name][param.name] = phi
 
-    envs: dict[str, dict[str, ir.Value]] = {}
+    base_env: dict[str, ir.Value] = {p.name: llvm_fn.args[idx] for idx, p in enumerate(fn.params)}
+    envs: dict[str, dict[str, ir.Value]] = {fn.entry: dict(base_env)}
     worklist = [fn.entry]
     visited = set()
 
@@ -54,12 +55,10 @@ def lower_function(fn: mir.Function, func_map: dict[str, ir.Function] | None = N
         visited.add(bname)
         block = fn.blocks[bname]
         builder = ir.IRBuilder(llvm_blocks[bname])
-        env: dict[str, ir.Value] = {}
-        # params
-        if bname == entry_name:
-            for p, arg in zip(fn.params, llvm_fn.args):
-                env[p.name] = arg
-        else:
+        # Seed with any incoming env (or the base params if unseen).
+        env: dict[str, ir.Value] = dict(envs.get(bname, base_env))
+        # params (phi nodes) override if present for this block.
+        if bname != entry_name:
             for param in block.params:
                 env[param.name] = phi_nodes[bname][param.name]
         for instr in block.instructions:
@@ -72,21 +71,19 @@ def lower_function(fn: mir.Function, func_map: dict[str, ir.Function] | None = N
             elif isinstance(instr, mir.Binary):
                 env[instr.dest] = _lower_binary(builder, instr, env)
             elif isinstance(instr, mir.Call):
-                # Direct call returning {val, err*} if needed.
-                callee = llvm_module.globals.get(instr.callee)
-                if callee is None or not isinstance(callee, ir.Function):
-                    # Fall back to a pair return; if func_map provided, use that for signature.
-                    if func_map and instr.callee in func_map:
-                        callee = func_map[instr.callee]
-                    else:
-                        ret_ty = _llvm_type(fn.return_type)
-                        pair_ty = ir.LiteralStructType([ret_ty, _llvm_type(ERROR)])
-                        arg_tys = [env[a].type for a in instr.args]
-                        callee_ty = ir.FunctionType(pair_ty, arg_tys)
-                        callee = ir.Function(llvm_module, callee_ty, name=instr.callee)
                 arg_vals = [env[a] for a in instr.args]
-                call_val = builder.call(callee, arg_vals, name=instr.dest)
                 if instr.normal or instr.error:
+                    callee = llvm_module.globals.get(instr.callee)
+                    if callee is None or not isinstance(callee, ir.Function):
+                        if func_map and instr.callee in func_map:
+                            callee = func_map[instr.callee]
+                        else:
+                            ret_ty = _llvm_type(fn.return_type)
+                            pair_ty = ir.LiteralStructType([ret_ty, _llvm_type(ERROR)])
+                            arg_tys = [val.type for val in arg_vals]
+                            callee_ty = ir.FunctionType(pair_ty, arg_tys)
+                            callee = ir.Function(llvm_module, callee_ty, name=instr.callee)
+                    call_val = builder.call(callee, arg_vals, name=instr.dest)
                     if not isinstance(call_val.type, ir.LiteralStructType):
                         raise NotImplementedError("expected pair return for call with error edges")
                     val = builder.extract_value(call_val, 0, name=instr.dest)
@@ -103,22 +100,40 @@ def lower_function(fn: mir.Function, func_map: dict[str, ir.Function] | None = N
                     else_bb = llvm_blocks[instr.error.target] if instr.error else llvm_blocks[bname]
                     builder.cbranch(is_ok, then_bb, else_bb)
                     if instr.normal:
+                        envs.setdefault(instr.normal.target, dict(env))
+                    if instr.error:
+                        envs.setdefault(instr.error.target, dict(env))
+                    if instr.normal:
                         worklist.append(instr.normal.target)
                     if instr.error:
                         worklist.append(instr.error.target)
                     break  # terminates this block
-                env[instr.dest] = call_val
+                else:
+                    callee = llvm_module.globals.get(instr.callee)
+                    if callee is None or not isinstance(callee, ir.Function):
+                        if func_map and instr.callee in func_map:
+                            callee = func_map[instr.callee]
+                        else:
+                            ret_ty = _llvm_type(ERROR if instr.callee in {"error_new", "error"} else fn.return_type)
+                            arg_tys = [val.type for val in arg_vals]
+                            callee_ty = ir.FunctionType(ret_ty, arg_tys)
+                            callee = ir.Function(llvm_module, callee_ty, name=instr.callee)
+                    call_val = builder.call(callee, arg_vals, name=instr.dest)
+                    env[instr.dest] = call_val
             else:
                 raise NotImplementedError(f"unsupported instruction: {instr}")
         term = block.terminator
         if isinstance(term, mir.Br):
             _add_phi_incoming(phi_nodes, term.target, env, llvm_blocks[bname])
             builder.branch(llvm_blocks[term.target.target])
+            envs.setdefault(term.target.target, dict(env))
             worklist.append(term.target.target)
         elif isinstance(term, mir.CondBr):
             _add_phi_incoming(phi_nodes, term.then, env, llvm_blocks[bname])
             _add_phi_incoming(phi_nodes, term.els, env, llvm_blocks[bname])
             builder.cbranch(env[term.cond], llvm_blocks[term.then.target], llvm_blocks[term.els.target])
+            envs.setdefault(term.then.target, dict(env))
+            envs.setdefault(term.els.target, dict(env))
             worklist.extend([term.then.target, term.els.target])
         elif isinstance(term, mir.Return):
             val = env[term.value] if term.value else ir.Constant(_llvm_type(fn.return_type), None)

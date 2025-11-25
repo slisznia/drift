@@ -168,6 +168,37 @@ def lower_straightline(checked: CheckedProgram) -> mir.Program:
             if isinstance(stmt, ast.IfStmt):
                 return _lower_if(stmt, current_block, temp_types)
             if isinstance(stmt, ast.RaiseStmt):
+                # Special-case raising an exception constructor: build an Error* via error_new.
+                if (
+                    isinstance(stmt.value, ast.Call)
+                    and isinstance(stmt.value.func, ast.Name)
+                    and stmt.value.func.ident in checked.exceptions
+                ):
+                    exc_name = stmt.value.func.ident
+                    msg_expr = None
+                    # Prefer a kwarg named msg if present, else first positional.
+                    for kw in stmt.value.kwargs:
+                        if kw.name == "msg":
+                            msg_expr = kw.value
+                            break
+                    if msg_expr is None and stmt.value.args:
+                        msg_expr = stmt.value.args[0]
+                    if msg_expr is None:
+                        # Fallback to a constant with the exception name.
+                        msg_val = fresh_val()
+                        current_block.instructions.append(
+                            mir.Const(dest=msg_val, type=STR, value=exc_name)
+                        )
+                        temp_types[msg_val] = STR
+                    else:
+                        msg_val, _, current_block = lower_expr(msg_expr, current_block, temp_types)
+                    err_tmp = fresh_val()
+                    current_block.instructions.append(
+                        mir.Call(dest=err_tmp, callee="error_new", args=[msg_val])
+                    )
+                    temp_types[err_tmp] = ERROR
+                    current_block.terminator = mir.Raise(error=err_tmp)
+                    return None
                 val, _, current_block = lower_expr(stmt.value, current_block, temp_types)
                 current_block.terminator = mir.Raise(error=val)
                 return None

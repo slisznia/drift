@@ -4,3 +4,4 @@ lang/__pycache__/
 tools/test-llvm/out
 tests/mir_lowering/out
 tests/mir_codegen/out
+__pycache__
