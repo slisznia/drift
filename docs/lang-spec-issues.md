@@ -1,21 +1,3 @@
-## 6. Trait grammar cleanup (Chapter 5 + Appendix C)
-
-### Tasks:
-
-* Rewrite Appendix C to match actual syntax:
-
-  * `require T is Trait`
-  * `require Self is Trait`
-  * Trait guards: `if T is Trait`
-* Remove:
-
-  * `where`
-  * `Self has`
-  * Old grammar references
-* Update FnDef grammar if needed.
-
----
-
 ## 7. Pipeline operator formal spec (Chapter 15)
 
 ### Tasks:

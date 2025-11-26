@@ -46,6 +46,7 @@ Drift expressions largely follow a C-style surface with explicit ownership rules
 - Unary operators: `-x`, `not x`, `!x`
 - Binary operators: `+`, `-`, `*`, `/`, comparisons (`<`, `<=`, `>`, `>=`, `==`, `!=`), boolean (`and`, `or`)
 - Ternary conditional: `cond ? then_expr : else_expr` (lower precedence than `or`; `cond` must be `Bool`, and both arms must have the same type)
+- Pipeline: `lhs >> stage` (left-associative; lower precedence than ternary/`or`; stages are calls/idents)
 - Move operator: `x->` moves ownership
 - Array literals: `[1, 2, 3]`
 - String concatenation uses `+`
@@ -1261,6 +1262,8 @@ try {
 Keywords and literals are reserved and cannot be used as identifiers (functions, variables, modules, structs, exceptions, etc.):  
 `fn`, `val`, `var`, `returns`, `if`, `else`, `while`, `break`, `continue`, `try`, `catch`, `throw`, `raise`, `return`, `exception`, `import`, `module`, `true`, `false`, `not`, `and`, `or`, plus language/FFI/legacy keywords (`auto`, `pragma`, `bool`, `int`, `float`, `string`, `void`, `abstract`, `assert`, `boolean`, `byte`, `case`, `char`, `class`, `const`, `default`, `do`, `double`, `enum`, `extends`, `final`, `finally`, `for`, `goto`, `implements`, `instanceof`, `interface`, `long`, `native`, `new`, `package`, `private`, `protected`, `public`, `short`, `static`, `strictfp`, `super`, `switch`, `synchronized`, `this`, `throws`, `transient`, `volatile`).
 
+**Operator tokens (reserved):** `+`, `-`, `*`, `/`, `%`, `==`, `!=`, `<`, `<=`, `>`, `>=`, `and`, `or`, `not`, `? :`, `>>` (pipeline), `<<`, `|>`, `<|`, indexing brackets `[]`, and member access `.`. These participate in precedence/associativity rules; identifiers cannot reuse them.
+
 ## 10. Variant types (`variant`)
 
 Drift’s `variant` keyword defines **tagged unions**: a value that is exactly one of several named alternatives (variants). Each alternative may carry its own fields, and the compiler enforces exhaustive handling when you `match` on the value.
@@ -1983,7 +1986,7 @@ This distinction becomes especially clear in pipelines (`>>`), where each stage 
 ### Pipeline behavior
 
 The pipeline operator `>>` is **ownership-aware**.  
-It automatically determines how each stage interacts based on the callee’s parameter type:
+It is left-associative and automatically determines how each stage interacts based on the callee’s parameter type:
 
 ```drift
 fn fill(f: ref mut File) returns Void { /* mutate */ }
@@ -1999,6 +2002,7 @@ open("x")
 - **Mutator stages** borrow temporarily and return the same owner.
 - **Transformer stages** consume and return new ownership.
 - **Finalizer stages** consume and end the pipeline.
+- **Desugaring intuition:** `x >> f` behaves like `f(x)`, and `x >> g(a, b)` behaves like `g(x, a, b)`. Pipelines are left-associative, so `a >> f >> g` becomes `g(f(a))`. Ownership follows the parameter types of each stage (borrow vs move).
 
 At the end of scope, if the value is still owned (not consumed by a finalizer), RAII automatically calls its destructor.
 
@@ -2922,6 +2926,10 @@ Stmt        ::= ValDecl | VarDecl | ExprStmt | IfStmt | WhileStmt | ForStmt
 ValDecl     ::= "val" Ident ":" Ty "=" Expr NEWLINE
 VarDecl     ::= "var" Ident ":" Ty "=" Expr NEWLINE
 ExprStmt    ::= Expr NEWLINE
+
+// Ownership-aware pipeline (left-associative)
+PipeExpr    ::= PipeExpr ">>" PipeStage | PrimaryExpr
+PipeStage   ::= Ident | CallExpr | PostfixExpr
 ```
 
 **Terminators and newlines.** The lexer emits a `TERMINATOR` whenever it encounters a newline (`\n`) and *all* of the following hold:
@@ -2940,7 +2948,7 @@ Parsers may treat `TERMINATOR` exactly like a semicolon. Conversely, an explicit
 Traits and implementations use `require … is …` clauses for constraints and allow boolean trait expressions.
 
 ```ebnf
-TraitDef    ::= "trait" Ident TraitParams? TraitBody
+TraitDef    ::= "trait" Ident TraitParams? TraitReq? TraitBody
 TraitParams ::= "<" Ident ("," Ident)* ">"                // optional generics
 TraitReq    ::= "require" TraitReqClause ("," TraitReqClause)*
 TraitReqClause ::= ("Self" | Ident) "is" TraitExpr
