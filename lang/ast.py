@@ -218,6 +218,14 @@ class WhileStmt(Stmt):
     condition: "Expr"
     body: Block
 
+@dataclass
+class BreakStmt(Stmt):
+    loc: Located
+
+@dataclass
+class ContinueStmt(Stmt):
+    loc: Located
+
 
 @dataclass
 class TryExpr(Expr):

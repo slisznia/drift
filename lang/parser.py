@@ -39,6 +39,8 @@ from .ast import (
     TryExpr,
     TryStmt,
     WhileStmt,
+    BreakStmt,
+    ContinueStmt,
     Unary,
 )
 
@@ -319,6 +321,10 @@ def _build_stmt(tree: Tree):
             return _build_import_stmt(target)
         if stmt_kind == "while_stmt":
             return _build_while_stmt(target)
+        if stmt_kind == "break_stmt":
+            return _build_break_stmt(target)
+        if stmt_kind == "continue_stmt":
+            return _build_continue_stmt(target)
         return None
     if kind == "if_stmt":
         return _build_if_stmt(tree)
@@ -554,6 +560,14 @@ def _build_while_stmt(tree: Tree) -> ast.WhileStmt:
     condition = _build_expr(condition_node)
     body = _build_block(body_node)
     return WhileStmt(loc=loc, condition=condition, body=body)
+
+
+def _build_break_stmt(tree: Tree) -> ast.BreakStmt:
+    return BreakStmt(loc=_loc(tree))
+
+
+def _build_continue_stmt(tree: Tree) -> ast.ContinueStmt:
+    return ContinueStmt(loc=_loc(tree))
 
 
 def _build_try_stmt(tree: Tree) -> TryStmt:

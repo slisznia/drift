@@ -22,6 +22,77 @@ from .types import (
     resolve_type,
 )
 
+RESERVED_IDENTIFIERS = frozenset(
+    {
+        "val",
+        "var",
+        "fn",
+        "returns",
+        "if",
+        "else",
+        "while",
+        "break",
+        "continue",
+        "try",
+        "catch",
+        "throw",
+        "raise",
+        "return",
+        "exception",
+        "import",
+        "module",
+        "true",
+        "false",
+        "not",
+        "and",
+        "or",
+        "auto",
+        "pragma",
+        "bool",
+        "int",
+        "float",
+        "string",
+        "void",
+        "abstract",
+        "assert",
+        "boolean",
+        "byte",
+        "case",
+        "char",
+        "class",
+        "const",
+        "default",
+        "do",
+        "double",
+        "enum",
+        "extends",
+        "final",
+        "finally",
+        "for",
+        "goto",
+        "implements",
+        "instanceof",
+        "interface",
+        "long",
+        "native",
+        "new",
+        "package",
+        "private",
+        "protected",
+        "public",
+        "short",
+        "static",
+        "strictfp",
+        "super",
+        "switch",
+        "synchronized",
+        "this",
+        "throws",
+        "transient",
+        "volatile",
+    }
+)
+
 
 @dataclass
 class VarInfo:
@@ -74,6 +145,8 @@ class Scope:
     def define(self, name: str, info: VarInfo, loc: ast.Located, capture_key: Optional[str] = None) -> None:
         if name in self.vars:
             raise CheckError(f"{loc.line}:{loc.column}: '{name}' already defined in this scope")
+        if name in RESERVED_IDENTIFIERS:
+            raise CheckError(f"{loc.line}:{loc.column}: '{name}' is a reserved keyword")
         if capture_key:
             if capture_key in self.capture_keys:
                 raise CheckError(
@@ -125,7 +198,7 @@ class Checker:
             allow_returns=False,
         )
         for stmt in program.statements:
-            self._check_stmt(stmt, module_ctx)
+            self._check_stmt(stmt, module_ctx, in_loop=False)
         for func in program.functions:
             self._check_function(func, global_scope)
         return CheckedProgram(
@@ -149,6 +222,8 @@ class Checker:
 
     def _register_exceptions(self, exceptions: List[ast.ExceptionDef]) -> None:
         for exc in exceptions:
+            if exc.name in RESERVED_IDENTIFIERS:
+                raise CheckError(f"{exc.loc.line}:{exc.loc.column}: '{exc.name}' is a reserved keyword")
             if exc.name in self.exception_infos:
                 raise CheckError(f"{exc.loc.line}:{exc.loc.column}: Exception '{exc.name}' already defined")
             arg_order: List[str] = []
@@ -171,6 +246,8 @@ class Checker:
 
     def _register_functions(self, functions: List[ast.FunctionDef]) -> None:
         for fn in functions:
+            if fn.name in RESERVED_IDENTIFIERS:
+                raise CheckError(f"{fn.loc.line}:{fn.loc.column}: '{fn.name}' is a reserved keyword")
             if fn.name in self.function_infos:
                 raise CheckError(f"{fn.loc.line}:{fn.loc.column}: Function '{fn.name}' already defined")
             try:
@@ -188,6 +265,10 @@ class Checker:
 
     def _register_structs(self, structs: List[ast.StructDef]) -> None:
         for struct in structs:
+            if struct.name in RESERVED_IDENTIFIERS:
+                raise CheckError(
+                    f"{struct.loc.line}:{struct.loc.column}: '{struct.name}' is a reserved keyword"
+                )
             if struct.name in self.struct_infos:
                 raise CheckError(
                     f"{struct.loc.line}:{struct.loc.column}: Struct '{struct.name}' already defined"
@@ -227,13 +308,13 @@ class Checker:
             allow_returns=True,
         )
         for stmt in fn.body.statements:
-            self._check_stmt(stmt, ctx)
+            self._check_stmt(stmt, ctx, in_loop=False)
         self.function_infos[fn.name] = FunctionInfo(
             signature=info.signature,
             node=fn,
         )
 
-    def _check_stmt(self, stmt: ast.Stmt, ctx: FunctionContext) -> None:
+    def _check_stmt(self, stmt: ast.Stmt, ctx: FunctionContext, in_loop: bool = False) -> None:
         if isinstance(stmt, ast.LetStmt):
             decl_type = None
             if stmt.type_expr is not None:
@@ -292,11 +373,11 @@ class Checker:
             cond_type = self._check_expr(stmt.condition, ctx)
             self._expect_type(cond_type, BOOL, stmt.loc)
             for inner in stmt.body.statements:
-                self._check_stmt(inner, ctx)
+                self._check_stmt(inner, ctx, in_loop=in_loop)
             return
         if isinstance(stmt, ast.TryStmt):
             for inner in stmt.body.statements:
-                self._check_stmt(inner, ctx)
+                self._check_stmt(inner, ctx, in_loop=in_loop)
             for clause in stmt.catches:
                 catch_scope = Scope(parent=ctx.scope)
                 binder_name = clause.binder
@@ -313,7 +394,15 @@ class Checker:
                         stmt.loc,
                     )
                 for inner in clause.block.statements:
-                    self._check_stmt(inner, catch_ctx)
+                    self._check_stmt(inner, catch_ctx, in_loop=in_loop)
+            return
+        if isinstance(stmt, ast.BreakStmt):
+            if not in_loop:
+                raise CheckError(f"{stmt.loc.line}:{stmt.loc.column}: 'break' outside loop")
+            return
+        if isinstance(stmt, ast.ContinueStmt):
+            if not in_loop:
+                raise CheckError(f"{stmt.loc.line}:{stmt.loc.column}: 'continue' outside loop")
             return
         raise CheckError(f"{stmt.loc.line}:{stmt.loc.column}: Unsupported statement {stmt}")
 

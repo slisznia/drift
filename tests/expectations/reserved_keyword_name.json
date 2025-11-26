@@ -1,0 +1,5 @@
+{
+  "exit": 1,
+  "stdout": "",
+  "stderr": "type error: 1:1: 'break' is a reserved keyword\n"
+}

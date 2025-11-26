@@ -14,6 +14,9 @@
 - Added per-frame captured locals to the error payload: runtime ABI now carries `cap_keys/values` and per-frame counts, lowering threads `^` bindings into throw/call error paths, and `error_to_cstr` emits `captured:{...}` per frame. Added a multi-level codegen test (`tests/mir_codegen/frames_captures`) to assert captured locals across the stack; updated frame expectations accordingly.
 - Enforced canonical module IDs at compile time (lowercase alnum with dots/underscores, no leading/trailing/consecutive separators, ≤254 UTF-8 bytes, reserved prefixes blocked); frames record declared module IDs only. Added negative tests for invalid/reserved module IDs and documented import aliasing (aliases do not affect frame metadata). Fixed linter spacing in the new module tests.
 - Added `while` loops end-to-end (grammar, parser, checker, interpreter, MIR lowering), plus runtime tests for simple, nested, and nested-with-try/catch loops. Import alias support was added to the grammar/spec.
+- Added `break`/`continue` tokens to the grammar and loop-scoping checks in the checker; added a nested while+try/catch runtime test (`while_try_catch.drift`). Documented control-flow (if/else, ternary, while, try/else, try/catch) in the language spec.
+- Expanded reserved keywords: checker now rejects a broad set (language/FFI/legacy keywords, lowercase primitive aliases); added a negative test for using a reserved word as a function name; spec reserved-keyword list updated.
+- Clarified that `Bool` lowers to LLVM `i1`; kept `true`/`false` as lowercase literals, so constructs like `while true { ... }` parse and type-check as expected. History/spec updated to reflect the current control-flow and reserved keyword rules.
 
 ## 2025-11-24
 - Fixed the parser’s `if` builder to grab the nested `else_clause` block, so conditional statements with an else arm are preserved through parsing and lowering.

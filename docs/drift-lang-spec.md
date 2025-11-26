@@ -415,7 +415,7 @@ while i < 3 {
 - `while <cond> { <stmts> }` evaluates `<cond>` each iteration and runs the body while it is `true`.
 - `<cond>` must be `Bool`; type errors are reported at compile time.
 - The body forms its own scope for local bindings; fresh bindings inside the loop shadow outer names and are re-created per iteration.
-- There is no implicit `break`/`continue` yet; exiting requires making the condition false.
+- `break` exits the nearest enclosing loop; `continue` jumps to the next iteration (re-evaluating the condition).
 
 ### 6.3 Ternary (`? :`) operator
 
@@ -452,6 +452,11 @@ try {
 - Executes the body; on error, transfers control to the first matching catch (no pattern guards yet; event match or catch-all).
 - Catch binder (if present) has type `Error`.
 - Control falls through after the try/catch unless all branches return/raise.
+
+## 7. Reserved keywords and operators
+
+Keywords and literals are reserved and cannot be used as identifiers (functions, variables, modules, structs, exceptions, etc.):  
+`fn`, `val`, `var`, `returns`, `if`, `else`, `while`, `break`, `continue`, `try`, `catch`, `throw`, `raise`, `return`, `exception`, `import`, `module`, `true`, `false`, `not`, `and`, `or`, plus language/FFI/legacy keywords (`auto`, `pragma`, `bool`, `int`, `float`, `string`, `void`, `abstract`, `assert`, `boolean`, `byte`, `case`, `char`, `class`, `const`, `default`, `do`, `double`, `enum`, `extends`, `final`, `finally`, `for`, `goto`, `implements`, `instanceof`, `interface`, `long`, `native`, `new`, `package`, `private`, `protected`, `public`, `short`, `static`, `strictfp`, `super`, `switch`, `synchronized`, `this`, `throws`, `transient`, `volatile`).
 
 ## 5. Standard I/O design
 

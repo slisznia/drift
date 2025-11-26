@@ -35,6 +35,8 @@ BANG: "!"
 IF: "if"
 ELSE: "else"
 WHILE: "while"
+BREAK: "break"
+CONTINUE: "continue"
 MOVE: "->"
 EXCEPTION: "exception"
 TRY: "try"
@@ -85,6 +87,8 @@ simple_stmt: let_stmt
            | raise_stmt
            | expr_stmt
            | import_stmt
+           | break_stmt
+           | continue_stmt
            | while_stmt
 
 try_stmt: TRY block terminator_opt catch_clause (terminator_opt catch_clause)* terminator_opt
@@ -97,6 +101,8 @@ assign_lhs: NAME index_suffix*
 
 if_stmt: IF expr terminator_opt block else_clause? terminator_opt
 else_clause: terminator_opt ELSE terminator_opt block
+break_stmt: BREAK
+continue_stmt: CONTINUE
 while_stmt: WHILE expr terminator_opt block
 terminator_opt: TERMINATOR*
 
