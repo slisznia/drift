@@ -1,32 +1,3 @@
-## 2. Null-safety vs Option<T> conflict (Chapters 10 & 11)
-
-### Required fix:
-
-* Decide whether the canonical optional type is `Option<T>` **or** `Optional<T>`.
-* Strong recommendation:
-  ✔ Unify around `variant Option<T>` in Chapter 10.
-  ✔ Rewrite Chapter 11 to describe helpers *for* Option<T> instead of a second type.
-
-### Tasks:
-
-* Remove `interface Optional<T>` from Chapter 11.
-* Replace `Optional.of/none` with `Option.some/none` (or whichever naming you choose).
-* Update all examples accordingly.
-* Ensure exceptions / algorithms / examples use the unified optional type.
-
----
-
-## 3. Broken code blocks + misplaced tuple section (Chapter 11)
-
-Tasks:
-
-1. Close the code fence before “### Tuple structs & tuple returns”.
-2. Move that entire tuple section into **Chapter 3** (structs) or a short separate chapter.
-3. Fix method names inside examples (`to_string` rather than `toString`).
-4. Fix usage of `let` inside examples.
-
----
-
 ## 4. Keyword consistency: remove `let`
 
 * Replace all `let` usages with `val` or `var`.

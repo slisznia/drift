@@ -217,7 +217,7 @@ var b = a      // ✅ copies `a` by calling `copy`
 
 ### Explicit copy expression
 
-Use the `copy <expr>` expression to force a duplicate of a `Copy` value. It fails at compile time if the operand is not `Copy`. This works anywhere an expression is allowed (call arguments, closure captures, `let` bindings) and leaves the original binding usable. Default by-value passing still **moves** non-`Copy` values; `copy` is how you make the intent to duplicate explicit.
+Use the `copy <expr>` expression to force a duplicate of a `Copy` value. It fails at compile time if the operand is not `Copy`. This works anywhere an expression is allowed (call arguments, closure captures, `val`/`var` bindings) and leaves the original binding usable. Default by-value passing still **moves** non-`Copy` values; `copy` is how you make the intent to duplicate explicit.
 ```
 
 Copying still respects ownership rules: `ref self` indicates the value is borrowed for the duration of the copy, after which both the original and the newly returned value remain valid.
@@ -1565,10 +1565,10 @@ fn copy_stream(src: InputStream, dst: OutputStream) returns Void {
 
     loop {
         scratch.clear()
-        let filled = src.read(scratch.as_mut_slice())
+        val filled = src.read(scratch.as_mut_slice())
         if filled == 0 { break }
 
-        let chunk = scratch.slice(0, filled)
+        val chunk = scratch.slice(0, filled)
         dst.write(chunk)
     }
 }
@@ -1580,7 +1580,7 @@ fn copy_stream(src: InputStream, dst: OutputStream) returns Void {
 ### Indexing, mutation, and borrowing
 #### Borrowed element references
 
-To avoid copying and let other APIs operate on a specific slot, `Array<T>` exposes helper methods:
+To avoid copying and allow other APIs to operate on a specific slot, `Array<T>` exposes helper methods:
 
 ```drift
 fn ref_at(self: ref Array<T>, index: Int64) returns ref T
@@ -2634,7 +2634,7 @@ Signed DMIR gives Drift a portable, semantically precise unit of distribution wh
 
 ### Overview
 
-Dynamic Drift plugins let separately compiled Drift modules be loaded at runtime as shared libraries (`.so`, `.dll`, `.dylib`). The plugin ABI sits on top of the core ABI—it does not modify existing rules, but specifies how Drift↔Drift dynamic linking works.
+Dynamic Drift plugins allow separately compiled Drift modules to be loaded at runtime as shared libraries (`.so`, `.dll`, `.dylib`). The plugin ABI sits on top of the core ABI—it does not modify existing rules, but specifies how Drift↔Drift dynamic linking works.
 
 Plugins interact with the host solely through:
 
