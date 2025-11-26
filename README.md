@@ -89,4 +89,4 @@ The repository ships with a prototype interpreter. From the repo root:
 ./drift.py examples/hello.drift
 ```
 
-See the full language specification in [docs/drift-lang-spec.md](docs/drift-lang-spec.md) for grammar, semantics, and additional examples.
+See the full language specification in [docs/drift-lang-spec.md](docs/drift-lang-spec.md) for semantics and examples. The full formal grammar lives in [docs/drift-lang-grammar.md](docs/drift-lang-grammar.md).

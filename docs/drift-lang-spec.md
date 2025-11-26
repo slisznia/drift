@@ -192,13 +192,6 @@ Functions may return tuples or accept them as parameters, and tuple types appear
 
 `x->` transfers ownership of `x` without copying. After a move, `x` becomes invalid. Equivalent intent to `std::move(x)` in C++ but lighter and explicit.
 
-### Syntax
-
-```drift
-PostfixExpr ::= PrimaryExpr
-              | PostfixExpr '->'
-```
-
 ### Core rules
 | Aspect | Description |
 |---------|-------------|
@@ -1166,14 +1159,6 @@ import std.io                 // bind the module
 import std.console.out as print // optional alias
 ```
 
-**Grammar**
-
-```ebnf
-ImportDecl    ::= 'import' ImportItem (',' ImportItem)* NEWLINE
-ImportItem    ::= QualifiedName (' ' 'as' ' ' Ident)?
-QualifiedName ::= Ident ('.' Ident)*
-```
-
 **Name‑resolution semantics**
 
 - `QualifiedName` is resolved left‑to‑right.  
@@ -1634,22 +1619,13 @@ Instead, they are desugared through capability interfaces so projects can pick a
 
 #### Array literal
 
-```
-ArrayLiteral ::= "[" (Expr ("," Expr)*)? "]"
-```
-
-Example: `val xs = [1, 2, 3]`.
+`[expr1, expr2, ...]` constructs a homogeneous array literal. Example: `val xs = [1, 2, 3]`.
 
 #### Map literal
 
-```
-MapLiteral ::= "{" (MapEntry ("," MapEntry)*)? "}"
-MapEntry   ::= Expr ":" Expr
-```
+`{ key: value, ... }` constructs a map literal. Example: `val user = { "name": "Ada", "age": 38 }`.
 
-Example: `val user = { "name": "Ada", "age": 38 }`.
-
-Duplicate keys are allowed syntactically; the target type decides whether to keep the first value, last
+Duplicate keys are allowed in the literal; the target type decides whether to keep the first value, last
 value, or reject duplicates.
 
 ### Type resolution
@@ -2982,66 +2958,6 @@ process(j)    // error: use of moved value
 
 ---
 
+## Formal grammar (external)
 
-## Appendix B — Grammar (EBNF excerpt)
-
-*(Traits/`implement` grammar is summarized in Appendix C.)*
-
-
-```ebnf
-Program     ::= ImportDecl* TopDecl*
-ImportDecl  ::= "import" ImportItem ("," ImportItem)* NEWLINE
-ImportItem  ::= ModulePath ("as" Ident)?
-ModulePath  ::= Ident ("." Ident)*
-
-TopDecl     ::= FnDef | TypeDef | StructDef | EnumDef
-
-FnDef       ::= "fn" Ident "(" Params? ")" (":" Type)? FnRequire? Block
-Params      ::= Param ("," Param)*
-Param       ::= Ident ":" Ty | "^" Ident ":" Ty
-
-Block       ::= "{" Stmt* "}"
-Stmt        ::= ValDecl | VarDecl | ExprStmt | IfStmt | WhileStmt | ForStmt
-              | ReturnStmt | BreakStmt | ContinueStmt | TryStmt | ThrowStmt
-
-ValDecl     ::= "val" Ident ":" Ty "=" Expr NEWLINE
-VarDecl     ::= "var" Ident ":" Ty "=" Expr NEWLINE
-ExprStmt    ::= Expr NEWLINE
-
-// Ownership-aware pipeline (left-associative)
-PipeExpr    ::= PipeExpr ">>" PipeStage | PrimaryExpr
-PipeStage   ::= Ident | CallExpr | PostfixExpr
-```
-
-**Terminators and newlines.** The lexer emits a `TERMINATOR` whenever it encounters a newline (`\n`) and *all* of the following hold:
-
-1. The current parenthesis/brace/bracket depth is zero (i.e., we are not inside `()`, `[]`, or `{}`).
-2. The previous token is “terminable” — identifiers, literals, `)`, `]`, `}`, `return`, `break`, etc.
-3. The previous token is **not** a binary operator (`+`, `*`, `>>`, ...), dot, comma, or colon that requires a follower.
-
-Parsers may treat `TERMINATOR` exactly like a semicolon. Conversely, an explicit `;` is legal anywhere a `TERMINATOR` could appear, which allows compact one-liners or multi-statement lines when desired. This rule keeps Drift source tidy without forcing mandatory semicolons.
-
----
-
-
-## Appendix C — Trait Grammar Notes
-
-Traits and implementations use `require … is …` clauses for constraints and allow boolean trait expressions.
-
-```ebnf
-TraitDef    ::= "trait" Ident TraitParams? TraitReq? TraitBody
-TraitParams ::= "<" Ident ("," Ident)* ">"                // optional generics
-TraitReq    ::= "require" TraitReqClause ("," TraitReqClause)*
-TraitReqClause ::= ("Self" | Ident) "is" TraitExpr
-
-Implement   ::= "implement" Ty ("for" Ty)? TraitReq? TraitBody
-
-TraitExpr   ::= TraitTerm ( ("and" | "or") TraitTerm )*
-TraitTerm   ::= "not"? Ident | "(" TraitExpr ")"
-
-FnRequire   ::= "require" TraitReqClause ("," TraitReqClause)*
-```
-
-`require` clauses appear on traits, implementations, and functions; they use the same `is`/`and`/`or`/`not` expressions and must reference either `Self` or generic parameters in scope.
-
-### End of Drift Language Specification
+This specification focuses on semantics: ownership, types, errors, concurrency, and runtime behavior. The complete formal grammar (tokens, precedence, productions) lives in `docs/drift-lang-grammar.md` and is authoritative for syntax. In case of conflict: semantics in this spec win for meaning; syntax in the grammar file wins for how code is parsed.
