@@ -13,6 +13,7 @@ PROGRAMS_DIR = ROOT / "tests" / "programs"
 EXPECTATIONS_DIR = ROOT / "tests" / "expectations"
 MIR_CASES_DIR = ROOT / "tests" / "mir_lowering"
 CODEGEN_DIR = ROOT / "tests" / "mir_codegen"
+VENV_SITE = ROOT / ".venv"
 
 
 def load_expectation(name: str) -> Dict[str, object]:
@@ -126,6 +127,7 @@ def _run_mir_tests() -> int:
 
 def _run_codegen_tests() -> int:
     """End-to-end MIR -> LLVM -> clang-15 link/run tests."""
+    _require_venv_site()
     try:
         from lang import parser, checker  # type: ignore
         from lang.runtime import builtin_signatures  # type: ignore
@@ -186,6 +188,7 @@ def _run_codegen_tests() -> int:
 
 
 def _build_and_link(drift_path: Path, harness_path: Path, out_dir: Path, case: str) -> tuple[str, Path]:
+    _require_venv_site()
     from lang import parser, checker
     from lang.runtime import builtin_signatures
     from lang.lower_to_mir import lower_straightline
@@ -232,6 +235,18 @@ def _build_and_link(drift_path: Path, harness_path: Path, out_dir: Path, case: s
 def _run_exe(exe_path: Path) -> tuple[int, str, str]:
     proc = subprocess.run([str(exe_path)], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     return proc.returncode, proc.stdout, proc.stderr
+
+
+def _require_venv_site() -> None:
+    """Force use of the local .venv site-packages for codegen."""
+    if not VENV_SITE.exists():
+        raise RuntimeError("codegen tests require .venv with llvmlite installed")
+    ver = f"python{sys.version_info.major}.{sys.version_info.minor}"
+    sp = VENV_SITE / "lib" / ver / "site-packages"
+    if sp.exists():
+        sys.path.insert(0, str(sp))
+    else:
+        raise RuntimeError(f"codegen tests require llvmlite in .venv (missing {sp})")
 
 
 def _run_verifier_negative_tests() -> int:

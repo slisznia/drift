@@ -5,6 +5,7 @@ from typing import Dict, Tuple, List, Optional
 from . import ast, mir
 from .checker import CheckedProgram
 from .types import BOOL, F64, I64, STR, ERROR, Type
+from ._lower_to_mir_utils import build_frame_consts
 
 
 class LoweringError(Exception):
@@ -54,6 +55,96 @@ def lower_straightline(checked: CheckedProgram, source_name: str | None = None, 
             capture_env: Dict[str, str],
             err_target: str | None = None,
         ) -> Tuple[str, Type, mir.BasicBlock]:
+            def lower_ternary_expr(
+                tern: ast.Ternary,
+                block: mir.BasicBlock,
+                types: Dict[str, Type],
+                caps: Dict[str, str],
+                err_tgt: str | None,
+            ) -> Tuple[str, Type, mir.BasicBlock]:
+                cond_val, _, block = lower_expr(tern.condition, block, types, caps, err_target=err_tgt)
+
+                then_name = fresh_block("bb_then")
+                else_name = fresh_block("bb_else")
+                join_name = fresh_block("bb_join")
+
+                then_block = mir.BasicBlock(name=then_name)
+                else_block = mir.BasicBlock(name=else_name)
+                blocks[then_name] = then_block
+                blocks[else_name] = else_block
+
+                block.terminator = mir.CondBr(
+                    cond=cond_val,
+                    then=mir.Edge(target=then_name),
+                    els=mir.Edge(target=else_name),
+                )
+
+                types_then = types.copy()
+                v_then, ty_then, then_block = lower_expr(tern.then_value, then_block, types_then, caps.copy(), err_target=err_tgt)
+                types_else = types.copy()
+                v_else, ty_else, else_block = lower_expr(tern.else_value, else_block, types_else, caps.copy(), err_target=err_tgt)
+                if ty_then != ty_else:
+                    raise LoweringError("ternary branches must have the same type")
+
+                phi_name = fresh_val()
+                join_block = mir.BasicBlock(name=join_name, params=[mir.Param(name=phi_name, type=ty_then)])
+                blocks[join_name] = join_block
+
+                then_block.terminator = mir.Br(target=mir.Edge(target=join_name, args=[v_then]))
+                else_block.terminator = mir.Br(target=mir.Edge(target=join_name, args=[v_else]))
+
+                types[phi_name] = ty_then
+                return phi_name, ty_then, join_block
+
+            def lower_try_expr_expr(
+                try_expr: ast.TryExpr,
+                block: mir.BasicBlock,
+                types: Dict[str, Type],
+                caps: Dict[str, str],
+                err_tgt: str | None,
+            ) -> Tuple[str, Type, mir.BasicBlock]:
+                if not isinstance(try_expr.expr, ast.Call):
+                    raise LoweringError("try/else lowering currently supports call attempts only")
+                if not isinstance(try_expr.expr.func, ast.Name):
+                    raise LoweringError("try/else lowering supports simple name callees only")
+                call_args: List[str] = []
+                for a in try_expr.expr.args:
+                    v, _, block = lower_expr(a, block, types, caps)
+                    call_args.append(v)
+                norm_name = fresh_block("bb_norm")
+                err_name = fresh_block("bb_err")
+                join_name = fresh_block("bb_join")
+                norm_param = mir.Param(name=fresh_val(), type=_type_of_literal(0))
+                norm_block = mir.BasicBlock(name=norm_name, params=[norm_param])
+                err_param = mir.Param(name=fresh_val(), type=ERROR)
+                err_block = mir.BasicBlock(name=err_name, params=[err_param])
+                join_param = mir.Param(name=f"phi{temp_counter}", type=_type_of_literal(0))
+                join_block = mir.BasicBlock(name=join_name, params=[join_param])
+                blocks[norm_name] = norm_block
+                blocks[err_name] = err_block
+                blocks[join_name] = join_block
+                call_dest = fresh_val()
+                call_err = fresh_val()
+                block.instructions.append(
+                    mir.Call(
+                        dest=call_dest,
+                        err_dest=call_err,
+                        callee=try_expr.expr.func.ident,
+                        args=call_args,
+                        normal=mir.Edge(target=norm_name, args=[call_dest]),
+                        error=mir.Edge(target=err_name, args=[call_err]),
+                    )
+                )
+                call_type = _lookup_type(try_expr.expr.func.ident, block_params, types, checked)
+                types[call_dest] = call_type
+                types[call_err] = ERROR
+                norm_block.params[0] = mir.Param(name=norm_param.name, type=call_type)
+                norm_block.terminator = mir.Br(target=mir.Edge(target=join_name, args=[norm_param.name]))
+                join_block.params[0] = mir.Param(name=join_param.name, type=call_type)
+                types[join_param.name] = call_type
+                fb_val, fb_ty, err_block = lower_expr(try_expr.fallback, err_block, types.copy(), caps.copy(), err_target=err_tgt)
+                err_block.terminator = mir.Br(target=mir.Edge(target=join_name, args=[fb_val]))
+                return join_param.name, types[call_dest], join_block
             if isinstance(expr, ast.Literal):
                 dest = fresh_val()
                 lit_val = expr.value
@@ -112,7 +203,7 @@ def lower_straightline(checked: CheckedProgram, source_name: str | None = None, 
                 cap_keys, cap_vals, cap_counts, cap_total, err_block = _build_capture_arrays(err_block, capture_env, temp_types, fresh_val)
                 push_err = err_param.name
                 # Add module/file/func/line constants for this call site.
-                mod_const, file_const, func_const, line_const = _build_frame_consts(
+                mod_const, file_const, func_const, line_const = build_frame_consts(
                     err_block, temp_types, source_name, fn_def.name, module_label, expr.loc.line, fresh_val
                 )
                 err_push_dest = fresh_val()
@@ -140,82 +231,9 @@ def lower_straightline(checked: CheckedProgram, source_name: str | None = None, 
                 temp_types[join_param.name] = call_ty
                 return join_param.name, call_ty, join_block
             if isinstance(expr, ast.Ternary):
-                cond_val, _, current_block = lower_expr(expr.condition, current_block, temp_types, capture_env, err_target=err_target)
-
-                then_name = fresh_block("bb_then")
-                else_name = fresh_block("bb_else")
-                join_name = fresh_block("bb_join")
-
-                then_block = mir.BasicBlock(name=then_name)
-                else_block = mir.BasicBlock(name=else_name)
-                blocks[then_name] = then_block
-                blocks[else_name] = else_block
-
-                current_block.terminator = mir.CondBr(
-                    cond=cond_val,
-                    then=mir.Edge(target=then_name),
-                    els=mir.Edge(target=else_name),
-                )
-
-                temp_types_then = temp_types.copy()
-                v_then, ty_then, then_block = lower_expr(expr.then_value, then_block, temp_types_then, capture_env.copy(), err_target=err_target)
-                temp_types_else = temp_types.copy()
-                v_else, ty_else, else_block = lower_expr(expr.else_value, else_block, temp_types_else, capture_env.copy(), err_target=err_target)
-                if ty_then != ty_else:
-                    raise LoweringError("ternary branches must have the same type")
-
-                phi_name = fresh_val()
-                join_block = mir.BasicBlock(name=join_name, params=[mir.Param(name=phi_name, type=ty_then)])
-                blocks[join_name] = join_block
-
-                then_block.terminator = mir.Br(target=mir.Edge(target=join_name, args=[v_then]))
-                else_block.terminator = mir.Br(target=mir.Edge(target=join_name, args=[v_else]))
-
-                temp_types[phi_name] = ty_then
-                return phi_name, ty_then, join_block
+                return lower_ternary_expr(expr, current_block, temp_types, capture_env, err_target)
             if isinstance(expr, ast.TryExpr):
-                if not isinstance(expr.expr, ast.Call):
-                    raise LoweringError("try/else lowering currently supports call attempts only")
-                if not isinstance(expr.expr.func, ast.Name):
-                    raise LoweringError("try/else lowering supports simple name callees only")
-                call_args: List[str] = []
-                for a in expr.expr.args:
-                    v, _, current_block = lower_expr(a, current_block, temp_types, capture_env)
-                    call_args.append(v)
-                norm_name = fresh_block("bb_norm")
-                err_name = fresh_block("bb_err")
-                join_name = fresh_block("bb_join")
-                norm_param = mir.Param(name=fresh_val(), type=_type_of_literal(0))
-                norm_block = mir.BasicBlock(name=norm_name, params=[norm_param])
-                err_param = mir.Param(name=fresh_val(), type=ERROR)
-                err_block = mir.BasicBlock(name=err_name, params=[err_param])
-                join_param = mir.Param(name=f"phi{temp_counter}", type=_type_of_literal(0))
-                join_block = mir.BasicBlock(name=join_name, params=[join_param])
-                blocks[norm_name] = norm_block
-                blocks[err_name] = err_block
-                blocks[join_name] = join_block
-                call_dest = fresh_val()
-                call_err = fresh_val()
-                current_block.instructions.append(
-                    mir.Call(
-                        dest=call_dest,
-                        err_dest=call_err,
-                        callee=expr.expr.func.ident,
-                        args=call_args,
-                        normal=mir.Edge(target=norm_name, args=[call_dest]),
-                        error=mir.Edge(target=err_name, args=[call_err]),
-                    )
-                )
-                call_type = _lookup_type(expr.expr.func.ident, block_params, temp_types, checked)
-                temp_types[call_dest] = call_type
-                temp_types[call_err] = ERROR
-                norm_block.params[0] = mir.Param(name=norm_param.name, type=call_type)
-                norm_block.terminator = mir.Br(target=mir.Edge(target=join_name, args=[norm_param.name]))
-                join_block.params[0] = mir.Param(name=join_param.name, type=call_type)
-                temp_types[join_param.name] = call_type
-                fb_val, fb_ty, err_block = lower_expr(expr.fallback, err_block, temp_types.copy(), capture_env.copy(), err_target=err_target)
-                err_block.terminator = mir.Br(target=mir.Edge(target=join_name, args=[fb_val]))
-                return join_param.name, temp_types[call_dest], join_block
+                return lower_try_expr_expr(expr, current_block, temp_types, capture_env, err_target)
             raise LoweringError(f"unsupported expression: {expr}")
 
         def lower_stmt(
@@ -554,32 +572,6 @@ def _type_of_literal(value) -> Type:
     return Type("<unknown>")
 
 
-def _build_frame_consts(
-    block: mir.BasicBlock,
-    temp_types: Dict[str, Type],
-    source_name: str | None,
-    func_name: str,
-    module_label: str,
-    line: int,
-    fresh_val,
-) -> tuple[str, str, str, str]:
-    from pathlib import Path
-    file_label = Path(source_name).name if source_name else "<unknown>"
-    file_const = fresh_val()
-    func_const = fresh_val()
-    mod_const = fresh_val()
-    line_const = fresh_val()
-    block.instructions.append(mir.Const(dest=file_const, type=STR, value=file_label))
-    block.instructions.append(mir.Const(dest=func_const, type=STR, value=func_name))
-    block.instructions.append(mir.Const(dest=mod_const, type=STR, value=module_label))
-    block.instructions.append(mir.Const(dest=line_const, type=I64, value=line))
-    temp_types[file_const] = STR
-    temp_types[func_const] = STR
-    temp_types[mod_const] = STR
-    temp_types[line_const] = I64
-    return mod_const, file_const, func_const, line_const
-
-
 def _build_capture_arrays(
     block: mir.BasicBlock,
     capture_env: Dict[str, str],
@@ -628,3 +620,98 @@ def _build_capture_arrays(
     block.instructions.append(mir.Const(dest=total_const, type=I64, value=len(key_consts)))
     temp_types[total_const] = I64
     return keys_arr, vals_arr, counts_arr, total_const, block
+
+
+def _lower_ternary_expr(
+    expr: ast.Ternary,
+    current_block: mir.BasicBlock,
+    temp_types: Dict[str, Type],
+    capture_env: Dict[str, str],
+    err_target: str | None,
+) -> Tuple[str, Type, mir.BasicBlock]:
+    # Assumes surrounding scope defines fresh_block/fresh_val/blocks/lower_expr
+    # These are closed over in the parent function.
+    cond_val, _, current_block = lower_expr(expr.condition, current_block, temp_types, capture_env, err_target=err_target)
+
+    then_name = fresh_block("bb_then")
+    else_name = fresh_block("bb_else")
+    join_name = fresh_block("bb_join")
+
+    then_block = mir.BasicBlock(name=then_name)
+    else_block = mir.BasicBlock(name=else_name)
+    blocks[then_name] = then_block
+    blocks[else_name] = else_block
+
+    current_block.terminator = mir.CondBr(
+        cond=cond_val,
+        then=mir.Edge(target=then_name),
+        els=mir.Edge(target=else_name),
+    )
+
+    temp_types_then = temp_types.copy()
+    v_then, ty_then, then_block = lower_expr(expr.then_value, then_block, temp_types_then, capture_env.copy(), err_target=err_target)
+    temp_types_else = temp_types.copy()
+    v_else, ty_else, else_block = lower_expr(expr.else_value, else_block, temp_types_else, capture_env.copy(), err_target=err_target)
+    if ty_then != ty_else:
+        raise LoweringError("ternary branches must have the same type")
+
+    phi_name = fresh_val()
+    join_block = mir.BasicBlock(name=join_name, params=[mir.Param(name=phi_name, type=ty_then)])
+    blocks[join_name] = join_block
+
+    then_block.terminator = mir.Br(target=mir.Edge(target=join_name, args=[v_then]))
+    else_block.terminator = mir.Br(target=mir.Edge(target=join_name, args=[v_else]))
+
+    temp_types[phi_name] = ty_then
+    return phi_name, ty_then, join_block
+
+
+def _lower_try_expr_expr(
+    expr: ast.TryExpr,
+    current_block: mir.BasicBlock,
+    temp_types: Dict[str, Type],
+    capture_env: Dict[str, str],
+    err_target: str | None,
+) -> Tuple[str, Type, mir.BasicBlock]:
+    if not isinstance(expr.expr, ast.Call):
+        raise LoweringError("try/else lowering currently supports call attempts only")
+    if not isinstance(expr.expr.func, ast.Name):
+        raise LoweringError("try/else lowering supports simple name callees only")
+    call_args: List[str] = []
+    for a in expr.expr.args:
+        v, _, current_block = lower_expr(a, current_block, temp_types, capture_env)
+        call_args.append(v)
+    norm_name = fresh_block("bb_norm")
+    err_name = fresh_block("bb_err")
+    join_name = fresh_block("bb_join")
+    norm_param = mir.Param(name=fresh_val(), type=_type_of_literal(0))
+    norm_block = mir.BasicBlock(name=norm_name, params=[norm_param])
+    err_param = mir.Param(name=fresh_val(), type=ERROR)
+    err_block = mir.BasicBlock(name=err_name, params=[err_param])
+    join_param = mir.Param(name=f"phi{temp_counter}", type=_type_of_literal(0))
+    join_block = mir.BasicBlock(name=join_name, params=[join_param])
+    blocks[norm_name] = norm_block
+    blocks[err_name] = err_block
+    blocks[join_name] = join_block
+    call_dest = fresh_val()
+    call_err = fresh_val()
+    current_block.instructions.append(
+        mir.Call(
+            dest=call_dest,
+            err_dest=call_err,
+            callee=expr.expr.func.ident,
+            args=call_args,
+            normal=mir.Edge(target=norm_name, args=[call_dest]),
+            error=mir.Edge(target=err_name, args=[call_err]),
+        )
+    )
+    call_type = _lookup_type(expr.expr.func.ident, block_params, temp_types, checked)
+    temp_types[call_dest] = call_type
+    temp_types[call_err] = ERROR
+    norm_block.params[0] = mir.Param(name=norm_param.name, type=call_type)
+    norm_block.terminator = mir.Br(target=mir.Edge(target=join_name, args=[norm_param.name]))
+    join_block.params[0] = mir.Param(name=join_param.name, type=call_type)
+    temp_types[join_param.name] = call_type
+    fb_val, fb_ty, err_block = lower_expr(expr.fallback, err_block, temp_types.copy(), capture_env.copy(), err_target=err_target)
+    err_block.terminator = mir.Br(target=mir.Edge(target=join_name, args=[fb_val]))
+    return join_param.name, temp_types[call_dest], join_block

@@ -451,6 +451,7 @@ try {
 
 - Executes the body; on error, transfers control to the first matching catch (no pattern guards yet; event match or catch-all).
 - Catch binder (if present) has type `Error`.
+- Matching is by exception/event name only; omitting the name makes the clause a catch-all. Domains/attributes are not matched (yet).
 - Control falls through after the try/catch unless all branches return/raise.
 
 ## 7. Reserved keywords and operators
