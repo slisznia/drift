@@ -109,6 +109,8 @@ class Checker:
         self.exception_infos: Dict[str, ExceptionInfo] = {}
 
     def check(self, program: ast.Program) -> CheckedProgram:
+        if program.module:
+            self._validate_module_name(program.module)
         self._register_exceptions(program.exceptions)
         self._register_structs(program.structs)
         self._register_functions(program.functions)
@@ -134,6 +136,16 @@ class Checker:
             exceptions=self.exception_infos,
             module=program.module,
         )
+
+    def _validate_module_name(self, name: str) -> None:
+        import re
+        if len(name.encode("utf-8")) > 254:
+            raise CheckError(f"0:0: module name too long (max 254 bytes)")
+        if not re.fullmatch(r"[a-z0-9](?:[a-z0-9_]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9_]*[a-z0-9])?)*", name):
+            raise CheckError(f"0:0: invalid module name '{name}' (lowercase alnum with dots/underscores; no leading/trailing dots/underscores)")
+        reserved_prefixes = ("lang.", "abi.", "std.", "core.", "lib.")
+        if name.startswith(reserved_prefixes):
+            raise CheckError(f"0:0: module name '{name}' uses a reserved prefix {reserved_prefixes}")
 
     def _register_exceptions(self, exceptions: List[ast.ExceptionDef]) -> None:
         for exc in exceptions:

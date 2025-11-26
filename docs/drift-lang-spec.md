@@ -377,6 +377,13 @@ QualifiedName ::= Ident ('.' Ident)*
 - If it resolves to an **exported symbol** inside a module (e.g., `std.console.out`), the import binds that symbol directly into the local scope under its own name (or the `as` alias).  
 - Ambiguities between module and symbol names must be disambiguated with `as` or avoided.
 
+**Module identifiers**
+
+- Declared with `module <id>` once per file; multiple files may share the same `<id>`, but a single-module build fails if any file is missing or mismatches the ID. A standalone file with no declaration defaults to `main`.
+- `<id>` must be lowercase alnum segments separated by dots, with optional underscores inside segments; no leading/trailing/consecutive dots/underscores; length ≤ 254 UTF-8 bytes.
+- Reserved prefixes are rejected: `lang.`, `abi.`, `std.`, `core.`, `lib.`.
+- Frames/backtraces record the declared module ID (not filenames), so cross-module stacks are unambiguous.
+
 ## 5. Standard I/O design
 
 ### `std.io` module

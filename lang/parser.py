@@ -184,11 +184,8 @@ def _build_program(tree: Tree) -> Program:
 
 
 def _build_module_decl(tree: Tree) -> str:
-    path_node = next((child for child in tree.children if isinstance(child, Tree) and _name(child) == "import_path"), None)
-    if path_node is None:
-        return "main"
-    parts = [child.value for child in path_node.children if isinstance(child, Token) and child.type == "NAME"]
-    return ".".join(parts) if parts else "main"
+    tok = next((child for child in tree.children if isinstance(child, Token) and child.type == "MODULE_ID"), None)
+    return tok.value if tok else "main"
 
 
 def _build_exception_def(tree: Tree) -> ExceptionDef:
