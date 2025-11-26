@@ -1399,103 +1399,63 @@ Variants underpin key library types such as `Result<T, E>` and `Option<T>`, enab
 
 ## 11. Null safety & optional values
 
-Drift is **null-free**. There is no `null` literal. A value is either present (`T`) or explicitly optional (`Optional<T>`). The compiler never promotes `Optional<T>` to `T` implicitly.
+Drift is **null-free**. There is no `null` literal. A value is either present (`T`) or explicitly optional (`Option<T>`). The compiler never promotes `Option<T>` to `T` implicitly.
 
 ### Types
 
 | Type | Meaning |
 |------|---------|
 | `T` | Non-optional; always initialized. |
-| `Optional<T>` | Possibly empty; either a value or nothing. |
+| `Option<T>` | Possibly empty; either a value or nothing. |
 
 ### Construction
 
 ```drift
-val present: Optional<Int64> = Optional.of(42)
-val empty: Optional<Int64> = Optional.none()
+val present: Option<Int64> = Some(value = 42)
+val empty: Option<Int64> = None
 ```
-
-### Interface
-
-```drift
-interface Optional<T> {
-    fn present(self) returns Bool
-    fn none(self) returns Bool
-    fn unwrap(self) returns T
-    fn unwrap_or(self, default: T) returns T
-    fn map<U>(self, f: fn(T) returns U) returns Optional<U>
-    fn if_present(self, f: fn(ref T) returns Void) returns Void
-    fn if_none(self, f: fn() returns Void) returns Void
-}
-
-module Optional {
-    fn of<T>(value: T) returns Optional<T>
-    fn none<T>() returns Optional<T>
-}
-```
-
-- `present()` is true when a value exists.
-- `none()` is true when empty.
-- `unwrap()` throws `Error("option.none_unwrapped")` if empty (discouraged in production).
-- `map` transforms when present; otherwise stays empty.
-- `if_present` calls the block with a borrow (`ref T`) to avoid moving.
-- `if_none` runs a block when empty.
 
 ### Control flow
 
 ```drift
-if qty.present() {
-    out.writeln("qty=" + qty.unwrap().toString())
+match qty {
+    Some(q) => out.writeln("qty=" + q.to_string()),
+    None => out.writeln("no qty"),
 }
-
-if qty.none() {
-    out.writeln("no qty")
-}
-
-qty.if_present(ref q: {
-    out.writeln("qty=" + q.toString())
-})
 ```
 
-There is no safe-navigation operator (`?.`). Access requires explicit helpers.
+There is no safe-navigation operator (`?.`). Access requires explicit pattern matching or helper combinators built atop `Option<T>`.
 
 ### Parameters & returns
 
-- A parameter of type `T` cannot receive `Optional.none()`.
-- Use `Optional<T>` for “maybe” values.
-- Returning `none()` from a function declared `: T` is a compile error.
+- A parameter of type `T` cannot receive `None`.
+- Use `Option<T>` for “maybe” values.
+- Returning `None` from a function declared `: T` is a compile error.
 
 ```drift
-fn find_sku(id: Int64) returns Optional<String> { /* ... */ }
+fn find_sku(id: Int64) returns Option<String> { /* ... */ }
 
 val sku = find_sku(42)
-sku.if_present(ref s: { out.writeln("sku=" + s) })
-if sku.none() {
-    out.writeln("missing")
+match sku {
+    Some(s) => out.writeln("sku=" + s),
+    None => out.writeln("missing"),
 }
 ```
 
 ### Ownership
 
-`if_present` borrows (`ref T`) by default. No move occurs unless you explicitly consume `T` inside the block.
+Pattern matching moves the bound value by default. If you need to borrow instead, destructure a reference to the `Option` and match on that (planned once borrow-patterns are added).
 
 ### Diagnostics (illustrative)
 
-- **E2400**: cannot assign `Optional.none()` to non-optional type `T`.
-- **E2401**: attempted member/method use on `Optional<T>` without `map`/`unwrap`/`if_present`.
-- **E2402**: `unwrap()` on empty optional.
-- **E2403**: attempted implicit conversion `Optional<T>` → `T`.
+- **E2400**: cannot assign `None` to non-optional type `T`.
+- **E2401**: attempted member/method use on `Option<T>` without pattern matching / combinators.
+- **E2402**: attempted unwrap of `None` (discouraged pattern).
+- **E2403**: attempted implicit conversion `Option<T>` → `T`.
 
 ### End-to-end example
 
 ```drift
-
-### Tuple structs & tuple returns
-
-- **Tuple structs:** `struct Point(x: Int64, y: Int64)` is a compact header that desugars to the standard block struct. Construction may be positional (`Point(10, 20)`) or named (`Point(x = 10, y = 20)`), dot access remains (`point.x`).
-
-- **Anonymous tuple types:** use parentheses for ad-hoc results, e.g. `fn bounds() returns (Int64, Int64, Int64, Int64)` and destructure with `(x1, y1, x2, y2) = bounds()`.
-
 import sys.console.out
 
 struct Order {
@@ -1504,9 +1464,9 @@ struct Order {
     quantity: Int64
 }
 
-fn find_order(id: Int64) returns Optional<Order> {
-    if id == 42 { return Optional.of(Order(id = 42, sku = "DRIFT-1", quantity = 1)) }
-    return Optional.none()
+fn find_order(id: Int64) returns Option<Order> {
+    if id == 42 { return Some(value = Order(id = 42, sku = "DRIFT-1", quantity = 1)) }
+    return None
 }
 
 fn ship(o: Order) returns Void {
@@ -1516,12 +1476,9 @@ fn ship(o: Order) returns Void {
 fn main() returns Void {
     val maybe_order = find_order(42)
 
-    maybe_order.if_present(ref o: {
-        ship(o)
-    })
-
-    if maybe_order.none() {
-        out.writeln("order not found")
+    match maybe_order {
+        Some(o) => ship(o),
+        None => out.writeln("order not found"),
     }
 }
 ```
