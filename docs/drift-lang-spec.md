@@ -156,6 +156,37 @@ The tuple-style header desugars to the block form. Field names remain available 
 
 ---
 
+### Tuple types and tuple expressions
+
+Drift supports **tuple types** as simple product types with unnamed fields. They are a single type written with parentheses:
+
+```drift
+(T1, T2, ..., Tn)    // n >= 2; (T) is just T
+```
+
+- Elements may have different types.
+- A tuple is sized if all elements are sized.
+- Ownership is per element: moving a tuple moves each element; copying a tuple is allowed only if **all** elements implement `Copy`.
+- Tuples participate in traits/requirements componentwise; e.g., `(A, B)` is `Copy` iff both `A` and `B` are.
+
+Tuple **expressions** use the same shape:
+
+```drift
+val pair = (left, right)
+```
+
+Each element’s ownership flows into the tuple according to the expression used.
+
+Tuples can be **destructured** in bindings:
+
+```drift
+val (x, y) = bounds()   // moves the returned tuple; x and y bind its elements
+```
+
+Functions may return tuples or accept them as parameters, and tuple types appear in generics (e.g., `Callable<(Int, String), Bool>`). There is no implicit tuple splat/spread; tuple members are accessed via destructuring or pattern matching once supported.
+
+---
+
 
 ## 4. Ownership and move semantics (`x->`)
 
@@ -768,37 +799,7 @@ This is the dynamic counterpart to compile‑time polymorphism provided by *trai
 
 **No class/struct inheritance:** Drift has no concrete type inheritance. Data and behavior compose via structs + traits (static) and interfaces (dynamic). This avoids fragile base classes, hidden layout coupling, and diamond/virtual-base complexity while keeping ABI/layout predictable; interfaces supply dynamic dispatch without inheriting state.
 
-**Closures/lambdas (surface preview):**
-- Syntax: `|params| => expr` for expression-bodied closures (result is the expression; no `return`). A block form may be added; block-bodied closures follow normal function rules (explicit `return`).
-- Capture modes are explicit per name to keep ownership obvious: default is by-value **move** (`x`), which consumes the binding; use the `copy x` expression to duplicate a `Copy` value and keep using the original. Borrow captures (`ref x`, `ref mut x`) are planned once borrow/lifetime checking is available; initial closures may ship without borrow captures to keep lifetimes simple. Non-capturing closures are just thin function pointers.
-- Runtime shape: capturing closures lower to a fat object `{ env_ptr, call_ptr }` with an env box holding captured values under their capture modes; the env has a single destructor. Non-capturing closures lower to thin function pointers.
-- Callable interface: closures can present a single callable interface; how you pass it controls allowed usage:
-  - `ref Callable<Args, R>` — immutable borrow; callable expected not to mutate its env; can be invoked multiple times while the borrow is held.
-  - `ref mut Callable<Args, R>` — mutable borrow; callable may mutate its env across calls; exclusive while borrowed.
-  - `Callable<Args, R>` by value — moves/consumes the callable; caller may invoke once and drop it. Passing a `Copy` callable here duplicates it; passing a move-only callable makes it single-use.
-  Examples:
-  ```drift
-  fn apply_twice(cb: ref Callable<Int, Int>, x: Int) returns Int {
-      return cb.call(x) + cb.call(x)
-  }
-
-  fn accumulate(cb: ref mut Callable<Int, Void>, xs: Array<Int>) returns Void {
-      var i = 0
-      while i < xs.len() { cb.call(xs[i]); i = i + 1 }
-  }
-
-  fn run_once(cb: Callable<Void, Int>) returns Int {   // consumes cb
-      return cb.call()
-  }
-  ```
-
-**In short:**
-
-- **Traits** describe *capabilities* and enable *compile‑time specialization*.
-- **Interfaces** describe *runtime object shapes* and enable *dynamic dispatch*.
-
-Traits are *not* types; interfaces *are* types.  
-Both systems integrate cleanly with Drift’s ownership, RAII, and borrowing rules.
+Closures and callable traits are specified separately (see Chapter 22). Interfaces focus purely on dynamic dispatch for traditional object shapes.
 
 ---
 
@@ -2208,20 +2209,7 @@ Drift deliberately keeps raw pointer syntax out of the language surface. Low-lev
 
 ### Slots and uninitialized handles
 
-To enable placement construction without exposing addresses, the runtime uses opaque helpers (see Chapter 16, Memory model):
-
-- `Slot<T>` — a typed storage location capable of holding one `T`.
-- `Uninit<T>` — a marker denoting “not constructed yet.”
-
-Internal APIs operate on these handles:
-
-```drift
-slot.write(value: T)         // move/copy into the slot
-slot.emplace(args…)         // construct in place from arguments
-slot.assume_init() @unsafe  // produce a normal reference once initialized
-```
-
-Typical code never manipulates the underlying addresses—only these safe handles.
+Chapter 16 defines the canonical typed-storage helpers `Slot<T>` and `Uninit<T>` used by container internals. The pointer-free surface relies on those opaque handles instead of raw addresses; user code never sees pointer syntax or untyped memory.
 
 ### Guarded builders for container growth
 
@@ -2881,6 +2869,98 @@ Dynamic plugins provide:
 
 This design keeps the plugin surface minimal while leveraging the language’s existing safety guarantees.
 
+
+---
+
+## 22. Closures and callable traits
+
+Drift treats callables as **traits first**, with an optional dynamic wrapper when you explicitly want type erasure. Capture modes are ownership-based; borrow captures (`ref`, `ref mut`) are intentionally deferred until the borrow/lifetime rules are specified.
+
+### Surface syntax
+
+- Expression-bodied closures: `|params| => expr` (the expression value is returned).
+- Block-bodied closures may be added later; if present, they follow normal function rules with explicit `return`.
+
+### Capture modes (current revision)
+
+- `x` — **move** capture. Consumes the binding when the closure is created and stores it in the closure environment. Mutating the captured value mutates only the environment copy.
+- `copy x` — **copy** capture. Requires `x` to implement `Copy`; duplicates the value into the environment and leaves the original usable.
+- `ref x`, `ref mut x` — **not yet supported**; rejected until borrow/lifetime checking is specified.
+
+Each captured name must be spelled explicitly; there is no implicit capture list.
+
+### Lowering model
+
+- **Non-capturing** closures/functions lower to **thin function pointers** and are `Copy`.
+- **Capturing** closures lower to a **fat object** `{ env_ptr, call_ptr }`, where `env_ptr` points to a heap box holding the captured values under their capture modes. The environment has a single destructor; dropping the closure drops the env exactly once.
+
+### Callable traits (static dispatch)
+
+Closures automatically implement one or more callable traits based on how they use their environment:
+
+```drift
+trait Callable<Args, R> {
+    fn call(self: ref Self, args: Args) returns R
+}
+
+trait CallableMut<Args, R> {
+    fn call(self: ref mut Self, args: Args) returns R
+}
+
+trait CallableOnce<Args, R> {
+    fn call(self: Self, args: Args) returns R
+}
+```
+
+- Pure/non-mutating closures implement `Callable` and `CallableOnce`.
+- Mutating closures implement `CallableMut` and `CallableOnce`.
+- Closures that move out of their captures implement **only** `CallableOnce`.
+- Non-capturing functions implement all three traits.
+
+Generics use these traits for zero-cost, monomorphized dispatch:
+
+```drift
+fn apply_twice<F>(f: F, x: Int) returns Int
+    require F is Callable<(Int), Int> {
+    return f.call(x) + f.call(x)
+}
+
+fn accumulate<F>(f: ref mut F, xs: Array<Int>) returns Void
+    require F is CallableMut<(Int), Void> {
+    var i = 0
+    while i < xs.len() { f.call(xs[i]); i = i + 1 }
+}
+
+fn run_once<F>(f: F) returns Int
+    require F is CallableOnce<Void, Int> {
+    return f.call()
+}
+```
+
+For multi-argument callables, `Args` is typically a tuple (e.g., `(Int, String)`); for zero-argument callables, use `Void` as the parameter type and call with `f.call()`.
+
+### Dynamic callable interface (opt-in erasure)
+
+When you need runtime dispatch, use an explicit interface:
+
+```drift
+interface CallableDyn<Args, R> {
+    fn call(self: ref CallableDyn<Args, R>, args: Args) returns R
+}
+
+fn erase<F, Args, R>(f: F) returns CallableDyn<Args, R>
+    require F is Callable<Args, R> {
+    // implementation-defined boxing/adaptation
+}
+```
+
+Erasure is explicit; the default callable path remains trait-based static dispatch.
+
+### ABI and interop notes
+
+- Closures are ordinary Drift values and can cross Drift module/plugin boundaries like any other value.
+- Capturing closures are **not** automatically wrapped for C ABIs. To interoperate with C callbacks, use a thin (non-capturing) function pointer or build an explicit `{ void* ctx, fn(ctx, …) }` trampoline; see `lang.abi` for guidance.
+- Borrow captures will be added once the borrow/lifetime model is specified; until then they are rejected.
 
 
 ## Appendix A — Ownership Examples
