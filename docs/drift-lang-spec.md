@@ -376,6 +376,7 @@ QualifiedName ::= Ident ('.' Ident)*
 - If it resolves to a **module**, the import binds that module under its last segment (or the `as` alias).  
 - If it resolves to an **exported symbol** inside a module (e.g., `std.console.out`), the import binds that symbol directly into the local scope under its own name (or the `as` alias).  
 - Ambiguities between module and symbol names must be disambiguated with `as` or avoided.
+- Aliases affect only the local binding; frames and module metadata always record the original module ID, not the alias.
 
 **Module identifiers**
 

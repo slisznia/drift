@@ -1,0 +1,5 @@
+{
+  "exit": 1,
+  "stdout": "",
+  "stderr": "type error: 0:0: invalid module name 'Bad.Module' (lowercase alnum with dots/underscores; no leading/trailing dots/underscores)\n"
+}

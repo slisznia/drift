@@ -184,8 +184,10 @@ def _build_program(tree: Tree) -> Program:
 
 
 def _build_module_decl(tree: Tree) -> str:
-    tok = next((child for child in tree.children if isinstance(child, Token) and child.type == "MODULE_ID"), None)
-    return tok.value if tok else "main"
+    from lark import Token as LarkToken
+
+    path_parts = [tok.value for tok in tree.scan_values(lambda v: isinstance(v, LarkToken) and v.type == "NAME")]
+    return ".".join(path_parts) if path_parts else "main"
 
 
 def _build_exception_def(tree: Tree) -> ExceptionDef:
@@ -489,7 +491,12 @@ def _build_import_stmt(tree: Tree) -> ImportStmt:
     loc = _loc(tree)
     path_node = tree.children[0]
     parts = [child.value for child in path_node.children if isinstance(child, Token) and child.type == "NAME"]
-    return ImportStmt(loc=loc, path=parts)
+    alias = None
+    if len(tree.children) > 1 and isinstance(tree.children[1], Tree) and _name(tree.children[1]) == "alias_clause":
+        alias_tok = next((c for c in tree.children[1].children if isinstance(c, Token) and c.type == "NAME"), None)
+        if alias_tok:
+            alias = alias_tok.value
+    return ImportStmt(loc=loc, path=parts, alias=alias)
 
 
 def _build_if_stmt(tree: Tree) -> IfStmt:

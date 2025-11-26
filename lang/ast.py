@@ -196,6 +196,7 @@ class Program:
 class ImportStmt(Stmt):
     loc: Located
     path: List[str]
+    alias: Optional[str] = None
 
 
 @dataclass
