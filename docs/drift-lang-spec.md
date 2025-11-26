@@ -12,7 +12,7 @@ Most languages pick a side:
 
 Drift rejects that binary. You get a single language that works across the entire performance spectrum.
 
-### 1.1 Safety first, without sacrificing power
+### Safety first, without sacrificing power
 
 Drift avoids the foot-guns that plague many systems languages:
 
@@ -23,19 +23,19 @@ Drift avoids the foot-guns that plague many systems languages:
 
 Yet it doesn’t enforce safety by making everything slow or hiding costs behind a garbage collector.
 
-### 1.2 Escape hatches when you ask for them
+### Escape hatches when you ask for them
 
 High-level code stays high-level by default. Low-level control appears only when you deliberately reach for the tooling (`lang.abi`, `lang.internals`, `@unsafe`).
 
-### 1.3 Move semantics everywhere
+### Move semantics everywhere
 
 Passing a value by value moves it—no deep copies unless you opt in. Moves are cheap; cloning is explicit.
 
-### 1.4 Zero-cost abstractions
+### Zero-cost abstractions
 
 Drift’s abstractions compile down to what you would hand-write. Ownership, traits, interfaces, and concurrency are “pay for what you use.”
 
-### 1.5 Ready out of the box, no hidden machinery
+### Ready out of the box, no hidden machinery
 
 The language ships meaningful tools (structured errors, virtual threads, collection literals) without magic or implicit globals. Everything is imported explicitly.
 
@@ -53,29 +53,29 @@ Drift expressions largely follow a C-style surface with explicit ownership rules
 - Array literals: `[1, 2, 3]`
 - String concatenation uses `+`
 
-### 1.6 Predictable interop
+### Predictable interop
 
 Precise binary layouts, opaque ABI types, and sealed unsafe modules keep foreign calls predictable without exposing raw pointers.
 
-### 1.7 Representation transparency only when requested
+### Representation transparency only when requested
 
 Everyday Drift code treats core types as opaque. When you need to see the layout, you opt in via `extern "C"` or `lang.abi` helpers.
 
-### 1.8 Performance without fear
+### Performance without fear
 
 Write clear code first. When you profile a hotspot, the language gives you the tools to optimize surgically without rewriting everything in C.
 
-### 1.9 A language for both humans and machines
+### A language for both humans and machines
 
 Drift emphasizes predictability, clarity, and strong guarantees so humans can reason about programs—and so tooling can help without guesswork.
 
-### 1.10 Signed modules and portable distribution
+### Signed modules and portable distribution
 
 All modules compile down to a canonical Drift Module IR (DMIR) that can be cryptographically signed and shipped as a Drift Module Package (DMP). Imports are verified before execution, so every machine sees the same typed semantics and can reject tampered artifacts.
 
 ---
 
-## 2. Variable and reference qualifiers
+## 3. Variable and reference qualifiers
 
 | Concept | Keyword / Syntax | Meaning |
 |---|---|---|
@@ -159,18 +159,18 @@ The tuple-style header desugars to the block form. Field names remain available 
 ---
 
 
-## 3. Ownership and move semantics (`x->`)
+## 4. Ownership and move semantics (`x->`)
 
 `x->` transfers ownership of `x` without copying. After a move, `x` becomes invalid. Equivalent intent to `std::move(x)` in C++ but lighter and explicit.
 
-### 3.1 Syntax
+### Syntax
 
 ```drift
 PostfixExpr ::= PrimaryExpr
               | PostfixExpr '->'
 ```
 
-### 3.2 Core rules
+### Core rules
 | Aspect | Description |
 |---------|-------------|
 | **Move target** | Must be an owned (`var`) value. |
@@ -181,7 +181,7 @@ PostfixExpr ::= PrimaryExpr
 
 ---
 
-### 3.3 Default: move-only types
+### Default: move-only types
 
 Every type is **move-only by default**. If you define a struct and do nothing else, the compiler will refuse to copy it; the only way to pass or assign it by value is to move with `x->`.
 
@@ -204,7 +204,7 @@ use_file(f->)    // ✅ move into the call
 
 This design keeps ownership explicit: you opt *out* of move-only semantics only when cheap copies are well-defined.
 
-### 3.4 Opting into copying
+### Opting into copying
 
 Types that want implicit copies implement the `Copy` trait (see Section 13.3 for the trait definition). The trait is only available when **every field is copyable**. Primitives already implement it; your structs may do the same:
 
@@ -218,14 +218,14 @@ implement Copy for Job {}
 var a = Job(id = 1)
 var b = a      // ✅ copies `a` by calling `copy`
 
-### 3.5 Explicit copy expression
+### Explicit copy expression
 
 Use the `copy <expr>` expression to force a duplicate of a `Copy` value. It fails at compile time if the operand is not `Copy`. This works anywhere an expression is allowed (call arguments, closure captures, `let` bindings) and leaves the original binding usable. Default by-value passing still **moves** non-`Copy` values; `copy` is how you make the intent to duplicate explicit.
 ```
 
 Copying still respects ownership rules: `ref self` indicates the value is borrowed for the duration of the copy, after which both the original and the newly returned value remain valid.
 
-### 3.5 Explicit deep copies (`clone`-style)
+### Explicit deep copies (`clone`-style)
 
 If a move-only type wants to offer a deliberate, potentially expensive duplicate, it can expose an explicit method (e.g., `clone`). Assignment still will not copy—callers must opt in:
 
@@ -247,7 +247,7 @@ This pattern distinguishes cheap, implicit copies (`Copy`) from explicit, potent
 
 ---
 
-### 3.6 Example — copy vs move
+### Example — copy vs move
 
 ```drift
 struct Job { id: Int }
@@ -265,7 +265,7 @@ process(j)    // ❌ error: j was moved
 
 ---
 
-### 3.7 Example — non-copyable type
+### Example — non-copyable type
 
 ```drift
 struct File { /* non-copyable handle */ }
@@ -281,7 +281,7 @@ upload(f)     // ❌ cannot copy non-copyable type
 
 ---
 
-### 3.8 Example — borrowing instead of moving
+### Example — borrowing instead of moving
 
 ```drift
 fn inspect(f: ref File) returns Void {
@@ -295,7 +295,7 @@ upload(f->)       // later move ownership away
 
 ---
 
-### 3.9 Example — mut borrow vs move
+### Example — mut borrow vs move
 
 ```drift
 fn fill(f: ref mut File) returns Void { /* writes data */ }
@@ -309,7 +309,7 @@ Borrow lifetimes are scoped to braces; once the borrow ends, moving is allowed a
 
 ---
 
-### 3.10 Example — move return values
+### Example — move return values
 
 ```drift
 fn open(name: String) returns File {
@@ -326,7 +326,7 @@ Ownership flows *out* of the function; RAII ensures destruction if not returned.
 
 ---
 
-### 3.11 Example — composition of moves
+### Example — composition of moves
 
 ```drift
 fn take(a: Array<Job>) returns Void { /* consumes array */ }
@@ -341,19 +341,19 @@ take(jobs)      // ❌ jobs invalid after move
 
 ---
 
-### 3.12 Lifetime and destruction rules
+### Lifetime and destruction rules
 - Locals are destroyed **in reverse declaration order** when a block closes.  
 - Moving (`x->`) transfers destruction responsibility to the receiver.  
 - Borrowed references are automatically invalidated at scope exit.  
 - No garbage collection — **destruction is deterministic** (RAII).
 
 ---
-## 4. Imports and standard I/O
+## 5. Imports and standard I/O
 
 Drift uses explicit imports — no global or magic identifiers.  
 Console output is available through the `std.console` module.
 
-### 4.1 Import syntax (modules and symbols)
+### Import syntax (modules and symbols)
 
 ```drift
 import std.console.out        // bind the exported `out` stream
@@ -389,7 +389,7 @@ QualifiedName ::= Ident ('.' Ident)*
 
 Drift uses structured control flow; all loops and conditionals are block-based.
 
-### 6.1 If/else
+### If/else
 
 ```drift
 if cond {
@@ -403,7 +403,7 @@ if cond {
 - The condition must type-check as `Bool`; the two branches need not return the same type unless used as an expression (e.g., in a ternary).
 - Each branch has its own scope for locals; names inside a branch shadow outer names.
 
-### 6.2 While loops
+### While loops
 
 ```drift
 var i: Int64 = 0
@@ -417,7 +417,7 @@ while i < 3 {
 - The body forms its own scope for local bindings; fresh bindings inside the loop shadow outer names and are re-created per iteration.
 - `break` exits the nearest enclosing loop; `continue` jumps to the next iteration (re-evaluating the condition).
 
-### 6.3 Ternary (`? :`) operator
+### Ternary (`? :`) operator
 
 ```drift
 val label = is_error ? "error" : "ok"
@@ -427,7 +427,7 @@ val label = is_error ? "error" : "ok"
 - `then_expr` and `else_expr` must have the same type (checked at compile time).
 - Useful for concise branching without introducing additional block nesting; when control flow is complex, prefer a full `if/else`.
 
-### 6.4 Try/else (expression) and Try/catch (statement)
+### Try/else (expression) and Try/catch (statement)
 
 **Expression form (`try/else`):**
 
@@ -459,13 +459,7 @@ try {
 Keywords and literals are reserved and cannot be used as identifiers (functions, variables, modules, structs, exceptions, etc.):  
 `fn`, `val`, `var`, `returns`, `if`, `else`, `while`, `break`, `continue`, `try`, `catch`, `throw`, `raise`, `return`, `exception`, `import`, `module`, `true`, `false`, `not`, `and`, `or`, plus language/FFI/legacy keywords (`auto`, `pragma`, `bool`, `int`, `float`, `string`, `void`, `abstract`, `assert`, `boolean`, `byte`, `case`, `char`, `class`, `const`, `default`, `do`, `double`, `enum`, `extends`, `final`, `finally`, `for`, `goto`, `implements`, `instanceof`, `interface`, `long`, `native`, `new`, `package`, `private`, `protected`, `public`, `short`, `static`, `strictfp`, `super`, `switch`, `synchronized`, `this`, `throws`, `transient`, `volatile`).
 
-## 8. Traits vs. interfaces
-
-- **Traits** are compile-time contracts with static/monomorphic dispatch. Implementations are specialized per concrete type (monomorphized) and incur no runtime vtable. Use traits for zero-cost abstractions like iterators, ops, or helpers that should inline/bake per type.
-- **Interfaces** are runtime contracts with dynamic dispatch via a vtable (fat pointers `{data, vtable}`). Use interfaces when you need late binding across modules/plugins or heterogeneous collections. Owned interfaces include a drop slot; borrowed interfaces omit it.
-- Choosing between them: prefer traits by default for performance and simplicity; reach for interfaces only when you truly need runtime polymorphism/late binding. The ABI and signing model keep interface layouts stable, while traits remain a compile-time-only construct.
-
-## 5. Standard I/O design
+## 8. Standard I/O design
 
 ### `std.io` module
 
@@ -509,7 +503,7 @@ This model allows concise I/O while keeping imports explicit and predictable.
 The objects `out`, `err`, and `in` are references to standard I/O stream instances.
 
 
-## 6. `lang.array`, `ByteBuffer`, and array literals
+## 9. `lang.array`, `ByteBuffer`, and array literals
 
 `lang.array` is the standard module for homogeneous sequences. It exposes the generic type `Array<T>` plus builder helpers and the binary-centric `ByteBuffer`. `Array` is always in scope for type annotations, so you can write:
 
@@ -537,9 +531,9 @@ val explicit: Array<Int64> = [1, 2, 3]  // annotation still allowed when desired
 
 `Array<T>` integrates with the broader language design — it moves with `->`, can be captured with `^`, and will participate in trait implementations like `Display` once the stdlib grows. The literal syntax keeps sample programs succinct while we flesh out higher-level APIs.
 
-### 6.1 ByteBuffer, ByteSlice, and MutByteSlice
+### ByteBuffer, ByteSlice, and MutByteSlice
 
-#### 6.1.1 Borrowing rules and zero-copy interop
+#### Borrowing rules and zero-copy interop
 
 `ByteSlice`/`MutByteSlice` behave like other Drift borrows:
 
@@ -602,7 +596,7 @@ fn copy_stream(src: InputStream, dst: OutputStream) returns Void {
 `read` writes into the provided mutable slice and returns the number of bytes initialized; `slice` then produces a read-only view of that prefix without copying. FFI helpers in `lang.abi` can also manufacture `ByteSlice`/`MutByteSlice` wrappers around raw pointers for zero-copy interop.
 
 
-### 6.2 Indexing, mutation, and borrowing
+### Indexing, mutation, and borrowing
 #### Borrowed element references
 
 To avoid copying and let other APIs operate on a specific slot, `Array<T>` exposes helper methods:
@@ -638,21 +632,21 @@ frozen[0] = 1               // compile error: cannot assign through immutable bi
 Nested indexing works as expected (e.g., `matrix[row][col]`) as long as the root binding is declared with `var`.
 
 
-## 7. Collection literals (arrays and maps)
+## 10. Collection literals (arrays and maps)
 
 Drift includes literal syntax for homogeneous arrays (`[a, b, ...]`) and maps (`{ key: value, ... }`).
 The syntax is part of the language grammar, but **literals never hard-wire a concrete container type**.
 Instead, they are desugared through capability interfaces so projects can pick any backing collection.
 
-### 7.1 Goals
+### Goals
 
 1. **Ergonomics** — trivial programs should be able to write `val xs = [1, 2, 3]` without ceremony.
 2. **Flexibility** — large systems must be free to route literals into custom containers, including
    arena-backed vectors, small-capacity stacks, or persistent maps.
 
-### 7.2 Syntax
+### Syntax
 
-#### 7.2.1 Array literal
+#### Array literal
 
 ```
 ArrayLiteral ::= "[" (Expr ("," Expr)*)? "]"
@@ -660,7 +654,7 @@ ArrayLiteral ::= "[" (Expr ("," Expr)*)? "]"
 
 Example: `val xs = [1, 2, 3]`.
 
-#### 7.2.2 Map literal
+#### Map literal
 
 ```
 MapLiteral ::= "{" (MapEntry ("," MapEntry)*)? "}"
@@ -672,7 +666,7 @@ Example: `val user = { "name": "Ada", "age": 38 }`.
 Duplicate keys are allowed syntactically; the target type decides whether to keep the first value, last
 value, or reject duplicates.
 
-### 7.3 Type resolution
+### Type resolution
 
 A literal `[exprs...]` or `{k: v, ...}` requires a *target* type `C`. Resolution happens in two phases:
 
@@ -681,7 +675,7 @@ A literal `[exprs...]` or `{k: v, ...}` requires a *target* type `C`. Resolution
 2. Determine the target container type `C` from context. If no context constrains the literal, the
    compiler falls back to the standard prelude types (`Array<T>` and `Map<K, V>`).
 
-#### 7.3.1 `FromArrayLiteral`
+#### `FromArrayLiteral`
 
 A type `C` may accept array literals by implementing:
 
@@ -700,7 +694,7 @@ C.from_array_literal(tmp_array)
 Where `tmp_array` is an ephemeral `Array<T>` built by the compiler. If `C` does not implement the
 interface, the literal fails to type-check.
 
-#### 7.3.2 `FromMapLiteral`
+#### `FromMapLiteral`
 
 Map literals use a similar interface:
 
@@ -713,7 +707,7 @@ interface FromMapLiteral<Key, Value> {
 The compiler converts `{k1: v1, ...}` into `C.from_map_literal(tmp_entries)` where `tmp_entries` is an
 `Array<(K, V)>`.
 
-### 7.4 Standard implementations
+### Standard implementations
 
 The prelude wires literals to the default collections:
 
@@ -744,7 +738,7 @@ fn main() returns Void {
 }
 ```
 
-### 7.5 Strict mode and overrides
+### Strict mode and overrides
 
 Projects may opt into a strict mode that disables implicit prelude imports. In that configuration:
 
@@ -770,13 +764,13 @@ val fast: SmallVec<Int> = [1, 2, 3]
 
 The same pattern applies to alternative map implementations.
 
-### 7.6 Diagnostics
+### Diagnostics
 
 - `[1, "two"]` → error: element types do not unify.
 - `{}` without a target type → error when no default map is in scope.
 - `val s: SortedSet<Int> = [1, 2, 3]` → error unless `SortedSet<Int>` implements `FromArrayLiteral<Int>`.
 
-### 7.7 Summary
+### Summary
 
 - Literal syntax is fixed in the language, but its meaning is delegated to interfaces.
 - The prelude provides ready-to-use defaults (`Array`, `Map`).
@@ -784,11 +778,11 @@ The same pattern applies to alternative map implementations.
 - Errors are clear when element types disagree or no implementation is available.
 
 
-## 8. Variant types (`variant`)
+## 11. Variant types (`variant`)
 
 Drift’s `variant` keyword defines **tagged unions**: a value that is exactly one of several named alternatives (variants). Each alternative may carry its own fields, and the compiler enforces exhaustive handling when you `match` on the value.
 
-### 8.1 Syntax
+### Syntax
 
 ```drift
 variant Result<T, E> {
@@ -802,7 +796,7 @@ variant Result<T, E> {
 - Each variant uses UpperCamel case and may include a field list `(field: Type, ...)`.
 - At least one variant must be declared, and names must be unique within the type.
 
-### 8.2 Semantics and representation
+### Semantics and representation
 
 A `variant` value stores:
 
@@ -811,7 +805,7 @@ A `variant` value stores:
 
 Only the active variant’s fields may be accessed. This is enforced statically by pattern matching.
 
-### 8.3 Construction
+### Construction
 
 Each variant behaves like a constructor:
 
@@ -822,7 +816,7 @@ val failure = Err(error = "oops")            // type inference fills in `<Int64,
 
 Named arguments are required when a variant has multiple fields; single-field variants may support positional construction, though the explicit form is always accepted.
 
-### 8.4 Pattern matching and exhaustiveness
+### Pattern matching and exhaustiveness
 
 `match` is used to consume a variant. All variants must be covered (or you must use future catch-all syntax once it exists).
 
@@ -870,7 +864,7 @@ fn describe_lookup(id: Int64, r: LookupResult<String>) returns String {
 }
 ```
 
-### 8.5 Recursive data
+### Recursive data
 
 Variants are ideal for ASTs and other recursive shapes:
 
@@ -890,7 +884,7 @@ fn eval(expr: ref Expr) returns Int64 {
 }
 ```
 
-### 8.6 Generics
+### Generics
 
 Variants support type parameters exactly like `struct` or `fn` declarations:
 
@@ -908,11 +902,11 @@ fn make_pair<T>(x: T, y: T) returns PairOrError<T, String> {
 }
 ```
 
-### 8.7 Value semantics and equality
+### Value semantics and equality
 
 Variants follow Drift’s value semantics: they are copied/moved by value, and their equality/ordering derive from their payloads. Two `Result` values are equal only if they hold the same variant *and* the corresponding fields are equal.
 
-### 8.8 Evolution considerations
+### Evolution considerations
 
 - Adding a new variant is a **breaking change** because every `match` must handle it explicitly.
 - Library authors should document variant additions clearly or provide fallback variants when forward compatibility matters.
@@ -920,12 +914,12 @@ Variants follow Drift’s value semantics: they are copied/moved by value, and t
 Variants underpin key library types such as `Result<T, E>` and `Option<T>`, enabling safe, expressive modeling of operations with multiple outcomes.
 
 
-## 9. Exceptions and error context
+## 12. Exceptions and error context
 
 Drift provides structured exception handling through a single `Error` type, **exception events**, and the `^` capture modifier.  
 Exceptions are **not** UI messages: they carry machine-friendly context (event name, arguments, captured locals, stack) that can be logged, inspected, or transmitted without embedding human prose.
 
-### 9.1 Goals
+### Goals
 Drift’s exception system is designed to:
 
 - Use **one concrete error type** (`Error`) for all thrown failures.
@@ -937,7 +931,7 @@ Drift’s exception system is designed to:
 
 ---
 
-### 9.2 Error type and layout
+### Error type and layout
 
 ```drift
 struct Error {
@@ -950,13 +944,13 @@ struct Error {
 exception IndexError(container: String, index: Int64)
 ```
 
-#### 9.2.1 event
+#### event
 Event name of the exception (`"BadArgument"`).
 
-#### 9.2.2 args
+#### args
 Only event arguments, stringified via `Display.to_string()`.
 
-#### 9.2.3 ctx_frames
+#### ctx_frames
 Per-frame captured locals:
 
 ```drift
@@ -968,14 +962,14 @@ struct CtxFrame {
 
 Event args never appear here.
 
-#### 9.2.4 stack
+#### stack
 Opaque captured backtrace.
 
 ---
 
-### 9.3 Exception events
+### Exception events
 
-#### 9.3.1 Declaring events
+#### Declaring events
 ```drift
 exception InvalidOrder(order_id: Int64, code: String)
 exception Timeout(operation: String, millis: Int64)
@@ -983,7 +977,7 @@ exception Timeout(operation: String, millis: Int64)
 
 Each parameter type must implement `Display`.
 
-#### 9.3.2 Throwing
+#### Throwing
 ```drift
 throw InvalidOrder(order_id = order.id, code = "order.invalid")
 ```
@@ -994,7 +988,7 @@ Runtime builds an `Error` with:
 - empty ctx_frames (filled during unwind)
 - backtrace
 
-#### 9.3.3 Display requirement
+#### Display requirement
 Each exception argument type must implement:
 
 ```drift
@@ -1005,7 +999,7 @@ trait Display {
 
 ---
 
-### 9.4 Capturing local context with ^
+### Capturing local context with ^
 
 Locals can be captured:
 
@@ -1029,11 +1023,11 @@ Rules:
 
 ---
 
-### 9.5 Throwing, catching, rethrowing
+### Throwing, catching, rethrowing
 
 `Error` is move-only.
 
-#### 9.5.1 Catch by event
+#### Catch by event
 ```drift
 try {
     ship(order)
@@ -1044,7 +1038,7 @@ try {
 
 Matches by `error.event`.
 
-#### 9.5.2 Catch-all + rethrow
+#### Catch-all + rethrow
 ```drift
 catch e {
     log(ref e)
@@ -1054,7 +1048,7 @@ catch e {
 
 Ownership moves back to unwinder.
 
-#### 9.5.3 Inline catch-all shorthand
+#### Inline catch-all shorthand
 
 For a single call where you just want a fallback value, use the one-liner form:
 
@@ -1075,7 +1069,7 @@ The `else` expression must produce the same type as the `try` expression. Except
 
 ---
 
-### 9.6 Internal Result<T, Error> semantics
+### Internal Result<T, Error> semantics
 
 Conceptual form:
 
@@ -1090,7 +1084,7 @@ Every function behaves as if returning `Result<T, Error>`; ABI lowers accordingl
 
 ---
 
-### 9.7 Drift–Drift propagation (plugins)
+### Drift–Drift propagation (plugins)
 
 Unwinding is allowed across Drift modules/plugins as long as:
 - The `Error` layout is identical.
@@ -1100,7 +1094,7 @@ Event name + args + ctx_frames + stack fully capture portable state.
 
 ---
 
-### 9.8 Logging and serialization
+### Logging and serialization
 JSON example:
 
 ```json
@@ -1117,7 +1111,7 @@ JSON example:
 
 ---
 
-### 9.9 Summary
+### Summary
 
 - Single `Error` type.
 - Event-based exceptions.
@@ -1126,12 +1120,12 @@ JSON example:
 - Precisely defined layout for plugin-safe unwinding.
 - Semantically equivalent to `Result<T, Error>` internally.
 
-## 10. Mutators, transformers, and finalizers
+## 13. Mutators, transformers, and finalizers
 
 In Drift, a function’s **parameter ownership mode** communicates its **lifecycle role** in a data flow.  
 This distinction becomes especially clear in pipelines (`>>`), where each stage expresses how it interacts with its input.
 
-### 10.1 Function roles
+### Function roles
 
 | Role | Parameter type | Return type | Ownership semantics | Typical usage |
 |------|----------------|--------------|---------------------|----------------|
@@ -1139,7 +1133,7 @@ This distinction becomes especially clear in pipelines (`>>`), where each stage 
 | **Transformer** | `T` | `U` (often `T`) | Consumes its input and returns a new owned value. Ownership transfers into the call and out again. | `compress`, `clone`, `serialize`. |
 | **Finalizer / Sink** | `T` | `Void` | Consumes the value completely. Ownership ends here; the resource is destroyed or released at function return. | `finalize`, `close`, `free`, `commit`. |
 
-### 10.2 Pipeline behavior
+### Pipeline behavior
 
 The pipeline operator `>>` is **ownership-aware**.  
 It automatically determines how each stage interacts based on the callee’s parameter type:
@@ -1161,7 +1155,7 @@ open("x")
 
 At the end of scope, if the value is still owned (not consumed by a finalizer), RAII automatically calls its destructor.
 
-### 10.3 Rationale
+### Rationale
 
 This mirrors real-world resource lifecycles:
 1. Creation — ownership established.  
@@ -1171,7 +1165,7 @@ This mirrors real-world resource lifecycles:
 
 Explicit parameter types make these transitions visible and verifiable at compile time.
 
-### 10.4 RAII interaction
+### RAII interaction
 
 All owned resources obey RAII: their destructors run automatically at scope end.  
 Finalizers are **optional** unless early release, explicit error handling, or shared-handle semantics require them.
@@ -1193,31 +1187,31 @@ Finalizers are **optional** unless early release, explicit error handling, or sh
 
 In both cases, the file handle is safely released exactly once.
 
-### 10.5 Destructors and moves
+### Destructors and moves
 
 - Deterministic RAII: owned values run their destructor at end of liveness—scope exit, early return, or after being consumed by a finalizer. No deferred GC-style cleanup.
 - Move-only by default: moving a value consumes it; the source binding becomes invalid and is not dropped there. Drop runs exactly once on the final owner.
 - Copyable types opt in: only `Copy` types may be implicitly copied; they either have trivial/no destructor or a well-defined copy+drop story.
 
-## 12. Null safety & optional values
+## 14. Null safety & optional values
 
 Drift is **null-free**. There is no `null` literal. A value is either present (`T`) or explicitly optional (`Optional<T>`). The compiler never promotes `Optional<T>` to `T` implicitly.
 
-### 12.1 Types
+### Types
 
 | Type | Meaning |
 |------|---------|
 | `T` | Non-optional; always initialized. |
 | `Optional<T>` | Possibly empty; either a value or nothing. |
 
-### 12.2 Construction
+### Construction
 
 ```drift
 val present: Optional<Int64> = Optional.of(42)
 val empty: Optional<Int64> = Optional.none()
 ```
 
-### 12.3 Interface
+### Interface
 
 ```drift
 interface Optional<T> {
@@ -1243,7 +1237,7 @@ module Optional {
 - `if_present` calls the block with a borrow (`ref T`) to avoid moving.
 - `if_none` runs a block when empty.
 
-### 12.4 Control flow
+### Control flow
 
 ```drift
 if qty.present() {
@@ -1261,7 +1255,7 @@ qty.if_present(ref q: {
 
 There is no safe-navigation operator (`?.`). Access requires explicit helpers.
 
-### 12.5 Parameters & returns
+### Parameters & returns
 
 - A parameter of type `T` cannot receive `Optional.none()`.
 - Use `Optional<T>` for “maybe” values.
@@ -1277,22 +1271,22 @@ if sku.none() {
 }
 ```
 
-### 12.6 Ownership
+### Ownership
 
 `if_present` borrows (`ref T`) by default. No move occurs unless you explicitly consume `T` inside the block.
 
-### 12.7 Diagnostics (illustrative)
+### Diagnostics (illustrative)
 
 - **E2400**: cannot assign `Optional.none()` to non-optional type `T`.
 - **E2401**: attempted member/method use on `Optional<T>` without `map`/`unwrap`/`if_present`.
 - **E2402**: `unwrap()` on empty optional.
 - **E2403**: attempted implicit conversion `Optional<T>` → `T`.
 
-### 12.8 End-to-end example
+### End-to-end example
 
 ```drift
 
-### 12.9 Tuple structs & tuple returns
+### Tuple structs & tuple returns
 
 - **Tuple structs:** `struct Point(x: Int64, y: Int64)` is a compact header that desugars to the standard block struct. Construction may be positional (`Point(10, 20)`) or named (`Point(x = 10, y = 20)`), dot access remains (`point.x`).
 
@@ -1329,14 +1323,20 @@ fn main() returns Void {
 ```
 
 ---
-## 13 Traits and compile-time capabilities
+## 15. Traits and compile-time capabilities
+
+### Traits vs. interfaces
+
+- **Traits** are compile-time contracts with static/monomorphic dispatch. Implementations are specialized per concrete type (monomorphized) and incur no runtime vtable. Use traits for zero-cost abstractions like iterators, ops, or helpers that should inline/bake per type.
+- **Interfaces** are runtime contracts with dynamic dispatch via a vtable (fat pointers `{data, vtable}`). Use interfaces when you need late binding across modules/plugins or heterogeneous collections. Owned interfaces include a drop slot; borrowed interfaces omit it.
+- Choosing between them: prefer traits by default for performance and simplicity; reach for interfaces only when you truly need runtime polymorphism/late binding. The ABI and signing model keep interface layouts stable, while traits remain a compile-time-only construct.
 
 (*Conforms to Drift Spec Rev. 2025-11 (Rev 4)*)  
 (*Fully consistent with the `require` + `is` syntax finalized in design discussions.*)
 
 ---
 
-### 13.1 Overview
+### Overview
 
 Traits in Drift describe **capabilities** a type *is capable of*.  
 They are compile-time contracts, not inheritance hierarchies and not runtime polymorphism.
@@ -1358,7 +1358,7 @@ Traits unify:
 
 ---
 
-### 13.2 Defining traits
+### Defining traits
 
 A trait defines a set of functions that a type must provide to be considered capable of that trait.
 
@@ -1385,7 +1385,7 @@ Rules:
 
 ---
 
-### 13.3 Implementing traits
+### Implementing traits
 
 An implementation attaches the capability to a type.
 
@@ -1418,7 +1418,7 @@ implement Debuggable for Box<T>
 
 ---
 
-### 13.4 Type-level trait requirements (`require`)
+### Type-level trait requirements (`require`)
 
 A type may declare that it cannot exist unless certain traits are implemented.
 
@@ -1464,7 +1464,7 @@ Constraints:
 
 ---
 
-### 13.5 Function-level trait requirements
+### Function-level trait requirements
 
 Functions may restrict their usage to specific capabilities:
 
@@ -1494,7 +1494,7 @@ Using a function with unmet trait requirements triggers a compile-time error.
 
 ---
 
-### 13.6 Trait guards (`if T is TraitName`)
+### Trait guards (`if T is TraitName`)
 
 Trait guards allow functions to adapt behavior based on whether a type implements a trait.
 
@@ -1534,7 +1534,7 @@ Trait guards prevent combinatorial explosion of overloaded functions.
 
 ---
 
-### 13.7 Trait expressions (boolean logic)
+### Trait expressions (boolean logic)
 
 Trait requirements and guards allow boolean trait expressions:
 
@@ -1561,7 +1561,7 @@ Traits become composable *properties* of types.
 
 ---
 
-### 13.8 Trait dependencies (traits requiring traits)
+### Trait dependencies (traits requiring traits)
 
 Traits themselves may declare capabilities they depend upon:
 
@@ -1579,7 +1579,7 @@ Any type that implements `Printable` must also implement `Debuggable` and `Displ
 
 ---
 
-### 13.9 RAII and the `Destructible` trait
+### RAII and the `Destructible` trait
 
 Destruction is expressed as a trait:
 
@@ -1616,7 +1616,7 @@ This integrates seamlessly with move semantics and deterministic lifetimes.
 
 ---
 
-### 13.10 Overloading and specialization by trait
+### Overloading and specialization by trait
 
 Functions may overload based on trait requirements:
 
@@ -1640,7 +1640,7 @@ Rules:
 
 ---
 
-### 13.11 Complete syntax summary
+### Complete syntax summary
 
 #### Defining a trait
 
@@ -1693,7 +1693,7 @@ require T is Clonable and not Destructible
 
 ---
 
-### 13.13 Thread-safety marker traits (`Send`, `Sync`)
+### Thread-safety marker traits (`Send`, `Sync`)
 
 Certain libraries (notably `std.concurrent`) rely on two marker traits that express thread-safety:
 
@@ -1714,7 +1714,7 @@ The concurrency chapter (Section 16.6) references these bounds when describing v
 ---
 
 
-### 13.14. Design Rationale
+### Design Rationale
 
 Traits are designed to:
 
@@ -1737,7 +1737,7 @@ The trio of:
 forms a coherent, expressive, zero‑overhead system.
 
 ---
-## 14. Interfaces & dynamic dispatch
+## 16. Interfaces & dynamic dispatch
 
 Drift supports **runtime polymorphism** through *interfaces*.  
 Interfaces allow multiple **different concrete types** to be treated as one unified abstract type at runtime.  
@@ -1779,7 +1779,7 @@ Both systems integrate cleanly with Drift’s ownership, RAII, and borrowing rul
 
 ---
 
-### 14.1 Interface definitions
+### Interface definitions
 
 Interfaces define a set of functions callable on any implementing type.
 
@@ -1798,7 +1798,7 @@ interface OutputStream {
 - A function that receives an `OutputStream` may be passed any object that implements that interface.
 - The method signatures inside an interface show the receiver type explicitly (`self: ref OutputStream`).
 
-### 14.2 Receiver rules (`self`)
+### Receiver rules (`self`)
 
 Drift differentiates between **methods** (eligible for dot-call syntax) and **free functions**.
 
@@ -1836,7 +1836,7 @@ This rule set makes the receiver’s ownership mode explicit and prevents implic
 
 ---
 
-### 14.3 Implementing interfaces
+### Implementing interfaces
 
 A concrete type implements an interface through an `implement` block:
 
@@ -1869,11 +1869,11 @@ Rules:
 
 ---
 
-### 14.4 Using interface values
+### Using interface values
 
 Interfaces may be used anywhere that types may appear.
 
-#### 14.4.1 Parameters
+#### Parameters
 
 ```drift
 fn write_header(out: OutputStream) returns Void {
@@ -1881,7 +1881,7 @@ fn write_header(out: OutputStream) returns Void {
 }
 ```
 
-#### 14.4.2 Return values
+#### Return values
 
 ```drift
 fn open_log(path: String) returns OutputStream {
@@ -1890,14 +1890,14 @@ fn open_log(path: String) returns OutputStream {
 }
 ```
 
-#### 14.4.3 Locals
+#### Locals
 
 ```drift
 var out: OutputStream = std.console.out
 out.writeln("ready")
 ```
 
-#### 14.4.4 Heterogeneous arrays
+#### Heterogeneous arrays
 
 ```drift
 var sinks: Array<OutputStream> = []
@@ -1909,7 +1909,7 @@ Each element may be a different type implementing the same interface.
 
 ---
 
-### 14.5 Dynamic dispatch semantics
+### Dynamic dispatch semantics
 
 A value of interface type is represented as a **fat pointer**, containing:
 
@@ -1932,7 +1932,7 @@ This ensures fully dynamic runtime dispatch with minimal overhead.
 
 ---
 
-### 14.6 Interfaces vs traits
+### Interfaces vs traits
 
 Characteristic | **Trait** | **Interface**
 ---------------|-----------|-------------
@@ -1950,7 +1950,7 @@ The two systems are orthogonal by design.
 
 ---
 
-### 14.7 Shape example
+### Shape example
 
 ### Define the interface
 
@@ -2003,7 +2003,7 @@ all.push(Rect(w = 3.0, h = 5.0))
 
 ---
 
-### 14.8 Ownership & RAII for interface values
+### Ownership & RAII for interface values
 
 Interface values follow Drift ownership and move semantics.
 
@@ -2035,7 +2035,7 @@ No double‑destroy is possible because `destroy(self)` consumes the value.
 
 ---
 
-### 14.9 Multiple interfaces
+### Multiple interfaces
 
 A type may implement several interfaces:
 
@@ -2057,7 +2057,7 @@ Layout stability: if interface inheritance is used, parent entries (including th
 
 ---
 
-### 14.10 Interfaces + traits together
+### Interfaces + traits together
 
 These systems complement each other:
 
@@ -2082,7 +2082,7 @@ This pattern is central to building logging, serialization, and plugin systems.
 
 ---
 
-### 14.11 Error handling across interfaces
+### Error handling across interfaces
 
 Interface method calls participate in normal exception propagation:
 
@@ -2102,7 +2102,7 @@ Thrown errors travel unchanged across interface boundaries, preserving `^`-captu
 
 ---
 
-### 14.12 Summary
+### Summary
 
 Interfaces provide:
 
@@ -2128,23 +2128,23 @@ Together they form a flexible dual system:
 
 ---
 
-## 15. Memory model
+## 17. Memory model
 
 This chapter defines Drift's rules for value storage, initialization, destruction, and dynamic allocation. The goal is predictable semantics for user code while relegating low-level memory manipulation to the standard library and `lang.abi`.
 
 Drift deliberately hides raw pointers, pointer arithmetic, and untyped memory. Those operations exist only inside sealed, `@unsafe` library internals. User-visible code works with typed values, references, and safe containers like `Array<T>`.
 
-### 15.1 Value storage
+### Value storage
 
 Every sized type `T` occupies `size_of<T>()` bytes. Sized types include primitives, structs whose fields are all sized, and generic instantiations where each argument is sized. These values may live in locals, struct fields, containers, or temporaries. The compiler chooses the actual storage (registers vs stack) and that choice is unobservable.
 
-#### 15.1.1 Initialization & destruction
+#### Initialization & destruction
 
 - A value must be initialized exactly once before use.
 - A value must be destroyed exactly once when it leaves scope or is overwritten.
 - Types with destructors run them during destruction; other types are dropped with no action.
 
-#### 15.1.2 Uninitialized memory
+#### Uninitialized memory
 
 User code never manipulates uninitialized memory. Library internals rely on two sealed helpers:
 
@@ -2153,11 +2153,11 @@ User code never manipulates uninitialized memory. Library internals rely on two 
 
 Only standard library `@unsafe` code touches these helpers.
 
-### 15.2 Raw storage
+### Raw storage
 
 `lang.abi` defines an opaque `RawBuffer` representing raw bytes that are not yet interpreted as typed values. Only allocator intrinsics can produce or consume a `RawBuffer`; user code cannot observe its address or layout. Growable containers use `RawBuffer` to reserve contiguous storage for multiple elements of the same type.
 
-### 15.3 Allocation & deallocation
+### Allocation & deallocation
 
 The runtime exposes three allocation primitives to the standard library:
 
@@ -2181,7 +2181,7 @@ struct Layout { size: Int, align: Int }
 
 Only containers and other stdlib internals call these functions; user code cannot.
 
-### 15.4 Layout of contiguous elements
+### Layout of contiguous elements
 
 Containers such as `Array<T>` store `cap` elements of type `T` in a contiguous region computed as:
 
@@ -2197,13 +2197,13 @@ Guarantees:
 - If `cap > 0`, the container holds a `RawBuffer` allocated with `layout_for<T>(cap)`.
 - That buffer may only be resized or freed via `realloc`/`dealloc`.
 
-### 15.5 Growth of containers
+### Growth of containers
 
-#### 15.5.1 Overview
+#### Overview
 
 Growable containers track both `len` (initialized elements) and `cap` (reserved slots). When `len == cap`, they obtain a larger `RawBuffer` and move existing elements—this is capacity growth.
 
-#### 15.5.2 Array layout
+#### Array layout
 
 ```drift
 struct Array<T> {
@@ -2215,7 +2215,7 @@ struct Array<T> {
 
 Invariant: indices `0 .. len` are initialized; `len .. cap` are uninitialized slots ready for construction. Growth occurs before inserting when `len == cap`.
 
-#### 15.5.3 Growth algorithm
+#### Growth algorithm
 
 ```
 fn grow<T>(ref mut self: Array<T>) @unsafe {
@@ -2238,7 +2238,7 @@ fn grow<T>(ref mut self: Array<T>) @unsafe {
 
 If `realloc` moves the allocation, the old buffer is later released with `dealloc`.
 
-#### 15.5.4 Moving elements
+#### Moving elements
 
 Initialized elements move slot-by-slot:
 
@@ -2252,19 +2252,19 @@ for i in 0 .. self.len {
 
 `slot_at` and `move_slot_to_slot` are sealed helpers that perform placement moves without exposing raw pointers to user code.
 
-#### 15.5.5 Initializing new slots
+#### Initializing new slots
 
 After growth, indices `len .. cap` become `Uninit<T>` slots. Public methods (e.g., `push`, `spare_capacity_mut`) safely initialize them.
 
-### 15.6 Stability & relocation
+### Stability & relocation
 
 Because `realloc` may relocate a `RawBuffer`, any references, slices, or views derived from a container become invalid after growth. Users must treat such views as ephemeral. Only the container itself may assume addresses remain stable between growth events.
 
-### 15.7 Stack vs dynamic storage
+### Stack vs dynamic storage
 
 Drift does not expose stack vs heap distinctions. Local variables and temporaries are compiler-managed; growable containers always use the allocator APIs above. This abstraction lets the backend optimize placement without affecting semantics.
 
-### 15.8 Summary
+### Summary
 
 The memory model rests on:
 
@@ -2279,11 +2279,11 @@ These rules scale to arrays, strings, maps, trait objects, and future higher-lev
 
 ---
 
-## 16. Concurrency & virtual threads
+## 18. Concurrency & virtual threads
 
 Drift offers structured, scalable concurrency via **virtual threads**: lightweight, stackful execution contexts scheduled on a pool of operating-system carrier threads. Programmers write synchronous-looking code without explicit `async`/`await`, yet the runtime multiplexes potentially millions of virtual threads.
 
-### 16.1 Virtual threads vs carrier threads
+### Virtual threads vs carrier threads
 
 | Layer | Meaning | Created by | Cost | Intended users |
 |-------|---------|------------|------|----------------|
@@ -2292,7 +2292,7 @@ Drift offers structured, scalable concurrency via **virtual threads**: lightweig
 
 Virtual threads borrow a carrier thread while running, but yield it whenever they perform a blocking operation (I/O, timer wait, join, etc.).
 
-### 16.2 `std.concurrent` API surface
+### `std.concurrent` API surface
 
 Drift’s standard concurrency module exposes straightforward helpers:
 
@@ -2308,7 +2308,7 @@ val ans = t.join()
 
 Spawn operations return a handle whose `join()` parks the caller until completion. Joining a failed thread returns a `JoinError` encapsulating the thrown `Error`.
 
-#### 16.2.1 Custom executors
+#### Custom executors
 
 Developers may target a specific executor policy:
 
@@ -2328,7 +2328,7 @@ val t = conc.spawn_on(exec, fn() returns Void {
 })
 ```
 
-#### 16.2.2 Structured concurrency
+#### Structured concurrency
 
 `conc.scope` groups spawned threads so they finish before the scope exits:
 
@@ -2346,7 +2346,7 @@ conc.scope(fn(scope: conc.Scope) returns Void {
 
 If any child fails, the scope cancels the remaining children and propagates the error, ensuring deterministic cleanup.
 
-### 16.3 Executors and policies
+### Executors and policies
 
 Carrier threads are managed by executors configured via a fluent `ExecutorPolicy` builder:
 
@@ -2374,7 +2374,7 @@ Policy fields:
 
 Timeouts apply uniformly to blocking ops backed by the executor.
 
-### 16.4 Blocking semantics
+### Blocking semantics
 
 Virtual threads behave as though they block, but the runtime parks them and frees the carrier thread:
 
@@ -2383,18 +2383,18 @@ Virtual threads behave as though they block, but the runtime parks them and free
 - `join()` parks the caller until the child completes.
 - When the event loop signals readiness, the reactor unparks the waiting virtual thread onto a carrier.
 
-### 16.5 Reactors
+### Reactors
 
 Drift ships with a shared default reactor (epoll/kqueue/IOCP depending on platform). Advanced users may supply custom reactors or inject them into executors for specialized workloads.
 
-### 16.6 Virtual thread lifecycle
+### Virtual thread lifecycle
 
 - Each virtual thread owns an independent call stack; RAII semantics run normally when the thread exits.
 - `join()` returns either the thread’s result or a `JoinError` capturing the propagated `Error`.
 - Parking/unparking is transparent to user code.
 - `Send`/`Sync` trait bounds govern which values may move across threads or be shared by reference.
 
-### 16.7 Intrinsics: `lang.thread`
+### Intrinsics: `lang.thread`
 
 At the bottom layer the runtime exposes a minimal intrinsic surface to the standard library:
 
@@ -2412,7 +2412,7 @@ module lang.thread
 
 Library code such as `std.concurrent` is responsible for presenting straightforward APIs; user programs never touch these intrinsics directly.
 
-### 16.8 Scoped virtual threads
+### Scoped virtual threads
 
 Structured scopes ensure children finish (or are cancelled) before scope exit:
 
@@ -2432,13 +2432,13 @@ conc.scope(fn(scope: conc.Scope) returns Void {
 
 This pattern mirrors `try/finally`: if any child throws, the scope cancels the rest and rethrows after all joins complete.
 
-### 16.9 Interaction with ownership & memory
+### Interaction with ownership & memory
 
 - Moves between threads require `Send`; shared borrows require `Sync`.
 - Destructors run deterministically when each virtual thread ends, preserving RAII guarantees.
 - Containers backed by `RawBuffer` (`Array`, `Map`, etc.) behave identically on all threads.
 
-### 16.10 Summary
+### Summary
 
 - Virtual threads deliver the ergonomics of synchronous code with the scalability of event-driven runtimes.
 - Executors configure carrier thread pools, queues, and timeout policies.
@@ -2447,17 +2447,17 @@ This pattern mirrors `try/finally`: if any child throws, the scope cancels the r
 - Structured concurrency scopes offer deterministic cancellation and cleanup.
 - Only a handful of `lang.thread` intrinsics underpin the model; user-facing code resides in `std.concurrent`.
 
-## 17. Pointer-free surface and ABI boundaries
+## 19. Pointer-free surface and ABI boundaries
 
 Drift deliberately keeps raw pointer syntax out of the language surface. Low-level memory manipulation and FFI plumbing are funneled through sealed standard-library modules so typical programs interact with typed handles rather than `*mut T` tokens.
 
-### 17.1 Policy: no raw pointer tokens
+### Policy: no raw pointer tokens
 
 - No `*mut T` / `*const T` syntax exists in Drift.
 - User-visible pointer arithmetic and casts are forbidden.
 - Untyped byte operations live behind `@unsafe` internals such as `lang.abi` and `lang.internals`.
 
-### 17.2 Slots and uninitialized handles
+### Slots and uninitialized handles
 
 To enable placement construction without exposing addresses, the runtime uses opaque helpers (see Section 15.1.2):
 
@@ -2474,7 +2474,7 @@ slot.assume_init() @unsafe  // produce a normal reference once initialized
 
 Typical code never manipulates the underlying addresses—only these safe handles.
 
-### 17.3 Guarded builders for container growth
+### Guarded builders for container growth
 
 Growable containers expose builder objects instead of raw capacity math. Example:
 
@@ -2493,7 +2493,7 @@ builder.finish()                 // commits len += 3; rollback if dropped early
 - Dropping the builder without `finish()` destroys partially built elements and leaves `len` unchanged.
 - No pointer arithmetic leaks outside.
 
-### 17.4 `RawBuffer` internals
+### `RawBuffer` internals
 
 Containers rely on `lang.abi::RawBuffer` for contiguous storage, but the public surface offers only safe operations:
 
@@ -2507,7 +2507,7 @@ fn reallocate(ref mut self, new_cap: Int) @unsafe
 
 `Array<T>` and similar types use these hooks internally; ordinary programs never touch the raw bytes.
 
-### 17.5 FFI via `lang.abi`
+### FFI via `lang.abi`
 
 Interop lives in `lang.abi`, which exposes opaque pointer/slice types instead of raw addresses:
 
@@ -2528,7 +2528,7 @@ fn render(points: Array<Point>) returns Int32 {
 }
 ```
 
-#### 17.5.1 Callbacks (C ABI)
+#### Callbacks (C ABI)
 
 - Only **non-capturing** functions may cross the C ABI as callbacks; they are exported/imported as thin `extern "C"` function pointers. This matches C’s model and keeps the ABI predictable.
 - Capturing closures are **not** auto-wrapped for C. If state is needed, authors must build it explicitly (e.g., a struct of state plus a manual trampoline taking `void*`), and manage allocation/freeing on the C side; the language runtime does not box captures for C callbacks.
@@ -2539,11 +2539,11 @@ fn render(points: Array<Point>) returns Int32 {
   - prevent Drift exceptions from crossing into C (catch and convert to a Drift error),
   - assume no thread-affinity guarantees unless the API states otherwise.
 
-### 17.6 Unsafe modules (`lang.internals`)
+### Unsafe modules (`lang.internals`)
 
 Truly low-level helpers (`Slot<T>`, unchecked length changes, raw buffer manipulation) live in sealed modules such as `lang.internals`. Importing them requires explicit opt-in (feature flag + `@unsafe` annotations). Most applications never import these modules; the standard library and advanced crates do so when implementing containers or FFI shims.
 
-### 17.7 Examples
+### Examples
 
 **Placement without pointers**
 
@@ -2571,7 +2571,7 @@ fn transmit(bytes: Array<U8>) returns Int32 {
 }
 ```
 
-### 17.8 Summary
+### Summary
 
 - The surface language never exposes raw pointer syntax or arithmetic.
 - Constructors, builders, and slices provide placement-new semantics without revealing addresses.
@@ -2583,7 +2583,7 @@ fn transmit(bytes: Array<U8>) returns Int32 {
 
 ---
 
-## 18. Signed modules and DMIR
+## 20. Signed modules and DMIR
 
 Drift distributes code as **digitally signed module packages (DMPs)** built around a canonical, target-independent representation called **DMIR** (Drift Module Intermediate Representation). Signing DMIR rather than backend objects guarantees that every user receives the same typed semantics, regardless of platform or compiler optimizations. This matters because:
 
@@ -2592,7 +2592,7 @@ Drift distributes code as **digitally signed module packages (DMPs)** built arou
 - dependency manifests can pin digests/signers to prevent supply-chain attacks.
 - Threat model: DMP protects against supply-chain and dependency tampering (swapped module artifacts). It does not protect against attackers who can already modify the compiler, linker, or the running process itself.
 
-### 18.1 Position in the pipeline
+### Position in the pipeline
 
 ```
 source → AST → HIR → DMIR (canonical) → [sign] → MIR/backend → object/JIT
@@ -2600,7 +2600,7 @@ source → AST → HIR → DMIR (canonical) → [sign] → MIR/backend → objec
 
 DMIR is the authoritative checkpoint. Later transformations (optimizations, codegen) do not affect the signature.
 
-### 18.2 Canonical DMIR contents
+### Canonical DMIR contents
 
 DMIR stores the typed, desugared module with all names resolved:
 
@@ -2612,7 +2612,7 @@ DMIR stores the typed, desugared module with all names resolved:
 
 Each DMIR block carries an independent version number (`dmir_version`).
 
-### 18.3 Module package layout
+### Module package layout
 
 ```
 +------------------+
@@ -2634,7 +2634,7 @@ Each DMIR block carries an independent version number (`dmir_version`).
 - **Signature block**: one or more signature entries (e.g., Ed25519). The signature covers `HEADER .. DMIR`.
 - **Optional source**: raw UTF-8 source for auditing; not part of verification.
 
-### 18.4 Signatures and verification
+### Signatures and verification
 
 1. Compute `payload = bytes[header_start .. dmir_end]`.
 2. Hash with SHA-256.
@@ -2655,14 +2655,14 @@ Projects may additionally pin dependency digests or require specific signers.
 
 **Verification point.** DMP signatures are verified only at module import / compilation time by the Drift toolchain. No runtime signature verification is performed by the generated program, and DMP is not a runtime tamper-resistance mechanism.
 
-### 18.5 Security properties
+### Security properties
 
 - Repository compromises cannot forge modules without the private key.
 - Canonicalization ensures reproducible builds and stable signatures.
 - DMIR versioning decouples language evolution from compiler releases.
 - Optional source does not influence verification, so audits cannot poison signatures.
 
-### 18.6 Future extensions
+### Future extensions
 
 Potential enhancements include transparency logs, certificate-based hierarchies, revocation lists, and dual-signature modes.
 
@@ -2674,9 +2674,9 @@ Signed DMIR gives Drift a portable, semantically precise unit of distribution wh
 
 
 
-## 19. Dynamic plugins (Drift→Drift ABI)
+## 21. Dynamic plugins (Drift→Drift ABI)
 
-### 19.1 Overview
+### Overview
 
 Dynamic Drift plugins let separately compiled Drift modules be loaded at runtime as shared libraries (`.so`, `.dll`, `.dylib`). The plugin ABI sits on top of the core ABI—it does not modify existing rules, but specifies how Drift↔Drift dynamic linking works.
 
@@ -2689,7 +2689,7 @@ Plugins interact with the host solely through:
 
 A plugin is simply a module that exports a single C-ABI entry point returning an implementation of an agreed-upon interface.
 
-### 19.2 Goals
+### Goals
 
 The plugin ABI is designed to:
 
@@ -2701,7 +2701,7 @@ The plugin ABI is designed to:
 6. Guarantee stable interface object layouts (fat pointers).
 7. Maintain forward compatibility through explicit ABI versioning.
 
-### 19.3 Core rule: all functions return `Result<T, Error>`
+### Core rule: all functions return `Result<T, Error>`
 
 Drift semantics treat every function as conceptually:
 
@@ -2726,7 +2726,7 @@ variant Result<T, E> {
 
 This applies globally, so plugin APIs need no extra wrappers: the ABI already standardizes on `Result<T, Error>` as the universal return type.
 
-### 19.4 No cross-boundary unwinding
+### No cross-boundary unwinding
 
 Drift implementations may use stack unwinding to realize `throw`, but:
 
@@ -2739,11 +2739,11 @@ If code inside a plugin throws, the implementation must intercept the unwind bef
 
 Host callbacks passed into a plugin obey the same rule. Violations lead to undefined behavior; implementations should abort if they detect cross-boundary unwinding.
 
-### 19.5 Interface object representation
+### Interface object representation
 
 Plugins and hosts communicate through interfaces that use the standard Drift fat-pointer representation.
 
-#### 19.5.1 ABI layout
+#### ABI layout
 
 Conceptually:
 
@@ -2762,7 +2762,7 @@ Rules:
 - Method ordering in vtables follows source declaration order.
 - The underlying concrete type remains opaque.
 
-### 19.6 Plugin entry point
+### Plugin entry point
 
 Every plugin exports exactly one unmangled C-ABI function:
 
@@ -2771,7 +2771,7 @@ extern "C" fn drift_plugin_entry(host: ref PluginHostApi)
     returns Result<PluginHandle, Error>
 ```
 
-#### 19.6.1 `PluginHandle`
+#### `PluginHandle`
 
 ```drift
 struct PluginHandle {
@@ -2788,7 +2788,7 @@ Fields:
 - `name` / `version`: metadata for logging or UX.
 - `instance`: an implementation of the `Plugin` interface returned to the host.
 
-### 19.7 The `Plugin` interface
+### The `Plugin` interface
 
 The host defines the primary plugin interface:
 
@@ -2822,7 +2822,7 @@ implement Plugin for MyPlugin {
 
 `PluginConfig` is a host-defined struct (often deserialized from JSON or a config map). Hosts may extend it freely because it never crosses the ABI boundary without coordination.
 
-### 19.8 Host API passed into the plugin
+### Host API passed into the plugin
 
 The host supplies services via another interface:
 
@@ -2844,7 +2844,7 @@ interface PluginHostApi {
 
 `LogLevel` is typically an enum defined by the host. The plugin receives an implementation of `PluginHostApi` through the entry point and may retain it for its lifetime.
 
-### 19.9 Versioning
+### Versioning
 
 Version compatibility is enforced by comparing:
 
@@ -2854,7 +2854,7 @@ host_abi_version == plugin_handle.abi_version
 
 On mismatch, the host should attempt `instance.shutdown()` if the plugin initialized successfully, then reject and unload the module.
 
-### 19.10 Plugin lifecycle
+### Plugin lifecycle
 
 1. Host loads the shared library via the OS loader.
 2. Host resolves `drift_plugin_entry` by unmangled C name.
@@ -2866,7 +2866,7 @@ On mismatch, the host should attempt `instance.shutdown()` if the plugin initial
 7. Host invokes plugin methods via interface dispatch for normal work.
 8. On unload, host calls `shutdown()` and releases all interface objects before unloading the library.
 
-### 19.11 Error handling conventions
+### Error handling conventions
 
 Errors crossing the boundary must always be represented as:
 
@@ -2891,7 +2891,7 @@ Rules:
 - `ctx_frames` and `stack` are diagnostic—it is acceptable if the host cannot interpret them.
 - Unknown events must be treated as opaque identifiers.
 
-### 19.12 Memory and ownership across the boundary
+### Memory and ownership across the boundary
 
 - Ownership rules follow normal Drift semantics.
 - Strings, arrays, maps, and interface values may cross freely.
@@ -2899,7 +2899,7 @@ Rules:
 - Both plugin and host must assume container storage may relocate unless pinned via RAII scope.
 - All loaded modules must share a compatible allocator (usually the process-wide allocator provided by the runtime).
 
-### 19.13 Safety constraints
+### Safety constraints
 
 To keep the boundary predictable:
 
@@ -2908,7 +2908,7 @@ To keep the boundary predictable:
 - Passing non-`Send` values between threads continues to follow the trait-based rules from Chapter 13.
 - Vtables must not be mutated after creation.
 
-### 19.14 Summary
+### Summary
 
 Dynamic plugins provide:
 
