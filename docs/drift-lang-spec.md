@@ -389,7 +389,21 @@ QualifiedName ::= Ident ('.' Ident)*
 
 Drift uses structured control flow; all loops and conditionals are block-based.
 
-### 6.1 While loops
+### 6.1 If/else
+
+```drift
+if cond {
+    do_true()
+} else {
+    do_false()
+}
+```
+
+- `if <cond> { ... } else { ... }` selects a branch based on a `Bool` condition.
+- The condition must type-check as `Bool`; the two branches need not return the same type unless used as an expression (e.g., in a ternary).
+- Each branch has its own scope for locals; names inside a branch shadow outer names.
+
+### 6.2 While loops
 
 ```drift
 var i: Int64 = 0
@@ -398,10 +412,46 @@ while i < 3 {
 }
 ```
 
-- `while <cond> { <stmts> }` evaluates `<cond>` on each iteration; the body runs while it is `true`.
+- `while <cond> { <stmts> }` evaluates `<cond>` each iteration and runs the body while it is `true`.
 - `<cond>` must be `Bool`; type errors are reported at compile time.
 - The body forms its own scope for local bindings; fresh bindings inside the loop shadow outer names and are re-created per iteration.
 - There is no implicit `break`/`continue` yet; exiting requires making the condition false.
+
+### 6.3 Ternary (`? :`) operator
+
+```drift
+val label = is_error ? "error" : "ok"
+```
+
+- `cond ? then_expr : else_expr` is an expression-form conditional; `cond` must be `Bool`.
+- `then_expr` and `else_expr` must have the same type (checked at compile time).
+- Useful for concise branching without introducing additional block nesting; when control flow is complex, prefer a full `if/else`.
+
+### 6.4 Try/else (expression) and Try/catch (statement)
+
+**Expression form (`try/else`):**
+
+```drift
+val result = try parse_int(input) else 0
+```
+
+- Evaluates the expression; on success, yields its value; on error, evaluates the `else` expression.
+- The attempt and fallback must have the same type.
+- Only simple call attempts are supported for the expression form today.
+
+**Statement form (`try/catch`):**
+
+```drift
+try {
+    risky()
+} catch MyError(err) {
+    handle(err)
+}
+```
+
+- Executes the body; on error, transfers control to the first matching catch (no pattern guards yet; event match or catch-all).
+- Catch binder (if present) has type `Error`.
+- Control falls through after the try/catch unless all branches return/raise.
 
 ## 5. Standard I/O design
 
