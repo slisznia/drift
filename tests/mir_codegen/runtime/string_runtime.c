@@ -13,15 +13,13 @@ struct DriftString drift_string_from_cstr(const char* cstr) {
     if (!buf) {
         abort();
     }
-    if (buf) {
-        memcpy(buf, cstr, len);
-        buf[len] = '\0';
-    }
+    memcpy(buf, cstr, len);
+    buf[len] = '\0';
     struct DriftString s = {(uintptr_t)len, buf};
     return s;
 }
 
-struct DriftString drift_string_from_bytes(const char* data, uintptr_t len) {
+struct DriftString drift_string_from_bytes(const char* data, drift_size_t len) {
     if (data == NULL || len == 0) {
         struct DriftString s = {0, NULL};
         return s;
@@ -30,21 +28,19 @@ struct DriftString drift_string_from_bytes(const char* data, uintptr_t len) {
     if (!buf) {
         abort();
     }
-    if (buf) {
-        memcpy(buf, data, (size_t)len);
-        buf[len] = '\0';
-    }
+    memcpy(buf, data, (size_t)len);
+    buf[len] = '\0';
     struct DriftString s = {len, buf};
     return s;
 }
 
-struct DriftString drift_string_literal(const char* data, uintptr_t len) {
+struct DriftString drift_string_literal(const char* data, drift_size_t len) {
     struct DriftString s = {len, (char*)data};
     return s;
 }
 
 struct DriftString drift_string_concat(struct DriftString a, struct DriftString b) {
-    uintptr_t total = a.len + b.len;
+    drift_size_t total = a.len + b.len;
     if (total == 0) {
         struct DriftString s = {0, NULL};
         return s;
@@ -53,15 +49,13 @@ struct DriftString drift_string_concat(struct DriftString a, struct DriftString 
     if (!buf) {
         abort();
     }
-    if (buf) {
-        if (a.len > 0 && a.data) {
-            memcpy(buf, a.data, (size_t)a.len);
-        }
-        if (b.len > 0 && b.data) {
-            memcpy(buf + a.len, b.data, (size_t)b.len);
-        }
-        buf[total] = '\0';
+    if (a.len > 0 && a.data) {
+        memcpy(buf, a.data, (size_t)a.len);
     }
+    if (b.len > 0 && b.data) {
+        memcpy(buf + a.len, b.data, (size_t)b.len);
+    }
+    buf[total] = '\0';
     struct DriftString s = {total, buf};
     return s;
 }
