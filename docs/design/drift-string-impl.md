@@ -6,21 +6,27 @@ This document captures the runtime/ABI shape of `String` for the codegen path. I
 - Heap-allocated, UTF-8 encoded strings.
 - Deterministic ownership: caller owns `String`, must free explicitly when required.
 - Opaque at the surface/DMIR level; layout is for runtime/ABI use only.
+- Lengths and indices use the language-level `Size` type rather than a hard-coded integer width.
 - Minimal helper set to support console I/O and basic concatenation/len.
 
 ## Runtime layout (proposed)
 
 ```c
+// `drift_size_t` is the C carrier for Drift's `Size` type.
+// Its exact definition is provided by the core runtime and must
+// match the ABI representation of `Size` on the current target.
+typedef int64_t drift_size_t;
+
 struct DriftString {
-    int64_t len;      // number of bytes (UTF-8), not including terminator
-    char* data;       // heap-allocated, UTF-8; not null-terminated unless helper guarantees
+    drift_size_t len;  // number of bytes (UTF-8), not including terminator; Drift `Size`
+    char* data;        // heap-allocated, UTF-8; not null-terminated unless helper guarantees
 };
 ```
 
 Notes:
-- `len` is signed 64-bit for consistency with other sizes.
+- `len` is conceptually a `Size` in the Drift spec. At the ABI level it is represented by `drift_size_t`, which must be kept in sync with the ABI carrier for `Size`.
 - `data` points to a heap buffer owned by the `DriftString`.
-- Helpers that expose C strings will ensure a temporary null terminator if needed; internally we treat strings as (ptr, len).
+- Helpers that expose C strings will ensure a temporary null terminator if needed; internally we treat strings as `(ptr, len)`.
 
 ## ABI helpers (C side)
 
@@ -31,7 +37,7 @@ Provide these functions in the runtime C shim:
 struct DriftString drift_string_from_cstr(const char* cstr);
 
 // Allocate a DriftString from a byte slice (ptr,len); copies the data.
-struct DriftString drift_string_from_bytes(const char* data, int64_t len);
+struct DriftString drift_string_from_bytes(const char* data, drift_size_t len);
 
 // Concatenate two strings; returns a new owned DriftString.
 struct DriftString drift_string_concat(struct DriftString a, struct DriftString b);
@@ -49,16 +55,18 @@ Ownership rules:
 
 ## Codegen mapping
 
-- The `String` type in MIR/LLVM lowers to `struct DriftString*` or by-value `struct DriftString` (choose one and stay consistent; simplest: by-value for now).
-- String literals: codegen emits a global constant UTF-8 byte array and constructs a `DriftString` with `len` and `data` pointing to that constant (no heap free required for literals).
+- The `String` type in DMIR/LLVM lowers to `struct DriftString` by value (or a stable pointer to it; choose one and stay consistent).
+- In the surface language, `String.len()` (or equivalent) returns `Size`, matching the `len` field's logical type.
+- String literals: codegen emits a global constant UTF-8 byte array and constructs a `DriftString` with `len: Size` and `data` pointing to that constant (no heap free required for literals).
 - `+` on `String`: lower to `drift_string_concat`.
 - `out.writeln(String)` / `out.write(String)`: lower to C stubs that accept `DriftString` and print (using `drift_string_to_cstr` internally).
 
 ## Future extensions (not required for initial bring-up)
-- `to_string` helpers for primitives (Int64, Bool, etc.) returning `DriftString`.
+- `to_string` helpers for primitives (Int, Bool, etc.) returning `DriftString`.
 - Slices/views into strings (avoid copies).
 - Small-string optimization (SSO) if needed for performance; would require a layout revision—document and version before changing.
 
 ## DMIR/Spec impact
 - `String` remains opaque in the language/DMIR spec; this document defines the runtime ABI only.
+- All public length/offset APIs on `String` must use `Size`, not `Int64`, to stay consistent with the core spec.
 - No DMIR signing changes are required as long as `String` fields are not exposed in DMIR.
