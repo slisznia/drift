@@ -12,6 +12,7 @@ Drift is a systems programming language focused on deterministic resource manage
 - **Signed modules** – compiled modules are cryptographically signed so imports can be verified everywhere.
 
 📖 **Full specification:** [docs/drift-lang-spec.md](docs/drift-lang-spec.md)
+📜 **Formal grammar:** [docs/drift-lang-grammar.md](docs/drift-lang-grammar.md)
 
 ## References
 
@@ -44,13 +45,13 @@ fn main() returns Void {
 struct Point { x: Int64, y: Int64 }
 
 implement Point {
-    fn move_by(ref mut self, dx: Int64, dy: Int64) returns Void {
+    fn move_by(self: &mut Point, dx: Int64, dy: Int64) returns Void {
         self.x += dx
         self.y += dy
     }
 }
 
-fn translate(ref p: Point, dx: Int64, dy: Int64) returns Void {
+fn translate(p: &mut Point, dx: Int64, dy: Int64) returns Void {
     p.x += dx
     p.y += dy
 }
