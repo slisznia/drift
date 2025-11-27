@@ -1,272 +1,292 @@
-# Iteration in Drift
+# Drift Loops and Iterators — Integrated Spec (with Grammar Extension)
 
-This document defines the iterator model in Drift: the traits involved, the role of `variant` types such as `Option<T>`, and the exact lowering of `for … in …` loops. The design is intentionally minimal, zero-cost, and consistent with Drift’s ownership and trait systems.
+## 1. Goals
+
+Drift’s looping model centers around a single, composable construct:
+
+    for pattern in iterable { body }
+
+This replaces all C-style loops. There is **no** `for (init; cond; step)` in Drift.
+
+Rationale:
+- Drift favors compile-time guarantees, ownership correctness, and explicit semantics.
+- `for … in …` expresses iteration directly, integrates with the type system, and avoids hidden mutation/aliasing patterns common in C-style loops.
+- All iteration is routed through a unified trait system (`IntoIterator`, `Iterator`) with `Option<T>` signaling termination.
 
 ---
 
-# 1. Variant types are the foundation
+## 2. Placement & Prelude
 
-Iteration in Drift uses the standard optional type:
+The iteration traits live in the standard library:
 
-```drift
-variant Option<T> {
-	Some(value: T)
-	None
-}
+```
+module std.iter
 ```
 
-`Option<T>` is a **real type**, not a trait. It is a tagged union with two variants:
+They are automatically made available to all Drift programs through the prelude:
 
-* `Some(value = x)` – represents presence of a value
-* `None` – represents absence
+```
+import std.prelude.*
+```
 
-The iterator model commits to `Option<T>` as the canonical “maybe” type. There is **no `Optional<T>` trait**, no abstraction layer, and no pluggable “maybe” type family.
+which re-exports:
+
+```
+export std.iter.{Iterator, IntoIterator}
+```
+
+Thus users **do not** manually import iteration traits.  
+The control-flow chapter of the spec normatively states that `for pattern in expr` depends on these traits.
 
 ---
 
-# 2. Iterator trait
+## 3. Core Traits
 
-An iterator is simply any type that can produce a sequence of items, one at a time:
+### 3.1 `Iterator<Item>`
 
-```drift
+```
 trait Iterator<Item> {
-	fn next(&mut self) returns Option<Item>
+    fn next(self: &mut Self) returns Option<Item>
 }
 ```
 
-Rules:
+### 3.2 `IntoIterator<Item, Iter>`
 
-* `Some(value = item)` indicates there **is** a next element.
-* `None` indicates the iterator is **exhausted**.
-* Once `next()` returns `None` for a given iterator instance, every following call must also return `None`.
-
-The trait is statically dispatched (monomorphized), like every Drift trait.
-
----
-
-# 3. IntoIterator: converting collections to iterators
-
-To make something iterable, a type implements:
-
-```drift
+```
 trait IntoIterator<Item, Iter>
-	require Iter is Iterator<Item>
+    require Iter is Iterator<Item>
 {
-	fn into_iter(self) returns Iter
+    fn into_iter(self) returns Iter
 }
 ```
 
-The iterator returned by `into_iter(self)` may:
-
-* consume `self` (move by value)
-* or borrow from `self` (if `self` is a `&` binding and you implement a borrowed form)
-
-This is where the container controls the ownership semantics of iteration.
+Any type may define how to turn into an iterator, supporting owned or borrowed iteration.
 
 ---
 
-# 4. Consuming vs borrowed iteration
+## 4. Foreach Loop Syntax
 
-### 4.1. Consuming iteration (by-value)
-
-Example for `Array<T>`:
-
-```drift
-implement<T> IntoIterator<T, ArrayIntoIter<T>> for Array<T> {
-	fn into_iter(self) returns ArrayIntoIter<T> {
-		return ArrayIntoIter<T>(arr = self, index = 0)
-	}
-}
 ```
-
-This:
-
-```drift
-for x in xs { ... }
-```
-
-means:
-
-* `xs` is **moved** into the iterator
-* `xs` is invalid after the loop
-* each element is moved out of the array lazily
-
-### 4.2. Borrowed iteration (non-consuming)
-
-Separately, you can allow:
-
-```drift
-for x in &xs { ... }
-```
-
-by implementing:
-
-```drift
-implement<T> IntoIterator<&T, ArrayRefIter<T>> for &Array<T>
-```
-
-Here:
-
-* `xs` is **borrowed**, not consumed
-* each iteration yields a `&T`
-* mutation rules follow standard borrowing semantics
-* `xs` remains usable after the loop
-
-Borrowed and consuming iterators are completely separate `IntoIterator` implementations.
-
----
-
-# 5. `for pattern in expr` syntax
-
-Drift has a dedicated foreach loop form:
-
-```drift
 for pattern in expr {
-	body
+    body
 }
 ```
 
-Where:
-
-* `pattern` is a binding pattern (identifier or tuple pattern today)
-* `expr` is any expression implementing `IntoIterator<_, _>`
-
-This is distinct from the C-style `for (init; cond; step)` form.
+- `pattern` is a full Drift pattern (identifier, tuple, or variant pattern).
+- `expr` must implement `std.iter::IntoIterator<Item, Iter>`.
+- No implicit indexing, no C-style loop constructs.
 
 ---
 
-# 6. Exact desugaring of foreach loops
+## 5. Desugaring (Normative)
 
-The compiler rewrites:
-
-```drift
-for pattern in expr {
-	body
+```
+for pat in expr {
+    body
 }
 ```
 
-into:
+desugars to:
 
-```drift
+```
 {
-	val __iterable = expr          // evaluate once
-	var __iter = __iterable.into_iter()
+    val __iterable = expr
+    var __iter = __iterable.into_iter()
 
-	while true {
-		val __next = __iter.next()
-
-		match __next {
-			Some(value = pattern) => {
-				body
-			}
-			None => {
-				break
-			}
-		}
-	}
+    loop {
+        val __next = __iter.next()
+        match __next {
+            Some(pat) => { body }
+            None => break
+        }
+    }
 }
 ```
 
-Notes:
+---
 
-* `value` is the field name defined in `Option<T>`.
-* This desugaring uses **only** standard language constructs:
+## 6. Borrowed vs Owned Iteration
 
-  * `val`
-  * variant construction
-  * `match` on a variant
-  * `while`
-  * `break`
-* No loop protocol, no special hidden trait, no compiler magic beyond this rewrite.
+### 6.1 Owned (consuming) iteration
+
+```
+var xs = Array<Int>[1, 2, 3]
+for x in xs {
+    out.writeln(x)
+}
+// xs is moved
+```
+
+### 6.2 Borrowed iteration
+
+```
+var xs = Array<Int>[1, 2, 3]
+for x in &xs {
+    out.writeln(x)
+}
+// xs is still valid
+```
 
 ---
 
-# 7. Patterns in foreach loops
+## 7. Pattern Support
 
-Because `Some(value = pattern)` is a pattern match, you can write:
+Allowed pattern forms:
 
-```drift
-for (k, v) in entries {
-	...
+- `x`
+- `(k, v)`
+- `(a, (b, c))`
+- `Some(x)`
+- `Some((k, v))`
+- Named-field variant patterns: `Some(value = x)`
+
+For single-field variants:
+
+```
+Some(x) == Some(value = x)
+```
+
+Positional destructuring is preferred and idiomatic.
+
+---
+
+## 8. Iterator Implementations (Examples)
+
+### 8.1 Consuming iterator
+
+```
+struct ArrayIter<T> {
+    data: Array<T>,
+    index: Int
+}
+
+implement<T> Iterator<T> for ArrayIter<T> {
+    fn next(self: &mut Self) returns Option<T> {
+        if self.index >= self.data.len() { return None }
+        val item = self.data[self.index]->
+        self.index += 1
+        return Some(item)
+    }
 }
 ```
 
-as long as the iterator yields items of type `(K, V)`.
+### 8.2 Borrowed iterator
 
-This uses the same pattern rules as `match` arms.
+```
+struct ArrayIterRef<'a, T> {
+    data: &'a Array<T>,
+    index: Int
+}
 
----
-
-# 8. Ownership model for iteration
-
-Everything follows the ordinary ownership rules already in the spec:
-
-* If `expr` is an owned value, `into_iter(self)` consumes it.
-* If `expr` is a reference (`&xs`), and you implement the borrowed form, the iterator borrows.
-* Items yielded by `next()` move or borrow according to their type:
-
-  * `Option<Item>` → `Some(value = item)` moves the `item`
-  * `Option<&T>` yields a borrow
-
-The iteration model requires no special-case ownership rules.
-
----
-
-# 9. Termination model
-
-“Iteration until” is encoded directly by the variant type:
-
-* `Some(value = x)` → continue
-* `None` → stop
-
-No separate Boolean flag, sentinel, or Option-like trait is needed.
-
-This design makes loop termination explicit and predictable.
-
----
-
-# 10. Why no `Optional<T>` trait?
-
-Because iteration does not need a behavioral abstraction over “maybe values.”
-
-* Drift already has **one canonical optional type**: `Option<T>`.
-* The `Iterator<Item>` trait is defined in terms of that concrete type.
-* Adding a trait like:
-
-  ```drift
-  trait Optional<T> { ... }
-  ```
-
-  would only make sense if multiple optional types existed — they do not.
-
-So Drift keeps iteration simple by standardizing on a single variant type for “presence/absence.”
-
----
-
-# 11. Minimal API for containers
-
-To support iteration, a container only needs to implement:
-
-```drift
-implement IntoIterator<Item, Iter> for MyContainer
+implement<'a, T> Iterator<&'a T> for ArrayIterRef<'a, T> {
+    fn next(self: &mut Self) returns Option<&'a T> {
+        if self.index >= self.data.len() { return None }
+        val r = &self.data[self.index]
+        self.index += 1
+        return Some(r)
+    }
+}
 ```
 
-where:
+---
 
-* `Iter` implements `Iterator<Item>`
-* `into_iter(self)` constructs that iterator
+## 9. Removing C-Style Loops
 
-Everything else is type-checked and lowered automatically.
+Drift supports only:
+
+- `for pattern in expr { … }`
+- `while cond { … }`
+- `loop { … }` (planned)
+
+Drift **does not** support:
+
+- `for(init; cond; step)`
+- `do { … } while`
+- implicit indexing
+
+All iteration routes through the iterator protocol.
 
 ---
 
-# 12. Summary
+## 10. Index-Based Iteration (Explicit)
 
-Drift’s iteration model is:
+```
+var i = 0
+while i < xs.len() {
+    out.writeln(xs[i])
+    i += 1
+}
+```
 
-* **Variant-driven** → `Option<T>` signals “more” vs “no more”
-* **Trait-based** → `Iterator<Item>` provides `next`
-* **Zero-cost** → all static, monomorphized
-* **Ownership-aware** → consuming or borrowed iteration
-* **Desugared** → `for pattern in expr` lowers to a `while + match`
-* **Minimalist** → no optional trait, no loop protocol object, no magic
+Explicit indexing is always valid.
+
+---
+
+## 11. Grammar Extension (Normative for Parsing)
+
+This section updates `drift-lang-grammar.md` to include `for pattern in expr`.
+
+### 11.1 Add `ForEachStmt` to statement grammar
+
+```
+Stmt          ::= ForEachStmt
+                | WhileStmt
+                | ValDecl | VarDecl | ExprStmt
+                | IfStmt
+                | ReturnStmt | BreakStmt | ContinueStmt
+                | TryStmt | ThrowStmt
+```
+
+```
+ForEachStmt   ::= "for" Pattern "in" Expr Block
+```
+
+### 11.2 Reserve `in` as a keyword
+
+Add `"in"` to the reserved keyword list.
+
+### 11.3 Pattern grammar (supports tuples and variants)
+
+```
+Pattern        ::= SimplePattern
+
+SimplePattern  ::= Ident
+                 | "_"
+                 | Literal
+                 | TuplePattern
+                 | VariantPattern
+
+TuplePattern   ::= "(" Pattern ("," Pattern)+ ")"
+
+VariantPattern ::= Ident "(" PatternList? ")"
+
+PatternList    ::= Pattern ("," Pattern)*
+                 | FieldPattern ("," FieldPattern)*
+
+FieldPattern   ::= Ident "=" Pattern
+```
+
+This grammar supports:
+- `(x, y)`
+- `Some(x)`
+- `Some((k, v))`
+- `Some(value = x)`
+- nested destructuring
+
+### 11.4 Iterator trait requirement (semantic)
+
+Semantic validation ensures:
+
+- `expr` implements `std.iter::IntoIterator<Item, Iter>`
+- `Iter` implements `std.iter::Iterator<Item>`
+
+---
+
+## 12. Summary
+
+- `for pattern in expr` is Drift’s canonical loop.
+- Powered by `std.iter::Iterator` and `std.iter::IntoIterator`, available via `std.prelude`.
+- Desugaring defines precise semantics.
+- Full destructuring supported.
+- Grammar formally extended with `ForEachStmt`.
+

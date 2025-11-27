@@ -182,6 +182,7 @@ Both approaches are valid—and optimized for different domains.
 | UI messages | Not part of exceptions | Often included |
 | Boilerplate | Minimal | Higher, but explicit |
 | Ownership | Move‑only exceptions | Move‑only error values |
+| Borrowing syntax | `&T` / `&mut T`, lvalue calls auto‑borrow, no borrowing from rvalues | `&T` / `&mut T`, explicit at call sites; borrows can be taken from temps |
 
 ---
 
