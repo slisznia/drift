@@ -9,7 +9,6 @@ from typing import Dict
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-PROGRAMS_DIR = ROOT / "tests" / "programs"
 EXPECTATIONS_DIR = ROOT / "tests" / "expectations"
 MIR_CASES_DIR = ROOT / "tests" / "mir_lowering"
 CODEGEN_DIR = ROOT / "tests" / "mir_codegen"

@@ -26,3 +26,4 @@
 - Plan cross-module error propagation: define backtrace handle format and how `Error` travels across module boundaries during SSA/LLVM work.
 - Support `source_location()` intrinsic returning `SourceLocation` (file, line).
 - Roadmap: plan LLVM backend integration via a minimal C shim using the LLVM C API, with Drift calling the shim through FFI to validate C interop while self-hosting.
+- Port the old runtime sample programs (`tests/programs/*`) into MIR/LLVM codegen tests once console I/O and strings are supported end-to-end, so we regain coverage without the interpreter.

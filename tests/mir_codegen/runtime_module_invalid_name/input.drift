@@ -1,0 +1,5 @@
+module Bad.Module
+
+fn main() returns Int64 {
+	return 0
+}
