@@ -27,16 +27,18 @@ Purpose: track the multi-pass effort to make MIR truly SSA (single definition pe
    - Verify codegen; expect temporary breakage during refactor and fix iteratively.
 
 ## Current status
-- `_t*` reserved in checker; verifier still allows reassign/redeclare (needs tightening).
-- Lowering threads user locals in loops but reuses names (non-SSA); temps can be reused.
-- Need to implement passes 1–3; tests currently green except skipped cases.
-- SSA scaffolding added: `lang/ssa_env.py` now shares counter/types via SSAContext; `lang/lower_to_mir_ssa.py` does SSA-correct params/let/assign and a scaffolded if/else with block params; strict-SSA verifier skeleton is in `work/mir_verifier_ssa_skeleton.py` for future integration.
+- Legacy lowering (`lower_to_mir.py`) is still the active path and remains non-SSA/mutable.
+- Strict SSA scaffolding exists in parallel:
+  - `lang/ssa_env.py` shares counter/types via SSAContext.
+  - `lang/lower_to_mir_ssa.py` does SSA-correct params/let/assign, scaffolded if/else/while, literals, binary ops/comparisons (including string eq/neq via helper), simple calls, returns, and array indexing. Field access is not supported yet (needs real field type lookup).
+  - Strict SSA verifier v2 (`lang/mir_verifier_ssa_v2.py`) pre-registers all defs (including call terminator dests), checks uses, and handles block params/terminators (including call-with-edges as terminators); hand-built SSA functions pass it. Type sanity (e.g., index integral) still relies on the checker for now; dominance checks remain TODO.
+- Not yet wired into the main pipeline; tests still run against the legacy lowering/codegen.
+- Remaining gaps: dominance not enforced; verifier now rejects calls-with-edges in the instruction list (must be terminators).
 
 ## Next actions
-- Implement SSA env + fresh naming for params/lets/assignments/temps; ban raw user names in MIR.
-- Switch block params/edges to carry SSA names (fresh params) for all multi-pred blocks; rebuild env per block.
-- After lowering emits unique names, tighten verifier to single-definition (remove `_t` loophole).
-- Add/enable tests: runtime_while_basic, if/else join, small MIR unit cases.
+- Flesh out SSA lowering to cover more expressions (more ops beyond current string eq/neq) and wire operand uses into the verifier as new MIR ops appear.
+- Add MIR unit tests (straight-line, if/else φ, while loop-carried, negative redefine) against the SSA verifier.
+- Plan integration: run SSA lowering+verifier in parallel to legacy, then swap once feature-complete and tests pass.
 
 ## Notes to cover during implementation
 - Function entry: params are SSA defs; entry env maps user params → their SSA names.
