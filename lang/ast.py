@@ -226,6 +226,11 @@ class BreakStmt(Stmt):
 class ContinueStmt(Stmt):
     loc: Located
 
+@dataclass
+class ThrowStmt(Stmt):
+    loc: Located
+    expr: "Expr"
+
 
 @dataclass
 class TryExpr(Expr):

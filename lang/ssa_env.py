@@ -80,4 +80,5 @@ class SSAEnv:
         Structured lowering can use this to decide which locals to carry
         through block params.
         """
-        return list(self.user_env.keys())
+        # Deterministic ordering is important for φ param/arg alignment.
+        return sorted(self.user_env.keys())

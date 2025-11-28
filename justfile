@@ -1,7 +1,11 @@
 set shell := ["bash", "-lc"]
 
 test: parse-all
-	python3 tests/run_tests.py
+	./.venv/bin/python3 tests/run_tests.py
+
+test-ssa:
+	PYTHONPATH=. ./.venv/bin/python3 -m lang.mir_ssa_tests
+	./.venv/bin/python3 tests/ssa_check_smoke.py
 
 parse-all: parse-playground parse-examples
 	@echo "Parsing successful."

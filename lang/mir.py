@@ -120,11 +120,21 @@ class ArrayGet(Instruction):
 
 
 @dataclass(frozen=True)
+class FieldSet(Instruction):
+    base: Value
+    field: str
+    value: Value
+    loc: Location = Location()
+    # Mutation: side-effecting in-place store; does not define a new SSA name.
+
+
+@dataclass(frozen=True)
 class ArraySet(Instruction):
     base: Value
     index: Value
     value: Value
     loc: Location = Location()
+    # Mutation: side-effecting in-place store; does not define a new SSA name.
 
 
 @dataclass(frozen=True)
@@ -183,6 +193,12 @@ class CondBr(Terminator):
 @dataclass(frozen=True)
 class Return(Terminator):
     value: Optional[Value] = None
+    loc: Location = Location()
+
+
+@dataclass(frozen=True)
+class Throw(Terminator):
+    error: Value
     loc: Location = Location()
 
 
