@@ -323,6 +323,56 @@ def _string_concat_decl(module: ir.Module) -> ir.Function:
     return fn
 
 
+def _error_new_decl(module: ir.Module) -> ir.Function:
+    fn = module.globals.get("drift_error_new")
+    if isinstance(fn, ir.Function):
+        return fn
+    assert STRING_LLVM_TYPE is not None and SIZE_T is not None
+    str_ptr = STRING_LLVM_TYPE.as_pointer()
+    fn_ty = ir.FunctionType(
+        ir.IntType(8).as_pointer(),  # Error*
+        (
+            str_ptr,  # keys
+            str_ptr,  # values
+            SIZE_T,   # attr_count
+            STRING_LLVM_TYPE,  # event
+            STRING_LLVM_TYPE,  # domain
+            str_ptr,  # frame_modules
+            str_ptr,  # frame_files
+            str_ptr,  # frame_funcs
+            SIZE_T.as_pointer(),  # frame_lines
+            SIZE_T,  # frame_count
+            str_ptr,  # cap_keys
+            str_ptr,  # cap_values
+            SIZE_T.as_pointer(),  # cap_counts
+            SIZE_T,  # cap_total
+        ),
+    )
+    return ir.Function(module, fn_ty, name="drift_error_new")
+
+
+def _error_push_frame_decl(module: ir.Module) -> ir.Function:
+    fn = module.globals.get("error_push_frame")
+    if isinstance(fn, ir.Function):
+        return fn
+    assert STRING_LLVM_TYPE is not None and SIZE_T is not None
+    str_ptr = STRING_LLVM_TYPE.as_pointer()
+    fn_ty = ir.FunctionType(
+        ir.IntType(8).as_pointer(),  # Error*
+        (
+            ir.IntType(8).as_pointer(),  # Error* incoming
+            STRING_LLVM_TYPE,  # module
+            STRING_LLVM_TYPE,  # file
+            STRING_LLVM_TYPE,  # func
+            ir.IntType(64),    # line (still i64 in MIR)
+            str_ptr,           # cap_keys
+            str_ptr,           # cap_values
+            SIZE_T,            # cap_count
+        ),
+    )
+    return ir.Function(module, fn_ty, name="error_push_frame")
+
+
 def _console_write_decl(module: ir.Module) -> ir.Function:
     fn = module.globals.get("drift_console_write")
     if isinstance(fn, ir.Function):
