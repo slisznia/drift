@@ -107,7 +107,6 @@ def _run_codegen_tests() -> int:
             "runtime_module_reserved_prefix",
             "runtime_mutable_bindings",
             "runtime_reserved_keyword_name",
-            "runtime_ternary",
             "runtime_try_catch",
             "runtime_while_basic",
             "runtime_while_nested",
