@@ -149,10 +149,15 @@ def lower_function(fn: mir.Function, func_map: dict[str, ir.Function] | None = N
                         if func_map and instr.callee in func_map:
                             callee = func_map[instr.callee]
                         else:
-                            ret_ty = _llvm_type(ERROR if instr.callee in {"error_new", "drift_error_new", "error_push_frame", "error"} else fn.return_type)
-                            arg_tys = [val.type for val in arg_vals]
-                            callee_ty = ir.FunctionType(ret_ty, arg_tys)
-                            callee = ir.Function(llvm_module, callee_ty, name=instr.callee)
+                            if instr.callee == "drift_error_new":
+                                callee = _error_new_decl(llvm_module)
+                            elif instr.callee == "error_push_frame":
+                                callee = _error_push_frame_decl(llvm_module)
+                            else:
+                                ret_ty = _llvm_type(ERROR if instr.callee in {"error_new", "error"} else fn.return_type)
+                                arg_tys = [val.type for val in arg_vals]
+                                callee_ty = ir.FunctionType(ret_ty, arg_tys)
+                                callee = ir.Function(llvm_module, callee_ty, name=instr.callee)
                     call_val = builder.call(callee, arg_vals, name=instr.dest)
                     env[instr.dest] = call_val
             else:
