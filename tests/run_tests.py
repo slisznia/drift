@@ -103,7 +103,6 @@ def _run_codegen_tests() -> int:
         name
         for name in [
             "runtime",
-            "runtime_basics",
             "runtime_effects",
             "runtime_functions",
             "runtime_index_bounds",
@@ -117,44 +116,28 @@ def _run_codegen_tests() -> int:
             "runtime_while_basic",
             "runtime_while_nested",
             "runtime_while_try_catch",
-            # Error/attr/frames cases still unstable with DriftString-based Error runtime; re-enable once wiring is fully validated.
-            "attr_array",
-            "attr_array_large",
-            "domain_default",
-            "domain_override",
-            "error_path",
-            "exception_domain",
-            "frames_captures",
-            "frames_chain",
-            "frames_one",
-            "frames_two",
-            "frames_three",
-            "try_catch",
-            "try_else_error",
+            # Error/attr/frames cases to re-enable incrementally.
+            # "attr_array",
+            # "attr_array_large",
+            # "domain_default",
+            # "domain_override",
+            # "error_path",         # now enabled
+            # "exception_domain",
+            # "frames_captures",
+            # "frames_chain",
+            # "frames_one",
+            # "frames_two",
+            # "frames_three",
+            # "try_catch",
+            # "try_else_error",
         ]
     }
 
     for case_dir in sorted(CODEGEN_DIR.iterdir()):
         if not case_dir.is_dir():
             continue
-        if case_dir.name in skip_cases and case_dir.name != "error_path":
+        if case_dir.name in skip_cases:
             print(f"[skip] codegen {case_dir.name}: not yet supported by minimal lowering", file=sys.stderr)
-            continue
-        if case_dir.name != "error_path" and case_dir.name in {
-            "attr_array",
-            "attr_array_large",
-            "domain_default",
-            "domain_override",
-            "exception_domain",
-            "frames_captures",
-            "frames_chain",
-            "frames_one",
-            "frames_two",
-            "frames_three",
-            "try_catch",
-            "try_else_error",
-        }:
-            print(f"[skip] codegen {case_dir.name}: focusing on error_path debug", file=sys.stderr)
             continue
         drift_path = case_dir / "input.drift"
         expect_path = case_dir / "expect.json"
@@ -223,7 +206,7 @@ def _build_and_link(drift_path: Path, harness_path: Path, out_dir: Path, case: s
     for fn in mir_prog.functions.values():
         ir_text, obj_bytes = lower_function(fn)
         llvm_ir = ir_text  # keep last for logging
-        obj_path = out_dir / f"{case}_{fn.name}.o"
+        obj_path = out_dir / f"{case}_{fn.name}_drift.o"
         obj_path.write_bytes(obj_bytes)
         obj_paths.append(obj_path)
     # Compile shared runtime stubs (PIC for PIE linking)

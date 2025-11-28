@@ -1,4 +1,4 @@
-fn main() -> Int64 { entry = bb0 }
+fn main_drift() -> Int64 { entry = bb0 }
 bb0:
   br bb_try_body1
 bb_catch2(err: Error):

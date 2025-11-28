@@ -4,7 +4,7 @@ from typing import Dict, Tuple, List, Optional
 
 from . import ast, mir
 from .checker import CheckedProgram
-from .types import BOOL, F64, I64, STR, ERROR, Type
+from .types import BOOL, F64, I64, STR, ERROR, UNIT, Type
 from ._lower_to_mir_utils import build_frame_consts
 
 
@@ -29,6 +29,7 @@ def lower_straightline(checked: CheckedProgram, source_name: str | None = None, 
 
     for fn_def in checked.program.functions:
         fn_info = checked.functions[fn_def.name]
+        fn_name = "main_drift" if fn_def.name == "main" else fn_def.name
 
         temp_counter = 0
         block_counter = 0
@@ -546,10 +547,14 @@ def lower_straightline(checked: CheckedProgram, source_name: str | None = None, 
             current_block = lower_stmt(stmt, current_block, temp_types, capture_env)
 
         if current_block is not None and current_block.terminator is None:
-            raise LoweringError("function did not terminate with return")
+            # Implicit return for Void functions; otherwise require explicit return.
+            if fn_info.signature.return_type == UNIT:
+                current_block.terminator = mir.Return()
+            else:
+                raise LoweringError("function did not terminate with return")
 
         fn = mir.Function(
-            name=fn_def.name,
+            name=fn_name,
             params=[mir.Param(name=p.name, type=fn_info.signature.params[idx]) for idx, p in enumerate(fn_def.params)],
             return_type=fn_info.signature.return_type,
             entry=entry.name,
