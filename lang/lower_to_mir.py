@@ -35,24 +35,35 @@ def lower_straightline(checked: CheckedProgram, source_name: str | None = None, 
         block_counter = 0
         blocks: Dict[str, mir.BasicBlock] = {}
 
-        def fresh_val() -> str:
+        def fresh_ssa(prefix: str = "t") -> str:
             nonlocal temp_counter
             temp_counter += 1
-            return f"_t{temp_counter}"
+            return f"_{prefix}{temp_counter}"
 
         def fresh_block(prefix: str) -> str:
             nonlocal block_counter
             block_counter += 1
             return f"{prefix}{block_counter}"
 
-        block_params = [mir.Param(name=p.name, type=fn_info.signature.params[idx]) for idx, p in enumerate(fn_def.params)]
+        # SSA env: user name -> SSA name; SSA types: SSA name -> Type.
+        entry_env: Dict[str, str] = {}
+        ssa_types: Dict[str, Type] = {}
+
+        block_params: list[mir.Param] = []
+        for idx, p in enumerate(fn_def.params):
+            ssa_name = fresh_ssa(p.name)
+            block_params.append(mir.Param(name=ssa_name, type=fn_info.signature.params[idx]))
+            entry_env[p.name] = ssa_name
+            ssa_types[ssa_name] = fn_info.signature.params[idx]
+
         entry = mir.BasicBlock(name="bb0", params=block_params)
         blocks[entry.name] = entry
 
         def lower_expr(
             expr: ast.Expr,
             current_block: mir.BasicBlock,
-            temp_types: Dict[str, Type],
+            ssa_types: Dict[str, Type],
+            env: Dict[str, str],
             capture_env: Dict[str, str],
             err_target: str | None = None,
         ) -> Tuple[str, Type, mir.BasicBlock]:
@@ -60,10 +71,11 @@ def lower_straightline(checked: CheckedProgram, source_name: str | None = None, 
                 tern: ast.Ternary,
                 block: mir.BasicBlock,
                 types: Dict[str, Type],
+                env: Dict[str, str],
                 caps: Dict[str, str],
                 err_tgt: str | None,
             ) -> Tuple[str, Type, mir.BasicBlock]:
-                cond_val, _, block = lower_expr(tern.condition, block, types, caps, err_target=err_tgt)
+                cond_val, _, block = lower_expr(tern.condition, block, types, env, caps, err_target=err_tgt)
 
                 then_name = fresh_block("bb_then")
                 else_name = fresh_block("bb_else")
@@ -80,10 +92,10 @@ def lower_straightline(checked: CheckedProgram, source_name: str | None = None, 
                     els=mir.Edge(target=else_name),
                 )
 
-                types_then = types.copy()
-                v_then, ty_then, then_block = lower_expr(tern.then_value, then_block, types_then, caps.copy(), err_target=err_tgt)
-                types_else = types.copy()
-                v_else, ty_else, else_block = lower_expr(tern.else_value, else_block, types_else, caps.copy(), err_target=err_tgt)
+                env_then = env.copy()
+                v_then, ty_then, then_block = lower_expr(tern.then_value, then_block, types, env_then, caps.copy(), err_target=err_tgt)
+                env_else = env.copy()
+                v_else, ty_else, else_block = lower_expr(tern.else_value, else_block, types, env_else, caps.copy(), err_target=err_tgt)
                 if ty_then != ty_else:
                     raise LoweringError("ternary branches must have the same type")
 
@@ -350,6 +362,16 @@ def lower_straightline(checked: CheckedProgram, source_name: str | None = None, 
                     val, _, current_block = lower_expr(stmt.value, current_block, temp_types, capture_env, err_target=err_target)
                     current_block.terminator = mir.Return(value=val)
                 return None
+            if isinstance(stmt, ast.AssignStmt):
+                if not isinstance(stmt.target, ast.Name):
+                    raise LoweringError("only simple name assignment supported in minimal lowering")
+                val, val_ty, current_block = lower_expr(stmt.value, current_block, temp_types, capture_env, err_target=err_target)
+                dest = stmt.target.ident
+                if dest not in temp_types:
+                    raise LoweringError(f"assignment to undefined binding '{dest}'")
+                current_block.instructions.append(mir.Move(dest=dest, source=val))
+                temp_types[dest] = val_ty
+                return current_block
             if isinstance(stmt, ast.IfStmt):
                 return _lower_if(stmt, current_block, temp_types, capture_env, err_target)
             if isinstance(stmt, ast.WhileStmt):
@@ -545,25 +567,28 @@ def lower_straightline(checked: CheckedProgram, source_name: str | None = None, 
             capture_env: Dict[str, str],
             err_target: str | None = None,
         ) -> Optional[mir.BasicBlock]:
+            # Thread loop-carried variables through block params/edges.
+            var_names = [n for n in temp_types.keys() if not n.startswith("_")]
+            var_params = [mir.Param(name=n, type=temp_types[n]) for n in var_names]
             cond_name = fresh_block("bb_while_cond")
             body_name = fresh_block("bb_while_body")
             after_name = fresh_block("bb_while_after")
-            cond_block = mir.BasicBlock(name=cond_name)
-            body_block = mir.BasicBlock(name=body_name)
-            after_block = mir.BasicBlock(name=after_name)
+            cond_block = mir.BasicBlock(name=cond_name, params=list(var_params))
+            body_block = mir.BasicBlock(name=body_name, params=list(var_params))
+            after_block = mir.BasicBlock(name=after_name, params=list(var_params))
             blocks[cond_name] = cond_block
             blocks[body_name] = body_block
             blocks[after_name] = after_block
-            current_block.terminator = mir.Br(target=mir.Edge(target=cond_name))
+            current_block.terminator = mir.Br(target=mir.Edge(target=cond_name, args=var_names))
             cond_val, _, cond_block = lower_expr(stmt.condition, cond_block, temp_types, capture_env, err_target=err_target)
             cond_block.terminator = mir.CondBr(
                 cond=cond_val,
-                then=mir.Edge(target=body_name),
-                els=mir.Edge(target=after_name),
+                then=mir.Edge(target=body_name, args=var_names),
+                els=mir.Edge(target=after_name, args=var_names),
             )
             end_body = lower_block(stmt.body.statements, body_block, temp_types.copy(), capture_env.copy(), err_target=err_target)
             if end_body is not None and end_body.terminator is None:
-                end_body.terminator = mir.Br(target=mir.Edge(target=cond_name))
+                end_body.terminator = mir.Br(target=mir.Edge(target=cond_name, args=var_names))
             return after_block
 
         def _lower_try(

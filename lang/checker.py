@@ -318,6 +318,8 @@ class Checker:
 
     def _check_stmt(self, stmt: ast.Stmt, ctx: FunctionContext, in_loop: bool = False) -> None:
         if isinstance(stmt, ast.LetStmt):
+            if stmt.name.startswith("_t"):
+                raise CheckError(f"{stmt.loc.line}:{stmt.loc.column}: identifiers starting with '_t' are reserved")
             decl_type = None
             if stmt.type_expr is not None:
                 try:

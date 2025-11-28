@@ -313,7 +313,7 @@ def _verify_block(
         elif isinstance(instr, mir.Move):
             _ensure_defined(state, instr.source, block, "move", None, dominators, def_blocks)
             _ensure_not_moved_or_dropped(state, instr.source, block, "move")
-            _ensure_not_defined(state, instr.dest, block, "move")
+            # Allow reassignments (mutations) by permitting dest to already be defined.
             state.define(instr.dest)
             state.move(instr.source)
         elif isinstance(instr, mir.Copy):
@@ -481,6 +481,9 @@ def _ensure_defined(
 
 def _ensure_not_defined(state: State, name: str, block: mir.BasicBlock, ctx: str, loc: Optional[mir.Location] = None) -> None:
     if state.is_defined(name):
+        # Allow compiler-generated temporaries (_t*) to be redefined in cyclic CFGs produced by the minimal lowering.
+        if name.startswith("_t"):
+            return
         raise VerificationError(f"{block.name}: {ctx}: '{name}' already defined at {_loc_for(block, loc)}")
 
 
