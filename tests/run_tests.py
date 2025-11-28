@@ -98,13 +98,12 @@ def _run_codegen_tests() -> int:
     failures = 0
     out_dir = CODEGEN_DIR / "out"
     out_dir.mkdir(parents=True, exist_ok=True)
+    expected_compile_fail = {"runtime_module_invalid_name", "runtime_module_reserved_prefix"}
     skip_cases = {
         # runtime_* cases rely on language features not yet lowered (mutation, arrays, full control flow, module checks, etc.).
         name
         for name in [
             "runtime",
-            "runtime_module_invalid_name",
-            "runtime_module_reserved_prefix",
             "runtime_mutable_bindings",
             "runtime_reserved_keyword_name",
             "runtime_try_catch",
@@ -143,6 +142,13 @@ def _run_codegen_tests() -> int:
         try:
             llvm_ir, exe_path = _build_and_link(drift_path, harness_path, out_dir, case_dir.name)
             exit_code, stdout, stderr = _run_exe(exe_path)
+        except checker.CheckError as exc:  # type: ignore[attr-defined]
+            if case_dir.name in expected_compile_fail:
+                print(f"[ok] codegen {case_dir.name} (compile error as expected)")
+                continue
+            failures += 1
+            print(f"[fail] codegen {case_dir.name}: compile error {exc}", file=sys.stderr)
+            continue
         except FileNotFoundError as exc:
             print(f"[skip] codegen {case_dir.name}: {exc}", file=sys.stderr)
             continue
