@@ -1,0 +1,7 @@
+import std.console.out
+
+fn main() returns Int64 {
+  out.writeln("hi from ssa")
+  val rc: Int64 = 0
+  return rc
+}

@@ -179,13 +179,10 @@ def lower_if(
     blocks[join_name] = join_block
 
     live_users = list(env.snapshot_live_user_names())
-    then_args = [env.lookup_user(u) for u in live_users]
-    else_args = [env.lookup_user(u) for u in live_users]
-
     current.terminator = mir.CondBr(
         cond=cond_ssa,
-        then=mir.Edge(target=then_name, args=then_args),
-        els=mir.Edge(target=else_name, args=else_args),
+        then=mir.Edge(target=then_name, args=[]),
+        els=mir.Edge(target=else_name, args=[]),
     )
 
     # Join params (fresh SSA) and branch envs.
@@ -270,7 +267,7 @@ def lower_while(
 
     header_block.terminator = mir.CondBr(
         cond=cond_ssa,
-        then=mir.Edge(target=body_name, args=[body_env.lookup_user(u) for u in live_users]),
+        then=mir.Edge(target=body_name, args=[]),
         els=mir.Edge(target=after_name, args=[header_env.lookup_user(u) for u in live_users]),
     )
 
@@ -431,6 +428,8 @@ class LoweringError(Exception):
 
 
 def _lookup_field_type(base_ty: Type, field: str, checked: CheckedProgram) -> Type:
+    if base_ty.name in {"&", "&mut"} and base_ty.args:
+        base_ty = base_ty.args[0]
     struct_info = checked.structs.get(base_ty.name)
     if struct_info:
         if field not in struct_info.field_types:

@@ -5,6 +5,7 @@ from __future__ import annotations
 from lang import ast
 from lang import mir
 from lang.mir_verifier_ssa_v2 import SSAVerifierV2
+from lang.mir_simplify_ssa import simplify_function
 from lang.lower_to_mir_ssa import lower_function_ssa, LoweringError
 from lang.types import BOOL, I64, STR, FunctionSignature
 from lang.checker import CheckedProgram, FunctionInfo
@@ -605,6 +606,37 @@ def test_misc_instrs_use_undef_fails():
     except RuntimeError:
         return
     raise AssertionError("expected verifier to fail on undefined operand in copy")
+
+
+def test_simplify_const_folding_and_dce():
+    # Build a function with const ops and dead defs; ensure simplifier removes/folds.
+    bb0 = mir.BasicBlock(name="bb0", params=[])
+    bb0.instructions.extend(
+        [
+            mir.Const(dest="_c0", type=I64, value=1),
+            mir.Const(dest="_c1", type=I64, value=2),
+            mir.Binary(dest="_b0", op="+", left="_c0", right="_c1", type=I64),
+            mir.Const(dest="_dead", type=I64, value=5),
+        ]
+    )
+    bb0.terminator = mir.Return(value="_b0")
+    fn = make_fn([bb0])
+    simplified_fn = simplify_function(
+        mir.Function(
+            name="f",
+            params=[],
+            return_type=I64,
+            entry="bb0",
+            module="tests",
+            source=None,
+            blocks=fn.blocks,
+        )
+    )
+    bb0_s = simplified_fn.blocks["bb0"]
+    # Expect dead const removed and binary folded to const.
+    dests = [instr.dest for instr in bb0_s.instructions if hasattr(instr, "dest")]
+    assert "_dead" not in dests
+    assert any(isinstance(instr, mir.Const) and instr.value == 3 and instr.type == I64 for instr in bb0_s.instructions)
 
 
 def test_try_catch_stmt_shape():

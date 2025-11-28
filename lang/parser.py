@@ -285,7 +285,7 @@ def _build_type_expr(tree: Tree) -> TypeExpr:
         return TypeExpr(name=ref_name, args=[inner])
     if name == "type_expr":
         for child in tree.children:
-            if isinstance(child, Tree) and _name(child) in {"base_type", "type_expr"}:
+            if isinstance(child, Tree) and _name(child) in {"base_type", "type_expr", "ref_type"}:
                 return _build_type_expr(child)
         return TypeExpr(name="<unknown>")
     if name == "base_type":
@@ -395,20 +395,11 @@ def _build_let_stmt(tree: Tree) -> LetStmt:
 def _build_assign_stmt(tree: Tree) -> AssignStmt:
     loc = _loc(tree)
     tree_children = [child for child in tree.children if isinstance(child, Tree)]
-    target_node = next(child for child in tree_children if _name(child) == "assign_lhs")
-    value_node = next(child for child in reversed(tree_children) if child is not target_node)
-    target = _build_assign_target(target_node)
+    target_node = tree_children[0]
+    value_node = tree_children[1]
+    target = _build_expr(target_node)
     value = _build_expr(value_node)
     return AssignStmt(loc=loc, target=target, value=value)
-
-
-def _build_assign_target(node: Tree) -> Expr:
-    name_token = next(child for child in node.children if isinstance(child, Token) and child.type == "NAME")
-    expr: Expr = Name(loc=_loc_from_token(name_token), ident=name_token.value)
-    for child in node.children:
-        if isinstance(child, Tree) and _name(child) == "index_suffix":
-            expr = _apply_index_suffix(expr, child)
-    return expr
 
 
 def _parse_binding_name(tree: Tree) -> tuple[Token, bool]:

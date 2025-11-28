@@ -4,22 +4,36 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 import sys
+import os
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 ROOT = SCRIPT_DIR.parent
 # Ensure project root is ahead of the script directory to avoid shadowing stdlib modules (e.g., types)
 sys.path = [str(ROOT)] + [p for p in sys.path if p != str(SCRIPT_DIR)]
 
-from lang import parser, checker  # type: ignore
+from lang import parser, checker, mir  # type: ignore
 from lang.lower_to_mir import lower_straightline
 from lang.lower_to_mir_ssa import lower_function_ssa, LoweringError
 from lang.mir_to_llvm import lower_function
 from lang.runtime import builtin_signatures
 from lang.mir_verifier import verify_program
 from lang.mir_verifier_ssa_v2 import SSAVerifierV2
+from lang.mir_simplify_ssa import simplify_function
 
 
-def _run_ssa_check(checked: checker.CheckedProgram) -> None:
+def _dump_ssa(fn_name: str, blocks: dict[str, mir.BasicBlock], file=None) -> None:
+    if file is None:
+        file = sys.stderr
+    print(f"== SSA for {fn_name} ==", file=file)
+    for name, block in blocks.items():
+        params = ", ".join(f"{p.name}:{p.type}" for p in block.params)
+        print(f"block {name}({params})", file=file)
+        for instr in block.instructions:
+            print(f"  {instr}", file=file)
+        print(f"  term {block.terminator}", file=file)
+
+
+def _run_ssa_check(checked: checker.CheckedProgram, simplify: bool, dump: bool) -> None:
     """Lower all user-defined functions through the SSA scaffold and verify structure."""
     for fn_def in checked.program.functions:
         if fn_def.name not in checked.functions:
@@ -28,24 +42,54 @@ def _run_ssa_check(checked: checker.CheckedProgram) -> None:
             lowered = lower_function_ssa(fn_def, checked)
         except LoweringError as e:
             raise SystemExit(f"SSA lowering failed for {fn_def.name}: {e}")
-        verifier_fn = type("F", (), {"blocks": lowered.blocks, "entry": lowered.entry})
+        fn_blocks = lowered.blocks
+        if simplify:
+            fn_blocks = simplify_function(
+                mir.Function(
+                    name=fn_def.name,
+                    params=[
+                        mir.Param(name=p.name, type=checked.functions[fn_def.name].signature.params[idx])
+                        for idx, p in enumerate(fn_def.params)
+                    ],
+                    return_type=checked.functions[fn_def.name].signature.return_type,
+                    entry=lowered.entry,
+                    module=checked.module or "<module>",
+                    source=None,
+                    blocks=fn_blocks,
+                )
+            ).blocks
+        if dump:
+            _dump_ssa(fn_def.name, fn_blocks)
+        verifier_fn = type("F", (), {"blocks": fn_blocks, "entry": lowered.entry})
         SSAVerifierV2(verifier_fn).verify()
 
 
 def compile_file(
-    source_path: Path, output_path: Path, emit_ir: bool, ssa_check: bool, ssa_mode: str
+    source_path: Path,
+    output_path: Path,
+    emit_ir: bool,
+    ssa_check: bool,
+    ssa_mode: str,
+    ssa_simplify: bool,
+    dump_ssa: bool,
 ) -> int:
     source = source_path.read_text()
     prog = parser.parse_program(source)
     checked = checker.Checker(builtin_signatures()).check(prog)
     if ssa_check:
         try:
-            _run_ssa_check(checked)
+            _run_ssa_check(checked, simplify=ssa_simplify, dump=dump_ssa)
         except Exception as e:
             if ssa_mode == "warn":
                 print(f"[ssa-check] warning: {e}", file=sys.stderr)
             else:
                 raise
+    # SSA-only mode for tests: skip legacy lowering/codegen if requested.
+    if os.environ.get("SSA_ONLY") == "1":
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(b"")
+        return 0
+
     mir_prog = lower_straightline(checked, source_name=str(source_path), module_name=checked.module or prog.module)
     verify_program(mir_prog)
     # TODO: handle multiple functions; currently only the first is emitted.
@@ -74,9 +118,27 @@ def main(argv: list[str] | None = None) -> int:
         default="fail",
         help="When --ssa-check is enabled: fail on SSA errors (default) or warn and continue",
     )
+    ap.add_argument(
+        "--ssa-simplify",
+        action="store_true",
+        help="Run SSA simplification (const folding, dead SSA removal) before SSA verification",
+    )
+    ap.add_argument(
+        "--dump-ssa",
+        action="store_true",
+        help="When --ssa-check is enabled: dump the (optionally simplified) SSA blocks",
+    )
     args = ap.parse_args(argv)
 
-    return compile_file(args.source, args.output, args.emit_ir, args.ssa_check, args.ssa_check_mode)
+    return compile_file(
+        args.source,
+        args.output,
+        args.emit_ir,
+        args.ssa_check,
+        args.ssa_check_mode,
+        args.ssa_simplify,
+        args.dump_ssa,
+    )
 
 
 if __name__ == "__main__":

@@ -302,7 +302,8 @@ class Checker:
         info = self.function_infos[fn.name]
         scope = Scope(parent=global_scope)
         for param, ty in zip(fn.params, info.signature.params):
-            scope.define(param.name, VarInfo(type=ty, mutable=False), fn.loc)
+            is_mut = ty.name in {"&", "&mut"}
+            scope.define(param.name, VarInfo(type=ty, mutable=is_mut), fn.loc)
         ctx = FunctionContext(
             name=fn.name,
             signature=info.signature,
@@ -666,6 +667,8 @@ class Checker:
         )
 
     def _resolve_attr_type(self, base_type: Type, attr: ast.Attr) -> Type:
+        if base_type.name in {"&", "&mut"} and base_type.args:
+            base_type = base_type.args[0]
         struct_info = self.struct_infos.get(base_type.name)
         if struct_info:
             if attr.attr not in struct_info.field_types:
@@ -714,6 +717,10 @@ class Checker:
             index_type = self._check_expr(target.index, ctx)
             self._expect_type(index_type, I64, target.index.loc)
             return element_type
+        if isinstance(target, ast.Attr):
+            self._ensure_mutable_root(target.value, ctx)
+            base_type = self._check_expr(target.value, ctx)
+            return self._resolve_attr_type(base_type, target)
         raise CheckError(
             f"{target.loc.line}:{target.loc.column}: Unsupported assignment target"
         )
@@ -729,6 +736,9 @@ class Checker:
         if isinstance(expr, ast.Index):
             self._ensure_mutable_root(expr.value, ctx)
             return
+        if isinstance(expr, ast.Attr):
+            self._ensure_mutable_root(expr.value, ctx)
+            return
         raise CheckError(
-            f"{expr.loc.line}:{expr.loc.column}: Assignment target must be a variable or array element"
+            f"{expr.loc.line}:{expr.loc.column}: Assignment target must be a variable, field, or array element"
         )

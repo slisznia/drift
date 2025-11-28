@@ -27,18 +27,22 @@ Purpose: track the multi-pass effort to make MIR truly SSA (single definition pe
    - Verify codegen; expect temporary breakage during refactor and fix iteratively.
 
 ## Current status
-- Legacy lowering (`lower_to_mir.py`) is still the active path and remains non-SSA/mutable.
-- Strict SSA scaffolding exists in parallel:
+- Legacy runner is deprioritized; `just test` runs the SSA-only suite (`test-ssa`). Legacy `run_tests.py` lives under `just legacy-test` and is not maintained.
+- SSA pipeline:
   - `lang/ssa_env.py` shares counter/types via SSAContext.
-  - `lang/lower_to_mir_ssa.py` does SSA-correct params/let/assign, scaffolded if/else/while, literals, binary ops/comparisons (including string eq/neq via helper), simple calls, returns, array indexing, field access (with real field types), and a minimal try/else lowering for call expressions that branch on normal/error edges (now covered by MIR tests). Live-user snapshots are now deterministic (sorted) to keep φ alignment stable.
-  - Strict SSA verifier v2 (`lang/mir_verifier_ssa_v2.py`) pre-registers all defs (including call terminator dests), checks uses with intra-block ordering + dominance, and handles block params/terminators (including call-with-edges as terminators); enforces “call with edges only as terminator,” “terminator not in instructions,” reachability (entry is the first block), known edge targets, φ arity (including arg-free edges into param-less blocks), and requires every block to end with a terminator. Type sanity (e.g., index integral) still relies on the checker for now.
-- SSA is now wired behind `--ssa-check` in `driftc.py`: when enabled, all user functions are lowered through the SSA scaffold and verified, then legacy MIR/codegen runs. Currently, `--ssa-check` hard-aborts on SSA lowering/verifier failures; no log-only mode yet.
-- Remaining gaps: SSA lowering still limited to the current expression set (no stores/field updates, no general try/catch beyond try `<call> else <expr>`), and the SSA checks are structural-only (semantic/type bugs like bad index types, invalid fields, or mismatched fallback types are delegated to the checker).
+  - `lang/lower_to_mir_ssa.py` lowers params/let/assign (now including field assignment end-to-end), if/else/while, literals, binops/comparisons (incl. string eq/neq helper), method-style calls, returns, array indexing, field access (real field types), FieldSet/ArraySet (side-effecting stores), try/else and try/catch (preludes allowed), and AST-level throw. Live-user snapshots are sorted for stable φ alignment.
+  - SSA verifier v2 pre-registers all defs (including call terminator dests), checks uses with intra-block ordering + dominance, enforces call-with-edges-only-as-terminator, “terminator not in instructions,” reachability (explicit entry stored on the function), known edge targets, φ arity (including arg-free edges into param-less blocks), and requires every block to end with a terminator. Type sanity is still checker-driven.
+  - SSA simplifier (`lang/mir_simplify_ssa.py`) does scalar const folding + dead pure-def cleanup; folded const types are asserted in tests.
+  - Mutation model documented (`docs/mir_mutation_model.md`): SSA names are immutable scalars; FieldSet/ArraySet are side-effecting memory ops (no dest/phi), may alias, and must be treated as barriers unless alias analysis proves otherwise.
+- SSA regression harness:
+  - Unit/negative tests in `lang/mir_ssa_tests.py`.
+  - Smoke tests in `tests/ssa_check_smoke.py` and SSA program suite in `tests/ssa_programs/*` (`tests/ssa_programs_test.py`); includes negative programs for bad fields/types.
+  - All SSA runners invoke `driftc.py` with `--ssa-check --ssa-check-mode=fail --ssa-simplify` (and `SSA_ONLY=1` to bypass legacy codegen). `--dump-ssa` flag exists for debugging.
 
 ## Next actions
-- Add MIR unit tests for CFG/phi failures (e.g., missing preds, edge arg count mismatch) as new MIR ops appear.
-- Flesh out SSA lowering to cover more expressions/ops and wire operand uses into the verifier as new MIR ops appear.
-- Plan integration: run SSA lowering+verifier in parallel to legacy, then swap once feature-complete and tests pass.
+- Keep growing the SSA program suite with real snippets (struct mutation, exceptions, control flow) and run it under `test-ssa`; re-enable more language features only via SSA.
+- Extend SSA lowering/verifier only when a real SSA test/program needs it; legacy lowering is out of scope.
+- Consider enabling warn-only SSA mode in more places if broader dogfooding is useful; tests currently use fail mode.
 
 ## Caveats / reminders
 - SSA path is still structurally-only; semantic/type bugs won’t be caught here. The verifier and integration tests never exercise or enforce things like bad index types, invalid field names, or mismatched call/fallback types. Those are all delegated to the checker, so any mistake wiring types in `lower_to_mir_ssa` (e.g., wrong `array_element_type`, `_lookup_field_type` misuse) will sail through the SSA suite.
@@ -47,13 +51,15 @@ Purpose: track the multi-pass effort to make MIR truly SSA (single definition pe
 - ## Immediate next steps (flag + surface)
 - Add an `--ssa-check` compiler flag: run SSA lowering + SSAVerifierV2 alongside legacy lowering; keep codegen on legacy MIR. In dev/debug, treat SSA verifier failures as hard errors; otherwise log and continue. **Implemented in `driftc.py`: `--ssa-check` runs SSA lowering/verifier for all user functions, then proceeds with legacy codegen. `--ssa-check-mode` (`fail`/`warn`) controls abort vs warn.**
 - Extend SSA lowering in two slices:
-  1) Writes: field/array updates (immutable rebuild or explicit store op) and add verifier operand checks for new MIR ops. (Basic FieldSet/ArraySet now exist; still need a documented mutation model before SSA optimizations.)
+  1) Writes: field/array updates (immutable rebuild or explicit store op) and add verifier operand checks for new MIR ops. (Basic FieldSet/ArraySet now exist; mutation model documented; still need to decide SSA-opt interplay.)
   2) General try/catch: pick a canonical MIR shape (error continuation + join φs) and teach the verifier about the new terminator/edges. Throw terminator/lowering exists; relaxed try/catch to allow preludes with a call as tail; still need to broaden to multiple/fallible ops in the try body and handle event/binder semantics.
 - Add checker+lowering+SSA integration tests to catch wiring errors that SSA won’t see:
   - Bad index types, invalid fields.
   - Fallback type mismatch in try/else.
   - (These should fail in the checker or loudly in lowering; they’re not SSA verifier’s job but guard against mis-threaded types.)
 - Add driver-level smoke test with `--ssa-check-mode=fail` (see `tests/ssa_check_smoke.py`) to prove SSA runs on a tiny real program; extend SSA lowering/tests as that example grows.
+- Build SSA-only regression suite under `tests/ssa_programs/*` and a runner `tests/ssa_programs_test.py` to compile them under `--ssa-check-mode=fail`; `test-ssa` runs SSA unit + smoke + program suite. Legacy runner is deprioritized/kept separate.
+- Add an SSA simplification pass (const folding, dead SSA removal) behind a flag and test it.
 - Document MIR mutation model explicitly: SSA names are immutable scalars; FieldSet/ArraySet are side-effecting memory ops (no dest, never φ sources), may alias, and must be treated as barriers by SSA optimizations unless alias/memory analysis proves otherwise. **Documented in docs/mir_mutation_model.md and code comments.**
 - Add MIR/unit tests that exercise `FieldSet`/`ArraySet` shapes to pin operand threading and env interactions; current suite doesn’t hit the new store ops.
 - Decide and document the mutation model in SSA MIR: current `FieldSet`/`ArraySet` mutate in place (not SSA-pure). Before running SSA-based optimizations, define how mutating ops interact with the SSA model (fresh aggregates vs explicit memory).

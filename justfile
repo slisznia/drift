@@ -1,24 +1,27 @@
 set shell := ["bash", "-lc"]
 
-test: parse-all
+test: test-ssa
+
+legacy-test: parse-all
 	./.venv/bin/python3 tests/run_tests.py
 
 test-ssa:
 	PYTHONPATH=. ./.venv/bin/python3 -m lang.mir_ssa_tests
 	./.venv/bin/python3 tests/ssa_check_smoke.py
+	./.venv/bin/python3 tests/ssa_programs_test.py
 
 parse-all: parse-playground parse-examples
 	@echo "Parsing successful."
 
 # Parse every Drift snippet under playground/ to ensure the grammar accepts them.
 parse-playground:
-	python3 tools/draft_linter.py playground
-	python3 tools/parse_playground.py
+	./.venv/bin/python3 tools/draft_linter.py playground
+	./.venv/bin/python3 tools/parse_playground.py
 
 # Parse every Drift example under examples/
 parse-examples:
-	python3 tools/draft_linter.py examples
-	python3 tools/parse_playground.py examples
+	./.venv/bin/python3 tools/draft_linter.py examples
+	./.venv/bin/python3 tools/parse_playground.py examples
 
 test-codegen:
 	./.venv/bin/python3 tools/test-llvm/test_codegen.py tools/test-llvm/out/add.o
@@ -30,5 +33,5 @@ mir-codegen:
 	mkdir -p tests/mir_lowering/out
 	PYTHONPATH=./ ./.venv/bin/python3 -m lang.driftc tests/mir_lowering/add.drift -o tests/mir_lowering/out/add.o --emit-ir
 	clang-15 -c tests/mir_lowering/main.c -o tests/mir_lowering/out/main.o
-	clang-15 tests/mir_lowering/out/main.o tests/mir_lowering/out/add.o -o tests/mir_lowering/out/add_mir_test
+	clang-15 tests/mir_lowering/out/main.o tests/mir_lowering/add.o -o tests/mir_lowering/out/add_mir_test
 	./tests/mir_lowering/out/add_mir_test
