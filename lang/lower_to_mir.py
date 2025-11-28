@@ -146,6 +146,8 @@ def lower_straightline(checked: CheckedProgram, source_name: str | None = None, 
                 types[join_param.name] = call_type
                 fb_val, fb_ty, err_block = lower_expr(try_expr.fallback, err_block, types.copy(), caps.copy(), err_target=err_tgt)
                 err_block.terminator = mir.Br(target=mir.Edge(target=join_name, args=[fb_val]))
+                if call_type == UNIT and join_block.terminator is None:
+                    join_block.terminator = mir.Return()
                 return join_param.name, types[call_dest], join_block
             if isinstance(expr, ast.Literal):
                 dest = fresh_val()
@@ -270,6 +272,8 @@ def lower_straightline(checked: CheckedProgram, source_name: str | None = None, 
                 else:
                     err_block.terminator = mir.Raise(error=err_push_dest)
                 temp_types[join_param.name] = call_ty
+                if call_ty == UNIT and join_block.terminator is None:
+                    join_block.terminator = mir.Return()
                 return join_param.name, call_ty, join_block
             if isinstance(expr, ast.Ternary):
                 return lower_ternary_expr(expr, current_block, temp_types, capture_env, err_target)
