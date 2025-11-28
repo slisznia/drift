@@ -120,6 +120,13 @@ class ArrayGet(Instruction):
 
 
 @dataclass(frozen=True)
+class ArrayLen(Instruction):
+    dest: Value
+    base: Value
+    loc: Location = Location()
+
+
+@dataclass(frozen=True)
 class FieldSet(Instruction):
     base: Value
     field: str

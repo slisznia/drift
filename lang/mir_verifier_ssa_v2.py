@@ -165,6 +165,8 @@ class SSAVerifierV2:
         elif isinstance(instr, mir.ArrayLiteral):
             for arg in instr.elements:
                 self._use(arg, where, block_name, local_defs)
+        elif isinstance(instr, mir.ArrayLen):
+            self._use(instr.base, where, block_name, local_defs)
         elif isinstance(instr, mir.CallWithCtx):
             self._use(instr.ctx_dest, where, block_name, local_defs)
             for arg in instr.args:

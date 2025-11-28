@@ -558,6 +558,19 @@ def test_fieldset_arrayset_shapes():
     SSAVerifierV2(fn).verify()
 
 
+def test_ref_fieldset_roundtrip():
+    """Mutating through a ref arg: FieldGet -> Binary -> FieldSet."""
+    pt = Type("Point")
+    bb0 = mir.BasicBlock(name="bb0", params=[mir.Param("_p0", pt)])
+    bb0.instructions.append(mir.FieldGet(dest="_x0", base="_p0", field="x"))
+    bb0.instructions.append(mir.Const(dest="_one", type=I64, value=1))
+    bb0.instructions.append(mir.Binary(dest="_x1", op="+", left="_x0", right="_one"))
+    bb0.instructions.append(mir.FieldSet(base="_p0", field="x", value="_x1"))
+    bb0.terminator = mir.Return(value=None)
+    fn = make_fn([bb0])
+    SSAVerifierV2(fn).verify()
+
+
 def test_fieldset_undef_fails():
     bb0 = mir.BasicBlock(name="bb0", params=[])
     bb0.instructions.append(mir.FieldSet(base="_undef_base", field="f", value="_undef_val"))

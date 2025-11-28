@@ -9,3 +9,4 @@ patch.diff
 *.o
 staged.zip
 staged
+.pytest_cache/

@@ -380,6 +380,15 @@ class Checker:
             for inner in stmt.body.statements:
                 self._check_stmt(inner, ctx, in_loop=in_loop)
             return
+        if isinstance(stmt, ast.ForStmt):
+            iter_ty = self._check_expr(stmt.iter_expr, ctx)
+            elem_ty = array_element_type(iter_ty)
+            if elem_ty is None:
+                raise CheckError(f"{stmt.loc.line}:{stmt.loc.column}: for-loop expects an Array, got {iter_ty}")
+            ctx.scope.define(stmt.var, VarInfo(type=elem_ty, mutable=False), stmt.loc)
+            for inner in stmt.body.statements:
+                self._check_stmt(inner, ctx, in_loop=in_loop)
+            return
         if isinstance(stmt, ast.TryStmt):
             for inner in stmt.body.statements:
                 self._check_stmt(inner, ctx, in_loop=in_loop)

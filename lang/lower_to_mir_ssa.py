@@ -13,7 +13,7 @@ from typing import Dict, List, Tuple
 from . import ast, mir
 from .checker import CheckedProgram
 from .ssa_env import SSAEnv, SSAContext
-from .types import Type, BOOL, I64, F64, STR, array_element_type
+from .types import Type, BOOL, I64, F64, STR, array_element_type, array_of
 
 
 @dataclass
@@ -89,6 +89,8 @@ def lower_block_in_env(
             err_ssa, _, current, env = lower_expr_to_ssa(stmt.expr, env, current, checked, blocks, fresh_block)
             current.terminator = mir.Throw(error=err_ssa, loc=stmt.loc)
             return current, env
+        elif isinstance(stmt, ast.ForStmt):
+            current, env = lower_for(stmt, env, blocks, current, checked, fresh_block)
         else:
             # Other statements (if/while/try) to be filled in later.
             pass
@@ -153,6 +155,69 @@ def lower_assign(
         )
         return current, env
     raise LoweringError(f"unsupported assignment target {stmt.target}")
+
+
+def lower_for(
+    stmt: ast.ForStmt,
+    env: SSAEnv,
+    blocks: Dict[str, mir.BasicBlock],
+    current: mir.BasicBlock,
+    checked: CheckedProgram,
+    fresh_block: callable,
+) -> Tuple[mir.BasicBlock, SSAEnv]:
+    iter_ssa, iter_ty, current, env = lower_expr_to_ssa(stmt.iter_expr, env, current, checked, blocks, fresh_block)
+    elem_ty = array_element_type(iter_ty)
+    if elem_ty is None:
+        raise LoweringError(f"for-loop expects array iterable, got {iter_ty}")
+    # Bind iterable to a temp SSA name to avoid re-evaluation.
+    iter_tmp = env.fresh_ssa("for_arr", iter_ty)
+    current.instructions.append(mir.Move(dest=iter_tmp, source=iter_ssa))
+    env.ctx.ssa_types[iter_tmp] = iter_ty
+    env.bind_user(f"__for_arr_{stmt.var}", iter_tmp, iter_ty)
+    # Length
+    len_ssa = env.fresh_ssa("for_len", I64)
+    current.instructions.append(mir.ArrayLen(dest=len_ssa, base=iter_tmp))
+    env.ctx.ssa_types[len_ssa] = I64
+    env.bind_user(f"__for_len_{stmt.var}", len_ssa, I64)
+    # Index
+    idx_ssa = env.fresh_ssa("for_idx", I64)
+    current.instructions.append(mir.Const(dest=idx_ssa, type=I64, value=0))
+    env.ctx.ssa_types[idx_ssa] = I64
+    env.bind_user(f"__for_idx_{stmt.var}", idx_ssa, I64)
+    # while idx < len
+    cond_expr = ast.Binary(
+        loc=stmt.loc,
+        op="<",
+        left=ast.Name(loc=stmt.loc, ident=f"__for_idx_{stmt.var}"),
+        right=ast.Name(loc=stmt.loc, ident=f"__for_len_{stmt.var}"),
+    )
+    # body: let var = arr[idx]; body stmts; idx = idx + 1
+    loop_var_let = ast.LetStmt(
+        loc=stmt.loc,
+        name=stmt.var,
+        type_expr=None,
+        value=ast.Index(
+            loc=stmt.loc,
+            value=ast.Name(loc=stmt.loc, ident=f"__for_arr_{stmt.var}"),
+            index=ast.Name(loc=stmt.loc, ident=f"__for_idx_{stmt.var}"),
+        ),
+        mutable=False,
+        capture=False,
+        capture_alias=None,
+    )
+    incr = ast.AssignStmt(
+        loc=stmt.loc,
+        target=ast.Name(loc=stmt.loc, ident=f"__for_idx_{stmt.var}"),
+        value=ast.Binary(
+            loc=stmt.loc,
+            op="+",
+            left=ast.Name(loc=stmt.loc, ident=f"__for_idx_{stmt.var}"),
+            right=ast.Literal(loc=stmt.loc, value=1),
+        ),
+    )
+    body_block = ast.Block(statements=[loop_var_let] + stmt.body.statements + [ast.ExprStmt(loc=stmt.loc, value=incr.value) if False else incr])
+    while_stmt = ast.WhileStmt(loc=stmt.loc, condition=cond_expr, body=body_block)
+    return lower_while(while_stmt, env, blocks, current, checked, fresh_block)
 
 
 def lower_if(
@@ -318,6 +383,26 @@ def lower_expr_to_ssa(
         current.instructions.append(mir.Const(dest=dest, type=lit_ty, value=lit_val, loc=getattr(expr, "loc", None)))
         env.ctx.ssa_types[dest] = lit_ty
         return dest, lit_ty, current, env
+    if isinstance(expr, ast.ArrayLiteral):
+        if not expr.elements:
+            raise LoweringError("empty array literals not supported in SSA lowering")
+        elem_ssa: List[str] = []
+        elem_ty: Optional[Type] = None
+        for e in expr.elements:
+            v, ty, current, env = lower_expr_to_ssa(e, env, current, checked, blocks, fresh_block)
+            if elem_ty is None:
+                elem_ty = ty
+            elif ty != elem_ty:
+                raise LoweringError("heterogeneous array literal not supported in SSA lowering")
+            elem_ssa.append(v)
+        assert elem_ty is not None
+        arr_ty = array_of(elem_ty)
+        dest = env.fresh_ssa("arr", arr_ty)
+        current.instructions.append(
+            mir.ArrayLiteral(dest=dest, elem_type=elem_ty, elements=elem_ssa, loc=getattr(expr, "loc", None))
+        )
+        env.ctx.ssa_types[dest] = arr_ty
+        return dest, arr_ty, current, env
     # Binary ops
     if isinstance(expr, ast.Binary):
         lhs, lhs_ty, current, env = lower_expr_to_ssa(expr.left, env, current, checked, blocks, fresh_block)
@@ -392,6 +477,23 @@ def lower_expr_to_ssa(
         )
         env.ctx.ssa_types[dest] = elem_ty
         return dest, elem_ty, current, env
+    # Borrow/addr-of: create a new SSA name with ref type, move from the base.
+    if isinstance(expr, ast.Unary) and expr.op in {"&", "&mut"}:
+        operand_ssa, operand_ty, current, env = lower_expr_to_ssa(expr.operand, env, current, checked, blocks, fresh_block)
+        ref_ty = Type(expr.op, args=[operand_ty])
+        dest = env.fresh_ssa("ref", ref_ty)
+        current.instructions.append(mir.Move(dest=dest, source=operand_ssa))
+        env.ctx.ssa_types[dest] = ref_ty
+        return dest, ref_ty, current, env
+    if isinstance(expr, ast.Unary):
+        operand_ssa, operand_ty, current, env = lower_expr_to_ssa(expr.operand, env, current, checked, blocks, fresh_block)
+        out_ty = operand_ty if expr.op == "-" else BOOL
+        dest = env.fresh_ssa("unary", out_ty)
+        current.instructions.append(
+            mir.Unary(dest=dest, op=expr.op, operand=operand_ssa, loc=getattr(expr, "loc", None))
+        )
+        env.ctx.ssa_types[dest] = out_ty
+        return dest, out_ty, current, env
     if isinstance(expr, ast.Attr):
         base_ssa, base_ty, current, env = lower_expr_to_ssa(expr.value, env, current, checked, blocks, fresh_block)
         field_ty = _lookup_field_type(base_ty, expr.attr, checked)

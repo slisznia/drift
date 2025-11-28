@@ -88,6 +88,8 @@ def simplify_function(fn: mir.Function) -> mir.Function:
             elif isinstance(instr, mir.ArrayLiteral):
                 for a in instr.elements:
                     note_use(a)
+            elif isinstance(instr, mir.ArrayLen):
+                note_use(instr.base)
             elif isinstance(instr, mir.Call):
                 for a in instr.args:
                     note_use(a)
@@ -140,7 +142,7 @@ def simplify_function(fn: mir.Function) -> mir.Function:
                     const_values[instr.dest] = folded
                     continue
             # Dead pure defs: drop if never used.
-            if isinstance(instr, (mir.Const, mir.Copy, mir.Binary, mir.Unary, mir.Move)):
+            if isinstance(instr, (mir.Const, mir.Copy, mir.Binary, mir.Unary, mir.Move, mir.ArrayLen)):
                 dest = getattr(instr, "dest", None)
                 if dest and uses.get(dest, 0) == 0:
                     continue

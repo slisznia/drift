@@ -91,6 +91,7 @@ simple_stmt: let_stmt
            | break_stmt
            | continue_stmt
            | while_stmt
+           | for_stmt
            | assign_stmt
            | expr_stmt
 
@@ -100,6 +101,8 @@ catch_pattern: NAME "(" NAME ")"   -> catch_event
              | NAME                -> catch_all
 
 assign_stmt: expr EQUAL expr
+
+for_stmt: "for" NAME "in" expr terminator_opt block
 
 if_stmt: IF expr terminator_opt block else_clause? terminator_opt
 else_clause: terminator_opt ELSE terminator_opt block

@@ -218,6 +218,14 @@ class WhileStmt(Stmt):
     condition: "Expr"
     body: Block
 
+
+@dataclass
+class ForStmt(Stmt):
+    loc: Located
+    var: str
+    iter_expr: "Expr"
+    body: Block
+
 @dataclass
 class BreakStmt(Stmt):
     loc: Located

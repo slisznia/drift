@@ -18,6 +18,7 @@ from .ast import (
     ExceptionDef,
     Expr,
     ExprStmt,
+    ForStmt,
     FunctionDef,
     IfStmt,
     ImportStmt,
@@ -315,6 +316,8 @@ def _build_stmt(tree: Tree):
         stmt_kind = _name(target)
         if stmt_kind == "let_stmt":
             return _build_let_stmt(target)
+        if stmt_kind == "for_stmt":
+            return _build_for_stmt(target)
         if stmt_kind == "assign_stmt":
             return _build_assign_stmt(target)
         if stmt_kind == "return_stmt":
@@ -400,6 +403,23 @@ def _build_assign_stmt(tree: Tree) -> AssignStmt:
     target = _build_expr(target_node)
     value = _build_expr(value_node)
     return AssignStmt(loc=loc, target=target, value=value)
+
+
+def _build_for_stmt(tree: Tree) -> ForStmt:
+    loc = _loc(tree)
+    name_token = next(child for child in tree.children if isinstance(child, Token) and child.type == "NAME")
+    expr_node = next(
+        child
+        for child in tree.children
+        if isinstance(child, Tree) and _name(child) not in {"block", "terminator_opt"}
+    )
+    block_node = next(child for child in tree.children if isinstance(child, Tree) and _name(child) == "block")
+    iter_expr = _build_expr(expr_node)
+    body_stmts = [
+        _build_stmt(child) for child in block_node.children if isinstance(child, Tree) and _name(child) == "stmt"
+    ]
+    body_stmts = [s for s in body_stmts if s is not None]
+    return ForStmt(loc=loc, var=name_token.value, iter_expr=iter_expr, body=Block(statements=body_stmts))
 
 
 def _parse_binding_name(tree: Tree) -> tuple[Token, bool]:
