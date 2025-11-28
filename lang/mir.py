@@ -136,6 +136,18 @@ class Binary(Instruction):
 
 
 @dataclass(frozen=True)
+class ConsoleWrite(Instruction):
+    value: Value
+    loc: Location = Location()
+
+
+@dataclass(frozen=True)
+class ConsoleWriteln(Instruction):
+    value: Value
+    loc: Location = Location()
+
+
+@dataclass(frozen=True)
 class Drop(Instruction):
     value: Value
     loc: Location = Location()

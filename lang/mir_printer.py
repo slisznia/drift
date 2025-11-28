@@ -55,6 +55,10 @@ def format_instr(instr: mir.Instruction) -> str:
         return f"  {instr.dest} = {instr.op} {instr.operand}"
     if isinstance(instr, mir.Binary):
         return f"  {instr.dest} = {instr.left} {instr.op} {instr.right}"
+    if isinstance(instr, mir.ConsoleWrite):
+        return f"  console_write {instr.value}"
+    if isinstance(instr, mir.ConsoleWriteln):
+        return f"  console_writeln {instr.value}"
     if isinstance(instr, mir.Drop):
         return f"  drop {instr.value}"
     return "  <invalid instr>"

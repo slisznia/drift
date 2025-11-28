@@ -74,7 +74,7 @@ def verify_function(fn: mir.Function, program: mir.Program | None = None) -> Non
         for p in block.params:
             def_blocks.setdefault(p.name, set()).add(name)
         for instr in block.instructions:
-            if isinstance(instr, (mir.Const, mir.Move, mir.Copy, mir.Call, mir.CallWithCtx, mir.StructInit, mir.FieldGet, mir.ArrayInit, mir.ArrayGet, mir.Unary, mir.Binary)):
+            if isinstance(instr, (mir.Const, mir.Move, mir.Copy, mir.Call, mir.CallWithCtx, mir.StructInit, mir.FieldGet, mir.ArrayInit, mir.ArrayGet, mir.Unary, mir.Binary, mir.ConsoleWrite, mir.ConsoleWriteln)):
                 def_blocks.setdefault(getattr(instr, "dest", None), set()).add(name) if getattr(instr, "dest", None) else None
     in_state, out_state = _dataflow_defs_types(fn, program)
     incoming = _compute_incoming_args(fn, out_state)
@@ -377,6 +377,12 @@ def _verify_block(
             _ensure_not_moved_or_dropped(state, instr.right, block, "binary")
             _ensure_not_defined(state, instr.dest, block, "binary")
             state.define(instr.dest)
+        elif isinstance(instr, mir.ConsoleWrite):
+            _ensure_defined(state, instr.value, block, "console_write", None, dominators, def_blocks)
+            _ensure_not_moved_or_dropped(state, instr.value, block, "console_write")
+        elif isinstance(instr, mir.ConsoleWriteln):
+            _ensure_defined(state, instr.value, block, "console_writeln", None, dominators, def_blocks)
+            _ensure_not_moved_or_dropped(state, instr.value, block, "console_writeln")
         elif isinstance(instr, mir.Drop):
             _ensure_defined(state, instr.value, block, "drop", None, dominators, def_blocks)
             _ensure_not_moved_or_dropped(state, instr.value, block, "drop")

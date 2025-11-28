@@ -82,6 +82,10 @@ def lower_function(fn: mir.Function, func_map: dict[str, ir.Function] | None = N
                 env[instr.dest] = env[instr.source]
             elif isinstance(instr, mir.Binary):
                 env[instr.dest] = _lower_binary(builder, instr, env)
+            elif isinstance(instr, mir.ConsoleWrite):
+                _lower_console_write(builder, env[instr.value])
+            elif isinstance(instr, mir.ConsoleWriteln):
+                _lower_console_writeln(builder, env[instr.value])
             elif isinstance(instr, mir.ArrayInit):
                 if instr.element_type == STR:
                     assert STRING_LLVM_TYPE is not None
@@ -283,6 +287,20 @@ def _lower_binary(builder: ir.IRBuilder, instr: mir.Binary, env: dict[str, ir.Va
     raise NotImplementedError(f"binary op {op}")
 
 
+def _lower_console_write(builder: ir.IRBuilder, value: ir.Value) -> None:
+    assert STRING_LLVM_TYPE is not None
+    assert value.type == STRING_LLVM_TYPE
+    fn = _console_write_decl(builder.module)
+    builder.call(fn, [value])
+
+
+def _lower_console_writeln(builder: ir.IRBuilder, value: ir.Value) -> None:
+    assert STRING_LLVM_TYPE is not None
+    assert value.type == STRING_LLVM_TYPE
+    fn = _console_writeln_decl(builder.module)
+    builder.call(fn, [value])
+
+
 def _add_phi_incoming(phi_nodes: dict[str, dict[str, ir.PhiInstr]], edge: mir.Edge, env: dict[str, ir.Value], pred_block: ir.Block) -> None:
     if not edge.args:
         return
@@ -298,6 +316,26 @@ def _string_concat_decl(module: ir.Module) -> ir.Function:
     assert STRING_LLVM_TYPE is not None
     fn_ty = ir.FunctionType(STRING_LLVM_TYPE, (STRING_LLVM_TYPE, STRING_LLVM_TYPE))
     fn = ir.Function(module, fn_ty, name="drift_string_concat")
+    return fn
+
+
+def _console_write_decl(module: ir.Module) -> ir.Function:
+    fn = module.globals.get("drift_console_write")
+    if isinstance(fn, ir.Function):
+        return fn
+    assert STRING_LLVM_TYPE is not None
+    fn_ty = ir.FunctionType(ir.VoidType(), (STRING_LLVM_TYPE,))
+    fn = ir.Function(module, fn_ty, name="drift_console_write")
+    return fn
+
+
+def _console_writeln_decl(module: ir.Module) -> ir.Function:
+    fn = module.globals.get("drift_console_writeln")
+    if isinstance(fn, ir.Function):
+        return fn
+    assert STRING_LLVM_TYPE is not None
+    fn_ty = ir.FunctionType(ir.VoidType(), (STRING_LLVM_TYPE,))
+    fn = ir.Function(module, fn_ty, name="drift_console_writeln")
     return fn
 
 
