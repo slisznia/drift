@@ -92,6 +92,8 @@ def emit_module_object(
     fn_map: dict[str, ir.Function] = {}
     blocks_map: dict[tuple[str, str], ir.Block] = {}
     struct_type_cache: dict[str, ir.Type] = {}
+    # Track which functions are invoked with error edges; they use the {T, Error*} ABI.
+    can_error_funcs: set[str] = set()
 
     def llvm_struct_type(name: str) -> ir.Type:
         if name in struct_type_cache:
@@ -104,6 +106,13 @@ def emit_module_object(
         struct_type_cache[name] = ty
         return ty
 
+    def llvm_ret_with_error(ret_ty: Type) -> ir.Type:
+        """{T, Error*} for can-error functions; Error* for void-like return."""
+        val_ll_ty = _llvm_type_with_structs(ret_ty)
+        if isinstance(val_ll_ty, ir.VoidType):
+            return ERROR_PTR_TY
+        return ir.LiteralStructType([val_ll_ty, ERROR_PTR_TY])
+
     def _llvm_type_with_structs(ty: Type) -> ir.Type:
         try:
             return _llvm_type(ty)
@@ -114,8 +123,17 @@ def emit_module_object(
             if elem_ty is not None:
                 return ir.LiteralStructType([WORD_INT, _llvm_type_with_structs(elem_ty).as_pointer()])
             raise
+    # Scan for can-error callees (call terminators with edges).
     for f in funcs:
-        ret_ty = _llvm_type_with_structs(f.return_type)
+        for block in f.blocks.values():
+            if isinstance(block.terminator, mir.Call) and block.terminator.normal and block.terminator.error:
+                can_error_funcs.add(block.terminator.callee)
+
+    for f in funcs:
+        if f.name in can_error_funcs:
+            ret_ty = llvm_ret_with_error(f.return_type)
+        else:
+            ret_ty = _llvm_type_with_structs(f.return_type)
         param_tys = [_llvm_type_with_structs(p.type) for p in f.params]
         llvm_fn = ir.Function(mod, ir.FunctionType(ret_ty, param_tys), name=f.name)
         fn_map[f.name] = llvm_fn
@@ -365,32 +383,56 @@ def emit_module_object(
 
             term = block.terminator
             if isinstance(term, mir.Return):
-                if isinstance(_llvm_type(f.return_type), ir.VoidType):
-                    builder.ret_void()
+                if f.name in can_error_funcs:
+                    err_null = ir.Constant(ERROR_PTR_TY, None)
+                    if isinstance(_llvm_type_with_structs(f.return_type), ir.VoidType):
+                        builder.ret(err_null)
+                    else:
+                        if term.value is None:
+                            raise RuntimeError(f"missing return value for non-void function {f.name}")
+                        if term.value not in values:
+                            raise RuntimeError(f"return value {term.value} undefined")
+                        pair_ty = llvm_ret_with_error(f.return_type)
+                        undef_pair = builder.alloca(pair_ty, name=f"{f.name}_ret_pair")
+                        # store value and err into the alloca then load as a struct
+                        val_ptr = builder.gep(undef_pair, [I32_TY(0), I32_TY(0)], inbounds=True)
+                        builder.store(values[term.value], val_ptr)
+                        err_ptr = builder.gep(undef_pair, [I32_TY(0), I32_TY(1)], inbounds=True)
+                        builder.store(err_null, err_ptr)
+                        pair_loaded = builder.load(undef_pair)
+                        builder.ret(pair_loaded)
                 else:
-                    if term.value is None:
-                        raise RuntimeError(f"missing return value for non-void function {f.name}")
-                    if term.value not in values:
-                        raise RuntimeError(f"return value {term.value} undefined")
-                    builder.ret(values[term.value])
+                    if isinstance(_llvm_type(f.return_type), ir.VoidType):
+                        builder.ret_void()
+                    else:
+                        if term.value is None:
+                            raise RuntimeError(f"missing return value for non-void function {f.name}")
+                        if term.value not in values:
+                            raise RuntimeError(f"return value {term.value} undefined")
+                        builder.ret(values[term.value])
             elif isinstance(term, mir.Call):
                 if not (term.normal and term.error):
                     raise RuntimeError("call terminator without normal/error edges not supported")
                 callee = fn_map.get(term.callee)
                 if callee is None:
                     raise RuntimeError(f"unknown callee {term.callee}")
-                if isinstance(callee.function_type.return_type, ir.VoidType):
+                if callee.name not in can_error_funcs:
+                    raise RuntimeError(f"call with edges to non-error function {callee.name}")
+                call_pair = builder.call(callee, [values[a] for a in term.args], name=term.dest or "call_pair")
+                ret_ty = callee.function_type.return_type
+                if isinstance(ret_ty, ir.LiteralStructType):
+                    val_component = builder.extract_value(call_pair, 0)
+                    err_component = builder.extract_value(call_pair, 1)
                     if term.dest is not None:
-                        # SSA lowering should not attach a value dest for void returns.
-                        raise RuntimeError("call with edges to void callee is not supported yet")
-                    builder.call(callee, [values[a] for a in term.args])
-                    call_val = None
+                        values[term.dest] = val_component
+                        ssa_types[term.dest] = term.ret_type
                 else:
-                    call_val = builder.call(callee, [values[a] for a in term.args], name=term.dest)
-                    values[term.dest] = call_val
-                    ssa_types[term.dest] = term.ret_type
-                # For now assume normal path only; branch on a constant false (err == null).
-                cond_val = ir.Constant(I1_TY, 0)
+                    # void-with-error* case
+                    val_component = None
+                    err_component = call_pair
+                cond_val = builder.icmp_unsigned(
+                    "!=", err_component, ir.Constant(ERROR_PTR_TY, None), name=f"errchk_{bname}"
+                )
                 # Wire incoming args for successors.
                 norm_tgt = term.normal.target
                 err_tgt = term.error.target
