@@ -6,6 +6,7 @@ import json
 import os
 import subprocess
 import sys
+import shutil
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -21,17 +22,23 @@ def _have_llvmlite() -> bool:
     return True
 
 
+def _find_clang() -> str | None:
+    for name in ("clang-15", "clang"):
+        path = shutil.which(name)
+        if path:
+            return path
+    return None
+
+
 def _run_case(case_dir: Path) -> str:
     expected = json.loads((case_dir / "expected.json").read_text())
-    requires_llvmlite = expected.get("skip_if", {}).get("requires_llvmlite", False)
-    if requires_llvmlite and not _have_llvmlite():
-        return "skipped (llvmlite missing)"
-
     mode = expected.get("mode", "compile")  # "compile" or "run"
+    requires_llvmlite = expected.get("skip_if", {}).get("requires_llvmlite", False)
+    if (mode == "run" or requires_llvmlite) and not _have_llvmlite():
+        return "skipped (llvmlite missing)"
     env = dict(os.environ)
     env["PYTHONPATH"] = str(ROOT)
-    if mode == "compile":
-        env["SSA_ONLY"] = "1"
+    backend = "ssa-llvm" if mode == "run" else "legacy"
     cmd = [
         str(DRIFTC),
         "-m",
@@ -42,6 +49,7 @@ def _run_case(case_dir: Path) -> str:
         "--ssa-check",
         "--ssa-check-mode=fail",
         "--ssa-simplify",
+        f"--backend={backend}",
     ]
     compile_res = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, env=env)
 
@@ -59,8 +67,30 @@ def _run_case(case_dir: Path) -> str:
     if mode == "compile":
         return "ok"
 
-    # mode == "run": legacy codegen is deprecated; runtime not supported yet.
-    return "skipped (runtime/codegen not supported in SSA-only mode)"
+    # mode == "run": link and execute.
+    clang = _find_clang()
+    if not clang:
+        return "skipped (clang not found)"
+    exe_path = case_dir / "a.out"
+    link = subprocess.run(
+        [clang, str(case_dir / "a.o"), "-o", str(exe_path)],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    if link.returncode != 0:
+        return f"FAIL (link failed: {link.stderr})"
+
+    run_res = subprocess.run([str(exe_path)] + expected.get("args", []), capture_output=True, text=True, env=env)
+    exit_expected = expected.get("exit_code", 0)
+    if run_res.returncode != exit_expected:
+        return f"FAIL (exit {run_res.returncode}, expected {exit_expected})"
+    if run_res.stdout != expected.get("stdout", ""):
+        return "FAIL (stdout mismatch)"
+    if run_res.stderr != expected.get("stderr", ""):
+        return "FAIL (stderr mismatch)"
+    return "ok"
 
 
 def main() -> int:

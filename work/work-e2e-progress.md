@@ -30,11 +30,10 @@
    - Keep the simplifier optional; rerun SSA verifier after any SSA transformations.
 
 ## Current status
-- E2E runner exists (`tests/e2e_runner.py`); all cases currently `mode: "compile"` except `hello` (set to `mode: "run"` but skipped because runtime is not yet wired).
+- E2E runner (`tests/e2e_runner.py`) always drives the SSA pipeline; `mode: "run"` now compiles with the experimental `ssa-llvm` backend, links with clang, and executes. `hello` is simplified to a constant return and runs end-to-end; other cases remain `mode: "compile"` for now.
 - SSA-only program suite and smoke tests remain green (`just test-ssa`).
-- Legacy codegen bypassed in `driftc.py`; object files are stubbed out when SSA_ONLY is set.
+- Legacy codegen is bypassed; the new backend emits an object from SSA (currently for single-block const/return only).
 
 ## Next steps
-- Implement SSA→LLVM lowering for the current SSA surface.
-- Enable run-mode in the runner by removing `SSA_ONLY` when mode is `"run"` and wiring link/execute; get `hello` passing as a true run test, then promote `control_flow` and `for_array` to run mode.
-- Leave other e2e cases in compile mode until their features are supported in codegen.
+- Expand SSA→LLVM lowering to handle real programs (calls/console I/O, control flow, data structures) so `control_flow` and `for_array` can be flipped to `mode: "run"`.
+- Keep the rest of the e2e cases in compile mode until their features are supported in codegen.

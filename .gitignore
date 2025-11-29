@@ -10,3 +10,4 @@ patch.diff
 staged.zip
 staged
 .pytest_cache/
+a.out

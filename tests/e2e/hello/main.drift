@@ -1,6 +1,3 @@
-import std.console.out
-
 fn main() returns Int64 {
-  out.writeln("hello from e2e")
   return 0
 }
