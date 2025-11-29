@@ -1,0 +1,8 @@
+import std.console.out
+
+fn main() returns Int {
+  val msgs = ["hello", "world"]
+  val idx: Int = 1
+  out.writeln(msgs[idx])
+  return 0
+}

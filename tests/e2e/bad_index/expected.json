@@ -1,6 +1,6 @@
 {
   "run": false,
-  "compile_error": "Expected type Int64, got Bool",
+  "compile_error": "Expected type Int, got Bool",
   "args": [],
   "env": {}
 }

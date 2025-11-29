@@ -1,5 +1,13 @@
 # Drift development history
 
+## 2025-11-29
+- SSA-first pipeline is now the only maintained path: `driftc` lowers every function to SSA, runs the simplifier and strict verifier, and the e2e runner uses the new SSA→LLVM backend to compile, link, and run real programs (hello, pure calls, console writes, structs by ref, arrays/for loops). Legacy lowering/codegen is deprecated.
+- SSA→LLVM backend now handles multi-function modules, control flow with PHIs from block params, pure calls, string literals, console runtime calls, struct init/field get/set using checker-provided layouts, array len/get/set and stack array literals, and word-sized `Int` mapping (Int/Int64 → i64, Int32 → i32, Bool → i1, String → `DriftString`).
+- Array lowering generalized: `{len: Size, data: T*}` works for any element type the backend can map (not just ints). Added a run-mode e2e `array_string` to prove `Array<String>` works; array literals now build a stack buffer of the element LLVM type and assemble the header. Bounds/len access reuse the same layout; unsupported element types hard-error.
+- Checker alignment: array indices are `Int` (word-sized) for both reads and writes; SSA smoke/programs updated to use `Int` instead of `Int64`. Negative index/field tests updated to the new messages.
+- Struct support tightened: `StructLayout` is threaded from the checker into SSA codegen; field get/set pick the correct layout via per-function SSA type maps (no cross-struct field-name guessing). Ref-struct mutation runs in e2e via SSA→LLVM with stack slots for struct locals.
+- Tests/e2e: SSA-only smoke/program suites are green; run-mode e2e covers hello, pure calls, console writes, control flow, arrays/for, struct mutation, and array-of-strings. Added a compile-fail `bad_index` with the updated `Int` expectation. Simplifier runs in the SSA path by default.
+
 ## 2025-11-26
 - Retired the legacy interpreter path: test runner no longer executes `drift.py` runtime programs; focus is MIR+codegen only.
 - Revised borrowing syntax to `&T` / `&mut T` with global lvalue auto-borrowing and no borrowing from rvalues; receivers now use `self: T` / `self: &T` / `self: &mut T` throughout the spec and examples. Grammar updated to accept the new reference types and borrow expressions; lambda params now use explicit `copy` capture instead of reusing general params. Removed legacy `ref` spellings (now invalid), refreshed README examples, and aligned the iterator doc to the new syntax.

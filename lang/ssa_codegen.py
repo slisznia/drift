@@ -345,9 +345,10 @@ def emit_module_object(
                 elif isinstance(instr, mir.ArrayLiteral):
                     # Stack-allocate array elements and build a {len, data*} struct.
                     elem_ty = instr.elem_type
-                    if elem_ty.name not in {"Int", "Int64", "Int32"}:
-                        raise RuntimeError("array literal supports int elements only for now")
-                    elem_ir_ty = _llvm_type_with_structs(elem_ty)
+                    try:
+                        elem_ir_ty = _llvm_type_with_structs(elem_ty)
+                    except NotImplementedError:
+                        raise RuntimeError(f"array literal element type {elem_ty} not supported")
                     count = len(instr.elements)
                     data_buf = builder.alloca(elem_ir_ty, ir.Constant(I32_TY, count), name=f"{instr.dest}.data")
                     for idx, arg in enumerate(instr.elements):

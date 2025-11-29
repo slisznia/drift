@@ -508,7 +508,7 @@ class Checker:
                 f"{expr.loc.line}:{expr.loc.column}: Type {container_type} is not indexable"
             )
         index_type = self._check_expr(expr.index, ctx)
-        self._expect_type(index_type, I64, expr.index.loc)
+        self._expect_type(index_type, INT, expr.index.loc)
         return element_type
 
     def _check_call(self, expr: ast.Call, ctx: FunctionContext) -> Type:
@@ -725,7 +725,7 @@ class Checker:
                     f"{target.loc.line}:{target.loc.column}: Type {container_type} is not indexable"
                 )
             index_type = self._check_expr(target.index, ctx)
-            self._expect_type(index_type, I64, target.index.loc)
+            self._expect_type(index_type, INT, target.index.loc)
             return element_type
         if isinstance(target, ast.Attr):
             self._ensure_mutable_root(target.value, ctx)
