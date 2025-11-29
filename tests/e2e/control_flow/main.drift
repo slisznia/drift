@@ -1,7 +1,7 @@
 import std.console.out
 
-fn main() returns Int64 {
-  var i: Int64 = 0
+fn main() returns Int {
+  var i: Int = 0
   while i < 3 {
     if i == 1 {
       out.writeln("mid")

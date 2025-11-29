@@ -1,10 +1,10 @@
 import std.console.out
 
-fn might_fail(x: Int64) returns Int64 {
+fn might_fail(x: Int) returns Int {
   return x
 }
 
-fn main() returns Int64 {
+fn main() returns Int {
   try {
     out.writeln("before")
     might_fail(1)

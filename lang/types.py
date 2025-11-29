@@ -27,6 +27,7 @@ class ReferenceType(Type):
         return f"{prefix}{self.args[0]}"
 
 
+INT = Type("Int")
 I64 = Type("Int64")
 F64 = Type("Float64")
 BOOL = Type("Bool")
@@ -38,7 +39,9 @@ DISPLAYABLE = Type("<Displayable>")
 BOTTOM = Type("⊥")
 
 _PRIMITIVES: Dict[str, Type] = {
+    "Int": INT,
     "Int64": I64,
+    "Int32": Type("Int32"),
     "Float64": F64,
     "Bool": BOOL,
     "String": STR,

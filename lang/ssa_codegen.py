@@ -9,6 +9,10 @@ from llvmlite import ir, binding as llvm  # type: ignore
 from . import mir
 from .types import BOOL, I64, UNIT, Type
 
+# Architecture word size: target x86_64 for now.
+WORD_BITS = 64
+WORD_INT = ir.IntType(WORD_BITS)
+
 
 def emit_dummy_main_object(out_path: Path) -> None:
     """Emit a trivial main that returns 0."""
@@ -32,8 +36,19 @@ def emit_dummy_main_object(out_path: Path) -> None:
 
 
 def _llvm_type(ty: Type) -> ir.Type:
-    # Minimal type mapping for current SSA surface.
-    if ty.name in {"Int", "Int64"}:
+    """Map Drift types to LLVM types (minimal surface).
+
+    - Int       → word-sized int (currently i64)
+    - Int64     → i64
+    - Int32     → i32
+    - Bool      → i1
+    - Void      → void
+    """
+    if ty.name == "Int":
+        return WORD_INT
+    if ty.name == "Int64":
+        return ir.IntType(64)
+    if ty.name == "Int32":
         return ir.IntType(32)
     if ty == BOOL or ty.name == "Bool":
         return ir.IntType(1)
@@ -133,10 +148,9 @@ def emit_module_object(funcs: list[mir.Function], entry: str, out_path: Path) ->
             if isinstance(term, mir.Return):
                 if isinstance(_llvm_type(f.return_type), ir.VoidType):
                     builder.ret_void()
-                elif term.value is None:
-                    zero = _llvm_type(f.return_type)(0)
-                    builder.ret(zero)
                 else:
+                    if term.value is None:
+                        raise RuntimeError(f"missing return value for non-void function {f.name}")
                     if term.value not in values:
                         raise RuntimeError(f"return value {term.value} undefined")
                     builder.ret(values[term.value])

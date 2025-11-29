@@ -12,6 +12,7 @@ from .types import (
     F64,
     FunctionSignature,
     I64,
+    INT,
     STR,
     ReferenceType,
     Type,
@@ -426,7 +427,7 @@ class Checker:
             if isinstance(value, bool):
                 return BOOL
             if isinstance(value, int):
-                return I64
+                return INT
             if isinstance(value, float):
                 return F64
             if isinstance(value, str):
@@ -692,7 +693,7 @@ class Checker:
         )
 
     def _expect_number(self, actual: Type, loc: ast.Located) -> None:
-        if actual not in (I64, F64):
+        if actual not in (INT, I64, F64):
             raise CheckError(f"{loc.line}:{loc.column}: Expected numeric type, got {actual}")
 
     def _expect_type(self, actual: Type, expected: Type, loc: ast.Located) -> None:

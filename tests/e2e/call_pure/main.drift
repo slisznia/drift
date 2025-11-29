@@ -1,8 +1,8 @@
-fn add_one(x: Int64) returns Int64 {
+fn add_one(x: Int) returns Int {
   return x + 1
 }
 
-fn main() returns Int64 {
-  val r: Int64 = add_one(41)
+fn main() returns Int {
+  val r: Int = add_one(41)
   return r
 }

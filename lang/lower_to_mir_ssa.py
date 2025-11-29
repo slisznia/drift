@@ -13,7 +13,7 @@ from typing import Dict, List, Tuple
 from . import ast, mir
 from .checker import CheckedProgram
 from .ssa_env import SSAEnv, SSAContext
-from .types import Type, BOOL, I64, F64, STR, array_element_type, array_of
+from .types import Type, BOOL, I64, INT, F64, STR, array_element_type, array_of
 
 
 @dataclass
@@ -517,7 +517,7 @@ def _type_of_literal(value: object) -> Type:
     if isinstance(value, bool):
         return BOOL
     if isinstance(value, int):
-        return I64
+        return INT
     if isinstance(value, float):
         return F64
     if isinstance(value, str):

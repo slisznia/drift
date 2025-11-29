@@ -1,6 +1,6 @@
 {
   "run": false,
-  "compile_error": "no field 'z'",
+  "compile_error": "has no field 'z'",
   "args": [],
   "env": {}
 }
