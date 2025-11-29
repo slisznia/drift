@@ -1,5 +1,5 @@
 {
-  "run": false,
+  "mode": "run",
   "compile_error": null,
   "exit_code": 0,
   "stdout": "",

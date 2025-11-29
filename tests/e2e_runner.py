@@ -27,10 +27,11 @@ def _run_case(case_dir: Path) -> str:
     if requires_llvmlite and not _have_llvmlite():
         return "skipped (llvmlite missing)"
 
+    mode = expected.get("mode", "compile")  # "compile" or "run"
     env = dict(os.environ)
     env["PYTHONPATH"] = str(ROOT)
-    # Run SSA path; keep legacy codegen bypassed for now.
-    env["SSA_ONLY"] = "1"
+    if mode == "compile":
+        env["SSA_ONLY"] = "1"
     cmd = [
         str(DRIFTC),
         "-m",
@@ -55,9 +56,11 @@ def _run_case(case_dir: Path) -> str:
     if compile_res.returncode != 0:
         return f"FAIL (compile failed: {compile_res.stderr})"
 
-    if expected.get("run", False):
-        return "skipped (run not supported with SSA_ONLY=1 yet)"
-    return "ok"
+    if mode == "compile":
+        return "ok"
+
+    # mode == "run": legacy codegen is deprecated; runtime not supported yet.
+    return "skipped (runtime/codegen not supported in SSA-only mode)"
 
 
 def main() -> int:

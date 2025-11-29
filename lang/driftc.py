@@ -72,11 +72,12 @@ def compile_file(
     ssa_mode: str,
     ssa_simplify: bool,
     dump_ssa: bool,
+    backend: str,
 ) -> int:
     source = source_path.read_text()
     prog = parser.parse_program(source)
     checked = checker.Checker(builtin_signatures()).check(prog)
-    if ssa_check:
+    if backend == "ssa-llvm":
         try:
             _run_ssa_check(checked, simplify=ssa_simplify, dump=dump_ssa)
         except Exception as e:
@@ -84,22 +85,22 @@ def compile_file(
                 print(f"[ssa-check] warning: {e}", file=sys.stderr)
             else:
                 raise
-    # SSA-only mode for tests: skip legacy lowering/codegen if requested.
-    if os.environ.get("SSA_ONLY") == "1":
+        from lang.ssa_codegen import emit_dummy_main_object
+
+        emit_dummy_main_object(output_path)
+        return 0
+    else:
+        if ssa_check:
+            try:
+                _run_ssa_check(checked, simplify=ssa_simplify, dump=dump_ssa)
+            except Exception as e:
+                if ssa_mode == "warn":
+                    print(f"[ssa-check] warning: {e}", file=sys.stderr)
+                else:
+                    raise
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_bytes(b"")
         return 0
-
-    mir_prog = lower_straightline(checked, source_name=str(source_path), module_name=checked.module or prog.module)
-    verify_program(mir_prog)
-    # TODO: handle multiple functions; currently only the first is emitted.
-    fn = next(iter(mir_prog.functions.values()))
-    llvm_ir, obj_bytes = lower_function(fn)
-    if emit_ir:
-        print(llvm_ir)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_bytes(obj_bytes)
-    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -124,6 +125,12 @@ def main(argv: list[str] | None = None) -> int:
         help="Run SSA simplification (const folding, dead SSA removal) before SSA verification",
     )
     ap.add_argument(
+        "--backend",
+        choices=["legacy", "ssa-llvm"],
+        default="legacy",
+        help="Select codegen backend (experimental ssa-llvm emits dummy main for now)",
+    )
+    ap.add_argument(
         "--dump-ssa",
         action="store_true",
         help="When --ssa-check is enabled: dump the (optionally simplified) SSA blocks",
@@ -138,6 +145,7 @@ def main(argv: list[str] | None = None) -> int:
         args.ssa_check_mode,
         args.ssa_simplify,
         args.dump_ssa,
+        args.backend,
     )
 
 
