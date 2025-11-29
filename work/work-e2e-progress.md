@@ -30,10 +30,11 @@
    - Keep the simplifier optional; rerun SSA verifier after any SSA transformations.
 
 ## Current status
-- E2E runner (`tests/e2e_runner.py`) always drives the SSA pipeline; `mode: "run"` now compiles with the experimental `ssa-llvm` backend, links with clang, and executes. `hello` is simplified to a constant return and runs end-to-end; other cases remain `mode: "compile"` for now.
+- E2E runner (`tests/e2e_runner.py`) always drives the SSA pipeline; `mode: "run"` compiles with the `ssa-llvm` backend, links with clang, and executes.
+- Backend now lowers multiple SSA functions with block params/branches and simple calls (no error edges, no runtime I/O yet). `hello` and new `call_pure` run end-to-end.
 - SSA-only program suite and smoke tests remain green (`just test-ssa`).
-- Legacy codegen is bypassed; the new backend emits an object from SSA (currently for single-block const/return only).
+- Legacy codegen is bypassed; SSA→LLVM is the active path for run-mode e2e.
 
 ## Next steps
-- Expand SSA→LLVM lowering to handle real programs (calls/console I/O, control flow, data structures) so `control_flow` and `for_array` can be flipped to `mode: "run"`.
-- Keep the rest of the e2e cases in compile mode until their features are supported in codegen.
+- Extend SSA→LLVM to cover more ops (console calls/strings, arrays/structs, error edges) and flip additional e2e cases (control_flow/for_array/etc.) to `mode: "run"`.
+- Keep any unsupported e2e cases in compile mode until their features are codegen-covered.

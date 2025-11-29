@@ -19,7 +19,7 @@ from lang.runtime import builtin_signatures
 from lang.mir_verifier import verify_program
 from lang.mir_verifier_ssa_v2 import SSAVerifierV2
 from lang.mir_simplify_ssa import simplify_function
-from lang.ssa_codegen import emit_dummy_main_object, emit_simple_main_object
+from lang.ssa_codegen import emit_dummy_main_object, emit_module_object
 
 
 def _dump_ssa(fn_name: str, blocks: dict[str, mir.BasicBlock], file=None) -> None:
@@ -86,23 +86,26 @@ def compile_file(
                 print(f"[ssa-check] warning: {e}", file=sys.stderr)
             else:
                 raise
-        # For now, emit a minimal main from SSA for the first function (prefer main).
-        fn_def = next((f for f in checked.program.functions if f.name == "main"), checked.program.functions[0])
-        lowered = lower_function_ssa(fn_def, checked)
-        fn_info = checked.functions[fn_def.name]
-        ssa_fn = mir.Function(
-            name=fn_def.name,
-            params=[
-                mir.Param(name=p.name, type=fn_info.signature.params[idx]) for idx, p in enumerate(fn_def.params)
-            ],
-            return_type=fn_info.signature.return_type,
-            entry=lowered.entry,
-            module=checked.module or prog.module or "<module>",
-            source=str(source_path),
-            blocks=lowered.blocks,
-        )
-        simplified = simplify_function(ssa_fn)
-        emit_simple_main_object(simplified, output_path)
+        ssa_fns: list[mir.Function] = []
+        for fn_def in checked.program.functions:
+            if fn_def.name not in checked.functions:
+                continue
+            lowered = lower_function_ssa(fn_def, checked)
+            fn_info = checked.functions[fn_def.name]
+            ssa_fn = mir.Function(
+                name=fn_def.name,
+                params=[
+                    mir.Param(name=p.name, type=fn_info.signature.params[idx]) for idx, p in enumerate(fn_def.params)
+                ],
+                return_type=fn_info.signature.return_type,
+                entry=lowered.entry,
+                module=checked.module or prog.module or "<module>",
+                source=str(source_path),
+                blocks=lowered.blocks,
+            )
+            simplified = simplify_function(ssa_fn)
+            ssa_fns.append(simplified)
+        emit_module_object(ssa_fns, entry="main", out_path=output_path)
         return 0
     else:
         if ssa_check:
