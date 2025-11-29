@@ -89,9 +89,29 @@ def emit_module_object(
     # First pass: create LLVM functions and basic blocks.
     fn_map: dict[str, ir.Function] = {}
     blocks_map: dict[tuple[str, str], ir.Block] = {}
+    struct_type_cache: dict[str, ir.Type] = {}
+
+    def llvm_struct_type(name: str) -> ir.Type:
+        if name in struct_type_cache:
+            return struct_type_cache[name]
+        if name not in struct_layouts:
+            raise RuntimeError(f"unknown struct layout for {name}")
+        layout = struct_layouts[name]
+        field_ll_tys = [_llvm_type(t) for t in layout.field_types]
+        ty = ir.LiteralStructType(field_ll_tys)
+        struct_type_cache[name] = ty
+        return ty
+
+    def _llvm_type_with_structs(ty: Type) -> ir.Type:
+        try:
+            return _llvm_type(ty)
+        except NotImplementedError:
+            if ty.name in struct_layouts:
+                return llvm_struct_type(ty.name)
+            raise
     for f in funcs:
-        ret_ty = _llvm_type(f.return_type)
-        param_tys = [_llvm_type(p.type) for p in f.params]
+        ret_ty = _llvm_type_with_structs(f.return_type)
+        param_tys = [_llvm_type_with_structs(p.type) for p in f.params]
         llvm_fn = ir.Function(mod, ir.FunctionType(ret_ty, param_tys), name=f.name)
         fn_map[f.name] = llvm_fn
         for bname in f.blocks:
@@ -103,11 +123,24 @@ def emit_module_object(
         phis: dict[tuple[str, str], ir.Instruction] = {}
         values: dict[str, ir.Value] = {}
         module = llvm_fn.module
+        # Map SSA names to types for struct lookups.
+        ssa_types: dict[str, Type] = {}
+        # Allocate struct slots in entry for any struct-typed SSA values.
+        struct_slots: dict[str, ir.Instruction] = {}
+        entry_block = blocks_map[(f.name, f.entry)]
+        entry_builder = ir.IRBuilder(entry_block)
 
         # Map function params.
         for param, llvm_param in zip(f.params, llvm_fn.args):
             llvm_param.name = param.name
             values[param.name] = llvm_param
+            ssa_types[param.name] = param.type
+            if param.type.name in struct_layouts:
+                # Param is a struct passed by value; store to a slot.
+                slot = entry_builder.alloca(_llvm_type_with_structs(param.type), name=f"{param.name}.slot")
+                entry_builder.store(llvm_param, slot)
+                struct_slots[param.name] = slot
+                values[param.name] = slot  # treat struct SSA as pointer to its slot
 
         # Block params: entry params map to function args; others get PHIs.
         for bname, block in f.blocks.items():
@@ -117,11 +150,15 @@ def emit_module_object(
                     raise RuntimeError(f"entry block params arity mismatch in {f.name}")
                 for idx, param in enumerate(block.params):
                     values[param.name] = values[f.params[idx].name]
+                    ssa_types[param.name] = param.type
+                    if param.type.name in struct_layouts and param.name in struct_slots:
+                        values[param.name] = struct_slots[param.name]
             else:
                 for param in block.params:
-                    phi = builder.phi(_llvm_type(param.type), name=param.name)
+                    phi = builder.phi(_llvm_type_with_structs(param.type), name=param.name)
                     phis[(bname, param.name)] = phi
                     values[param.name] = phi
+                    ssa_types[param.name] = param.type
 
         # Emit instructions and terminators.
         for bname, block in f.blocks.items():
@@ -129,8 +166,9 @@ def emit_module_object(
             for instr in block.instructions:
                 if isinstance(instr, mir.Const):
                     if isinstance(instr.value, (int, bool)):
-                        ir_ty = _llvm_type(instr.type)
+                        ir_ty = _llvm_type_with_structs(instr.type)
                         values[instr.dest] = ir_ty(int(instr.value))
+                        ssa_types[instr.dest] = instr.type
                     elif isinstance(instr.value, str):
                         # Materialize a global string constant.
                         data = bytearray(instr.value.encode("utf-8"))
@@ -153,10 +191,15 @@ def emit_module_object(
                         tmp = builder.insert_value(zero_struct, strlen, 0)
                         str_val = builder.insert_value(tmp, ptr, 1)
                         values[instr.dest] = str_val
+                        ssa_types[instr.dest] = instr.type
                     else:
                         raise RuntimeError("simple backend supports int/bool/string const only")
                 elif isinstance(instr, mir.Move):
                     values[instr.dest] = values[instr.source]
+                    ssa_types[instr.dest] = ssa_types.get(instr.source, ssa_types.get(instr.dest))
+                    if instr.dest in struct_slots and instr.source in values:
+                        # propagate pointer mapping if applicable
+                        values[instr.dest] = values[instr.source]
                 elif isinstance(instr, mir.Binary):
                     lhs = values[instr.left]
                     rhs = values[instr.right]
@@ -197,6 +240,51 @@ def emit_module_object(
                         args = [values[a] for a in instr.args]
                         call_val = builder.call(callee, args, name=instr.dest)
                         values[instr.dest] = call_val
+                        ssa_types[instr.dest] = instr.ret_type
+                elif isinstance(instr, mir.StructInit):
+                    if instr.type.name not in struct_layouts:
+                        raise RuntimeError(f"unknown struct type {instr.type}")
+                    if instr.dest not in struct_slots:
+                        slot = entry_builder.alloca(_llvm_type_with_structs(instr.type), name=f"{instr.dest}.slot")
+                        struct_slots[instr.dest] = slot
+                    slot = struct_slots[instr.dest]
+                    for idx, arg in enumerate(instr.args):
+                        field_ptr = builder.gep(slot, [I32_TY(0), I32_TY(idx)], inbounds=True)
+                        builder.store(values[arg], field_ptr)
+                    values[instr.dest] = slot
+                    ssa_types[instr.dest] = instr.type
+                elif isinstance(instr, mir.FieldSet):
+                    base_slot = struct_slots.get(instr.base)
+                    if base_slot is None:
+                        base_slot = values.get(instr.base)
+                    if base_slot is None:
+                        raise RuntimeError(f"no struct slot for {instr.base}")
+                    base_ty = ssa_types.get(instr.base)
+                    if base_ty is None or base_ty.name not in struct_layouts:
+                        raise RuntimeError(f"base {instr.base} is not a struct for field set")
+                    layout = struct_layouts[base_ty.name]
+                    if instr.field not in layout.index_by_name:
+                        raise RuntimeError(f"struct {base_ty.name} has no field {instr.field}")
+                    idx = layout.index_by_name[instr.field]
+                    field_ptr = builder.gep(base_slot, [I32_TY(0), I32_TY(idx)], inbounds=True)
+                    builder.store(values[instr.value], field_ptr)
+                elif isinstance(instr, mir.FieldGet):
+                    base_slot = struct_slots.get(instr.base)
+                    if base_slot is None:
+                        base_slot = values.get(instr.base)
+                    if base_slot is None:
+                        raise RuntimeError(f"no struct slot for {instr.base}")
+                    base_ty = ssa_types.get(instr.base)
+                    if base_ty is None or base_ty.name not in struct_layouts:
+                        raise RuntimeError(f"base {instr.base} is not a struct for field get")
+                    layout = struct_layouts[base_ty.name]
+                    if instr.field not in layout.index_by_name:
+                        raise RuntimeError(f"struct {base_ty.name} has no field {instr.field}")
+                    idx = layout.index_by_name[instr.field]
+                    field_ptr = builder.gep(base_slot, [I32_TY(0), I32_TY(idx)], inbounds=True)
+                    loaded = builder.load(field_ptr, name=instr.dest)
+                    values[instr.dest] = loaded
+                    ssa_types[instr.dest] = layout.field_types[idx]
                 else:
                     raise RuntimeError(f"unsupported instruction {instr}")
 
