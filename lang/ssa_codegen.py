@@ -9,7 +9,7 @@ from llvmlite import ir, binding as llvm  # type: ignore
 
 from . import mir
 from .ir_layout import StructLayout
-from .types import BOOL, I64, STR, UNIT, Type, array_element_type, array_of
+from .types import BOOL, ERROR, I64, STR, UNIT, Type, array_element_type, array_of
 
 # Architecture word size: target x86_64 for now.
 WORD_BITS = 64
@@ -64,6 +64,8 @@ def _llvm_type(ty: Type) -> ir.Type:
         return I32_TY
     if ty == BOOL or ty.name == "Bool":
         return I1_TY
+    if ty == ERROR or ty.name == "Error":
+        return ERROR_PTR_TY
     if ty == UNIT or ty.name == "Void":
         return ir.VoidType()
     if ty == STR or ty.name == "String":
@@ -116,25 +118,6 @@ def emit_module_object(
                 work.append(term.error.target)
         return seen
 
-    def _reachable(f: mir.Function) -> set[str]:
-        seen: set[str] = set()
-        work = [f.entry]
-        while work:
-            b = work.pop()
-            if b in seen or b not in f.blocks:
-                continue
-            seen.add(b)
-            term = f.blocks[b].terminator
-            if isinstance(term, mir.Br):
-                work.append(term.target.target)
-            elif isinstance(term, mir.CondBr):
-                work.append(term.then.target)
-                work.append(term.els.target)
-            elif isinstance(term, mir.Call) and term.normal and term.error:
-                work.append(term.normal.target)
-                work.append(term.error.target)
-        return seen
-
     def llvm_struct_type(name: str) -> ir.Type:
         if name in struct_type_cache:
             return struct_type_cache[name]
@@ -163,11 +146,14 @@ def emit_module_object(
             if elem_ty is not None:
                 return ir.LiteralStructType([WORD_INT, _llvm_type_with_structs(elem_ty).as_pointer()])
             raise
-    # Scan for can-error callees (call terminators with edges).
+    # Scan for can-error callees (call terminators with edges) and functions that throw.
     for f in funcs:
         for block in f.blocks.values():
-            if isinstance(block.terminator, mir.Call) and block.terminator.normal and block.terminator.error:
+            term = block.terminator
+            if isinstance(term, mir.Call) and term.normal and term.error:
                 can_error_funcs.add(block.terminator.callee)
+            elif isinstance(term, mir.Throw):
+                can_error_funcs.add(f.name)
 
     for f in funcs:
         reachable = _reachable(f)
@@ -235,7 +221,12 @@ def emit_module_object(
             builder = ir.IRBuilder(blocks_map[(f.name, bname)])
             for instr in block.instructions:
                 if isinstance(instr, mir.Const):
-                    if isinstance(instr.value, (int, bool)):
+                    if instr.type == ERROR or instr.type.name == "Error":
+                        if instr.value not in (None, 0):
+                            raise RuntimeError("Error const supports only null")
+                        values[instr.dest] = ir.Constant(ERROR_PTR_TY, None)
+                        ssa_types[instr.dest] = instr.type
+                    elif isinstance(instr.value, (int, bool)):
                         ir_ty = _llvm_type_with_structs(instr.type)
                         values[instr.dest] = ir_ty(int(instr.value))
                         ssa_types[instr.dest] = instr.type
@@ -440,14 +431,12 @@ def emit_module_object(
             term = block.terminator
             if isinstance(term, mir.Return):
                 if f.name in can_error_funcs:
+                    if term.error is None:
+                        raise RuntimeError(f"can-error function {f.name} returned without error operand")
                     ret_ll_ty = _llvm_type_with_structs(f.return_type)
-                    # Determine err pointer: use explicit term.error if present, else null.
-                    if term.error is not None:
-                        if term.error not in values:
-                            raise RuntimeError(f"error value {term.error} undefined in {f.name}")
-                        err_val = values[term.error]
-                    else:
-                        err_val = ir.Constant(ERROR_PTR_TY, None)
+                    if term.error not in values:
+                        raise RuntimeError(f"error value {term.error} undefined in {f.name}")
+                    err_val = values[term.error]
                     if isinstance(ret_ll_ty, ir.VoidType):
                         builder.ret(err_val)
                     else:
@@ -537,6 +526,24 @@ def emit_module_object(
                     for param, arg in zip(tblock.params, edge.args):
                         phis[(tgt, param.name)].add_incoming(values[arg], blocks_map[(f.name, bname)])
                 builder.cbranch(cond_val, blocks_map[(f.name, term.then.target)], blocks_map[(f.name, term.els.target)])
+            elif isinstance(term, mir.Throw):
+                if f.name not in can_error_funcs:
+                    raise RuntimeError(f"throw in non-error function {f.name} not supported")
+                if term.error not in values:
+                    raise RuntimeError(f"throw error value {term.error} undefined in {f.name}")
+                err_val = values[term.error]
+                ret_ll_ty = _llvm_type_with_structs(f.return_type)
+                if isinstance(ret_ll_ty, ir.VoidType):
+                    builder.ret(err_val)
+                else:
+                    pair_ty = llvm_ret_with_error(f.return_type)
+                    pair_ptr = builder.alloca(pair_ty, name=f"{f.name}_throw_pair")
+                    val_ptr = builder.gep(pair_ptr, [I32_TY(0), I32_TY(0)], inbounds=True)
+                    builder.store(ir.Constant.undef(_llvm_type_with_structs(f.return_type)), val_ptr)
+                    err_ptr = builder.gep(pair_ptr, [I32_TY(0), I32_TY(1)], inbounds=True)
+                    builder.store(err_val, err_ptr)
+                    pair_loaded = builder.load(pair_ptr)
+                    builder.ret(pair_loaded)
             elif term is None:
                 builder.unreachable()
             else:

@@ -116,8 +116,11 @@ def simplify_function(fn: mir.Function) -> mir.Function:
             elif isinstance(term, mir.Br):
                 for a in term.target.args:
                     note_use(a)
-            elif isinstance(term, mir.Return) and term.value is not None:
-                note_use(term.value)
+            elif isinstance(term, mir.Return):
+                if term.value is not None:
+                    note_use(term.value)
+                if term.error is not None:
+                    note_use(term.error)
             elif isinstance(term, mir.Call) and (term.normal or term.error):
                 for a in term.args:
                     note_use(a)

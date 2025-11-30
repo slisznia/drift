@@ -44,9 +44,10 @@ def lower_function_ssa(fn_def: ast.FunctionDef, checked: CheckedProgram) -> Lowe
         then_block = mir.BasicBlock(
             name="bb_then1",
             instructions=[
+                mir.Const(dest="_err_null", type=ERROR, value=None, loc=fn_def.loc),
                 mir.Const(dest="_lit4", type=INT, value=0, loc=fn_def.loc),
             ],
-            terminator=mir.Return(value="_lit4", error=None, loc=fn_def.loc),
+            terminator=mir.Return(value="_lit4", error="_err_null", loc=fn_def.loc),
         )
         else_block = mir.BasicBlock(
             name="bb_else2",

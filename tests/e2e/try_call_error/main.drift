@@ -10,9 +10,11 @@ fn may_fail_error(flag: Int) returns Int {
 
 fn main() returns Int {
   try {
-    may_fail_error(0)
+    may_fail_error(1)
   } catch err {
+    out.writeln("err")
     return 1
   }
+  out.writeln("ok")
   return 42
 }

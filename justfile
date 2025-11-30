@@ -1,6 +1,7 @@
 set shell := ["bash", "-lc"]
 
-test: test-ssa
+test: test-ssa test-e2e
+	@echo "Success."
 
 legacy-test: parse-all
 	./.venv/bin/python3 tests/run_tests.py
