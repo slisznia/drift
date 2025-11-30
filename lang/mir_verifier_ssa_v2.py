@@ -184,6 +184,8 @@ class SSAVerifierV2:
             self._use(instr.value, where, block_name, local_defs)
         elif isinstance(instr, mir.Drop):
             self._use(instr.value, where, block_name, local_defs)
+        elif isinstance(instr, mir.ErrorEvent):
+            self._use(instr.error, where, block_name, local_defs)
         # Add other instruction kinds as the SSA lowering grows.
 
     def _visit_terminator(self, where_block: str, term, block_name: str, local_defs: Set[str]) -> None:

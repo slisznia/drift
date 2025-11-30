@@ -429,6 +429,17 @@ def emit_module_object(
                     arr_val = builder.insert_value(arr_tmp, data_buf, 1)
                     values[instr.dest] = arr_val
                     ssa_types[instr.dest] = array_of(elem_ty)
+                elif isinstance(instr, mir.ErrorEvent):
+                    # Projection of error event: for the dummy runtime, call helper to get code as Int.
+                    if instr.error not in values:
+                        raise RuntimeError(f"error value {instr.error} undefined")
+                    err_val = values[instr.error]
+                    err_evt_fn = module.globals.get("drift_error_get_code")
+                    if not isinstance(err_evt_fn, ir.Function):
+                        err_evt_fn = ir.Function(module, ir.FunctionType(WORD_INT, [ERROR_PTR_TY]), name="drift_error_get_code")
+                    call_val = builder.call(err_evt_fn, [err_val], name=instr.dest)
+                    values[instr.dest] = call_val
+                    ssa_types[instr.dest] = INT
                 else:
                     raise RuntimeError(f"unsupported instruction {instr}")
 

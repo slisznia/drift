@@ -558,6 +558,14 @@ def _lookup_field_type(base_ty: Type, field: str, checked: CheckedProgram) -> Ty
     raise LoweringError(f"type {base_ty} has no fields")
 
 
+def _ssa_read_error_event(err_ssa: str, env: SSAEnv, current: mir.BasicBlock) -> tuple[str, mir.BasicBlock]:
+    """Emit MIR to read the error event/code into an SSA name."""
+    dest = env.fresh_ssa("err_event", INT)
+    current.instructions.append(mir.ErrorEvent(dest=dest, error=err_ssa))
+    env.ctx.ssa_types[dest] = INT
+    return dest, current
+
+
 def _callee_name(call: ast.Call) -> Optional[str]:
     if isinstance(call.func, ast.Name):
         return call.func.ident
