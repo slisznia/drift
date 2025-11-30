@@ -558,6 +558,14 @@ def _lookup_field_type(base_ty: Type, field: str, checked: CheckedProgram) -> Ty
     raise LoweringError(f"type {base_ty} has no fields")
 
 
+def _callee_name(call: ast.Call) -> Optional[str]:
+    if isinstance(call.func, ast.Name):
+        return call.func.ident
+    if isinstance(call.func, ast.Attr) and isinstance(call.func.value, ast.Name):
+        return f"{call.func.value.ident}.{call.func.attr}"
+    return None
+
+
 def _lower_try_catch_expr(
     expr: ast.TryCatchExpr,
     env: SSAEnv,
@@ -614,9 +622,11 @@ def _lower_try_catch_expr(
         target=mir.Edge(target=join_name, args=[fallback_ssa] + [err_env.lookup_user(u) for u in live_users])
     )
     # Only calls are supported for now.
-    if not (isinstance(expr.attempt, ast.Call) and isinstance(expr.attempt.func, ast.Name)):
+    if not isinstance(expr.attempt, ast.Call):
         raise LoweringError("try/catch expression lowering currently supports call attempts only")
-    callee = expr.attempt.func.ident
+    callee = _callee_name(expr.attempt)
+    if callee is None:
+        raise LoweringError("try/catch expression lowering supports simple name/attr callees only")
     if callee not in checked.functions:
         raise LoweringError(f"unknown function '{callee}' in try")
     ret_ty = checked.functions[callee].signature.return_type
@@ -665,9 +675,11 @@ def lower_try_stmt(
     if not isinstance(try_final, ast.ExprStmt):
         raise LoweringError("try/catch lowering currently expects final statement to be a call expression")
     try_expr = try_final.value
-    if not (isinstance(try_expr, ast.Call) and isinstance(try_expr.func, ast.Name)):
+    if not isinstance(try_expr, ast.Call):
         raise LoweringError("try/catch lowering currently supports call expressions only")
-    callee = try_expr.func.ident
+    callee = _callee_name(try_expr)
+    if callee is None:
+        raise LoweringError("try/catch lowering currently supports name/attr callees only")
     if callee not in checked.functions:
         raise LoweringError(f"unknown function '{callee}' in try/catch")
     ret_ty = checked.functions[callee].signature.return_type

@@ -143,7 +143,6 @@ class ArraySet(Instruction):
     loc: Location = Location()
     # Mutation: side-effecting in-place store; does not define a new SSA name.
 
-
 @dataclass(frozen=True)
 class Unary(Instruction):
     dest: Value

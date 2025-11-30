@@ -14,6 +14,9 @@ test-ssa:
 	./.venv/bin/python3 tests/ssa_check_smoke.py
 	./.venv/bin/python3 tests/ssa_programs_test.py
 
+test-e2e-ssa-subset:
+	PYTHONPATH=. ./.venv/bin/python3 tests/e2e_runner.py --backend=ssa-llvm hello throw_try
+
 parse-all: parse-playground parse-examples
 	@echo "Parsing successful."
 

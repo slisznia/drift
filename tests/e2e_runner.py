@@ -9,6 +9,9 @@ import sys
 import shutil
 from pathlib import Path
 
+import argparse
+from typing import Iterable
+
 ROOT = Path(__file__).resolve().parent.parent
 DRIFTC = ROOT / ".venv" / "bin" / "python3"
 DRIFTC_MODULE = "lang.driftc"
@@ -30,7 +33,7 @@ def _find_clang() -> str | None:
     return None
 
 
-def _run_case(case_dir: Path) -> str:
+def _run_case(case_dir: Path, backend_override: str | None = None) -> str:
     expected = json.loads((case_dir / "expected.json").read_text())
     mode = expected.get("mode", "compile")  # "compile" or "run"
     requires_llvmlite = expected.get("skip_if", {}).get("requires_llvmlite", False)
@@ -38,7 +41,7 @@ def _run_case(case_dir: Path) -> str:
         return "skipped (llvmlite missing)"
     env = dict(os.environ)
     env["PYTHONPATH"] = str(ROOT)
-    backend = "ssa-llvm" if mode == "run" else "legacy"
+    backend = backend_override or ("ssa-llvm" if mode == "run" else "legacy")
     cmd = [
         str(DRIFTC),
         "-m",
@@ -93,12 +96,21 @@ def _run_case(case_dir: Path) -> str:
     return "ok"
 
 
-def main() -> int:
+def main(argv: Iterable[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description="Run e2e Drift tests")
+    ap.add_argument("--backend", choices=["ssa-llvm", "legacy"], help="Override backend (default: mode-based)")
+    ap.add_argument("cases", nargs="*", help="Specific test case names to run (directories under tests/e2e)")
+    args = ap.parse_args(argv)
+
     failures: list[tuple[Path, str]] = []
-    for case_dir in sorted((ROOT / "tests" / "e2e").iterdir()):
+    case_dirs = sorted((ROOT / "tests" / "e2e").iterdir())
+    if args.cases:
+        names = set(args.cases)
+        case_dirs = [d for d in case_dirs if d.name in names]
+    for case_dir in case_dirs:
         if not (case_dir / "main.drift").exists():
             continue
-        status = _run_case(case_dir)
+        status = _run_case(case_dir, backend_override=args.backend)
         print(f"{case_dir.name}: {status}")
         if not status.startswith("ok") and not status.startswith("skipped"):
             failures.append((case_dir, status))
