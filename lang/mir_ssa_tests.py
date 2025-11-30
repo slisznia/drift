@@ -466,17 +466,13 @@ def test_phi_arity_mismatch_fails():
     raise AssertionError("expected verifier to fail on phi arity mismatch")
 
 
-def test_unreachable_block_fails():
+def test_unreachable_block_allowed():
     bb0 = mir.BasicBlock(name="bb0", params=[])
     bb0.terminator = mir.Return(value=None)
     bb_dead = mir.BasicBlock(name="bb_dead", params=[])
     bb_dead.terminator = mir.Return(value=None)
     fn = make_fn([bb0, bb_dead])
-    try:
-        SSAVerifierV2(fn).verify()
-    except RuntimeError:
-        return
-    raise AssertionError("expected verifier to fail on unreachable block")
+    SSAVerifierV2(fn).verify()
 
 
 def test_missing_terminator_fails():
@@ -961,7 +957,7 @@ if __name__ == "__main__":
     test_redefine_fails()
     test_use_before_def_fails()
     test_phi_arity_mismatch_fails()
-    test_unreachable_block_fails()
+    test_unreachable_block_allowed()
     test_missing_terminator_fails()
     test_field_get()
     test_call_with_edges()

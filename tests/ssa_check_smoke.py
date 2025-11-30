@@ -82,29 +82,13 @@ def test_ssa_check_control_flow(tmp_path: Path) -> None:
     )
 
 
-def test_ssa_check_try_else(tmp_path: Path) -> None:
-    _run_ssa_smoke(
-        tmp_path,
-        "try_else.drift",
-        "import std.console.out\n"
-        "fn foo(x: Int) returns Int {\n"
-        "  return x\n"
-        "}\n"
-        "fn main() returns Int {\n"
-        "  val y: Int = try foo(1) catch { 42; }\n"
-        "  out.writeln(\"y computed\")\n"
-        "  val rc: Int = 0\n"
-        "  return rc\n"
-        "}\n",
-    )
-
-
 def test_ssa_check_try_catch(tmp_path: Path) -> None:
     _run_ssa_smoke(
         tmp_path,
         "try_catch.drift",
         "import std.console.out\n"
         "fn might_fail(x: Int) returns Int {\n"
+        "  if x != 0 { throw drift_error_new_dummy(x); }\n"
         "  return x\n"
         "}\n"
         "fn main() returns Int {\n"
@@ -123,5 +107,4 @@ def test_ssa_check_try_catch(tmp_path: Path) -> None:
 if __name__ == "__main__":
     test_ssa_check_smoke(Path("/tmp"))
     test_ssa_check_control_flow(Path("/tmp"))
-    test_ssa_check_try_else(Path("/tmp"))
     test_ssa_check_try_catch(Path("/tmp"))

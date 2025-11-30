@@ -213,7 +213,7 @@ Option B (full generalization via a dedicated try-body block) remains a future e
 
 ### Progress
 
-* `tests/e2e_runner.py` always uses the SSA backend; legacy backend removed.  
+* `tests/e2e_runner.py` always uses the SSA backend; SSA verification runs in fail mode (hard gate); legacy backend removed.  
 * Justfile includes `test-e2e-ssa-subset` that runs via SSA backend:
   - `hello`
   - `throw_try`
@@ -276,7 +276,7 @@ These are reserved for after the 3 phases are complete.
 | Multi-catch                        | ✓ stmt/expr multi-catch with event dispatch         |
 | Event-matching                     | ✓ stmt/expr via event codes                         |
 | Full attempt generalization        | ✗ deferred (expr remains call-only for now)         |
-| SSA-driven e2e                     | ✓ default; legacy backend removed                   |
+| SSA-driven e2e                     | ✓ default; SSA verifier is a hard gate; legacy backend removed |
 | Legacy backend/tests               | ✓ removed (SSA-only pipeline)                       |
 | & / &mut ref semantics             | ✓ fully supported in SSA backend                    |
 | Cleanup (docs, duplicate lowering) | ◔ code + examples aligned; DMIR→SSA unification long-term |

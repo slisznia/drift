@@ -49,7 +49,6 @@ def _run_case(case_dir: Path) -> str:
         "-o",
         str(case_dir / "a.o"),
         "--ssa-check",
-        "--ssa-check-mode=warn",
         "--ssa-simplify",
     ]
     compile_res = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, env=env)

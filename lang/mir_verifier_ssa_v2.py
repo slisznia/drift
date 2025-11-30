@@ -40,14 +40,17 @@ class SSAVerifierV2:
         self._compute_dominators(reachable)
         self._check_phi_arity(reachable)
         # Register block params and function params.
-        for block in self.blocks.values():
+        for bname in reachable:
+            block = self.blocks[bname]
             self._register_block_params(block)
         # Register defining instruction dests and terminator dests.
-        for block in self.blocks.values():
+        for bname in reachable:
+            block = self.blocks[bname]
             self._register_instr_defs(block)
             self._register_term_defs(block)
         # Check uses in instructions and terminators.
-        for block in self.blocks.values():
+        for bname in reachable:
+            block = self.blocks[bname]
             self._visit_block(block)
 
     def _iter_blocks(self):
@@ -279,9 +282,7 @@ class SSAVerifierV2:
         entry = self._entry_block_name()
         if entry not in reachable:
             raise RuntimeError("entry block is unreachable")
-        unreachable = set(self.blocks.keys()) - reachable
-        if unreachable:
-            raise RuntimeError(f"unreachable blocks present: {sorted(unreachable)}")
+        # Allow unreachable blocks (e.g., dead catch arms); they will be pruned by later passes.
 
     def _build_preds(self, reachable: Set[str]) -> None:
         preds: Dict[str, Set[str]] = {name: set() for name in reachable}
