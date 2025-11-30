@@ -1219,6 +1219,7 @@ import std.console.out as print // optional alias
 - Ambiguities between module and symbol names must be disambiguated with `as` or avoided.
 - Aliases affect only the local binding; frames and module metadata always record the original module ID, not the alias.
 - For console streams and other standard I/O primitives, refer to Chapter 18.
+- Only **exported** symbols may be resolved by `import`. Attempting to `import M.f` when `f` is not exported by module `M` is a compile-time error.
 
 **Module identifiers**
 
@@ -1226,6 +1227,25 @@ import std.console.out as print // optional alias
 - `<id>` must be lowercase alnum segments separated by dots, with optional underscores inside segments; no leading/trailing/consecutive dots/underscores; length ≤ 254 UTF-8 bytes.
 - Reserved prefixes are rejected: `lang.`, `abi.`, `std.`, `core.`, `lib.`.
 - Frames/backtraces record the declared module ID (not filenames), so cross-module stacks are unambiguous.
+
+### 7.2. Module interface and exports
+
+A **static module** (one compiled into the host image, either directly from source or via DMP/DMIR) may define many top-level items (functions, structs, traits, interfaces), but only a **selected subset** forms its *module interface*. The module interface consists of symbols that are **exported** and therefore visible to other modules.
+
+Drift treats functions in the module interface as **can-throw entry points**:
+
+- Every exported function is allowed to fail and therefore participates in the standard `Result<T, Error>` model.
+- At the ABI level, exported Drift functions are always compiled using the **error-aware calling convention**:
+  - `fn f(...) returns T` → ABI returns `Result<T, Error>` encoded as `{T, Error*}`.
+  - `fn f(...) returns Void` → ABI returns `Result<Void, Error>` encoded as `Error*`.
+- Internal helpers (non-exported functions) may use more aggressive internal optimizations for error handling, but their exact calling convention is not visible across module boundaries.
+
+Import resolution (Section 7.1) only considers **exported** symbols:
+
+- `import my.module.foo` may only bind `foo` if `foo` appears in `my.module`’s export list.
+- Non-exported functions and types are private to the defining module and cannot be named from other modules.
+
+The export set is recorded in the module’s DMIR/DMP metadata (Chapter 20). Tools use this metadata to enforce that only exported, can-throw entry points participate in cross-module linking.
 
 ## 8. Control flow
 
@@ -1971,13 +1991,21 @@ variant Result<T, E> {
 
 Every function behaves as if returning `Result<T, Error>`; ABI lowers accordingly.
 
+When a function is part of a module’s exported interface (Chapter 7.2), the `Result<T, Error>` model is **visible at the ABI**:
+
+- Exported functions always use the `Result<T, Error>` calling convention on the wire, encoded as `{T, Error*}` or `Error*` at the ABI.
+- Callers in other modules must treat every exported function as potentially failing, even if its implementation never actually throws.
+- Internal, non-exported functions may be lowered more aggressively (for example, eliding the error channel when analysis proves “no throw”), but such optimizations must not change the behavior of exported entry points as seen through the module interface.
+
 ---
 
-### 14.7. Drift–Drift propagation (plugins)
+### 14.7. Drift–Drift propagation across static modules
 
-Unwinding is allowed across Drift modules/plugins as long as:
-- The `Error` layout is identical.
-- Same runtime/unwinder is used.
+Unwinding is allowed across **static Drift modules** as long as:
+- The `Error` layout used by those modules is identical.
+- They share the same runtime and unwinder.
+
+This applies to modules that are compiled together into a single image (either directly from source or via DMIR/DMP). **Unwinding must not cross FFI or OS-level shared library boundaries**; any exported Drift APIs used via C/FFI must convert failures into value errors at the boundary (see Chapter 17).
 
 Event name + args + ctx_frames + stack fully capture portable state.
 
@@ -2006,7 +2034,7 @@ JSON example:
 - Event-based exceptions.
 - Arguments + captured locals normalized to strings.
 - Move-only errors with deterministic ownership.
-- Precisely defined layout for plugin-safe unwinding.
+- Precisely defined layout for cross-module-safe unwinding.
 - Semantically equivalent to `Result<T, Error>` internally.
 
 ## 15. Mutators, transformers, and finalizers
@@ -2400,6 +2428,8 @@ fn transmit(bytes: Array<U8>) returns Int32 {
 }
 ```
 
+**Plugin note.** OS-level plugins (shared libraries) are just C-ABI FFI surfaces from Drift’s point of view. Authors should design plugin APIs as small C-style interfaces (opaque handles + error codes) and wrap them in static Drift modules as described in Chapter 21.
+
 ### 17.8. Summary
 
 - The surface language never exposes raw pointer syntax or arithmetic.
@@ -2649,6 +2679,7 @@ DMIR stores the typed, desugared module with all names resolved:
 - Canonical function bodies (control flow normalized, metadata stripped).
 - Canonical literal encodings (UTF-8 strings, LEB128 integers, IEEE-754 floats).
 - Deterministic ordering by fully-qualified name.
+- A canonical **export list**: the subset of top-level symbols that form the module interface. For functions, each export entry records the fully-qualified name, type signature, and that it is an exported Drift entry point using the error-aware calling convention `Result<T, Error>`. This export list describes the interface of a **static module** as seen by other Drift code compiled against the same DMIR; it is not a promise of OS-level binary compatibility.
 - No timestamps, file paths, environment data, or formatting trivia.
 
 Each DMIR block carries an independent version number (`dmir_version`).
@@ -2674,6 +2705,12 @@ Each DMIR block carries an independent version number (`dmir_version`).
 - **DMIR**: list of canonical items `{kind, fully-qualified name, canonical body}`.
 - **Signature block**: one or more signature entries (e.g., Ed25519). The signature covers `HEADER .. DMIR`.
 - **Optional source**: raw UTF-8 source for auditing; not part of verification.
+
+The **METADATA** section includes an `exports` table describing the module interface:
+
+- For each exported function: fully-qualified name, type, and a flag indicating that it uses the standard Drift `Result<T, Error>` calling convention.
+- Non-exported functions and types are omitted from this table and cannot be imported by other modules.
+- The `exports` table is the canonical source of truth for which symbols may be referenced across module boundaries.
 
 ### 20.4. Signatures and verification
 
@@ -2711,258 +2748,94 @@ Signed DMIR gives Drift a portable, semantically precise unit of distribution wh
 
 *Note:* The exact signing/verification scheme (PGP vs Ed25519, cert hierarchies, revocation policies) is still under design and will be finalized before the DMP format is stabilized. The structure here captures intent; cryptographic options may evolve.
 
+**Design note — module interface and errors.** Drift deliberately restricts the module interface to a small, explicit set of exported functions that can throw. This keeps cross-module ABIs uniform (every exported function uses `Result<T, Error>`), simplifies plugin design, and prevents accidental exposure of internal helper functions. Internal code is free to optimize error handling aggressively, but anything that crosses a module boundary must treat errors as first-class values using the standard `Error` type and `Result<T, Error>` encoding.
+
 ---
 
 
 
-## 21. Dynamic plugins (Drift→Drift ABI)
+## 21. Plugin-style extension via FFI
 
-### 21.1. Overview
+Drift’s core module system is **static**: modules are compiled into a single image (either directly from source or via DMIR/DMP), and their interfaces are described by the export list in DMIR (Chapter 20). All exported functions are conceptually `Result<T, Error>` and may unwind across static module boundaries (Chapter 14.7).
 
-Dynamic Drift plugins allow separately compiled Drift modules to be loaded at runtime as shared libraries (`.so`, `.dll`, `.dylib`). The plugin ABI sits on top of the core ABI—it does not modify existing rules, but specifies how Drift↔Drift dynamic linking works.
+Dynamic, OS-level plugins (shared libraries such as `.so`, `.dll`, `.dylib`) are treated as **FFI**, not as first-class Drift modules:
 
-Plugins interact with the host solely through:
+- They use a C-style ABI.
+- They are loaded with the host platform’s dynamic loader (`dlopen`/`dlsym`, `LoadLibrary`, etc.).
+- Their public surface is a small, explicit C API (opaque handles, error codes), described in C headers rather than Drift `module` declarations.
 
-- Interfaces (runtime-dispatched fat pointers).
-- Values crossing the boundary via the standard Drift ABI.
-- Structured errors carried by the unified `Error` type.
-- The `Result<T, Error>` convention that all Drift functions already obey.
+Drift code interacts with such plugins by:
 
-A plugin is simply a module that exports a single C-ABI entry point returning an implementation of an agreed-upon interface.
+1. Defining an FFI surface in a dedicated `lang.abi.*` or application-specific FFI module:
 
-### 21.2. Goals
+   ```drift
+   // Example: plugin FFI surface
+   extern "C" struct PluginApi {
+       version: Uint32,
+       init: extern "C" fn() returns Int32,
+       shutdown: extern "C" fn() returns Int32,
+       do_work: extern "C" fn(handle: PluginHandle, req: &RequestC, resp: &mut ResponseC) returns Int32
+   }
 
-The plugin ABI is designed to:
+   extern "C"
+   fn plugin_get_api(expected_version: Uint32) returns &PluginApi
+   ```
 
-1. Allow separate compilation and runtime loading.
-2. Provide a small, predictable ABI surface for linking Drift binaries.
-3. Permit bidirectional calls using interfaces.
-4. Ensure errors cross the boundary only as values, not control flow.
-5. Prevent exception unwinding from crossing between host and plugin.
-6. Guarantee stable interface object layouts (fat pointers).
-7. Maintain forward compatibility through explicit ABI versioning.
+2. Writing a **static Drift module** that wraps this C API in normal Drift functions and types:
 
-### 21.3. Core rule: all functions return `Result<T, Error>`
+   ```drift
+   module host.plugins.example
 
-Drift semantics treat every function as conceptually:
+   export {
+       fn do_work(req: Request) returns Result<Response, Error>
+   }
+
+   fn do_work(req: Request) returns Result<Response, Error> {
+       // call into the .so via FFI, map Int32 error codes to Drift Error, etc.
+   }
+   ```
+
+3. Treating the FFI boundary like any other C interop:
+
+   - No unwinding crosses the `.so` boundary.
+   - Failures are communicated as **values** (e.g., integer error codes, small tagged enums).
+   - Opaque handles are used for plugin-owned state; the host never relies on plugin internal layout.
+
+### 21.1. Error handling at the FFI plugin boundary
+
+At the OS-level plugin boundary:
+
+- Drift’s `Error` type and unwinding **must not** cross into or out of a `.so`.
+- Plugin APIs must return errors as ABI-stable primitives (e.g., `Int32` error codes, or a small `enum` marked as FFI-safe).
+- Hosts are responsible for mapping these codes into Drift’s `Error` values at the wrapper layer (static modules).
+
+Example:
 
 ```drift
-fn foo(...) returns T
-```
+extern "C"
+fn plugin_do_work(api: &PluginApi, req: &RequestC, resp: &mut ResponseC) returns Int32
 
-which lowers to:
+fn do_work(req: Request) returns Result<Response, Error> {
+    var req_c = to_c_request(req)
+    var resp_c = ResponseC.zero()
 
-```drift
-fn foo(...) returns Result<T, Error>
-```
-
-using the variant described in Chapter 10:
-
-```drift
-variant Result<T, E> {
-    Ok(value: T)
-    Err(error: E)
+    val code = plugin_do_work(api, &req_c, &resp_c)
+    if code == 0 {
+        return Ok(from_c_response(resp_c))
+    }
+    // convert error code to Drift Error
+    return Err(make_plugin_error(code))
 }
 ```
 
-This applies globally, so plugin APIs need no extra wrappers: the ABI already standardizes on `Result<T, Error>` as the universal return type.
+This pattern keeps the OS plugin ABI small and stable while preserving Drift’s richer error model inside the static world.
 
-### 21.4. No cross-boundary unwinding
+### 21.2. Summary
 
-Drift implementations may use stack unwinding to realize `throw`, but:
+- **Static modules** (Chapter 7, Chapter 20) are the core Drift unit of composition. They are compiled into a single image or via DMIR/DMP and may use the full error model and unwinding semantics.
+- **Plugins in the OS sense** are handled via **FFI**: a C-style ABI with opaque handles and explicit error codes, wrapped by static Drift modules.
+- The language does **not** define a separate “plugin module” kind or a first-class Drift-plugin ABI in this revision. Future revisions may introduce a higher-level Drift-to-Drift plugin profile if real-world experience justifies the added complexity.
 
-> Unwinding must never cross the plugin boundary.
-
-If code inside a plugin throws, the implementation must intercept the unwind before control returns to the host. At the ABI boundary:
-
-- Success must produce `Result<T, Error>.Ok(value)`.
-- Failure must produce `Result<T, Error>.Err(error)`.
-
-Host callbacks passed into a plugin obey the same rule. Violations lead to undefined behavior; implementations should abort if they detect cross-boundary unwinding.
-
-### 21.5. Interface object representation
-
-Plugins and hosts communicate through interfaces that use the standard Drift fat-pointer representation.
-
-#### 21.5.1. ABI layout
-
-Conceptually:
-
-```drift
-struct InterfaceObject {
-    data: abi.CPtr<Opaque>
-    vtable: abi.CPtr<Opaque>
-}
-```
-
-where `data` points to the concrete storage of the implementing type and `vtable` points to the method table for that type/interface pair.
-
-Rules:
-
-- Both sides must compile against the same interface definition.
-- Method ordering in vtables follows source declaration order.
-- The underlying concrete type remains opaque.
-
-### 21.6. Plugin entry point
-
-Every plugin exports exactly one unmangled C-ABI function:
-
-```drift
-extern "C" fn drift_plugin_entry(host: &PluginHostApi)
-    returns Result<PluginHandle, Error>
-```
-
-#### 21.6.1. `PluginHandle`
-
-```drift
-struct PluginHandle {
-    abi_version: Int32,
-    name: String,
-    version: String,
-    instance: Plugin  // interface object
-}
-```
-
-Fields:
-
-- `abi_version`: plugin ABI version required by the plugin.
-- `name` / `version`: metadata for logging or UX.
-- `instance`: an implementation of the `Plugin` interface returned to the host.
-
-### 21.7. The `Plugin` interface
-
-The host defines the primary plugin interface:
-
-```drift
-interface Plugin {
-    fn name(self: &Plugin) returns String
-    fn version(self: &Plugin) returns String
-
-    fn initialize(self: &Plugin, config: PluginConfig)
-        returns Result<Void, Error>
-
-    fn shutdown(self: &Plugin)
-        returns Result<Void, Error>
-}
-```
-
-Plugins implement this interface with any concrete type:
-
-```drift
-struct MyPlugin { /* fields */ }
-
-implement Plugin for MyPlugin {
-    fn name(self: &MyPlugin) returns String { ... }
-    fn version(self: &MyPlugin) returns String { ... }
-    fn initialize(self: &MyPlugin, config: PluginConfig)
-        returns Result<Void, Error> { ... }
-    fn shutdown(self: &MyPlugin)
-        returns Result<Void, Error> { ... }
-}
-```
-
-`PluginConfig` is a host-defined struct (often deserialized from JSON or a config map). Hosts may extend it freely because it never crosses the ABI boundary without coordination.
-
-### 21.8. Host API passed into the plugin
-
-The host supplies services via another interface:
-
-```drift
-interface PluginHostApi {
-    fn abi_version(self: &PluginHostApi) returns Int32
-
-    fn log(self: &PluginHostApi,
-           level: LogLevel,
-           message: String) returns Void
-
-    fn load_resource(self: &PluginHostApi,
-                     path: String) returns Result<ByteBuffer, Error>
-
-    fn get_config(self: &PluginHostApi,
-                  key: String) returns Result<String, Error>
-}
-```
-
-`LogLevel` is typically an enum defined by the host. The plugin receives an implementation of `PluginHostApi` through the entry point and may retain it for its lifetime.
-
-### 21.9. Versioning
-
-Version compatibility is enforced by comparing:
-
-```drift
-host_abi_version == plugin_handle.abi_version
-```
-
-On mismatch, the host should attempt `instance.shutdown()` if the plugin initialized successfully, then reject and unload the module.
-
-### 21.10. Plugin lifecycle
-
-1. Host loads the shared library via the OS loader.
-2. Host resolves `drift_plugin_entry` by unmangled C name.
-3. Host invokes the entry point, passing a `PluginHostApi` instance.
-4. Plugin returns `Result<PluginHandle, Error>`.
-   - On `Err(error)`, the host logs and unloads the plugin.
-5. Host compares ABI versions.
-6. Host calls `initialize()` if initialization is required.
-7. Host invokes plugin methods via interface dispatch for normal work.
-8. On unload, host calls `shutdown()` and releases all interface objects before unloading the library.
-
-### 21.11. Error handling conventions
-
-Errors crossing the boundary must always be represented as:
-
-```drift
-Result<T, Error>.Err(error)
-```
-
-where `Error` is the Chapter 14 layout:
-
-```drift
-struct Error {
-    event: String,
-    args: Map<String, String>,
-    ctx_frames: Array<CtxFrame>,
-    stack: BacktraceHandle
-}
-```
-
-Rules:
-
-- Event names plus args are stable and may be switched on by the host.
-- `ctx_frames` and `stack` are diagnostic—it is acceptable if the host cannot interpret them.
-- Unknown events must be treated as opaque identifiers.
-
-### 21.12. Memory and ownership across the boundary
-
-- Ownership rules follow normal Drift semantics.
-- Strings, arrays, maps, and interface values may cross freely.
-- Neither side should free memory allocated by the other except through normal Drift destructors.
-- Both plugin and host must assume container storage may relocate unless pinned via RAII scope.
-- All loaded modules must share a compatible allocator (usually the process-wide allocator provided by the runtime).
-
-### 21.13. Safety constraints
-
-To keep the boundary predictable:
-
-- A plugin must not retain references to host-owned objects after `shutdown()`.
-- The host must not use plugin objects after unload.
-- Passing non-`Send` values between threads continues to follow the trait-based rules from Chapter 13.
-- Vtables must not be mutated after creation.
-
-### 21.14. Summary
-
-Dynamic plugins provide:
-
-- A stable, vtable-based ABI for host↔plugin interaction.
-- A uniform `Result<T, Error>` error model.
-- A guarantee against cross-boundary unwinding.
-- Deterministic lifetime rules for interface objects.
-- Explicit versioning for forward compatibility.
-
-This design keeps the plugin surface minimal while leveraging the language’s existing safety guarantees.
-
-
----
 
 ## 22. Closures and callable traits
 
