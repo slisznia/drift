@@ -7,7 +7,7 @@ from lang import mir
 from lang.mir_verifier_ssa_v2 import SSAVerifierV2
 from lang.mir_simplify_ssa import simplify_function
 from lang.lower_to_mir_ssa import lower_function_ssa, LoweringError
-from lang.types import BOOL, I64, INT, STR, FunctionSignature
+from lang.types import BOOL, ERROR, I64, INT, STR, FunctionSignature
 from lang.checker import CheckedProgram, FunctionInfo
 from lang.ast import (
     Block,
@@ -670,6 +670,108 @@ def test_try_catch_stmt_shape():
     )
     fn = make_fn([bb_entry, bb_catch, bb_join])
     SSAVerifierV2(fn).verify()
+
+
+def test_can_error_invariants_throw_flagged() -> None:
+    # throw in non-can-error function should be rejected during annotation.
+    f = mir.Function(
+        name="bad_throw",
+        params=[],
+        return_type=I64,
+        entry="bb0",
+        blocks={"bb0": mir.BasicBlock(name="bb0", params=[], instructions=[], terminator=mir.Throw(error="_e"))},
+    )
+    try:
+        from lang.driftc import _annotate_can_error  # type: ignore
+    except Exception:
+        return
+    try:
+        _annotate_can_error([f])
+    except RuntimeError:
+        return
+    raise AssertionError("expected throw in non-can-error function to fail annotation")
+
+
+def test_can_error_invariants_call_edges_to_non_can_error() -> None:
+    callee = mir.Function(
+        name="callee",
+        params=[],
+        return_type=I64,
+        entry="bb0",
+        blocks={"bb0": mir.BasicBlock(name="bb0", params=[], instructions=[], terminator=mir.Return(value=None))},
+        can_error=False,
+    )
+    caller_entry = mir.BasicBlock(
+        name="bb0",
+        params=[],
+        instructions=[],
+        terminator=mir.Call(
+            dest="_res",
+            callee="callee",
+            args=[],
+            ret_type=I64,
+            err_dest=None,
+            normal=mir.Edge(target="bb1", args=[]),
+            error=mir.Edge(target="bb2", args=[]),
+        ),
+    )
+    caller = mir.Function(
+        name="caller",
+        params=[],
+        return_type=I64,
+        entry="bb0",
+        blocks={
+            "bb0": caller_entry,
+            "bb1": mir.BasicBlock(name="bb1", params=[], instructions=[], terminator=mir.Return(value=None)),
+            "bb2": mir.BasicBlock(name="bb2", params=[], instructions=[], terminator=mir.Return(value=None)),
+        },
+    )
+    try:
+        from lang.driftc import _annotate_can_error  # type: ignore
+    except Exception:
+        return
+    try:
+        _annotate_can_error([callee, caller])
+    except RuntimeError:
+        return
+    raise AssertionError("expected call-with-edges to non-can-error callee to fail annotation")
+
+
+def test_can_error_invariants_plain_call_to_can_error() -> None:
+    # callee returns with error, caller drops it via plain call.
+    callee_block = mir.BasicBlock(
+        name="bb0",
+        params=[],
+        instructions=[
+            mir.Const(dest="_err", type=ERROR, value=None),
+            mir.Const(dest="_v", type=I64, value=0),
+        ],
+        terminator=mir.Return(value="_v", error="_err"),
+    )
+    callee = mir.Function(
+        name="can_err",
+        params=[],
+        return_type=I64,
+        entry="bb0",
+        blocks={"bb0": callee_block},
+        can_error=True,
+    )
+    caller_block = mir.BasicBlock(
+        name="bb0",
+        params=[],
+        instructions=[mir.Call(dest="_tmp", callee="can_err", args=[], ret_type=I64, err_dest=None, normal=None, error=None)],
+        terminator=mir.Return(value="_tmp"),
+    )
+    caller = mir.Function(name="caller", params=[], return_type=I64, entry="bb0", blocks={"bb0": caller_block})
+    try:
+        from lang.driftc import _annotate_can_error  # type: ignore
+    except Exception:
+        return
+    try:
+        _annotate_can_error([callee, caller])
+    except RuntimeError:
+        return
+    raise AssertionError("expected plain call to can-error function to fail annotation")
 
 
 def test_lowering_try_catch_integration():

@@ -94,7 +94,7 @@ def emit_module_object(
     fn_map: dict[str, ir.Function] = {}
     blocks_map: dict[tuple[str, str], ir.Block] = {}
     struct_type_cache: dict[str, ir.Type] = {}
-    # Track which functions are invoked with error edges; they use the {T, Error*} ABI.
+    # Track which functions are allowed to produce errors; MIR should already mark them.
     can_error_funcs: set[str] = {f.name for f in funcs if getattr(f, "can_error", False)}
     # Cached runtime decls
     rt_error_dummy: Optional[ir.Function] = None
@@ -146,14 +146,16 @@ def emit_module_object(
             if elem_ty is not None:
                 return ir.LiteralStructType([WORD_INT, _llvm_type_with_structs(elem_ty).as_pointer()])
             raise
-    # Also pick up callees from call-with-edges and functions containing Throw in case flags were not set.
+    # Assert MIR can_error markings cover all throw/call-with-edges sites.
     for f in funcs:
         for block in f.blocks.values():
             term = block.terminator
             if isinstance(term, mir.Call) and term.normal and term.error:
-                can_error_funcs.add(term.callee)
+                if term.callee not in can_error_funcs:
+                    raise RuntimeError(f"callee {term.callee} used with error edges but not marked can_error")
             elif isinstance(term, mir.Throw):
-                can_error_funcs.add(f.name)
+                if f.name not in can_error_funcs:
+                    raise RuntimeError(f"function {f.name} contains Throw but is not marked can_error")
 
     for f in funcs:
         reachable = _reachable(f)
@@ -539,18 +541,20 @@ def emit_module_object(
                 if isinstance(ret_ll_ty, ir.VoidType):
                     builder.ret(err_val)
                 else:
-                    if isinstance(ret_ll_ty, ir.IntType):
-                        zero_val = ret_ll_ty(0)
-                    else:
-                        zero_val = ir.Constant(ret_ll_ty, None)
+                    # Value is ignored on error; insert err into a zeroed pair.
                     pair_ty = llvm_ret_with_error(f.return_type)
                     pair_ptr = builder.alloca(pair_ty, name=f"{f.name}_throw_pair")
                     val_ptr = builder.gep(pair_ptr, [I32_TY(0), I32_TY(0)], inbounds=True)
-                    builder.store(zero_val, val_ptr)
+                    if isinstance(ret_ll_ty, ir.IntType):
+                        val_zero = ret_ll_ty(0)
+                    elif isinstance(ret_ll_ty, ir.PointerType):
+                        val_zero = ir.Constant(ret_ll_ty, None)
+                    else:
+                        val_zero = builder.load(builder.alloca(ret_ll_ty))
+                    builder.store(val_zero, val_ptr)
                     err_ptr = builder.gep(pair_ptr, [I32_TY(0), I32_TY(1)], inbounds=True)
                     builder.store(err_val, err_ptr)
-                    pair_loaded = builder.load(pair_ptr)
-                    builder.ret(pair_loaded)
+                    builder.ret(builder.load(pair_ptr))
             elif term is None:
                 builder.unreachable()
             else:

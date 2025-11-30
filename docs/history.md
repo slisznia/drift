@@ -32,6 +32,11 @@
 - Expanded reserved keywords: checker now rejects a broad set (language/FFI/legacy keywords, lowercase primitive aliases); added a negative test for using a reserved word as a function name; spec reserved-keyword list updated.
 - Clarified that `Bool` lowers to LLVM `i1`; kept `true`/`false` as lowercase literals, so constructs like `while true { ... }` parse and type-check as expected. History/spec updated to reflect the current control-flow and reserved keyword rules.
 - Reordered the language spec chapters for better definition-before-use flow (traits/interfaces early, variants before exceptions/null safety, arrays/collections grouped, standard I/O moved later) and renumbered chapters sequentially without duplicates.
+- Error edges fully integrated end-to-end: `throw` now lowers through MIR→SSA→LLVM using the `{T, Error*}` / `Error*` ABI, and new e2e tests (`throw_try`, `void_throw`) cover both value+error and void can-error paths. SSA call-edge tests now include throwing and void callees.
+- Generic SSA lowering now handles can-error functions without hand-crafted MIR: special cases for `may_fail_error`, `may_throw`, and `maybe_fail` were removed, relying on normal lowering plus can-error tagging.
+- MIR `Function` now carries a `can_error` flag propagated from throws and call-with-edges; SSA codegen enforces can-error invariants (returns carry error operands, calls-with-edges only target can-error functions, plain calls to can-error functions are rejected).
+- SSA lowering handles `RaiseStmt` and prunes unused join blocks in `if` lowering; throw lowering uses safe placeholder values in pairs.
+- Added FFI-based plugin stance to the spec, clarified static modules/exports as can-throw entry points, and tightened DMIR export semantics to cover static modules only. Drift-native plugin ABI was removed in favor of FFI guidance.
 
 ## 2025-11-24
 - Fixed the parser’s `if` builder to grab the nested `else_clause` block, so conditional statements with an else arm are preserved through parsing and lowering.

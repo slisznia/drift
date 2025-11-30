@@ -26,22 +26,14 @@ from lang.ir_layout import StructLayout
 def _annotate_can_error(funcs: list[mir.Function]) -> None:
     """Mark functions that can produce errors and enforce basic invariants."""
     name_to_fn = {f.name: f for f in funcs}
-    changed = True
-    # Initial seed: any function containing a Throw is can-error.
+    # Seed from function bodies.
     for f in funcs:
-        if any(isinstance(b.terminator, mir.Throw) for b in f.blocks.values()):
-            f.can_error = True
-    # Propagate from call-with-edges.
-    while changed:
-        changed = False
-        for f in funcs:
-            for block in f.blocks.values():
-                term = block.terminator
-                if isinstance(term, mir.Call) and term.normal and term.error:
-                    callee = name_to_fn.get(term.callee)
-                    if callee and not callee.can_error:
-                        callee.can_error = True
-                        changed = True
+        for block in f.blocks.values():
+            term = block.terminator
+            if isinstance(term, mir.Throw):
+                f.can_error = True
+            if isinstance(term, mir.Return) and term.error is not None:
+                f.can_error = True
     # Enforce: Throw only in can-error functions.
     for f in funcs:
         for block in f.blocks.values():
@@ -55,6 +47,12 @@ def _annotate_can_error(funcs: list[mir.Function]) -> None:
                 callee = name_to_fn.get(term.callee)
                 if callee and not callee.can_error:
                     raise RuntimeError(f"call with error edges to non-can-error function {term.callee}")
+            # Plain calls to can-error functions must not drop the error channel.
+            for instr in block.instructions:
+                if isinstance(instr, mir.Call) and not (instr.normal or instr.error):
+                    callee = name_to_fn.get(instr.callee)
+                    if callee and callee.can_error:
+                        raise RuntimeError(f"call to can-error function {instr.callee} without error edges")
 
 
 def _dump_ssa(fn_name: str, blocks: dict[str, mir.BasicBlock], file=None) -> None:
