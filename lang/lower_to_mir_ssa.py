@@ -14,7 +14,7 @@ from . import ast, mir
 from .checker import CheckedProgram
 from .ssa_env import SSAEnv, SSAContext
 from .types import ERROR, INT
-from .types import Type, BOOL, I64, INT, F64, STR, array_element_type, array_of
+from .types import Type, ReferenceType, BOOL, I64, INT, F64, STR, array_element_type, array_of, ref_of
 
 
 @dataclass
@@ -50,6 +50,9 @@ def lower_function_ssa(fn_def: ast.FunctionDef, checked: CheckedProgram) -> Lowe
 
     # Lower body (placeholder)
     current, env = lower_block_in_env(fn_def.body.statements, env, blocks, entry_block, checked, fresh_block)
+    if current.terminator is None:
+        # Implicit return for functions that fall through.
+        current.terminator = mir.Return()
 
     return LoweredFunction(blocks=blocks, env=env, entry=entry_name)
 
@@ -493,7 +496,7 @@ def lower_expr_to_ssa(
     # Borrow/addr-of: create a new SSA name with ref type, move from the base.
     if isinstance(expr, ast.Unary) and expr.op in {"&", "&mut"}:
         operand_ssa, operand_ty, current, env = lower_expr_to_ssa(expr.operand, env, current, checked, blocks, fresh_block)
-        ref_ty = Type(expr.op, args=[operand_ty])
+        ref_ty = ref_of(operand_ty, mutable=(expr.op == "&mut"))
         dest = env.fresh_ssa("ref", ref_ty)
         current.instructions.append(mir.Move(dest=dest, source=operand_ssa))
         env.ctx.ssa_types[dest] = ref_ty
@@ -543,7 +546,7 @@ class LoweringError(Exception):
 
 
 def _lookup_field_type(base_ty: Type, field: str, checked: CheckedProgram) -> Type:
-    if base_ty.name in {"&", "&mut"} and base_ty.args:
+    if isinstance(base_ty, ReferenceType) and base_ty.args:
         base_ty = base_ty.args[0]
     struct_info = checked.structs.get(base_ty.name)
     if struct_info:

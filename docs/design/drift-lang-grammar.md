@@ -161,10 +161,10 @@ MapEntry     ::= Expr ":" Expr
 MatchExpr    ::= "match" Expr "{" MatchArm+ "}"
 MatchArm     ::= Pattern "=>" Expr TERMINATOR?
 Pattern      ::= Ident | Literal | "(" Pattern ("," Pattern)+ ")"
-TryCatchExpr ::= "try" Expr "catch" CatchExprArm
-CatchExprArm ::= Ident "(" Ident ")" Block
-               | Ident Block
-               | Block
+TryCatchExpr ::= "try" Expr ("catch" CatchExprArm)+
+CatchExprArm ::= Ident "(" Ident ")" Block    // event-specific
+               | Ident Block                  // catch-all with binder
+               | Block                        // catch-all
 LambdaExpr   ::= "|" LambdaParams? "|" "=>" (Expr | Block)
 LambdaParams ::= LambdaParam ("," LambdaParam)*
 

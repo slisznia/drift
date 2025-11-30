@@ -12,11 +12,8 @@ ROOT = SCRIPT_DIR.parent
 sys.path = [str(ROOT)] + [p for p in sys.path if p != str(SCRIPT_DIR)]
 
 from lang import parser, checker, mir  # type: ignore
-from lang.lower_to_mir import lower_straightline
 from lang.lower_to_mir_ssa import lower_function_ssa, LoweringError
-from lang.mir_to_llvm import lower_function
 from lang.runtime import builtin_signatures
-from lang.mir_verifier import verify_program
 from lang.mir_verifier_ssa_v2 import SSAVerifierV2
 from lang.mir_simplify_ssa import simplify_function
 from lang.ssa_codegen import emit_dummy_main_object, emit_module_object
@@ -106,12 +103,11 @@ def compile_file(
     ssa_mode: str,
     ssa_simplify: bool,
     dump_ssa: bool,
-    backend: str,
 ) -> int:
     source = source_path.read_text()
     prog = parser.parse_program(source)
     checked = checker.Checker(builtin_signatures()).check(prog)
-    if backend == "ssa-llvm":
+    if ssa_check:
         try:
             _run_ssa_check(checked, simplify=ssa_simplify, dump=dump_ssa)
         except Exception as e:
@@ -119,45 +115,31 @@ def compile_file(
                 print(f"[ssa-check] warning: {e}", file=sys.stderr)
             else:
                 raise
-        ssa_fns: list[mir.Function] = []
-        struct_layouts: dict[str, StructLayout] = {}
-        for sname, sinfo in checked.structs.items():
-            field_names = list(sinfo.field_order)
-            field_types = [sinfo.field_types[name] for name in field_names]
-            struct_layouts[sname] = StructLayout(name=sname, field_names=field_names, field_types=field_types)
-        for fn_def in checked.program.functions:
-            if fn_def.name not in checked.functions:
-                continue
-            lowered = lower_function_ssa(fn_def, checked)
-            fn_info = checked.functions[fn_def.name]
-            ssa_fn = mir.Function(
-                name=fn_def.name,
-                params=[
-                    mir.Param(name=p.name, type=fn_info.signature.params[idx]) for idx, p in enumerate(fn_def.params)
-                ],
-                return_type=fn_info.signature.return_type,
-                entry=lowered.entry,
-                module=checked.module or prog.module or "<module>",
-                source=str(source_path),
-                blocks=lowered.blocks,
-            )
-            simplified = simplify_function(ssa_fn)
-            ssa_fns.append(simplified)
-        _annotate_can_error(ssa_fns)
-        emit_module_object(ssa_fns, struct_layouts, entry="main", out_path=output_path)
-        return 0
-    else:
-        if ssa_check:
-            try:
-                _run_ssa_check(checked, simplify=ssa_simplify, dump=dump_ssa)
-            except Exception as e:
-                if ssa_mode == "warn":
-                    print(f"[ssa-check] warning: {e}", file=sys.stderr)
-                else:
-                    raise
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_bytes(b"")
-        return 0
+    ssa_fns: list[mir.Function] = []
+    struct_layouts: dict[str, StructLayout] = {}
+    for sname, sinfo in checked.structs.items():
+        field_names = list(sinfo.field_order)
+        field_types = [sinfo.field_types[name] for name in field_names]
+        struct_layouts[sname] = StructLayout(name=sname, field_names=field_names, field_types=field_types)
+    for fn_def in checked.program.functions:
+        if fn_def.name not in checked.functions:
+            continue
+        lowered = lower_function_ssa(fn_def, checked)
+        fn_info = checked.functions[fn_def.name]
+        ssa_fn = mir.Function(
+            name=fn_def.name,
+            params=[mir.Param(name=p.name, type=fn_info.signature.params[idx]) for idx, p in enumerate(fn_def.params)],
+            return_type=fn_info.signature.return_type,
+            entry=lowered.entry,
+            module=checked.module or prog.module or "<module>",
+            source=str(source_path),
+            blocks=lowered.blocks,
+        )
+        simplified = simplify_function(ssa_fn)
+        ssa_fns.append(simplified)
+    _annotate_can_error(ssa_fns)
+    emit_module_object(ssa_fns, struct_layouts, entry="main", out_path=output_path)
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -168,7 +150,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument(
         "--ssa-check",
         action="store_true",
-        help="Also run the strict SSA lowering + verifier; codegen still uses legacy MIR",
+        help="Run the strict SSA lowering + verifier before codegen",
     )
     ap.add_argument(
         "--ssa-check-mode",
@@ -180,12 +162,6 @@ def main(argv: list[str] | None = None) -> int:
         "--ssa-simplify",
         action="store_true",
         help="Run SSA simplification (const folding, dead SSA removal) before SSA verification",
-    )
-    ap.add_argument(
-        "--backend",
-        choices=["legacy", "ssa-llvm"],
-        default="legacy",
-        help="Select codegen backend (experimental ssa-llvm emits dummy main for now)",
     )
     ap.add_argument(
         "--dump-ssa",
@@ -202,7 +178,6 @@ def main(argv: list[str] | None = None) -> int:
         args.ssa_check_mode,
         args.ssa_simplify,
         args.dump_ssa,
-        args.backend,
     )
 
 

@@ -1,7 +1,0 @@
-import sys.console.out
-
-fn main() returns Void {
-	val greeting: String = "hello"
-	val target: String = "tests"
-	out.writeln(greeting + ", " + target)
-}

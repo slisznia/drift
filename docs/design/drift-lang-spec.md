@@ -1297,6 +1297,7 @@ val label = is_error ? "error" : "ok"
 val result = try parse_int(input) catch { 0 }
 val logged = try parse_int(input) catch err { log(err); 0 }
 val parsed = try parse_amount(input) catch BadFormat(e) { 0 }
+val routed = try parse(input) catch BadFormat(e) { 0 } catch { 1 }
 ```
 
 - Evaluates the attempt expression; on success, yields its value.
@@ -1305,6 +1306,9 @@ val parsed = try parse_amount(input) catch BadFormat(e) { 0 }
   - `catch { block }` — catch-all, no binder.
   - `catch e { block }` — catch-all, binder `e: Error`.
   - `catch EventName(e) { block }` — match specific event, binder `e: Error`.
+- Multiple catch arms are allowed; event arms are tested in source order, then catch-all; if no arm matches and there is no catch-all, the error is rethrown.
+- Event identity is by event name; the implementation assigns each exception a deterministic integer `event_code` for dispatch, but that encoding is an implementation detail.
+- The **attempt must be a function call** (`Name` or `Name.Attr`); non-call attempts are a compile-time error in the current revision.
 - This is sugar for a block-wrapped statement `try/catch` that returns the block’s value.
 
 **Statement form (`try/catch`):**
@@ -1320,6 +1324,7 @@ try {
 - Executes the body; on error, transfers control to the first matching catch (event match or catch-all).
 - Catch binder (if present) has type `Error`.
 - Matching is by exception/event name only; omitting the name makes the clause a catch-all. Domains/attributes are not matched (yet).
+- Multiple catches are allowed; event-specific arms are evaluated in source order, then catch-all. If no arm matches and there is no catch-all, the error is rethrown to the caller.
 - Control falls through after the try/catch unless all branches return/raise.
 
 ## 9. Reserved keywords and operators

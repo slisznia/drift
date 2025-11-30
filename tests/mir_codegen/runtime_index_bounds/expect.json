@@ -1,5 +1,0 @@
-{
-  "exit": 1,
-  "stdout": "",
-  "stderr": "{\"event\":\"IndexError\",\"domain\":\"lang.array\",\"attrs\":{\"container\":\"Array\",\"index\":\"5\"},\"frames\":[]}\n"
-}

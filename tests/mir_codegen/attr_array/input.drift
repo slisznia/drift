@@ -1,5 +1,0 @@
-exception Attrs(a: String, b: String, c: String)
-
-fn raise_with_attrs() returns Int64 {
-    throw Attrs(a = "aa", c = "cc", b = "bb")
-}

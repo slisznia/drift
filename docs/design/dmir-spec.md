@@ -85,6 +85,7 @@ See also: `docs/design-first-afm-then-ssa.md` for the design path that led to th
 - `call <fn>(args) normal bbN(args) error bbE(err)` — direct call with explicit normal and error successors; builtins/constructors follow the same shape.
 - `struct_init <Type>(args)` — positional args in field order.
 - `field_get <base>.<field>` — read-only access to struct field.
+- `error_event <err>` — project the thrown error’s event/code for dispatch (lowered to a runtime helper such as `drift_error_get_code`).
 - `array_init [v0, v1, ...]` — arrays are values; element type is concrete.
 - `array_get base, index` — includes bounds check that raises `Error` on OOB.
 - `array_set base, index, value` — bounds check then write; only on mutable arrays.
@@ -115,6 +116,7 @@ See also: `docs/design-first-afm-then-ssa.md` for the design path that led to th
 - Call convention with errors: functions that can raise return a pair `{ T, Error* }`, where `Error* == null` means success. For functions whose result type is `Error`, the return is just `Error*`.
 - Calls with error edges: MIR calls carry `normal`/`error` edges. Codegen splits the pair and branches on `err == null` to the normal successor (passing `T`) or the error successor (passing `Error*`). Callers propagate the `Error*` on the error edge without freeing; the handler frees it.
 - `raise` lowers to returning `{ undef<T>, err_ptr }` along the error path (or `err_ptr` if the function’s return type is `Error`). There is no unwinding; propagation is explicit via error edges.
+- `error_event(err)` projects an error’s event/code (an `Int`) for dispatch; try/catch lowering uses it to branch to the matching catch clauses in source order, falling back to catch-all, else rethrow.
 - Top-level handlers (e.g., runtime entry) are responsible for displaying/freeing uncaught errors.
 
 ### Error object layout (C ABI; user code sees an opaque handle)
@@ -150,16 +152,17 @@ let _t3 = b()
 let x = if _t1 { _t2 } else { _t3 }
 ```
 
-Surface try/else:
+Surface try/catch with catch-all:
 ```drift
 val fallback = try parse(input) catch { default_value }
 ```
 DMIR:
 ```
-let _t1 = parse(input) try_else default_value
-let fallback = _t1
+let _t1 = parse(input)      // call with error edge to fallback
+let fallback = _t1          // normal edge
+// error edge branches to fallback block that evaluates default_value
 ```
-(`try_else` desugars to the structured try/catch form with a catch-all that yields `default_value`.)
+(`try/catch` desugars to a call with explicit normal/error edges and a catch-all fallback block.)
 
 Surface struct/exception constructors:
 ```drift
@@ -279,7 +282,7 @@ bb_join(val) -> return val
 bb_err(err) -> raise err
 ```
 
-### Example 2: try/else with struct init and error edge
+### Example 2: try/catch with struct init and error edge
 Surface:
 ```drift
 exception Invalid(kind: String)
@@ -292,8 +295,11 @@ fn make(cond: Bool) returns Point {
 ```
 DMIR:
 ```
-let _t1 = build(cond) try_else Point(0, 0)
-let p = _t1
+// call build with explicit normal/error edges
+// normal edge:
+let p = call build(cond)
+// error edge:
+let p = Point(0, 0)
 return p
 ```
 SSA MIR:
@@ -308,11 +314,11 @@ bb_ok(val: Point):
   return val
 
 bb_err(err: Error):
-  // try-else fallback
+  // try/catch fallback
   v_fallback = Point(0, 0)
   return v_fallback
 ```
-(The inline try/else becomes a call with an error edge into a fallback block; struct init is positional; no drops shown here—those are inserted after liveness.)
+(The inline try/catch becomes a call with an error edge into a catch block; struct init is positional; no drops shown here—those are inserted after liveness.)
 
 CFG (block notation):
 ```

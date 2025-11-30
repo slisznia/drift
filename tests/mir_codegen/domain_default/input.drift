@@ -1,5 +1,0 @@
-exception NetError(msg: String, domain = "net")
-
-fn drift_entry() returns Int64 {
-    throw NetError(msg = "down")
-}

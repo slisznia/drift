@@ -1,0 +1,30 @@
+import std.console.out
+
+exception MyEventA(msg: String)
+exception MyEventB(msg: String)
+
+fn throw_b() returns Int {
+  // Event code 2 (second exception) will not match the first catch arm.
+  throw drift_error_new_dummy(2)
+}
+
+fn do_inner() returns Int {
+  try {
+    throw_b()
+  } catch MyEventA(e) {
+    out.writeln("inner-match")
+    return 10
+  }
+  // No catch-all: error rethrows to caller if not MyEventA.
+  return 1
+}
+
+fn main() returns Int {
+  try {
+    do_inner()
+  } catch err {
+    out.writeln("outer")
+    return 5
+  }
+  return 0
+}

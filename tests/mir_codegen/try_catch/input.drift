@@ -1,9 +1,0 @@
-exception Oops(msg: String)
-
-fn run() returns Int64 {
-    try {
-        throw Oops(msg = "bad")
-    } catch Oops(err) {
-        return 7
-    }
-}

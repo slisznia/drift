@@ -1,4 +1,0 @@
-fn add(a: Int64, b: Int64) -> Int64 { entry = bb0 }
-bb0(a: Int64, b: Int64):
-  _t1 = a + b
-  return _t1

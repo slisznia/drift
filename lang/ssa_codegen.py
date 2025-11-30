@@ -9,7 +9,7 @@ from llvmlite import ir, binding as llvm  # type: ignore
 
 from . import mir
 from .ir_layout import StructLayout
-from .types import BOOL, ERROR, I64, INT, STR, UNIT, Type, array_element_type, array_of
+from .types import BOOL, ERROR, I64, INT, STR, UNIT, Type, ReferenceType, array_element_type, array_of
 
 # Architecture word size: target x86_64 for now.
 WORD_BITS = 64
@@ -140,6 +140,8 @@ def emit_module_object(
         try:
             return _llvm_type(ty)
         except NotImplementedError:
+            if isinstance(ty, ReferenceType):
+                return _llvm_type_with_structs(ty.args[0]).as_pointer()
             if ty.name in struct_layouts:
                 return llvm_struct_type(ty.name)
             elem_ty = array_element_type(ty)
@@ -183,6 +185,24 @@ def emit_module_object(
         entry_block = blocks_map[(f.name, f.entry)]
         entry_builder = ir.IRBuilder(entry_block)
         entry_builder.position_at_start(entry_block)
+
+        # Pre-allocate struct slots for any struct init/call dests to ensure allocas live in entry.
+        prealloc_builder = ir.IRBuilder(entry_block)
+        prealloc_builder.position_at_start(entry_block)
+        for blk in f.blocks.values():
+            for instr in blk.instructions:
+                struct_name: Optional[str] = None
+                if isinstance(instr, mir.StructInit):
+                    struct_name = instr.type.name
+                    dest_name = instr.dest
+                elif isinstance(instr, mir.Call) and not (instr.normal or instr.error) and instr.callee in struct_layouts:
+                    struct_name = instr.callee
+                    dest_name = instr.dest
+                if struct_name and dest_name not in struct_slots:
+                    prealloc_builder.position_at_start(entry_block)
+                    struct_slots[dest_name] = prealloc_builder.alloca(
+                        _llvm_type_with_structs(Type(struct_name)), name=f"{dest_name}.slot"
+                    )
 
         # Map function params.
         for param, llvm_param in zip(f.params, llvm_fn.args):
@@ -303,6 +323,23 @@ def emit_module_object(
                         if not isinstance(_llvm_type(instr.ret_type), ir.VoidType):
                             # map dest to undef to keep SSA map consistent
                             values[instr.dest] = ir.Constant.undef(_llvm_type(instr.ret_type))
+                    elif instr.callee in struct_layouts:
+                        layout = struct_layouts[instr.callee]
+                        if instr.args and len(instr.args) != len(layout.field_names):
+                            raise RuntimeError(f"struct ctor {instr.callee} arity mismatch")
+                        # Allocate slot if needed.
+                        if instr.dest not in struct_slots:
+                            eb = ir.IRBuilder(entry_block)
+                            eb.position_at_start(entry_block)
+                            struct_slots[instr.dest] = eb.alloca(
+                                _llvm_type_with_structs(Type(instr.callee)), name=f"{instr.dest}.slot"
+                            )
+                        slot = struct_slots[instr.dest]
+                        for idx, arg in enumerate(instr.args):
+                            field_ptr = builder.gep(slot, [I32_TY(0), I32_TY(idx)], inbounds=True)
+                            builder.store(values[arg], field_ptr)
+                        values[instr.dest] = slot
+                        ssa_types[instr.dest] = Type(instr.callee)
                     else:
                         callee = fn_map.get(instr.callee)
                         if callee is None:
@@ -327,7 +364,9 @@ def emit_module_object(
                     if instr.type.name not in struct_layouts:
                         raise RuntimeError(f"unknown struct type {instr.type}")
                     if instr.dest not in struct_slots:
-                        slot = entry_builder.alloca(_llvm_type_with_structs(instr.type), name=f"{instr.dest}.slot")
+                        eb = ir.IRBuilder(entry_block)
+                        eb.position_at_start(entry_block)
+                        slot = eb.alloca(_llvm_type_with_structs(instr.type), name=f"{instr.dest}.slot")
                         struct_slots[instr.dest] = slot
                     slot = struct_slots[instr.dest]
                     for idx, arg in enumerate(instr.args):
@@ -336,34 +375,36 @@ def emit_module_object(
                     values[instr.dest] = slot
                     ssa_types[instr.dest] = instr.type
                 elif isinstance(instr, mir.FieldSet):
-                    base_slot = struct_slots.get(instr.base)
-                    if base_slot is None:
-                        base_slot = values.get(instr.base)
-                    if base_slot is None:
-                        raise RuntimeError(f"no struct slot for {instr.base}")
                     base_ty = ssa_types.get(instr.base)
-                    if base_ty is None or base_ty.name not in struct_layouts:
+                    inner_ty = base_ty.args[0] if isinstance(base_ty, ReferenceType) else base_ty
+                    if inner_ty is None or inner_ty.name not in struct_layouts:
                         raise RuntimeError(f"base {instr.base} is not a struct for field set")
-                    layout = struct_layouts[base_ty.name]
+                    layout = struct_layouts[inner_ty.name]
                     if instr.field not in layout.index_by_name:
-                        raise RuntimeError(f"struct {base_ty.name} has no field {instr.field}")
+                        raise RuntimeError(f"struct {inner_ty.name} has no field {instr.field}")
+                    base_ptr = values.get(instr.base) if isinstance(base_ty, ReferenceType) else struct_slots.get(instr.base)
+                    if base_ptr is None:
+                        base_ptr = values.get(instr.base)
+                    if base_ptr is None:
+                        raise RuntimeError(f"no struct slot for {instr.base}")
                     idx = layout.index_by_name[instr.field]
-                    field_ptr = builder.gep(base_slot, [I32_TY(0), I32_TY(idx)], inbounds=True)
+                    field_ptr = builder.gep(base_ptr, [I32_TY(0), I32_TY(idx)], inbounds=True)
                     builder.store(values[instr.value], field_ptr)
                 elif isinstance(instr, mir.FieldGet):
-                    base_slot = struct_slots.get(instr.base)
-                    if base_slot is None:
-                        base_slot = values.get(instr.base)
-                    if base_slot is None:
-                        raise RuntimeError(f"no struct slot for {instr.base}")
                     base_ty = ssa_types.get(instr.base)
-                    if base_ty is None or base_ty.name not in struct_layouts:
+                    inner_ty = base_ty.args[0] if isinstance(base_ty, ReferenceType) else base_ty
+                    if inner_ty is None or inner_ty.name not in struct_layouts:
                         raise RuntimeError(f"base {instr.base} is not a struct for field get")
-                    layout = struct_layouts[base_ty.name]
+                    layout = struct_layouts[inner_ty.name]
                     if instr.field not in layout.index_by_name:
-                        raise RuntimeError(f"struct {base_ty.name} has no field {instr.field}")
+                        raise RuntimeError(f"struct {inner_ty.name} has no field {instr.field}")
+                    base_ptr = values.get(instr.base) if isinstance(base_ty, ReferenceType) else struct_slots.get(instr.base)
+                    if base_ptr is None:
+                        base_ptr = values.get(instr.base)
+                    if base_ptr is None:
+                        raise RuntimeError(f"no struct slot for {instr.base}")
                     idx = layout.index_by_name[instr.field]
-                    field_ptr = builder.gep(base_slot, [I32_TY(0), I32_TY(idx)], inbounds=True)
+                    field_ptr = builder.gep(base_ptr, [I32_TY(0), I32_TY(idx)], inbounds=True)
                     loaded = builder.load(field_ptr, name=instr.dest)
                     values[instr.dest] = loaded
                     ssa_types[instr.dest] = layout.field_types[idx]

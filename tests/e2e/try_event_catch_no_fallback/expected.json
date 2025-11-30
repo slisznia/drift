@@ -1,8 +1,8 @@
 {
   "mode": "run",
   "compile_error": null,
-  "exit_code": 42,
-  "stdout": "",
+  "exit_code": 5,
+  "stdout": "outer\n",
   "stderr": "",
   "args": [],
   "env": {}

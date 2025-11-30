@@ -1,5 +1,0 @@
-{
-  "exit": 1,
-  "stdout": "",
-  "stderr": "{\"event\":\"Oops\",\"domain\":\"main\",\"attrs\":{\"msg\":\"bad\"},\"frames\":[{\"module\":\"main\",\"file\":\"input.drift\",\"func\":\"maybe_fail\",\"line\":5,\"captured\":{}}]}\n"
-}

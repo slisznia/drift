@@ -3,9 +3,6 @@ set shell := ["bash", "-lc"]
 test: test-ssa test-e2e
 	@echo "Success."
 
-legacy-test: parse-all
-	./.venv/bin/python3 tests/run_tests.py
-
 test-e2e:
 	./.venv/bin/python3 tests/e2e_runner.py
 
@@ -15,7 +12,7 @@ test-ssa:
 	./.venv/bin/python3 tests/ssa_programs_test.py
 
 test-e2e-ssa-subset:
-	PYTHONPATH=. ./.venv/bin/python3 tests/e2e_runner.py --backend=ssa-llvm hello throw_try try_catch try_call_error try_event_catch_stmt try_event_catch_expr
+	PYTHONPATH=. ./.venv/bin/python3 tests/e2e_runner.py hello throw_try try_catch try_call_error try_event_catch_stmt try_event_catch_expr try_event_catch_no_fallback array_string for_array console_hello ref_struct_mutation
 
 parse-all: parse-playground parse-examples
 	@echo "Parsing successful."
@@ -29,19 +26,6 @@ parse-playground:
 parse-examples:
 	./.venv/bin/python3 tools/draft_linter.py examples
 	./.venv/bin/python3 tools/parse_playground.py examples
-
-test-codegen:
-	./.venv/bin/python3 tools/test-llvm/test_codegen.py tools/test-llvm/out/add.o
-	clang-15 -c tools/test-llvm/main.c -o tools/test-llvm/out/main.o
-	clang-15 tools/test-llvm/out/main.o tools/test-llvm/out/add.o -o tools/test-llvm/out/add_test
-	./tools/test-llvm/out/add_test
-
-mir-codegen:
-	mkdir -p tests/mir_lowering/out
-	PYTHONPATH=./ ./.venv/bin/python3 -m lang.driftc tests/mir_lowering/add.drift -o tests/mir_lowering/out/add.o --emit-ir
-	clang-15 -c tests/mir_lowering/main.c -o tests/mir_lowering/out/main.o
-	clang-15 tests/mir_lowering/out/main.o tests/mir_lowering/add.o -o tests/mir_lowering/out/add_mir_test
-	./tests/mir_lowering/out/add_mir_test
 
 stage-for-review:
 	rm -rf staged

@@ -173,28 +173,22 @@ Remaining work:
 
 *(beyond direct calls)*
 
-### Goals
+### Current decision
 
-* Potentially allow richer forms of attempts, not only direct call shapes, while keeping semantics aligned with the interpreter.
+For now we adopt **Option A (safe & narrow)**:
 
-### Strategy (to be decided after Phase 1)
+* Expression try/catch only supports call-like attempts (`foo()`, `obj.method()` via `Name` / `Name.Attr`).
+* Non-call attempts (e.g., `try x + y catch`) are a compile-time error; `try_event_catch_expr_noncall` enforces this.
 
-1. **Option A (safe & narrow)**  
-   * Continue to support only call-like constructs (`foo()`, `obj.method()`) as attempts.  
-   * Document this explicitly in the language spec as a current limitation.
+Option B (full generalization via a dedicated try-body block) remains a future enhancement and is not planned for this phase.
 
-2. **Option B (full)**  
-   * Introduce a dedicated SSA “try body” block that runs the entire attempt expression and surfaces errors via a single call-with-edges or throw.
-   * More work, more power, but higher complexity.
+### Goals (deferred)
 
-### Required steps
-
-* Decide between Option A vs B.
-* If broadening beyond calls:
+* If/when broadening beyond calls:
   * Update `_lower_try_catch_expr` to build a dedicated try-body region.
   * Ensure that any throw in that region correctly routes to the catch arm.
-* Add negative tests for illegal attempt forms.
-* Update the language spec to reflect supported attempts.
+  * Add negative tests for illegal attempt forms.
+  * Update the language spec to reflect supported attempts.
 
 ---
 
@@ -204,7 +198,7 @@ Remaining work:
 
 ### Goals
 
-* Run a subset of e2e programs through the SSA backend only.
+* Run all e2e programs through the SSA backend only.
 * Validate end-to-end behavior for:
   * try/catch
   * throw
@@ -213,31 +207,55 @@ Remaining work:
 
 ### Required steps
 
-1. Identify a seed set of test programs (e.g., `throw_try`, `try_catch`, `try_multi_catch`, `array_string`).
-2. Use `tests/e2e_runner.py` with `--backend=ssa-llvm` and a Just target like `test-e2e-ssa-subset` to:
-   * Lower via strict SSA.
-   * Emit an object/binary via `ssa_codegen`.
-   * Run the binary and compare output/exit code with `expected.json`.
-3. Fix any backend/SSA discrepancies found.
-4. Gradually expand coverage until SSA is trusted as the main codegen path.
+1. Run e2e programs through the SSA backend only.
+2. Fix any backend/SSA discrepancies found.
+3. Expand coverage until SSA is trusted as the main codegen path.
 
 ### Progress
 
-* `tests/e2e_runner.py` accepts `--backend` and case filters. :contentReference[oaicite:1]{index=1}  
-* Justfile includes `test-e2e-ssa-subset` that runs `hello`, `throw_try`, `try_catch`, `try_call_error`, `try_event_catch_stmt`, `try_event_catch_expr` via SSA backend.
+* `tests/e2e_runner.py` always uses the SSA backend; legacy backend removed.  
+* Justfile includes `test-e2e-ssa-subset` that runs via SSA backend:
+  - `hello`
+  - `throw_try`
+  - `try_catch`
+  - `try_call_error`
+  - `try_event_catch_stmt`
+  - `try_event_catch_expr`
+  - `try_event_catch_no_fallback`
+  - `array_string`
+  - `for_array`
+  - `console_hello`
+  - `ref_struct_mutation`
 * Added `ErrorEvent` projection wired to `drift_error_get_code` and a dedicated SSA test to ensure it codegens end-to-end.
 
 ---
+
+## Reference Semantics (SSA)
+
+### Goals
+
+* Fully support `&` / `&mut` in SSA lowering and backend.
+* Use `ReferenceType` consistently in SSA types.
+* FieldGet/FieldSet operate correctly through references.
+* Passing references across calls works; verified end-to-end.
+
+### Status
+
+* `ReferenceType` integrated into SSA lowering for borrows.
+* SSA codegen maps references to pointers to the underlying type.
+* FieldGet/FieldSet unwrap references and operate on struct layouts.
+* E2E `ref_struct_mutation` proves mutation through `&mut` across a call (prints exit 42).
 
 # 5. Final Cleanup Targets
 
 These are reserved for after the 3 phases are complete.
 
-* Remove duplicate try-lowering logic in `lower_to_mir.py`.
-* Update all spec examples to remove `try_else` remnants and align with the new SSA shape.
+* Remove duplicate try-lowering logic in `lower_to_mir.py`. ✅ done — legacy MIR lowering no longer carries try/else scaffolding and does not attempt to model full event-dispatch semantics (SSA is the source of truth).
+* Update all spec examples to remove `try_else` remnants and align with the new SSA shape. ✅ done — grammar + error-handling/DMIR sections now describe multi-arm stmt/expr try/catch with event dispatch; no `try_else` remains.
 * Consider a general “error dispatch” MIR op if we want multi-catch dispatch to be first-class.
 * Audit lifetime and scope rules for catch binders (both stmt and expr forms).
-* Ensure DMIR → SSA lowering path is unified, not forked.
+* Ensure DMIR → SSA lowering path is unified, not forked. ◔ SSA path is authoritative; legacy MIR lowering is documented as minimal/legacy only.
+* Reference semantics in SSA: ✔ `ReferenceType` throughout lowering/codegen, FieldGet/Set unwrap refs, refs passed as pointers, e2e `ref_struct_mutation` proves mutation across calls.
 
 ---
 
@@ -257,6 +275,8 @@ These are reserved for after the 3 phases are complete.
 | Phase 1b: Event-based dispatch     | ✓ stmt+expr done (expr call-only)                   |
 | Multi-catch                        | ✓ stmt/expr multi-catch with event dispatch         |
 | Event-matching                     | ✓ stmt/expr via event codes                         |
-| Full attempt generalization        | ✗ Phase 2                                           |
-| SSA-driven e2e                     | ◔ subset wired (`hello`, `throw_try`)               |
-| Cleanup (docs, duplicate lowering) | pending                                             |
+| Full attempt generalization        | ✗ deferred (expr remains call-only for now)         |
+| SSA-driven e2e                     | ✓ default; legacy backend removed                   |
+| Legacy backend/tests               | ✓ removed (SSA-only pipeline)                       |
+| & / &mut ref semantics             | ✓ fully supported in SSA backend                    |
+| Cleanup (docs, duplicate lowering) | ◔ code + examples aligned; DMIR→SSA unification long-term |

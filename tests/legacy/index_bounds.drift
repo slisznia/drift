@@ -1,4 +1,0 @@
-fn main() returns Void {
-	val nums = [1, 2, 3]
-	val oob = nums[5]
-}
