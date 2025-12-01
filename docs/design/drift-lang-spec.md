@@ -790,6 +790,10 @@ require T is (Debuggable or Displayable)
 require T is Clonable and not Destructible
 ```
 
+#### 5.13.7. Diagnostic formatting for exceptions (forward-looking)
+
+Exception arguments and `^`-captured locals rely on a diagnostic formatting trait. Today this role is served by the same string-formatting traits used elsewhere, but the intent is to converge on a dedicated diagnostic trait that can produce stable, structured diagnostics without forcing user-facing text. Chapters 14.3 and 14.4 refer to this diagnostic requirement instead of inlining a specific trait definition.
+
 ---
 
 ### 5.14. Thread-safety marker traits (`Send`, `Sync`)
@@ -1835,7 +1839,7 @@ The same pattern applies to alternative map implementations.
 ## 14. Exceptions and error context
 
 Drift provides structured exception handling through a single `Error` type, **exception events**, and the `^` capture modifier.  
-Exception declarations create constructor names in the value namespace. `throw ExcName(field = expr, ...)` is valid syntax: fields must match the declared names/types, produce an `Error` value with the exception’s deterministic `event_code`, and integrate with the existing `try/catch` event dispatch. Today, fields are type-checked and the first `String` payload is threaded into the runtime `Error` struct; additional fields are reserved for a future payload layout.
+Exception declarations create constructor names in the value namespace. `throw ExcName(field = expr, ...)` is valid syntax: fields must match the declared names/types, produce an `Error` value with the exception’s deterministic `event_code`, and integrate with the existing `try/catch` event dispatch. Every exception argument is recorded in `Error.args` as a diagnostic string, and any `^`-captured locals are recorded in `ctx_frames` the same way; both are diagnostics, not user-facing payloads.
 Exceptions are **not** UI messages: they carry machine-friendly context (event name, arguments, captured locals, stack) that can be logged, inspected, or transmitted without embedding human prose.
 
 ### 14.1. Goals
@@ -1867,7 +1871,7 @@ exception IndexError(container: String, index: Int64)
 Event name of the exception (`"BadArgument"`).
 
 #### 14.2.2. args
-Only event arguments, stringified via `Display.to_string()`.
+All exception arguments, normalized into diagnostic strings via the language’s diagnostic formatting trait (see §5.13.7).
 
 #### 14.2.3. ctx_frames
 Per-frame captured locals:
@@ -1894,7 +1898,7 @@ exception InvalidOrder(order_id: Int64, code: String)
 exception Timeout(operation: String, millis: Int64)
 ```
 
-Each parameter type must implement `Display`.
+Each parameter type must implement the diagnostic formatting trait used for exceptions (see §5.13.7).
 
 #### 14.3.2. Throwing
 ```drift
@@ -1903,18 +1907,12 @@ throw InvalidOrder(order_id = order.id, code = "order.invalid")
 
 Runtime builds an `Error` with:
 - event name
-- args (stringified)
+- args (each declared field formatted via the diagnostic trait into `Map<String, String>`)
 - empty ctx_frames (filled during unwind)
 - backtrace
 
-#### 14.3.3. Display requirement
-Each exception argument type must implement:
-
-```drift
-trait Display {
-    fn to_string(self) returns String
-}
-```
+#### 14.3.3. Diagnostic formatting requirement
+Each exception argument type must satisfy the diagnostic formatting requirement described in §5.13.7 so the runtime can capture a string form for `Error.args`.
 
 ---
 
@@ -1937,7 +1935,7 @@ A frame is added when unwinding past the function:
 
 Rules:
 - Only `^`-annotated locals captured.
-- Values must implement `Display`.
+- Values must implement the same diagnostic formatting trait used for exception arguments (see §5.13.7).
 - Capture happens once per frame.
 
 ---
