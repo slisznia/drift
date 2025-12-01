@@ -19,6 +19,8 @@ The goal is to move from ad-hoc/index-based exception codes to ABI-stable 64-bit
 - [ ] Decide on an ABI version tag that “includes exception-code v1” (if you want a formal ABI version bump).
 - [ ] Document “mixing modules compiled under different exception-code schemes is forbidden”.
 - [x] ABI note on xxHash64 implementation/seed added in code.
+- [x] `drift-abi-exceptions.md` documents bit layout (kind[63:60], payload[59:0]) and current kind assignments (TEST/USER/BUILTIN).
+- [x] ABI note on xxHash64 implementation/seed added in code.
 - [x] ABI note on xxHash64 implementation/seed added in code.
 - [x] ABI note on xxHash64 implementation/seed added in code.
 
@@ -85,6 +87,10 @@ The goal is to move from ad-hoc/index-based exception codes to ABI-stable 64-bit
 
   * [ ] Two distinct exceptions in one module intentionally forced to collide (e.g., stubbed hash for testing).
   * [ ] Check error text is stable and reasonably user-friendly.
+
+### 0.4a Compiler metadata for linkers
+
+* [ ] Export `ExceptionMeta` (fqn, kind, payload60, event_code) in module metadata for future DMP/link collision checks.
 
 ### 0.5 Linker / DMP packer: global collision checks
 
