@@ -24,6 +24,7 @@ from .types import (
     ref_of,
     resolve_type,
 )
+from .xxhash64 import hash64
 
 RESERVED_IDENTIFIERS = frozenset(
     {
@@ -184,10 +185,12 @@ class Checker:
         }
         self.struct_infos: Dict[str, StructInfo] = {}
         self.exception_infos: Dict[str, ExceptionInfo] = {}
+        self.module_name: str = ""
 
     def check(self, program: ast.Program) -> CheckedProgram:
         if program.module:
             self._validate_module_name(program.module)
+        self.module_name = program.module or ""
         self._register_exceptions(program.exceptions)
         self._register_structs(program.structs)
         self._register_functions(program.functions)
@@ -225,7 +228,8 @@ class Checker:
             raise CheckError(f"0:0: module name '{name}' uses a reserved prefix {reserved_prefixes}")
 
     def _register_exceptions(self, exceptions: List[ast.ExceptionDef]) -> None:
-        for idx, exc in enumerate(exceptions):
+        payload_seen: Dict[int, str] = {}
+        for exc in exceptions:
             if exc.name in RESERVED_IDENTIFIERS:
                 raise CheckError(f"{exc.loc.line}:{exc.loc.column}: '{exc.name}' is a reserved keyword")
             if exc.name in self.exception_infos:
@@ -241,12 +245,21 @@ class Checker:
                     raise CheckError(f"{exc.loc.line}:{exc.loc.column}: duplicate arg '{arg.name}'")
                 arg_order.append(arg.name)
                 arg_types[arg.name] = ty
+            fqn = f"{self.module_name}:{exc.name}"
+            payload60 = hash64(fqn.encode("utf-8")) & ((1 << 60) - 1)
+            if payload60 in payload_seen and payload_seen[payload60] != exc.name:
+                raise CheckError(
+                    f"{exc.loc.line}:{exc.loc.column}: exception code collision in module '{self.module_name}' "
+                    f"between '{payload_seen[payload60]}' and '{exc.name}'"
+                )
+            payload_seen[payload60] = exc.name
+            event_code = (0b0001 << 60) | payload60
             self.exception_infos[exc.name] = ExceptionInfo(
                 name=exc.name,
                 arg_order=arg_order,
                 arg_types=arg_types,
                 domain=exc.domain,
-                event_code=idx + 1,  # deterministic code for event dispatch
+                event_code=event_code,
             )
 
     def _register_functions(self, functions: List[ast.FunctionDef]) -> None:
