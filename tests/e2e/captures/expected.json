@@ -1,4 +1,4 @@
 {
   "mode": "compile",
-  "compile_error": "exception constructor lowering not implemented"
+  "compile_error": "used before definition"
 }

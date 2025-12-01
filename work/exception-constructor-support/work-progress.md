@@ -185,8 +185,8 @@ Because lowering will produce real event_codes and Error payload, the existing t
 | Area                             | Status                |
 | -------------------------------- | --------------------- |
 | Exception decl in checker        | ✓ registered with event codes |
-| Exception constructor resolution | ◔ checker builds ExceptionCtor; lowering pending |
-| Exception constructor lowering   | ✗                     |
+| Exception constructor resolution | ✓ checker builds ExceptionCtor nodes |
+| Exception constructor lowering   | ◔ SSA calls `drift_error_new_dummy` (fields ignored for now) |
 | Runtime support for constructors | ✗ (dummy only)        |
 | SSA dispatch compatibility       | pending Phase 4       |
 | e2e coverage                     | pending (compile-error tracker added) |

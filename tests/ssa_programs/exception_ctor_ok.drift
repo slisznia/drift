@@ -1,10 +1,5 @@
 exception E(a: Int)
 
-fn f() returns Void {
-  throw E(a = 1)
-}
-
 fn main() returns Int {
-  f()
-  return 0
+  throw E(a = 1)
 }

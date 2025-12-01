@@ -385,7 +385,28 @@ def lower_expr_to_ssa(
     control-flow split (e.g., try/else lowering).
     """
     if isinstance(expr, ast.ExceptionCtor):
-        raise LoweringError("exception constructor lowering not implemented yet")
+        # Materialize event code.
+        code_ssa = env.fresh_ssa("exc_code", INT)
+        current.instructions.append(
+            mir.Const(dest=code_ssa, type=INT, value=expr.event_code, loc=getattr(expr, "loc", None))
+        )
+        env.ctx.ssa_types[code_ssa] = INT
+        # TODO: lower expr.fields payloads once runtime supports them.
+        dest_err = env.fresh_ssa("exc", ERROR)
+        current.instructions.append(
+            mir.Call(
+                dest=dest_err,
+                callee="drift_error_new_dummy",
+                args=[code_ssa],
+                ret_type=ERROR,
+                err_dest=None,
+                normal=None,
+                error=None,
+                loc=getattr(expr, "loc", None),
+            )
+        )
+        env.ctx.ssa_types[dest_err] = ERROR
+        return dest_err, ERROR, current, env
     # Names
     if isinstance(expr, ast.Name):
         ssa = env.lookup_user(expr.ident)
