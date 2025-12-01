@@ -400,13 +400,13 @@ def emit_module_object(
                     base_ty = ssa_types.get(instr.base)
                     if base_ty == ERROR:
                         base_ptr = values[instr.base]
-                        err_ty = ir.LiteralStructType([WORD_INT, _drift_string_type()])
+                        err_ty = ir.LiteralStructType([ir.IntType(64), _drift_string_type()])
                         cast_ptr = builder.bitcast(base_ptr, err_ty.as_pointer())
                         if instr.field == "code":
                             field_ptr = builder.gep(cast_ptr, [I32_TY(0), I32_TY(0)], inbounds=True)
                             loaded = builder.load(field_ptr, name=instr.dest)
                             values[instr.dest] = loaded
-                            ssa_types[instr.dest] = INT
+                            ssa_types[instr.dest] = I64
                             continue
                         if instr.field == "payload":
                             field_ptr = builder.gep(cast_ptr, [I32_TY(0), I32_TY(1)], inbounds=True)
@@ -500,10 +500,12 @@ def emit_module_object(
                     err_val = values[instr.error]
                     err_evt_fn = module.globals.get("drift_error_get_code")
                     if not isinstance(err_evt_fn, ir.Function):
-                        err_evt_fn = ir.Function(module, ir.FunctionType(WORD_INT, [ERROR_PTR_TY]), name="drift_error_get_code")
+                        err_evt_fn = ir.Function(
+                            module, ir.FunctionType(ir.IntType(64), [ERROR_PTR_TY]), name="drift_error_get_code"
+                        )
                     call_val = builder.call(err_evt_fn, [err_val], name=instr.dest)
                     values[instr.dest] = call_val
-                    ssa_types[instr.dest] = INT
+                    ssa_types[instr.dest] = I64
                 else:
                     raise RuntimeError(f"unsupported instruction {instr}")
 

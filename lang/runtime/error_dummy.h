@@ -4,6 +4,9 @@
 #include <stdint.h>
 #include "string_runtime.h"
 
+#define DRIFT_EVENT_KIND_TEST 0
+#define DRIFT_EVENT_PAYLOAD_MASK ((1ULL << 60) - 1)
+
 struct DriftError {
     int64_t code;               // matches Drift Int (word-sized)
     struct DriftString payload; // first payload field (if provided)

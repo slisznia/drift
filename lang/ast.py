@@ -202,9 +202,9 @@ class ImportStmt(Stmt):
 @dataclass
 class CatchClause:
     event: Optional[str]
-    event_code: Optional[int] = None
     binder: Optional[str]
     block: Block
+    event_code: Optional[int] = None
 
 
 @dataclass

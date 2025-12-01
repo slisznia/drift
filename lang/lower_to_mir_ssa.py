@@ -386,10 +386,10 @@ def lower_expr_to_ssa(
     """
     if isinstance(expr, ast.ExceptionCtor):
         # Materialize event code.
-        code_ssa = env.fresh_ssa("exc_code", INT)
+        code_ssa = env.fresh_ssa("exc_code", I64)
         loc = getattr(expr, "loc", None)
-        current.instructions.append(mir.Const(dest=code_ssa, type=INT, value=expr.event_code, loc=loc))
-        env.ctx.ssa_types[code_ssa] = INT
+        current.instructions.append(mir.Const(dest=code_ssa, type=I64, value=expr.event_code, loc=loc))
+        env.ctx.ssa_types[code_ssa] = I64
         # Thread first payload field if present; otherwise use empty string literal.
         payload_ssa: Optional[str] = None
         if expr.fields:
@@ -584,7 +584,7 @@ def _lookup_field_type(base_ty: Type, field: str, checked: CheckedProgram) -> Ty
         base_ty = base_ty.args[0]
     if base_ty == ERROR:
         if field == "code":
-            return INT
+            return I64
         if field == "payload":
             return STR
         raise LoweringError(f"Error has no field '{field}'")
@@ -603,9 +603,9 @@ def _lookup_field_type(base_ty: Type, field: str, checked: CheckedProgram) -> Ty
 
 def _ssa_read_error_event(err_ssa: str, env: SSAEnv, current: mir.BasicBlock) -> tuple[str, mir.BasicBlock]:
     """Emit MIR to read the error event/code into an SSA name."""
-    dest = env.fresh_ssa("err_event", INT)
+    dest = env.fresh_ssa("err_event", I64)
     current.instructions.append(mir.ErrorEvent(dest=dest, error=err_ssa))
-    env.ctx.ssa_types[dest] = INT
+    env.ctx.ssa_types[dest] = I64
     return dest, current
 
 
@@ -847,9 +847,9 @@ def lower_try_stmt(
     for idx, (event_code_val, clause, catch_name) in enumerate(event_catches):
         cmp_dest = env.fresh_ssa(f"err_evt_cmp{idx}", BOOL)
         env.ctx.ssa_types[cmp_dest] = BOOL
-        const_name = env.fresh_ssa(f"err_evt_const{idx}", INT)
-        cursor_block.instructions.append(mir.Const(dest=const_name, type=INT, value=event_code_val))
-        env.ctx.ssa_types[const_name] = INT
+        const_name = env.fresh_ssa(f"err_evt_const{idx}", I64)
+        cursor_block.instructions.append(mir.Const(dest=const_name, type=I64, value=event_code_val))
+        env.ctx.ssa_types[const_name] = I64
         cursor_block.instructions.append(
             mir.Binary(dest=cmp_dest, op="==", left=event_code, right=const_name, loc=stmt.loc)
         )

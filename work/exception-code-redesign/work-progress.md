@@ -20,6 +20,7 @@ The goal is to move from ad-hoc/index-based exception codes to ABI-stable 64-bit
 - [ ] Document “mixing modules compiled under different exception-code schemes is forbidden”.
 - [x] ABI note on xxHash64 implementation/seed added in code.
 - [x] ABI note on xxHash64 implementation/seed added in code.
+- [x] ABI note on xxHash64 implementation/seed added in code.
 
 ### 0.2 Runtime representation (Error struct & helpers)
 
@@ -63,7 +64,7 @@ The goal is to move from ad-hoc/index-based exception codes to ABI-stable 64-bit
   * [x] Build FQN.
   * [x] Compute 60-bit payload via `hash60`.
   * [x] Build full `event_code` with kind = `USER`.
-  * [x] Attach event_code to the exception symbol in the compiler’s symbol table.
+  * [x] Attach event_code to the exception symbol in the compiler’s symbol table and retain metadata for future export.
 
 ### 0.4 Compiler: per-module collision table
 
