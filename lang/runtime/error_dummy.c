@@ -2,7 +2,7 @@
 #include "error_dummy.h"
 #include <stdlib.h>
 
-struct DriftError* drift_error_new_dummy(int code) {
+struct DriftError* drift_error_new_dummy(int64_t code) {
     struct DriftError* err = malloc(sizeof(struct DriftError));
     if (!err) {
         abort();
@@ -11,7 +11,7 @@ struct DriftError* drift_error_new_dummy(int code) {
     return err;
 }
 
-long long drift_error_get_code(struct DriftError* err) {
+int64_t drift_error_get_code(struct DriftError* err) {
     if (!err) return 0;
     return err->code;
 }

@@ -1,0 +1,16 @@
+import std.console.out
+
+exception InvalidPayload(payload: String)
+
+fn fire() returns Void {
+  throw InvalidPayload(payload = "oops")
+}
+
+fn main() returns Int {
+  try {
+    fire()
+  } catch InvalidPayload(e) {
+    out.writeln("caught")
+  }
+  return 0
+}
