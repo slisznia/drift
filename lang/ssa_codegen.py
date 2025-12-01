@@ -343,7 +343,7 @@ def emit_module_object(
                     else:
                         callee = fn_map.get(instr.callee)
                         if callee is None:
-                            # Try runtime dummy error helper.
+                            # Try runtime helpers.
                             if instr.callee == "drift_error_new_dummy":
                                 if rt_error_dummy is None:
                                     rt_error_dummy = ir.Function(
@@ -352,6 +352,12 @@ def emit_module_object(
                                         name="drift_error_new_dummy",
                                     )
                                 callee = rt_error_dummy
+                            elif instr.callee == "drift_string_eq":
+                                callee = ir.Function(
+                                    module,
+                                    ir.FunctionType(WORD_INT, [_drift_string_type(), _drift_string_type()]),
+                                    name="drift_string_eq",
+                                )
                             else:
                                 raise RuntimeError(f"unknown callee {instr.callee}")
                         if callee.name in can_error_funcs:

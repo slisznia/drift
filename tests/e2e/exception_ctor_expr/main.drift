@@ -1,0 +1,25 @@
+import std.console.out
+
+exception InvalidPayload(payload: String)
+
+fn ingest(line: String) returns Int {
+  if line == "" {
+    throw InvalidPayload(payload = line)
+  }
+  out.writeln("accepted")
+  return 0
+}
+
+fn might_throw(line: String) returns Int {
+  val rc = try ingest(line) catch InvalidPayload(e) {
+    out.writeln("expr caught");
+    1
+  };
+  return rc
+}
+
+fn main() returns Int {
+  val a: Int = try might_throw("ok") catch InvalidPayload(e) { 9; };
+  val b: Int = try might_throw("") catch InvalidPayload(e) { 1; };
+  return a + b
+}

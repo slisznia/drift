@@ -1,0 +1,5 @@
+{
+  "mode": "run",
+  "exit_code": 1,
+  "stdout": "accepted\nexpr caught\n"
+}

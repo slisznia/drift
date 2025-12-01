@@ -1,0 +1,19 @@
+import std.console.out
+
+exception A()
+exception B()
+
+fn fire() returns Void {
+  throw B()
+}
+
+fn main() returns Int {
+  try {
+    fire()
+  } catch A(e) {
+    out.writeln("A")
+  } catch err {
+    out.writeln("fallback")
+  }
+  return 0
+}
