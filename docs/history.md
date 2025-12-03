@@ -157,3 +157,4 @@
 - SSA simplifier now counts uses across blocks so it no longer drops defs that are only threaded via edges/joins; try/catch lowered programs verify and run again.
 - Updated the `captures` e2e expected compile error to the current can-error invariant (“call to can-error function … without error edges”); all e2e/SSA suites are green again.
 - Optional as a first-class generic is usable outside exceptions: added `DriftOptionalInt` helpers (`drift_optional_int_some/none`), SSA lowering guards to avoid name clashes in `unwrap_or`, a negative SSA test for bad defaults, and an e2e `optional_basic` that exercises `is_some/is_none/unwrap_or` through SSA→LLVM.
+- Added SSA Optional coverage: `optional_phi` exercises Optional<Int> flowing through a branch/join; `optional_phi_type_mismatch` asserts a clean checker error when mixing Optional and non-Optional types across branches.
