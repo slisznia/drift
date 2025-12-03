@@ -127,6 +127,7 @@ class StructInfo:
     name: str
     field_order: List[str]
     field_types: Dict[str, Type]
+    is_synthetic: bool = False
 
 
 @dataclass
@@ -288,8 +289,10 @@ class Checker:
                 args_view_type=f"{exc.name}ArgsView",
             )
             # Register synthetic structs for arg key / args view.
-            self._define_struct(f"{exc.name}ArgKey", key_struct_fields, exc.loc, is_synthetic=True)
-            self._define_struct(f"{exc.name}ArgsView", view_struct_fields, exc.loc, is_synthetic=True)
+            key_struct = self._define_struct(f"{exc.name}ArgKey", key_struct_fields, exc.loc, is_synthetic=True)
+            view_struct = self._define_struct(f"{exc.name}ArgsView", view_struct_fields, exc.loc, is_synthetic=True)
+            self.exception_infos[exc.name].arg_key_struct = key_struct
+            self.exception_infos[exc.name].args_view_struct = view_struct
             self.exception_metadata.append(
                 ExceptionMeta(fqn=fqn, kind=0b0001, payload60=payload60, event_code=event_code, arg_order=arg_order.copy())
             )
@@ -317,7 +320,7 @@ class Checker:
         for struct in structs:
             self._define_struct(struct.name, struct.fields, struct.loc, is_synthetic=False)
 
-    def _define_struct(self, name: str, fields: List[ast.StructField], loc: ast.Located, is_synthetic: bool = False) -> None:
+    def _define_struct(self, name: str, fields: List[ast.StructField], loc: ast.Located, is_synthetic: bool = False) -> StructInfo:
         """Define a struct (real or synthetic) and its constructor signature."""
         if name in RESERVED_IDENTIFIERS:
             raise CheckError(f"{loc.line}:{loc.column}: '{name}' is a reserved keyword")
@@ -325,7 +328,7 @@ class Checker:
             # allow synthetic re-definition if it is identical
             if not is_synthetic:
                 raise CheckError(f"{loc.line}:{loc.column}: Struct '{name}' already defined")
-            return
+            return self.struct_infos[name]
         field_order: List[str] = []
         field_types: Dict[str, Type] = {}
         for field in fields:
@@ -337,7 +340,7 @@ class Checker:
                 raise CheckError(f"{loc.line}:{loc.column}: duplicate field '{field.name}'")
             field_order.append(field.name)
             field_types[field.name] = ty
-        struct_info = StructInfo(name=name, field_order=field_order, field_types=field_types)
+        struct_info = StructInfo(name=name, field_order=field_order, field_types=field_types, is_synthetic=is_synthetic)
         self.struct_infos[name] = struct_info
         signature = FunctionSignature(
             name=name,
@@ -346,6 +349,7 @@ class Checker:
             effects=None,
         )
         self.function_infos[name] = FunctionInfo(signature=signature, node=None)
+        return struct_info
 
     def _check_function(self, fn: ast.FunctionDef, global_scope: Scope) -> None:
         info = self.function_infos[fn.name]
@@ -618,9 +622,20 @@ class Checker:
         container_type = self._check_expr(expr.value, ctx)
         element_type = array_element_type(container_type)
         if element_type is None:
-            raise CheckError(
-                f"{expr.loc.line}:{expr.loc.column}: Type {container_type} is not indexable"
-            )
+            # Special-case exception args-view: string literal keys only.
+            for exc in self.exception_infos.values():
+                if container_type.name == exc.args_view_type:
+                    if not isinstance(expr.index, ast.Literal) or not isinstance(expr.index.value, str):
+                        raise CheckError(
+                            f"{expr.index.loc.line}:{expr.index.loc.column}: exception args index must be a string literal"
+                        )
+                    key = expr.index.value
+                    if key not in exc.arg_types:
+                        raise CheckError(
+                            f"{expr.index.loc.line}:{expr.index.loc.column}: Exception '{exc.name}' has no arg '{key}'"
+                        )
+                    return Type("Option", (STR,))
+            raise CheckError(f"{expr.loc.line}:{expr.loc.column}: Type {container_type} is not indexable")
         index_type = self._check_expr(expr.index, ctx)
         self._expect_type(index_type, INT, expr.index.loc)
         return element_type
@@ -814,6 +829,8 @@ class Checker:
             )
         exc_info = self.exception_infos.get(base_type.name)
         if exc_info:
+            if attr.attr == "args":
+                return Type(exc_info.args_view_type)
             if attr.attr not in exc_info.arg_types:
                 raise CheckError(
                     f"{attr.loc.line}:{attr.loc.column}: Exception '{exc_info.name}' has no field '{attr.attr}'"
