@@ -271,6 +271,13 @@ class Checker:
                 )
             payload_seen[payload60] = fqn
             event_code = (0b0001 << 60) | payload60
+            # Synthesize arg-key and args-view struct fields.
+            key_struct_fields = [
+                ast.StructField(name="name", type_expr=ast.TypeExpr(name="String")),
+            ]
+            view_struct_fields = [
+                ast.StructField(name="error", type_expr=ast.TypeExpr(name="Error")),
+            ]
             self.exception_infos[exc.name] = ExceptionInfo(
                 name=exc.name,
                 arg_order=arg_order,
@@ -280,6 +287,9 @@ class Checker:
                 arg_key_type=f"{exc.name}ArgKey",
                 args_view_type=f"{exc.name}ArgsView",
             )
+            # Register synthetic structs for arg key / args view.
+            self._define_struct(f"{exc.name}ArgKey", key_struct_fields, exc.loc, is_synthetic=True)
+            self._define_struct(f"{exc.name}ArgsView", view_struct_fields, exc.loc, is_synthetic=True)
             self.exception_metadata.append(
                 ExceptionMeta(fqn=fqn, kind=0b0001, payload60=payload60, event_code=event_code, arg_order=arg_order.copy())
             )
@@ -305,36 +315,37 @@ class Checker:
 
     def _register_structs(self, structs: List[ast.StructDef]) -> None:
         for struct in structs:
-            if struct.name in RESERVED_IDENTIFIERS:
-                raise CheckError(
-                    f"{struct.loc.line}:{struct.loc.column}: '{struct.name}' is a reserved keyword"
-                )
-            if struct.name in self.struct_infos:
-                raise CheckError(
-                    f"{struct.loc.line}:{struct.loc.column}: Struct '{struct.name}' already defined"
-                )
-            field_order: List[str] = []
-            field_types: Dict[str, Type] = {}
-            for field in struct.fields:
-                try:
-                    ty = resolve_type(field.type_expr)
-                except TypeSystemError as exc:
-                    raise CheckError(f"{field.type_expr.name}: {exc}") from exc
-                if field.name in field_types:
-                    raise CheckError(
-                        f"{struct.loc.line}:{struct.loc.column}: duplicate field '{field.name}'"
-                    )
-                field_order.append(field.name)
-                field_types[field.name] = ty
-            struct_info = StructInfo(name=struct.name, field_order=field_order, field_types=field_types)
-            self.struct_infos[struct.name] = struct_info
-            signature = FunctionSignature(
-                name=struct.name,
-                params=tuple(field_types[name] for name in field_order),
-                return_type=Type(struct.name),
-                effects=None,
-            )
-            self.function_infos[struct.name] = FunctionInfo(signature=signature, node=None)
+            self._define_struct(struct.name, struct.fields, struct.loc, is_synthetic=False)
+
+    def _define_struct(self, name: str, fields: List[ast.StructField], loc: ast.Located, is_synthetic: bool = False) -> None:
+        """Define a struct (real or synthetic) and its constructor signature."""
+        if name in RESERVED_IDENTIFIERS:
+            raise CheckError(f"{loc.line}:{loc.column}: '{name}' is a reserved keyword")
+        if name in self.struct_infos:
+            # allow synthetic re-definition if it is identical
+            if not is_synthetic:
+                raise CheckError(f"{loc.line}:{loc.column}: Struct '{name}' already defined")
+            return
+        field_order: List[str] = []
+        field_types: Dict[str, Type] = {}
+        for field in fields:
+            try:
+                ty = resolve_type(field.type_expr)
+            except TypeSystemError as exc:
+                raise CheckError(f"{field.type_expr.name}: {exc}") from exc
+            if field.name in field_types:
+                raise CheckError(f"{loc.line}:{loc.column}: duplicate field '{field.name}'")
+            field_order.append(field.name)
+            field_types[field.name] = ty
+        struct_info = StructInfo(name=name, field_order=field_order, field_types=field_types)
+        self.struct_infos[name] = struct_info
+        signature = FunctionSignature(
+            name=name,
+            params=tuple(field_types[n] for n in field_order),
+            return_type=Type(name),
+            effects=None,
+        )
+        self.function_infos[name] = FunctionInfo(signature=signature, node=None)
 
     def _check_function(self, fn: ast.FunctionDef, global_scope: Scope) -> None:
         info = self.function_infos[fn.name]
