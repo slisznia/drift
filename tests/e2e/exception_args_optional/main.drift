@@ -1,0 +1,23 @@
+import std.console.out
+
+exception OptErr(a: String, b: String)
+
+fn raise_opt() returns Void {
+    throw OptErr(a = "alpha", b = "beta")
+}
+
+fn main() returns Int {
+    try {
+    raise_opt()
+  } catch OptErr(e) {
+    val view = e.args
+    // Optional lookup via ArgKey variable (without dot-sugar).
+    val key_a = view.a()
+    val opt_a = view[key_a]
+    val a_val = opt_a.unwrap_or("none")
+    out.writeln(a_val)
+    return 0
+  }
+    out.writeln("no error")
+    return 1
+}

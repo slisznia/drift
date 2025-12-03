@@ -679,6 +679,11 @@ class Checker:
         return element_type
 
     def _check_call(self, expr: ast.Call, ctx: FunctionContext) -> Type:
+        # Optional<T> builtin methods are handled specially.
+        if isinstance(expr.func, ast.Attr):
+            base_type = self._check_expr(expr.func.value, ctx)
+            if base_type.name == "Optional":
+                return self._check_optional_call(expr, base_type, ctx)
         callee_name = self._resolve_callee(expr.func, ctx)
         exc_info = self.exception_infos.get(callee_name)
         if exc_info:
@@ -889,6 +894,25 @@ class Checker:
         raise CheckError(
             f"{attr.loc.line}:{attr.loc.column}: Unknown attribute '{attr.attr}' on type '{base_type}'"
         )
+
+    def _check_optional_call(self, expr: ast.Call, base_type: Type, ctx: FunctionContext) -> Type:
+        if not base_type.args:
+            raise CheckError(f"{expr.loc.line}:{expr.loc.column}: Optional without type argument")
+        inner_ty = base_type.args[0]
+        method = expr.func.attr
+        if expr.kwargs:
+            raise CheckError(f"{expr.loc.line}:{expr.loc.column}: Optional.{method} does not accept keyword args")
+        if method in {"is_some", "is_none"}:
+            if expr.args:
+                raise CheckError(f"{expr.loc.line}:{expr.loc.column}: Optional.{method} takes no arguments")
+            return BOOL
+        if method == "unwrap_or":
+            if len(expr.args) != 1:
+                raise CheckError(f"{expr.loc.line}:{expr.loc.column}: Optional.unwrap_or expects exactly 1 argument")
+            arg_ty = self._check_expr(expr.args[0], ctx)
+            self._expect_type(arg_ty, inner_ty, expr.args[0].loc)
+            return inner_ty
+        raise CheckError(f"{expr.loc.line}:{expr.loc.column}: Unknown Optional method '{method}'")
 
     def _expect_number(self, actual: Type, loc: ast.Located) -> None:
         if actual not in (INT, I64, F64):

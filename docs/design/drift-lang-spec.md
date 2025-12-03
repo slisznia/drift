@@ -1582,6 +1582,25 @@ fn main() returns Void {
 }
 ```
 
+### 11.8. Optional API (minimal)
+
+The standard library exposes a minimal API on `Optional<T>`:
+
+```drift
+struct Optional<T> {
+    fn is_some(self) returns Bool
+    fn is_none(self) returns Bool
+    fn unwrap_or(self, default: T) returns T
+}
+```
+
+Semantics:
+- `is_some` tests the tag.
+- `is_none` is `!is_some`.
+- `unwrap_or` returns the inner value if present, otherwise `default`.
+
+This API is sufficient to inspect `Optional<T>` without pattern matching; richer combinators can be added later.
+
 ---
 ## 12. `lang.array`, `ByteBuffer`, and array literals
 
@@ -2027,7 +2046,7 @@ The args-view exposes keys and lookup:
 struct EArgKey { name: String }
 
 implement EArgsView {
-    fn operator[](self: &EArgsView, key: EArgKey) returns Option<String>
+    fn operator[](self: &EArgsView, key: EArgKey) returns Optional<String>
 
     // one generated key per declared field, e.g.:
     fn sql_code(self: &EArgsView) returns EArgKey
@@ -2035,7 +2054,9 @@ implement EArgsView {
 }
 ```
 
-`Option<String>` holds the diagnostic string for the attribute if present. In a typed catch, `e.args[.sql_code()]` yields `Option<String>` and can be combined with `unwrap_or`, pattern matches, etc.
+`Optional<String>` holds the diagnostic string for the attribute if present. In a typed catch, `e.args[.sql_code()]` yields `Optional<String>` and can be combined with `unwrap_or`, pattern matches, etc. Forms:
+- `view[.field]` or `view[view.field()]` are **required** lookups and return `String`; the field must exist on the exception type.
+- `view[key]` for any other `EArgKey` returns `Optional<String>`; missing keys yield `None`.
 
 **Dot-shortcut sugar:** inside indexing brackets or argument lists, a leading dot is sugar for invoking the member on the receiver:
 

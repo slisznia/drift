@@ -543,9 +543,92 @@ def lower_expr_to_ssa(
         return dest, res_ty, current, env
     # Calls (simple name callee, no error edges in scaffold)
     if isinstance(expr, ast.Call):
+        # Optional<T> builtin methods.
+        if isinstance(expr.func, ast.Attr) and isinstance(expr.func.value, ast.Name) and env.has_user(expr.func.value.ident):
+            base_ssa = env.lookup_user(expr.func.value.ident)
+            base_ty = env.ctx.ssa_types.get(base_ssa)
+            if base_ty and base_ty.name == "Optional" and base_ty.args:
+                inner_ty = base_ty.args[0]
+                loc = getattr(expr, "loc", None)
+                if expr.func.attr == "is_some":
+                    dest = env.fresh_ssa("opt_is_some", BOOL)
+                    current.instructions.append(mir.FieldGet(dest=dest, base=base_ssa, field="is_some", loc=loc))
+                    env.ctx.ssa_types[dest] = BOOL
+                    return dest, BOOL, current, env
+                if expr.func.attr == "is_none":
+                    tag = env.fresh_ssa("opt_is_some", BOOL)
+                    current.instructions.append(mir.FieldGet(dest=tag, base=base_ssa, field="is_some", loc=loc))
+                    env.ctx.ssa_types[tag] = BOOL
+                    inv_dest = env.fresh_ssa("opt_is_none", BOOL)
+                    current.instructions.append(mir.Unary(dest=inv_dest, op="not", operand=tag, loc=loc))
+                    env.ctx.ssa_types[inv_dest] = BOOL
+                    return inv_dest, BOOL, current, env
+                if expr.func.attr == "unwrap_or":
+                    if not (blocks and fresh_block):
+                        raise LoweringError("unwrap_or lowering requires block context")
+                    if len(expr.args) != 1:
+                        raise LoweringError("Optional.unwrap_or expects exactly one argument")
+                    default_ssa, default_ty, current, env = lower_expr_to_ssa(
+                        expr.args[0], env, current, checked, blocks, fresh_block
+                    )
+                    if default_ty != inner_ty:
+                        raise LoweringError("unwrap_or default type mismatch")
+                    tag = env.fresh_ssa("opt_is_some", BOOL)
+                    current.instructions.append(mir.FieldGet(dest=tag, base=base_ssa, field="is_some", loc=loc))
+                    env.ctx.ssa_types[tag] = BOOL
+                    some_val = env.fresh_ssa("opt_value", inner_ty)
+                    current.instructions.append(mir.FieldGet(dest=some_val, base=base_ssa, field="value", loc=loc))
+                    env.ctx.ssa_types[some_val] = inner_ty
+                    then_name = fresh_block("bb_optional_some")
+                    else_name = fresh_block("bb_optional_none")
+                    join_name = fresh_block("bb_optional_join")
+                    then_param = mir.Param(name=env.fresh_ssa("opt_val_param", ty=inner_ty), type=inner_ty)
+                    else_param = mir.Param(name=env.fresh_ssa("opt_default_param", ty=inner_ty), type=inner_ty)
+                    then_block = mir.BasicBlock(name=then_name, params=[then_param])
+                    else_block = mir.BasicBlock(name=else_name, params=[else_param])
+                    join_block = mir.BasicBlock(name=join_name, params=[mir.Param(name="opt_res", type=inner_ty)])
+                    blocks[then_name] = then_block
+                    blocks[else_name] = else_block
+                    blocks[join_name] = join_block
+                    then_block.terminator = mir.Br(target=mir.Edge(target=join_name, args=[then_param.name]))
+                    else_block.terminator = mir.Br(target=mir.Edge(target=join_name, args=[else_param.name]))
+                    current.terminator = mir.CondBr(
+                        cond=tag,
+                        then=mir.Edge(target=then_name, args=[some_val]),
+                        els=mir.Edge(target=else_name, args=[default_ssa]),
+                    )
+                    join_env = env.clone_for_block(env.user_env)
+                    env.ctx.ssa_types["opt_res"] = inner_ty
+                    return "opt_res", inner_ty, join_block, join_env
         # Bare name call
         if isinstance(expr.func, ast.Name):
             callee = expr.func.ident
+            # Struct constructor shortcut.
+            if callee in checked.structs:
+                struct_info = checked.structs[callee]
+                # Positional args map in field order; kwargs override by name.
+                arg_values: Dict[str, str] = {}
+                for kw in expr.kwargs:
+                    v, _, current, env = lower_expr_to_ssa(kw.value, env, current, checked, blocks, fresh_block)
+                    arg_values[kw.name] = v
+                pos_args = []
+                for a in expr.args:
+                    v, _, current, env = lower_expr_to_ssa(a, env, current, checked, blocks, fresh_block)
+                    pos_args.append(v)
+                arg_ssa: List[str] = []
+                pos_idx = 0
+                for field in struct_info.field_order:
+                    if field in arg_values:
+                        arg_ssa.append(arg_values[field])
+                    else:
+                        if pos_idx >= len(pos_args):
+                            raise LoweringError(f"missing constructor arg '{field}' for {callee}")
+                        arg_ssa.append(pos_args[pos_idx])
+                        pos_idx += 1
+                dest = env.fresh_ssa(callee, Type(callee))
+                current.instructions.append(mir.StructInit(dest=dest, type=Type(callee), args=arg_ssa))
+                env.ctx.ssa_types[dest] = Type(callee)
+                return dest, Type(callee), current, env
         elif isinstance(expr.func, ast.Attr) and isinstance(expr.func.value, ast.Name):
             # Method-style call on a resolved value; use the base type if known.
             base_ssa = env.lookup_user(expr.func.value.ident) if env.has_user(expr.func.value.ident) else None
@@ -890,7 +973,7 @@ def lower_try_stmt(
             catch_env.bind_user(clause.binder, catch_params[0].name, binder_ty)
         catch_block, catch_env = lower_block_in_env(clause.block.statements, catch_env, blocks, catch_block, checked, fresh_block)
         catch_blocks.append(catch_block)
-        catch_envs[catch_name] = catch_env
+        catch_envs[catch_block.name] = catch_env
         if clause.event:
             if clause.event_code is None:
                 exc_info = checked.exceptions.get(clause.event)

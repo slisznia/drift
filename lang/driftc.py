@@ -138,7 +138,7 @@ def compile_file(
         simplified = simplify_function(ssa_fn)
         ssa_fns.append(simplified)
     _annotate_can_error(ssa_fns)
-    emit_module_object(ssa_fns, struct_layouts, entry="main", out_path=output_path)
+    emit_module_object(ssa_fns, struct_layouts, entry="main", out_path=output_path, exception_names=set(checked.exceptions.keys()))
     return 0
 
 

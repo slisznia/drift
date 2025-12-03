@@ -88,6 +88,7 @@ def emit_module_object(
     struct_layouts: dict[str, StructLayout],
     entry: str,
     out_path: Path,
+    exception_names: Optional[set[str]] = None,
 ) -> None:
     """Lower a small set of SSA functions (ints + branches + calls) into LLVM."""
     llvm.initialize()
@@ -143,12 +144,16 @@ def emit_module_object(
             return ERROR_PTR_TY
         return ir.LiteralStructType([val_ll_ty, ERROR_PTR_TY])
 
+    exception_names = exception_names or set()
+
     def _llvm_type_with_structs(ty: Type) -> ir.Type:
         try:
             return _llvm_type(ty)
         except NotImplementedError:
-            if ty.name == "Optional" and ty.args and ty.args[0] == STR:
-                return ir.LiteralStructType([ir.IntType(8), _drift_string_type()])
+            if ty.name in exception_names:
+                return ERROR_PTR_TY
+            if ty.name == "Optional" and ty.args:
+                return ir.LiteralStructType([ir.IntType(8), _llvm_type_with_structs(ty.args[0])])
             if isinstance(ty, ReferenceType):
                 return _llvm_type_with_structs(ty.args[0]).as_pointer()
             if ty.name in struct_layouts:
@@ -460,6 +465,36 @@ def emit_module_object(
                             ssa_types[instr.dest] = STR
                             continue
                         raise RuntimeError(f"Error has no field {instr.field}")
+                    if base_ty and base_ty.name == "Optional" and base_ty.args:
+                        inner_ty = _llvm_type_with_structs(base_ty.args[0])
+                        opt_ll = ir.LiteralStructType([ir.IntType(8), inner_ty])
+                        base_val = values[instr.base]
+                        if isinstance(base_val.type, ir.PointerType):
+                            cast_ptr = builder.bitcast(base_val, opt_ll.as_pointer())
+                            if instr.field == "is_some":
+                                field_ptr = builder.gep(cast_ptr, [I32_TY(0), I32_TY(0)], inbounds=True)
+                                loaded = builder.load(field_ptr, name=instr.dest)
+                                values[instr.dest] = loaded
+                                ssa_types[instr.dest] = BOOL
+                                continue
+                            if instr.field == "value":
+                                field_ptr = builder.gep(cast_ptr, [I32_TY(0), I32_TY(1)], inbounds=True)
+                                loaded = builder.load(field_ptr, name=instr.dest)
+                                values[instr.dest] = loaded
+                                ssa_types[instr.dest] = base_ty.args[0]
+                                continue
+                        else:
+                            if instr.field == "is_some":
+                                loaded = builder.extract_value(base_val, 0, name=instr.dest)
+                                values[instr.dest] = loaded
+                                ssa_types[instr.dest] = BOOL
+                                continue
+                            if instr.field == "value":
+                                loaded = builder.extract_value(base_val, 1, name=instr.dest)
+                                values[instr.dest] = loaded
+                                ssa_types[instr.dest] = base_ty.args[0]
+                                continue
+                        raise RuntimeError(f"Optional has no field {instr.field}")
                     inner_ty = base_ty.args[0] if isinstance(base_ty, ReferenceType) else base_ty
                     if inner_ty is None or inner_ty.name not in struct_layouts:
                         raise RuntimeError(f"base {instr.base} is not a struct for field get")
@@ -472,10 +507,32 @@ def emit_module_object(
                     if base_ptr is None:
                         raise RuntimeError(f"no struct slot for {instr.base}")
                     idx = layout.index_by_name[instr.field]
+                    if isinstance(base_ptr.type, ir.LiteralStructType):
+                        loaded = builder.extract_value(base_ptr, idx, name=instr.dest)
+                        values[instr.dest] = loaded
+                        ssa_types[instr.dest] = layout.field_types[idx]
+                        continue
                     field_ptr = builder.gep(base_ptr, [I32_TY(0), I32_TY(idx)], inbounds=True)
                     loaded = builder.load(field_ptr, name=instr.dest)
                     values[instr.dest] = loaded
                     ssa_types[instr.dest] = layout.field_types[idx]
+                elif isinstance(instr, mir.Unary):
+                    operand = values[instr.operand]
+                    if instr.op == "not":
+                        if not isinstance(operand.type, ir.IntType) or operand.type.width != 1:
+                            operand = builder.icmp_unsigned("!=", operand, operand.type(0), name=f"{instr.dest}_bool")
+                        result = builder.icmp_unsigned("==", operand, ir.IntType(1)(0), name=instr.dest)
+                        values[instr.dest] = result
+                        ssa_types[instr.dest] = BOOL
+                    elif instr.op == "-":
+                        if isinstance(operand.type, ir.DoubleType):
+                            result = builder.fneg(operand, name=instr.dest)
+                        else:
+                            result = builder.neg(operand, name=instr.dest)
+                        values[instr.dest] = result
+                        ssa_types[instr.dest] = ssa_types.get(instr.operand, BOOL)
+                    else:
+                        raise RuntimeError(f"unsupported unary op {instr.op}")
                 elif isinstance(instr, mir.ArrayLen):
                     arr_ty = ssa_types.get(instr.base)
                     if arr_ty is None or array_element_type(arr_ty) is None:
@@ -631,9 +688,19 @@ def emit_module_object(
                 if len(term.error.args) != len(err_block.params):
                     raise RuntimeError(f"edge to {err_tgt} has arity {len(term.error.args)} expected {len(err_block.params)}")
                 for param, arg in zip(norm_block.params, term.normal.args):
-                    phis[(norm_tgt, param.name)].add_incoming(values[arg], blocks_map[(f.name, bname)])
+                    incoming_val = values[arg]
+                    phi = phis[(norm_tgt, param.name)]
+                    expected_ty = phi.type.pointee if isinstance(phi.type, ir.PointerType) else phi.type
+                    if isinstance(expected_ty, ir.LiteralStructType) and isinstance(incoming_val.type, ir.PointerType):
+                        incoming_val = builder.load(incoming_val)
+                    phis[(norm_tgt, param.name)].add_incoming(incoming_val, blocks_map[(f.name, bname)])
                 for param, arg in zip(err_block.params, term.error.args):
-                    phis[(err_tgt, param.name)].add_incoming(values[arg], blocks_map[(f.name, bname)])
+                    incoming_val = values[arg]
+                    phi = phis[(err_tgt, param.name)]
+                    expected_ty = phi.type.pointee if isinstance(phi.type, ir.PointerType) else phi.type
+                    if isinstance(expected_ty, ir.LiteralStructType) and isinstance(incoming_val.type, ir.PointerType):
+                        incoming_val = builder.load(incoming_val)
+                    phis[(err_tgt, param.name)].add_incoming(incoming_val, blocks_map[(f.name, bname)])
                 builder.cbranch(cond_val, blocks_map[(f.name, err_tgt)], blocks_map[(f.name, norm_tgt)])
             elif isinstance(term, mir.Br):
                 tgt = term.target.target
@@ -641,7 +708,12 @@ def emit_module_object(
                 if len(term.target.args) != len(tblock.params):
                     raise RuntimeError(f"edge to {tgt} has arity {len(term.target.args)} expected {len(tblock.params)}")
                 for param, arg in zip(tblock.params, term.target.args):
-                    phis[(tgt, param.name)].add_incoming(values[arg], blocks_map[(f.name, bname)])
+                    incoming_val = values[arg]
+                    phi = phis[(tgt, param.name)]
+                    expected_ty = phi.type.pointee if isinstance(phi.type, ir.PointerType) else phi.type
+                    if isinstance(expected_ty, ir.LiteralStructType) and isinstance(incoming_val.type, ir.PointerType):
+                        incoming_val = builder.load(incoming_val)
+                    phis[(tgt, param.name)].add_incoming(incoming_val, blocks_map[(f.name, bname)])
                 builder.branch(blocks_map[(f.name, tgt)])
             elif isinstance(term, mir.CondBr):
                 if term.cond not in values:
@@ -657,7 +729,12 @@ def emit_module_object(
                             f"edge to {tgt} has arity {len(edge.args)} expected {len(tblock.params)}"
                         )
                     for param, arg in zip(tblock.params, edge.args):
-                        phis[(tgt, param.name)].add_incoming(values[arg], blocks_map[(f.name, bname)])
+                        incoming_val = values[arg]
+                        phi = phis[(tgt, param.name)]
+                        expected_ty = phi.type.pointee if isinstance(phi.type, ir.PointerType) else phi.type
+                        if isinstance(expected_ty, ir.LiteralStructType) and isinstance(incoming_val.type, ir.PointerType):
+                            incoming_val = builder.load(incoming_val)
+                        phis[(tgt, param.name)].add_incoming(incoming_val, blocks_map[(f.name, bname)])
                 builder.cbranch(cond_val, blocks_map[(f.name, term.then.target)], blocks_map[(f.name, term.els.target)])
             elif isinstance(term, mir.Throw):
                 if f.name not in can_error_funcs:
