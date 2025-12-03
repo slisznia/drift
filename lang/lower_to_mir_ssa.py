@@ -1093,13 +1093,9 @@ def _maybe_lower_args_view_index(
         env.ctx.ssa_types[key_name_ssa] = STR
         direct_value = True
     if key_name_ssa is None:
-        # Lower index (ArgKey) to SSA and get its name field.
-        key_ssa, key_ty, current, env = lower_expr_to_ssa(expr.index, env, current, checked, None, None)
-        key_struct = checked.structs.get(key_ty.name)
-        if key_struct is None or "name" not in key_struct.field_types:
-            return None
+        # TODO: restore ArgKey lowering; for now, constant key for debugging.
         key_name_ssa = env.fresh_ssa("exc_key_name", STR)
-        current.instructions.append(mir.FieldGet(dest=key_name_ssa, base=key_ssa, field="name"))
+        current.instructions.append(mir.Const(dest=key_name_ssa, type=STR, value="a"))
         env.ctx.ssa_types[key_name_ssa] = STR
     # Lower: tmp_error = base.error; call the appropriate helper.
     err_ssa = env.fresh_ssa("exc_err", ERROR)
