@@ -701,6 +701,12 @@ def _apply_index_suffix(base: Expr, suffix_node: Tree) -> Index:
     index_expr = None
     for child in suffix_node.children:
         if isinstance(child, Tree):
+            # Allow leading-dot expr as a special node: DOT NAME
+            if _name(child) == "dot_expr":
+                dot_ident = child.children[0].value
+                loc = _loc(child)
+                index_expr = Attr(loc=loc, value=base, attr=dot_ident)
+                break
             index_expr = _build_expr(child)
             break
     if index_expr is None:
