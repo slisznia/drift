@@ -240,19 +240,7 @@ For now, just make sure the `Optional<T>` ABI and method set are “match-ready,
 
 ---
 
-## 2. Option<T> vs Optional<T>
-
-You’re not wrong to question the name. The trade-offs:
-
-### Arguments for `Option<T>`
-
-* Very common in language design circles:
-
-  * Rust, OCaml, Haskell (`Maybe` but conceptually same), Scala, etc.
-* Shorter, less noisy in type signatures:
-
-  * `Option<Result<T, Error>>` vs `Optional<Result<T, Error>>`.
-* Easy to mentally model as “maybe-value” once you’re used to it.
+## 2. Rename Option<T> to Optional<T>
 
 ### Arguments for `Optional<T>`
 
@@ -265,23 +253,11 @@ You’re not wrong to question the name. The trade-offs:
   * “This function returns an optional string” → `Optional<String>`.
 * Avoids the slightly abstract “Option” term; closer to your docs’ natural language.
 
-### My recommendation
-
 Given your target audience (schools, enterprise backend devs, lots of Java/C/C++ background, not primarily Rust functional-programming folks):
 
-* I’d **switch to `Optional<T>` now**, before the ecosystem and docs grow too heavy.
-* Internally, you can still treat it as the canonical “option type” in design docs; the name is just surface sugar.
-* If you ever care about compatibility, you can later add:
-
-  ```drift
-  type Option<T> = Optional<T>
-  ```
-
-  as an alias in the stdlib, to accommodate people who instinctively look for `Option`.
+* **Switch to `Optional<T>` now**, before the ecosystem and docs grow too heavy.
 
 ### What renaming actually costs
-
-If you decide to rename:
 
 **Action items:**
 
