@@ -466,34 +466,18 @@ def emit_module_object(
                             continue
                         raise RuntimeError(f"Error has no field {instr.field}")
                     if base_ty and base_ty.name == "Optional" and base_ty.args:
-                        inner_ty = _llvm_type_with_structs(base_ty.args[0])
-                        opt_ll = ir.LiteralStructType([ir.IntType(8), inner_ty])
+                        inner_ty = base_ty.args[0]
                         base_val = values[instr.base]
-                        if isinstance(base_val.type, ir.PointerType):
-                            cast_ptr = builder.bitcast(base_val, opt_ll.as_pointer())
-                            if instr.field == "is_some":
-                                field_ptr = builder.gep(cast_ptr, [I32_TY(0), I32_TY(0)], inbounds=True)
-                                loaded = builder.load(field_ptr, name=instr.dest)
-                                values[instr.dest] = loaded
-                                ssa_types[instr.dest] = BOOL
-                                continue
-                            if instr.field == "value":
-                                field_ptr = builder.gep(cast_ptr, [I32_TY(0), I32_TY(1)], inbounds=True)
-                                loaded = builder.load(field_ptr, name=instr.dest)
-                                values[instr.dest] = loaded
-                                ssa_types[instr.dest] = base_ty.args[0]
-                                continue
-                        else:
-                            if instr.field == "is_some":
-                                loaded = builder.extract_value(base_val, 0, name=instr.dest)
-                                values[instr.dest] = loaded
-                                ssa_types[instr.dest] = BOOL
-                                continue
-                            if instr.field == "value":
-                                loaded = builder.extract_value(base_val, 1, name=instr.dest)
-                                values[instr.dest] = loaded
-                                ssa_types[instr.dest] = base_ty.args[0]
-                                continue
+                        if instr.field == "is_some":
+                            loaded = builder.extract_value(base_val, 0, name=instr.dest)
+                            values[instr.dest] = loaded
+                            ssa_types[instr.dest] = BOOL
+                            continue
+                        if instr.field == "value":
+                            loaded = builder.extract_value(base_val, 1, name=instr.dest)
+                            values[instr.dest] = loaded
+                            ssa_types[instr.dest] = inner_ty
+                            continue
                         raise RuntimeError(f"Optional has no field {instr.field}")
                     inner_ty = base_ty.args[0] if isinstance(base_ty, ReferenceType) else base_ty
                     if inner_ty is None or inner_ty.name not in struct_layouts:
