@@ -87,26 +87,16 @@ The compiler enforces:
 The runtime provides a helper for tests and non-ABI dummy errors:
 
 ```c
-// test helper: constructs an Error with code + single (key, payload) arg
-Error* drift_error_new_dummy(uint64_t raw_payload60, DriftString key, DriftString payload);
+// test helper: constructs an Error with a caller-provided event_code and optional (key, payload) arg
+Error* drift_error_new_dummy(uint64_t event_code, DriftString key, DriftString payload);
 ```
 
 Semantics:
 
-- `raw_payload60` is treated as an *unstructured* value for testing.
-- The runtime constructs:
-
-  ```c
-  uint64_t payload60 = raw_payload60 & PAYLOAD_MASK;
-  uint64_t code = drift_event_code(TEST, payload60);
-  ```
-
-- The resulting `Error` carries:
-
-  - `code` as above, with kind = TEST.
-  - `payload` as the first payload string (the language-level `Error.payload`).
-
-These errors are **not** part of any stable ABI; consumers must not rely on particular test codes across versions.
+- `event_code` is used verbatim (kind/payload preserved).
+- If `key.len > 0`, the runtime seeds a one-element args array with `(key, payload)`.
+- `payload` is also stored in the legacy `Error.payload` field.
+- These errors are **not** part of any stable ABI; consumers must not rely on particular codes across versions.
 
 ---
 

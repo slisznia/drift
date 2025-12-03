@@ -205,6 +205,7 @@ class CatchClause:
     binder: Optional[str]
     block: Block
     event_code: Optional[int] = None
+    arg_order: Optional[list[str]] = None
 
 
 @dataclass

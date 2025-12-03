@@ -458,6 +458,7 @@ class Checker:
                     exc_info = self.exception_infos.get(clause.event)
                     if exc_info:
                         clause.event_code = exc_info.event_code
+                        clause.arg_order = exc_info.arg_order
                 for inner in clause.block.statements:
                     self._check_stmt(inner, catch_ctx, in_loop=in_loop)
             return

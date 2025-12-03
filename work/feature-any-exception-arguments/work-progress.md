@@ -151,6 +151,8 @@ Compiler/runtime work remains.
 - `operator[]` on args-view returning `Option<String>`.
 - Dot-shortcut lowering for `e.args[.sql_code]` / `e.args[.sql_code()]`.
 
+**Runtime progress:** `DriftError` now carries an args array (`(key,value)*` + count), `drift_error_new_dummy(code, key, payload)` seeds one entry when `key` is non-empty, and `drift_error_get_arg` provides lookup. Compiler wiring to populate multiple fields and synthesize args-views/keys remains.
+
 ### 3B.1 Front-end: exception metadata & synthetic types
 
 **Tasks:**
