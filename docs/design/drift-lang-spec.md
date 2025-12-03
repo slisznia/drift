@@ -181,6 +181,29 @@ The tuple-style header desugars to the block form. Field names remain available 
 
 ---
 
+### 3.5. `val` fields as type-level constants
+
+```drift
+struct Test {
+    val GAME_CTRL_UP:   Int = 1
+    val GAME_CTRL_DOWN: Int = 2
+}
+```
+
+Rules:
+
+- A `val` field in a `struct` is a **type-level constant**, not per-instance storage.
+- `val` fields do **not** contribute to the struct’s runtime layout or `size_of<T>()`.
+- A struct that contains only `val` fields is a **zero-sized type**; e.g. `size_of<Test>() == 0` above.
+- Accessing a `val` field through an instance (`obj.GAME_CTRL_UP`) is equivalent to accessing it through the type (`Test.GAME_CTRL_UP`) and is compile-time constant-foldable.
+- `val` fields must be initialized with **compile-time constant expressions**.
+- Constant safety: a `val` field may only use a type that:
+  - does not implement `Destructible`, and
+  - can be fully constructed at compile time (primitives, static `String`, plain structs/variants with const-friendly fields).
+  Types requiring runtime destruction or runtime data as initializers are disallowed for `val` fields.
+
+---
+
 ### 3.5. Tuple types and tuple expressions
 
 Drift supports **tuple types** as simple product types with unnamed fields. They are a single type written with parentheses:
@@ -1580,6 +1603,25 @@ fn main() returns Void {
         None => out.writeln("order not found"),
     }
 }
+
+### 11.8. Optional API (minimal)
+
+The standard library exposes a minimal API on `Optional<T>`:
+
+```drift
+struct Optional<T> {
+    fn is_some(self) returns Bool
+    fn is_none(self) returns Bool
+    fn unwrap_or(self, default: T) returns T
+}
+```
+
+Semantics:
+- `is_some` tests the tag.
+- `is_none` is `!is_some`.
+- `unwrap_or` returns the inner value if present, otherwise `default`.
+
+This API is sufficient to inspect `Optional<T>` without pattern matching; richer combinators can be added later.
 ```
 
 ### 11.8. Optional API (minimal)

@@ -150,3 +150,6 @@
 - Introduced a formal `Diagnostic` + `DiagnosticCtx` definition in the traits chapter and marked `Debuggable` as legacy for diagnostics; Chapter 14 now explicitly requires `Diagnostic` for exception fields and captures.
 - Updated the exceptions/diagnostics work tracker with a spec-only Step 2 plan; implementation/runtime changes remain out of scope for this pass.
 - Hardened dot-shortcut args access: parser now captures `.field` correctly, checker handles `e.args[.foo]` sugar and rejects unknown keys, and the SSA backend fixes the `__exc_args_get` ABI (sret) to stop crashes; added an e2e `exception_args_dot` covering the feature. Added a checker guard that functions may not `return Error`, with a negative SSA test.
+
+## 2025-12-03
+- Spec clarifications for struct `val` fields: they are type-level constants with compile-time initializers, excluded from layout/`size_of`, and disallow `Destructible`/non-const types; structs with only `val` fields are ZSTs. Added notes on required vs optional exception-args lookups and renamed `Option` to `Optional` (with a minimal `is_some`/`is_none`/`unwrap_or` API) in the spec.
