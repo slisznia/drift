@@ -155,6 +155,8 @@ Compiler/runtime work remains.
 
 **Compiler progress:** checker metadata now carries `arg_order` plus synthesized arg-key/args-view type names for each exception; synthetic structs for key/view are registered; `ExceptionCtor` nodes retain `arg_order`; `MyError.args` resolves to the per-exception args-view type; indexing that view with a declared string key type-checks as `Option<String>`.
 
+**SSA/runtime plumbing:** args-view indexing lowers to `__exc_args_get` returning an `Option<String>` wrapper over `drift_error_get_arg`; `Option<String>` has a concrete LLVM/C shape (`{i8 is_some, DriftString}`). `ExceptionCtor` now seeds all declared args: first field via `drift_error_new_dummy(code, key, payload)`, remaining fields via `drift_error_add_arg(err, key, value)`. Dot-shortcut rewrite is still pending.
+
 ### 3B.1 Front-end: exception metadata & synthetic types
 
 **Tasks:**

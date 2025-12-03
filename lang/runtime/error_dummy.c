@@ -24,6 +24,21 @@ struct DriftError* drift_error_new_dummy(int64_t code, struct DriftString key, s
     return err;
 }
 
+void drift_error_add_arg(struct DriftError* err, struct DriftString key, struct DriftString value) {
+    if (!err) {
+        return;
+    }
+    size_t new_count = err->arg_count + 1;
+    struct DriftErrorArg* new_args = realloc(err->args, new_count * sizeof(struct DriftErrorArg));
+    if (!new_args) {
+        abort();
+    }
+    new_args[new_count - 1].key = key;
+    new_args[new_count - 1].value = value;
+    err->args = new_args;
+    err->arg_count = new_count;
+}
+
 int64_t drift_error_get_code(struct DriftError* err) {
     if (!err) return 0;
     return err->code;

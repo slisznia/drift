@@ -146,7 +146,7 @@ def emit_module_object(
             return _llvm_type(ty)
         except NotImplementedError:
             if ty.name == "Option" and ty.args and ty.args[0] == STR:
-                return ir.LiteralStructType([ir.IntType(1), _drift_string_type()])
+                return ir.LiteralStructType([ir.IntType(8), _drift_string_type()])
             if isinstance(ty, ReferenceType):
                 return _llvm_type_with_structs(ty.args[0]).as_pointer()
             if ty.name in struct_layouts:

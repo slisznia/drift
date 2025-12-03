@@ -30,5 +30,7 @@ struct DriftError* drift_error_new_dummy(int64_t code, struct DriftString key, s
 int64_t drift_error_get_code(struct DriftError* err);
 // Returns pointer to value if found, NULL otherwise. No ownership transfer.
 const struct DriftString* drift_error_get_arg(const struct DriftError* err, const struct DriftString* key);
+// Append an arg (key,value) to an existing error.
+void drift_error_add_arg(struct DriftError* err, struct DriftString key, struct DriftString value);
 // Option<String> return for exception arg lookup.
 struct DriftOptionString __exc_args_get(const struct DriftError* err, struct DriftString key);

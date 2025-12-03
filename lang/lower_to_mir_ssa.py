@@ -397,8 +397,9 @@ def lower_expr_to_ssa(
         # Thread first payload field if present; otherwise use empty string literal.
         payload_ssa: Optional[str] = None
         key_ssa: Optional[str] = None
-        if expr.fields:
-            first_name, first_expr = next(iter(expr.fields.items()))
+        if expr.fields and expr.arg_order:
+            first_name = expr.arg_order[0]
+            first_expr = expr.fields[first_name]
             key_ssa = env.fresh_ssa("exc_key", STR)
             current.instructions.append(mir.Const(dest=key_ssa, type=STR, value=first_name, loc=loc))
             env.ctx.ssa_types[key_ssa] = STR
@@ -429,6 +430,31 @@ def lower_expr_to_ssa(
             )
         )
         env.ctx.ssa_types[dest_err] = ERROR
+        # Add remaining args (if any) via drift_error_add_arg.
+        if expr.fields and expr.arg_order:
+            for name in expr.arg_order[1:]:
+                if name not in expr.fields:
+                    continue
+                key_const = env.fresh_ssa(f"{name}_key", STR)
+                current.instructions.append(mir.Const(dest=key_const, type=STR, value=name, loc=loc))
+                env.ctx.ssa_types[key_const] = STR
+                val_ssa, val_ty, current, env = lower_expr_to_ssa(
+                    expr.fields[name], env, current, checked, blocks, fresh_block
+                )
+                if val_ty != STR:
+                    raise LoweringError("exception arg lowering currently supports String only")
+                current.instructions.append(
+                    mir.Call(
+                        dest=env.fresh_ssa(f"{name}_add", UNIT),
+                        callee="drift_error_add_arg",
+                        args=[dest_err, key_const, val_ssa],
+                        ret_type=UNIT,
+                        err_dest=None,
+                        normal=None,
+                        error=None,
+                        loc=loc,
+                    )
+                )
         return dest_err, ERROR, current, env
     # Names
     if isinstance(expr, ast.Name):
