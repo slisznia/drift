@@ -11,7 +11,12 @@ test-ssa:
 	PYTHONPATH=. ./.venv/bin/python3 -m lang.mir_ssa_tests
 	./.venv/bin/python3 tests/ssa_check_smoke.py
 	./.venv/bin/python3 tests/ssa_programs_test.py
-	just test-runtime-c
+	if ! command -v {{CLANG_BIN}} >/dev/null 2>&1; then \
+	  echo "{{CLANG_BIN}} is missing"; \
+	  exit 1; \
+	fi
+	{{CLANG_BIN}} -Ilang -Ilang/runtime -o /tmp/runtime_error_dummy_raw tests/runtime_error_dummy_raw.c lang/runtime/error_dummy.c lang/runtime/string_runtime.c && /tmp/runtime_error_dummy_raw
+	{{CLANG_BIN}} -Ilang -Ilang/runtime -o /tmp/runtime_error_args_none tests/runtime_error_args_none.c lang/runtime/error_dummy.c lang/runtime/string_runtime.c && /tmp/runtime_error_args_none
 
 test-runtime-c:
 	#!/usr/bin/env bash

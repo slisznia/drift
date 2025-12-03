@@ -1,8 +1,9 @@
 {
-  "binder_out_of_scope_error.drift": "Unknown identifier",
-  "negative_field_missing.drift": "has no field",
-  "negative_field_type.drift": "Expected type",
-  "exception_ctor_unknown.drift": "Unknown exception",
-  "exception_ctor_bad_field.drift": "has no field",
-  "exception_ctor_wrong_type.drift": "Expected type"
+  "exception_args_unknown_key.drift": "Struct 'MyErrorArgsView' has no field '.'",
+  "binder_out_of_scope_error.drift": "Unknown identifier 'e'",
+  "exception_ctor_bad_field.drift": "Exception 'E' has no field 'x'",
+  "exception_ctor_unknown.drift": "Unknown exception 'E'",
+  "exception_ctor_wrong_type.drift": "Expected type Int, got String",
+  "negative_field_missing.drift": "Struct 'Point' has no field 'z'",
+  "negative_field_type.drift": "Expected type Int, got String"
 }

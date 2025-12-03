@@ -58,6 +58,7 @@ def _run_program(path: Path) -> None:
 
 def test_ssa_programs() -> None:
     for drift_file in sorted((ROOT / "tests" / "ssa_programs").glob("*.drift")):
+        print(f"[ssa] {drift_file.name}")
         _run_program(drift_file)
 
 

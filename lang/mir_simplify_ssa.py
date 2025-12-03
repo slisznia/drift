@@ -11,7 +11,7 @@ from __future__ import annotations
 from typing import Dict, Set
 
 from . import mir
-from .types import BOOL
+from .types import BOOL, INT, Type
 
 
 _INT_BIN_OPS = {"+", "-", "*", "/", "==", "!=", "<", "<=", ">", ">="}
@@ -48,6 +48,7 @@ def simplify_function(fn: mir.Function) -> mir.Function:
     blocks: Dict[str, mir.BasicBlock] = {}
     for name, block in fn.blocks.items():
         const_values: Dict[str, object] = {}
+        const_types: Dict[str, Type] = {}
         uses: Dict[str, int] = {}
 
         def note_use(val: str) -> None:
@@ -57,6 +58,7 @@ def simplify_function(fn: mir.Function) -> mir.Function:
         for instr in block.instructions:
             if isinstance(instr, mir.Const):
                 const_values[instr.dest] = instr.value
+                const_types[instr.dest] = instr.type
             # track uses for pure defs; side-effecting ops are barriers, but still record operand uses.
             if isinstance(instr, mir.Move):
                 note_use(instr.source)
@@ -139,10 +141,20 @@ def simplify_function(fn: mir.Function) -> mir.Function:
                 rhs_val = const_values.get(instr.right)
                 folded = _fold_binary(instr.op, lhs_val, rhs_val)
                 if folded is not None:
-                    new_instrs.append(
-                        mir.Const(dest=instr.dest, type=BOOL if isinstance(folded, bool) else instr.type, value=folded)
-                    )
+                    # Prefer an explicit type on the instruction, otherwise inherit from operands, otherwise fall back.
+                    result_ty = getattr(instr, "type", None)
+                    if isinstance(folded, bool):
+                        result_ty = BOOL
+                    if result_ty is None:
+                        lty = const_types.get(instr.left)
+                        rty = const_types.get(instr.right)
+                        if lty is not None and lty == rty:
+                            result_ty = lty
+                    if result_ty is None:
+                        result_ty = INT
+                    new_instrs.append(mir.Const(dest=instr.dest, type=result_ty, value=folded))
                     const_values[instr.dest] = folded
+                    const_types[instr.dest] = result_ty
                     continue
             # Dead pure defs: drop if never used.
             if isinstance(instr, (mir.Const, mir.Copy, mir.Binary, mir.Unary, mir.Move, mir.ArrayLen)):
