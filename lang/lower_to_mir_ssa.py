@@ -992,13 +992,24 @@ def _maybe_lower_args_view_index(
     # Derive key name without re-evaluating the base when using leading-dot sugar.
     key_name_ssa: Optional[str] = None
     direct_value = False
-    if isinstance(expr.index, ast.Attr) and expr.index.value is expr.value:
+    # Helper to compare bases by identity or name.
+    def _same_base(a: ast.Expr, b: ast.Expr) -> bool:
+        return (a is b) or (isinstance(a, ast.Name) and isinstance(b, ast.Name) and a.ident == b.ident)
+    # Method sugar: view[view.a()]
+    if isinstance(expr.index, ast.Call):
+        func = expr.index.func
+        if isinstance(func, ast.Attr) and _same_base(func.value, expr.value):
+            key_name_ssa = env.fresh_ssa("exc_key_name", STR)
+            current.instructions.append(mir.Const(dest=key_name_ssa, type=STR, value=func.attr))
+            env.ctx.ssa_types[key_name_ssa] = STR
+            direct_value = True
+    if key_name_ssa is None and isinstance(expr.index, ast.Attr) and _same_base(expr.index.value, expr.value):
         # Leading-dot case: index is Attr on the same base; use the attr name directly and return String.
         key_name_ssa = env.fresh_ssa("exc_key_name", STR)
         current.instructions.append(mir.Const(dest=key_name_ssa, type=STR, value=expr.index.attr))
         env.ctx.ssa_types[key_name_ssa] = STR
         direct_value = True
-    else:
+    if key_name_ssa is None:
         # Lower index (ArgKey) to SSA and get its name field.
         key_ssa, key_ty, current, env = lower_expr_to_ssa(expr.index, env, current, checked, None, None)
         key_struct = checked.structs.get(key_ty.name)

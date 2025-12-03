@@ -10,12 +10,12 @@ fn main() returns Int {
     make_error()
   } catch MyError(e) {
     val view = e.args
-    val a_key = view.a()
-    val b_key = view.b()
-    // Access both keys; Option<String> results are assigned to ensure lowering hits __exc_args_get.
-    val a_opt = view[a_key]
-    val b_opt = view[b_key]
-    // For now, just return 0; the SSA path is exercised by the lookups.
+    // Required access via method sugar.
+    val a_val: String = view[view.a()]
+    val b_val: String = view[.b]
+    // Optional path via explicit ArgKey construction.
+    val manual_key = MyErrorArgKey(name = "a")
+    val a_opt = view[manual_key]
     sum = 0
   }
   return sum

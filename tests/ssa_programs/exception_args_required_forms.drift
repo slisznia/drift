@@ -1,0 +1,17 @@
+exception ReqErr(a: String, b: String)
+
+fn make_error() returns Void {
+  throw ReqErr(a = "aa", b = "bb")
+}
+
+fn main() returns Int {
+  try {
+    make_error()
+  } catch ReqErr(e) {
+    val view = e.args
+    val a_val: String = view[.a]
+    val b_val: String = view[view.b()]
+    return 0
+  }
+  return 1
+}
