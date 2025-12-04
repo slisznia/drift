@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from typing import List, Set
 
-from .. import stage1 as H
+from lang2 import stage1 as H
 from . import mir_nodes as M
 
 

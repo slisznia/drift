@@ -22,7 +22,8 @@ from __future__ import annotations
 
 from typing import List
 
-from ..stage0 import ast  # local copy of AST node definitions for the refactor
+# Import stage0 AST via package API to keep stage layering explicit.
+from lang2.stage0 import ast
 from . import hir_nodes as H
 
 

@@ -52,6 +52,26 @@ parse-all: parse-examples
 parse-examples:
 	./.venv/bin/python3 tools/draft_linter.py examples
 
+# Lang2 staged compiler tests
+lang2-test: lang2-stage1-test lang2-stage2-test
+	@echo "lang2 tests: Success."
+
+lang2-stage1-test:
+	# Ensure pytest is available in the venv
+	if ! ./.venv/bin/python3 -m pytest --version >/dev/null 2>&1; then \
+	  echo "pytest is missing in .venv; please install it (e.g., .venv/bin/python3 -m pip install pytest)"; \
+	  exit 1; \
+	fi
+	PYTHONPATH=. ./.venv/bin/python3 -m pytest lang2/stage1/tests
+
+lang2-stage2-test:
+	# Ensure pytest is available in the venv
+	if ! ./.venv/bin/python3 -m pytest --version >/dev/null 2>&1; then \
+	  echo "pytest is missing in .venv; please install it (e.g., .venv/bin/python3 -m pip install pytest)"; \
+	  exit 1; \
+	fi
+	PYTHONPATH=. ./.venv/bin/python3 -m pytest lang2/stage2/tests
+
 stage-for-review:
 	rm -rf staged
 	mkdir staged

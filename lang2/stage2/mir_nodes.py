@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import List, Dict, Optional, Union
 
-from ..stage1.hir_nodes import UnaryOp, BinaryOp
+from lang2.stage1 import UnaryOp, BinaryOp
 
 
 class MNode:
