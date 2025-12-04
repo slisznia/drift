@@ -10,9 +10,8 @@ fn main() returns Int {
     try {
         raise_dot()
     } catch DotErr(e) {
-        val view = e.args
-        val _a = view[.a]
-        val _b = view[.b]
+        val _a = e.attrs["a"].as_string().unwrap_or("<missing>")
+        val _b = e.attrs["b"].as_string().unwrap_or("<missing>")
         out.writeln("caught")
         out.writeln(_a)
         out.writeln(_b)

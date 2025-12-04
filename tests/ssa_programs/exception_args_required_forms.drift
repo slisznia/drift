@@ -8,9 +8,8 @@ fn main() returns Int {
   try {
     make_error()
   } catch ReqErr(e) {
-    val view = e.args
-    val a_val: String = view[.a]
-    val b_val: String = view[view.b()]
+    val a_val: String = e.attrs["a"].as_string().unwrap_or("<missing>")
+    val b_val: String = e.attrs["b"].as_string().unwrap_or("<missing>")
     return 0
   }
   return 1

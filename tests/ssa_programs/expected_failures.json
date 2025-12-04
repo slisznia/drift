@@ -1,5 +1,4 @@
 {
-  "exception_args_unknown_key.drift": "Exception 'MyError' has no field 'c'",
   "binder_out_of_scope_error.drift": "Unknown identifier 'e'",
   "exception_ctor_bad_field.drift": "Exception 'E' has no field 'x'",
   "exception_ctor_unknown.drift": "Unknown exception 'E'",

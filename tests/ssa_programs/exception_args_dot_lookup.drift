@@ -8,9 +8,8 @@ fn main() returns Int {
   try {
     make_error()
   } catch MyError(e) {
-    val view = e.args
-    val _a = view[view.a()]
-    val _b = view[view.b()]
+    val _a = e.attrs["a"].as_string().unwrap_or("<missing>")
+    val _b = e.attrs["b"].as_string().unwrap_or("<missing>")
     return 0
   }
   return 0

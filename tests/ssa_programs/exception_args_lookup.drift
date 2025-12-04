@@ -9,13 +9,11 @@ fn main() returns Int {
   try {
     make_error()
   } catch MyError(e) {
-    val view = e.args
-    // Required access via method sugar.
-    val a_val: String = view[view.a()]
-    val b_val: String = view[.b]
-    // Optional path via explicit ArgKey construction.
-    val manual_key = MyErrorArgKey(name = "a")
-    val a_opt = view[manual_key]
+    val a_val: String = e.attrs["a"].as_string().unwrap_or("<missing>")
+    val b_val: String = e.attrs["b"].as_string().unwrap_or("<missing>")
+    // Optional path via missing key.
+    val missing = e.attrs["zzz"].as_string()
+    val _ = missing.unwrap_or("<none>")
     sum = 0
   }
   return sum

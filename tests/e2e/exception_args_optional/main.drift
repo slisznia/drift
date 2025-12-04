@@ -10,9 +10,8 @@ fn main() returns Int {
     try {
         raise_opt()
     } catch OptErr(e) {
-        val view = e.args
-        val key_a = view.a()
-        val opt_a = view[key_a]
+        val dv = e.attrs["a"]
+        val opt_a = dv.as_string()
         if opt_a.is_some() {
             out.writeln("SOME")
         } else {

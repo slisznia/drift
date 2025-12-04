@@ -1,10 +1,16 @@
 exception MyError(a: String)
 
+fn raise_it() returns Void {
+  throw MyError(a = "AA")
+}
+
 fn main() returns Int {
   try {
-    throw MyError(a = "AA")
+    raise_it()
   } catch MyError(e) {
-    val bad = e.args[.c]  // expect compile-time error: unknown key
+    val missing = e.attrs["c"].as_string()
+    // Missing key yields none; unwrap to default to prove path works.
+    val fallback = missing.unwrap_or("none")
     return 0
   }
   return 0
