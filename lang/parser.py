@@ -29,6 +29,7 @@ from .ast import (
     Located,
     Move,
     Name,
+    Placeholder,
     Param,
     Program,
     RaiseStmt,
@@ -663,6 +664,8 @@ def _build_expr(node) -> Expr:
         return Unary(loc=_loc(node), op="&mut" if mut else "&", operand=target)
     if name == "postfix":
         return _build_postfix(node)
+    if name == "leading_dot":
+        return _build_leading_dot(node)
     if name == "primary":
         return _build_expr(node.children[0])
     if name == "neg":
@@ -700,19 +703,10 @@ def _build_array_literal(tree: Tree) -> ArrayLiteral:
 
 
 def _apply_index_suffix(base: Expr, suffix_node: Tree) -> Index:
-    index_expr = None
-    for child in suffix_node.children:
-        if isinstance(child, Tree):
-            # Allow leading-dot expr as a special node: DOT NAME
-            if _name(child) == "dot_expr":
-                dot_ident = next(tok.value for tok in child.children if isinstance(tok, Token) and tok.type == "NAME")
-                loc = _loc(child)
-                index_expr = Attr(loc=loc, value=base, attr=dot_ident)
-                break
-            index_expr = _build_expr(child)
-            break
-    if index_expr is None:
+    idx_child = next((c for c in suffix_node.children if isinstance(c, Tree)), None)
+    if idx_child is None:
         raise ValueError("index suffix missing expression")
+    index_expr = _build_expr(idx_child)
     return Index(loc=_loc(suffix_node), value=base, index=index_expr)
 
 
@@ -792,7 +786,21 @@ def _build_postfix(tree: Tree) -> Expr:
     if not tree.children:
         raise ValueError("postfix node missing children")
     expr = _build_expr(tree.children[0])
-    for child in tree.children[1:]:
+    suffix_nodes = tree.children[1:]
+    return _apply_postfix_suffixes(expr, suffix_nodes)
+
+
+def _build_leading_dot(tree: Tree) -> Expr:
+    # Base receiver placeholder with an initial attribute name from the DOT NAME.
+    name_tok = next(tok for tok in tree.children if isinstance(tok, Token) and tok.type == "NAME")
+    base_loc = _loc(tree)
+    expr: Expr = Attr(loc=_loc_from_token(name_tok), value=Placeholder(loc=base_loc), attr=name_tok.value)
+    suffix_nodes = [child for child in tree.children if isinstance(child, Tree)]
+    return _apply_postfix_suffixes(expr, suffix_nodes)
+
+
+def _apply_postfix_suffixes(expr: Expr, suffix_nodes: List[Tree]) -> Expr:
+    for child in suffix_nodes:
         if not isinstance(child, Tree):
             raise ValueError("Unexpected postfix child token")
         suffix_node = child

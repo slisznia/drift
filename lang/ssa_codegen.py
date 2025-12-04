@@ -328,15 +328,43 @@ def emit_module_object(
                     if instr.dest in struct_slots and instr.source in values:
                         # propagate pointer mapping if applicable
                         values[instr.dest] = values[instr.source]
+                elif isinstance(instr, mir.Store):
+                    base_val = values.get(instr.base)
+                    if base_val is None:
+                        raise RuntimeError(f"store base {instr.base} undefined")
+                    val = values.get(instr.value)
+                    if val is None:
+                        raise RuntimeError(f"store value {instr.value} undefined; have {list(values.keys())}")
+                    # Align pointee types if needed.
+                    if isinstance(base_val.type, ir.PointerType) and isinstance(val.type, ir.PointerType):
+                        if base_val.type.pointee != val.type.pointee:
+                            val = builder.bitcast(val, base_val.type)
+                    if not isinstance(base_val.type, ir.PointerType):
+                        raise RuntimeError(f"store base {instr.base} is not a pointer")
+                    # If storing a struct value into a pointer, bitcast the destination as needed.
+                    if isinstance(val.type, ir.LiteralStructType) and isinstance(base_val.type, ir.PointerType):
+                        if base_val.type.pointee != val.type:
+                            base_val = builder.bitcast(base_val, val.type.as_pointer())
+                    builder.store(val, base_val)
                 elif isinstance(instr, mir.Binary):
-                    lhs = values[instr.left]
-                    rhs = values[instr.right]
+                    def _load_if_ref(name: str):
+                        val = values[name]
+                        ty = ssa_types.get(name)
+                        if isinstance(ty, ReferenceType):
+                            val = builder.load(val)
+                            ty = ty.args[0]
+                        return val, ty
+                    lhs, lhs_ty = _load_if_ref(instr.left)
+                    rhs, rhs_ty = _load_if_ref(instr.right)
                     if instr.op == "+":
                         values[instr.dest] = builder.add(lhs, rhs, name=instr.dest)
+                        ssa_types[instr.dest] = lhs_ty or rhs_ty
                     elif instr.op == "-":
                         values[instr.dest] = builder.sub(lhs, rhs, name=instr.dest)
+                        ssa_types[instr.dest] = lhs_ty or rhs_ty
                     elif instr.op == "*":
                         values[instr.dest] = builder.mul(lhs, rhs, name=instr.dest)
+                        ssa_types[instr.dest] = lhs_ty or rhs_ty
                     elif instr.op in {"==", "!=", "<", "<=", ">", ">="}:
                         pred_map = {
                             "==": "==",
@@ -349,6 +377,7 @@ def emit_module_object(
                         pred = pred_map[instr.op]
                         cmp = builder.icmp_signed(pred, lhs, rhs, name=f"cmp_{instr.dest}")
                         values[instr.dest] = cmp
+                        ssa_types[instr.dest] = BOOL
                     else:
                         raise RuntimeError(f"unsupported binary op {instr.op}")
                 elif isinstance(instr, mir.Call):
@@ -581,7 +610,28 @@ def emit_module_object(
                         call_val = builder.call(callee, [dv_arg], name=instr.dest)
                         values[instr.dest] = call_val
                     else:
-                        call_val = builder.call(callee, args, name=instr.dest)
+                        adj_args = []
+                        for idx, arg in enumerate(args):
+                            expected = callee.function_type.args[idx]
+                            if isinstance(expected, ir.LiteralStructType) and isinstance(arg.type, ir.PointerType):
+                                if arg.type.pointee == expected:
+                                    arg = builder.load(arg)
+                            elif isinstance(expected, ir.PointerType):
+                                if isinstance(arg.type, ir.LiteralStructType):
+                                    slot = builder.alloca(expected.pointee, name=f"{instr.dest}.arg{idx}")
+                                    builder.store(arg, slot)
+                                    arg = slot
+                                elif not isinstance(arg.type, ir.PointerType):
+                                    slot = builder.alloca(expected.pointee, name=f"{instr.dest}.arg{idx}")
+                                    # If scalar, bitcast/store as needed.
+                                    if expected.pointee == arg.type:
+                                        builder.store(arg, slot)
+                                    else:
+                                        cast_slot = builder.bitcast(slot, arg.type.as_pointer()) if hasattr(arg.type, "as_pointer") else slot
+                                        builder.store(arg, cast_slot)
+                                    arg = slot
+                            adj_args.append(arg)
+                        call_val = builder.call(callee, adj_args, name=instr.dest)
                         values[instr.dest] = call_val
                     ssa_types[instr.dest] = instr.ret_type
                 elif isinstance(instr, mir.StructInit):
@@ -595,7 +645,11 @@ def emit_module_object(
                     slot = struct_slots[instr.dest]
                     for idx, arg in enumerate(instr.args):
                         field_ptr = builder.gep(slot, [I32_TY(0), I32_TY(idx)], inbounds=True)
-                        builder.store(values[arg], field_ptr)
+                        arg_val = values[arg]
+                        arg_ty = ssa_types.get(arg)
+                        if isinstance(arg_ty, ReferenceType):
+                            arg_val = builder.load(arg_val)
+                        builder.store(arg_val, field_ptr)
                     values[instr.dest] = slot
                     ssa_types[instr.dest] = instr.type
                 elif isinstance(instr, mir.FieldSet):
@@ -784,14 +838,19 @@ def emit_module_object(
                         pair_loaded = builder.load(pair_ptr)
                         builder.ret(pair_loaded)
                 else:
-                    if isinstance(_llvm_type(f.return_type), ir.VoidType):
+                    if isinstance(_llvm_type_with_structs(f.return_type), ir.VoidType):
                         builder.ret_void()
                     else:
                         if term.value is None:
                             raise RuntimeError(f"missing return value for non-void function {f.name}")
                         if term.value not in values:
                             raise RuntimeError(f"return value {term.value} undefined")
-                        builder.ret(values[term.value])
+                        ret_val = values[term.value]
+                        ret_ll_ty = _llvm_type_with_structs(f.return_type)
+                        if isinstance(ret_ll_ty, ir.LiteralStructType) and isinstance(ret_val.type, ir.PointerType):
+                            if ret_val.type.pointee == ret_ll_ty:
+                                ret_val = builder.load(ret_val)
+                        builder.ret(ret_val)
             elif isinstance(term, mir.Call):
                 if not (term.normal and term.error):
                     raise RuntimeError("call terminator without normal/error edges not supported")
@@ -801,7 +860,27 @@ def emit_module_object(
                 if callee.name not in can_error_funcs:
                     raise RuntimeError(f"call with edges to non-error function {callee.name}")
                 call_args = [values[a] for a in term.args]
-                call_pair = builder.call(callee, call_args, name=term.dest or "call_pair")
+                adj_args = []
+                for idx, arg in enumerate(call_args):
+                    expected = callee.function_type.args[idx]
+                    if isinstance(expected, ir.LiteralStructType) and isinstance(arg.type, ir.PointerType):
+                        if arg.type.pointee == expected:
+                            arg = builder.load(arg)
+                    elif isinstance(expected, ir.PointerType):
+                        if isinstance(arg.type, ir.LiteralStructType):
+                            slot = builder.alloca(expected.pointee, name=f"{term.dest or 'call_pair'}.arg{idx}")
+                            builder.store(arg, slot)
+                            arg = slot
+                        elif not isinstance(arg.type, ir.PointerType):
+                            slot = builder.alloca(expected.pointee, name=f"{term.dest or 'call_pair'}.arg{idx}")
+                            if expected.pointee == arg.type:
+                                builder.store(arg, slot)
+                            else:
+                                cast_slot = builder.bitcast(slot, arg.type.as_pointer()) if hasattr(arg.type, "as_pointer") else slot
+                                builder.store(arg, cast_slot)
+                            arg = slot
+                    adj_args.append(arg)
+                call_pair = builder.call(callee, adj_args, name=term.dest or "call_pair")
                 ret_ty = callee.function_type.return_type
                 if isinstance(ret_ty, ir.LiteralStructType):
                     val_component = builder.extract_value(call_pair, 0)

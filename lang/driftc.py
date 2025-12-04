@@ -74,15 +74,16 @@ def _run_ssa_check(checked: checker.CheckedProgram, simplify: bool, dump: bool) 
         except LoweringError as e:
             raise SystemExit(f"SSA lowering failed for {fn_def.name}: {e}")
         fn_blocks = lowered.blocks
+        fn_info = checked.functions.get(lowered.name, checked.functions[fn_def.name])
         if simplify:
             fn_blocks = simplify_function(
                 mir.Function(
-                    name=fn_def.name,
+                    name=lowered.name,
                     params=[
-                        mir.Param(name=p.name, type=checked.functions[fn_def.name].signature.params[idx])
+                        mir.Param(name=p.name, type=fn_info.signature.params[idx])
                         for idx, p in enumerate(fn_def.params)
                     ],
-                    return_type=checked.functions[fn_def.name].signature.return_type,
+                    return_type=fn_info.signature.return_type,
                     entry=lowered.entry,
                     module=checked.module or "<module>",
                     source=None,
@@ -125,9 +126,9 @@ def compile_file(
         if fn_def.name not in checked.functions:
             continue
         lowered = lower_function_ssa(fn_def, checked)
-        fn_info = checked.functions[fn_def.name]
+        fn_info = checked.functions.get(lowered.name, checked.functions[fn_def.name])
         ssa_fn = mir.Function(
-            name=fn_def.name,
+            name=lowered.name,
             params=[mir.Param(name=p.name, type=fn_info.signature.params[idx]) for idx, p in enumerate(fn_def.params)],
             return_type=fn_info.signature.return_type,
             entry=lowered.entry,

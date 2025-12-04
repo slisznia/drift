@@ -192,6 +192,7 @@ class FunctionContext:
     signature: FunctionSignature
     scope: Scope
     allow_returns: bool
+    receiver_placeholder: Optional[Type]
 
 
 class Checker:
@@ -221,6 +222,7 @@ class Checker:
             ),
             scope=global_scope,
             allow_returns=False,
+            receiver_placeholder=None,
         )
         for stmt in program.statements:
             self._check_stmt(stmt, module_ctx, in_loop=False)
@@ -331,6 +333,19 @@ class Checker:
                 effects=None,
             )
             self.function_infos[fn.name] = FunctionInfo(signature=signature, node=fn)
+            # If the first parameter is a struct type, also register a method-style callee.
+            if param_types:
+                recv_ty = param_types[0]
+                recv_struct = recv_ty.args[0] if isinstance(recv_ty, ReferenceType) else recv_ty
+                struct_info = self.struct_infos.get(recv_struct.name)
+                if struct_info:
+                    method_sig = FunctionSignature(
+                        name=fn.name,
+                        params=param_types,
+                        return_type=return_type,
+                        effects=None,
+                    )
+                    struct_info.methods[fn.name] = method_sig
 
     def _register_structs(self, structs: List[ast.StructDef]) -> None:
         for struct in structs:
@@ -380,6 +395,7 @@ class Checker:
             signature=info.signature,
             scope=scope,
             allow_returns=True,
+            receiver_placeholder=None,
         )
         for stmt in fn.body.statements:
             self._check_stmt(stmt, ctx, in_loop=False)
@@ -494,6 +510,7 @@ class Checker:
                     signature=ctx.signature,
                     scope=catch_scope,
                     allow_returns=ctx.allow_returns,
+                    receiver_placeholder=None,
                 )
                 if binder_name:
                     catch_scope.define(
@@ -552,6 +569,10 @@ class Checker:
             return self._check_try_catch_expr(expr, ctx)
         if isinstance(expr, ast.Ternary):
             return self._check_ternary(expr, ctx)
+        if isinstance(expr, ast.Placeholder):
+            if ctx.receiver_placeholder is None:
+                raise CheckError(f"{expr.loc.line}:{expr.loc.column}: '.' placeholder used outside of receiver context")
+            return ctx.receiver_placeholder
         if isinstance(expr, ast.Unary):
             operand_type = self._check_expr(expr.operand, ctx)
             if expr.op == "-":
@@ -595,6 +616,7 @@ class Checker:
                 signature=ctx.signature,
                 scope=catch_scope,
                 allow_returns=ctx.allow_returns,
+                receiver_placeholder=None,
             )
             if arm.binder:
                 catch_scope.define(arm.binder, VarInfo(type=ERROR, mutable=False), expr.loc)
@@ -655,102 +677,114 @@ class Checker:
         return element_type
 
     def _check_call(self, expr: ast.Call, ctx: FunctionContext) -> Type:
-        # Optional<T> builtin methods are handled specially.
-        if isinstance(expr.func, ast.Attr):
-            base_type = self._check_expr(expr.func.value, ctx)
-            if base_type.name == "Optional":
-                return self._check_optional_call(expr, base_type, ctx)
-            if base_type.name == "DiagnosticValue":
-                method = expr.func.attr
-                if expr.kwargs:
-                    raise CheckError(f"{expr.loc.line}:{expr.loc.column}: DiagnosticValue.{method} does not accept keyword args")
-                if method == "get":
-                    if len(expr.args) != 1:
-                        raise CheckError(f"{expr.loc.line}:{expr.loc.column}: DiagnosticValue.get expects 1 argument")
-                    arg_ty = self._check_expr(expr.args[0], ctx)
-                    self._expect_type(arg_ty, STR, expr.args[0].loc)
-                    return Type("DiagnosticValue")
-                if method == "index":
-                    if len(expr.args) != 1:
-                        raise CheckError(f"{expr.loc.line}:{expr.loc.column}: DiagnosticValue.index expects 1 argument")
-                    arg_ty = self._check_expr(expr.args[0], ctx)
-                    self._expect_type(arg_ty, INT, expr.args[0].loc)
-                    return Type("DiagnosticValue")
-                if method == "as_int":
-                    if expr.args:
-                        raise CheckError(f"{expr.loc.line}:{expr.loc.column}: DiagnosticValue.as_int takes no arguments")
-                    return Type("Optional", (INT,))
-                if method == "as_bool":
-                    if expr.args:
-                        raise CheckError(f"{expr.loc.line}:{expr.loc.column}: DiagnosticValue.as_bool takes no arguments")
-                    return Type("Optional", (BOOL,))
-                if method == "as_float":
-                    if expr.args:
-                        raise CheckError(f"{expr.loc.line}:{expr.loc.column}: DiagnosticValue.as_float takes no arguments")
-                    return Type("Optional", (Type("Float64"),))
-                if method == "as_string":
-                    if expr.args:
-                        raise CheckError(f"{expr.loc.line}:{expr.loc.column}: DiagnosticValue.as_string takes no arguments")
-                    return Type("Optional", (STR,))
-                raise CheckError(f"{expr.loc.line}:{expr.loc.column}: Unknown DiagnosticValue method '{method}'")
-        callee_name = self._resolve_callee(expr.func, ctx)
-        exc_info = self.exception_infos.get(callee_name)
-        if exc_info:
-            self._check_exception_constructor(expr, exc_info, ctx)
-            return ERROR
-        struct_info = self.struct_infos.get(callee_name)
-        if struct_info:
-            self._check_struct_constructor(expr, struct_info, ctx)
-            return Type(callee_name)
-        if callee_name not in self.function_infos:
-            raise CheckError(f"{expr.loc.line}:{expr.loc.column}: Unknown function '{callee_name}'")
-        info = self.function_infos[callee_name]
-        sig = info.signature
-        if len(expr.args) != len(sig.params):
-            raise CheckError(
-                f"{expr.loc.line}:{expr.loc.column}: '{callee_name}' expects {len(sig.params)} args, got {len(expr.args)}"
-            )
-        for kw in expr.kwargs:
-            if kw.name not in sig.allowed_kwargs:
+        placeholder_prev = ctx.receiver_placeholder
+        base_type_for_placeholder: Optional[Type] = None
+        try:
+            if isinstance(expr.func, ast.Attr):
+                base_type_for_placeholder = self._check_expr(expr.func.value, ctx)
+                ctx.receiver_placeholder = base_type_for_placeholder
+            # Optional<T> builtin methods are handled specially.
+            method_sig: Optional[FunctionSignature] = None
+            if isinstance(expr.func, ast.Attr):
+                base_type = base_type_for_placeholder if base_type_for_placeholder is not None else self._check_expr(expr.func.value, ctx)
+                if base_type.name == "Optional":
+                    return self._check_optional_call(expr, base_type, ctx)
+                if base_type.name == "DiagnosticValue":
+                    method = expr.func.attr
+                    if expr.kwargs:
+                        raise CheckError(f"{expr.loc.line}:{expr.loc.column}: DiagnosticValue.{method} does not accept keyword args")
+                    if method == "get":
+                        if len(expr.args) != 1:
+                            raise CheckError(f"{expr.loc.line}:{expr.loc.column}: DiagnosticValue.get expects 1 argument")
+                        arg_ty = self._check_expr(expr.args[0], ctx)
+                        self._expect_type(arg_ty, STR, expr.args[0].loc)
+                        return Type("DiagnosticValue")
+                    if method == "index":
+                        if len(expr.args) != 1:
+                            raise CheckError(f"{expr.loc.line}:{expr.loc.column}: DiagnosticValue.index expects 1 argument")
+                        arg_ty = self._check_expr(expr.args[0], ctx)
+                        self._expect_type(arg_ty, INT, expr.args[0].loc)
+                        return Type("DiagnosticValue")
+                    if method == "as_int":
+                        if expr.args:
+                            raise CheckError(f"{expr.loc.line}:{expr.loc.column}: DiagnosticValue.as_int takes no arguments")
+                        return Type("Optional", (INT,))
+                    if method == "as_bool":
+                        if expr.args:
+                            raise CheckError(f"{expr.loc.line}:{expr.loc.column}: DiagnosticValue.as_bool takes no arguments")
+                        return Type("Optional", (BOOL,))
+                    if method == "as_float":
+                        if expr.args:
+                            raise CheckError(f"{expr.loc.line}:{expr.loc.column}: DiagnosticValue.as_float takes no arguments")
+                        return Type("Optional", (Type("Float64"),))
+                    if method == "as_string":
+                        if expr.args:
+                            raise CheckError(f"{expr.loc.line}:{expr.loc.column}: DiagnosticValue.as_string takes no arguments")
+                        return Type("Optional", (STR,))
+                    raise CheckError(f"{expr.loc.line}:{expr.loc.column}: Unknown DiagnosticValue method '{method}'")
+                struct_info = self.struct_infos.get(base_type.name)
+                if struct_info and struct_info.methods and expr.func.attr in struct_info.methods:
+                    method_sig = struct_info.methods[expr.func.attr]
+            callee_name = self._resolve_callee(expr.func, ctx)
+            exc_info = self.exception_infos.get(callee_name)
+            if exc_info:
+                self._check_exception_constructor(expr, exc_info, ctx)
+                return ERROR
+            struct_info = self.struct_infos.get(callee_name)
+            if struct_info:
+                self._check_struct_constructor(expr, struct_info, ctx)
+                return Type(callee_name)
+            if method_sig is None and callee_name not in self.function_infos:
+                raise CheckError(f"{expr.loc.line}:{expr.loc.column}: Unknown function '{callee_name}'")
+            sig = method_sig or self.function_infos[callee_name].signature
+            expected_params = sig.params[1:] if method_sig else sig.params
+            if len(expr.args) != len(expected_params):
                 raise CheckError(
-                    f"{kw.value.loc.line}:{kw.value.loc.column}: '{callee_name}' does not accept keyword '{kw.name}'"
+                    f"{expr.loc.line}:{expr.loc.column}: '{callee_name}' expects {len(expected_params)} args, got {len(expr.args)}"
                 )
-            self._check_expr(kw.value, ctx)
-        for arg_expr, expected in zip(expr.args, sig.params):
-            if isinstance(expected, ReferenceType):
-                # Auto-borrow from lvalues only.
-                if isinstance(arg_expr, ast.Unary) and arg_expr.op in ("&", "&mut"):
-                    inner_type = self._check_expr(arg_expr.operand, ctx)
-                    if expected.mutable and arg_expr.op != "&mut":
-                        raise CheckError(
-                            f"{arg_expr.loc.line}:{arg_expr.loc.column}: expected &mut but found shared borrow"
-                        )
-                    if not expected.mutable and arg_expr.op == "&mut":
-                        raise CheckError(
-                            f"{arg_expr.loc.line}:{arg_expr.loc.column}: expected shared borrow but found &mut"
-                        )
-                    if arg_expr.op == "&mut" and isinstance(arg_expr.operand, ast.Name):
-                        var = ctx.scope.lookup(arg_expr.operand.ident, arg_expr.operand.loc)
-                        if not var.mutable:
-                            raise CheckError(
-                                f"{arg_expr.loc.line}:{arg_expr.loc.column}: cannot take &mut of immutable binding '{arg_expr.operand.ident}'"
-                            )
-                    self._expect_type(inner_type, expected.args[0], arg_expr.loc)
-                elif isinstance(arg_expr, ast.Name):
-                    var = ctx.scope.lookup(arg_expr.ident, arg_expr.loc)
-                    if expected.mutable and not var.mutable:
-                        raise CheckError(
-                            f"{arg_expr.loc.line}:{arg_expr.loc.column}: expected mutable binding for &mut parameter"
-                        )
-                    self._expect_type(var.type, expected.args[0], arg_expr.loc)
-                else:
+            for kw in expr.kwargs:
+                if kw.name not in sig.allowed_kwargs:
                     raise CheckError(
-                        f"{arg_expr.loc.line}:{arg_expr.loc.column}: cannot borrow from a temporary or moved value"
+                        f"{kw.value.loc.line}:{kw.value.loc.column}: '{callee_name}' does not accept keyword '{kw.name}'"
                     )
-            else:
-                actual = self._check_expr(arg_expr, ctx)
-                self._expect_type(actual, expected, arg_expr.loc)
-        return sig.return_type
+                self._check_expr(kw.value, ctx)
+            for arg_expr, expected in zip(expr.args, expected_params):
+                if isinstance(expected, ReferenceType):
+                    # Auto-borrow from lvalues only.
+                    if isinstance(arg_expr, ast.Unary) and arg_expr.op in ("&", "&mut"):
+                        inner_type = self._check_expr(arg_expr.operand, ctx)
+                        if expected.mutable and arg_expr.op != "&mut":
+                            raise CheckError(
+                                f"{arg_expr.loc.line}:{arg_expr.loc.column}: expected &mut but found shared borrow"
+                            )
+                        if not expected.mutable and arg_expr.op == "&mut":
+                            raise CheckError(
+                                f"{arg_expr.loc.line}:{arg_expr.loc.column}: expected shared borrow but found &mut"
+                            )
+                        if arg_expr.op == "&mut" and isinstance(arg_expr.operand, ast.Name):
+                            var = ctx.scope.lookup(arg_expr.operand.ident, arg_expr.operand.loc)
+                            if not var.mutable:
+                                raise CheckError(
+                                    f"{arg_expr.loc.line}:{arg_expr.loc.column}: cannot take &mut of immutable binding '{arg_expr.operand.ident}'"
+                                )
+                        self._expect_type(inner_type, expected.args[0], arg_expr.loc)
+                    elif isinstance(arg_expr, ast.Name):
+                        var = ctx.scope.lookup(arg_expr.ident, arg_expr.loc)
+                        if expected.mutable and not var.mutable:
+                            raise CheckError(
+                                f"{arg_expr.loc.line}:{arg_expr.loc.column}: expected mutable binding for &mut parameter"
+                            )
+                        self._expect_type(var.type, expected.args[0], arg_expr.loc)
+                    else:
+                        raise CheckError(
+                            f"{arg_expr.loc.line}:{arg_expr.loc.column}: cannot borrow from a temporary or moved value"
+                        )
+                else:
+                    actual = self._check_expr(arg_expr, ctx)
+                    self._expect_type(actual, expected, arg_expr.loc)
+            return sig.return_type
+        finally:
+            ctx.receiver_placeholder = placeholder_prev
 
     def _check_struct_constructor(self, expr: ast.Call, info: StructInfo, ctx: FunctionContext) -> None:
         if len(expr.args) > len(info.field_order):
@@ -822,20 +856,26 @@ class Checker:
     def _check_binary(self, expr: ast.Binary, ctx: FunctionContext) -> Type:
         left = self._check_expr(expr.left, ctx)
         right = self._check_expr(expr.right, ctx)
+        def _base_numeric(t: Type) -> Type:
+            if isinstance(t, ReferenceType):
+                return t.args[0]
+            return t
+        lnum = _base_numeric(left)
+        rnum = _base_numeric(right)
         op = expr.op
         if op in {"+", "-", "*", "/"}:
-            if left == STR and op == "+":
-                self._expect_type(right, STR, expr.loc)
+            if lnum == STR and op == "+":
+                self._expect_type(rnum, STR, expr.loc)
                 return STR
-            self._expect_number(left, expr.loc)
-            self._expect_type(right, left, expr.loc)
-            return left
+            self._expect_number(lnum, expr.loc)
+            self._expect_type(rnum, lnum, expr.loc)
+            return lnum
         if op in {"==", "!="}:
-            self._expect_type(right, left, expr.loc)
+            self._expect_type(rnum, lnum, expr.loc)
             return BOOL
         if op in {"<", "<=", ">", ">="}:
-            self._expect_number(left, expr.loc)
-            self._expect_type(right, left, expr.loc)
+            self._expect_number(lnum, expr.loc)
+            self._expect_type(rnum, lnum, expr.loc)
             return BOOL
         if op in {"and", "or"}:
             self._expect_type(left, BOOL, expr.loc)
@@ -857,7 +897,7 @@ class Checker:
             struct_info = self.struct_infos.get(base_type.name)
             if struct_info:
                 if struct_info.methods and func_expr.attr in struct_info.methods:
-                    return f"{base_type.name}.{func_expr.attr}"
+                    return struct_info.methods[func_expr.attr].name
                 # Fallback for synthetic args-view helpers: allow method name even if not pre-registered.
                 if base_type.name.endswith("ArgsView"):
                     return f"{base_type.name}.{func_expr.attr}"
@@ -934,6 +974,9 @@ class Checker:
                     f"{loc.line}:{loc.column}: Expected type implementing Display, got {actual}"
                 )
             return
+        # Allow auto-deref of references when the inner type matches.
+        if isinstance(actual, ReferenceType) and actual.args and actual.args[0] == expected:
+            return
         if actual != expected:
             raise CheckError(
                 f"{loc.line}:{loc.column}: Expected type {expected}, got {actual}"
@@ -946,6 +989,8 @@ class Checker:
                 raise CheckError(
                     f"{target.loc.line}:{target.loc.column}: '{target.ident}' is immutable"
                 )
+            if isinstance(info.type, ReferenceType):
+                return info.type.args[0]
             return info.type
         if isinstance(target, ast.Index):
             self._ensure_mutable_root(target.value, ctx)

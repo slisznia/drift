@@ -136,6 +136,14 @@ class FieldSet(Instruction):
 
 
 @dataclass(frozen=True)
+class Store(Instruction):
+    base: Value
+    value: Value
+    loc: Location = Location()
+    # Mutation: side-effecting store through a reference; does not define a new SSA name.
+
+
+@dataclass(frozen=True)
 class ArraySet(Instruction):
     base: Value
     index: Value

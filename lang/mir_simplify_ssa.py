@@ -86,6 +86,9 @@ def simplify_function(fn: mir.Function) -> mir.Function:
                     note_use(a)
             elif isinstance(instr, mir.ArrayLen):
                 note_use(instr.base)
+            elif isinstance(instr, mir.Store):
+                note_use(instr.base)
+                note_use(instr.value)
             elif isinstance(instr, mir.Call):
                 for a in instr.args:
                     note_use(a)

@@ -1,0 +1,25 @@
+struct Box {
+    id: Int
+}
+
+struct Counter {
+    value: Int
+}
+
+fn new_box(c: &mut Counter) returns Box {
+    c.value = c.value + 1
+    return Box(id = c.value)
+}
+
+fn use_box(self: Box, a: Int, b: Int) returns Int {
+    return a + b
+}
+
+fn main() returns Int {
+    var counter: Counter = Counter(value = 0)
+    val result = new_box(&mut counter).use_box(.id, .id)
+    if counter.value != 1 {
+        return 99
+    }
+    return result
+}

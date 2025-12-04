@@ -34,13 +34,25 @@ class LoweredFunction:
     blocks: Dict[str, mir.BasicBlock]
     env: SSAEnv
     entry: str = "bb0"
+    name: str = ""
 
 
 def lower_function_ssa(fn_def: ast.FunctionDef, checked: CheckedProgram) -> LoweredFunction:
     """Lower a single function into SSA MIR blocks (scaffold only)."""
     fn_info = checked.functions[fn_def.name]
+    fn_sig = fn_info.signature
+    # Prefer method alias name if available (Struct.method).
+    effective_name = fn_def.name
+    if fn_sig.params:
+        recv_ty = fn_sig.params[0]
+        recv_struct = recv_ty.args[0] if isinstance(recv_ty, ReferenceType) else recv_ty
+        struct_info = checked.structs.get(recv_struct.name)
+        if struct_info and fn_def.name in struct_info.methods:
+            effective_name = struct_info.methods[fn_def.name].name
+            fn_info = checked.functions.get(effective_name, fn_info)
+            fn_sig = fn_info.signature
     ctx = SSAContext()
-    env = SSAEnv(ctx=ctx, frame_name=fn_def.name)
+    env = SSAEnv(ctx=ctx, frame_name=effective_name)
     blocks: Dict[str, mir.BasicBlock] = {}
     block_counter = 0
 
@@ -55,7 +67,7 @@ def lower_function_ssa(fn_def: ast.FunctionDef, checked: CheckedProgram) -> Lowe
 
     # Bind params to fresh SSA names
     for idx, p in enumerate(fn_def.params):
-        ty = fn_info.signature.params[idx]
+        ty = fn_sig.params[idx]
         ssa_name = env.fresh_ssa(p.name, ty)
         entry_block.params.append(mir.Param(name=ssa_name, type=ty))
         env.bind_user(p.name, ssa_name, ty)
@@ -66,7 +78,7 @@ def lower_function_ssa(fn_def: ast.FunctionDef, checked: CheckedProgram) -> Lowe
         # Implicit return for functions that fall through.
         current.terminator = mir.Return()
 
-    return LoweredFunction(blocks=blocks, env=env, entry=entry_name)
+    return LoweredFunction(blocks=blocks, env=env, entry=entry_name, name=effective_name)
 
 
 def lower_block_in_env(
@@ -147,10 +159,22 @@ def lower_assign(
     if isinstance(stmt.target, ast.Name):
         if not env.has_user(stmt.target.ident):
             raise LoweringError(f"assignment to undeclared variable {stmt.target.ident}")
+        target_ssa = env.lookup_user(stmt.target.ident)
+        target_ty = env.ctx.ssa_types.get(target_ssa)
         val_ssa, val_ty, current, env = lower_expr_to_ssa(stmt.value, env, current, checked, blocks, fresh_block)
-        dest_ssa = env.fresh_ssa(stmt.target.ident, val_ty)
-        current.instructions.append(mir.Move(dest=dest_ssa, source=val_ssa))
-        env.bind_user(stmt.target.ident, dest_ssa, val_ty)
+        # If assigning through a reference, emit a Store rather than rebinding.
+        if isinstance(target_ty, ReferenceType):
+            inner_ty = target_ty.args[0]
+            if val_ty != inner_ty:
+                raise LoweringError(
+                    f"type mismatch storing through reference {stmt.target.ident}: expected {inner_ty}, got {val_ty}"
+                )
+            current.instructions.append(mir.Store(base=target_ssa, value=val_ssa, loc=getattr(stmt, "loc", None)))
+            env.ctx.ssa_types[target_ssa] = target_ty
+        else:
+            dest_ssa = env.fresh_ssa(stmt.target.ident, val_ty)
+            current.instructions.append(mir.Move(dest=dest_ssa, source=val_ssa))
+            env.bind_user(stmt.target.ident, dest_ssa, val_ty)
         return current, env
     # Field update
     if isinstance(stmt.target, ast.Attr):
@@ -402,6 +426,10 @@ def lower_expr_to_ssa(
     Returns (ssa_name, type, current_block, env) where current_block/env reflect any
     control-flow split (e.g., try/else lowering).
     """
+    if isinstance(expr, ast.Placeholder):
+        if placeholder_ssa is None or placeholder_ty is None:
+            raise LoweringError("receiver placeholder used outside of method call")
+        return placeholder_ssa, placeholder_ty, current, env
     # Legacy args-view removed; no special casing.
     # Error.attrs indexing -> __exc_attrs_get_dv (DiagnosticValue).
     if isinstance(expr, ast.Index) and isinstance(expr.value, ast.Attr) and expr.value.attr == "attrs":
@@ -654,11 +682,13 @@ def lower_expr_to_ssa(
         if expr.op in {"==", "!=", "<", "<=", ">", ">="}:
             res_ty = BOOL
         else:
-            res_ty = lhs_ty
+            # For arithmetic ops, propagate the underlying numeric type (strip references).
+            res_ty = lhs_ty.args[0] if isinstance(lhs_ty, ReferenceType) else lhs_ty
         env.ctx.ssa_types[dest] = res_ty
         return dest, res_ty, current, env
     # Calls (simple name callee, no error edges in scaffold)
     if isinstance(expr, ast.Call):
+        method_callee = None
         # Receiver placeholder support: evaluate receiver once and thread into args.
         recv_ssa: Optional[str] = None
         recv_ty: Optional[Type] = None
@@ -892,7 +922,7 @@ def lower_expr_to_ssa(
             if recv_ty and recv_ty.name in checked.structs:
                 struct_info = checked.structs[recv_ty.name]
                 if struct_info.methods and expr.func.attr in struct_info.methods:
-                    method_callee = f"{recv_ty.name}.{expr.func.attr}"
+                    method_callee = struct_info.methods[expr.func.attr].name
             callee = method_callee or (
                 f"{expr.func.value.ident}.{expr.func.attr}" if isinstance(expr.func.value, ast.Name) else None
             )
@@ -922,6 +952,8 @@ def lower_expr_to_ssa(
             )
             arg_ssa.append(v)
         ret_ty = checked.functions[callee].signature.return_type
+        if method_callee and recv_ssa is not None:
+            arg_ssa = [recv_ssa] + arg_ssa
         dest = env.fresh_ssa(callee, ret_ty)
         current.instructions.append(
             mir.Call(dest=dest, callee=callee, args=arg_ssa, ret_type=ret_ty, err_dest=None, normal=None, error=None, loc=getattr(expr, "loc", None))
@@ -931,7 +963,16 @@ def lower_expr_to_ssa(
     # Array indexing
     if isinstance(expr, ast.Index):
         base_ssa, base_ty, current, env = lower_expr_to_ssa(expr.value, env, current, checked, blocks, fresh_block)
-        idx_ssa, idx_ty, current, env = lower_expr_to_ssa(expr.index, env, current, checked, blocks, fresh_block)
+        idx_ssa, idx_ty, current, env = lower_expr_to_ssa(
+            expr.index,
+            env,
+            current,
+            checked,
+            blocks,
+            fresh_block,
+            placeholder_ssa=base_ssa,
+            placeholder_ty=base_ty,
+        )
         elem_ty = array_element_type(base_ty)
         if elem_ty is None:
             raise LoweringError(f"type {base_ty} is not indexable")
@@ -959,7 +1000,16 @@ def lower_expr_to_ssa(
         env.ctx.ssa_types[dest] = out_ty
         return dest, out_ty, current, env
     if isinstance(expr, ast.Attr):
-        base_ssa, base_ty, current, env = lower_expr_to_ssa(expr.value, env, current, checked, blocks, fresh_block)
+        base_ssa, base_ty, current, env = lower_expr_to_ssa(
+            expr.value,
+            env,
+            current,
+            checked,
+            blocks,
+            fresh_block,
+            placeholder_ssa=placeholder_ssa,
+            placeholder_ty=placeholder_ty,
+        )
         if expr.attr == "attrs":
             dest = env.fresh_ssa("attrs_view", Type("ErrorAttrs"))
             current.instructions.append(mir.Move(dest=dest, source=base_ssa))

@@ -189,14 +189,19 @@ postfix_suffix: call_suffix
 call_suffix: "(" [call_args] ")"
 attr_suffix: DOT NAME
 move_suffix: MOVE
-index_suffix: "[" (dot_expr | expr) "]"
-dot_expr: DOT NAME
+index_suffix: "[" (leading_dot | expr) "]"
 
 primary: literal
        | NAME -> var
-       | DOT  -> placeholder
+       | leading_dot
        | "(" expr ")"
        | array_literal
+
+leading_dot: DOT NAME leading_suffix*
+leading_suffix: call_suffix
+              | attr_suffix
+              | move_suffix
+              | index_suffix
 
 array_literal: "[" [expr (COMMA expr)*] "]"
 
