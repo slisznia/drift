@@ -1,7 +1,7 @@
 # status
 
-* Current: no implementation changes yet; optional/args-view are legacy and will be removed.
-* Next: finish the spec/docs update (exception syntax, DiagnosticValue, typed attrs/frames, DMIR/ABI) with zero JSON references, then start runtime types in isolation.
+* Current: Spec/grammar/ABI/DMIR docs updated for typed diagnostics and new exception syntax; runtime `DiagnosticValue` + helpers implemented in C with unit tests.
+* Next: Wire `DiagnosticValue`/`Diagnostic` into the compiler/runtime (`Error.attrs`, `^` captures), and mark remaining doc nits (Missing at ABI/logging) if any.
 
 # phase 0 — align spec / grammar / ABI (prep)
 
@@ -24,7 +24,7 @@
   * `ErrorFrame` layout (typed locals)
   * `Error.attrs` map rules
   * default `Diagnostic` derivation for structs
-* Status: in progress. Spec/grammar/ABI/DMIR docs updated for typed `DiagnosticValue`, `attrs`, and new exception syntax. Remaining: clarify how/if `Missing` is exposed at ABI/logging level (no JSON) and ensure any straggler doc references are cleaned up.
+* Status: done. Spec/grammar/ABI/DMIR docs updated for typed `DiagnosticValue`, `attrs`, and new exception syntax. Remaining doc nit: clarify how/if `Missing` is exposed at ABI/logging level (no JSON) if needed.
 
 ---
 
@@ -57,7 +57,7 @@ Tests:
 * nested objects
 * arrays
 * handling of Missing / wrong-type access
-* Status: not started.
+* Status: in progress — C runtime `DiagnosticValue` + helpers implemented and unit-tested (`tests/runtime_diagnostic_value.c`).
 
 Status: not started.
 
@@ -82,7 +82,7 @@ Tests:
 
 * struct → object tree
 * custom implementation overrides
-* Status: not started.
+* Status: in progress — primitive `to_diag` equivalents implemented in C (helpers for scalars/Optional), but not yet exposed through the compiler.
 
 Status: not started.
 

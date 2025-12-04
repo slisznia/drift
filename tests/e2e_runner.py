@@ -76,6 +76,7 @@ def _run_case(case_dir: Path) -> str:
         ROOT / "lang" / "runtime" / "string_runtime.c",
         ROOT / "lang" / "runtime" / "console_runtime.c",
         ROOT / "lang" / "runtime" / "error_dummy.c",
+        ROOT / "lang" / "runtime" / "diagnostic_runtime.c",
     ]
     link_cmd = [clang, str(case_dir / "a.o")] + [str(p) for p in runtime_sources] + ["-o", str(exe_path)]
     link = subprocess.run(link_cmd, cwd=ROOT, capture_output=True, text=True, env=env)

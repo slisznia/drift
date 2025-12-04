@@ -18,6 +18,7 @@ test-ssa:
 	fi
 	{{CLANG_BIN}} -Ilang -Ilang/runtime -o /tmp/runtime_error_dummy_raw tests/runtime_error_dummy_raw.c lang/runtime/error_dummy.c lang/runtime/string_runtime.c && /tmp/runtime_error_dummy_raw
 	{{CLANG_BIN}} -Ilang -Ilang/runtime -o /tmp/runtime_error_args_none tests/runtime_error_args_none.c lang/runtime/error_dummy.c lang/runtime/string_runtime.c && /tmp/runtime_error_args_none
+	{{CLANG_BIN}} -Ilang -Ilang/runtime -o /tmp/runtime_diagnostic_value tests/runtime_diagnostic_value.c lang/runtime/diagnostic_runtime.c lang/runtime/string_runtime.c && /tmp/runtime_diagnostic_value
 
 test-runtime-c:
 	#!/usr/bin/env bash
