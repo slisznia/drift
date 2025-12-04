@@ -86,7 +86,8 @@ MIR should be explicit and simple enough that lowering is mostly a mechanical ma
 ## Status
 
 - Plan written (this file).  
-- HIR skeleton added in `lang/hir_nodes.py` with base classes, operator enums, expressions, statements, and `HBlock`.  
+- HIR skeleton added under `lang2/hir_nodes.py` with base classes, operator enums, expressions, statements, and `HBlock`/`HExprStmt`.  
+- AST→HIR visitor skeleton added under `lang2/ast_to_hir.py` (trivial leaf handlers; rest stubbed).  
 - MIR schema still to finalize; no lowering code yet.
 
 ## Next steps (strict order)

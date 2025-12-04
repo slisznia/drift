@@ -132,6 +132,11 @@ class HBlock(HStmt):
 
 
 @dataclass
+class HExprStmt(HStmt):
+	expr: HExpr
+
+
+@dataclass
 class HLet(HStmt):
 	name: str
 	value: HExpr
@@ -176,6 +181,6 @@ __all__ = [
 	"HVar", "HLiteralInt", "HLiteralString", "HLiteralBool",
 	"HCall", "HMethodCall", "HField", "HIndex", "HDVInit",
 	"HUnary", "HBinary",
-	"HBlock", "HLet", "HAssign", "HIf", "HLoop",
+	"HBlock", "HExprStmt", "HLet", "HAssign", "HIf", "HLoop",
 	"HBreak", "HContinue", "HReturn",
 ]
