@@ -63,8 +63,8 @@ See also: `docs/design-first-afm-then-ssa.md` for the design path that led to th
 - Dead-code removal is not part of canonicalization; keep all user-visible semantics intact.
 
 ## Errors & exceptions
-- Single `Error` type; exceptions are event + args lowered to an `Error` value.
-- `throw Event(args...)` lowers to `raise <Error>`.
+- Single `Error` type; exceptions are event + attrs (typed `DiagnosticValue`) lowered to an `Error` value.
+- `throw Event { ... }` lowers to `raise <Error>`.
 - `try/catch` is retained structurally; lowering to SSA will turn it into explicit control-flow edges carrying the `Error`.
 
 ## Ownership & drops
@@ -122,16 +122,17 @@ See also: `docs/design-first-afm-then-ssa.md` for the design path that led to th
 ### Error object layout (C ABI; user code sees an opaque handle)
 - Stored/returned as `Error*` (heap-allocated). User code treats it as opaque; the runtime exposes a stable C ABI so modules/tools can interoperate and so the signed DMIR has a deterministic backing layout.
 - Stable C structs (layout frozen once blessed):
-  - `struct DriftErrorAttr { const char* key; const char* value_json; };` — keys/values are UTF-8, values are deterministically encoded (e.g., JSON scalars/objects), attrs sorted by key for canonicalization.
+  - `struct DriftDiagnosticValue { uint8_t tag; union { ... } };` — typed diagnostic value (Missing/Null/Bool/Int/Float/String/Array/Object) represented as a tag + union.
+  - `struct DriftErrorAttr { const char* key; struct DriftDiagnosticValue value; };` — keys are UTF-8; values are typed diagnostics.
   - `struct DriftFrame { const char* module; const char* file; uint32_t line; const char* func; };` — optional backtrace frames captured at raise sites (module IDs flow from the module declaration; file/line/func stay for debugging).
   - `struct DriftError { const char* event; const char* domain; struct DriftErrorAttr* attrs; size_t attr_count; struct DriftFrame* frames; size_t frame_count; void* ctx; void (*free_fn)(struct DriftError*); };`
 - `domain` is an optional namespace for the event (e.g., `net`, `net.ip6`, `io.fs`); if absent, it may be `NULL`. Exception definitions can supply a default domain; throw sites may override via a `domain` kwarg; builtin/runtime errors use a fixed domain (e.g., `runtime`).
 - Ownership: constructors/`raise` allocate `DriftError` on the heap; ownership passes to the caller/handler. Handlers either propagate the pointer along an error edge or free exactly once via `free_fn(err)` (or a standard `error_free(err)` entry point). Uncaught errors are freed at the top-level entry after reporting.
-- Canonicalization: attrs are stored in deterministic order; strings are null-terminated; the struct alignment/layout is fixed for signing/backcompat. No external C libraries are required; the header is self-contained and C-ABI safe.
+- Canonicalization: attrs may be stored in deterministic order; strings are null-terminated; the struct alignment/layout is fixed for signing/backcompat. No external C libraries are required; the header is self-contained and C-ABI safe. Logging/serialization is implementation-defined and not part of the ABI.
 - Helper APIs (C ABI): `error_new(event, domain, attrs, attr_count, frames, frame_count) -> Error*`, `error_to_cstr(Error*) -> const char*` (preformatted diagnostic stored in the error), `error_free(Error*)`. The `error_to_cstr` result is owned by the error object, valid until `error_free`, and must not be freed by callers (thread-safe to read; no static buffer).
 - Encoding: all strings in `DriftError` (event, domain, attr keys/values, frame modules/files/funcs) are UTF-8, null-terminated. Callers must not assume any other encoding.
 - ABI separation: internal Drift→Drift calls may carry an extra context/error handle for frame capture, but external `extern "C"` exports keep the stable C ABI (`{T, Error*}` or `T`). The hidden ctx must never alter the published C interface.
-- `throw Event(args...)` lowers to construction of this `Error*`; `try/catch` moves the pointer along error edges; calls/ops can raise; `raise` terminates the function with the error path. Error edges carry the `Error*` value; handlers decide whether to free or propagate.
+- `throw Event { ... }` lowers to construction of this `Error*`; `try/catch` moves the pointer along error edges; calls/ops can raise; `raise` terminates the function with the error path. Error edges carry the `Error*` value; handlers decide whether to free or propagate.
 - Module IDs in frames: modules are declared with `module <id>`; `<id>` must be lowercase alnum with underscores/dots, no leading/trailing/consecutive dots/underscores, UTF-8 length ≤ 254, and must not start with reserved prefixes (`lang.`, `abi.`, `std.`, `core.`, `lib.`). One `module` per file; multiple files may share the same ID (one module across files), but a “single-module” compile fails if any file is missing or mismatches the ID. The declared ID (not filenames) is recorded in backtrace frames so cross-module stacks are unambiguous and is treated as canonical at compile time (never rewritten later).
 
 ## Serialization

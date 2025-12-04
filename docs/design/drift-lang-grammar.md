@@ -68,7 +68,7 @@ Implement    ::= "implement" Ty ("for" Ty)? TraitReq? TraitBody
 VariantDef   ::= "variant" Ident TraitParams? "{" VariantItem+ "}"
 VariantItem  ::= Ident ("(" Fields? ")")?
 
-ExceptionDef ::= "exception" Ident TraitParams? "(" Fields? ")" TraitReq?
+ExceptionDef ::= "exception" Ident TraitParams? "{" Fields? "}" TraitReq?
 
 InterfaceDef ::= "interface" Ident TraitParams? "{" InterfaceMember+ "}"
 InterfaceMember ::= FnSig TERMINATOR?

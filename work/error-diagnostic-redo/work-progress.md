@@ -1,8 +1,13 @@
+# status
+
+* Current: no implementation changes yet; optional/args-view are legacy and will be removed.
+* Next: finish the spec/docs update (exception syntax, DiagnosticValue, typed attrs/frames, DMIR/ABI) with zero JSON references, then start runtime types in isolation.
+
 # phase 0 — align spec / grammar / ABI (prep)
 
-* [ ] Update spec/grammar with the new exception syntax:
+* [x] Update spec/grammar with the new exception syntax:
   `exception Foo { x: Int, y: String }`
-* [ ] Lock down the formal `DiagnosticValue` enum used across:
+* [x] Lock down the formal `DiagnosticValue` enum used across:
 
   * DMIR
   * compiler lowering
@@ -19,6 +24,7 @@
   * `ErrorFrame` layout (typed locals)
   * `Error.attrs` map rules
   * default `Diagnostic` derivation for structs
+* Status: in progress. Spec/grammar/ABI/DMIR docs updated for typed `DiagnosticValue`, `attrs`, and new exception syntax. Remaining: clarify how/if `Missing` is exposed at ABI/logging level (no JSON) and ensure any straggler doc references are cleaned up.
 
 ---
 
@@ -51,6 +57,9 @@ Tests:
 * nested objects
 * arrays
 * handling of Missing / wrong-type access
+* Status: not started.
+
+Status: not started.
 
 ## 1.2 Implement `Diagnostic` trait
 
@@ -73,6 +82,9 @@ Tests:
 
 * struct → object tree
 * custom implementation overrides
+* Status: not started.
+
+Status: not started.
 
 ---
 
@@ -96,6 +108,7 @@ Add:
 
 * `fn attrs(&self) -> Map<String,DiagnosticValue>`
 * `attrs["sql_code"].as_int()` must work as expected
+* Status: not started.
 
 ## 2.2 Implement the new `^` capture model
 
@@ -110,6 +123,7 @@ Tests:
 * capture struct
 * capture local shadowing rules
 * ensuring capture does not allocate or mutate unexpectedly
+* Status: not started.
 
 ---
 
@@ -139,6 +153,7 @@ Tests:
 
 * DMIR lowering of exception construction
 * DMIR round-trip stability for nested DiagnosticValue trees
+* Status: not started.
 
 ## 3.2 Updated ABI (non-JSON)
 
@@ -163,6 +178,7 @@ Tests (C side):
 * nested arrays
 * missing/null handling
 * frames with locals
+* Status: not started.
 
 ---
 
@@ -190,6 +206,7 @@ Tests:
 * multiple fields
 * no fields
 * trailing comma variants
+* Status: not started.
 
 ---
 
@@ -221,6 +238,7 @@ Tests:
 * try/catch lowering with new error layout
 * SSA correctness for throw paths
 * multiple nested DiagnosticValue combinations
+* Status: not started.
 
 ---
 
@@ -239,6 +257,7 @@ Tests:
 
 * Logging produces readable structured output
 * No effect on runtime behaviour
+* Status: not started.
 
 ---
 
@@ -259,4 +278,4 @@ Tests:
 * ABI tests pass with C consumers
 * End-to-end: throw, catch, log, inspect errors produces correct typed output
 * Spec and implementation remain 1:1
-
+* Status: not started.

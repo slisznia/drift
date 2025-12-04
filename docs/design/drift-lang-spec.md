@@ -815,31 +815,54 @@ require T is (Debuggable or Displayable)
 require T is Clonable and not Destructible
 ```
 
-#### 5.13.7. Diagnostic formatting for exceptions
+#### 5.13.7. Diagnostic trait
 
-Exceptions and `^`-captured locals rely on a dedicated diagnostic formatting trait:
+Exceptions and `^`-captured locals rely on a dedicated diagnostic trait:
 
 ```drift
 trait Diagnostic {
-    fn write_diagnostic(self, ctx: &mut DiagnosticCtx)
-}
-
-trait DiagnosticCtx {
-    fn emit_current(self, value: String)
-    fn field(self, name: String, value: String)
-    fn field_fmt(self, name: String, value: impl Display)
-    fn nested(self, prefix: String, f: fn(&mut DiagnosticCtx))
+    fn to_diag(self) returns DiagnosticValue
 }
 ```
 
-Guidance:
+Rules:
 
-- `emit_current` uses the caller-provided key (exception field name or `^` capture label).
-- `field` / `field_fmt` add additional diagnostic key/value pairs.
-- `nested` flattens nested data into dotted keys like `"conn.state"`.
-- The standard library may provide a blanket implementation for types that implement `Display`, emitting a single field via `emit_current(self.to_string())`. Large or complex types should implement `Diagnostic` explicitly to provide concise, meaningful diagnostics instead of deep dumps.
+- Primitive types implement `to_diag` as scalars.
+- `Optional<T>` implements `to_diag` as `Null` (None) or `T.to_diag()`.
+- Structs without a custom implementation default to an `Object` mapping each field name to `field_value.to_diag()`.
+- `to_diag` must never throw.
 
----
+#### 5.13.8. DiagnosticValue: structured diagnostics
+
+```drift
+variant DiagnosticValue {
+    Missing
+    Null
+    Bool(value: Bool)
+    Int(value: Int64)
+    Float(value: Float64)
+    String(value: String)
+    Array(items: Array<DiagnosticValue>)
+    Object(fields: Map<String, DiagnosticValue>)
+}
+```
+
+Library helpers (non-throwing):
+
+```drift
+fn kind(self: &DiagnosticValue) returns String        // optional helper
+fn get(self: &DiagnosticValue, field: String) returns DiagnosticValue
+fn index(self: &DiagnosticValue, idx: Int) returns DiagnosticValue
+fn as_string(self: &DiagnosticValue) returns Optional<String>
+fn as_int(self: &DiagnosticValue) returns Optional<Int64>
+fn as_bool(self: &DiagnosticValue) returns Optional<Bool>
+fn as_float(self: &DiagnosticValue) returns Optional<Float64>
+```
+
+Rules:
+
+- Wrong type / missing field / out-of-bounds → `DiagnosticValue::Missing`.
+- `.as_*()` on `Missing` returns `Optional.none`.
 
 ### 5.14. Thread-safety marker traits (`Send`, `Sync`)
 
@@ -1922,7 +1945,7 @@ The same pattern applies to alternative map implementations.
 ## 14. Exceptions and error context
 
 Drift provides structured exception handling through a single `Error` type, **exception events**, and the `^` capture modifier.  
-Exception declarations create constructor names in the value namespace. `throw ExcName(field = expr, ...)` is valid syntax: fields must match the declared names/types, produce an `Error` value with the exception’s deterministic `event_code`, and integrate with the existing `try/catch` event dispatch. Every exception argument is recorded in `Error.args` as a diagnostic string, and any `^`-captured locals are recorded in `ctx_frames` the same way; both are diagnostics, not user-facing payloads.
+Exception declarations create constructor names in the value namespace. `throw ExcName { field: expr, ... }` is valid syntax: fields must match the declared names/types, produce an `Error` value with the exception’s deterministic `event_code`, and integrate with the existing `try/catch` event dispatch. Every exception attribute is recorded in `Error.attrs` as a typed `DiagnosticValue`, and any `^`-captured locals are recorded in `ctx_frames` the same way; both are diagnostics, not user-facing payloads.
 Exceptions are **not** UI messages: they carry machine-friendly context (event name, arguments, captured locals, stack) that can be logged, inspected, or transmitted without embedding human prose.
 `Error` itself is a catch-all handler type: user functions do not return `Error` or throw `Error` directly; they throw concrete exception events, and catch blocks may bind either a specific exception type or `Error` as a generic binder.
 
@@ -1943,19 +1966,22 @@ Drift’s exception system is designed to:
 ```drift
 struct Error {
     event: String,
-    args: Map<String, String>,
+    attrs: Map<String, DiagnosticValue>,
     ctx_frames: Array<CtxFrame>,
     stack: BacktraceHandle
 }
 
-exception IndexError(container: String, index: Int64)
+exception IndexError {
+    container: String,
+    index: Int64,
+}
 ```
 
 #### 14.2.1. event
 Event name of the exception (`"BadArgument"`).
 
-#### 14.2.2. args
-All exception arguments, normalized into diagnostic strings via the `Diagnostic` trait (see §5.13.7).
+#### 14.2.2. attrs
+All exception attributes as typed `DiagnosticValue` entries (see §5.13.8). Values are produced via `Diagnostic.to_diag()`; no stringification is implied.
 
 #### 14.2.3. ctx_frames
 Per-frame captured locals:
@@ -1963,11 +1989,11 @@ Per-frame captured locals:
 ```drift
 struct CtxFrame {
     fn_name: String,
-    locals: Map<String, String>
+    locals: Map<String, DiagnosticValue>
 }
 ```
 
-Event args never appear here.
+Event attrs never appear here.
 
 #### 14.2.4. stack
 Opaque captured backtrace.
@@ -1978,25 +2004,31 @@ Opaque captured backtrace.
 
 #### 14.3.1. Declaring events
 ```drift
-exception InvalidOrder(order_id: Int64, code: String)
-exception Timeout(operation: String, millis: Int64)
+exception InvalidOrder {
+    order_id: Int64,
+    code: String,
+}
+exception Timeout {
+    operation: String,
+    millis: Int64,
+}
 ```
 
-Each parameter type must implement `Diagnostic` (see §5.13.7).
+Each field type must implement `Diagnostic` (see §5.13.7).
 
 #### 14.3.2. Throwing
 ```drift
-throw InvalidOrder(order_id = order.id, code = "order.invalid")
+throw InvalidOrder { order_id: order.id, code: "order.invalid" }
 ```
 
 Runtime builds an `Error` with:
 - event name
-- args (each declared field formatted via the diagnostic trait into `Map<String, String>`)
+- attrs (each declared field converted via `Diagnostic.to_diag()` into `Map<String, DiagnosticValue>`)
 - empty ctx_frames (filled during unwind)
 - backtrace
 
-#### 14.3.3. Diagnostic formatting requirement
-Each exception argument type must implement `Diagnostic` (see §5.13.7) so the runtime can capture a string form for `Error.args`.
+#### 14.3.3. Diagnostic requirement
+Each exception field type must implement `Diagnostic` (see §5.13.7) so the runtime can capture a typed `DiagnosticValue`.
 
 ---
 
@@ -2066,51 +2098,20 @@ val date = {
 }
 ```
 
-The `else` expression must produce the same type as the `try` expression. Exception context (`event`, args, captured locals, stack) is still recorded before control flows into the `else` arm.
+The `else` expression must produce the same type as the `try` expression. Exception context (`event`, attrs, captured locals, stack) is still recorded before control flows into the `else` arm.
 
 ---
 
-#### 14.5.4. Args-view and typed key access
+#### 14.5.4. Accessing attributes
 
-Each exception type `E` gets a compiler-generated *args-view* value:
-
-```drift
-struct EArgsView { /* opaque view into Error.args */ }
-
-implement E {
-    fn args(self: &E) returns EArgsView
-}
-```
-
-The args-view exposes keys and lookup:
+Attributes are accessed via `Error.attrs`:
 
 ```drift
-struct EArgKey { name: String }
-
-implement EArgsView {
-    fn operator[](self: &EArgsView, key: EArgKey) returns Optional<String>
-
-    // one generated key per declared field, e.g.:
-    fn sql_code(self: &EArgsView) returns EArgKey
-    fn payload(self: &EArgsView) returns EArgKey
-}
+val code = e.attrs["sql_code"].as_int()
+val cust = e.attrs["order"]["customer"]["id"].as_string()
 ```
 
-`Optional<String>` holds the diagnostic string for the attribute if present. In a typed catch, `e.args[.sql_code()]` yields `Optional<String>` and can be combined with `unwrap_or`, pattern matches, etc. Forms:
-- `view[.field]` or `view[view.field()]` are **required** lookups and return `String`; the field must exist on the exception type.
-- `view[key]` for any other `EArgKey` returns `Optional<String>`; missing keys yield `None`.
-
-**Dot-shortcut sugar:** inside indexing brackets or argument lists, a leading dot is sugar for invoking the member on the receiver:
-
-```drift
-e.args[.sql_code]    // desugars to e.args[ e.args.sql_code ]
-e.args[.sql_code()]  // desugars to e.args[ e.args.sql_code() ]
-view.filter(.is_admin) // desugars to view.filter(view.is_admin)
-```
-
-Resolution is value-based (uses the receiver value); if the member does not exist, normal name-resolution errors apply.
-
-`EArgsView` carries an internal reference to the underlying `Error` instance; it is never materialized independently. Dot-shortcut does not “nest”: `.foo.bar` is only valid if `.foo` itself produces a member with `bar`; otherwise normal member-resolution errors apply.
+Lookups and `.as_*()` are non-throwing; missing or wrong-typed fields yield `DiagnosticValue::Missing` and `Optional.none`.
 
 ---
 
@@ -2145,17 +2146,17 @@ Unwinding is allowed across **static Drift modules** as long as:
 
 This applies to modules that are compiled together into a single image (either directly from source or via DMIR/DMP). **Unwinding must not cross FFI or OS-level shared library boundaries**; any exported Drift APIs used via C/FFI must convert failures into value errors at the boundary (see Chapter 17).
 
-Event name + args + ctx_frames + stack fully capture portable state.
+Event name + attrs + ctx_frames + stack fully capture portable state.
 
 ---
 
 ### 14.8. Logging and serialization
-JSON example:
+Serialization/logging is implementation-defined. A possible JSON shape:
 
 ```json
 {
   "event": "InvalidOrder",
-  "args": { "order_id": "42", "code": "order.invalid" },
+  "attrs": { "order_id": 42, "code": "order.invalid" },
   "ctx_frames": [
     { "fn_name": "ship", "locals": { "record.id": "42" }},
     { "fn_name": "ingest_order", "locals": { "batch": "B1" }}
@@ -2170,7 +2171,7 @@ JSON example:
 
 - Single `Error` type.
 - Event-based exceptions.
-- Arguments + captured locals normalized to strings.
+- Attributes + captured locals stored as typed `DiagnosticValue`.
 - Move-only errors with deterministic ownership.
 - Precisely defined layout for cross-module-safe unwinding.
 - Semantically equivalent to `Result<T, Error>` internally.
