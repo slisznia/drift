@@ -88,7 +88,7 @@ MIR should be explicit and simple enough that lowering is mostly a mechanical ma
 - Plan written (this file).  
 - HIR skeleton added under `lang2/hir_nodes.py` with base classes, operator enums, expressions, statements, and `HBlock`/`HExprStmt`.  
 - Local AST copy added under `lang2/ast.py` to keep the refactor isolated.  
-- AST→HIR visitor skeleton added under `lang2/ast_to_hir.py` (trivial leaf handlers; rest stubbed).  
+- AST→HIR visitor under `lang2/ast_to_hir.py` now lowers literals, vars, unary/binary ops, field/index, let/assign/if/return/break/continue/expr-stmt; calls/control-flow sugar still stubbed.  
 - MIR schema still to finalize; no lowering code yet.
 
 ## Next steps (strict order)
