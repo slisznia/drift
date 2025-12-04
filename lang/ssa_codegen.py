@@ -31,13 +31,25 @@ def _drift_string_type() -> ir.LiteralStructType:
 # initialize the arg pointer type after string type is defined
 DRIFT_ERROR_ARG_PTR_TY = ir.LiteralStructType([_drift_string_type(), _drift_string_type()]).as_pointer()
 # DiagnosticValue ABI (tag + union). Union is modeled as a byte array big enough for the largest primitive/string case.
+# Model DriftDiagnosticValue layout: tag (u8) + padding + 16-byte union (align 8).
 DV_TY = ir.LiteralStructType(
     [
         ir.IntType(8),                         # tag
-        ir.ArrayType(ir.IntType(8), 7),        # padding
-        ir.ArrayType(ir.IntType(8), 16),       # union storage (covers string/int/float/bool payloads)
+        ir.ArrayType(ir.IntType(8), 7),        # padding to 8-byte alignment
+        ir.ArrayType(I64_TY, 2),               # 16-byte union storage (aligned)
     ]
 )
+
+
+def _declare_dv_sret(module: ir.Module, name: str, arg_types: list[ir.Type]) -> ir.Function:
+    """Declare a DriftDiagnosticValue-returning helper using an explicit sret out-param."""
+    fn = ir.Function(module, ir.FunctionType(ir.VoidType(), [DV_TY.as_pointer(), *arg_types]), name=name)
+    # Mark the first argument as sret/noalias to match C ABI for aggregates >16 bytes.
+    fn.args[0].attributes.add("sret")
+    fn.args[0].attributes.add("noalias")
+    # Tag so the call-site logic knows to use an out-slot.
+    setattr(fn, "_dv_sret", True)
+    return fn
 
 
 def emit_dummy_main_object(out_path: Path) -> None:
@@ -441,10 +453,19 @@ def emit_module_object(
                         ssa_types[instr.dest] = Type(instr.callee)
                     else:
                         callee = fn_map.get(instr.callee)
+                        if callee is not None and callee.name != instr.callee:
+                            # Force runtime helper resolution for known helpers if the name is mismatched.
+                            callee = None
                         if callee is None:
                             mod_fn = module.globals.get(instr.callee)
                             if isinstance(mod_fn, ir.Function):
                                 callee = mod_fn
+                        # If we picked up a non-sret declaration for DV helpers, force redeclaration.
+                        if callee is not None and instr.callee.startswith("drift_dv_") and not getattr(
+                            callee, "_dv_sret", False
+                        ):
+                            callee = None
+                        dv_sret_decl = False
                         if callee is None:
                             # Try runtime helpers.
                             if instr.callee == "drift_error_new_dummy":
@@ -478,52 +499,92 @@ def emit_module_object(
                                 callee = rt_error_add_local_dv
                             elif instr.callee == "drift_dv_int":
                                 if rt_dv_int is None:
-                                    rt_dv_int = ir.Function(
-                                        module,
-                                        ir.FunctionType(DV_TY, [I64_TY]),
-                                        name="drift_dv_int",
-                                    )
+                                    rt_dv_int = _declare_dv_sret(module, "drift_dv_int", [I64_TY])
                                 callee = rt_dv_int
                             elif instr.callee == "drift_dv_string":
                                 if rt_dv_string is None:
-                                    rt_dv_string = ir.Function(
-                                        module,
-                                        ir.FunctionType(DV_TY, [_drift_string_type()]),
-                                        name="drift_dv_string",
-                                    )
+                                    rt_dv_string = _declare_dv_sret(module, "drift_dv_string", [_drift_string_type()])
                                 callee = rt_dv_string
                             elif instr.callee == "drift_dv_bool":
                                 if rt_dv_bool is None:
-                                    rt_dv_bool = ir.Function(
-                                        module,
-                                        ir.FunctionType(DV_TY, [ir.IntType(8)]),
-                                        name="drift_dv_bool",
-                                    )
+                                    rt_dv_bool = _declare_dv_sret(module, "drift_dv_bool", [ir.IntType(8)])
                                 callee = rt_dv_bool
+                            elif instr.callee == "drift_dv_float":
+                                callee = module.globals.get("drift_dv_float")
+                                if callee is None:
+                                    callee = _declare_dv_sret(module, "drift_dv_float", [ir.DoubleType()])
+                                else:
+                                    setattr(callee, "_dv_sret", True)
                             elif instr.callee == "drift_dv_null":
                                 if rt_dv_null is None:
-                                    rt_dv_null = ir.Function(
-                                        module,
-                                        ir.FunctionType(DV_TY, []),
-                                        name="drift_dv_null",
-                                    )
+                                    rt_dv_null = _declare_dv_sret(module, "drift_dv_null", [])
                                 callee = rt_dv_null
+                            elif instr.callee == "drift_dv_missing":
+                                callee = module.globals.get("drift_dv_missing")
+                                if callee is None:
+                                    callee = _declare_dv_sret(module, "drift_dv_missing", [])
+                                else:
+                                    setattr(callee, "_dv_sret", True)
                             elif instr.callee == "drift_dv_get":
                                 if rt_dv_get is None:
-                                    rt_dv_get = ir.Function(
-                                        module,
-                                        ir.FunctionType(DV_TY, [DV_TY, _drift_string_type()]),
-                                        name="drift_dv_get",
-                                    )
+                                    rt_dv_get = _declare_dv_sret(module, "drift_dv_get", [DV_TY, _drift_string_type()])
                                 callee = rt_dv_get
                             elif instr.callee == "drift_dv_index":
                                 if rt_dv_index is None:
-                                    rt_dv_index = ir.Function(
-                                        module,
-                                        ir.FunctionType(DV_TY, [DV_TY, I64_TY]),
-                                        name="drift_dv_index",
-                                    )
+                                    rt_dv_index = _declare_dv_sret(module, "drift_dv_index", [DV_TY, I64_TY])
                                 callee = rt_dv_index
+                            elif instr.callee == "drift_diag_from_bool":
+                                callee = module.globals.get("drift_diag_from_bool")
+                                if callee is None:
+                                    callee = _declare_dv_sret(module, "drift_diag_from_bool", [ir.IntType(8)])
+                                else:
+                                    setattr(callee, "_dv_sret", True)
+                            elif instr.callee == "drift_diag_from_int":
+                                callee = module.globals.get("drift_diag_from_int")
+                                if callee is None:
+                                    callee = _declare_dv_sret(module, "drift_diag_from_int", [I64_TY])
+                                else:
+                                    setattr(callee, "_dv_sret", True)
+                            elif instr.callee == "drift_diag_from_float":
+                                callee = module.globals.get("drift_diag_from_float")
+                                if callee is None:
+                                    callee = _declare_dv_sret(module, "drift_diag_from_float", [ir.DoubleType()])
+                                else:
+                                    setattr(callee, "_dv_sret", True)
+                            elif instr.callee == "drift_diag_from_string":
+                                callee = module.globals.get("drift_diag_from_string")
+                                if callee is None:
+                                    callee = _declare_dv_sret(module, "drift_diag_from_string", [_drift_string_type()])
+                                else:
+                                    setattr(callee, "_dv_sret", True)
+                            elif instr.callee == "drift_diag_from_optional_int":
+                                callee = module.globals.get("drift_diag_from_optional_int")
+                                if callee is None:
+                                    opt_int_ty = ir.LiteralStructType([ir.IntType(8), WORD_INT])
+                                    callee = _declare_dv_sret(module, "drift_diag_from_optional_int", [opt_int_ty])
+                                else:
+                                    setattr(callee, "_dv_sret", True)
+                            elif instr.callee == "drift_diag_from_optional_string":
+                                callee = module.globals.get("drift_diag_from_optional_string")
+                                if callee is None:
+                                    opt_str_ty = _llvm_type_with_structs(Type("Optional", (STR,)))
+                                    callee = _declare_dv_sret(module, "drift_diag_from_optional_string", [opt_str_ty])
+                                else:
+                                    setattr(callee, "_dv_sret", True)
+                            elif instr.callee == "drift_diag_from_optional_bool":
+                                callee = module.globals.get("drift_diag_from_optional_bool")
+                                if callee is None:
+                                    opt_bool_ty = ir.LiteralStructType([ir.IntType(8), ir.IntType(8)])
+                                    callee = _declare_dv_sret(module, "drift_diag_from_optional_bool", [opt_bool_ty])
+                                else:
+                                    setattr(callee, "_dv_sret", True)
+                            elif instr.callee == "drift_diag_from_optional_float":
+                                callee = module.globals.get("drift_diag_from_optional_float")
+                                if callee is None:
+                                    opt_f_ty = _llvm_type_with_structs(Type("Optional", (Type("Float64"),)))
+                                    callee = _declare_dv_sret(module, "drift_diag_from_optional_float", [opt_f_ty])
+                                else:
+                                    setattr(callee, "_dv_sret", True)
                             elif instr.callee == "drift_dv_as_int":
                                 if rt_dv_as_int is None:
                                     rt_dv_as_int = ir.Function(
@@ -555,9 +616,14 @@ def emit_module_object(
                                     opt_s_ty = _llvm_type_with_structs(Type("Optional", (STR,)))
                                     rt_dv_as_string = ir.Function(
                                         module,
-                                        ir.FunctionType(opt_s_ty, [DV_TY.as_pointer()]),
+                                        ir.FunctionType(
+                                            ir.VoidType(), [opt_s_ty.as_pointer(), DV_TY.as_pointer()]
+                                        ),
                                         name="drift_dv_as_string",
                                     )
+                                    rt_dv_as_string.args[0].attributes.add("sret")
+                                    rt_dv_as_string.args[0].attributes.add("noalias")
+                                    setattr(rt_dv_as_string, "_opt_sret_ty", opt_s_ty)
                                 callee = rt_dv_as_string
                             elif instr.callee == "drift_string_eq":
                                 callee = ir.Function(
@@ -572,7 +638,6 @@ def emit_module_object(
                                         ir.FunctionType(ir.VoidType(), [DV_TY.as_pointer(), ERROR_PTR_TY, _drift_string_type()]),
                                         name="__exc_attrs_get_dv",
                                     )
-                                    rt_exc_attrs_get_dv.args[0].attributes.add("sret")
                                 callee = rt_exc_attrs_get_dv
                             elif instr.callee == "drift_optional_int_some":
                                 callee = module.globals.get("drift_optional_int_some")
@@ -596,7 +661,10 @@ def emit_module_object(
                             if callee is None:
                                 ret_ty = _llvm_type_with_structs(instr.ret_type)
                                 param_tys = [_llvm_type_with_structs(ssa_types[a]) for a in instr.args]
-                                callee = ir.Function(module, ir.FunctionType(ret_ty, param_tys), name=instr.callee)
+                                if instr.ret_type.name == "DiagnosticValue":
+                                    callee = _declare_dv_sret(module, instr.callee, param_tys)
+                                else:
+                                    callee = ir.Function(module, ir.FunctionType(ret_ty, param_tys), name=instr.callee)
                                 module.globals[callee.name] = callee
                                 fn_map[instr.callee] = callee
                     if callee is None:
@@ -607,8 +675,16 @@ def emit_module_object(
                     # Adjust bool arg to match runtime signature (i8).
                     if callee is rt_dv_bool and args and isinstance(args[0].type, ir.IntType) and args[0].type.width == 1:
                         args[0] = builder.zext(args[0], ir.IntType(8), name=f"{instr.dest}_bext")
+                    dv_sret_call = getattr(callee, "_dv_sret", False)
                     if callee is rt_exc_attrs_get_dv:
                         out_slot = builder.alloca(DV_TY, name=f"{instr.dest}.dv")
+                        out_slot.align = 8
+                        builder.call(callee, [out_slot] + args)
+                        call_val = builder.load(out_slot, name=instr.dest)
+                        values[instr.dest] = call_val
+                    elif dv_sret_call:
+                        out_slot = builder.alloca(DV_TY, name=f"{instr.dest}.dv")
+                        out_slot.align = 8
                         builder.call(callee, [out_slot] + args)
                         call_val = builder.load(out_slot, name=instr.dest)
                         values[instr.dest] = call_val
@@ -620,17 +696,32 @@ def emit_module_object(
                         dv_arg = args[2]
                         if not isinstance(dv_arg.type, ir.PointerType):
                             slot = builder.alloca(DV_TY, name=f"{instr.dest}.dvslot")
+                            slot.align = 8
                             builder.store(dv_arg, slot)
                             dv_arg = slot
                         builder.call(callee, [args[0], args[1], dv_arg])
                         # void return; no SSA value
-                    elif callee in (rt_dv_as_int, rt_dv_as_bool, rt_dv_as_float, rt_dv_as_string):
+                    elif callee in (rt_dv_as_int, rt_dv_as_bool, rt_dv_as_float):
                         dv_arg = args[0]
                         if not isinstance(dv_arg.type, ir.PointerType):
                             slot = builder.alloca(DV_TY, name=f"{instr.dest}.dvslot")
+                            slot.align = 8
                             builder.store(dv_arg, slot)
                             dv_arg = slot
                         call_val = builder.call(callee, [dv_arg], name=instr.dest)
+                        values[instr.dest] = call_val
+                    elif callee is rt_dv_as_string:
+                        dv_arg = args[0]
+                        if not isinstance(dv_arg.type, ir.PointerType):
+                            slot = builder.alloca(DV_TY, name=f"{instr.dest}.dvslot")
+                            slot.align = 8
+                            builder.store(dv_arg, slot)
+                            dv_arg = slot
+                        ret_ty = getattr(callee, "_opt_sret_ty")
+                        out_slot = builder.alloca(ret_ty, name=f"{instr.dest}.opt_str")
+                        out_slot.align = 8
+                        builder.call(callee, [out_slot, dv_arg])
+                        call_val = builder.load(out_slot, name=instr.dest)
                         values[instr.dest] = call_val
                     else:
                         adj_args = []
@@ -654,7 +745,15 @@ def emit_module_object(
                                         builder.store(arg, cast_slot)
                                     arg = slot
                             adj_args.append(arg)
-                        call_val = builder.call(callee, adj_args, name=instr.dest)
+                        try:
+                            call_val = builder.call(callee, adj_args, name=instr.dest)
+                        except TypeError as exc:
+                            arg_ssa_types = [ssa_types.get(a) for a in instr.args]
+                            raise TypeError(
+                                f"{instr.callee} call arg types {[a.type for a in adj_args]} "
+                                f"expected {callee.function_type} "
+                                f"ssa_arg_types={arg_ssa_types}"
+                            ) from exc
                         values[instr.dest] = call_val
                     ssa_types[instr.dest] = instr.ret_type
                 elif isinstance(instr, mir.StructInit):

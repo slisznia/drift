@@ -33,6 +33,9 @@ struct DriftError {
     size_t frame_count;
 };
 
+_Static_assert(sizeof(struct DriftDiagnosticValue) == 24, "DriftDiagnosticValue size mismatch");
+_Static_assert(_Alignof(struct DriftDiagnosticValue) == 8, "DriftDiagnosticValue alignment mismatch");
+
 // Returns a non-null Error* for testing error-edge lowering.
 struct DriftError* drift_error_new_dummy(int64_t code, struct DriftString key, struct DriftString payload);
 int64_t drift_error_get_code(struct DriftError* err);

@@ -38,15 +38,23 @@ struct DriftDiagnosticObject {
 
 struct DriftDiagnosticValue {
     uint8_t tag; // DriftDiagnosticTag
+    uint8_t _pad[7]; // pad to 8-byte boundary
     union {
-        uint8_t bool_value;
+        uint64_t as_u64[2]; // 16-byte blob for generic storage
+        struct {
+            int64_t len;
+            char* data;
+        } string_value;
         int64_t int_value;
         double float_value;
-        struct DriftString string_value;
+        uint8_t bool_value;
         struct DriftDiagnosticArray array;
         struct DriftDiagnosticObject object;
     } data;
 };
+
+_Static_assert(sizeof(struct DriftDiagnosticValue) == 24, "DriftDiagnosticValue size mismatch");
+_Static_assert(_Alignof(struct DriftDiagnosticValue) == 8, "DriftDiagnosticValue alignment mismatch");
 
 struct DriftOptionalInt {
     uint8_t is_some;

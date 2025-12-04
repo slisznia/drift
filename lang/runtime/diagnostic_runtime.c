@@ -4,48 +4,57 @@
 #include <stdio.h>
 
 struct DriftDiagnosticValue drift_dv_missing(void) {
-    struct DriftDiagnosticValue dv = {.tag = DV_MISSING};
+    struct DriftDiagnosticValue dv = {0};
+    dv.tag = DV_MISSING;
     return dv;
 }
 
 struct DriftDiagnosticValue drift_dv_null(void) {
-    struct DriftDiagnosticValue dv = {.tag = DV_NULL};
+    struct DriftDiagnosticValue dv = {0};
+    dv.tag = DV_NULL;
     return dv;
 }
 
 struct DriftDiagnosticValue drift_dv_bool(uint8_t value) {
-    struct DriftDiagnosticValue dv = {.tag = DV_BOOL};
+    struct DriftDiagnosticValue dv = {0};
+    dv.tag = DV_BOOL;
     dv.data.bool_value = value ? 1 : 0;
     return dv;
 }
 
 struct DriftDiagnosticValue drift_dv_int(int64_t value) {
-    struct DriftDiagnosticValue dv = {.tag = DV_INT};
+    struct DriftDiagnosticValue dv = {0};
+    dv.tag = DV_INT;
     dv.data.int_value = value;
     return dv;
 }
 
 struct DriftDiagnosticValue drift_dv_float(double value) {
-    struct DriftDiagnosticValue dv = {.tag = DV_FLOAT};
+    struct DriftDiagnosticValue dv = {0};
+    dv.tag = DV_FLOAT;
     dv.data.float_value = value;
     return dv;
 }
 
 struct DriftDiagnosticValue drift_dv_string(struct DriftString value) {
-    struct DriftDiagnosticValue dv = {.tag = DV_STRING};
-    dv.data.string_value = value;
+    struct DriftDiagnosticValue dv = {0};
+    dv.tag = DV_STRING;
+    dv.data.string_value.len = value.len;
+    dv.data.string_value.data = value.data;
     return dv;
 }
 
 struct DriftDiagnosticValue drift_dv_array(struct DriftDiagnosticValue* items, size_t len) {
-    struct DriftDiagnosticValue dv = {.tag = DV_ARRAY};
+    struct DriftDiagnosticValue dv = {0};
+    dv.tag = DV_ARRAY;
     dv.data.array.items = items;
     dv.data.array.len = len;
     return dv;
 }
 
 struct DriftDiagnosticValue drift_dv_object(struct DriftDiagnosticField* fields, size_t len) {
-    struct DriftDiagnosticValue dv = {.tag = DV_OBJECT};
+    struct DriftDiagnosticValue dv = {0};
+    dv.tag = DV_OBJECT;
     dv.data.object.fields = fields;
     dv.data.object.len = len;
     return dv;
@@ -106,7 +115,7 @@ struct DriftOptionalString drift_dv_as_string(const struct DriftDiagnosticValue*
     if (!dv || dv->tag != DV_STRING) {
         return OPTIONAL_STRING_NONE;
     }
-    struct DriftOptionalString out = {1, dv->data.string_value};
+    struct DriftOptionalString out = {1, {dv->data.string_value.len, dv->data.string_value.data}};
     return out;
 }
 

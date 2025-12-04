@@ -21,15 +21,28 @@ void drift_error_add_attr_dv(struct DriftError* err, struct DriftString key, con
     if (!err) {
         return;
     }
-    size_t new_acount = err->attr_count + 1;
-    struct DriftErrorAttr* new_attrs = realloc(err->attrs, new_acount * sizeof(struct DriftErrorAttr));
+    // Grow by 1 and append; if realloc fails, abort to avoid partial writes.
+    size_t new_count = err->attr_count + 1;
+    struct DriftErrorAttr* new_attrs = realloc(err->attrs, new_count * sizeof(struct DriftErrorAttr));
     if (!new_attrs) {
         abort();
     }
-    new_attrs[new_acount - 1].key = key;
-    new_attrs[new_acount - 1].value = *value;
+    // Copy key/value into the newly appended slot.
+    new_attrs[new_count - 1].key = key;
+    new_attrs[new_count - 1].value = *value;
+#ifdef DEBUG_DIAGNOSTICS
+    if (value) {
+        fprintf(stderr, "[err_add_attr] count=%zu key=%.*s tag=%u len=%lld ptr=%p\n",
+                new_count,
+                (int)key.len, key.data ? key.data : "<null>",
+                value->tag,
+                (long long)value->data.string_value.len,
+                (void*)value->data.string_value.data);
+        fflush(stderr);
+    }
+#endif
     err->attrs = new_attrs;
-    err->attr_count = new_acount;
+    err->attr_count = new_count;
 }
 
 void drift_error_add_local_dv(struct DriftError* err, struct DriftString frame, struct DriftString key, struct DriftDiagnosticValue value) {
@@ -89,23 +102,33 @@ struct DriftOptionalString __exc_attrs_get(const struct DriftError* err, struct 
         return out;
     }
     out.is_some = 1;
-    out.value = val->data.string_value;
+    out.value.len = val->data.string_value.len;
+    out.value.data = val->data.string_value.data;
     return out;
 }
 
 // Typed DiagnosticValue lookup; writes Missing if absent.
 void __exc_attrs_get_dv(struct DriftDiagnosticValue* out, const struct DriftError* err, struct DriftString key) {
     if (!out) return;
+    // Defensive default: Missing.
+    out->tag = DV_MISSING;
+    out->data.int_value = 0;
     if (!err) {
-        *out = drift_dv_missing();
         return;
     }
     // Typed attrs lookup.
     const struct DriftDiagnosticValue* val = drift_error_get_attr(err, &key);
     if (!val) {
-        *out = drift_dv_missing();
         return;
     }
+#ifdef DEBUG_DIAGNOSTICS
+    fprintf(stderr, "[exc_attrs_get_dv] key=%.*s tag=%u len=%lld ptr=%p\n",
+            (int)key.len, key.data ? key.data : "<null>",
+            val->tag,
+            (long long)val->data.string_value.len,
+            (void*)val->data.string_value.data);
+    fflush(stderr);
+#endif
     *out = *val;
 }
 

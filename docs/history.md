@@ -164,3 +164,4 @@
 ## 2025-12-04
 - E2E runner builds into `build/tests/e2e/<case>/` instead of test dirs; `just test-e2e`/subset wipes that build dir first to avoid stale artifacts. All e2e tests green.
 - Error-edge hardening: can-error inference is locked to MIR; negative tests cover plain call dropping error and edges to non-can-error; Throw returns now use deterministic zero/null placeholders for non-void `{T, Error*}` pairs. Try/catch generalization remains open.
+- DiagnosticValue ABI fixes: modeled DV-returning helpers with explicit `sret` (DV ctor/get/index, diag-from primitives/optionals) and made `drift_dv_as_string` return via sret because `Optional<String>` is >16B. The C runtime layout now matches LLVM (24B, align 8) and attrs retrieval uses the correct out-param ABI, eliminating the intermittent `<missing>`/garbage output in `exception_args_dot`/`exception_args_optional`.
