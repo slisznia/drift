@@ -649,34 +649,6 @@ class Checker:
                 index_type = self._check_expr(expr.index, ctx)
                 self._expect_type(index_type, STR, expr.index.loc)
                 return Type("DiagnosticValue")
-            # Special-case exception args-view: key type must match the view's key type.
-            for exc in self.exception_infos.values():
-                if container_type.name == exc.args_view_type:
-                    expected_key_ty = Type(exc.arg_key_type)
-                    same_base = lambda a, b: (a is b) or (
-                        isinstance(a, ast.Name) and isinstance(b, ast.Name) and a.ident == b.ident
-                    )
-                    # Method sugar: view[view.a()]
-                    if isinstance(expr.index, ast.Call):
-                        func = expr.index.func
-                        if isinstance(func, ast.Attr) and same_base(func.value, expr.value):
-                            if func.attr not in exc.arg_types:
-                                raise CheckError(
-                                    f"{func.loc.line}:{func.loc.column}: Exception '{exc.name}' has no field '{func.attr}'"
-                                )
-                            index_ty = self._check_expr(expr.index, ctx)
-                            self._expect_type(index_ty, expected_key_ty, expr.index.loc)
-                            return STR
-                    if isinstance(expr.index, ast.Attr) and same_base(expr.index.value, expr.value):
-                        if expr.index.attr not in exc.arg_types:
-                            raise CheckError(
-                                f"{expr.index.loc.line}:{expr.index.loc.column}: Exception '{exc.name}' has no field '{expr.index.attr}'"
-                            )
-                        # leading-dot sugar: treat `.field` as the key; field is guaranteed to exist
-                        return STR
-                    index_type = self._check_expr(expr.index, ctx)
-                    self._expect_type(index_type, expected_key_ty, expr.index.loc)
-                    return Type("Optional", (STR,))
             raise CheckError(f"{expr.loc.line}:{expr.loc.column}: Type {container_type} is not indexable")
         index_type = self._check_expr(expr.index, ctx)
         self._expect_type(index_type, INT, expr.index.loc)
@@ -910,8 +882,6 @@ class Checker:
                 )
             return struct_info.field_types[attr.attr]
         if base_type == ERROR:
-            if attr.attr == "payload":
-                return STR
             if attr.attr == "code":
                 return I64
             if attr.attr == "attrs":
@@ -921,8 +891,6 @@ class Checker:
             )
         exc_info = self.exception_infos.get(base_type.name)
         if exc_info:
-            if attr.attr == "args":
-                return Type(exc_info.args_view_type)
             if attr.attr == "attrs":
                 return Type("ErrorAttrs")
             if attr.attr not in exc_info.arg_types:

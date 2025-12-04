@@ -118,11 +118,8 @@ def emit_module_object(
     can_error_funcs: set[str] = {f.name for f in funcs if getattr(f, "can_error", False)}
     # Cached runtime decls
     rt_error_dummy: Optional[ir.Function] = None
-    rt_error_add_arg: Optional[ir.Function] = None
     rt_error_add_attr_dv: Optional[ir.Function] = None
     rt_error_add_local_dv: Optional[ir.Function] = None
-    rt_exc_args_get: Optional[ir.Function] = None
-    rt_exc_attrs_get: Optional[ir.Function] = None
     rt_exc_attrs_get_dv: Optional[ir.Function] = None
     rt_dv_int: Optional[ir.Function] = None
     rt_dv_string: Optional[ir.Function] = None
@@ -408,14 +405,6 @@ def emit_module_object(
                                         name="drift_error_new_dummy",
                                     )
                                 callee = rt_error_dummy
-                            elif instr.callee == "drift_error_add_arg":
-                                if rt_error_add_arg is None:
-                                    rt_error_add_arg = ir.Function(
-                                        module,
-                                        ir.FunctionType(ir.VoidType(), [ERROR_PTR_TY, _drift_string_type(), _drift_string_type()]),
-                                        name="drift_error_add_arg",
-                                    )
-                                callee = rt_error_add_arg
                             elif instr.callee == "drift_error_add_attr_dv":
                                 if rt_error_add_attr_dv is None:
                                     rt_error_add_attr_dv = ir.Function(
@@ -524,31 +513,6 @@ def emit_module_object(
                                     ir.FunctionType(WORD_INT, [_drift_string_type(), _drift_string_type()]),
                                     name="drift_string_eq",
                                 )
-                            elif instr.callee == "__exc_args_get":
-                                if rt_exc_args_get is None:
-                                    rt_exc_args_get = ir.Function(
-                                        module,
-                                        ir.FunctionType(
-                                            ir.VoidType(),
-                                            [opt_string_ty.as_pointer(), ERROR_PTR_TY, _drift_string_type()],
-                                        ),
-                                        name="__exc_args_get",
-                                    )
-                                    # first param is sret out-param
-                                    rt_exc_args_get.args[0].attributes.add("sret")
-                                callee = rt_exc_args_get
-                            elif instr.callee == "__exc_attrs_get":
-                                if rt_exc_attrs_get is None:
-                                    rt_exc_attrs_get = ir.Function(
-                                        module,
-                                        ir.FunctionType(
-                                            ir.VoidType(),
-                                            [opt_string_ty.as_pointer(), ERROR_PTR_TY, _drift_string_type()],
-                                        ),
-                                        name="__exc_attrs_get",
-                                    )
-                                    rt_exc_attrs_get.args[0].attributes.add("sret")
-                                callee = rt_exc_attrs_get
                             elif instr.callee == "__exc_attrs_get_dv":
                                 if rt_exc_attrs_get_dv is None:
                                     rt_exc_attrs_get_dv = ir.Function(
@@ -576,14 +540,6 @@ def emit_module_object(
                                         ir.FunctionType(ir.LiteralStructType([ir.IntType(8), WORD_INT]), []),
                                         name="drift_optional_int_none",
                                     )
-                            elif instr.callee == "__exc_args_get_required":
-                                callee = module.globals.get("__exc_args_get_required")
-                                if callee is None:
-                                    callee = ir.Function(
-                                        module,
-                                        ir.FunctionType(_drift_string_type(), [ERROR_PTR_TY, _drift_string_type()]),
-                                        name="__exc_args_get_required",
-                                    )
                             # If still unknown, declare an external with a best-effort signature.
                             if callee is None:
                                 ret_ty = _llvm_type_with_structs(instr.ret_type)
@@ -599,25 +555,12 @@ def emit_module_object(
                     # Adjust bool arg to match runtime signature (i8).
                     if callee is rt_dv_bool and args and isinstance(args[0].type, ir.IntType) and args[0].type.width == 1:
                         args[0] = builder.zext(args[0], ir.IntType(8), name=f"{instr.dest}_bext")
-                    if callee is rt_exc_args_get:
-                        out_slot = builder.alloca(opt_string_ty, name=f"{instr.dest}.opt")
-                        builder.call(callee, [out_slot] + args)
-                        call_val = builder.load(out_slot, name=instr.dest)
-                        values[instr.dest] = call_val
-                    elif callee is rt_exc_attrs_get:
-                        out_slot = builder.alloca(opt_string_ty, name=f"{instr.dest}.opt")
-                        builder.call(callee, [out_slot] + args)
-                        call_val = builder.load(out_slot, name=instr.dest)
-                        values[instr.dest] = call_val
-                    elif callee is rt_exc_attrs_get_dv:
+                    if callee is rt_exc_attrs_get_dv:
                         out_slot = builder.alloca(DV_TY, name=f"{instr.dest}.dv")
                         builder.call(callee, [out_slot] + args)
                         call_val = builder.load(out_slot, name=instr.dest)
                         values[instr.dest] = call_val
                     elif instr.callee in ("drift_optional_int_some", "drift_optional_int_none"):
-                        call_val = builder.call(callee, args, name=instr.dest)
-                        values[instr.dest] = call_val
-                    elif callee.name == "__exc_args_get_required":
                         call_val = builder.call(callee, args, name=instr.dest)
                         values[instr.dest] = call_val
                     elif callee is rt_error_add_attr_dv:
@@ -675,21 +618,13 @@ def emit_module_object(
                     base_ty = ssa_types.get(instr.base)
                     if base_ty == ERROR:
                         base_ptr = values[instr.base]
-                        err_ty = ir.LiteralStructType(
-                            [ir.IntType(64), _drift_string_type(), DRIFT_ERROR_ARG_PTR_TY, WORD_INT]
-                        )
+                        err_ty = ir.LiteralStructType([ir.IntType(64)])
                         cast_ptr = builder.bitcast(base_ptr, err_ty.as_pointer())
                         if instr.field == "code":
                             field_ptr = builder.gep(cast_ptr, [I32_TY(0), I32_TY(0)], inbounds=True)
                             loaded = builder.load(field_ptr, name=instr.dest)
                             values[instr.dest] = loaded
                             ssa_types[instr.dest] = I64
-                            continue
-                        if instr.field == "payload":
-                            field_ptr = builder.gep(cast_ptr, [I32_TY(0), I32_TY(1)], inbounds=True)
-                            loaded = builder.load(field_ptr, name=instr.dest)
-                            values[instr.dest] = loaded
-                            ssa_types[instr.dest] = STR
                             continue
                         raise RuntimeError(f"Error has no field {instr.field}")
                     if base_ty and base_ty.name == "Optional" and base_ty.args:

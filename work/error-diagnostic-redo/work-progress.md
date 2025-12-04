@@ -104,7 +104,7 @@ Add:
 
 * `fn attrs(&self) -> Map<String,DiagnosticValue>`
 * `attrs["sql_code"].as_int()` must work as expected
-* Status: in progress — dummy runtime `Error` carries typed attrs (legacy args/payload still present); compiler seeds typed attrs via exception constructors and captures, and in-tree tests now consume attrs/DV instead of payload/args. Legacy accessors are next to retire.
+* Status: done — runtime `Error` only carries typed attrs/frames; compiler seeds typed attrs via exception constructors and captures; all in-tree tests consume attrs/DV and legacy args/payload/arg-view helpers have been removed.
 
 ## 2.2 Implement the new `^` capture model
 

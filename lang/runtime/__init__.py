@@ -131,9 +131,6 @@ SPECIAL_SIGNATURES: Mapping[str, FunctionSignature] = {
     "out.writeln": OUT_WRITELN_SIGNATURE,
     "drift_error_new_dummy": FunctionSignature("drift_error_new_dummy", (INT, STR, STR), ERROR, effects=None),
     "drift_error_get_code": FunctionSignature("drift_error_get_code", (ERROR,), INT, effects=None),
-    "__exc_args_get": FunctionSignature("__exc_args_get", (ERROR, STR), Type("Optional", args=(STR,)), effects=None),
-    "__exc_args_get_required": FunctionSignature("__exc_args_get_required", (ERROR, STR), STR, effects=None),
-    "drift_error_add_arg": FunctionSignature("drift_error_add_arg", (ERROR, STR, STR), UNIT, effects=None),
     "drift_optional_int_some": FunctionSignature(
         "drift_optional_int_some", (INT,), Type("Optional", args=(INT,)), effects=None
     ),

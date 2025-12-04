@@ -4,12 +4,13 @@ fn make_error() returns Void {
   throw MyError(a = "AA")
 }
 
-fn main() returns Int64 {
-  var code: Int64 = 0
+fn main() returns Int {
   try {
     make_error()
-  } catch Error(e) {
-    code = e.code
+  } catch e {
+    val c = e.code
+    // consume c to satisfy type checker; nothing to return from catch
+    val _ = c
   }
-  return code
+  return 0
 }

@@ -17,7 +17,7 @@ test-ssa:
 	  exit 1; \
 	fi
 	{{CLANG_BIN}} -Ilang -Ilang/runtime -o /tmp/runtime_error_dummy_raw tests/runtime_error_dummy_raw.c lang/runtime/error_dummy.c lang/runtime/string_runtime.c lang/runtime/diagnostic_runtime.c && /tmp/runtime_error_dummy_raw
-	{{CLANG_BIN}} -Ilang -Ilang/runtime -o /tmp/runtime_error_args_none tests/runtime_error_args_none.c lang/runtime/error_dummy.c lang/runtime/string_runtime.c lang/runtime/diagnostic_runtime.c && /tmp/runtime_error_args_none
+	# legacy args test removed
 	{{CLANG_BIN}} -Ilang -Ilang/runtime -o /tmp/runtime_diagnostic_value tests/runtime_diagnostic_value.c lang/runtime/diagnostic_runtime.c lang/runtime/string_runtime.c && /tmp/runtime_diagnostic_value
 
 test-runtime-c:
@@ -27,7 +27,7 @@ test-runtime-c:
 	  exit 1
 	fi
 	{{CLANG_BIN}} -Ilang -Ilang/runtime -o /tmp/runtime_error_dummy_raw tests/runtime_error_dummy_raw.c lang/runtime/error_dummy.c lang/runtime/string_runtime.c && /tmp/runtime_error_dummy_raw
-	{{CLANG_BIN}} -Ilang -Ilang/runtime -o /tmp/runtime_error_args_none tests/runtime_error_args_none.c lang/runtime/error_dummy.c lang/runtime/string_runtime.c && /tmp/runtime_error_args_none
+	# legacy args test removed
 	echo "test-runtime-c OK"
 
 test-e2e-ssa-subset:

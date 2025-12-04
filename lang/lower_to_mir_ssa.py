@@ -399,10 +399,7 @@ def lower_expr_to_ssa(
     Returns (ssa_name, type, current_block, env) where current_block/env reflect any
     control-flow split (e.g., try/else lowering).
     """
-    lowered_idx = _maybe_lower_args_view_index(expr, env, current, checked)
-    if lowered_idx is not None:
-        result_ssa, result_ty, current, env = lowered_idx
-        return result_ssa, result_ty, current, env
+    # Legacy args-view removed; no special casing.
     # Error.attrs indexing -> __exc_attrs_get_dv (DiagnosticValue).
     if isinstance(expr, ast.Index) and isinstance(expr.value, ast.Attr) and expr.value.attr == "attrs":
         base_ssa, base_ty, current, env = lower_expr_to_ssa(expr.value.value, env, current, checked, blocks, fresh_block)
@@ -515,20 +512,6 @@ def lower_expr_to_ssa(
                         err_dest=None,
                         normal=None,
                         error=None,
-                        loc=loc,
-                    )
-                )
-                # Legacy string arg for backward compatibility (string only).
-                if val_ty == STR:
-                    current.instructions.append(
-                        mir.Call(
-                            dest=env.fresh_ssa(f"{name}_add_arg", UNIT),
-                            callee="drift_error_add_arg",
-                            args=[dest_err, key_const, val_ssa],
-                            ret_type=UNIT,
-                            err_dest=None,
-                            normal=None,
-                            error=None,
                         loc=loc,
                     )
                 )
@@ -935,11 +918,6 @@ def lower_expr_to_ssa(
         return dest, ret_ty, current, env
     # Array indexing
     if isinstance(expr, ast.Index):
-        # Try args-view special-case first.
-        lowered_idx = _maybe_lower_args_view_index(expr, env, current, checked)
-        if lowered_idx is not None:
-            dest, dest_ty, current, env = lowered_idx
-            return dest, dest_ty, current, env
         base_ssa, base_ty, current, env = lower_expr_to_ssa(expr.value, env, current, checked, blocks, fresh_block)
         idx_ssa, idx_ty, current, env = lower_expr_to_ssa(expr.index, env, current, checked, blocks, fresh_block)
         elem_ty = array_element_type(base_ty)
@@ -1331,58 +1309,3 @@ def lower_try_stmt(
         loc=stmt.loc,
     )
     return join_block, join_env
-def _maybe_lower_args_view_index(
-    expr: ast.Expr, env: SSAEnv, current: mir.BasicBlock, checked: CheckedProgram
-) -> Optional[Tuple[str, Type, mir.BasicBlock, SSAEnv]]:
-    """Lower args-view indexing to __exc_args_get(Error, String) returning Optional<String>."""
-    if not isinstance(expr, ast.Index):
-        return None
-    # Lower base to SSA and get its type.
-    base_ssa, base_ty, current, env = lower_expr_to_ssa(expr.value, env, current, checked, None, None)
-    if base_ty.name not in checked.structs:
-        return None
-    struct_info = checked.structs[base_ty.name]
-    if "error" not in struct_info.field_types or struct_info.field_types["error"] != ERROR:
-        return None
-    # Derive key name without re-evaluating the base when using leading-dot sugar.
-    key_name_ssa: Optional[str] = None
-    direct_value = False
-    # Helper to compare bases by identity or name.
-    def _same_base(a: ast.Expr, b: ast.Expr) -> bool:
-        return (a is b) or (isinstance(a, ast.Name) and isinstance(b, ast.Name) and a.ident == b.ident)
-    # Method sugar: view[view.a()]
-    if isinstance(expr.index, ast.Call):
-        func = expr.index.func
-        if isinstance(func, ast.Attr) and _same_base(func.value, expr.value):
-            key_name_ssa = env.fresh_ssa("exc_key_name", STR)
-            current.instructions.append(mir.Const(dest=key_name_ssa, type=STR, value=func.attr))
-            env.ctx.ssa_types[key_name_ssa] = STR
-            direct_value = True
-    if key_name_ssa is None and isinstance(expr.index, ast.Attr) and _same_base(expr.index.value, expr.value):
-        # Leading-dot case: index is Attr on the same base; use the attr name directly and return String.
-        key_name_ssa = env.fresh_ssa("exc_key_name", STR)
-        current.instructions.append(mir.Const(dest=key_name_ssa, type=STR, value=expr.index.attr))
-        env.ctx.ssa_types[key_name_ssa] = STR
-        direct_value = True
-    if key_name_ssa is None:
-        # TODO: restore ArgKey lowering; for now, constant key for debugging.
-        key_name_ssa = env.fresh_ssa("exc_key_name", STR)
-        current.instructions.append(mir.Const(dest=key_name_ssa, type=STR, value="a"))
-        env.ctx.ssa_types[key_name_ssa] = STR
-    # Lower: tmp_error = base.error; call the appropriate helper.
-    err_ssa = env.fresh_ssa("exc_err", ERROR)
-    current.instructions.append(mir.FieldGet(dest=err_ssa, base=base_ssa, field="error"))
-    env.ctx.ssa_types[err_ssa] = ERROR
-    if direct_value:
-        dest = env.fresh_ssa("exc_arg_val", STR)
-        current.instructions.append(
-            mir.Call(dest=dest, callee="__exc_args_get_required", args=[err_ssa, key_name_ssa], ret_type=STR)
-        )
-        env.ctx.ssa_types[dest] = STR
-        return dest, STR, current, env
-    dest = env.fresh_ssa("exc_arg", Type("Optional", (STR,)))
-    current.instructions.append(
-        mir.Call(dest=dest, callee="__exc_args_get", args=[err_ssa, key_name_ssa], ret_type=Type("Optional", (STR,)))
-    )
-    env.ctx.ssa_types[dest] = Type("Optional", (STR,))
-    return dest, Type("Optional", (STR,)), current, env
