@@ -11,8 +11,8 @@ Currently supported:
   - literals, vars, unary/binary ops, field/index reads
   - let/assign/expr/return statements
   - `if` with then/else/join blocks
-Control-flow constructs (loop/break/continue) and calls/DV are still
-NotImplemented and will be added incrementally.
+  - `loop` with break/continue
+Calls/DV lowering remain TODO and will be added incrementally.
 """
 
 from __future__ import annotations
@@ -106,6 +106,8 @@ class HIRToMIR:
 
 	def __init__(self, builder: MirBuilder):
 		self.b = builder
+		# Stack of (continue_target, break_target) block names for nested loops.
+		self._loop_stack: list[tuple[str, str]] = []
 
 	# --- Expression lowering ---
 
@@ -215,10 +217,20 @@ class HIRToMIR:
 		self.b.set_terminator(M.Return(value=val))
 
 	def _visit_stmt_HBreak(self, stmt: H.HBreak) -> None:
-		raise NotImplementedError("Break lowering not implemented yet")
+		# Break jumps to the innermost loop's break target.
+		if not self._loop_stack:
+			raise NotImplementedError("break outside of loop not supported yet")
+		_, break_target = self._loop_stack[-1]
+		if self.b.block.terminator is None:
+			self.b.set_terminator(M.Goto(target=break_target))
 
 	def _visit_stmt_HContinue(self, stmt: H.HContinue) -> None:
-		raise NotImplementedError("Continue lowering not implemented yet")
+		# Continue jumps to the innermost loop's continue target (loop header).
+		if not self._loop_stack:
+			raise NotImplementedError("continue outside of loop not supported yet")
+		continue_target, _ = self._loop_stack[-1]
+		if self.b.block.terminator is None:
+			self.b.set_terminator(M.Goto(target=continue_target))
 
 	def _visit_stmt_HIf(self, stmt: H.HIf) -> None:
 		# If the current block already ended, do nothing.
@@ -256,8 +268,36 @@ class HIRToMIR:
 		# 6) Continue in join block.
 		self.b.set_block(join_block)
 
-	def visit_stmt_HLoop(self, stmt: H.HLoop) -> None:
-		raise NotImplementedError("Loop lowering not implemented yet")
+	def _visit_stmt_HLoop(self, stmt: H.HLoop) -> None:
+		# If the current block already ended, do nothing.
+		if self.b.block.terminator is not None:
+			return
+
+		# Create loop blocks.
+		header = self.b.new_block("loop_header")
+		body = self.b.new_block("loop_body")
+		exit_block = self.b.new_block("loop_exit")
+
+		# Jump from current block to loop header.
+		self.b.set_terminator(M.Goto(target=header.name))
+
+		# Record loop context: continue -> header, break -> exit.
+		self._loop_stack.append((header.name, exit_block.name))
+
+		# Header: fall through to body.
+		self.b.set_block(header)
+		self.b.set_terminator(M.Goto(target=body.name))
+
+		# Body: lower statements.
+		self.b.set_block(body)
+		self.lower_block(stmt.body)
+		if self.b.block.terminator is None:
+			# If body falls through, loop back.
+			self.b.set_terminator(M.Goto(target=header.name))
+
+		# Pop loop context and continue in exit block.
+		self._loop_stack.pop()
+		self.b.set_block(exit_block)
 
 
 __all__ = ["MirBuilder", "HIRToMIR"]
