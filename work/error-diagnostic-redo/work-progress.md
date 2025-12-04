@@ -1,7 +1,7 @@
 # status
 
-* Current: Spec/grammar/ABI/DMIR docs updated for typed diagnostics and new exception syntax; runtime `DiagnosticValue` + helpers implemented in C with unit tests.
-* Next: Wire `DiagnosticValue`/`Diagnostic` into the compiler/runtime (`Error.attrs`, `^` captures), and mark remaining doc nits (Missing at ABI/logging) if any.
+* Current: Spec/grammar/ABI/DMIR docs updated for typed diagnostics and new exception syntax; runtime `DiagnosticValue` + helpers implemented in C with unit tests; dummy runtime `Error` now carries typed attrs alongside legacy fields.
+* Next: Wire `DiagnosticValue`/`Diagnostic` into `Error`/`^` capture in the compiler, and remove legacy args/payload once the compiler is updated.
 
 # phase 0 — align spec / grammar / ABI (prep)
 
@@ -57,7 +57,7 @@ Tests:
 * nested objects
 * arrays
 * handling of Missing / wrong-type access
-* Status: in progress — C runtime `DiagnosticValue` + helpers implemented and unit-tested (`tests/runtime_diagnostic_value.c`).
+* Status: done for runtime core — implemented in C with unit tests (`tests/runtime_diagnostic_value.c`).
 
 Status: not started.
 
@@ -82,7 +82,7 @@ Tests:
 
 * struct → object tree
 * custom implementation overrides
-* Status: in progress — primitive `to_diag` equivalents implemented in C (helpers for scalars/Optional), but not yet exposed through the compiler.
+* Status: in progress — primitive “to_diag” equivalents implemented in C (helpers for scalars/Optional); compiler/runtime integration pending.
 
 Status: not started.
 
@@ -108,7 +108,7 @@ Add:
 
 * `fn attrs(&self) -> Map<String,DiagnosticValue>`
 * `attrs["sql_code"].as_int()` must work as expected
-* Status: not started.
+* Status: in progress — dummy runtime `Error` carries typed attrs (plus legacy args/payload for now) and string lookups still work; compiler still emits legacy args.
 
 ## 2.2 Implement the new `^` capture model
 
@@ -123,7 +123,7 @@ Tests:
 * capture struct
 * capture local shadowing rules
 * ensuring capture does not allocate or mutate unexpectedly
-* Status: not started.
+* Status: not started (compiler/runtime capture path still string-based).
 
 ---
 

@@ -5,7 +5,6 @@
 #include <stddef.h>
 
 #include "string_runtime.h"
-#include "error_dummy.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -49,6 +48,11 @@ struct DriftDiagnosticValue {
     } data;
 };
 
+struct DriftOptionalInt {
+    uint8_t is_some;
+    int64_t value;
+};
+
 struct DriftOptionalBool {
     uint8_t is_some;
     uint8_t value;
@@ -59,9 +63,15 @@ struct DriftOptionalFloat {
     double value;
 };
 
-// Optional<Int> and Optional<String> come from error_dummy.h
+struct DriftOptionalString {
+    uint8_t is_some;
+    struct DriftString value;
+};
+
+static const struct DriftOptionalInt OPTIONAL_INT_NONE = {0, 0};
 static const struct DriftOptionalBool DRIFT_OPTIONAL_BOOL_NONE = {0, 0};
 static const struct DriftOptionalFloat DRIFT_OPTIONAL_FLOAT_NONE = {0, 0.0};
+static const struct DriftOptionalString OPTIONAL_STRING_NONE = {0, {0, NULL}};
 
 // Constructors
 struct DriftDiagnosticValue drift_dv_missing(void);

@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include "string_runtime.h"
+#include "diagnostic_runtime.h"
 
 #define DRIFT_EVENT_KIND_TEST 0
 #define DRIFT_EVENT_PAYLOAD_MASK ((1ULL << 60) - 1)
@@ -13,24 +14,18 @@ struct DriftErrorArg {
     struct DriftString value;
 };
 
-struct DriftOptionalString {
-    uint8_t is_some;
-    struct DriftString value;
+struct DriftErrorAttr {
+    struct DriftString key;
+    struct DriftDiagnosticValue value;
 };
-#define OPTIONAL_STRING_NONE \
-    (struct DriftOptionalString){.is_some = 0, .value = (struct DriftString){0, NULL}}
-
-struct DriftOptionalInt {
-    uint8_t is_some;
-    int64_t value;
-};
-#define OPTIONAL_INT_NONE (struct DriftOptionalInt){.is_some = 0, .value = 0}
 
 struct DriftError {
-    int64_t code;               // matches Drift Int (word-sized)
-    struct DriftString payload; // legacy first payload field (if provided)
-    struct DriftErrorArg* args; // dynamic array of args (key/value)
-    size_t arg_count;           // number of entries in args
+    int64_t code;                // matches Drift Int (word-sized)
+    struct DriftString payload;  // legacy payload field (string)
+    struct DriftErrorArg* args;  // legacy string args
+    size_t arg_count;            // number of string args
+    struct DriftErrorAttr* attrs; // typed attrs (key -> DiagnosticValue)
+    size_t attr_count;           // number of entries in attrs
 };
 
 // Returns a non-null Error* for testing error-edge lowering.
@@ -38,11 +33,12 @@ struct DriftError* drift_error_new_dummy(int64_t code, struct DriftString key, s
 int64_t drift_error_get_code(struct DriftError* err);
 // Returns pointer to value if found, NULL otherwise. No ownership transfer.
 const struct DriftString* drift_error_get_arg(const struct DriftError* err, const struct DriftString* key);
-// Append an arg (key,value) to an existing error.
+const struct DriftDiagnosticValue* drift_error_get_attr(const struct DriftError* err, const struct DriftString* key);
+// Append an attr (key,value) to an existing error (value stored as DiagnosticValue::String).
 void drift_error_add_arg(struct DriftError* err, struct DriftString key, struct DriftString value);
-// Optional<String> return for exception arg lookup.
+// Optional<String> return for exception attr lookup (string-valued only).
 struct DriftOptionalString __exc_args_get(const struct DriftError* err, struct DriftString key);
-// Required arg lookup: returns empty string if missing (used for typed catches where the field is guaranteed).
+// Required attr lookup (string-valued only): returns empty string if missing.
 struct DriftString __exc_args_get_required(const struct DriftError* err, struct DriftString key);
 
 // Optional<Int> helpers for generic Optional coverage.
