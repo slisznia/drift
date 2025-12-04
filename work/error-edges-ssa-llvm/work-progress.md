@@ -6,7 +6,7 @@
 
 - **1. Make MIR the single source of truth for can-error** — ✔️ done. `driftc._annotate_can_error` seeds `can_error` from MIR bodies and raises on any `Throw` in a non-`can_error` function or call-with-edges to a non-`can_error` callee; `ssa_codegen` only asserts.
 - **2. Negative tests for incorrect error-edge usage** — ✔️ done (plain call to can-error, call-with-edges to non-can-error). A separate “Throw in non-can-error” test is redundant because `_annotate_can_error` auto-marks functions containing `Throw` as `can_error`.
-- **3. Improve placeholder values for `Throw` in non-Void functions** — ✗ open (still zero/undef fallback).
+- **3. Improve placeholder values for `Throw` in non-Void functions** — ✔️ done. Throw now returns a deterministic zeroed value for all return types (zero scalars, null pointers, zeroed structs/arrays) paired with the error.
 - **4. Generalize `try/catch` lowering** — ✗ open.
 
 ---

@@ -971,20 +971,30 @@ def emit_module_object(
                 if isinstance(ret_ll_ty, ir.VoidType):
                     builder.ret(err_val)
                 else:
-                    # Value is ignored on error; insert err into a zeroed pair.
+                    # Value is ignored on error; return a zeroed pair with the error.
                     pair_ty = llvm_ret_with_error(f.return_type)
-                    pair_ptr = builder.alloca(pair_ty, name=f"{f.name}_throw_pair")
-                    val_ptr = builder.gep(pair_ptr, [I32_TY(0), I32_TY(0)], inbounds=True)
                     if isinstance(ret_ll_ty, ir.IntType):
                         val_zero = ret_ll_ty(0)
                     elif isinstance(ret_ll_ty, ir.PointerType):
                         val_zero = ir.Constant(ret_ll_ty, None)
+                    elif isinstance(ret_ll_ty, ir.LiteralStructType):
+                        elems = []
+                        for t in ret_ll_ty.elements:
+                            if isinstance(t, ir.IntType):
+                                elems.append(t(0))
+                            elif isinstance(t, ir.PointerType):
+                                elems.append(ir.Constant(t, None))
+                            else:
+                                elems.append(ir.Constant(t, None))
+                        val_zero = ir.Constant.literal_struct(elems)
+                    elif isinstance(ret_ll_ty, ir.ArrayType):
+                        val_zero = ir.Constant(ret_ll_ty, None)
                     else:
-                        val_zero = builder.load(builder.alloca(ret_ll_ty))
-                    builder.store(val_zero, val_ptr)
-                    err_ptr = builder.gep(pair_ptr, [I32_TY(0), I32_TY(1)], inbounds=True)
-                    builder.store(err_val, err_ptr)
-                    builder.ret(builder.load(pair_ptr))
+                        val_zero = ir.Constant(ret_ll_ty, None)
+                    tmp_pair = ir.Constant(pair_ty, None)
+                    tmp_pair = builder.insert_value(tmp_pair, val_zero, 0)
+                    tmp_pair = builder.insert_value(tmp_pair, err_val, 1)
+                    builder.ret(tmp_pair)
             elif term is None:
                 builder.unreachable()
             else:
