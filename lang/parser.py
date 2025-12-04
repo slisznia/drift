@@ -674,6 +674,8 @@ def _build_expr(node) -> Expr:
     if name == "var":
         token = node.children[0]
         return Name(loc=_loc(node), ident=token.value)
+    if name == "placeholder":
+        return Placeholder(loc=_loc(node))
     if name == "int_lit":
         return Literal(loc=_loc(node), value=int(node.children[0].value))
     if name == "float_lit":

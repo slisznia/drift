@@ -51,6 +51,54 @@ Drift expressions largely follow a C-style surface with explicit ownership rules
 - Array literals: `[1, 2, 3]`
 - String concatenation uses `+`
 
+### 2.x. Receiver placeholder (`.foo`, `.foo(...)`)
+
+When calling a method on a receiver expression `R`, a leading-dot placeholder lets arguments reuse that same receiver without re-evaluating it:
+
+```drift
+R.method(.field, .other_method(), .index)
+```
+
+Semantics:
+
+- `.name` desugars to `R.name`.
+- `.name(a, b)` desugars to `R.name(a, b)`.
+- The receiver `R` is evaluated **exactly once** and reused for the main call and all leading-dot arguments. Conceptually:
+
+  ```drift
+  R.method(.a(), .b)
+  ```
+
+  behaves like:
+
+  ```drift
+  val __recv = R
+  __recv.method(__recv.a(), __recv.b)
+  ```
+
+Where leading-dot is valid:
+
+- Inside method-call argument lists (`R.method(...)`), including in nested sub-expressions.
+- Inside an index expression `R[expr]` **only when** `expr` is a leading-dot form; `R[.len]` means `R[R.len]`.
+
+Scoping / nesting:
+
+- Leading-dot binds to the immediately enclosing receiver. Nested calls each have their own receiver placeholder. For example:
+
+  ```drift
+  outer().a(.x, inner().b(.y))
+  ```
+
+  desugars to:
+
+  ```drift
+  val __outer = outer()
+  val __inner = inner()
+  __outer.a(__outer.x, __inner.b(__inner.y))
+  ```
+
+All arguments still evaluate left-to-right; the only special rule is reuse of the already-evaluated receiver.
+
 ### 2.1. Predictable interop
 
 Precise binary layouts, opaque ABI types, and sealed unsafe modules keep foreign calls predictable without exposing raw pointers.

@@ -194,6 +194,7 @@ dot_expr: DOT NAME
 
 primary: literal
        | NAME -> var
+       | DOT  -> placeholder
        | "(" expr ")"
        | array_literal
 

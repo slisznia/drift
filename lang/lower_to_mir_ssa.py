@@ -393,6 +393,9 @@ def lower_expr_to_ssa(
     checked: CheckedProgram,
     blocks: Dict[str, mir.BasicBlock] | None = None,
     fresh_block: callable | None = None,
+    *,
+    placeholder_ssa: Optional[str] = None,
+    placeholder_ty: Optional[Type] = None,
 ) -> Tuple[str, Type, mir.BasicBlock, SSAEnv]:
     """Lower an expression to SSA, emitting instructions into the current block.
 
@@ -656,6 +659,9 @@ def lower_expr_to_ssa(
         return dest, res_ty, current, env
     # Calls (simple name callee, no error edges in scaffold)
     if isinstance(expr, ast.Call):
+        # Receiver placeholder support: evaluate receiver once and thread into args.
+        recv_ssa: Optional[str] = None
+        recv_ty: Optional[Type] = None
         # Lower callee base if it's an attribute; use its SSA name/type for method dispatch.
         base_ssa = None
         base_ty = None
@@ -866,28 +872,30 @@ def lower_expr_to_ssa(
                 current.instructions.append(mir.StructInit(dest=dest, type=Type(callee), args=arg_ssa))
                 env.ctx.ssa_types[dest] = Type(callee)
                 return dest, Type(callee), current, env
-        elif isinstance(expr.func, ast.Attr) and isinstance(expr.func.value, ast.Name):
-            # Method-style call on a resolved value; use the base type if known.
-            base_ssa = env.lookup_user(expr.func.value.ident) if env.has_user(expr.func.value.ident) else None
-            base_ty = env.ctx.ssa_types.get(base_ssa) if base_ssa else None
+        elif isinstance(expr.func, ast.Attr):
+            # Method-style call; evaluate receiver once if available and use as placeholder.
+            recv_ssa = base_ssa
+            recv_ty = base_ty
+            if recv_ssa is None or recv_ty is None:
+                if not (isinstance(expr.func.value, ast.Name) and not env.has_user(expr.func.value.ident)):
+                    recv_ssa, recv_ty, current, env = lower_expr_to_ssa(
+                        expr.func.value,
+                        env,
+                        current,
+                        checked,
+                        blocks,
+                        fresh_block,
+                        placeholder_ssa=placeholder_ssa,
+                        placeholder_ty=placeholder_ty,
+                    )
             method_callee = None
-            if base_ty and base_ty.name in checked.structs:
-                struct_info = checked.structs[base_ty.name]
+            if recv_ty and recv_ty.name in checked.structs:
+                struct_info = checked.structs[recv_ty.name]
                 if struct_info.methods and expr.func.attr in struct_info.methods:
-                    method_callee = f"{base_ty.name}.{expr.func.attr}"
-                    # If this is an args-view key helper (no args), synthesize ArgKey directly.
-                    if not expr.args and base_ty.name.endswith("ArgsView"):
-                        key_ty = Type(base_ty.name.replace("ArgsView", "ArgKey"))
-                        key_const = env.fresh_ssa(f"{expr.func.attr}_key", STR)
-                        current.instructions.append(
-                            mir.Const(dest=key_const, type=STR, value=expr.func.attr, loc=getattr(expr, "loc", None))
-                        )
-                        env.ctx.ssa_types[key_const] = STR
-                        dest = env.fresh_ssa(expr.func.attr, key_ty)
-                        current.instructions.append(mir.StructInit(dest=dest, type=key_ty, args=[key_const]))
-                        env.ctx.ssa_types[dest] = key_ty
-                        return dest, key_ty, current, env
-            callee = method_callee or f"{expr.func.value.ident}.{expr.func.attr}"
+                    method_callee = f"{recv_ty.name}.{expr.func.attr}"
+            callee = method_callee or (
+                f"{expr.func.value.ident}.{expr.func.attr}" if isinstance(expr.func.value, ast.Name) else None
+            )
         else:
             raise LoweringError(f"unsupported call callee shape in SSA lowering (func={expr.func})")
         if callee not in checked.functions:
@@ -897,7 +905,9 @@ def lower_expr_to_ssa(
                 dest = env.fresh_ssa(callee, ret_ty)
                 arg_ssa = []
                 for a in expr.args:
-                    v, _, current, env = lower_expr_to_ssa(a, env, current, checked, blocks, fresh_block)
+                    v, _, current, env = lower_expr_to_ssa(
+                        a, env, current, checked, blocks, fresh_block, placeholder_ssa=recv_ssa, placeholder_ty=recv_ty
+                    )
                     arg_ssa.append(v)
                 current.instructions.append(
                     mir.Call(dest=dest, callee=callee, args=arg_ssa, ret_type=ret_ty, err_dest=None, normal=None, error=None, loc=getattr(expr, "loc", None))
@@ -907,7 +917,9 @@ def lower_expr_to_ssa(
             raise LoweringError(f"unknown function '{callee}' in SSA lowering")
         arg_ssa: List[str] = []
         for a in expr.args:
-            v, _, current, env = lower_expr_to_ssa(a, env, current, checked, blocks, fresh_block)
+            v, _, current, env = lower_expr_to_ssa(
+                a, env, current, checked, blocks, fresh_block, placeholder_ssa=recv_ssa, placeholder_ty=recv_ty
+            )
             arg_ssa.append(v)
         ret_ty = checked.functions[callee].signature.return_type
         dest = env.fresh_ssa(callee, ret_ty)
@@ -948,13 +960,6 @@ def lower_expr_to_ssa(
         return dest, out_ty, current, env
     if isinstance(expr, ast.Attr):
         base_ssa, base_ty, current, env = lower_expr_to_ssa(expr.value, env, current, checked, blocks, fresh_block)
-        exc_info = checked.exceptions.get(base_ty.name)
-        if exc_info and expr.attr == "args":
-            view_ty = Type(exc_info.args_view_type)
-            dest = env.fresh_ssa("args_view", view_ty)
-            current.instructions.append(mir.StructInit(dest=dest, type=view_ty, args=[base_ssa]))
-            env.ctx.ssa_types[dest] = view_ty
-            return dest, view_ty, current, env
         if expr.attr == "attrs":
             dest = env.fresh_ssa("attrs_view", Type("ErrorAttrs"))
             current.instructions.append(mir.Move(dest=dest, source=base_ssa))
@@ -1309,3 +1314,7 @@ def lower_try_stmt(
         loc=stmt.loc,
     )
     return join_block, join_env
+    if isinstance(expr, ast.Placeholder):
+        if placeholder_ssa is None or placeholder_ty is None:
+            raise LoweringError("receiver placeholder used outside of method call")
+        return placeholder_ssa, placeholder_ty, current, env

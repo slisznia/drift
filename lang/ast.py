@@ -129,6 +129,11 @@ class Name(Expr):
 
 
 @dataclass
+class Placeholder(Expr):
+    loc: Located
+
+
+@dataclass
 class Attr(Expr):
     loc: Located
     value: Expr
