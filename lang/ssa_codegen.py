@@ -117,6 +117,7 @@ def emit_module_object(
     rt_error_dummy: Optional[ir.Function] = None
     rt_error_add_arg: Optional[ir.Function] = None
     rt_error_add_attr_dv: Optional[ir.Function] = None
+    rt_error_add_local_dv: Optional[ir.Function] = None
     rt_exc_args_get: Optional[ir.Function] = None
     rt_exc_attrs_get: Optional[ir.Function] = None
     rt_dv_int: Optional[ir.Function] = None
@@ -409,6 +410,17 @@ def emit_module_object(
                                         name="drift_error_add_attr_dv",
                                     )
                                 callee = rt_error_add_attr_dv
+                            elif instr.callee == "drift_error_add_local_dv":
+                                if rt_error_add_local_dv is None:
+                                    rt_error_add_local_dv = ir.Function(
+                                        module,
+                                        ir.FunctionType(
+                                            ir.VoidType(),
+                                            [ERROR_PTR_TY, _drift_string_type(), _drift_string_type(), DV_TY],
+                                        ),
+                                        name="drift_error_add_local_dv",
+                                    )
+                                callee = rt_error_add_local_dv
                             elif instr.callee == "drift_dv_int":
                                 if rt_dv_int is None:
                                     rt_dv_int = ir.Function(

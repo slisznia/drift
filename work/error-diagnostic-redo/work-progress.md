@@ -1,7 +1,7 @@
 # status
 
-* Current: Spec/grammar/ABI/DMIR docs updated for typed diagnostics and new exception syntax; runtime `DiagnosticValue` + helpers implemented in C with unit tests; dummy runtime `Error` now carries typed attrs alongside legacy fields.
-* Next: Wire `DiagnosticValue`/`Diagnostic` into `Error`/`^` capture in the compiler, and remove legacy args/payload once the compiler is updated.
+* Current: Spec/grammar/ABI/DMIR docs updated for typed diagnostics and new exception syntax; runtime `DiagnosticValue` + helpers implemented in C with unit tests; dummy runtime `Error` now carries typed attrs alongside legacy fields; SSA lowering seeds typed attrs and now threads `^` captures into typed ctx_frames.
+* Next: Finish compiler/runtime capture plumbing (wider type coverage) and remove legacy args/payload once compiler paths consume typed attrs/frames everywhere.
 
 # phase 0 — align spec / grammar / ABI (prep)
 
@@ -59,8 +59,6 @@ Tests:
 * handling of Missing / wrong-type access
 * Status: done for runtime core — implemented in C with unit tests (`tests/runtime_diagnostic_value.c`).
 
-Status: not started.
-
 ## 1.2 Implement `Diagnostic` trait
 
 As per spec:
@@ -84,8 +82,6 @@ Tests:
 * custom implementation overrides
 * Status: in progress — primitive “to_diag” equivalents implemented in C (helpers for scalars/Optional); compiler/runtime integration pending.
 
-Status: not started.
-
 ---
 
 # phase 2 — Error representation
@@ -108,7 +104,7 @@ Add:
 
 * `fn attrs(&self) -> Map<String,DiagnosticValue>`
 * `attrs["sql_code"].as_int()` must work as expected
-* Status: in progress — dummy runtime `Error` carries typed attrs (plus legacy args/payload for now) and string lookups still work; compiler still emits legacy args.
+* Status: in progress — dummy runtime `Error` carries typed attrs (plus legacy args/payload for now) and string lookups still work; compiler seeds typed attrs via exception constructors but still leaves legacy args/payload.
 
 ## 2.2 Implement the new `^` capture model
 
@@ -123,7 +119,7 @@ Tests:
 * capture struct
 * capture local shadowing rules
 * ensuring capture does not allocate or mutate unexpectedly
-* Status: not started (compiler/runtime capture path still string-based).
+* Status: in progress — runtime has `ctx_frames` and `drift_error_add_local_dv`; compiler now records captured `^` locals in SSA and emits typed locals for primitive/string captures when constructing exceptions. Needs wider type coverage and integration with any existing runtime consumers.
 
 ---
 

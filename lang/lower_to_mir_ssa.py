@@ -40,7 +40,7 @@ def lower_function_ssa(fn_def: ast.FunctionDef, checked: CheckedProgram) -> Lowe
     """Lower a single function into SSA MIR blocks (scaffold only)."""
     fn_info = checked.functions[fn_def.name]
     ctx = SSAContext()
-    env = SSAEnv(ctx=ctx)
+    env = SSAEnv(ctx=ctx, frame_name=fn_def.name)
     blocks: Dict[str, mir.BasicBlock] = {}
     block_counter = 0
 
@@ -128,7 +128,10 @@ def lower_let(
     val_ssa, val_ty, current, env = lower_expr_to_ssa(stmt.value, env, current, checked, blocks, fresh_block)
     dest_ssa = env.fresh_ssa(stmt.name, val_ty)
     current.instructions.append(mir.Move(dest=dest_ssa, source=val_ssa))
-    env.bind_user(stmt.name, dest_ssa, val_ty)
+    capture_key = None
+    if getattr(stmt, "capture", False):
+        capture_key = stmt.capture_alias or stmt.name
+    env.bind_user(stmt.name, dest_ssa, val_ty, capture_key=capture_key)
     return current, env
 
 
@@ -526,9 +529,74 @@ def lower_expr_to_ssa(
                             err_dest=None,
                             normal=None,
                             error=None,
+                        loc=loc,
+                    )
+                )
+        # Capture any ^ locals as typed diagnostics.
+        if env.capture_env:
+            frame_const = env.fresh_ssa("frame_name", STR)
+            current.instructions.append(mir.Const(dest=frame_const, type=STR, value=env.frame_name, loc=loc))
+            env.ctx.ssa_types[frame_const] = STR
+            for cap_key, cap_ssa, cap_ty in env.snapshot_captures():
+                # Convert captured value to DiagnosticValue.
+                dv_dest = env.fresh_ssa(f"{cap_key}_dv", Type("DiagnosticValue"))
+                if cap_ty in (INT, I64):
+                    current.instructions.append(
+                        mir.Call(
+                            dest=dv_dest,
+                            callee="drift_dv_int",
+                            args=[cap_ssa],
+                            ret_type=Type("DiagnosticValue"),
+                            err_dest=None,
+                            normal=None,
+                            error=None,
                             loc=loc,
                         )
                     )
+                elif cap_ty == BOOL:
+                    current.instructions.append(
+                        mir.Call(
+                            dest=dv_dest,
+                            callee="drift_dv_bool",
+                            args=[cap_ssa],
+                            ret_type=Type("DiagnosticValue"),
+                            err_dest=None,
+                            normal=None,
+                            error=None,
+                            loc=loc,
+                        )
+                    )
+                elif cap_ty == STR:
+                    current.instructions.append(
+                        mir.Call(
+                            dest=dv_dest,
+                            callee="drift_dv_string",
+                            args=[cap_ssa],
+                            ret_type=Type("DiagnosticValue"),
+                            err_dest=None,
+                            normal=None,
+                            error=None,
+                            loc=loc,
+                        )
+                    )
+                else:
+                    raise LoweringError(f"captured local '{cap_key}' type {cap_ty} not supported for diagnostics")
+                env.ctx.ssa_types[dv_dest] = Type("DiagnosticValue")
+                key_const = env.fresh_ssa(f"{cap_key}_key", STR)
+                current.instructions.append(mir.Const(dest=key_const, type=STR, value=cap_key, loc=loc))
+                env.ctx.ssa_types[key_const] = STR
+                current.instructions.append(
+                    mir.Call(
+                        dest=env.fresh_ssa(f"{cap_key}_add", UNIT),
+                        callee="drift_error_add_local_dv",
+                        args=[dest_err, frame_const, key_const, dv_dest],
+                        ret_type=UNIT,
+                        err_dest=None,
+                        normal=None,
+                        error=None,
+                        loc=loc,
+                    )
+                )
         return dest_err, ERROR, current, env
     # Names
     if isinstance(expr, ast.Name):

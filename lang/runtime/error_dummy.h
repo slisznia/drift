@@ -19,6 +19,17 @@ struct DriftErrorAttr {
     struct DriftDiagnosticValue value;
 };
 
+struct DriftErrorLocal {
+    struct DriftString key;
+    struct DriftDiagnosticValue value;
+};
+
+struct DriftCtxFrame {
+    struct DriftString name;
+    struct DriftErrorLocal* locals;
+    size_t local_count;
+};
+
 struct DriftError {
     int64_t code;                // matches Drift Int (word-sized)
     struct DriftString payload;  // legacy payload field (string)
@@ -26,6 +37,8 @@ struct DriftError {
     size_t arg_count;            // number of string args
     struct DriftErrorAttr* attrs; // typed attrs (key -> DiagnosticValue)
     size_t attr_count;           // number of entries in attrs
+    struct DriftCtxFrame* frames; // captured locals grouped by frame
+    size_t frame_count;
 };
 
 // Returns a non-null Error* for testing error-edge lowering.
@@ -37,6 +50,8 @@ const struct DriftDiagnosticValue* drift_error_get_attr(const struct DriftError*
 // Append an attr (key,value) to an existing error (value stored as DiagnosticValue::String).
 void drift_error_add_arg(struct DriftError* err, struct DriftString key, struct DriftString value);
 void drift_error_add_attr_dv(struct DriftError* err, struct DriftString key, struct DriftDiagnosticValue value);
+// Attach a captured local (typed DiagnosticValue) to a named frame.
+void drift_error_add_local_dv(struct DriftError* err, struct DriftString frame, struct DriftString key, struct DriftDiagnosticValue value);
 // Optional<String> return for exception attr lookup (string-valued only).
 struct DriftOptionalString __exc_args_get(const struct DriftError* err, struct DriftString key);
 // Required attr lookup (string-valued only): returns empty string if missing.

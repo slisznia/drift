@@ -15,6 +15,8 @@ struct DriftError* drift_error_new_dummy(int64_t code, struct DriftString key, s
     err->arg_count = 0;
     err->attrs = NULL;
     err->attr_count = 0;
+    err->frames = NULL;
+    err->frame_count = 0;
     if (key.len > 0) {
         drift_error_add_arg(err, key, payload);
     }
@@ -61,6 +63,36 @@ void drift_error_add_attr_dv(struct DriftError* err, struct DriftString key, str
     new_attrs[new_acount - 1].value = value;
     err->attrs = new_attrs;
     err->attr_count = new_acount;
+}
+
+void drift_error_add_local_dv(struct DriftError* err, struct DriftString frame, struct DriftString key, struct DriftDiagnosticValue value) {
+    if (!err) return;
+    // Find or create frame by name.
+    size_t frame_idx = err->frame_count;
+    for (size_t i = 0; i < err->frame_count; i++) {
+        if (drift_string_eq(err->frames[i].name, frame)) {
+            frame_idx = i;
+            break;
+        }
+    }
+    if (frame_idx == err->frame_count) {
+        size_t new_count = err->frame_count + 1;
+        struct DriftCtxFrame* new_frames = realloc(err->frames, new_count * sizeof(struct DriftCtxFrame));
+        if (!new_frames) abort();
+        new_frames[new_count - 1].name = frame;
+        new_frames[new_count - 1].locals = NULL;
+        new_frames[new_count - 1].local_count = 0;
+        err->frames = new_frames;
+        err->frame_count = new_count;
+    }
+    struct DriftCtxFrame* tgt = &err->frames[frame_idx];
+    size_t new_lcount = tgt->local_count + 1;
+    struct DriftErrorLocal* new_locals = realloc(tgt->locals, new_lcount * sizeof(struct DriftErrorLocal));
+    if (!new_locals) abort();
+    new_locals[new_lcount - 1].key = key;
+    new_locals[new_lcount - 1].value = value;
+    tgt->locals = new_locals;
+    tgt->local_count = new_lcount;
 }
 
 int64_t drift_error_get_code(struct DriftError* err) {

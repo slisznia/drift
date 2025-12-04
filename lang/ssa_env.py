@@ -27,12 +27,18 @@ class SSAEnv:
 
     - `ctx` holds the global SSA counter and type table for the function.
     - `user_env` maps user-level names (strings from the source) to SSA names.
+    - `capture_env` maps capture keys to (ssa name, Type).
+    - `capture_keys_by_user` tracks which user variable owns which capture key.
+    - `frame_name` carries the current function name for context frames.
 
     MIR must *only* use SSA names; user names never appear directly in MIR.
     """
 
     ctx: SSAContext
     user_env: Dict[str, str] = field(default_factory=dict)
+    capture_env: Dict[str, tuple[str, Type]] = field(default_factory=dict)
+    capture_keys_by_user: Dict[str, str] = field(default_factory=dict)
+    frame_name: str = ""
 
     def fresh_ssa(self, prefix: str, ty: Optional[Type] = None) -> str:
         """Return a fresh SSA name like `_x0`, `_t3`, `_phi7`.
@@ -47,11 +53,17 @@ class SSAEnv:
 
     # --- user-vars -----------------------------------------------------
 
-    def bind_user(self, user_name: str, ssa_name: str, ty: Optional[Type] = None) -> None:
+    def bind_user(self, user_name: str, ssa_name: str, ty: Optional[Type] = None, capture_key: Optional[str] = None) -> None:
         """Bind a user variable to an SSA name and record its type (if given)."""
         self.user_env[user_name] = ssa_name
         if ty is not None:
             self.ctx.ssa_types[ssa_name] = ty
+        # Preserve existing capture key if present and not explicitly overridden.
+        if capture_key is None and user_name in self.capture_keys_by_user:
+            capture_key = self.capture_keys_by_user[user_name]
+        if capture_key is not None and ty is not None:
+            self.capture_keys_by_user[user_name] = capture_key
+            self.capture_env[capture_key] = (ssa_name, ty)
 
     def lookup_user(self, user_name: str) -> str:
         """Lookup current SSA name for a user variable.
@@ -72,7 +84,14 @@ class SSAEnv:
         `params` maps user_name -> param_ssa_name for that block.
         The child shares the function-global counter/type table via ctx.
         """
-        return SSAEnv(ctx=self.ctx, user_env=dict(params))
+        cloned = SSAEnv(
+            ctx=self.ctx,
+            user_env=dict(params),
+            capture_env=dict(self.capture_env),
+            capture_keys_by_user=dict(self.capture_keys_by_user),
+            frame_name=self.frame_name,
+        )
+        return cloned
 
     def snapshot_live_user_names(self) -> Iterable[str]:
         """Return current live user names (keys of user_env).
@@ -82,3 +101,7 @@ class SSAEnv:
         """
         # Deterministic ordering is important for φ param/arg alignment.
         return sorted(self.user_env.keys())
+
+    def snapshot_captures(self) -> Iterable[tuple[str, str, Type]]:
+        """Return capture entries as (capture_key, ssa_name, type)."""
+        return [(k, v[0], v[1]) for k, v in sorted(self.capture_env.items())]
