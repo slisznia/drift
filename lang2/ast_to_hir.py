@@ -4,9 +4,10 @@
 AST → HIR lowering (sugar removal entry point).
 
 This pass takes the parsed AST and produces the sugar-free HIR defined in
-`lang2/hir_nodes.py`. Only the trivial leaf cases are implemented right now
-to keep the initial commit small; all other nodes fail loudly so they can be
-filled in incrementally.
+`lang2/hir_nodes.py`. It currently lowers basic expressions/statements
+(literals, vars, unary/binary ops, field/index, let/assign/if/return/break/continue/expr-stmt);
+calls/control-flow sugar and other complex constructs still fail loudly so
+they can be filled in incrementally.
 """
 
 from __future__ import annotations
@@ -185,9 +186,6 @@ class AstToHIR:
 
 	def visit_stmt_RaiseStmt(self, stmt: ast.RaiseStmt) -> H.HStmt:
 		raise NotImplementedError("Raise lowering not implemented yet")
-
-
-__all__ = ["AstToHIR"]
 
 
 __all__ = ["AstToHIR"]
