@@ -8,7 +8,17 @@ Currently validates address-taken detection over simple MIR snippets.
 
 from __future__ import annotations
 
-from lang2.stage2 import MirFunc, BasicBlock, AddrOfLocal, LoadLocal, Goto
+from lang2.stage2 import (
+	MirFunc,
+	BasicBlock,
+	AddrOfLocal,
+	LoadLocal,
+	Goto,
+	Call,
+	MethodCall,
+	ConstructDV,
+	ConstInt,
+)
 from lang2.stage3 import MirPreAnalysis
 
 
@@ -37,5 +47,49 @@ def test_address_taken_detected():
 
 	result = MirPreAnalysis().analyze(func)
 	assert result.address_taken == {"x"}
-	# may_fail is stubbed; should be empty for now.
-	assert result.may_fail_instrs == set()
+	assert result.may_fail == set()
+
+
+def test_calls_marked_may_fail():
+	entry = BasicBlock(
+		name="entry",
+		instructions=[
+			Call(dest="t0", fn="foo", args=[]),
+			MethodCall(dest="t1", receiver="obj", method_name="bar", args=[]),
+			ConstructDV(dest="t2", dv_type_name="Err", args=[]),
+		],
+		terminator=Goto(target="exit"),
+	)
+	exit_block = BasicBlock(name="exit", instructions=[], terminator=None)
+	func = MirFunc(
+		name="f",
+		params=[],
+		locals=[],
+		blocks={"entry": entry, "exit": exit_block},
+		entry="entry",
+	)
+	result = MirPreAnalysis().analyze(func)
+	assert ("entry", 0) in result.may_fail
+	assert ("entry", 1) in result.may_fail
+	assert ("entry", 2) in result.may_fail
+
+
+def test_pure_ops_not_marked():
+	entry = BasicBlock(
+		name="entry",
+		instructions=[
+			ConstInt(dest="c0", value=0),
+			LoadLocal(dest="t0", local="x"),
+		],
+		terminator=Goto(target="exit"),
+	)
+	exit_block = BasicBlock(name="exit", instructions=[], terminator=None)
+	func = MirFunc(
+		name="f",
+		params=[],
+		locals=["x"],
+		blocks={"entry": entry, "exit": exit_block},
+		entry="entry",
+	)
+	result = MirPreAnalysis().analyze(func)
+	assert result.may_fail == set()

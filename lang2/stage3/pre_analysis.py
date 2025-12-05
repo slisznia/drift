@@ -37,14 +37,14 @@ class MirAnalysisResult:
 	"""Holds pre-analysis results for a single MirFunc."""
 
 	address_taken: Set[str]
-	may_fail_instrs: Set[int]  # placeholder for future use (e.g., instruction indices)
+	may_fail: Set[tuple[str, int]]  # (block_name, instruction_index)
 
 
 class MirPreAnalysis:
 	"""
 	Run MIR pre-analyses:
 	  - address_taken: which locals have their address observed
-	  - may_fail: stubbed for now
+	  - may_fail: which instruction sites can fail (conservative)
 
 	Entry point:
 	  analyze(func: MirFunc) -> MirAnalysisResult
@@ -52,28 +52,39 @@ class MirPreAnalysis:
 
 	def analyze(self, func: MirFunc) -> MirAnalysisResult:
 		addr_taken: Set[str] = set()
-		may_fail: Set[int] = set()  # not used yet; reserved for future
+		may_fail: Set[tuple[str, int]] = set()
 
-		for block in func.blocks.values():
-			for instr in block.instructions:
-				self._visit_instr(instr, addr_taken, may_fail)
+		for block_name, block in func.blocks.items():
+			for idx, instr in enumerate(block.instructions):
+				self._visit_instr(block_name, idx, instr, addr_taken, may_fail)
 			if block.terminator is not None:
-				self._visit_term(block.terminator, may_fail)
+				self._visit_term(block_name, block.terminator, may_fail)
 
-		return MirAnalysisResult(address_taken=addr_taken, may_fail_instrs=may_fail)
+		return MirAnalysisResult(address_taken=addr_taken, may_fail=may_fail)
 
 	def _visit_instr(
-		self, instr: MInstr, addr_taken: Set[str], may_fail: Set[int]
+		self,
+		block_name: str,
+		idx: int,
+		instr: MInstr,
+		addr_taken: Set[str],
+		may_fail: Set[tuple[str, int]],
 	) -> None:
 		"""Inspect a MIR instruction and update analysis sets."""
 		if isinstance(instr, AddrOfLocal):
 			addr_taken.add(instr.local)
-		# may_fail stubs: calls / DV construction can be marked later
-		if isinstance(instr, (Call, MethodCall, ConstructDV)):
-			# Placeholder: assume calls may fail; refine when you add richer flags.
-			# We do not record IDs yet; may_fail remains empty until SSA needs it.
-			pass
 
-	def _visit_term(self, term: MTerminator, may_fail: Set[int]) -> None:
+		may_fail_ops = (
+			Call,
+			MethodCall,
+			ConstructDV,
+			# Conservatively include field/index ops if you treat them as potentially failing.
+			# This can be refined later.
+			# LoadField, StoreField, LoadIndex, StoreIndex, ...
+		)
+		if isinstance(instr, may_fail_ops):
+			may_fail.add((block_name, idx))
+
+	def _visit_term(self, block_name: str, term: MTerminator, may_fail: Set[tuple[str, int]]) -> None:
 		"""Inspect a MIR terminator. Currently no-op; reserved for future."""
 		return
