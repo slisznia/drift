@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from typing import Dict, Set
 
 from lang2.stage3 import ThrowSummary
+from lang2.stage2 import MirFunc, Return
 
 
 @dataclass
@@ -67,3 +68,29 @@ def enforce_can_throw_invariants(func_infos: Dict[str, FuncThrowInfo]) -> None:
 	for fname, info in func_infos.items():
 		if info.constructs_error and not info.declared_can_throw:
 			raise RuntimeError(f"function {fname} constructs an Error but is not declared can-throw")
+
+
+def enforce_return_shape_for_can_throw(
+	func_infos: Dict[str, FuncThrowInfo],
+	funcs: Dict[str, MirFunc],
+) -> None:
+	"""
+	Additional invariant:
+	  - If a function is declared can-throw (returns FnResult/throws), every Return
+	    terminator must carry a value (no bare `return;`).
+
+	This is a lightweight check; a richer type-aware check can later ensure that the
+	returned value is actually a FnResult constructed via ConstructResultOk/Err.
+	"""
+	for fname, info in func_infos.items():
+		if not info.declared_can_throw:
+			continue
+		fn = funcs.get(fname)
+		if fn is None:
+			continue
+		for block in fn.blocks.values():
+			term = block.terminator
+			if isinstance(term, Return) and term.value is None:
+				raise RuntimeError(
+					f"function {fname} is declared can-throw but has a bare return in block {block.name}"
+				)

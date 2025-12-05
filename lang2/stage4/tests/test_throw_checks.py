@@ -13,7 +13,9 @@ from lang2.stage4 import (
 	FuncThrowInfo,
 	build_func_throw_info,
 	enforce_can_throw_invariants,
+	enforce_return_shape_for_can_throw,
 )
+from lang2.stage2 import BasicBlock, MirFunc, Return
 
 
 def test_build_func_throw_info_combines_summary_and_decl():
@@ -62,3 +64,29 @@ def test_enforce_can_throw_invariants_allows_declared_thrower():
 	func_infos = build_func_throw_info(summaries, declared_can_throw={"h": True})
 	# Should not raise
 	enforce_can_throw_invariants(func_infos)
+
+
+def test_return_shape_enforced_for_can_throw():
+	# Function h is declared can-throw but has a bare return -> should fail.
+	summaries = {
+		"h": ThrowSummary(
+			constructs_error=False,
+			exception_types=set(),
+			may_fail_sites=set(),
+		)
+	}
+	func_infos = build_func_throw_info(summaries, declared_can_throw={"h": True})
+	# MIR with a bare return
+	entry = BasicBlock(name="entry", instructions=[], terminator=Return(value=None))
+	funcs = {"h": MirFunc(name="h", params=[], locals=[], blocks={"entry": entry}, entry="entry")}
+	try:
+		enforce_return_shape_for_can_throw(func_infos, funcs)
+		raised = False
+	except RuntimeError:
+		raised = True
+	assert raised, "expected bare return in can-throw function to violate invariant"
+
+	# Now give h a value-bearing return; should pass.
+	entry_ok = BasicBlock(name="entry", instructions=[], terminator=Return(value="v0"))
+	funcs_ok = {"h": MirFunc(name="h", params=[], locals=[], blocks={"entry": entry_ok}, entry="entry")}
+	enforce_return_shape_for_can_throw(func_infos, funcs_ok)
