@@ -6,7 +6,7 @@ Experimental SSA: ensure Φ placement on a simple diamond CFG.
 This exercises `MirToSSA.run_experimental_multi_block` using a classic diamond:
 
     entry -> then -> join
-          \-> else -> join
+          \\-> else -> join
 
 Each branch defines the same local `x` with different values. The join block
 should receive a Φ for `x` with incoming values from both predecessors.

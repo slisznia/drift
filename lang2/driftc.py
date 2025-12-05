@@ -39,7 +39,8 @@ def compile_stubbed_funcs(
 
 	Args:
 	  func_hirs: mapping of function name -> HIR block (body).
-	  declared_can_throw: optional mapping of fn name -> bool; defaults to False.
+	  declared_can_throw: optional mapping of fn name -> bool; **test/prototype-only**.
+	    In a real compiler this will be computed by the checker from signatures.
 	  exc_env: optional exception environment (event name -> code) passed to HIRToMIR.
 
 	Returns:

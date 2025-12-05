@@ -44,8 +44,9 @@ class Checker:
 	Placeholder checker.
 
 	Accepts a sequence of function declarations and an optional declared_can_throw
-	map (defaults to False for all). A real checker will compute these from
-	signatures (FnResult/throws) and the type system.
+	map (defaults to False for all). This input is strictly a testing shim; a real
+	checker will compute declared_can_throw from signatures (FnResult/throws) and
+	the type system.
 	"""
 
 	def __init__(self, declared_can_throw: Dict[str, bool] | None = None) -> None:
