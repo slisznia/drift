@@ -102,8 +102,8 @@ class DominatorAnalysis:
 			candidates = dom[b] - {b}
 			id_candidate: Optional[str] = None
 			for c in candidates:
-				# c is the immediate dominator if it dominates b
-				# and no other candidate dominates c.
+				# c is the immediate dominator if no other candidate dominates c
+				# (i.e., c is the lowest dominator of b).
 				if all((c == d) or (c not in dom[d]) for d in candidates):
 					id_candidate = c
 					break

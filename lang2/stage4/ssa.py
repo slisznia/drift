@@ -17,7 +17,16 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict
 
-from lang2.stage2 import MirFunc, LoadLocal, StoreLocal, MInstr
+from lang2.stage2 import (
+	MirFunc,
+	LoadLocal,
+	StoreLocal,
+	MInstr,
+	Phi,
+	Goto,
+	IfTerminator,
+)
+from lang2.stage4.dom import DominatorAnalysis, DominanceFrontierAnalysis
 
 
 @dataclass
@@ -84,3 +93,58 @@ class MirToSSA:
 
 		block.instructions = new_instrs
 		return SsaFunc(func=func, local_versions=version, current_value=current_value)
+
+	def run_experimental_multi_block(self, func: MirFunc) -> SsaFunc:
+		"""
+		Experimental multi-block SSA scaffold.
+
+		Uses dominators + dominance frontiers to place Φ nodes for locals with
+		definitions in multiple blocks. This is intentionally limited and only
+		intended for test-driven bring-up on simple CFGs (e.g., diamonds). The
+		main run() entry point remains single-block-only until this path is
+		mature.
+		"""
+		# Control-flow helpers.
+		dom_info = DominatorAnalysis().compute(func)
+		df_info = DominanceFrontierAnalysis().compute(func, dom_info)
+
+		# Predecessor map for incoming edges.
+		preds: Dict[str, set[str]] = {b: set() for b in func.blocks}
+		for bname, block in func.blocks.items():
+			term = block.terminator
+			if isinstance(term, Goto):
+				preds[term.target].add(bname)
+			elif isinstance(term, IfTerminator):
+				preds[term.then_target].add(bname)
+				preds[term.else_target].add(bname)
+
+		# Definition sites and values per local.
+		def_sites: Dict[str, set[str]] = {}
+		def_values: Dict[str, Dict[str, str]] = {}
+		for bname, block in func.blocks.items():
+			for instr in block.instructions:
+				if isinstance(instr, StoreLocal):
+					def_sites.setdefault(instr.local, set()).add(bname)
+					def_values.setdefault(instr.local, {})[bname] = instr.value
+
+		placed: set[tuple[str, str]] = set()  # (local, block) pairs with φ already placed
+
+		for local, blocks_with_def in def_sites.items():
+			if len(blocks_with_def) < 2:
+				continue  # no join needed
+			worklist = list(blocks_with_def)
+			while worklist:
+				b = worklist.pop()
+				for y in df_info.df.get(b, set()):
+					if (local, y) in placed:
+						continue
+					# Build incoming map from predecessors; default to the local name if unknown.
+					incoming: Dict[str, str] = {}
+					for p in preds.get(y, ()):
+						incoming[p] = def_values.get(local, {}).get(p, local)
+					phi = Phi(dest=f"{local}_phi", incoming=incoming)
+					func.blocks[y].instructions.insert(0, phi)
+					placed.add((local, y))
+					# For now we do not iterate further for newly added φ blocks; this is enough for simple diamonds.
+
+		return SsaFunc(func=func, local_versions={}, current_value={})

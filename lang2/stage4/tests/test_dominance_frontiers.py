@@ -3,8 +3,8 @@
 """
 Unit tests for dominance frontier computation on MIR CFGs.
 
-Covers straight-line (no frontiers), diamond (join block in DF(entry)), and
-loop shapes (frontier capturing back-edge/exit).
+Covers straight-line (no frontiers), diamond (join block in branch frontiers,
+empty DF(entry)), and loop shapes (backedge/exit in frontiers).
 """
 
 from lang2.stage2 import BasicBlock, MirFunc, Goto, IfTerminator
@@ -69,4 +69,4 @@ def test_df_loop_captures_backedge_and_exit():
 	info = _run_df(func)
 	# loop_body has the backedge target in its frontier; loop_header may list itself.
 	assert "loop_header" in info.df["loop_body"]
-	# loop_exit is not dominated by loop_body's idom, so it should not appear in DF(loop_body) here.
+	assert "loop_exit" not in info.df["loop_body"]
