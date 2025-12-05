@@ -178,8 +178,9 @@ class ErrorEvent(MInstr):
 	"""
 	Project the event code from an Error value.
 
-	Used by catch/dispatch logic to decide which handler to take based on the
-	error's event identifier (runtime-dependent layout).
+	The concrete layout is defined by the runtime ABI; this just captures the
+	"extract the event code" operation so later passes (catch/dispatch) can use
+	it without knowing the Error struct shape here.
 	"""
 
 	dest: ValueId

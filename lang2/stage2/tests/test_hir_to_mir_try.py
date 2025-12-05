@@ -12,6 +12,7 @@ from lang2.stage2 import (
 	ConstInt,
 	ConstructError,
 	Goto,
+	ErrorEvent,
 )
 
 
@@ -55,7 +56,9 @@ def test_try_routes_throw_to_catch_block():
 	assert isinstance(try_body.terminator, Goto)
 	assert try_body.terminator.target.startswith("try_catch")
 
-	# Catch block should end with Goto to cont
+	# Catch block should start by projecting event code and end with Goto to cont
 	catch_block = blocks[try_body.terminator.target]
+	# Catch block should have an ErrorEvent (projecting code from the stored Error).
+	assert any(isinstance(ins, ErrorEvent) for ins in catch_block.instructions)
 	assert isinstance(catch_block.terminator, Goto)
 	assert catch_block.terminator.target.startswith("try_cont")

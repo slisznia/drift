@@ -14,8 +14,9 @@ Currently supported:
   - `loop` with break/continue
   - plain calls, method calls, DV construction
   - ternary expressions (diamond CFG + hidden temp)
-  - `throw` lowered to Error/ResultErr + return
-Remaining TODO: try/rethrow and any complex call shapes beyond direct
+  - `throw` lowered to Error/ResultErr + return, with try-stack routing to the
+    nearest catch block
+Remaining TODO: rethrow/multi-catch/result-driven try sugar and any complex call
 names/receivers.
 """
 
@@ -468,8 +469,13 @@ class HIRToMIR:
 		# Pop context before lowering catch so throws inside catch go to outer try.
 		self._try_stack.pop()
 
-		# Lower catch.
+		# Lower catch. Make the caught Error available + project event code.
 		self.b.set_block(catch_block)
+		err_tmp = self.b.new_temp()
+		self.b.emit(M.LoadLocal(dest=err_tmp, local=catch_name))
+		code_tmp = self.b.new_temp()
+		self.b.emit(M.ErrorEvent(dest=code_tmp, error=err_tmp))
+
 		self.lower_block(stmt.catch_block)
 		if self.b.block.terminator is None:
 			self.b.set_terminator(M.Goto(target=cont_block.name))
