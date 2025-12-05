@@ -130,6 +130,29 @@ class HTernary(HExpr):
 
 
 @dataclass
+class HThrow(HStmt):
+	"""Throw an error/exception value. Semantically returns Err from this function."""
+	value: HExpr
+
+
+@dataclass
+class HTry(HStmt):
+	"""
+	Statement-level try/catch:
+
+	  try { body } catch name { handler }
+
+	For the first iteration:
+	  - single catch only
+	  - no finally
+	  - no multi-catch variants
+	"""
+	body: "HBlock"
+	catch_name: str
+	catch_block: "HBlock"
+
+
+@dataclass
 class HField(HExpr):
 	"""Field access: subject.name"""
 	subject: HExpr
@@ -228,5 +251,5 @@ __all__ = [
 	"HCall", "HMethodCall", "HTernary", "HField", "HIndex", "HDVInit",
 	"HUnary", "HBinary",
 	"HBlock", "HExprStmt", "HLet", "HAssign", "HIf", "HLoop",
-	"HBreak", "HContinue", "HReturn",
+	"HBreak", "HContinue", "HReturn", "HThrow", "HTry",
 ]

@@ -10,9 +10,9 @@ This pass takes the parsed AST and produces the sugar-free HIR defined in
 `lang2/stage1/hir_nodes.py`. It currently lowers expressions/statements:
   - literals, vars, unary/binary ops, field/index
   - let/assign/if/while/for/return/break/continue/expr-stmt
-  - plain/method calls, exception ctors
-Remaining sugar (ternary, try/throw/raise, array literals) still fails loudly so
-it can be filled in incrementally.
+  - plain/method calls, exception ctors, ternary, try/throw
+Remaining sugar (raise/rethrow, TryCatchExpr, array literals) still fails loudly
+so it can be filled in incrementally.
 
 Entry points (stage API):
   - lower_expr: lower a single expression to HIR
@@ -227,7 +227,21 @@ class AstToHIR:
 		return H.HIf(cond=cond, then_block=then_block, else_block=else_block)
 
 	def _visit_stmt_TryStmt(self, stmt: ast.TryStmt) -> H.HStmt:
-		raise NotImplementedError("Try lowering not implemented yet")
+		"""
+		Lower statement-form try/catch:
+
+		  try { body } catch name { handler }
+
+		into HTry with a single catch. Rethrow/finally are not handled yet.
+		"""
+		body_block = self.lower_block(stmt.body)
+		# AST currently carries catches as a list of CatchExprArm; assume single catch for now.
+		if not stmt.catches:
+			raise NotImplementedError("Try lowering requires a catch arm")
+		catch_arm = stmt.catches[0]
+		catch_block = self.lower_block(catch_arm.block)
+		catch_name = catch_arm.binder or "e"
+		return H.HTry(body=body_block, catch_name=catch_name, catch_block=catch_block)
 
 	def _visit_stmt_WhileStmt(self, stmt: ast.WhileStmt) -> H.HStmt:
 		"""
@@ -310,7 +324,9 @@ class AstToHIR:
 		return H.HContinue()
 
 	def _visit_stmt_ThrowStmt(self, stmt: ast.ThrowStmt) -> H.HStmt:
-		raise NotImplementedError("Throw lowering not implemented yet")
+		"""Lower throw statement to HThrow; semantics are implemented in later stages."""
+		value_h = self.lower_expr(stmt.value)
+		return H.HThrow(value=value_h)
 
 	def _visit_stmt_RaiseStmt(self, stmt: ast.RaiseStmt) -> H.HStmt:
 		raise NotImplementedError("Raise lowering not implemented yet")

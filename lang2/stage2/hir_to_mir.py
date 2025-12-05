@@ -13,12 +13,15 @@ Currently supported:
   - `if` with then/else/join blocks
   - `loop` with break/continue
   - plain calls, method calls, DV construction
-Remaining TODO: try/ternary/exception sugar and any complex call shapes beyond
-direct names/receivers.
+  - ternary expressions (diamond CFG + hidden temp)
+  - `throw` lowered to Error/ResultErr + return
+Remaining TODO: try/rethrow and any complex call shapes beyond direct
+names/receivers.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import List, Set
 
 from lang2 import stage1 as H
@@ -116,6 +119,8 @@ class HIRToMIR:
 		self.b = builder
 		# Stack of (continue_target, break_target) block names for nested loops.
 		self._loop_stack: list[tuple[str, str]] = []
+		# Stack of try contexts for nested try/catch (innermost on top).
+		self._try_stack: list["_TryCtx"] = []
 
 	# --- Expression lowering ---
 
@@ -380,5 +385,103 @@ class HIRToMIR:
 		self._loop_stack.pop()
 		self.b.set_block(exit_block)
 
+	def _visit_stmt_HThrow(self, stmt: H.HThrow) -> None:
+		"""
+		Lower `throw expr` into:
+		  - construct an Error (event code + diagnostic payload),
+		  - wrap it in FnResult.Err,
+		  - return from the current function.
+
+		This matches the ABI model where functions return `FnResult<R, Error>`.
+
+		For now we synthesize a placeholder event code (0); wiring concrete
+		event codes from exception declarations can be added once the ABI
+		thread is plumbed through HIR/MIR.
+		"""
+		if self.b.block.terminator is not None:
+			return
+
+		# Payload of the error (already a DiagnosticValue expression in HIR).
+		payload_val = self.lower_expr(stmt.value)
+
+		# Placeholder event code (per ABI this will be a real code later).
+		code_val = self.b.new_temp()
+		self.b.emit(M.ConstInt(dest=code_val, value=0))
+
+		# Build the Error value.
+		err_val = self.b.new_temp()
+		self.b.emit(M.ConstructError(dest=err_val, code=code_val, payload=payload_val))
+
+		# If we are inside a try, route to the catch block instead of returning.
+		if self._try_stack and self.b.block.terminator is None:
+			ctx = self._try_stack[-1]
+			self.b.ensure_local(ctx.error_local)
+			self.b.emit(M.StoreLocal(local=ctx.error_local, value=err_val))
+			self.b.set_terminator(M.Goto(target=ctx.catch_block_name))
+			return
+
+		# Otherwise, wrap into FnResult.Err and return.
+		res_val = self.b.new_temp()
+		self.b.emit(M.ConstructResultErr(dest=res_val, error=err_val))
+		self.b.set_terminator(M.Return(value=res_val))
+
+	def _visit_stmt_HTry(self, stmt: H.HTry) -> None:
+		"""
+		Lower a minimal try/catch:
+
+		  try { body } catch name { handler }
+
+		into explicit blocks:
+		  entry -> try_body
+		  try_body: body (falls through) -> try_cont
+		  try_catch: handler (falls through) -> try_cont
+		  try_cont: continuation
+
+		Any `throw` encountered in try_body will store the Error into the
+		catch binder local and jump to the catch block (via the try stack).
+		"""
+		if self.b.block.terminator is not None:
+			return
+
+		# Create blocks
+		body_block = self.b.new_block("try_body")
+		catch_block = self.b.new_block("try_catch")
+		cont_block = self.b.new_block("try_cont")
+
+		# Entry: jump into body.
+		self.b.set_terminator(M.Goto(target=body_block.name))
+
+		# Register try context so inner throws can target the catch.
+		catch_name = stmt.catch_name or "__err"
+		self.b.ensure_local(catch_name)
+		self._try_stack.append(_TryCtx(error_local=catch_name, catch_block_name=catch_block.name, cont_block_name=cont_block.name))
+
+		# Lower try body.
+		self.b.set_block(body_block)
+		self.lower_block(stmt.body)
+		if self.b.block.terminator is None:
+			self.b.set_terminator(M.Goto(target=cont_block.name))
+
+		# Pop context before lowering catch so throws inside catch go to outer try.
+		self._try_stack.pop()
+
+		# Lower catch.
+		self.b.set_block(catch_block)
+		self.lower_block(stmt.catch_block)
+		if self.b.block.terminator is None:
+			self.b.set_terminator(M.Goto(target=cont_block.name))
+
+		# Continue in cont.
+		self.b.set_block(cont_block)
+
 
 __all__ = ["MirBuilder", "HIRToMIR"]
+
+
+@dataclass
+class _TryCtx:
+	"""Internal try/catch context to route throws to the correct catch block."""
+
+	error_local: str
+	catch_block_name: str
+	cont_block_name: str

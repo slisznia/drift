@@ -147,6 +147,33 @@ class ConstructDV(MInstr):
 
 
 @dataclass
+class ConstructError(MInstr):
+	"""
+	Construct an Error value from an event code and diagnostic payload.
+
+	`code` is the 64-bit event code (as per drift-abi-exceptions).
+	`payload` is a DiagnosticValue representing structured attrs.
+	"""
+	dest: ValueId
+	code: ValueId
+	payload: ValueId
+
+
+@dataclass
+class ConstructResultOk(MInstr):
+	"""Construct FnResult.Ok(value)."""
+	dest: ValueId
+	value: ValueId
+
+
+@dataclass
+class ConstructResultErr(MInstr):
+	"""Construct FnResult.Err(error)."""
+	dest: ValueId
+	error: ValueId
+
+
+@dataclass
 class UnaryOpInstr(MInstr):
 	"""dest = op operand (unary numeric/logical/bit ops)."""
 	dest: ValueId
@@ -242,6 +269,7 @@ __all__ = [
 	"LoadIndex", "StoreIndex",
 	"Call", "MethodCall",
 	"ConstructDV",
+	"ConstructError", "ConstructResultOk", "ConstructResultErr",
 	"UnaryOpInstr", "BinaryOpInstr",
 	"Phi",
 	"Goto", "IfTerminator", "Return",
