@@ -107,7 +107,7 @@ MIR should be explicit and simple enough that lowering is mostly a mechanical ma
 - A placeholder type-aware FnResult return check (`enforce_fnresult_returns_typeaware`) exists in stage4/throw_checks.py; current structural check is intentionally over-strict and will be replaced once types reach stage4.  
 - Stage-specific test dirs added (`lang2/stageN/tests/`); runtime artifacts for stage tests should go under `build/tests/stageN/`.
 - Documentation tightened: all public AST nodes in stage0 carry docstrings; stage4 dominator/frontier comments corrected to match implementation/tests.
-- Result-driven try sugar scaffolding added: AST supports `TryExpr`, HIR adds `HTryResult`, and a stage1 rewrite (`lang2/stage1/try_result_rewrite.py`) desugars it to explicit HIR (`is_err`/`unwrap_err` throw + `unwrap`). Tests in `lang2/stage1/tests/test_try_result_rewrite.py` capture the shape; sugar is not yet integrated into the main lowering pipeline. A stage1 helper `normalize_hir` wraps the rewrite for future driver integration.
+- Result-driven try sugar scaffolding added: AST supports `TryExpr`, HIR adds `HTryResult`, and a stage1 rewrite (`lang2/stage1/try_result_rewrite.py`) desugars it to explicit HIR (`is_err`/`unwrap_err` throw + `unwrap`). Tests in `lang2/stage1/tests/test_try_result_rewrite.py` capture the shape; `normalize_hir` wraps the rewrite for use by drivers/tests (integration test in `test_try_result_integration.py` lowers desugared HIR to MIR). Full type-aware gating still TBD.
 
 ## Next steps (forward-looking)
 

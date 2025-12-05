@@ -80,6 +80,10 @@ class TryResultRewriter:
 		if isinstance(stmt, H.HExprStmt):
 			prefix, expr = self._rewrite_expr(stmt.expr)
 			return prefix + [H.HExprStmt(expr=expr)]
+		if isinstance(stmt, H.HThrow):
+			# throw expr? => prefixes + throw rewritten expr
+			prefix, expr = self._rewrite_expr(stmt.value)
+			return prefix + [H.HThrow(value=expr)]
 		if isinstance(stmt, H.HLet):
 			prefix, expr = self._rewrite_expr(stmt.value)
 			return prefix + [H.HLet(name=stmt.name, value=expr)]

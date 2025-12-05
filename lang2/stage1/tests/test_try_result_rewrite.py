@@ -68,3 +68,43 @@ def test_try_result_inside_return_desugars_cleanly():
 	assert isinstance(stmts[-1], H.HReturn)
 	assert isinstance(stmts[-1].value, H.HVar)
 
+
+def test_try_result_in_throw_rewrites_with_prefixes():
+	"""throw expr? should expand prefixes and throw the rewritten value temp."""
+	rewriter = TryResultRewriter()
+	hir = H.HBlock(statements=[H.HThrow(value=H.HTryResult(expr=H.HVar(name="e_res")))])
+
+	rewritten = rewriter.rewrite_block(hir)
+	# Expect: let __res, if is_err { throw __res.unwrap_err }, let __val, throw __val
+	assert len(rewritten.statements) == 4
+	assert isinstance(rewritten.statements[-1], H.HThrow)
+	assert isinstance(rewritten.statements[-1].value, H.HVar)
+	assert rewritten.statements[-1].value.name.startswith("__val")
+
+
+def test_try_result_in_call_argument_rewrites_and_unwraps():
+	"""
+	Call with a try-result argument should insert prefixes before the call and
+	pass the unwrapped value to the callee.
+	"""
+	rewriter = TryResultRewriter()
+	hir = H.HBlock(
+		statements=[
+			H.HExprStmt(
+				expr=H.HCall(
+					fn=H.HVar(name="f"),
+					args=[H.HTryResult(expr=H.HVar(name="arg_res"))],
+				)
+			)
+		]
+	)
+
+	rewritten = rewriter.rewrite_block(hir)
+	# Expect: let __res, if is_err { throw ... }, let __val, call f(__val)
+	assert len(rewritten.statements) == 4
+	call_stmt = rewritten.statements[-1]
+	assert isinstance(call_stmt, H.HExprStmt)
+	call_expr = call_stmt.expr
+	assert isinstance(call_expr, H.HCall)
+	assert isinstance(call_expr.args[0], H.HVar)
+	assert call_expr.args[0].name.startswith("__val")
