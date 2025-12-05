@@ -22,6 +22,7 @@ from lang2.stage2 import (
 	LoadLocal,
 	StoreLocal,
 	MInstr,
+	AssignSSA,
 	Phi,
 	Goto,
 	IfTerminator,
@@ -86,15 +87,13 @@ class MirToSSA:
 				ssa_name = f"{instr.local}_{version_idx}"
 				current_value[instr.local] = ssa_name
 				value_for_instr[(block.name, idx)] = ssa_name
-				# For now, we do not rewrite the instruction; we just record versions.
-				# Later, stores/loads will be rewritten to SSA temps.
-				new_instrs.append(instr)
+				new_instrs.append(AssignSSA(dest=ssa_name, src=instr.value))
 			elif isinstance(instr, LoadLocal):
 				if instr.local not in version:
 					raise RuntimeError(f"SSA: load before store for local '{instr.local}'")
 				# Load sees the current SSA value for the local.
 				value_for_instr[(block.name, idx)] = current_value[instr.local]
-				new_instrs.append(instr)
+				new_instrs.append(AssignSSA(dest=instr.dest, src=current_value[instr.local]))
 			else:
 				new_instrs.append(instr)
 

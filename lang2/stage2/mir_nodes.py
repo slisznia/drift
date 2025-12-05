@@ -164,6 +164,19 @@ class BinaryOpInstr(MInstr):
 
 
 @dataclass
+class AssignSSA(MInstr):
+	"""
+	SSA move/copy used during SSA construction.
+
+	This is introduced by the SSA pass when rewriting LoadLocal/StoreLocal into
+	pure SSA value flow. It carries explicit dest/src ValueIds.
+	"""
+
+	dest: ValueId
+	src: ValueId
+
+
+@dataclass
 class Phi(MInstr):
 	"""Phi node (added/used during SSA construction)."""
 	dest: ValueId

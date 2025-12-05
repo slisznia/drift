@@ -12,7 +12,16 @@ from __future__ import annotations
 
 import pytest
 
-from lang2.stage2 import MirFunc, BasicBlock, StoreLocal, LoadLocal, ConstInt, Return, Goto
+from lang2.stage2 import (
+	AssignSSA,
+	MirFunc,
+	BasicBlock,
+	StoreLocal,
+	LoadLocal,
+	ConstInt,
+	Return,
+	Goto,
+)
 from lang2.stage4 import MirToSSA
 
 
@@ -29,9 +38,17 @@ def test_straight_line_ssa_passes():
 	func = MirFunc(name="f", params=[], locals=["x"], blocks={"entry": entry}, entry="entry")
 	ssa_func = MirToSSA().run(func)
 	assert ssa_func.func is func
-	assert ssa_func.func.blocks["entry"].instructions[0].local == "x"
+	instrs = ssa_func.func.blocks["entry"].instructions
+	assert isinstance(instrs[0], AssignSSA)
+	assert instrs[0].dest == "x_1"
+	assert instrs[0].src == "v0"
+	assert isinstance(instrs[1], AssignSSA)
+	assert instrs[1].dest == "t0"
+	assert instrs[1].src == "x_1"
 	assert ssa_func.local_versions["x"] == 1
 	assert ssa_func.current_value["x"] == "x_1"
+	assert ssa_func.value_for_instr[("entry", 0)] == "x_1"
+	assert ssa_func.value_for_instr[("entry", 1)] == "x_1"
 
 
 def test_multiple_stores_version_increments():
