@@ -9,9 +9,22 @@ Pipeline placement:
 Public API:
   - MirToSSA: entry point to convert MIR to SSA form
   - SsaFunc: wrapper for SSA-ified MirFunc
+  - DominatorAnalysis / DominanceFrontierAnalysis: CFG utilities for SSA
 """
 
 from .ssa import MirToSSA, SsaFunc
-from .dom import DominatorAnalysis, DominatorInfo
+from .dom import (
+	DominatorAnalysis,
+	DominatorInfo,
+	DominanceFrontierAnalysis,
+	DominanceFrontierInfo,
+)
 
-__all__ = ["MirToSSA", "SsaFunc", "DominatorAnalysis", "DominatorInfo"]
+__all__ = [
+	"MirToSSA",
+	"SsaFunc",
+	"DominatorAnalysis",
+	"DominatorInfo",
+	"DominanceFrontierAnalysis",
+	"DominanceFrontierInfo",
+]

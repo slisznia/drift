@@ -28,6 +28,18 @@ class DominatorInfo:
 	idom: Dict[str, Optional[str]] = field(default_factory=dict)
 
 
+@dataclass
+class DominanceFrontierInfo:
+	"""
+	Dominance frontier table: df[block] = set of blocks in its dominance frontier.
+
+	Definition: b is in DF(x) iff x dominates a predecessor of b but does not
+	strictly dominate b. Used for SSA φ-placement.
+	"""
+
+	df: Dict[str, Set[str]] = field(default_factory=dict)
+
+
 class DominatorAnalysis:
 	"""
 	Compute immediate dominators for a MIR CFG.
@@ -98,3 +110,61 @@ class DominatorAnalysis:
 			idom[b] = id_candidate
 
 		return DominatorInfo(idom=idom)
+
+
+class DominanceFrontierAnalysis:
+	"""
+	Compute dominance frontiers for a MIR CFG, given immediate dominators.
+
+	Algorithm (standard two-phase):
+	  1) DF_local: for each block b, add each successor s of b where idom[s] != b
+	  2) DF_up: propagate from children in the dominator tree:
+	     for each child c of b, for each w in DF[c], if idom[w] != b then add w to DF[b]
+	"""
+
+	def compute(self, func: MirFunc, dom_info: DominatorInfo) -> DominanceFrontierInfo:
+		"""Compute dominance frontiers for all blocks in func."""
+		blocks = list(func.blocks.keys())
+		entry = func.entry
+
+		# Build predecessor/successor maps (shared approach with dominator analysis).
+		preds: Dict[str, Set[str]] = {b: set() for b in blocks}
+		succ: Dict[str, Set[str]] = {b: set() for b in blocks}
+		for bname, block in func.blocks.items():
+			term = block.terminator
+			if isinstance(term, Goto):
+				preds[term.target].add(bname)
+				succ[bname].add(term.target)
+			elif isinstance(term, IfTerminator):
+				preds[term.then_target].add(bname)
+				preds[term.else_target].add(bname)
+				succ[bname].add(term.then_target)
+				succ[bname].add(term.else_target)
+
+		idom = dom_info.idom
+
+		# Build dominator-tree children from idom.
+		children: Dict[str, Set[str]] = {b: set() for b in blocks}
+		for b, i in idom.items():
+			if i is not None:
+				children[i].add(b)
+
+		df: Dict[str, Set[str]] = {b: set() for b in blocks}
+
+		# 1) Local frontiers.
+		for b in blocks:
+			for s in succ[b]:
+				if idom.get(s) != b:
+					df[b].add(s)
+
+		# 2) Upwards propagation along the dominator tree.
+		def _dfs(node: str) -> None:
+			for child in children[node]:
+				_dfs(child)
+				for w in df[child]:
+					if idom.get(w) != node:
+						df[node].add(w)
+
+		_dfs(entry)
+
+		return DominanceFrontierInfo(df=df)
