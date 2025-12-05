@@ -10,6 +10,7 @@ Public API:
   - MirToSSA: entry point to convert MIR to SSA form
   - SsaFunc: wrapper for SSA-ified MirFunc
   - DominatorAnalysis / DominanceFrontierAnalysis: CFG utilities for SSA
+  - throw_checks: helpers to consume throw summaries and enforce invariants
 """
 
 from .ssa import MirToSSA, SsaFunc
@@ -19,6 +20,11 @@ from .dom import (
 	DominanceFrontierAnalysis,
 	DominanceFrontierInfo,
 )
+from .throw_checks import (
+	FuncThrowInfo,
+	build_func_throw_info,
+	enforce_can_throw_invariants,
+)
 
 __all__ = [
 	"MirToSSA",
@@ -27,4 +33,7 @@ __all__ = [
 	"DominatorInfo",
 	"DominanceFrontierAnalysis",
 	"DominanceFrontierInfo",
+	"FuncThrowInfo",
+	"build_func_throw_info",
+	"enforce_can_throw_invariants",
 ]

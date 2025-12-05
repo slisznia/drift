@@ -26,9 +26,9 @@ from lang2.stage2 import MirFunc
 class ThrowSummary:
 	"""Aggregated throw-related facts for a single function."""
 
-	constructs_error: bool
-	exception_types: Set[str]
-	may_fail_sites: Set[tuple[str, int]]
+	constructs_error: bool  # does this function contain any ConstructError at all?
+	exception_types: Set[str]  # DV names inferred from event codes via code_to_exc
+	may_fail_sites: Set[tuple[str, int]]  # raw copy of MirAnalysisResult.may_fail
 
 
 class ThrowSummaryBuilder:

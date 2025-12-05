@@ -10,14 +10,14 @@ This module lowers sugar-free HIR into explicit MIR instructions/blocks.
 Currently supported:
   - literals, vars, unary/binary ops, field/index reads
   - let/assign/expr/return statements
-  - `if` with then/else/join blocks
-  - `loop` with break/continue
-  - plain calls, method calls, DV construction
-  - ternary expressions (diamond CFG + hidden temp)
-  - `throw` lowered to Error/ResultErr + return, with try-stack routing to the
-    nearest catch block
-Remaining TODO: rethrow/multi-catch/result-driven try sugar and any complex call
-names/receivers.
+	- `if` with then/else/join blocks
+	- `loop` with break/continue
+	- plain calls, method calls, DV construction
+	- ternary expressions (diamond CFG + hidden temp)
+	- `throw` lowered to Error/ResultErr + return, with try-stack routing to the
+    nearest catch block (event codes come from optional exception metadata)
+ Remaining TODO: rethrow/multi-catch/result-driven try sugar and any complex call
+ names/receivers.
 """
 
 from __future__ import annotations
@@ -403,9 +403,8 @@ class HIRToMIR:
 
 		This matches the ABI model where functions return `FnResult<R, Error>`.
 
-		For now we synthesize a placeholder event code (0); wiring concrete
-		event codes from exception declarations can be added once the ABI
-		thread is plumbed through HIR/MIR.
+		Event codes are taken from exception metadata when available (via
+		`exc_env`), otherwise 0 as a placeholder.
 		"""
 		if self.b.block.terminator is not None:
 			return

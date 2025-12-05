@@ -40,10 +40,10 @@ from lang2.stage2 import (
 class MirAnalysisResult:
 	"""Holds pre-analysis results for a single MirFunc."""
 
-	address_taken: Set[str]
-	may_fail: Set[tuple[str, int]]  # (block_name, instruction_index)
+	address_taken: Set[str]  # locals whose address is taken
+	may_fail: Set[tuple[str, int]]  # instruction sites that can fail (block_name, instruction_index)
 	construct_error_sites: Set[tuple[str, int]]  # where ConstructError appears
-	exception_types: Set[str] = field(default_factory=set)  # DV type names seen in ConstructError
+	exception_types: Set[str] = field(default_factory=set)  # DV type names seen via event-code mapping
 
 
 class MirPreAnalysis:
