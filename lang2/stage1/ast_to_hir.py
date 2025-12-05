@@ -7,10 +7,12 @@ Pipeline placement:
   AST (lang2/stage0/ast.py) → HIR (lang2/stage1/hir_nodes.py) → MIR → SSA → LLVM/obj
 
 This pass takes the parsed AST and produces the sugar-free HIR defined in
-`lang2/stage1/hir_nodes.py`. It currently lowers basic expressions/statements
-(literals, vars, unary/binary ops, field/index, let/assign/if/return/break/continue/expr-stmt,
-plain/method calls); control-flow sugar and other complex constructs still fail
-loudly so they can be filled in incrementally.
+`lang2/stage1/hir_nodes.py`. It currently lowers expressions/statements:
+  - literals, vars, unary/binary ops, field/index
+  - let/assign/if/while/for/return/break/continue/expr-stmt
+  - plain/method calls, exception ctors
+Remaining sugar (ternary, try/throw/raise, array literals) still fails loudly so
+it can be filled in incrementally.
 
 Entry points (stage API):
   - lower_expr: lower a single expression to HIR
