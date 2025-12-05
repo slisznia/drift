@@ -142,6 +142,25 @@ def enforce_fnresult_returns_for_can_throw(
 				)
 
 
+def enforce_fnresult_returns_typeaware(
+	func_infos: Dict[str, FuncThrowInfo],
+	ssa_funcs: Dict[str, "SsaFunc"],  # type: ignore[name-defined]
+	type_env: "TypeEnv",  # type: ignore[name-defined]
+) -> None:
+	"""
+	Placeholder for a future, type-aware FnResult return check.
+
+	This will replace the structural `enforce_fnresult_returns_for_can_throw` once
+	SSA/type info is threaded into stage4. The intent is to assert that every
+	returned SSA value in a can-throw function has type `FnResult<_, Error>`
+	according to the checker/type environment.
+	"""
+	raise NotImplementedError(
+		"type-aware FnResult return checking is not implemented yet; "
+		"use the structural check as a stopgap"
+	)
+
+
 def run_throw_checks(
 	funcs: Dict[str, MirFunc],
 	summaries: Dict[str, ThrowSummary],

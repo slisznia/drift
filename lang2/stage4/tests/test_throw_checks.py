@@ -20,6 +20,7 @@ from lang2.stage4 import (
 from lang2.stage2 import BasicBlock, MirFunc, Return
 from lang2.stage2 import ConstructResultErr
 from lang2.stage3 import ThrowSummaryBuilder
+import pytest
 
 
 def test_build_func_throw_info_combines_summary_and_decl():
@@ -147,3 +148,50 @@ def test_run_throw_checks_wrapper_executes_all_invariants():
 	)
 	assert "w" in func_infos
 	assert func_infos["w"].declared_can_throw is True
+
+
+def test_structural_fnresult_check_flags_forwarding_cases():
+	"""
+	The structural FnResult check is intentionally strict: it only accepts
+	return values defined by ConstructResultOk/Err. Forwarding a FnResult param
+	or returning a local that aliases a FnResult will fail until a type-aware
+	check replaces this.
+	"""
+	func_infos = {
+		"fwd_param": FuncThrowInfo(
+			constructs_error=False,
+			exception_types=set(),
+			may_fail_sites=set(),
+			declared_can_throw=True,
+		),
+		"alias_local": FuncThrowInfo(
+			constructs_error=False,
+			exception_types=set(),
+			may_fail_sites=set(),
+			declared_can_throw=True,
+		),
+	}
+
+	# Case 1: returning a FnResult parameter directly
+	entry_param = BasicBlock(name="entry", instructions=[], terminator=Return(value="param_res"))
+	funcs_param = {
+		"fwd_param": MirFunc(name="fwd_param", params=[], locals=[], blocks={"entry": entry_param}, entry="entry")
+	}
+	with pytest.raises(RuntimeError):
+		enforce_fnresult_returns_for_can_throw(func_infos, funcs_param)
+
+	# Case 2: returning a local that aliases a FnResult
+	entry_alias = BasicBlock(
+		name="entry",
+		instructions=[
+			# local_x := param_res (aliasing a FnResult)
+			ConstructResultErr(dest="r0", error="e0"),
+			# In a real alias scenario this would be a Move/StoreLocal; we keep it simple.
+		],
+		terminator=Return(value="alias_res"),
+	)
+	funcs_alias = {
+		"alias_local": MirFunc(name="alias_local", params=[], locals=[], blocks={"entry": entry_alias}, entry="entry")
+	}
+	with pytest.raises(RuntimeError):
+		enforce_fnresult_returns_for_can_throw(func_infos, funcs_alias)
