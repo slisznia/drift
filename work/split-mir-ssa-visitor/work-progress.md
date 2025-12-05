@@ -35,10 +35,10 @@ Goal: Replace the monolithic `if isinstance` lowering in `lower_to_mir_ssa.py` w
 
 - (Checker/driver) Wire `declared_can_throw` from the checker (FnResult return types / throws clauses) into stage4 throw checks; keep the “no ConstructError in non-can-throw fns” and “no bare return in can-throw fns” invariants hard. Driver should call `run_throw_checks(funcs, summaries, declared_can_throw)` after stage3.
 - (Stage4) Replace the structural FnResult check (`enforce_fnresult_returns_for_can_throw`, which rejects forwarding/aliasing) with a type-aware `enforce_fnresult_returns_typeaware` once SSA/type_env are threaded into stage4; keep the TODO stub in code to make this explicit.
-- (Checker) Add catch-arm validation: at most one catch-all, catch-all must be last, and (optionally) warn/error on duplicate event arms. Lowering will then assume arms are well-formed.
-- (Stage2) Catch-arm validation: multiple catch-alls are rejected in lowering; catch-all ordering/duplicate event arms should be enforced in the checker (currently a catch-all earlier than an event arm steals all control flow; later arms are dead).
+- (Checker) Add catch-arm validation: at most one catch-all, catch-all must be last, and (optionally) warn/error on duplicate/unknown event arms. Lowering now rejects multiple catch-alls and catch-all-not-last; checker should enforce the rest.
 - (Stage2) Rethrow/unmatched semantics implemented: unmatched errors unwind to the nearest outer try (via the try stack) and only return FnResult.Err when no outer try exists. Nested-unwind tests cover this; checker should still validate catch-arm shapes.
 - (Stage2 tests) Additional try/catch coverage now includes binder vs no-binder arms, unknown-event fallback (code 0), and outer catch-all capturing propagated errors. Consider porting more legacy exception scenarios as HIR→MIR shape tests.
+- (Try sugar) Record the result-driven try desugaring pattern to adopt later (e.g. `let tmp = fallible(); if tmp.is_err() { throw tmp.unwrap_err(); } let x = tmp.unwrap();`), likely in a checker/HIR rewrite pass when adding `?`/try-expression sugar.
 
 ## HIR node set (finalize before coding)
 
@@ -107,13 +107,10 @@ MIR should be explicit and simple enough that lowering is mostly a mechanical ma
 - Stage-specific test dirs added (`lang2/stageN/tests/`); runtime artifacts for stage tests should go under `build/tests/stageN/`.
 - Documentation tightened: all public AST nodes in stage0 carry docstrings; stage4 dominator/frontier comments corrected to match implementation/tests.
 
-## Next steps (strict order)
+## Next steps (forward-looking)
 
-1. **Freeze AST surface** during the rewrite.
-2. **Finalize HIR nodes** (as above) and add `hir_nodes.py` stubs.
-3. **Implement AST→HIR visitor/registry** with fail-loud default and unit tests (AST → expected HIR).
-4. **Finalize MIR op list** (as above) and define the MIR instruction/block structures.
-5. **Implement HIR→MIR lowering** (no SSA; structured control flow only).
-6. **Implement pre-analyses on MIR** (address-taken, may-fail) storing flags in side tables.
-7. **Implement MIR→SSA pass** in a new module: pure CFG + SSA construction using the pre-analysis flags.
-8. **Remove legacy lowering**: delete or retire the monolithic `lower_to_mir_ssa.py` once new pipeline is green. Add exhaustiveness checks for handled node types.
+- **Driver/checker integration:** Wire `declared_can_throw` from the type checker (FnResult returns / throws clauses) into stage4; driver should call `run_throw_checks(funcs, summaries, declared_can_throw)` after stage3, emitting diagnostics instead of RuntimeError.
+- **Type-aware FnResult returns:** Replace the structural `enforce_fnresult_returns_for_can_throw` with the planned type-aware `enforce_fnresult_returns_typeaware` once SSA/type_env reach stage4 (TODO stub lives in code).
+- **Catch-arm validation in checker:** Lowering now rejects multiple catch-alls and catch-all-not-last; checker should additionally enforce duplicate/unknown event arms with user-facing errors.
+- **Result-driven try sugar:** Adopt the desugaring pattern `let tmp = fallible(); if tmp.is_err() { throw tmp.unwrap_err(); } let x = tmp.unwrap();` in a checker/HIR rewrite when adding `?`/try-expression sugar.
+- **Surface exception scenarios:** Port additional legacy exception cases as HIR→MIR shape tests (multi-event with catch-all, outer catches different event than inner) to guard semantics.
