@@ -54,19 +54,25 @@ class MirBuilder:
 		self._locals_set: Set[M.LocalId] = set()
 
 	def new_temp(self) -> M.ValueId:
+		"""Allocate a fresh temporary ValueId for intermediate results."""
 		self._temp_counter += 1
 		return f"t{self._temp_counter}"
 
 	def emit(self, instr: M.MInstr) -> M.ValueId | None:
+		"""
+		Append a MIR instruction to the current block and return its dest, if any.
+		"""
 		self.block.instructions.append(instr)
 		if hasattr(instr, "dest"):
 			return getattr(instr, "dest")
 		return None
 
 	def set_terminator(self, term: M.MTerminator) -> None:
+		"""Set the terminator for the current block."""
 		self.block.terminator = term
 
 	def ensure_local(self, name: M.LocalId) -> None:
+		"""Record a local name on the function if it hasn't been seen yet."""
 		if name not in self._locals_set:
 			self._locals_set.add(name)
 			self.func.locals.append(name)

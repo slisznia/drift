@@ -37,23 +37,27 @@ class Stmt(Node):
 
 @dataclass
 class Literal(Expr):
+	"""Literal value (int, string, or bool)."""
 	value: Union[int, str, bool]
 	loc: Optional[object] = None  # placeholder for source location
 
 
 @dataclass
 class Name(Expr):
+	"""Identifier reference."""
 	ident: str
 	loc: Optional[object] = None
 
 
 @dataclass
 class Placeholder(Expr):
+	"""Receiver placeholder (dot-shortcut) before desugaring."""
 	loc: Optional[object] = None
 
 
 @dataclass
 class Attr(Expr):
+	"""Attribute access: value.attr."""
 	value: Expr
 	attr: str
 	loc: Optional[object] = None
@@ -61,6 +65,7 @@ class Attr(Expr):
 
 @dataclass
 class Call(Expr):
+	"""Function or method call prior to desugaring."""
 	func: Expr
 	args: List[Expr]
 	kwargs: List[object]  # keep shape compatible; specifics not needed yet
@@ -69,6 +74,7 @@ class Call(Expr):
 
 @dataclass
 class Binary(Expr):
+	"""Binary operator expression."""
 	op: str
 	left: Expr
 	right: Expr
@@ -77,6 +83,7 @@ class Binary(Expr):
 
 @dataclass
 class Unary(Expr):
+	"""Unary operator expression."""
 	op: str
 	operand: Expr
 	loc: Optional[object] = None
@@ -84,6 +91,7 @@ class Unary(Expr):
 
 @dataclass
 class Index(Expr):
+	"""Indexing expression: value[index]."""
 	value: Expr
 	index: Expr
 	loc: Optional[object] = None
@@ -91,6 +99,7 @@ class Index(Expr):
 
 @dataclass
 class ArrayLiteral(Expr):
+	"""Array literal placeholder used in early AST; semantics refined later."""
 	elems: List[Expr]
 	loc: Optional[object] = None
 
@@ -108,6 +117,7 @@ class ExceptionCtor(Expr):
 
 @dataclass
 class CatchExprArm:
+	"""Single catch arm in a try/catch expression."""
 	event: Optional[str]
 	binder: Optional[str]
 	block: List[Stmt]
@@ -116,6 +126,7 @@ class CatchExprArm:
 
 @dataclass
 class TryCatchExpr(Expr):
+	"""Expression-form try/catch (lowered later)."""
 	attempt: Expr
 	catch_arms: List[CatchExprArm]
 	loc: Optional[object] = None
@@ -123,6 +134,7 @@ class TryCatchExpr(Expr):
 
 @dataclass
 class Ternary(Expr):
+	"""Conditional expression: cond ? then_expr : else_expr."""
 	cond: Expr
 	then_expr: Expr
 	else_expr: Expr
@@ -133,6 +145,7 @@ class Ternary(Expr):
 
 @dataclass
 class LetStmt(Stmt):
+	"""Let-binding statement: let name = value."""
 	name: str
 	value: Expr
 	loc: Optional[object] = None
@@ -140,6 +153,7 @@ class LetStmt(Stmt):
 
 @dataclass
 class AssignStmt(Stmt):
+	"""Assignment to an expression target."""
 	target: Expr
 	value: Expr
 	loc: Optional[object] = None
@@ -147,6 +161,7 @@ class AssignStmt(Stmt):
 
 @dataclass
 class IfStmt(Stmt):
+	"""If/else statement with explicit blocks."""
 	cond: Expr
 	then_block: List[Stmt]
 	else_block: List[Stmt]
@@ -155,30 +170,35 @@ class IfStmt(Stmt):
 
 @dataclass
 class ReturnStmt(Stmt):
+	"""Function return with optional value."""
 	value: Optional[Expr]
 	loc: Optional[object] = None
 
 
 @dataclass
 class RaiseStmt(Stmt):
+	"""Raise expression value as an error (placeholder)."""
 	value: Expr
 	loc: Optional[object] = None
 
 
 @dataclass
 class ExprStmt(Stmt):
+	"""Expression used for side effects as a statement."""
 	expr: Expr
 	loc: Optional[object] = None
 
 
 @dataclass
 class ImportStmt(Stmt):
+	"""Import statement placeholder (path-only for now)."""
 	path: str
 	loc: Optional[object] = None
 
 
 @dataclass
 class TryStmt(Stmt):
+	"""Statement-form try/catch placeholder."""
 	body: List[Stmt]
 	catches: List[CatchExprArm]
 	loc: Optional[object] = None
@@ -186,6 +206,7 @@ class TryStmt(Stmt):
 
 @dataclass
 class WhileStmt(Stmt):
+	"""While loop: while cond { body }."""
 	cond: Expr
 	body: List[Stmt]
 	loc: Optional[object] = None
@@ -193,6 +214,7 @@ class WhileStmt(Stmt):
 
 @dataclass
 class ForStmt(Stmt):
+	"""Foreach loop: for iter_var in iterable { body }."""
 	iter_var: str
 	iterable: Expr
 	body: List[Stmt]
@@ -201,16 +223,19 @@ class ForStmt(Stmt):
 
 @dataclass
 class BreakStmt(Stmt):
+	"""Loop break."""
 	loc: Optional[object] = None
 
 
 @dataclass
 class ContinueStmt(Stmt):
+	"""Loop continue."""
 	loc: Optional[object] = None
 
 
 @dataclass
 class ThrowStmt(Stmt):
+	"""Throw statement placeholder."""
 	value: Expr
 	loc: Optional[object] = None
 

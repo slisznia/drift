@@ -12,8 +12,8 @@ purely structural: all semantic flags are computed here.
 
 Current analyses:
   - address_taken: locals whose address is observed (AddrOfLocal)
-Planned:
-  - may_fail: instructions/terminators that can fail/throw
+  - may_fail: instruction sites that can fail/throw (calls, method calls,
+    ConstructDV)
 """
 
 from __future__ import annotations

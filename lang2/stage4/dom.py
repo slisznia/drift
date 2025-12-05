@@ -41,6 +41,7 @@ class DominatorAnalysis:
 	"""
 
 	def compute(self, func: MirFunc) -> DominatorInfo:
+		"""Compute immediate dominators for the given MIR function."""
 		blocks = list(func.blocks.keys())
 		entry = func.entry
 
