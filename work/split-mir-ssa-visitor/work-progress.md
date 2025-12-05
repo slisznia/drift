@@ -35,7 +35,7 @@ Goal: Replace the monolithic `if isinstance` lowering in `lower_to_mir_ssa.py` w
 
 ### Near-term follow-ups
 - Wire `declared_can_throw` from the checker (FnResult return types / throws clauses) into stage4 throw checks; keep the “no ConstructError in non-can-throw fns” and “no bare return in can-throw fns” invariants hard.
-- Add a type-aware check that returns in can-throw functions actually yield `FnResult<_, Error>` (not just any value). A structural placeholder exists in stage4 throw_checks; replace with a type-driven version once types are threaded.
+- Add a type-aware check that returns in can-throw functions actually yield `FnResult<_, Error>` (not just any value). A structural placeholder exists in stage4 throw_checks; it will reject forwarding/aliasing cases until a type-driven version replaces it.
 - Generalize `HTry` to multi-arm/event-specific catches by dispatching on `ErrorEvent` codes and rethrowing when no arm matches.
 
 ## HIR node set (finalize before coding)

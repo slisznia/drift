@@ -104,10 +104,15 @@ def enforce_fnresult_returns_for_can_throw(
 	Stronger return-shape invariant for can-throw functions:
 	  - Every Return value in a can-throw function must come from a ConstructResultOk/Err.
 
-	This is a conservative structural check (not type-driven): it scans the MIR
-	instructions for ConstructResultOk/Err with dest matching the returned ValueId.
-	If none is found anywhere in the function, we flag it. This keeps us honest
-	that can-throw functions actually produce a FnResult on all return paths.
+	This is a conservative structural check (not type-driven and intentionally
+	over-strict for now): it scans the MIR instructions for ConstructResultOk/Err
+	with dest matching the returned ValueId. If none is found anywhere in the
+	function, we flag it. This keeps us honest that can-throw functions actually
+	produce a FnResult on all return paths.
+
+	Limitations (by design for now):
+	  - Returning a FnResult parameter or local that aliases a FnResult will fail
+	    this check until a type-aware pass replaces it.
 	"""
 	for fname, info in func_infos.items():
 		if not info.declared_can_throw:

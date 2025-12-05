@@ -2,6 +2,10 @@ set shell := ["bash", "-lc"]
 set quiet
 CLANG_BIN := "clang-15"
 
+# Default task: run the staged lang2 compiler tests.
+default: lang2-test
+	@echo "lang2-test: Success."
+
 test: test-ssa test-e2e
 	@echo "test-ssa test-e2e: Success."
 
