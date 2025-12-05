@@ -15,9 +15,11 @@ from lang2.stage4 import (
 	enforce_can_throw_invariants,
 	enforce_return_shape_for_can_throw,
 	enforce_fnresult_returns_for_can_throw,
+	run_throw_checks,
 )
 from lang2.stage2 import BasicBlock, MirFunc, Return
 from lang2.stage2 import ConstructResultErr
+from lang2.stage3 import ThrowSummaryBuilder
 
 
 def test_build_func_throw_info_combines_summary_and_decl():
@@ -123,3 +125,25 @@ def test_fnresult_return_shape_enforced_for_can_throw():
 	)
 	funcs_ok = {"k": MirFunc(name="k", params=[], locals=[], blocks={"entry": entry_ok}, entry="entry")}
 	enforce_fnresult_returns_for_can_throw(func_infos, funcs_ok)
+
+
+def test_run_throw_checks_wrapper_executes_all_invariants():
+	# Build MIR + summary for a can-throw function that returns FnResult
+	entry = BasicBlock(
+		name="entry",
+		instructions=[ConstructResultErr(dest="r0", error="e0")],
+		terminator=Return(value="r0"),
+	)
+	funcs = {"w": MirFunc(name="w", params=[], locals=[], blocks={"entry": entry}, entry="entry")}
+	summary = ThrowSummary(
+		constructs_error=True,
+		exception_types={"E"},
+		may_fail_sites=set(),
+	)
+	func_infos = run_throw_checks(
+		funcs=funcs,
+		summaries={"w": summary},
+		declared_can_throw={"w": True},
+	)
+	assert "w" in func_infos
+	assert func_infos["w"].declared_can_throw is True

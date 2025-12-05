@@ -135,3 +135,25 @@ def enforce_fnresult_returns_for_can_throw(
 					f"function {fname} is declared can-throw but return in block {block.name} "
 					f"does not return a FnResult (no ConstructResultOk/Err defines {return_val})"
 				)
+
+
+def run_throw_checks(
+	funcs: Dict[str, MirFunc],
+	summaries: Dict[str, ThrowSummary],
+	declared_can_throw: Dict[str, bool],
+) -> Dict[str, FuncThrowInfo]:
+	"""
+	Convenience wrapper to build FuncThrowInfo and run all stage4 throw invariants.
+
+	This keeps the pipeline driver simple: given MIR functions, throw summaries
+	from stage3, and the checker-supplied `declared_can_throw` map, we:
+	  1. build FuncThrowInfo,
+	  2. enforce can-throw invariants,
+	  3. enforce return-shape invariants for can-throw functions,
+	  4. return the FuncThrowInfo map for further stages to consume.
+	"""
+	func_infos = build_func_throw_info(summaries, declared_can_throw)
+	enforce_can_throw_invariants(func_infos)
+	enforce_return_shape_for_can_throw(func_infos, funcs)
+	enforce_fnresult_returns_for_can_throw(func_infos, funcs)
+	return func_infos
