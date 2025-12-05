@@ -44,6 +44,7 @@ from .hir_nodes import (
 	BinaryOp,
 )
 from .ast_to_hir import AstToHIR
+from .normalize import normalize_hir
 
 __all__ = [
 	"HNode",
@@ -77,4 +78,5 @@ __all__ = [
 	"UnaryOp",
 	"BinaryOp",
 	"AstToHIR",
+	"normalize_hir",
 ]

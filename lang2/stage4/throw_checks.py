@@ -15,7 +15,7 @@ lowering/SSA so those passes stay structural.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, Set
+from typing import Dict, Protocol, Set
 
 from lang2.stage3 import ThrowSummary
 from lang2.stage2 import MirFunc, Return, ConstructResultOk, ConstructResultErr
@@ -159,6 +159,42 @@ def enforce_fnresult_returns_typeaware(
 		"type-aware FnResult return checking is not implemented yet; "
 		"use the structural check as a stopgap"
 	)
+
+
+class TypeEnv(Protocol):
+	"""
+	Minimal protocol for future type-aware return checks.
+
+	The real type environment will be provided by the checker/driver once SSA is
+	annotated with types; this placeholder constrains the expected API shape.
+	"""
+
+	def type_of_ssa_value(self, func_name: str, value_id: str) -> object:
+		"""
+		Return the type of an SSA value in the given function.
+
+		This is intentionally generic to keep stage4 decoupled from the concrete
+		type system; the driver/checker will supply a concrete implementation.
+		"""
+		...
+
+
+class TypeEnv(Protocol):
+	"""
+	Minimal protocol for future type-aware return checks.
+
+	The real type environment will be provided by the checker/driver once SSA is
+	annotated with types; this placeholder constrains the expected API shape.
+	"""
+
+	def type_of_ssa_value(self, func_name: str, value_id: str) -> object:
+		"""
+		Return the type of an SSA value in the given function.
+
+		This is intentionally generic to keep stage4 decoupled from the concrete
+		type system; the driver/checker will supply a concrete implementation.
+		"""
+		...
 
 
 def run_throw_checks(

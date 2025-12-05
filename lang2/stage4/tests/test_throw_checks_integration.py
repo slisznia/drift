@@ -88,3 +88,85 @@ def test_can_throw_try_catch_and_return_ok_shape():
 	infos = run_throw_checks(mir_funcs, summaries, declared_can_throw)
 	assert fn_name in infos
 	assert infos[fn_name].declared_can_throw is True
+
+
+def test_can_throw_fnresult_forwarding_currently_rejected():
+	"""
+	Structural FnResult check still rejects forwarding/aliasing:
+	a can-throw function that returns a value not produced by ConstructResultOk/Err
+	should fail for now (type-aware checks will relax this later).
+	"""
+	# MIR: entry -> return param "p" (no ConstructResultOk/Err defines it).
+	entry = M.BasicBlock(name="entry", instructions=[], terminator=M.Return(value="p"))
+	mir_fn = M.MirFunc(
+		name="f_forward",
+		params=[],
+		locals=["p"],
+		blocks={"entry": entry},
+		entry="entry",
+	)
+	mir_funcs = {"f_forward": mir_fn}
+	summaries = ThrowSummaryBuilder().build(mir_funcs, code_to_exc={})
+	declared_can_throw = {"f_forward": True}
+
+	with pytest.raises(RuntimeError):
+		run_throw_checks(mir_funcs, summaries, declared_can_throw)
+
+
+def test_can_throw_without_throw_and_ok_return_passes():
+	"""
+	A can-throw function that never throws but returns a ConstructResultOk value
+	should clear all invariants.
+	"""
+	entry = M.BasicBlock(
+		name="entry",
+		instructions=[
+			M.ConstInt(dest="v_ok", value=42),
+			M.ConstructResultOk(dest="r_ok", value="v_ok"),
+		],
+		terminator=M.Return(value="r_ok"),
+	)
+	mir_fn = M.MirFunc(
+		name="f_ok_only",
+		params=[],
+		locals=[],
+		blocks={"entry": entry},
+		entry="entry",
+	)
+	mir_funcs = {"f_ok_only": mir_fn}
+	summaries = ThrowSummaryBuilder().build(mir_funcs, code_to_exc={})
+	declared_can_throw = {"f_ok_only": True}
+
+	infos = run_throw_checks(mir_funcs, summaries, declared_can_throw)
+	assert "f_ok_only" in infos
+	assert infos["f_ok_only"].declared_can_throw is True
+
+
+def test_fnresult_forwarding_aliasing_expected_fail():
+	"""
+	Structural FnResult check still fails for forwarding/aliasing.
+	This documents the limitation; it should be relaxed once the type-aware check is available.
+	"""
+	# MIR: ConstructResultOk -> StoreLocal alias -> Return alias
+	entry = M.BasicBlock(
+		name="entry",
+		instructions=[
+			M.ConstInt(dest="v_ok", value=7),
+			M.ConstructResultOk(dest="r0", value="v_ok"),
+			M.StoreLocal(local="alias", value="r0"),
+		],
+		terminator=M.Return(value="alias"),
+	)
+	mir_fn = M.MirFunc(
+		name="f_alias",
+		params=[],
+		locals=["alias"],
+		blocks={"entry": entry},
+		entry="entry",
+	)
+	mir_funcs = {"f_alias": mir_fn}
+	summaries = ThrowSummaryBuilder().build(mir_funcs, code_to_exc={})
+	declared_can_throw = {"f_alias": True}
+
+	with pytest.raises(RuntimeError):
+		run_throw_checks(mir_funcs, summaries, declared_can_throw)

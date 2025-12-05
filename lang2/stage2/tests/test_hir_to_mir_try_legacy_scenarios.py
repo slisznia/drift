@@ -189,3 +189,69 @@ def test_inner_catch_all_handles_error_before_outer_specific_arm():
 	assert isinstance(outer_dispatch.terminator, M.IfTerminator)
 	# Walk the inner else chain to ensure it never reaches the outer dispatch.
 	assert inner_dispatch.terminator.target != outer_dispatch.name
+
+
+def test_inner_matching_catch_handles_and_stops_propagation():
+	"""
+	Inner try has an event-specific arm for the thrown event; outer has a different arm.
+	The thrown event must be caught by the inner arm and not propagate to the outer dispatch.
+	"""
+	exc_env = {"EvtInner": 11, "EvtOuter": 22}
+	builder = MirBuilder(name="legacy_inner_matches")
+	lower = HIRToMIR(builder, exc_env=exc_env)
+
+	hir = H.HBlock(
+		statements=[
+			H.HTry(
+				body=H.HBlock(
+					statements=[
+						H.HTry(
+							body=H.HBlock(
+								statements=[H.HThrow(value=H.HDVInit(dv_type_name="EvtInner", args=[]))]
+							),
+							catches=[
+								H.HCatchArm(
+									event_name="EvtInner",
+									binder="inner",
+									block=H.HBlock(statements=[]),
+								)
+							],
+						)
+					]
+				),
+				catches=[
+					H.HCatchArm(
+						event_name="EvtOuter",
+						binder="outer",
+						block=H.HBlock(statements=[]),
+					)
+				],
+			)
+		]
+	)
+	lower.lower_block(hir)
+	func = builder.func
+
+	# Find the inner dispatch by looking for the binder 'inner' in a catch block reached via then-branch.
+	dispatch_blocks = {
+		name: blk for name, blk in func.blocks.items()
+		if name.startswith("try_dispatch") and "next" not in name
+	}
+	assert dispatch_blocks
+	inner_dispatch_name = None
+	for name, block in dispatch_blocks.items():
+		if isinstance(block.terminator, M.IfTerminator):
+			then_block = func.blocks[block.terminator.then_target]
+			if any(isinstance(instr, M.StoreLocal) and instr.local == "inner" for instr in then_block.instructions):
+				inner_dispatch_name = name
+				break
+	assert inner_dispatch_name is not None, "could not find inner dispatch"
+	inner_dispatch = func.blocks[inner_dispatch_name]
+
+	# The matched path should bind 'inner' in its catch block.
+	then_block = func.blocks[inner_dispatch.terminator.then_target]
+	assert any(isinstance(instr, M.StoreLocal) and instr.local == "inner" for instr in then_block.instructions)
+
+	# The unmatched path remains available for other events: it will unwind to the outer try.
+	inner_final = _walk_else(func, inner_dispatch)
+	assert isinstance(inner_final.terminator, M.Goto)
