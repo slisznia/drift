@@ -17,6 +17,7 @@ from lang2.stage2 import (
 	Call,
 	MethodCall,
 	ConstructDV,
+	ConstructError,
 	ConstInt,
 )
 from lang2.stage3 import MirPreAnalysis
@@ -57,6 +58,7 @@ def test_calls_marked_may_fail():
 			Call(dest="t0", fn="foo", args=[]),
 			MethodCall(dest="t1", receiver="obj", method_name="bar", args=[]),
 			ConstructDV(dest="t2", dv_type_name="Err", args=[]),
+			ConstructError(dest="t3", code="c", payload="p"),
 		],
 		terminator=Goto(target="exit"),
 	)
@@ -72,6 +74,8 @@ def test_calls_marked_may_fail():
 	assert ("entry", 0) in result.may_fail
 	assert ("entry", 1) in result.may_fail
 	assert ("entry", 2) in result.may_fail
+	assert ("entry", 3) in result.may_fail
+	assert ("entry", 3) in result.construct_error_sites
 
 
 def test_pure_ops_not_marked():
@@ -93,3 +97,4 @@ def test_pure_ops_not_marked():
 	)
 	result = MirPreAnalysis().analyze(func)
 	assert result.may_fail == set()
+	assert result.construct_error_sites == set()

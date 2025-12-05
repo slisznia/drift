@@ -117,6 +117,12 @@ class HIRToMIR:
 	"""
 
 	def __init__(self, builder: MirBuilder, exc_env: Mapping[str, int] | None = None):
+		"""
+		Create a lowering context.
+
+		`exc_env` (optional) maps DV/exception type names to event codes so
+		throw lowering can emit real codes instead of placeholders.
+		"""
 		self.b = builder
 		# Stack of (continue_target, break_target) block names for nested loops.
 		self._loop_stack: list[tuple[str, str]] = []
