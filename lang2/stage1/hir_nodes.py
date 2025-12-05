@@ -130,6 +130,18 @@ class HTernary(HExpr):
 
 
 @dataclass
+class HTryResult(HExpr):
+	"""
+	Result-driven try sugar marker (e.g., expr?).
+
+	This remains in HIR until a rewrite pass desugars it into an explicit
+	`if is_err { throw unwrap_err() } else { unwrap() }` pattern. Keeping it
+	syntactic here avoids entangling lowering with sugar.
+	"""
+	expr: HExpr
+
+
+@dataclass
 class HThrow(HStmt):
 	"""Throw an error/exception value. Semantically returns Err from this function."""
 	value: HExpr
@@ -263,7 +275,7 @@ __all__ = [
 	"HNode", "HExpr", "HStmt",
 	"UnaryOp", "BinaryOp",
 	"HVar", "HLiteralInt", "HLiteralString", "HLiteralBool",
-	"HCall", "HMethodCall", "HTernary", "HField", "HIndex", "HDVInit",
+	"HCall", "HMethodCall", "HTernary", "HTryResult", "HField", "HIndex", "HDVInit",
 	"HUnary", "HBinary",
 	"HBlock", "HExprStmt", "HLet", "HAssign", "HIf", "HLoop",
 	"HBreak", "HContinue", "HReturn", "HThrow", "HTry", "HCatchArm",

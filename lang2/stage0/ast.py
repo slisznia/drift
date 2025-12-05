@@ -141,6 +141,18 @@ class Ternary(Expr):
 	loc: Optional[object] = None
 
 
+@dataclass
+class TryExpr(Expr):
+	"""
+	Result-driven try sugar (e.g., expr? / try expr).
+
+	This is a syntactic marker that will be desugared in a later HIR rewrite
+	pass once types are known. Semantics: treat an Err from expr as a throw.
+	"""
+	expr: Expr
+	loc: Optional[object] = None
+
+
 # Statements
 
 @dataclass
@@ -243,7 +255,7 @@ class ThrowStmt(Stmt):
 __all__ = [
 	"Node", "Expr", "Stmt",
 	"Literal", "Name", "Placeholder", "Attr", "Call", "Binary", "Unary",
-	"Index", "ArrayLiteral", "ExceptionCtor", "CatchExprArm", "TryCatchExpr", "Ternary",
+	"Index", "ArrayLiteral", "ExceptionCtor", "CatchExprArm", "TryCatchExpr", "Ternary", "TryExpr",
 	"LetStmt", "AssignStmt", "IfStmt", "ReturnStmt", "RaiseStmt", "ExprStmt", "ImportStmt",
 	"TryStmt", "WhileStmt", "ForStmt", "BreakStmt", "ContinueStmt", "ThrowStmt",
 ]

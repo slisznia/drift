@@ -212,6 +212,15 @@ class AstToHIR:
 		else_h = self.lower_expr(expr.else_expr)
 		return H.HTernary(cond=cond_h, then_expr=then_h, else_expr=else_h)
 
+	def _visit_expr_TryExpr(self, expr: ast.TryExpr) -> H.HExpr:
+		"""
+		Result-driven try sugar marker (expr? / try expr).
+
+		We lower to HTryResult and leave desugaring to a dedicated HIR rewrite
+		pass (see stage1/try_result_rewrite.py). That keeps this pass sugar-only.
+		"""
+		return H.HTryResult(expr=self.lower_expr(expr.expr))
+
 	def _visit_expr_TryCatchExpr(self, expr: ast.TryCatchExpr) -> H.HExpr:
 		raise NotImplementedError("Try/catch expr lowering not implemented yet")
 
