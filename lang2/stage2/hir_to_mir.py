@@ -475,9 +475,8 @@ class HIRToMIR:
 		  each catch arm -> try_cont (if it falls through)
 
 		Notes/assumptions:
-		  - We expect well-formed arms (at most one catch-all, catch-all last).
-		    Until the checker enforces this, we defensively reject multiple
-		    catch-alls here.
+		  - We defensively reject malformed arms here: at most one catch-all and
+		    it must be the last arm.
 		  - Unmatched errors first unwind to an outer try (if any) using the
 		    same try-stack machinery as throw; only when there is no outer try
 		    do we propagate Err out of this function.
@@ -498,6 +497,7 @@ class HIRToMIR:
 		# Create catch blocks for each arm.
 		catch_blocks: list[tuple[H.HCatchArm, M.BasicBlock]] = []
 		catch_all_block: M.BasicBlock | None = None
+		catch_all_seen = False
 		for idx, arm in enumerate(stmt.catches):
 			cb = self.b.new_block(f"try_catch_{idx}")
 			catch_blocks.append((arm, cb))
@@ -505,6 +505,13 @@ class HIRToMIR:
 				if catch_all_block is not None:
 					raise RuntimeError("multiple catch-all arms are not supported")
 				catch_all_block = cb
+				# Remember that we've seen a catch-all; any later event-specific
+				# arms would be dead. We reject that here instead of silently
+				# generating unreachable blocks.
+				catch_all_seen = True
+			else:
+				if catch_all_seen:
+					raise RuntimeError("catch-all must be the last catch arm")
 
 		# Entry: jump into body and register try context so throws can target dispatch.
 		self.b.set_terminator(M.Goto(target=body_block.name))
