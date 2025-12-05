@@ -169,6 +169,4 @@ def test_for_with_missing_cond_step_defaults():
 def test_fail_loud_on_unhandled_nodes():
 	l = AstToHIR()
 	with pytest.raises(NotImplementedError):
-		l.lower_expr(ast.Ternary(ast.Literal(True), ast.Literal(1), ast.Literal(2)))
-	with pytest.raises(NotImplementedError):
 		l.lower_stmt(ast.ThrowStmt(value=ast.Literal(1)))

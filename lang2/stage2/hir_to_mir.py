@@ -206,6 +206,48 @@ class HIRToMIR:
 		self.b.emit(M.ConstructDV(dest=dest, dv_type_name=expr.dv_type_name, args=arg_vals))
 		return dest
 
+	def _visit_expr_HTernary(self, expr: H.HTernary) -> M.ValueId:
+		"""
+		Lower ternary expression by building a diamond CFG that stores into a
+		hidden local and reloads it at the join. SSA will place φs as needed.
+		"""
+		# Allocate a hidden local for the ternary result.
+		temp_local = f"__tern_tmp{self.b.new_temp()}"
+		self.b.ensure_local(temp_local)
+
+		# Evaluate condition in the current block.
+		cond_val = self.lower_expr(expr.cond)
+
+		# Create then/else/join blocks.
+		then_block = self.b.new_block("tern_then")
+		else_block = self.b.new_block("tern_else")
+		join_block = self.b.new_block("tern_join")
+
+		# Branch on condition from the current block.
+		self.b.set_terminator(
+			M.IfTerminator(cond=cond_val, then_target=then_block.name, else_target=else_block.name)
+		)
+
+		# Then branch: compute then_expr, store to temp, jump to join.
+		self.b.set_block(then_block)
+		then_val = self.lower_expr(expr.then_expr)
+		self.b.emit(M.StoreLocal(local=temp_local, value=then_val))
+		if self.b.block.terminator is None:
+			self.b.set_terminator(M.Goto(target=join_block.name))
+
+		# Else branch: compute else_expr, store to temp, jump to join.
+		self.b.set_block(else_block)
+		else_val = self.lower_expr(expr.else_expr)
+		self.b.emit(M.StoreLocal(local=temp_local, value=else_val))
+		if self.b.block.terminator is None:
+			self.b.set_terminator(M.Goto(target=join_block.name))
+
+		# Join: load the temp as the value of the ternary and continue.
+		self.b.set_block(join_block)
+		dest = self.b.new_temp()
+		self.b.emit(M.LoadLocal(dest=dest, local=temp_local))
+		return dest
+
 	# --- Statement lowering ---
 
 	def lower_stmt(self, stmt: H.HStmt) -> None:

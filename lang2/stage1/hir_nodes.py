@@ -122,6 +122,14 @@ class HMethodCall(HExpr):
 
 
 @dataclass
+class HTernary(HExpr):
+	"""Conditional expression: cond ? then_expr : else_expr."""
+	cond: HExpr
+	then_expr: HExpr
+	else_expr: HExpr
+
+
+@dataclass
 class HField(HExpr):
 	"""Field access: subject.name"""
 	subject: HExpr
@@ -217,7 +225,7 @@ __all__ = [
 	"HNode", "HExpr", "HStmt",
 	"UnaryOp", "BinaryOp",
 	"HVar", "HLiteralInt", "HLiteralString", "HLiteralBool",
-	"HCall", "HMethodCall", "HField", "HIndex", "HDVInit",
+	"HCall", "HMethodCall", "HTernary", "HField", "HIndex", "HDVInit",
 	"HUnary", "HBinary",
 	"HBlock", "HExprStmt", "HLet", "HAssign", "HIf", "HLoop",
 	"HBreak", "HContinue", "HReturn",

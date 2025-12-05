@@ -206,7 +206,11 @@ class AstToHIR:
 		return H.HDVInit(dv_type_name=expr.name, args=arg_exprs)
 
 	def _visit_expr_Ternary(self, expr: ast.Ternary) -> H.HExpr:
-		raise NotImplementedError("Ternary lowering not implemented yet")
+		"""Lower ternary expression: cond ? then_expr : else_expr."""
+		cond_h = self.lower_expr(expr.cond)
+		then_h = self.lower_expr(expr.then_expr)
+		else_h = self.lower_expr(expr.else_expr)
+		return H.HTernary(cond=cond_h, then_expr=then_h, else_expr=else_h)
 
 	def _visit_expr_TryCatchExpr(self, expr: ast.TryCatchExpr) -> H.HExpr:
 		raise NotImplementedError("Try/catch expr lowering not implemented yet")
