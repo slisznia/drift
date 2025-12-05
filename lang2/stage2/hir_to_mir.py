@@ -517,27 +517,35 @@ class HIRToMIR:
 		# Chain event-specific arms with IfTerminator, else falling through.
 		event_arms = [(arm, cb) for arm, cb in catch_blocks if arm.event_name is not None]
 		current_block = dispatch_block
-		for idx, (arm, cb) in enumerate(event_arms):
-			arm_code = self._lookup_catch_event_code(arm.event_name)
-			arm_code_const = self.b.new_temp()
-			self.b.emit(M.ConstInt(dest=arm_code_const, value=arm_code))
-			cmp_tmp = self.b.new_temp()
-			self.b.emit(M.BinaryOpInstr(dest=cmp_tmp, op=M.BinaryOp.EQ, left=code_tmp, right=arm_code_const))
+		if event_arms:
+			for arm, cb in event_arms:
+				arm_code = self._lookup_catch_event_code(arm.event_name)
+				arm_code_const = self.b.new_temp()
+				self.b.emit(M.ConstInt(dest=arm_code_const, value=arm_code))
+				cmp_tmp = self.b.new_temp()
+				self.b.emit(M.BinaryOpInstr(dest=cmp_tmp, op=M.BinaryOp.EQ, left=code_tmp, right=arm_code_const))
 
-			# Chain to the next dispatch block; the final "else" is resolved after the loop.
-			else_block = self.b.new_block("try_dispatch_next")
-			self.b.set_terminator(M.IfTerminator(cond=cmp_tmp, then_target=cb.name, else_target=else_block.name))
-			current_block = else_block
+				else_block = self.b.new_block("try_dispatch_next")
+				self.b.set_terminator(M.IfTerminator(cond=cmp_tmp, then_target=cb.name, else_target=else_block.name))
+				current_block = else_block
+				self.b.set_block(current_block)
+
+			# Final dispatch resolution: either a catch-all or propagate as Err.
 			self.b.set_block(current_block)
-
-		# Final dispatch resolution: either a catch-all or propagate as Err.
-		self.b.set_block(current_block)
-		if catch_all_block is not None:
-			self.b.set_terminator(M.Goto(target=catch_all_block.name))
+			if catch_all_block is not None:
+				self.b.set_terminator(M.Goto(target=catch_all_block.name))
+			else:
+				res_val = self.b.new_temp()
+				self.b.emit(M.ConstructResultErr(dest=res_val, error=err_tmp))
+				self.b.set_terminator(M.Return(value=res_val))
 		else:
-			res_val = self.b.new_temp()
-			self.b.emit(M.ConstructResultErr(dest=res_val, error=err_tmp))
-			self.b.set_terminator(M.Return(value=res_val))
+			# No event-specific arms: either jump to catch-all or rethrow immediately.
+			if catch_all_block is not None:
+				self.b.set_terminator(M.Goto(target=catch_all_block.name))
+			else:
+				res_val = self.b.new_temp()
+				self.b.emit(M.ConstructResultErr(dest=res_val, error=err_tmp))
+				self.b.set_terminator(M.Return(value=res_val))
 
 		# Lower each catch arm: bind error if requested, emit ErrorEvent for handler logic, then body.
 		for arm, cb in catch_blocks:

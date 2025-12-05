@@ -36,8 +36,8 @@ Goal: Replace the monolithic `if isinstance` lowering in `lower_to_mir_ssa.py` w
 - (Checker/driver) Wire `declared_can_throw` from the checker (FnResult return types / throws clauses) into stage4 throw checks; keep the “no ConstructError in non-can-throw fns” and “no bare return in can-throw fns” invariants hard. Driver should call `run_throw_checks(funcs, summaries, declared_can_throw)` after stage3.
 - (Stage4) Replace the structural FnResult check (`enforce_fnresult_returns_for_can_throw`, which rejects forwarding/aliasing) with a type-aware `enforce_fnresult_returns_typeaware` once SSA/type_env are threaded into stage4; keep the TODO stub in code to make this explicit.
 - (Checker) Add catch-arm validation: at most one catch-all, catch-all must be last, and (optionally) warn/error on duplicate event arms. Lowering will then assume arms are well-formed.
-- (Stage2) Simplify the try dispatch else-chain and rethrow semantics; test the “unmatched event + no catch-all rethrows as FnResult.Err” case.
-- (Stage2) Decide and document rethrow semantics: currently rethrow = propagate out as FnResult.Err, not unwind to an outer try in the same function; revisit when cross-function unwinding is added.
+- (Stage2) Add explicit tests for catch-all ordering/multiple catch-all rejection, and consider rejecting “catch-all not last” until checker enforces it.
+- (Stage2) Decide and document rethrow semantics: currently rethrow = propagate out as FnResult.Err, not unwind to an outer try in the same function; if we later want inner rethrows to reach outer tries, route via `_try_stack` instead of returning immediately.
 
 ## HIR node set (finalize before coding)
 
