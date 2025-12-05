@@ -12,5 +12,6 @@ Public API:
 """
 
 from .ssa import MirToSSA, SsaFunc
+from .dom import DominatorAnalysis, DominatorInfo
 
-__all__ = ["MirToSSA", "SsaFunc"]
+__all__ = ["MirToSSA", "SsaFunc", "DominatorAnalysis", "DominatorInfo"]
