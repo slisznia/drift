@@ -49,7 +49,7 @@ Surface AST (stage0) ──> HIR (stage1) ──> MIR (stage2) ──> SSA (stag
   * Can-throw fns must return a value produced by `ConstructResultOk/Err` (structural; does not understand aliasing/forwarding yet).
 * Planned:
   * Type-aware FnResult return check (`enforce_fnresult_returns_typeaware`) once SSA/type_env reach stage4.
-  * Checker-provided `declared_can_throw` map (FnResult return type / throws clause) fed into `run_throw_checks` in the real driver.
+  * Checker-provided `declared_can_throw` map (derived from signatures / throws clauses) fed into `run_throw_checks` in the real driver. Tests use `FnSignature` + checker helpers (see `lang2/test_support`) rather than hard-coded bool maps.
   * Checker-side catch-arm validation for duplicate/unknown events with user-facing diagnostics.
 
 ## Known challenges / design choices

@@ -7,6 +7,7 @@ from __future__ import annotations
 from lang2 import stage1 as H
 from lang2.driftc import compile_stubbed_funcs
 from lang2.checker import FnSignature
+from lang2.test_support import build_exception_catalog
 
 
 def test_driver_collects_catch_arms_and_reports_diagnostics():
@@ -32,7 +33,7 @@ def test_driver_collects_catch_arms_and_reports_diagnostics():
 	mir_funcs, checked = compile_stubbed_funcs(
 		func_hirs={"f": hir_block},
 		signatures=signatures,
-		exc_env={"Evt": 1},
+		exc_env=build_exception_catalog({"Evt": 1}),
 		return_checked=True,
 	)
 

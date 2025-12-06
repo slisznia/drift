@@ -21,13 +21,8 @@ from lang2.stage2 import BasicBlock, MirFunc, Return, StoreLocal
 from lang2.stage2 import ConstructResultErr
 from lang2.stage3 import ThrowSummaryBuilder
 import pytest
-from lang2.checker import Checker, FnSignature
-
-
-def _declared_from_signatures(signatures: dict[str, FnSignature]) -> dict[str, bool]:
-	"""Derive declared_can_throw from FnSignature inputs via the checker stub."""
-	checked = Checker(signatures=signatures).check(signatures.keys())
-	return {name: info.declared_can_throw for name, info in checked.fn_infos.items()}
+from lang2.checker import FnSignature
+from lang2.test_support import declared_from_signatures
 
 
 def test_build_func_throw_info_combines_summary_and_decl():
@@ -41,7 +36,7 @@ def test_build_func_throw_info_combines_summary_and_decl():
 	}
 	func_infos = build_func_throw_info(
 		summaries,
-		declared_can_throw=_declared_from_signatures(
+		declared_can_throw=declared_from_signatures(
 			{"f": FnSignature(name="f", return_type="FnResult<Int, Error>")}
 		),
 	)
@@ -65,7 +60,7 @@ def test_enforce_can_throw_invariants_raises_for_non_declared_thrower():
 	}
 	func_infos = build_func_throw_info(
 		summaries,
-		declared_can_throw=_declared_from_signatures({"g": FnSignature(name="g", return_type="Int")}),
+		declared_can_throw=declared_from_signatures({"g": FnSignature(name="g", return_type="Int")}),
 	)
 	try:
 		enforce_can_throw_invariants(func_infos)
@@ -86,7 +81,7 @@ def test_enforce_can_throw_invariants_allows_declared_thrower():
 	}
 	func_infos = build_func_throw_info(
 		summaries,
-		declared_can_throw=_declared_from_signatures(
+		declared_can_throw=declared_from_signatures(
 			{"h": FnSignature(name="h", return_type="FnResult<Int, Error>")}
 		),
 	)
@@ -105,7 +100,7 @@ def test_return_shape_enforced_for_can_throw():
 	}
 	func_infos = build_func_throw_info(
 		summaries,
-		declared_can_throw=_declared_from_signatures(
+		declared_can_throw=declared_from_signatures(
 			{"h": FnSignature(name="h", return_type="FnResult<Int, Error>")}
 		),
 	)
@@ -136,7 +131,7 @@ def test_fnresult_return_shape_enforced_for_can_throw():
 	}
 	func_infos = build_func_throw_info(
 		summaries,
-		declared_can_throw=_declared_from_signatures(
+		declared_can_throw=declared_from_signatures(
 			{"k": FnSignature(name="k", return_type="FnResult<Int, Error>")}
 		),
 	)
@@ -177,7 +172,7 @@ def test_run_throw_checks_wrapper_executes_all_invariants():
 	func_infos = run_throw_checks(
 		funcs=funcs,
 		summaries={"w": summary},
-		declared_can_throw=_declared_from_signatures(
+		declared_can_throw=declared_from_signatures(
 			{"w": FnSignature(name="w", return_type="FnResult<Int, Error>")}
 		),
 	)

@@ -8,13 +8,8 @@ from lang2.stage2 import BasicBlock, ConstructResultOk, MirFunc, Return
 from lang2.stage3 import ThrowSummaryBuilder
 from lang2.stage4 import MirToSSA, run_throw_checks
 from lang2.types_env_impl import SimpleTypeEnv
-from lang2.checker import Checker, FnSignature
-
-
-def _declared_from_signatures(signatures: dict[str, FnSignature]) -> dict[str, bool]:
-	"""Derive declared_can_throw from FnSignature inputs via the checker stub."""
-	checked = Checker(signatures=signatures).check(signatures.keys())
-	return {name: info.declared_can_throw for name, info in checked.fn_infos.items()}
+from lang2.checker import FnSignature
+from lang2.test_support import declared_from_signatures
 
 
 def _build_simple_mir_fn(name: str, ret_value: str) -> MirFunc:
@@ -54,7 +49,7 @@ def test_typeaware_accepts_fnresult_return():
 	run_throw_checks(
 		{fn_name: mir_func},
 		summaries,
-		declared_can_throw=_declared_from_signatures(
+		declared_can_throw=declared_from_signatures(
 			{fn_name: FnSignature(name=fn_name, return_type="FnResult<Int, Error>")}
 		),
 		ssa_funcs={fn_name: ssa_func},
@@ -81,7 +76,7 @@ def test_typeaware_rejects_non_fnresult_return():
 		run_throw_checks(
 			{fn_name: mir_func},
 			summaries,
-			declared_can_throw=_declared_from_signatures(
+			declared_can_throw=declared_from_signatures(
 				{fn_name: FnSignature(name=fn_name, return_type="FnResult<Int, Error>")}
 			),
 			ssa_funcs={fn_name: ssa_func},

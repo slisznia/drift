@@ -44,8 +44,8 @@ def compile_stubbed_funcs(
 
 	Args:
 	  func_hirs: mapping of function name -> HIR block (body).
-	  declared_can_throw: optional mapping of fn name -> bool; **test/prototype-only**
-	    shim. Prefer `signatures` for new tests.
+	  declared_can_throw: optional mapping of fn name -> bool; **legacy test shim**.
+	    Prefer `signatures` for new tests and treat this as deprecated.
 	  signatures: optional mapping of fn name -> FnSignature. The real checker will
 	    use parsed/type-checked signatures to derive throw intent; this parameter
 	    lets tests mimic that shape without a full parser/type checker.

@@ -83,9 +83,11 @@ class Checker:
 	Placeholder checker.
 
 	Accepts a sequence of function declarations and an optional declared_can_throw
-	map (defaults to False for all). This input is strictly a testing shim; a real
-	checker will compute declared_can_throw from signatures (FnResult/throws) and
-	the type system, and validate catch arms against an exception catalog.
+	map (defaults to False for all). This input is strictly a testing shim; new
+	callers should prefer `signatures` and treat `declared_can_throw` as a
+	deprecated convenience. A real checker will compute declared_can_throw from
+	signatures (FnResult/throws) and the type system, and validate catch arms
+	against an exception catalog.
 	"""
 
 	def __init__(
