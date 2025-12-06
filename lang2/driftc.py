@@ -33,6 +33,7 @@ from lang2.diagnostics import Diagnostic
 def compile_stubbed_funcs(
 	func_hirs: Mapping[str, H.HBlock],
 	declared_can_throw: Mapping[str, bool] | None = None,
+	signatures: Mapping[str, "FnSignature"] | None = None,
 	exc_env: Mapping[str, int] | None = None,
 ) -> Dict[str, M.MirFunc]:
 	"""
@@ -40,19 +41,26 @@ def compile_stubbed_funcs(
 
 	Args:
 	  func_hirs: mapping of function name -> HIR block (body).
-	  declared_can_throw: optional mapping of fn name -> bool; **test/prototype-only**.
-	    In a real compiler this will be computed by the checker from signatures.
+	  declared_can_throw: optional mapping of fn name -> bool; **test/prototype-only**
+	    shim. Prefer `signatures` for new tests.
+	  signatures: optional mapping of fn name -> FnSignature. The real checker will
+	    use parsed/type-checked signatures to derive throw intent; this parameter
+	    lets tests mimic that shape without a full parser/type checker.
 	  exc_env: optional exception environment (event name -> code) passed to HIRToMIR.
 
 	Returns:
 	  dict of function name -> lowered MIR function.
 
-	Raises:
-	  RuntimeError if throw invariants are violated (until real diagnostics are wired).
+	Notes:
+	  In the driver path, throw-check violations are appended to
+	  `checked.diagnostics`; direct calls to `run_throw_checks` without a
+	  diagnostics sink still raise RuntimeError in tests. This helper exists
+	  for tests/prototypes; a real CLI will build signatures and diagnostics
+	  from parsed sources instead of the shims here.
 	"""
 	# Stage “checker”: obtain declared_can_throw from the checker stub so the
 	# driver path mirrors the real compiler layering once a proper checker exists.
-	checker = Checker(declared_can_throw or {})
+	checker = Checker(declared_can_throw=declared_can_throw, signatures=signatures)
 	checked = checker.check(func_hirs.keys())
 	declared = {name: info.declared_can_throw for name, info in checked.fn_infos.items()}
 	mir_funcs: Dict[str, M.MirFunc] = {}

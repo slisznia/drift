@@ -19,10 +19,25 @@ For now we only thread a boolean throw intent per function through to the driver
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, Iterable, List, Optional, FrozenSet
+from typing import Any, Dict, Iterable, List, Optional, FrozenSet, Mapping, Tuple
 
 from lang2.diagnostics import Diagnostic
 from lang2.types_protocol import TypeEnv
+
+
+@dataclass
+class FnSignature:
+	"""
+	Placeholder function signature used by the stub checker.
+
+	Only `name`, `return_type`, and optional `throws_events` are represented.
+	The real checker will replace this with its own type-checked signature
+	structure.
+	"""
+
+	name: str
+	return_type: Any
+	throws_events: Tuple[str, ...] = ()
 
 
 @dataclass
@@ -71,8 +86,17 @@ class Checker:
 	the type system.
 	"""
 
-	def __init__(self, declared_can_throw: Dict[str, bool] | None = None) -> None:
-		self._declared = declared_can_throw or {}
+	def __init__(
+		self,
+		declared_can_throw: Mapping[str, bool] | None = None,
+		signatures: Mapping[str, FnSignature] | None = None,
+	) -> None:
+		# Until a real type checker exists we support two testing shims:
+		# 1) an explicit name -> bool map, or
+		# 2) a name -> FnSignature map, from which we can infer can-throw based
+		#    on the return type resembling FnResult.
+		self._declared_map = declared_can_throw or {}
+		self._signatures = signatures or {}
 
 	def check(self, fn_decls: Iterable[str]) -> CheckedProgram:
 		"""
@@ -80,7 +104,15 @@ class Checker:
 		"""
 		fn_infos: Dict[str, FnInfo] = {}
 		for name in fn_decls:
-			fn_infos[name] = FnInfo(name=name, declared_can_throw=self._declared.get(name, False))
+			declared_can_throw = self._declared_map.get(name)
+			if declared_can_throw is None:
+				sig = self._signatures.get(name)
+				if sig is not None:
+					declared_can_throw = self._is_fnresult_return(sig.return_type)
+				else:
+					declared_can_throw = False
+
+			fn_infos[name] = FnInfo(name=name, declared_can_throw=declared_can_throw)
 
 		# TODO: real checker will:
 		#   - resolve signatures (FnResult/throws),
@@ -93,3 +125,19 @@ class Checker:
 			exception_catalog=None,
 			diagnostics=[],
 		)
+
+	def _is_fnresult_return(self, return_type: Any) -> bool:
+		"""
+		Best-effort predicate to decide if a return type resembles FnResult<_, Error>.
+
+		This is intentionally loose to avoid committing to a concrete type
+		representation before the real checker exists. For now we consider:
+
+		* strings containing 'FnResult'
+		* tuples shaped like ('FnResult', ok_ty, err_ty)
+		"""
+		if isinstance(return_type, str):
+			return "FnResult" in return_type
+		if isinstance(return_type, tuple) and return_type and return_type[0] == "FnResult":
+			return True
+		return False
