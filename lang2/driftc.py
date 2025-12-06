@@ -30,6 +30,7 @@ from lang2.stage4 import run_throw_checks
 from lang2.checker import Checker, CheckedProgram, FnSignature
 from lang2.checker.catch_arms import CatchArmInfo
 from lang2.diagnostics import Diagnostic
+from lang2.types_env_impl import build_type_env_from_ssa
 
 
 def compile_stubbed_funcs(
@@ -38,6 +39,7 @@ def compile_stubbed_funcs(
 	signatures: Mapping[str, FnSignature] | None = None,
 	exc_env: Mapping[str, int] | None = None,
 	return_checked: bool = False,
+	build_ssa: bool = False,
 ) -> Dict[str, M.MirFunc] | tuple[Dict[str, M.MirFunc], CheckedProgram]:
 	"""
 	Lower a set of HIR function bodies through the lang2 pipeline and run throw checks.
@@ -51,7 +53,10 @@ def compile_stubbed_funcs(
 	    lets tests mimic that shape without a full parser/type checker.
 	  exc_env: optional exception environment (event name -> code) passed to HIRToMIR.
 	  return_checked: when True, also return the CheckedProgram produced by the
-	    checker so diagnostics can be inspected in tests.
+	    checker so diagnostics/fn_infos can be asserted in integration tests.
+	  build_ssa: when True, also run MIR→SSA and derive a TypeEnv from SSA +
+	    signatures so the type-aware throw check path is exercised. Loops/backedges
+	    are still rejected by the SSA pass.
 
 	Returns:
 	  dict of function name -> lowered MIR function. When `return_checked` is
@@ -94,13 +99,23 @@ def compile_stubbed_funcs(
 	# Stage3: summaries
 	summaries = ThrowSummaryBuilder().build(mir_funcs, code_to_exc=exc_env or {})
 
+	# Optional SSA/type-env for typed throw checks
+	ssa_funcs = None
+	type_env = None
+	if build_ssa:
+		from lang2.stage4 import MirToSSA  # local import to avoid unused deps
+
+		ssa_funcs = {name: MirToSSA().run(func) for name, func in mir_funcs.items()}
+		type_env = build_type_env_from_ssa(ssa_funcs, signatures=signatures)
+		checked.type_env = type_env
+
 	# Stage4: throw checks
 	run_throw_checks(
 		funcs=mir_funcs,
 		summaries=summaries,
 		declared_can_throw=declared,
-		type_env=checked.type_env,
-		ssa_funcs=None,
+		type_env=type_env or checked.type_env,
+		ssa_funcs=ssa_funcs,
 		diagnostics=checked.diagnostics,
 	)
 

@@ -39,18 +39,20 @@ Surface AST (stage0) ──> HIR (stage1) ──> MIR (stage2) ──> SSA (stag
   * Unmatched errors: unwind to the nearest outer try (same function) via the try stack; only return `FnResult.Err` when no outer try exists.
 * Catch-arm validation:
   * Lowering rejects malformed shapes (multiple catch-all, catch-all not last).
-  * Checker is expected to enforce duplicate/unknown event arms later.
+  * Checker-side helpers (`lang2/checker/catch_arms.py`) currently enforce duplicate/unknown event arms; the driver collects HIR catch arms after normalization and feeds them into the checker along with an exception catalog. Future work is to attach real spans and a richer catalog from the front-end.
 * Unknown event names fall back to code `0`; throw/catch of the same unknown name still match, but the checker should eventually forbid unknown events.
 
 ## Invariants & type safety (current vs planned)
-* Enforced now (stage4 structural checks):
+* Enforced now:
   * Non–can-throw fns must not construct errors.
   * Can-throw fns must not have bare `return;`.
-  * Can-throw fns must return a value produced by `ConstructResultOk/Err` (structural; does not understand aliasing/forwarding yet).
-* Planned:
-  * Type-aware FnResult return check (`enforce_fnresult_returns_typeaware`) once SSA/type_env reach stage4.
+  * FnResult returns are enforced in two modes:
+    * **Structural (untyped/unit tests):** return value must be produced by `ConstructResultOk/Err` in the same function; aliasing/forwarding is rejected.
+    * **Type-aware (typed paths):** when SSA + `TypeEnv` are provided, only the returned SSA value’s type matters (`is_fnresult`/`fnresult_parts`); structural guard is skipped. See `lang2/types_protocol.py`, `lang2/types_env_impl.py`, and `lang2/stage4/tests/test_throw_checks_typeaware*.py`.
+* Planned/remaining work:
+  * Make typed paths the default once a real `TypeEnv` is available everywhere (structural guard becomes a fallback/debug check).
   * Checker-provided `declared_can_throw` map (derived from signatures / throws clauses) fed into `run_throw_checks` in the real driver. Tests use `FnSignature` + checker helpers (see `lang2/test_support`) rather than hard-coded bool maps.
-  * Checker-side catch-arm validation for duplicate/unknown events with user-facing diagnostics.
+  * Checker-side catch-arm validation is present in the stub; future work is to attach real spans and a front-end exception catalog.
 
 ## Known challenges / design choices
 * **Layering over monoliths:** Each stage has a clear public API; policy (throw checks) sits in stage4, not tangled with lowering.
@@ -58,6 +60,8 @@ Surface AST (stage0) ──> HIR (stage1) ──> MIR (stage2) ──> SSA (stag
 * **Unwinding vs return Err:** Current semantics keep unwinding within a function using the try stack; only top-level returns Err. Cross-function unwinding is a future design decision.
 * **Unknown events:** Mapped to code 0; acceptable for now but slated for checker rejection.
 * **Result-driven try sugar:** To be introduced as a desugaring pattern (`let tmp = fallible(); if tmp.is_err() { throw tmp.unwrap_err(); } let x = tmp.unwrap();`) in a checker/HIR rewrite when `?`/try-expression sugar arrives.
+* **Testing guidance:** Integration tests that need checker output/diagnostics should prefer the driver harness (`compile_stubbed_funcs(..., return_checked=True)`) and assert on the `CheckedProgram` (fn_infos, diagnostics, exception catalog). Direct `run_throw_checks(...)` calls are reserved for stage4 unit tests.
+* **TypeEnv shims:** `SimpleTypeEnv` (manual tagging) and `InferredTypeEnv/build_type_env_from_ssa` (infer FnResult types from SSA + signatures) exist for tests; a real checker/type system will eventually provide the canonical `TypeEnv`.
 
 ## How to run the staged tests
 * Default Just target: `just lang2-test` (runs `pytest` on stage2 + stage4 suites).

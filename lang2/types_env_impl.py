@@ -1,19 +1,30 @@
 # vim: set noexpandtab: -*- indent-tabs-mode: t -*-
 # author: Sławomir Liszniański; created: 2025-12-05
 """
-Simple testing implementation of the `TypeEnv` protocol.
+Simple testing implementations of the `TypeEnv` protocol.
 
-This is **not** a real type system. It exists solely to let tests exercise the
-type-aware FnResult checks in stage4 without pulling in a full checker/type
-environment. Callers can populate it with opaque type handles (strings, tuples,
-custom objects) and use the helpers to identify FnResult types.
+These are **not** real type systems. They exist solely to let tests exercise
+the type-aware FnResult checks in stage4 without pulling in a full
+checker/type environment. `SimpleTypeEnv` lets tests install arbitrary type
+handles; `InferredTypeEnv` can derive FnResult types from SSA + signatures.
 """
 
 from __future__ import annotations
 
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Mapping, Tuple
 
 from lang2.types_protocol import TypeEnv
+from lang2.stage4.ssa import SsaFunc
+from lang2.stage2 import (
+	AssignSSA,
+	Call,
+	ConstructResultErr,
+	ConstructResultOk,
+	LoadLocal,
+	MethodCall,
+	Phi,
+)
+from lang2.checker import FnSignature
 
 
 class SimpleTypeEnv(TypeEnv):
@@ -51,3 +62,100 @@ class SimpleTypeEnv(TypeEnv):
 			raise TypeError(f"fnresult_parts called on non-FnResult type {ty!r}")
 		ok_ty, err_ty = ty
 		return ok_ty, err_ty
+
+
+class InferredTypeEnv(TypeEnv):
+	"""
+	Best-effort TypeEnv built from SSA functions and (optional) signatures.
+
+	This recognizes FnResult values produced by ConstructResultOk/Err and by
+	function/method calls whose signatures return FnResult. AssignSSA copies and
+	Phi nodes propagate types when incoming values agree.
+	"""
+
+	def __init__(self, types: Mapping[tuple[str, str], Any]) -> None:
+		self._types: Dict[tuple[str, str], Any] = dict(types)
+
+	def type_of_ssa_value(self, func_name: str, value_id: str) -> Any:
+		"""Return the inferred type for an SSA value (raises KeyError if unknown)."""
+		return self._types[(func_name, value_id)]
+
+	def is_fnresult(self, ty: Any) -> bool:
+		return _is_fnresult_type(ty)
+
+	def fnresult_parts(self, ty: Any) -> Tuple[Any, Any]:
+		if isinstance(ty, tuple):
+			if len(ty) == 2:
+				return ty
+			if ty and ty[0] == "FnResult":
+				ok = ty[1] if len(ty) > 1 else None
+				err = ty[2] if len(ty) > 2 else None
+				return ok, err
+		# Strings or unknown shapes: treat as opaque FnResult parts.
+		return (None, None)
+
+
+def build_type_env_from_ssa(
+	ssa_funcs: Mapping[str, SsaFunc],
+	signatures: Mapping[str, FnSignature] | None = None,
+) -> InferredTypeEnv:
+	"""
+	Derive a TypeEnv from SSA functions and (optionally) known signatures.
+
+	Recognizes FnResult values produced by ConstructResultOk/Err and by calls
+	with FnResult return types. Propagates types through AssignSSA and simple
+	Phi nodes when incoming types agree.
+	"""
+	types: Dict[tuple[str, str], Any] = {}
+	sig_map = signatures or {}
+
+	for fname, ssa in ssa_funcs.items():
+		# First pass: direct defs and copies.
+		for block in ssa.func.blocks.values():
+			for instr in block.instructions:
+				if isinstance(instr, (ConstructResultOk, ConstructResultErr)):
+					types[(fname, instr.dest)] = ("FnResult", None, None)
+				elif isinstance(instr, Call) and instr.dest is not None:
+					sig = sig_map.get(instr.fn)
+					if sig is not None:
+						types[(fname, instr.dest)] = sig.return_type
+				elif isinstance(instr, MethodCall) and instr.dest is not None:
+					sig = sig_map.get(instr.method_name)
+					if sig is not None:
+						types[(fname, instr.dest)] = sig.return_type
+				elif isinstance(instr, AssignSSA):
+					src_ty = types.get((fname, instr.src))
+					if src_ty is not None:
+						types[(fname, instr.dest)] = src_ty
+				elif isinstance(instr, Phi):
+					incoming_tys = {types.get((fname, val)) for val in instr.incoming.values()}
+					incoming_tys.discard(None)
+					if len(incoming_tys) == 1:
+						types[(fname, instr.dest)] = incoming_tys.pop()
+
+		# Second pass: if the function's own return type is FnResult and a return
+		# value is missing a type, seed it from the signature.
+		fn_sig = sig_map.get(fname)
+		if fn_sig and _is_fnresult_type(fn_sig.return_type):
+			for block in ssa.func.blocks.values():
+				term = block.terminator
+				if hasattr(term, "value") and getattr(term, "value") is not None:
+					val = term.value
+					if (fname, val) not in types:
+						types[(fname, val)] = fn_sig.return_type
+
+	return InferredTypeEnv(types)
+
+
+def _is_fnresult_type(ty: Any) -> bool:
+	if isinstance(ty, str):
+		return "FnResult" in ty
+	if isinstance(ty, tuple):
+		if len(ty) == 2:
+			return True
+		if ty and ty[0] == "FnResult":
+			return True
+	return False
+
+
+__all__ = ["SimpleTypeEnv", "InferredTypeEnv", "build_type_env_from_ssa"]
