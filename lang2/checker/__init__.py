@@ -21,6 +21,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional, FrozenSet
 
+from lang2.types_protocol import TypeEnv
+
 
 @dataclass
 class FnInfo:
@@ -53,7 +55,7 @@ class CheckedProgram:
 	"""
 
 	fn_infos: Dict[str, FnInfo]
-	type_env: Optional[Any] = None
+	type_env: Optional[TypeEnv] = None
 	exception_catalog: Optional[Dict[str, int]] = None
 	diagnostics: List[Any] = None  # placeholder until Diagnostic is defined
 
@@ -79,6 +81,10 @@ class Checker:
 		for name in fn_decls:
 			fn_infos[name] = FnInfo(name=name, declared_can_throw=self._declared.get(name, False))
 
+		# TODO: real checker will:
+		#   - resolve signatures (FnResult/throws),
+		#   - collect catch arms per function and validate them against the exception catalog,
+		#   - build a concrete TypeEnv and diagnostics list.
 		# The real checker will attach type_env, diagnostics, and exception_catalog.
 		return CheckedProgram(
 			fn_infos=fn_infos,

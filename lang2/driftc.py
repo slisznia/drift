@@ -67,7 +67,13 @@ def compile_stubbed_funcs(
 	summaries = ThrowSummaryBuilder().build(mir_funcs, code_to_exc=exc_env or {})
 
 	# Stage4: throw checks
-	run_throw_checks(mir_funcs, summaries, declared)
+	run_throw_checks(
+		funcs=mir_funcs,
+		summaries=summaries,
+		declared_can_throw=declared,
+		type_env=checked.type_env,
+		ssa_funcs=None,
+	)
 
 	return mir_funcs
 
