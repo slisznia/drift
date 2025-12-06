@@ -110,7 +110,8 @@ def build_type_env_from_ssa(
 	sig_map = signatures or {}
 
 	for fname, ssa in ssa_funcs.items():
-		# First pass: direct defs and copies.
+		# First pass: recognize direct FnResult constructions, call results from
+		# known signatures, and propagate via AssignSSA/Phi when obvious.
 		for block in ssa.func.blocks.values():
 			for instr in block.instructions:
 				if isinstance(instr, (ConstructResultOk, ConstructResultErr)):
@@ -134,7 +135,8 @@ def build_type_env_from_ssa(
 						types[(fname, instr.dest)] = incoming_tys.pop()
 
 		# Second pass: if the function's own return type is FnResult and a return
-		# value is missing a type, seed it from the signature.
+		# value is missing a type, seed it from the signature so type-aware throw
+		# checks have something to work with even when inference failed.
 		fn_sig = sig_map.get(fname)
 		if fn_sig and _is_fnresult_type(fn_sig.return_type):
 			for block in ssa.func.blocks.values():

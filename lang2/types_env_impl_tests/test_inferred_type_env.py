@@ -17,10 +17,11 @@ from lang2.stage4 import MirToSSA, run_throw_checks
 from lang2.stage3 import ThrowSummaryBuilder
 from lang2.checker import FnSignature
 from lang2.test_support import declared_from_signatures, make_signatures
-from lang2.types_env_impl import build_type_env_from_ssa
+from lang2.types_env_impl import build_type_env_from_ssa, SimpleTypeEnv
 
 
 def _ssa_for_func(func: MirFunc):
+	"""Helper to SSA-ify a MIR func for these tests."""
 	return MirToSSA().run(func)
 
 
@@ -99,3 +100,41 @@ def test_inferred_type_env_uses_signatures_for_call_results():
 		ssa_funcs={"caller": ssa},
 		type_env=type_env,
 	)
+
+
+def test_typeaware_check_rejects_non_fnresult_type():
+	"""
+	Type-aware throw check should fail when the TypeEnv says return value is not FnResult.
+	"""
+	entry = BasicBlock(
+		name="entry",
+		instructions=[
+			ConstInt(dest="v0", value=1),
+			ConstructResultErr(dest="r0", error="v0"),
+		],
+		terminator=Return(value="r0"),
+	)
+	mir_func = MirFunc(
+		name="f_bad_type",
+		params=[],
+		locals=[],
+		blocks={"entry": entry},
+		entry="entry",
+	)
+	ssa = _ssa_for_func(mir_func)
+
+	# Deliberately tag return value as non-FnResult.
+	tenv = SimpleTypeEnv()
+	tenv.set_ssa_type("f_bad_type", "r0", "Int")
+
+	summaries = ThrowSummaryBuilder().build({"f_bad_type": mir_func}, code_to_exc={})
+	decl = declared_from_signatures(make_signatures({"f_bad_type": "FnResult<Int, Error>"}))
+
+	with pytest.raises(RuntimeError):
+		run_throw_checks(
+			{"f_bad_type": mir_func},
+			summaries,
+			declared_can_throw=decl,
+			ssa_funcs={"f_bad_type": ssa},
+			type_env=tenv,
+		)
