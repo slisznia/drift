@@ -1,8 +1,8 @@
 """
-LLVM IR end-to-end runner for lang2 codegen tests (clang-only).
+LLVM IR runner for lang2 codegen IR cases (clang-only).
 
-Each test case lives under `lang2/tests/codegen/<case>/` and should contain:
-  - main.drift (or a placeholder when parser/front-end are stubbed)
+Each test case lives under `lang2/codegen/ir_cases/<case>/` and should contain:
+  - main.drift (or a placeholder when parser/front-end are stubbed; currently unused)
   - expected.json with at least:
       {
         "exit_code": <int>,
@@ -33,7 +33,7 @@ BUILD_ROOT = ROOT / "build" / "tests" / "lang2"
 
 def _run_case(case_dir: Path) -> str:
 	"""
-	Run a single codegen e2e case:
+Run a single codegen IR case:
 	  1) use the prebuilt LLVM IR file under case_dir/ir.ll (for now),
 	  2) compile it with clang, run the binary,
 	  3) compare exit/stdout/stderr to expected.json.
@@ -86,15 +86,15 @@ def _run_case(case_dir: Path) -> str:
 
 
 def main(argv: Iterable[str] | None = None) -> int:
-	ap = argparse.ArgumentParser(description="Run lang2 codegen e2e tests (lli-based)")
+	ap = argparse.ArgumentParser(description="Run lang2 codegen IR cases (clang-based)")
 	ap.add_argument(
 		"cases",
 		nargs="*",
-		help="Specific test case names to run (directories under lang2/tests/codegen)",
+		help="Specific test case names to run (directories under lang2/codegen/ir_cases)",
 	)
 	args = ap.parse_args(argv)
 
-	case_dirs = sorted((ROOT / "lang2" / "tests" / "codegen").iterdir())
+	case_dirs = sorted((ROOT / "lang2" / "codegen" / "ir_cases").iterdir())
 	if args.cases:
 		names = set(args.cases)
 		case_dirs = [d for d in case_dirs if d.name in names]

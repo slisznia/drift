@@ -57,7 +57,7 @@ parse-examples:
 	./.venv/bin/python3 tools/draft_linter.py examples
 
 # Lang2 staged compiler tests
-lang2-test: lang2-stage1-test lang2-stage2-test lang2-stage3-test lang2-stage4-test lang2-llvm-test lang2-codegen-test
+lang2-test: lang2-stage1-test lang2-stage2-test lang2-stage3-test lang2-stage4-test lang2-core-test lang2-driver-test lang2-llvm-test lang2-codegen-test
 	@echo "lang2 tests: Success."
 
 lang2-stage1-test:
@@ -92,6 +92,24 @@ lang2-stage4-test:
 	fi
 	PYTHONPATH=. ./.venv/bin/python3 -m pytest -v lang2/stage4/tests
 
+# Core TypeEnv/TypeTable tests.
+lang2-core-test:
+	# Ensure pytest is available in the venv
+	if ! ./.venv/bin/python3 -m pytest --version >/dev/null 2>&1; then \
+	  echo "pytest is missing in .venv; please install it (e.g., .venv/bin/python3 -m pip install pytest)"; \
+	  exit 1; \
+	fi
+	PYTHONPATH=. ./.venv/bin/python3 -m pytest -v lang2/core/tests
+
+# Driver/integration tests (driftc pipeline, try sugar, declared events).
+lang2-driver-test:
+	# Ensure pytest is available in the venv
+	if ! ./.venv/bin/python3 -m pytest --version >/dev/null 2>&1; then \
+	  echo "pytest is missing in .venv; please install it (e.g., .venv/bin/python3 -m pip install pytest)"; \
+	  exit 1; \
+	fi
+	PYTHONPATH=. ./.venv/bin/python3 -m pytest -v lang2/driver/tests
+
 # Basic LLVM codegen smoke test (llvmlite), kept separate from pytest collection.
 lang2-llvm-test:
 	./.venv/bin/python3 tools/test-llvm/test_codegen.py /tmp/lang2_test_codegen.o
@@ -106,8 +124,8 @@ lang2-codegen-test:
 	# Clean codegen artifacts to keep cases isolated between runs.
 	rm -rf build/tests/lang2
 	PYTHONPATH=. ./.venv/bin/python3 -m pytest -v lang2/codegen/tests
-	# Run clang-based e2e cases (per-case dirs under lang2/tests/codegen).
-	PYTHONPATH=. ./.venv/bin/python3 lang2/tests/codegen/e2e_runner.py
+	# Run clang-based IR cases (per-case dirs under lang2/codegen/ir_cases).
+	PYTHONPATH=. ./.venv/bin/python3 lang2/codegen/ir_cases/e2e_runner.py
 
 stage-for-review:
 	rm -rf staged
