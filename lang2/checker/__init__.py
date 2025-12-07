@@ -36,14 +36,21 @@ class FnSignature:
 	"""
 	Placeholder function signature used by the stub checker.
 
-	Only `name`, `return_type`, and optional `throws_events` are represented.
-	The real checker will replace this with its own type-checked signature
+	Only `name`, `return_type`, and optional `throws_events` are represented,
+	with placeholders for resolved TypeIds, param types, and throws flags. The
+	real checker will replace this with its own type-checked signature
 	structure.
 	"""
 
 	name: str
 	return_type: Any
 	throws_events: Tuple[str, ...] = ()
+	param_types: Optional[list[Any]] = None  # raw param type shapes (strings/tuples)
+	param_type_ids: Optional[list[TypeId]] = None  # resolved param TypeIds
+	loc: Optional[Any] = None
+	declared_can_throw: Optional[bool] = None
+	is_extern: bool = False
+	is_intrinsic: bool = False
 	return_type_id: Optional[TypeId] = None  # resolved TypeId (checker-owned)
 	error_type_id: Optional[TypeId] = None   # resolved error TypeId
 
@@ -60,6 +67,8 @@ class FnInfo:
 
 	name: str
 	declared_can_throw: bool
+	signature: Optional[FnSignature] = None
+	inferred_may_throw: bool = False
 
 	# Optional fields reserved for the real checker; left as None here.
 	declared_events: Optional[FrozenSet[str]] = None
@@ -151,8 +160,13 @@ class Checker:
 				return_type_id, error_type_id = self._resolve_signature_types(sig)
 				sig.return_type_id = return_type_id
 				sig.error_type_id = error_type_id
+				sig.param_type_ids = self._resolve_param_types(sig)
 				if declared_events is None and sig.throws_events:
 					declared_events = frozenset(sig.throws_events)
+				if sig.declared_can_throw is None and sig.throws_events:
+					sig.declared_can_throw = True
+				if sig.declared_can_throw is not None:
+					declared_can_throw = sig.declared_can_throw
 
 			if declared_can_throw is None:
 				if sig is not None:
@@ -167,6 +181,7 @@ class Checker:
 			fn_infos[name] = FnInfo(
 				name=name,
 				declared_can_throw=declared_can_throw,
+				signature=sig,
 				declared_events=declared_events,
 				return_type=return_type,
 				return_type_id=return_type_id,
@@ -217,6 +232,26 @@ class Checker:
 		#   - collect catch arms per function and validate them against the exception catalog,
 		#   - build a concrete TypeEnv and diagnostics list.
 		# The real checker will attach type_env, diagnostics, and exception_catalog.
+
+		# Best-effort inferred throw detection: walk HIR to see if any throw or
+		# call to a throwing function exists. This is deliberately shallow and
+		# treats any throw/call as making the function may-throw; context (try
+		# coverage) is not considered in this stub.
+		for fn_name, hir_block in self._hir_blocks.items():
+			info = fn_infos.get(fn_name)
+			if info is None:
+				continue
+			if self._function_may_throw(hir_block, fn_infos):
+				info.inferred_may_throw = True
+				if not info.declared_can_throw:
+					diagnostics.append(
+						Diagnostic(
+							message=f"function {fn_name} may throw but is not declared throws",
+							severity="error",
+							span=None,
+						)
+					)
+
 		return CheckedProgram(
 			fn_infos=fn_infos,
 			type_table=self._type_table,
@@ -224,6 +259,101 @@ class Checker:
 			exception_catalog=self._exception_catalog,
 			diagnostics=diagnostics,
 		)
+
+	def _call_may_throw(self, callee_name: str, fn_infos: Mapping[str, FnInfo]) -> bool:
+		"""Determine if a call to `callee_name` may throw, based on FnInfo."""
+		info = fn_infos.get(callee_name)
+		if info is None:
+			return False
+		# Prefer explicit declared_can_throw; fall back to inferred flag.
+		if info.declared_can_throw:
+			return True
+		return info.inferred_may_throw
+
+	def _function_may_throw(self, block: "H.HBlock", fn_infos: Mapping[str, FnInfo]) -> bool:  # type: ignore[name-defined]
+		"""
+		Walk a HIR block and conservatively decide if it may throw.
+
+		Any `HThrow` or call to a function marked can-throw sets the flag. This is
+		context-insensitive: try/catch coverage is ignored in this stub.
+		"""
+		from lang2 import stage1 as H
+
+		may_throw = False
+
+		def walk_expr(expr: H.HExpr) -> None:
+			nonlocal may_throw
+			if isinstance(expr, H.HCall):
+				if isinstance(expr.fn, H.HVar):
+					if self._call_may_throw(expr.fn.name, fn_infos):
+						may_throw = True
+				for arg in expr.args:
+					walk_expr(arg)
+			elif isinstance(expr, H.HMethodCall):
+				# Without method resolution, treat as non-throwing unless receiver
+				# or args contain throws.
+				walk_expr(expr.receiver)
+				for arg in expr.args:
+					walk_expr(arg)
+			elif isinstance(expr, H.HTryResult):
+				walk_expr(expr.expr)
+			elif isinstance(expr, H.HResultOk):
+				walk_expr(expr.value)
+			elif isinstance(expr, H.HBinary):
+				walk_expr(expr.left)
+				walk_expr(expr.right)
+			elif isinstance(expr, H.HUnary):
+				walk_expr(expr.expr)
+			elif isinstance(expr, H.HTernary):
+				walk_expr(expr.cond)
+				walk_expr(expr.then_expr)
+				walk_expr(expr.else_expr)
+			elif isinstance(expr, H.HField):
+				walk_expr(expr.subject)
+			elif isinstance(expr, H.HIndex):
+				walk_expr(expr.subject)
+				walk_expr(expr.index)
+			elif isinstance(expr, H.HDVInit):
+				for a in expr.args:
+					walk_expr(a)
+			# literals/vars are leaf nodes
+
+		def walk_block(b: H.HBlock) -> None:
+			nonlocal may_throw
+			for stmt in b.statements:
+				if isinstance(stmt, H.HThrow):
+					may_throw = True
+					continue
+				if isinstance(stmt, H.HTry):
+					walk_block(stmt.body)
+					for arm in stmt.catches:
+						walk_block(arm.block)
+					continue
+				if isinstance(stmt, H.HReturn) and stmt.value is not None:
+					walk_expr(stmt.value)
+					continue
+				if isinstance(stmt, H.HLet):
+					walk_expr(stmt.value)
+					continue
+				if isinstance(stmt, H.HAssign):
+					walk_expr(stmt.value)
+					continue
+				if isinstance(stmt, H.HIf):
+					walk_expr(stmt.cond)
+					walk_block(stmt.then_block)
+					if stmt.else_block:
+						walk_block(stmt.else_block)
+					continue
+				if isinstance(stmt, H.HLoop):
+					walk_block(stmt.body)
+					continue
+				if isinstance(stmt, H.HExprStmt):
+					walk_expr(stmt.value)
+					continue
+				# other statements: continue
+
+		walk_block(block)
+		return may_throw
 
 	def _is_fnresult_return(self, return_type: Any) -> bool:
 		"""
@@ -272,6 +402,20 @@ class Checker:
 				return self._type_table.new_fnresult(ok, err), err
 		# Fallback unknown
 		return self._type_table.new_unknown("UnknownReturn"), None
+
+	def _resolve_param_types(self, sig: FnSignature) -> Optional[list[TypeId]]:
+		"""
+		Map raw param type shapes (strings/tuples) to TypeIds using the TypeTable.
+
+		Returns None if the signature did not supply param types; otherwise returns
+		a list of TypeIds (one per param).
+		"""
+		if sig.param_types is None:
+			return None
+		resolved: list[TypeId] = []
+		for p in sig.param_types:
+			resolved.append(self._map_opaque(p))
+		return resolved
 
 	def _map_opaque(self, val: Any) -> TypeId:
 		"""Naively map an opaque return component into a TypeId."""
