@@ -56,3 +56,16 @@ fn drift_main() returns Int {
 	assert isinstance(main.statements[0], H.HReturn)
 	# ns.Ok should not be rewritten to HResultOk (attr call stays a normal call)
 	assert isinstance(main.statements[0].value, (H.HCall, H.HMethodCall))
+
+
+def test_parse_throw_stmt(tmp_path: Path):
+	src = tmp_path / "main.drift"
+	src.write_text("""
+fn drift_main() returns FnResult<Int, Error> {
+    throw err_val;
+}
+""")
+	func_hirs, sigs = parse_drift_to_hir(src)
+	assert sigs["drift_main"].return_type.startswith("FnResult")
+	main = func_hirs["drift_main"]
+	assert isinstance(main.statements[0], H.HThrow)

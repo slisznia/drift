@@ -346,7 +346,10 @@ class AstToHIR:
 
 	def _visit_stmt_ThrowStmt(self, stmt: ast.ThrowStmt) -> H.HStmt:
 		"""Lower throw statement to HThrow; semantics are implemented in later stages."""
-		value_h = self.lower_expr(stmt.value)
+		# stage0 ThrowStmt uses .expr (parser path) while some tests still build
+		# ThrowStmt with a .value field; handle both defensively.
+		expr = getattr(stmt, "expr", None) or getattr(stmt, "value")
+		value_h = self.lower_expr(expr)
 		return H.HThrow(value=value_h)
 
 	def _visit_stmt_RaiseStmt(self, stmt: ast.RaiseStmt) -> H.HStmt:

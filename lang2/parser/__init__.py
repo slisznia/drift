@@ -28,19 +28,19 @@ def _type_expr_to_str(typ: parser_ast.TypeExpr) -> str:
 def _convert_expr(expr: parser_ast.Expr) -> s0.Expr:
 	"""Convert parser AST expressions into lang2.stage0 AST expressions."""
 	if isinstance(expr, parser_ast.Literal):
-		return s0.Literal(value=expr.value)
+		return s0.Literal(value=expr.value, loc=getattr(expr, "loc", None))
 	if isinstance(expr, parser_ast.Name):
-		return s0.Name(ident=expr.ident)
+		return s0.Name(ident=expr.ident, loc=getattr(expr, "loc", None))
 	if isinstance(expr, parser_ast.Call):
-		return s0.Call(func=_convert_expr(expr.func), args=[_convert_expr(a) for a in expr.args], kwargs=[], loc=None)
+		return s0.Call(func=_convert_expr(expr.func), args=[_convert_expr(a) for a in expr.args], kwargs=[], loc=getattr(expr, "loc", None))
 	if isinstance(expr, parser_ast.Attr):
-		return s0.Attr(value=_convert_expr(expr.value), attr=expr.attr)
+		return s0.Attr(value=_convert_expr(expr.value), attr=expr.attr, loc=getattr(expr, "loc", None))
 	if isinstance(expr, parser_ast.Index):
-		return s0.Index(value=_convert_expr(expr.value), index=_convert_expr(expr.index))
+		return s0.Index(value=_convert_expr(expr.value), index=_convert_expr(expr.index), loc=getattr(expr, "loc", None))
 	if isinstance(expr, parser_ast.Binary):
-		return s0.Binary(op=expr.op, left=_convert_expr(expr.left), right=_convert_expr(expr.right))
+		return s0.Binary(op=expr.op, left=_convert_expr(expr.left), right=_convert_expr(expr.right), loc=getattr(expr, "loc", None))
 	if isinstance(expr, parser_ast.Unary):
-		return s0.Unary(op=expr.op, operand=_convert_expr(expr.operand))
+		return s0.Unary(op=expr.op, operand=_convert_expr(expr.operand), loc=getattr(expr, "loc", None))
 	if isinstance(expr, parser_ast.Move):
 		return _convert_expr(expr.value)
 	raise NotImplementedError(f"Unsupported expression in adapter: {expr!r}")
