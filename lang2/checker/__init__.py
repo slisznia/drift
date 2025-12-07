@@ -172,6 +172,36 @@ class Checker:
 				error_type_id=error_type_id,
 			)
 
+			# Consistency check: declared_can_throw should align with the resolved
+			# return type shape. This guards legacy bool-map overrides from drifting
+			# away from signature intent.
+			if declared_can_throw and return_type_id is not None:
+				td = self._type_table.get(return_type_id)
+				if td.kind is not TypeKind.FNRESULT:
+					diagnostics.append(
+						Diagnostic(
+							message=(
+								f"function {name} is marked can-throw but return type {td.name!r} "
+								f"is not FnResult"
+							),
+							severity="error",
+							span=None,
+						)
+					)
+			if not declared_can_throw and return_type_id is not None:
+				td = self._type_table.get(return_type_id)
+				if td.kind is TypeKind.FNRESULT:
+					diagnostics.append(
+						Diagnostic(
+							message=(
+								f"function {name} returns FnResult but is not declared can-throw; "
+								f"use FnResult return or mark throws accordingly"
+							),
+							severity="error",
+							span=None,
+						)
+					)
+
 		# Validate result-driven try sugar operands when HIR is available. This is
 		# intentionally conservative: only known FnResult-returning calls are
 		# accepted; everything else produces a diagnostic so that non-FnResult
@@ -378,6 +408,7 @@ class Checker:
 			ConstInt,
 			ConstBool,
 			ConstString,
+			ConstructError,
 			AssignSSA,
 			Phi,
 			UnaryOpInstr,
@@ -436,6 +467,10 @@ class Checker:
 							if value_types.get((fn_name, dest)) != dest_ty:
 								value_types[(fn_name, dest)] = dest_ty
 								changed = True
+						elif isinstance(instr, ConstructError) and dest is not None:
+							if value_types.get((fn_name, dest)) != self._error_type:
+								value_types[(fn_name, dest)] = self._error_type
+								changed = True
 						elif isinstance(instr, Call) and dest is not None:
 							callee_sig = signatures.get(instr.fn)
 							if callee_sig is not None:
@@ -450,15 +485,28 @@ class Checker:
 								value_types[(fn_name, dest)] = dest_ty
 								changed = True
 						elif isinstance(instr, MethodCall) and dest is not None:
-							callee_sig = signatures.get(instr.method_name)
-							if callee_sig is not None:
-								if callee_sig.return_type_id is None:
-									rt_id, err_id = self._resolve_signature_types(callee_sig)
-									callee_sig.return_type_id = rt_id
-									callee_sig.error_type_id = err_id
-								dest_ty = callee_sig.return_type_id or self._unknown_type
+							# Intrinsic methods on FnResult: unwrap/unwrap_err/is_err
+							recv_ty = value_types.get((fn_name, instr.receiver))
+							if recv_ty is not None and self._type_table.get(recv_ty).kind is TypeKind.FNRESULT:
+								ok_ty, err_ty = self._type_table.get(recv_ty).param_types
+								if instr.method_name == "unwrap":
+									dest_ty = ok_ty
+								elif instr.method_name == "unwrap_err":
+									dest_ty = err_ty
+								elif instr.method_name == "is_err":
+									dest_ty = self._bool_type
+								else:
+									dest_ty = self._unknown_type
 							else:
-								dest_ty = self._unknown_type
+								callee_sig = signatures.get(instr.method_name)
+								if callee_sig is not None:
+									if callee_sig.return_type_id is None:
+										rt_id, err_id = self._resolve_signature_types(callee_sig)
+										callee_sig.return_type_id = rt_id
+										callee_sig.error_type_id = err_id
+									dest_ty = callee_sig.return_type_id or self._unknown_type
+								else:
+									dest_ty = self._unknown_type
 							if value_types.get((fn_name, dest)) != dest_ty:
 								value_types[(fn_name, dest)] = dest_ty
 								changed = True

@@ -142,6 +142,19 @@ class HTryResult(HExpr):
 
 
 @dataclass
+class HResultOk(HExpr):
+	"""
+	Wrap a value into FnResult.Ok for explicit can-throw returns.
+
+	This is a lightweight node so tests/pipeline code can express returning
+	a FnResult without hand-coding MIR ops. Lowering turns this into
+	ConstructResultOk(dest, value).
+	"""
+
+	value: HExpr
+
+
+@dataclass
 class HThrow(HStmt):
 	"""Throw an error/exception value. Semantically returns Err from this function."""
 	value: HExpr

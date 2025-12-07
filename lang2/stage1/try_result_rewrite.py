@@ -163,6 +163,9 @@ class TryResultRewriter:
 			pfx_t, then = self._rewrite_expr(expr.then_expr)
 			pfx_e, els = self._rewrite_expr(expr.else_expr)
 			return pfx_c + pfx_t + pfx_e, H.HTernary(cond=cond, then_expr=then, else_expr=els)
+		if isinstance(expr, H.HResultOk):
+			pfx, inner = self._rewrite_expr(expr.value)
+			return pfx, H.HResultOk(value=inner)
 		if isinstance(expr, H.HDVInit):
 			new_args: List[H.HExpr] = []
 			pfx: List[H.HStmt] = []
