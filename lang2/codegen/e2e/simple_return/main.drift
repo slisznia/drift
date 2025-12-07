@@ -1,0 +1,3 @@
+fn drift_main() returns Int {
+    return 42;
+}
