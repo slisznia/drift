@@ -31,6 +31,7 @@ from lang2.stage4 import MirToSSA
 from lang2.checker import Checker, CheckedProgram, FnSignature
 from lang2.checker.catch_arms import CatchArmInfo
 from lang2.core.diagnostics import Diagnostic
+from lang2.core.types_core import TypeTable
 from lang2.codegen.llvm import lower_module_to_llvm
 from lang2.type_resolver import resolve_program_signatures
 
@@ -43,6 +44,7 @@ def compile_stubbed_funcs(
 	return_checked: bool = False,
 	build_ssa: bool = False,
 	return_ssa: bool = False,
+	type_table: "TypeTable | None" = None,
 ) -> (
 	Dict[str, M.MirFunc]
 	| tuple[Dict[str, M.MirFunc], CheckedProgram]
@@ -94,9 +96,9 @@ def compile_stubbed_funcs(
 			catch_arms_map[name] = arms
 
 	# If no signatures were supplied, resolve basic signatures from normalized HIR.
-	type_table = None
+	shared_type_table = type_table
 	if signatures is None:
-		type_table, signatures = resolve_program_signatures(_fake_decls_from_hirs(normalized_hirs))
+		shared_type_table, signatures = resolve_program_signatures(_fake_decls_from_hirs(normalized_hirs))
 
 	# Stage “checker”: obtain declared_can_throw from the checker stub so the
 	# driver path mirrors the real compiler layering once a proper checker exists.
@@ -106,7 +108,7 @@ def compile_stubbed_funcs(
 		exception_catalog=exc_env,
 		catch_arms=catch_arms_map,
 		hir_blocks=func_hirs,
-		type_table=type_table,
+		type_table=shared_type_table,
 	)
 	checked = checker.check(func_hirs.keys())
 	declared = {name: info.declared_can_throw for name, info in checked.fn_infos.items()}
@@ -160,6 +162,7 @@ def compile_to_llvm_ir_for_tests(
 	signatures: Mapping[str, FnSignature],
 	exc_env: Mapping[str, int] | None = None,
 	entry: str = "drift_main",
+	type_table: "TypeTable | None" = None,
 ) -> tuple[str, CheckedProgram]:
 	"""
 	End-to-end helper: HIR -> MIR -> throw checks -> SSA -> LLVM IR for tests.
@@ -177,6 +180,7 @@ def compile_to_llvm_ir_for_tests(
 		return_checked=True,
 		build_ssa=True,
 		return_ssa=True,
+		type_table=type_table,
 	)
 
 	# Lower module to LLVM IR and append the OS entry wrapper.

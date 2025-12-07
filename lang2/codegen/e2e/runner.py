@@ -69,7 +69,7 @@ def _run_case(case_dir: Path) -> str:
 		return "skipped (missing expected.json or main.drift)"
 
 	expected = json.loads(expected_path.read_text())
-	func_hirs, signatures = parse_drift_to_hir(source_path)
+	func_hirs, signatures, type_table = parse_drift_to_hir(source_path)
 	# For now assume entry is drift_main when present, else first function.
 	entry = "drift_main" if "drift_main" in func_hirs else next(iter(func_hirs))
 
@@ -77,6 +77,7 @@ def _run_case(case_dir: Path) -> str:
 		func_hirs=func_hirs,
 		signatures=signatures,
 		entry=entry,
+		type_table=type_table,
 	)
 
 	build_dir = BUILD_ROOT / case_dir.name

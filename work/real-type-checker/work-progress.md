@@ -11,14 +11,16 @@ Replace the legacy string/tuple/type-guess shims with a real front-end type chec
 
 ### Planned work
 1. **Minimal type resolver** ✅
-   - Added `lang2/type_resolver.py` to resolve declared types (`Int`, `Bool`, `String`, `Error`, `FnResult<...>`) into a shared `TypeTable` and build `FnSignature` with `param_type_ids`, `return_type_id`, `declared_can_throw`, `loc`, flags. Raw fields remain for legacy/tests.
+   - Added `lang2/type_resolver.py` to resolve declared types (`Int`, `Bool`, `String`, `Error`, `FnResult<...>`) into a shared `TypeTable` and build `FnSignature` with `param_type_ids`, `return_type_id`, `declared_can_throw`, `loc`, flags. Raw fields remain for legacy/tests. Parser adapter now builds decls from `FunctionDef` (params/return) and feeds them into the resolver; auto-resolution is used when no signatures are supplied.
 
 2. **Driver integration** ✅ (stub)
    - `compile_stubbed_funcs` now calls the resolver (using a fake decl shim) when no signatures are supplied, so tests get TypeIds without hand-built signatures. A real front end should supply decls with parsed types/throws.
+   - The shared `TypeTable` from the resolver (or caller) is threaded into `Checker` even when signatures are provided, so `TypeId`/`TypeKind` queries stay coherent end-to-end.
 
-3. **Checker consumption** ⏳
+3. **Checker consumption** ✅ (core plumbing)
    - Prefers TypeIds in signatures; falls back only when missing. Try-sugar checks use TypeIds. `_is_fnresult_return` still exists as a legacy fallback until all callers supply TypeIds.
-   - Helper `check_call_signature` added (not yet wired) to enforce arity/type via `FnInfo.signature` + TypeIds.
+   - Helper `check_call_signature` added; HIR walk enforces call arity for plain calls via `FnInfo.signature`. Arg type checks are deferred until expression typing exists.
+   - `parse_drift_to_hir` now returns the shared `TypeTable` so Drift-source paths can thread it into `Checker`, keeping TypeId/TypeKind coherent.
 
 4. **Call/arity/type checks**
    - Add a `check_call` helper that consults `FnInfo.signature` + `TypeTable` to enforce arity, set call result types, and mark throwing calls. Wire this into the appropriate pass once expression typing is available.

@@ -115,10 +115,47 @@ def _convert_block(block: parser_ast.Block) -> list[s0.Stmt]:
 	return [_convert_stmt(s) for s in block.statements]
 
 
-def parse_drift_to_hir(path: Path) -> Tuple[Dict[str, H.HBlock], Dict[str, FnSignature]]:
-	"""Parse a Drift source file into lang2 HIR blocks + FnSignatures."""
+def _decls_from_parser_program(prog: parser_ast.Module) -> list[object]:
+	"""
+	Build decl-like objects from parser AST FunctionDef nodes so downstream
+	resolvers can construct FnSignatures with real param/return types.
+	"""
+	decls: list[object] = []
+
+	class _FrontendParam:
+		def __init__(self, name: str, type_expr: parser_ast.TypeExpr, loc: Optional[parser_ast.Located]) -> None:
+			self.name = name
+			self.type = _type_expr_to_str(type_expr)
+			self.loc = loc
+
+	class _FrontendDecl:
+		def __init__(
+			self,
+			name: str,
+			params: list[_FrontendParam],
+			return_type: str,
+			loc: Optional[parser_ast.Located],
+		) -> None:
+			self.name = name
+			self.params = params
+			self.return_type = return_type
+			self.throws = ()
+			self.loc = loc
+			self.is_extern = False
+			self.is_intrinsic = False
+
+	for fn in prog.functions:
+		params = [_FrontendParam(p.name, p.type_expr, getattr(p, "loc", None)) for p in fn.params]
+		ret_str = _type_expr_to_str(fn.return_type)
+		decls.append(_FrontendDecl(fn.name, params, ret_str, getattr(fn, "loc", None)))
+	return decls
+
+
+def parse_drift_to_hir(path: Path) -> Tuple[Dict[str, H.HBlock], Dict[str, FnSignature], "TypeTable"]:
+	"""Parse a Drift source file into lang2 HIR blocks + FnSignatures + TypeTable."""
 	source = path.read_text()
 	prog = _parser.parse_program(source)
+	decls = _decls_from_parser_program(prog)
 	func_hirs: Dict[str, H.HBlock] = {}
 	signatures: Dict[str, FnSignature] = {}
 	lowerer = AstToHIR()
@@ -126,9 +163,12 @@ def parse_drift_to_hir(path: Path) -> Tuple[Dict[str, H.HBlock], Dict[str, FnSig
 		stmt_block = _convert_block(fn.body)
 		hir_block = lowerer.lower_block(stmt_block)
 		func_hirs[fn.name] = hir_block
-		ret_str = _type_expr_to_str(fn.return_type)
-		signatures[fn.name] = FnSignature(name=fn.name, return_type=ret_str)
-	return func_hirs, signatures
+	# Build signatures with resolved TypeIds from parser decls.
+	from lang2.type_resolver import resolve_program_signatures
+
+	type_table, sigs = resolve_program_signatures(decls)
+	signatures.update(sigs)
+	return func_hirs, signatures, type_table
 
 
 __all__ = ["parse_drift_to_hir"]

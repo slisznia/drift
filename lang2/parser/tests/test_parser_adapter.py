@@ -12,7 +12,7 @@ fn drift_main() returns Int {
     return 42;
 }
 """)
-	func_hirs, sigs = parse_drift_to_hir(src)
+	func_hirs, sigs, _type_table = parse_drift_to_hir(src)
 	assert set(func_hirs.keys()) == {"drift_main"}
 	assert sigs["drift_main"].return_type == "Int"
 	block = func_hirs["drift_main"]
@@ -31,7 +31,7 @@ fn drift_main() returns Int {
     return callee();
 }
 """)
-	func_hirs, sigs = parse_drift_to_hir(src)
+	func_hirs, sigs, _type_table = parse_drift_to_hir(src)
 	assert set(func_hirs.keys()) == {"callee", "drift_main"}
 	assert sigs["callee"].return_type.startswith("FnResult")
 	assert sigs["drift_main"].return_type == "Int"
@@ -50,7 +50,7 @@ fn drift_main() returns Int {
     return ns.Ok(1);
 }
 """)
-	func_hirs, sigs = parse_drift_to_hir(src)
+	func_hirs, sigs, _type_table = parse_drift_to_hir(src)
 	assert set(func_hirs.keys()) == {"drift_main"}
 	assert sigs["drift_main"].return_type == "Int"
 	main = func_hirs["drift_main"]
@@ -66,7 +66,7 @@ fn drift_main() returns FnResult<Int, Error> {
     throw err_val;
 }
 """)
-	func_hirs, sigs = parse_drift_to_hir(src)
+	func_hirs, sigs, _type_table = parse_drift_to_hir(src)
 	assert sigs["drift_main"].return_type.startswith("FnResult")
 	main = func_hirs["drift_main"]
 	assert isinstance(main.statements[0], H.HThrow)
@@ -79,7 +79,7 @@ fn drift_main() returns FnResult<Int, Error> {
     raise err_val;
 }
 """)
-	func_hirs, sigs = parse_drift_to_hir(src)
+	func_hirs, sigs, _type_table = parse_drift_to_hir(src)
 	assert sigs["drift_main"].return_type.startswith("FnResult")
 	main = func_hirs["drift_main"]
 	assert len(main.statements) == 1
