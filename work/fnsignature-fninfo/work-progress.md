@@ -2,13 +2,12 @@
 
 ### Current state
 - `FnSignature` scaffold now includes placeholders for:
-  - `name`, `return_type`, `throws_events`
-  - optional `param_types` (raw shapes), `param_type_ids` (resolved via TypeTable)
-  - `declared_can_throw` flag, `loc`, `is_extern`, `is_intrinsic`
-  - resolved `return_type_id` / `error_type_id`
+-  - canonical TypeId fields: `param_type_ids`, `return_type_id`, `declared_can_throw`, `loc`, `is_extern`, `is_intrinsic`, `error_type_id`
+-  - legacy/raw fields remain (`return_type`, `param_types`, `throws_events`) but are secondary.
 - `FnInfo` now owns an optional `signature` and an `inferred_may_throw` flag; legacy fields remain for backward compatibility.
-- Checker respects `signature.declared_can_throw` when provided, resolves return/param types via TypeTable, and threads the signature into `FnInfo`.
+- Checker prefers pre-resolved TypeIds in signatures; falls back to legacy string/tuple resolution only when ids are missing. `signature.declared_can_throw` overrides heuristics; throws_events default `declared_can_throw` to True when present.
 - Best-effort “may throw” marking: the checker can walk provided HIR blocks, mark `FnInfo.inferred_may_throw` when it sees throws/throwing calls, and emit a diagnostic if a may-throw function is not declared throws (stub-level, context-insensitive).
+- Try-sugar validation now inspects `signature.return_type_id` via TypeTable to decide if an operand is FnResult.
 - Tests remain green (`just lang2-test`).
 
 ### Pending/next steps

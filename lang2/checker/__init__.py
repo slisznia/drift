@@ -39,20 +39,25 @@ class FnSignature:
 	Only `name`, `return_type`, and optional `throws_events` are represented,
 	with placeholders for resolved TypeIds, param types, and throws flags. The
 	real checker will replace this with its own type-checked signature
-	structure.
+	structure. The TypeId fields are the canonical ones; the raw fields exist
+	only for legacy/test scaffolding.
 	"""
 
 	name: str
-	return_type: Any
-	throws_events: Tuple[str, ...] = ()
-	param_types: Optional[list[Any]] = None  # raw param type shapes (strings/tuples)
-	param_type_ids: Optional[list[TypeId]] = None  # resolved param TypeIds
 	loc: Optional[Any] = None
+
+	# Canonical, type-checked fields (preferred).
+	param_type_ids: Optional[list[TypeId]] = None
+	return_type_id: Optional[TypeId] = None
 	declared_can_throw: Optional[bool] = None
 	is_extern: bool = False
 	is_intrinsic: bool = False
-	return_type_id: Optional[TypeId] = None  # resolved TypeId (checker-owned)
-	error_type_id: Optional[TypeId] = None   # resolved error TypeId
+	error_type_id: Optional[TypeId] = None  # resolved error TypeId
+
+	# Legacy/raw fields (to be removed once real type checker is wired).
+	return_type: Any = None
+	throws_events: Tuple[str, ...] = ()
+	param_types: Optional[list[Any]] = None  # raw param type shapes (strings/tuples)
 
 
 @dataclass
@@ -156,11 +161,20 @@ class Checker:
 
 			if sig is not None:
 				declared_events = frozenset(sig.throws_events) if sig.throws_events else None
+				# Prefer pre-resolved TypeIds if supplied; fall back to legacy resolution.
+				if sig.return_type_id is None or sig.error_type_id is None:
+					return_type_id, error_type_id = self._resolve_signature_types(sig)
+					sig.return_type_id = return_type_id
+					sig.error_type_id = error_type_id
+				else:
+					return_type_id = sig.return_type_id
+					error_type_id = sig.error_type_id
+
+				if sig.param_type_ids is None:
+					sig.param_type_ids = self._resolve_param_types(sig)
+
+				# Keep legacy/raw fields for backward compatibility.
 				return_type = sig.return_type
-				return_type_id, error_type_id = self._resolve_signature_types(sig)
-				sig.return_type_id = return_type_id
-				sig.error_type_id = error_type_id
-				sig.param_type_ids = self._resolve_param_types(sig)
 				if declared_events is None and sig.throws_events:
 					declared_events = frozenset(sig.throws_events)
 				if sig.declared_can_throw is None and sig.throws_events:
@@ -183,7 +197,7 @@ class Checker:
 				declared_can_throw=declared_can_throw,
 				signature=sig,
 				declared_events=declared_events,
-				return_type=return_type,
+				return_type=return_type,  # legacy/raw
 				return_type_id=return_type_id,
 				error_type_id=error_type_id,
 			)
