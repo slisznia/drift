@@ -67,7 +67,8 @@ class FnInfo:
 
 	Only `name` and `declared_can_throw` are populated by this stub. Real
 	`FnInfo` will carry richer information such as declared event set, return
-	type, and source span for diagnostics.
+	type, and source span for diagnostics. `signature` is the canonical source
+	of truth for return/param types and throws flags.
 	"""
 
 	name: str
@@ -184,7 +185,12 @@ class Checker:
 
 			if declared_can_throw is None:
 				if sig is not None:
-					declared_can_throw = self._is_fnresult_return(sig.return_type)
+					# Prefer resolved type ids to legacy raw shapes.
+					if sig.return_type_id is not None:
+						td = self._type_table.get(sig.return_type_id)
+						declared_can_throw = td.kind is TypeKind.FNRESULT
+					else:
+						declared_can_throw = False
 				else:
 					declared_can_throw = False
 
@@ -373,8 +379,8 @@ class Checker:
 		"""
 		Best-effort predicate to decide if a return type resembles FnResult<_, Error>.
 
-		This is intentionally loose to avoid committing to a concrete type
-		representation before the real checker exists. For now we consider:
+		Legacy heuristic used only when no resolved TypeId is available. For now we
+		consider:
 
 		* strings containing 'FnResult'
 		* tuples shaped like ('FnResult', ok_ty, err_ty)
