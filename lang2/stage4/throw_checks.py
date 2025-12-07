@@ -203,8 +203,6 @@ def enforce_fnresult_returns_typeaware(
 	not inspected yet.
 	"""
 	for fname, info in func_infos.items():
-		if not info.declared_can_throw:
-			continue
 		ssa_fn = ssa_funcs.get(fname)
 		if ssa_fn is None:
 			continue
@@ -218,20 +216,28 @@ def enforce_fnresult_returns_typeaware(
 			term = block.terminator
 			if isinstance(term, Return) and term.value is not None:
 				ty = type_env.type_of_ssa_value(fname, term.value)
-				if not type_env.is_fnresult(ty):
-					fn_type_error = (
-						f"function {fname} is declared can-throw but return in block "
-						f"{block.name} has non-FnResult type {ty!r}"
-					)
-					break
-				if decl_ok_err is not None:
-					actual_ok, actual_err = type_env.fnresult_parts(ty)
-					if (actual_ok, actual_err) != decl_ok_err:
-						exp_ok, exp_err = decl_ok_err
+				if info.declared_can_throw:
+					if not type_env.is_fnresult(ty):
 						fn_type_error = (
-							f"function {fname} returns FnResult with mismatched parts in block "
-							f"{block.name}: expected ({exp_ok!r}, {exp_err!r}) but got "
-							f"({actual_ok!r}, {actual_err!r})"
+							f"function {fname} is declared can-throw but return in block "
+							f"{block.name} has non-FnResult type {ty!r}"
+						)
+						break
+					if decl_ok_err is not None:
+						actual_ok, actual_err = type_env.fnresult_parts(ty)
+						if (actual_ok, actual_err) != decl_ok_err:
+							exp_ok, exp_err = decl_ok_err
+							fn_type_error = (
+								f"function {fname} returns FnResult with mismatched parts in block "
+								f"{block.name}: expected ({exp_ok!r}, {exp_err!r}) but got "
+								f"({actual_ok!r}, {actual_err!r})"
+							)
+							break
+				else:
+					if type_env.is_fnresult(ty):
+						fn_type_error = (
+							f"function {fname} is not declared can-throw but returns FnResult "
+							f"in block {block.name}; declare FnResult/throws or adjust the signature"
 						)
 						break
 		if fn_type_error is not None:

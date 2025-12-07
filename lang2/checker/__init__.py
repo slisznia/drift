@@ -352,7 +352,8 @@ class Checker:
 				walk_expr(expr.then_expr)
 				walk_expr(expr.else_expr)
 			elif isinstance(expr, H.HUnary):
-				walk_expr(expr.operand)
+				# HUnary stores its operand in `expr`, not `operand`.
+				walk_expr(expr.expr)
 			elif isinstance(expr, H.HBinary):
 				walk_expr(expr.left)
 				walk_expr(expr.right)
