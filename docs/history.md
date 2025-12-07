@@ -1,5 +1,11 @@
 # Drift development history
 
+## 2025-12-07
+- Cleaned up the lang2 front-end slice: parser copy lives in `lang2/parser/` with a table-driven adapter (`parse_drift_to_hir`); RaiseStmt for `throw` maps to ThrowStmt, unsupported stmts fail loudly; AstToHIR ThrowStmt uses the canonical `value` field. Adapter tests cover Ok sugar, attr-call non-rewrite, raise→throw, and unsupported constructs.
+- LLVM backend tests relocated to `lang2/codegen/llvm/tests/`; `just lang2-codegen-test` now runs them there, still cleaning `build/tests/lang2` and running IR/e2e runners.
+- Drift-source e2e runner documents current simple_return case; codegen path remains SSA-first with wrapper helpers (`compile_to_llvm_ir_for_tests`) reusing the same SSA as throw checks.
+- Work-progress notes updated accordingly; refactor considered complete, ready to tackle FnSignature enrichment and additional e2e coverage next.
+
 ## 2025-12-01
 - Hardened exception event codes: `Error.code` is `I64` with a 4+60 bit layout (kinds + payload), user exceptions hash their FQN via xxHash64, per-module collisions are rejected, and metadata now records FQN/kind/payload/event_code for future export.
 - Updated runtime dummy helper to carry code + first payload; added C runtime tests to validate kind/payload packing across multiple inputs. `test-runtime-c` runs via `CLANG_BIN` (default clang-15).
