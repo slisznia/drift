@@ -15,11 +15,12 @@ lowering/SSA so those passes stay structural.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Mapping, Optional, Set
 
 from lang2.diagnostics import Diagnostic
 from lang2.stage3 import ThrowSummary
 from lang2.stage2 import MirFunc, Return, ConstructResultOk, ConstructResultErr
+from lang2.types_core import TypeId
 from lang2.types_protocol import TypeEnv
 
 
@@ -38,6 +39,7 @@ class FuncThrowInfo:
 	exception_types: Set[str]
 	may_fail_sites: Set[tuple[str, int]]
 	declared_can_throw: bool
+	return_type_id: Optional[TypeId] = None
 
 
 def _report(msg: str, diagnostics: Optional[List[Diagnostic]]) -> None:
@@ -56,20 +58,28 @@ def _report(msg: str, diagnostics: Optional[List[Diagnostic]]) -> None:
 def build_func_throw_info(
 	summaries: Dict[str, ThrowSummary],
 	declared_can_throw: Dict[str, bool],
+	fn_infos: Mapping[str, "FnInfo"] | None = None,  # type: ignore[name-defined]
 ) -> Dict[str, FuncThrowInfo]:
 	"""
 	Combine ThrowSummary facts with declaration intent.
 
 	`summaries`: output of ThrowSummaryBuilder (per-function throw facts)
 	`declared_can_throw`: function name -> whether its signature allows throwing (FnResult/throws)
+	`fn_infos`: optional mapping of function name -> FnInfo with return_type_id populated by the checker
 	"""
 	out: Dict[str, FuncThrowInfo] = {}
 	for fname, summary in summaries.items():
+		return_ty: Optional[TypeId] = None
+		if fn_infos is not None:
+			fn_info = fn_infos.get(fname)
+			if fn_info is not None:
+				return_ty = fn_info.return_type_id
 		out[fname] = FuncThrowInfo(
 			constructs_error=summary.constructs_error,
 			exception_types=set(summary.exception_types),
 			may_fail_sites=set(summary.may_fail_sites),
 			declared_can_throw=declared_can_throw.get(fname, False),
+			return_type_id=return_ty,
 		)
 	return out
 
@@ -194,6 +204,9 @@ def enforce_fnresult_returns_typeaware(
 		if ssa_fn is None:
 			continue
 		fn_type_error = None
+		decl_ok_err: tuple[TypeId, TypeId] | None = None
+		if info.return_type_id is not None and type_env.is_fnresult(info.return_type_id):
+			decl_ok_err = type_env.fnresult_parts(info.return_type_id)
 		# We assume SSA layer can expose returns; in this skeleton we scan MIR
 		# terminators in the underlying MIR function carried by SsaFunc.
 		for block in ssa_fn.func.blocks.values():
@@ -206,6 +219,16 @@ def enforce_fnresult_returns_typeaware(
 						f"{block.name} has non-FnResult type {ty!r}"
 					)
 					break
+				if decl_ok_err is not None:
+					actual_ok, actual_err = type_env.fnresult_parts(ty)
+					if (actual_ok, actual_err) != decl_ok_err:
+						exp_ok, exp_err = decl_ok_err
+						fn_type_error = (
+							f"function {fname} returns FnResult with mismatched parts in block "
+							f"{block.name}: expected ({exp_ok!r}, {exp_err!r}) but got "
+							f"({actual_ok!r}, {actual_err!r})"
+						)
+						break
 		if fn_type_error is not None:
 			_report(msg=fn_type_error, diagnostics=diagnostics)
 
@@ -216,6 +239,7 @@ def run_throw_checks(
 	declared_can_throw: Dict[str, bool],
 	ssa_funcs: Dict[str, "SsaFunc"] | None = None,  # type: ignore[name-defined]
 	type_env: TypeEnv | None = None,
+	fn_infos: Mapping[str, "FnInfo"] | None = None,  # type: ignore[name-defined]
 	diagnostics: Optional[List[Diagnostic]] = None,
 ) -> Dict[str, FuncThrowInfo]:
 	"""
@@ -232,7 +256,7 @@ def run_throw_checks(
 	       guard is skipped in that case to allow forwarding/aliasing),
 	  5. return the FuncThrowInfo map for further stages to consume.
 	"""
-	func_infos = build_func_throw_info(summaries, declared_can_throw)
+	func_infos = build_func_throw_info(summaries, declared_can_throw, fn_infos=fn_infos)
 	enforce_can_throw_invariants(func_infos, diagnostics=diagnostics)
 	enforce_return_shape_for_can_throw(func_infos, funcs, diagnostics=diagnostics)
 	# FnResult shape: run either the structural guard (untyped/unit tests) or

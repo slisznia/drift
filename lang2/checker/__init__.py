@@ -20,13 +20,15 @@ and validate catch-arm shapes when provided.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, Iterable, List, Optional, FrozenSet, Mapping, Sequence, Set, Tuple
+from typing import Any, Dict, Iterable, List, Optional, FrozenSet, Mapping, Sequence, Set, Tuple, TYPE_CHECKING
 
 from lang2.diagnostics import Diagnostic
 from lang2.types_protocol import TypeEnv
 from lang2.checker.catch_arms import CatchArmInfo, validate_catch_arms
 from lang2.types_core import TypeTable, TypeId, TypeKind
-from lang2.types_core import TypeTable, TypeId, TypeKind
+
+if TYPE_CHECKING:
+	from lang2 import stage1 as H
 
 
 @dataclass
@@ -104,6 +106,7 @@ class Checker:
 		signatures: Mapping[str, FnSignature] | None = None,
 		catch_arms: Mapping[str, Sequence[CatchArmInfo]] | None = None,
 		exception_catalog: Mapping[str, int] | None = None,
+		hir_blocks: Mapping[str, "H.HBlock"] | None = None,  # type: ignore[name-defined]
 	) -> None:
 		# Until a real type checker exists we support two testing shims:
 		# 1) an explicit name -> bool map, or
@@ -113,6 +116,7 @@ class Checker:
 		self._signatures = signatures or {}
 		self._catch_arms = catch_arms or {}
 		self._exception_catalog = dict(exception_catalog) if exception_catalog else None
+		self._hir_blocks = hir_blocks or {}
 		# Naive type table for return type resolution; real checker will own this.
 		self._type_table = TypeTable()
 		self._int_type = self._type_table.new_scalar("Int")
@@ -167,6 +171,15 @@ class Checker:
 				return_type_id=return_type_id,
 				error_type_id=error_type_id,
 			)
+
+		# Validate result-driven try sugar operands when HIR is available. This is
+		# intentionally conservative: only known FnResult-returning calls are
+		# accepted; everything else produces a diagnostic so that non-FnResult
+		# operands are rejected early.
+		for fn_name, hir_block in self._hir_blocks.items():
+			if fn_name not in fn_infos:
+				continue
+			self._validate_try_results(fn_name, hir_block, diagnostics)
 
 		# TODO: real checker will:
 		#   - resolve signatures (FnResult/throws),
@@ -250,6 +263,99 @@ class Checker:
 				return self._type_table.new_fnresult(ok, err)
 		return self._type_table.new_unknown(str(val))
 
+	def _validate_try_results(
+		self,
+		fn_name: str,
+		block: "H.HBlock",
+		diagnostics: List[Diagnostic],
+	) -> None:
+		"""
+		Walk a HIR block and require that every HTryResult operand is known to be a
+		FnResult-returning expression based on signatures.
+
+		This is deliberately shallow for now: it accepts HCall/HMethodCall whose
+		target signature return_type_id is FnResult; everything else is flagged so
+		that try-sugar cannot wrap non-FnResult values.
+		"""
+		from lang2 import stage1 as H
+
+		def report(msg: str) -> None:
+			diagnostics.append(Diagnostic(message=msg, severity="error", span=None))
+
+		def is_fnresult_sig(sig: FnSignature | None) -> bool:
+			if sig is None or sig.return_type_id is None:
+				return False
+			td = self._type_table.get(sig.return_type_id)
+			return td.kind is TypeKind.FNRESULT
+
+		def validate_try_expr(expr: H.HExpr, span_descr: str) -> None:
+			# Only accept simple calls/method calls to signatures we know are FnResult.
+			if isinstance(expr, H.HCall) and isinstance(expr.fn, H.HVar):
+				sig = self._signatures.get(expr.fn.name)
+				if is_fnresult_sig(sig):
+					return
+			if isinstance(expr, H.HMethodCall):
+				sig = self._signatures.get(expr.method_name)
+				if is_fnresult_sig(sig):
+					return
+			report(
+				msg=(
+					f"function {fn_name} uses try-expression on a non-FnResult operand "
+					f"({span_descr}); try sugar requires FnResult<_, Error>"
+				)
+			)
+
+		def walk_expr(expr: H.HExpr) -> None:
+			if isinstance(expr, H.HTryResult):
+				validate_try_expr(expr.expr, span_descr="try operand")
+				walk_expr(expr.expr)
+			elif isinstance(expr, H.HCall):
+				walk_expr(expr.fn)
+				for arg in expr.args:
+					walk_expr(arg)
+			elif isinstance(expr, H.HMethodCall):
+				walk_expr(expr.receiver)
+				for arg in expr.args:
+					walk_expr(arg)
+			elif isinstance(expr, H.HTernary):
+				walk_expr(expr.cond)
+				walk_expr(expr.then_expr)
+				walk_expr(expr.else_expr)
+			elif isinstance(expr, H.HUnary):
+				walk_expr(expr.operand)
+			elif isinstance(expr, H.HBinary):
+				walk_expr(expr.left)
+				walk_expr(expr.right)
+			# Literals/vars need no action.
+
+		def walk_block(hb: H.HBlock) -> None:
+			for stmt in hb.statements:
+				if isinstance(stmt, H.HExprStmt):
+					walk_expr(stmt.expr)
+				elif isinstance(stmt, H.HLet):
+					walk_expr(stmt.value)
+				elif isinstance(stmt, H.HAssign):
+					walk_expr(stmt.value)
+				elif isinstance(stmt, H.HIf):
+					walk_expr(stmt.cond)
+					walk_block(stmt.then_block)
+					if stmt.else_block is not None:
+						walk_block(stmt.else_block)
+				elif isinstance(stmt, H.HLoop):
+					walk_block(stmt.block)
+				elif isinstance(stmt, H.HReturn):
+					if stmt.value is not None:
+						walk_expr(stmt.value)
+				elif isinstance(stmt, H.HThrow):
+					walk_expr(stmt.value)
+				elif isinstance(stmt, H.HTry):
+					walk_block(stmt.body)
+					for arm in stmt.catches:
+						walk_block(arm.block)
+				# HBreak/HContinue carry no expressions.
+
+		walk_block(block)
+
 	def build_type_env_from_ssa(
 		self,
 		ssa_funcs: Mapping[str, "SsaFunc"],
@@ -332,8 +438,12 @@ class Checker:
 								changed = True
 						elif isinstance(instr, Call) and dest is not None:
 							callee_sig = signatures.get(instr.fn)
-							if callee_sig and callee_sig.return_type_id is not None:
-								dest_ty = callee_sig.return_type_id
+							if callee_sig is not None:
+								if callee_sig.return_type_id is None:
+									rt_id, err_id = self._resolve_signature_types(callee_sig)
+									callee_sig.return_type_id = rt_id
+									callee_sig.error_type_id = err_id
+								dest_ty = callee_sig.return_type_id or self._unknown_type
 							else:
 								dest_ty = self._unknown_type
 							if value_types.get((fn_name, dest)) != dest_ty:
@@ -341,8 +451,12 @@ class Checker:
 								changed = True
 						elif isinstance(instr, MethodCall) and dest is not None:
 							callee_sig = signatures.get(instr.method_name)
-							if callee_sig and callee_sig.return_type_id is not None:
-								dest_ty = callee_sig.return_type_id
+							if callee_sig is not None:
+								if callee_sig.return_type_id is None:
+									rt_id, err_id = self._resolve_signature_types(callee_sig)
+									callee_sig.return_type_id = rt_id
+									callee_sig.error_type_id = err_id
+								dest_ty = callee_sig.return_type_id or self._unknown_type
 							else:
 								dest_ty = self._unknown_type
 							if value_types.get((fn_name, dest)) != dest_ty:

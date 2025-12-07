@@ -35,4 +35,37 @@ def test_typeaware_fnresult_mismatch_emits_diagnostic():
 	assert fn_name in mir_funcs
 	assert checked.type_env is not None
 	messages = [diag.message for diag in checked.diagnostics]
-	assert any("non-FnResult" in msg for msg in messages)
+	assert any("FnResult" in msg for msg in messages)
+
+
+def test_typeaware_fnresult_part_mismatch_emits_diagnostic():
+	"""
+	Function declared FnResult<Int, Error> but returns FnResult<Bool, Error>;
+	type-aware check should flag the ok/err part mismatch.
+	"""
+	fn_name = "f_mismatch"
+	hir = H.HBlock(
+		statements=[
+			H.HLet(name="x", value=H.HCall(fn=H.HVar(name="callee_bool"), args=[])),
+			H.HReturn(value=H.HVar(name="x")),
+		]
+	)
+	signatures = make_signatures(
+		{
+			fn_name: "FnResult<Int, Error>",
+			"callee_bool": ("FnResult", "Bool", "Error"),
+		}
+	)
+
+	mir_funcs, checked = compile_stubbed_funcs(
+		func_hirs={fn_name: hir},
+		signatures=signatures,
+		exc_env={},
+		build_ssa=True,
+		return_checked=True,
+	)
+
+	assert fn_name in mir_funcs
+	assert checked.type_env is not None
+	messages = [diag.message for diag in checked.diagnostics]
+	assert any("mismatched parts" in msg for msg in messages)

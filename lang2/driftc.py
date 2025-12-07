@@ -87,6 +87,7 @@ def compile_stubbed_funcs(
 		signatures=signatures,
 		exception_catalog=exc_env,
 		catch_arms=catch_arms_map,
+		hir_blocks=func_hirs,
 	)
 	checked = checker.check(func_hirs.keys())
 	declared = {name: info.declared_can_throw for name, info in checked.fn_infos.items()}
@@ -125,6 +126,7 @@ def compile_stubbed_funcs(
 		summaries=summaries,
 		declared_can_throw=declared,
 		type_env=type_env or checked.type_env,
+		fn_infos=checked.fn_infos,
 		ssa_funcs=ssa_funcs,
 		diagnostics=checked.diagnostics,
 	)
