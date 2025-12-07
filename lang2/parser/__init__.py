@@ -7,7 +7,7 @@ lang2 pipeline.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict, Tuple
+from typing import Callable, Dict, Tuple
 
 from . import parser as _parser
 from . import ast as parser_ast
@@ -46,35 +46,69 @@ def _convert_expr(expr: parser_ast.Expr) -> s0.Expr:
 	raise NotImplementedError(f"Unsupported expression in adapter: {expr!r}")
 
 
+def _convert_return(stmt: parser_ast.ReturnStmt) -> s0.Stmt:
+	return s0.ReturnStmt(value=_convert_expr(stmt.value) if stmt.value is not None else None, loc=stmt.loc)
+
+
+def _convert_expr_stmt(stmt: parser_ast.ExprStmt) -> s0.Stmt:
+	return s0.ExprStmt(expr=_convert_expr(stmt.value), loc=stmt.loc)
+
+
+def _convert_let(stmt: parser_ast.LetStmt) -> s0.Stmt:
+	return s0.LetStmt(name=stmt.name, value=_convert_expr(stmt.value), loc=stmt.loc)
+
+
+def _convert_assign(stmt: parser_ast.AssignStmt) -> s0.Stmt:
+	return s0.AssignStmt(target=_convert_expr(stmt.target), value=_convert_expr(stmt.value), loc=stmt.loc)
+
+
+def _convert_if(stmt: parser_ast.IfStmt) -> s0.Stmt:
+	return s0.IfStmt(
+		cond=_convert_expr(stmt.condition),
+		then_block=_convert_block(stmt.then_block),
+		else_block=_convert_block(stmt.else_block) if stmt.else_block else [],
+	)
+
+
+def _convert_break(stmt: parser_ast.BreakStmt) -> s0.Stmt:
+	return s0.BreakStmt(loc=stmt.loc)
+
+
+def _convert_continue(stmt: parser_ast.ContinueStmt) -> s0.Stmt:
+	return s0.ContinueStmt(loc=stmt.loc)
+
+
+def _convert_throw(stmt: parser_ast.ThrowStmt) -> s0.Stmt:
+	return s0.ThrowStmt(value=_convert_expr(stmt.expr), loc=stmt.loc)
+
+
+def _convert_raise(stmt: parser_ast.RaiseStmt) -> s0.Stmt:
+	# TODO: when rethrow semantics are defined, map RaiseStmt appropriately.
+	# For now, treat parser RaiseStmt as a plain throw of the expression.
+	expr = getattr(stmt, "expr", None) or getattr(stmt, "value")
+	return s0.ThrowStmt(value=_convert_expr(expr), loc=stmt.loc)
+
+
+_STMT_DISPATCH: dict[type[parser_ast.Stmt], Callable[[parser_ast.Stmt], s0.Stmt]] = {
+	parser_ast.ReturnStmt: _convert_return,
+	parser_ast.ExprStmt: _convert_expr_stmt,
+	parser_ast.LetStmt: _convert_let,
+	parser_ast.AssignStmt: _convert_assign,
+	parser_ast.IfStmt: _convert_if,
+	parser_ast.BreakStmt: _convert_break,
+	parser_ast.ContinueStmt: _convert_continue,
+	parser_ast.ThrowStmt: _convert_throw,
+	parser_ast.RaiseStmt: _convert_raise,
+}
+
+
 def _convert_stmt(stmt: parser_ast.Stmt) -> s0.Stmt:
 	"""Convert parser AST statements into lang2.stage0 AST statements."""
-	if isinstance(stmt, parser_ast.ReturnStmt):
-		return s0.ReturnStmt(value=_convert_expr(stmt.value) if stmt.value is not None else None, loc=stmt.loc)
-	if isinstance(stmt, parser_ast.ExprStmt):
-		return s0.ExprStmt(expr=_convert_expr(stmt.value), loc=stmt.loc)
-	if isinstance(stmt, parser_ast.LetStmt):
-		return s0.LetStmt(name=stmt.name, value=_convert_expr(stmt.value), loc=stmt.loc)
-	if isinstance(stmt, parser_ast.AssignStmt):
-		return s0.AssignStmt(target=_convert_expr(stmt.target), value=_convert_expr(stmt.value), loc=stmt.loc)
-	if isinstance(stmt, parser_ast.IfStmt):
-		return s0.IfStmt(
-			cond=_convert_expr(stmt.condition),
-			then_block=_convert_block(stmt.then_block),
-			else_block=_convert_block(stmt.else_block) if stmt.else_block else [],
-		)
-	if isinstance(stmt, parser_ast.BreakStmt):
-		return s0.BreakStmt(loc=stmt.loc)
-	if isinstance(stmt, parser_ast.ContinueStmt):
-		return s0.ContinueStmt(loc=stmt.loc)
-	if isinstance(stmt, parser_ast.ThrowStmt):
-		return s0.ThrowStmt(value=_convert_expr(stmt.expr), loc=stmt.loc)
-	if isinstance(stmt, parser_ast.RaiseStmt):
-		# TODO: when rethrow semantics are defined, map RaiseStmt appropriately.
-		# For now, treat parser RaiseStmt as a plain throw of the expression.
-		expr = getattr(stmt, "expr", None) or getattr(stmt, "value")
-		return s0.ThrowStmt(value=_convert_expr(expr), loc=stmt.loc)
-	# While/For/Try not yet needed for current e2e cases.
-	raise NotImplementedError(f"Unsupported statement in adapter: {stmt!r}")
+	fn = _STMT_DISPATCH.get(type(stmt))
+	if fn is None:
+		# While/For/Try not yet needed for current e2e cases.
+		raise NotImplementedError(f"Unsupported statement in adapter: {stmt!r}")
+	return fn(stmt)
 
 
 def _convert_block(block: parser_ast.Block) -> list[s0.Stmt]:
