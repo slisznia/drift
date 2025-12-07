@@ -1,6 +1,6 @@
 # `drift-lang-abi.md`
 
-### **Drift Language ABI — Scalars, Errors, Events, FnResult, Calling Conventions (v0)**
+### **Drift Language ABI — Scalars, Errors, Events, FnResult, Calling Conventions (v1)**
 
 **Purpose:**
 This document defines the **binary interoperability ABI** for Drift programs across module boundaries and for C/LLVM interop.
@@ -28,7 +28,7 @@ Drift has two classes of scalars:
 | ---------- | -------------------- | --------------------------------- | -------------------------------------- |
 | `Int`      | `int64_t`            | `i64`                             | Signed integer.                        |
 | `Uint`     | `uint64_t`           | `i64`                             | Unsigned.                              |
-| `Size`     | `uintptr_t` (64-bit) | `i64`                             | Pointer-sized, pinned to 64-bit in v0. |
+| `Size`     | `uintptr_t` (64-bit) | `i64`                             | Pointer-sized, pinned to 64-bit in v1. |
 | `Bool`     | `uint8_t`            | `i1` (in regs), `i8` (in structs) | ABI defines on-wire as 1 byte.         |
 | `Float`    | `double`             | `double`                          | IEEE-754 64-bit float.                 |
 
@@ -176,7 +176,7 @@ At module boundaries, the ABI becomes a stable C layout.
 
 Within a module, the compiler may use any efficient layout, as long as all call sites in the module agree.
 
-The canonical v0 layout is:
+The canonical v1 layout is:
 
 ```c
 typedef struct {
@@ -256,7 +256,7 @@ Notes:
 
 ---
 
-# 5. Calling convention summary (v0)
+# 5. Calling convention summary (v1)
 
 ### 5.1 Drift → LLVM rules
 
@@ -285,7 +285,7 @@ Current implementations may lower them opaquely through:
 * fat-pointer layouts, or
 * internal pointer types,
 
-but these are **not** part of v0 ABI yet.
+but these are **not** part of v1 ABI yet.
 
 ---
 
@@ -322,11 +322,11 @@ ABI-compatible changes:
 
 ---
 
-# 8. Appendix: Example C header (v0)
+# 8. Appendix: Example C header (v1)
 
 ```c
-#ifndef DRIFT_LANG_ABI_V0_H
-#define DRIFT_LANG_ABI_V0_H
+#ifndef DRIFT_LANG_ABI_V1_H
+#define DRIFT_LANG_ABI_V1_H
 
 #include <stdint.h>
 #include <stddef.h>
@@ -366,7 +366,7 @@ typedef struct {
 }
 #endif
 
-#endif /* DRIFT_LANG_ABI_V0_H */
+#endif /* DRIFT_LANG_ABI_V1_H */
 ```
 
 ---
