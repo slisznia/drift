@@ -67,7 +67,12 @@ def _convert_stmt(stmt: parser_ast.Stmt) -> s0.Stmt:
 	if isinstance(stmt, parser_ast.ContinueStmt):
 		return s0.ContinueStmt(loc=stmt.loc)
 	if isinstance(stmt, parser_ast.ThrowStmt):
-		return s0.ThrowStmt(expr=_convert_expr(stmt.expr), loc=stmt.loc)
+		return s0.ThrowStmt(value=_convert_expr(stmt.expr), loc=stmt.loc)
+	if isinstance(stmt, parser_ast.RaiseStmt):
+		# TODO: when rethrow semantics are defined, map RaiseStmt appropriately.
+		# For now, treat parser RaiseStmt as a plain throw of the expression.
+		expr = getattr(stmt, "expr", None) or getattr(stmt, "value")
+		return s0.ThrowStmt(value=_convert_expr(expr), loc=stmt.loc)
 	# While/For/Try not yet needed for current e2e cases.
 	raise NotImplementedError(f"Unsupported statement in adapter: {stmt!r}")
 
