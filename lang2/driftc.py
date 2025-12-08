@@ -191,7 +191,7 @@ def compile_to_llvm_ir_for_tests(
 	)
 
 	# Lower module to LLVM IR and append the OS entry wrapper.
-	module = lower_module_to_llvm(mir_funcs, ssa_funcs, checked.fn_infos)
+	module = lower_module_to_llvm(mir_funcs, ssa_funcs, checked.fn_infos, type_table=checked.type_table)
 	module.emit_entry_wrapper(entry)
 	return module.render(), checked
 

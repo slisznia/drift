@@ -99,36 +99,16 @@ Goal: ensure `String` is already a first-class type in the compiler’s TypeTabl
 
 Do this in two steps: **literals + pass-through** first; **concat/print** second.
 
-### 3A. Minimal: literals and pass-through
+### 3A. Minimal: literals and pass-through (in progress)
 
-1. **LLVM type for String**
+* LLVM module seeds `%DriftString = { %drift.size, i8* }`.
+* ConstString lowering emits a private UTF-8 global with escaped bytes and builds the struct inline (len/data); no runtime call.
+* Return/call lowering understands `%DriftString` when a shared TypeTable is provided; Int remains the default fallback.
+* IR test added for a function returning a string literal.
 
-   * Implement `_llvm_type_for_string` or equivalent:
-
-     * Return `ir.LiteralStructType([ llvm_uint_type, ir.IntType(8).as_pointer() ])`.
-
-2. **String literal lowering**
-
-   * For each `HStringLiteral`:
-
-     * Emit a private global:
-
-       ```llvm
-       @.str0 = private unnamed_addr constant [N x i8] c"..."
-       ```
-     * Lower the expression to:
-
-       ```llvm
-       %p   = getelementptr [N x i8], [N x i8]* @.str0, i32 0, i32 0
-       %len = <constant N as i64>   ; or Uint type
-       %s   = insertvalue %DriftString undef, %len, 0
-       %s2  = insertvalue %DriftString %s, i8* %p, 1
-       ```
-   * No runtime call; this is purely structural.
-
-3. **Function params/returns**
-
-   * Ensure functions with `String` parameters/returns use `%DriftString` as the ABI type and follow normal struct-by-value convention.
+TODO in this phase:
+* Add more IR tests (pass-through call returning String) once param lowering exists.
+* Tighten literal escaping if we start using non-ASCII or embedded quotes (currently emits `\XX` hex escapes, quotes/backslashes escaped).
 
 ### 3B. Then: concat and print
 

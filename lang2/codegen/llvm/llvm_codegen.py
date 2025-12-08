@@ -5,16 +5,19 @@ SSA → LLVM IR lowering for the v1 Drift ABI (textual emitter).
 
 Scope (v1 bring-up):
   - Input: SSA (`SsaFunc`) plus MIR (`MirFunc`) and `FnInfo` metadata.
-  - Supported types: Int (i64), Bool (i1 in regs), FnResult<Int, Error>.
-  - Supported ops: ConstInt/Bool, AssignSSA aliases, BinaryOpInstr (int),
-    Call (Int or FnResult<Int, Error> return), Phi, ConstructResultOk/Err,
-    ConstructError (attrs zeroed), Return, IfTerminator/Goto.
+  - Supported types: Int (i64), Bool (i1 in regs), String ({%drift.size, i8*}),
+    FnResult<Int, Error>.
+  - Supported ops: ConstInt/Bool/String, AssignSSA aliases, BinaryOpInstr (int),
+    Call (Int/String or FnResult<Int, Error> return), Phi, ConstructResultOk/Err,
+    ConstructError (attrs zeroed), Return, IfTerminator/Goto, Array ops.
   - Control flow: straight-line + if/else (acyclic CFGs); loops/backedges are
     rejected explicitly.
 
 ABI (from docs/design/drift-lang-abi.md):
-  - %DriftError      = { i64 code, ptr attrs, ptr ctx_frames, ptr stack }
-  - %FnResult_Int_Error = { i1 is_err, i64 ok, %DriftError err }
+  - %DriftError           = { i64 code, ptr attrs, ptr ctx_frames, ptr stack }
+  - %FnResult_Int_Error   = { i1 is_err, i64 ok, %DriftError err }
+  - %DriftString          = { %drift.size, i8* }
+  - %drift.size           = i64 (Uint carrier)
   - Drift Int is i64; Bool is i1 in registers.
 
 This emitter is deliberately small and produces LLVM text suitable for feeding
@@ -25,7 +28,7 @@ directly. Unsupported features raise clear errors rather than emitting bad IR.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Mapping
+from typing import Dict, List, Mapping, Optional
 
 from lang2.checker import FnInfo
 from lang2.stage1 import BinaryOp
@@ -52,6 +55,7 @@ from lang2.stage2 import (
 )
 from lang2.stage4.ssa import SsaFunc
 from lang2.stage4.ssa import CfgKind
+from lang2.core.types_core import TypeKind, TypeTable, TypeId
 
 """LLVM codegen for lang2 SSA.
 
@@ -75,6 +79,7 @@ def lower_ssa_func_to_llvm(
 	ssa: SsaFunc,
 	fn_info: FnInfo,
 	fn_infos: Mapping[str, FnInfo] | None = None,
+	type_table: Optional[TypeTable] = None,
 ) -> str:
 	"""
 	Lower a single SSA function to LLVM IR text using FnInfo for return typing.
@@ -88,18 +93,21 @@ def lower_ssa_func_to_llvm(
 	  LLVM IR string for the function definition.
 
 	Limitations:
-	  - Only Int/Bools and FnResult<Int, Error> returns are supported in v1.
+	  - Returns: Int, String, or FnResult<Int, Error> in v1.
 	  - No loops/backedges; CFG must be acyclic (if/else diamonds ok).
 	"""
 	all_infos = dict(fn_infos) if fn_infos is not None else {fn_info.name: fn_info}
-	builder = _FuncBuilder(func=func, ssa=ssa, fn_info=fn_info, fn_infos=all_infos)
-	return builder.lower()
+	mod = LlvmModuleBuilder()
+	builder = _FuncBuilder(func=func, ssa=ssa, fn_info=fn_info, fn_infos=all_infos, module=mod, type_table=type_table)
+	mod.emit_func(builder.lower())
+	return mod.render()
 
 
 def lower_module_to_llvm(
 	funcs: Mapping[str, MirFunc],
 	ssa_funcs: Mapping[str, SsaFunc],
 	fn_infos: Mapping[str, FnInfo],
+	type_table: Optional[TypeTable] = None,
 ) -> LlvmModuleBuilder:
 	"""
 	Lower a set of SSA functions to an LLVM module.
@@ -113,11 +121,28 @@ def lower_module_to_llvm(
 	for name, func in funcs.items():
 		ssa = ssa_funcs[name]
 		fn_info = fn_infos[name]
-		mod.emit_func(lower_ssa_func_to_llvm(func, ssa, fn_info, fn_infos))
+		builder = _FuncBuilder(func=func, ssa=ssa, fn_info=fn_info, fn_infos=fn_infos, module=mod, type_table=type_table)
+		mod.emit_func(builder.lower())
 	return mod
 
 
 # Internal helpers -------------------------------------------------------------
+
+
+def _escape_byte(b: int) -> str:
+	"""
+	Encode a single byte for an LLVM c\"...\" string literal.
+
+	Printable, non-special ASCII stays as-is; quote and backslash are escaped;
+	all other bytes are emitted as \\XX hex escapes.
+	"""
+	if 32 <= b <= 126 and b not in (34, 92):  # printable ASCII excluding \" and \\
+		return chr(b)
+	if b == 34:  # double quote
+		return "\\22"
+	if b == 92:  # backslash
+		return "\\5C"
+	return f"\\{b:02X}"
 
 
 @dataclass
@@ -125,6 +150,7 @@ class LlvmModuleBuilder:
 	"""Textual LLVM module builder with seeded ABI type declarations."""
 
 	type_decls: List[str] = field(default_factory=list)
+	consts: List[str] = field(default_factory=list)
 	funcs: List[str] = field(default_factory=list)
 
 	def __post_init__(self) -> None:
@@ -165,6 +191,9 @@ class LlvmModuleBuilder:
 		lines: List[str] = []
 		lines.extend(self.type_decls)
 		lines.append("")
+		if self.consts:
+			lines.extend(self.consts)
+			lines.append("")
 		lines.extend(self.funcs)
 		lines.append("")
 		return "\n".join(lines)
@@ -176,14 +205,19 @@ class _FuncBuilder:
 	ssa: SsaFunc
 	fn_info: FnInfo
 	fn_infos: Mapping[str, FnInfo]
+	module: LlvmModuleBuilder
+	type_table: Optional[TypeTable] = None
 	tmp_counter: int = 0
 	lines: List[str] = field(default_factory=list)
 	value_map: Dict[str, str] = field(default_factory=dict)
 	value_types: Dict[str, str] = field(default_factory=dict)
 	aliases: Dict[str, str] = field(default_factory=dict)
+	string_type_id: Optional[TypeId] = None
+	int_type_id: Optional[TypeId] = None
 
 	def lower(self) -> str:
 		self._assert_cfg_supported()
+		self._prime_type_ids()
 		self._emit_header()
 		self._declare_array_helpers_if_needed()
 		order = self.ssa.block_order or list(self.func.blocks.keys())
@@ -191,6 +225,15 @@ class _FuncBuilder:
 			self._emit_block(block_name)
 		self.lines.append("}")
 		return "\n".join(self.lines)
+
+	def _prime_type_ids(self) -> None:
+		if self.type_table is None:
+			return
+		for ty_id, ty_def in getattr(self.type_table, "_defs", {}).items():  # type: ignore[attr-defined]
+			if ty_def.kind is TypeKind.SCALAR and ty_def.name == "String":
+				self.string_type_id = ty_id
+			if ty_def.kind is TypeKind.SCALAR and ty_def.name == "Int":
+				self.int_type_id = ty_id
 
 	def _emit_header(self) -> None:
 		ret_ty = self._return_llvm_type()
@@ -334,23 +377,25 @@ class _FuncBuilder:
 		Lower a ConstString to a DriftString literal ({len: %drift.size, data: i8*}).
 		We emit a private unnamed constant for the bytes (with trailing NUL) and
 		build the struct inline; no runtime call is needed for literals.
+
+		Literals are encoded as UTF-8 and emitted with explicit escapes so that
+		non-ASCII and special characters are preserved exactly.
 		"""
 		dest = self._map_value(instr.dest)
 		utf8_bytes = instr.value.encode("utf-8")
 		size = len(utf8_bytes)
 		global_name = f"@.str{len(self.module.consts)}"
+		escaped = "".join(_escape_byte(b) for b in utf8_bytes) + "\\00"
 		self.module.consts.append(
-			f"{global_name} = private unnamed_addr constant [{size + 1} x i8] c\"{instr.value}\\00\""
+			f"{global_name} = private unnamed_addr constant [{size + 1} x i8] c\"{escaped}\""
 		)
 		ptr = self._fresh("strptr")
 		self.lines.append(
 			f"  {ptr} = getelementptr inbounds [{size + 1} x i8], [{size + 1} x i8]* {global_name}, i32 0, i32 0"
 		)
 		tmp0 = self._fresh("str0")
-		tmp1 = self._fresh("str1")
 		self.lines.append(f"  {tmp0} = insertvalue {DRIFT_STRING_TYPE} undef, {DRIFT_SIZE_TYPE} {size}, 0")
-		self.lines.append(f"  {tmp1} = insertvalue {DRIFT_STRING_TYPE} {tmp0}, i8* {ptr}, 1")
-		self.lines.append(f"  {dest} = add {DRIFT_STRING_TYPE} {tmp1}, zeroinitializer")
+		self.lines.append(f"  {dest} = insertvalue {DRIFT_STRING_TYPE} {tmp0}, i8* {ptr}, 1")
 		self.value_types[dest] = DRIFT_STRING_TYPE
 
 	def _lower_call(self, instr: Call) -> None:
@@ -366,11 +411,20 @@ class _FuncBuilder:
 				self.lines.append(f"  {dest} = extractvalue {FNRESULT_INT_ERROR} {tmp}, 1")
 				self.value_types[dest] = "i64"
 		else:
+			ret_ty = "i64"
+			if (
+				self.string_type_id is not None
+				and callee_info.signature
+				and callee_info.signature.return_type_id == self.string_type_id
+			):
+				ret_ty = DRIFT_STRING_TYPE
+			if dest is None and ret_ty != "void":
+				raise NotImplementedError("LLVM codegen v1: cannot drop non-void call result")
 			if dest is None:
 				self.lines.append(f"  call void @{instr.fn}({args})")
 			else:
-				self.lines.append(f"  {dest} = call i64 @{instr.fn}({args})")
-				self.value_types[dest] = "i64"
+				self.lines.append(f"  {dest} = call {ret_ty} @{instr.fn}({args})")
+				self.value_types[dest] = ret_ty
 
 	def _lower_term(self, term: object) -> None:
 		if isinstance(term, Goto):
@@ -390,21 +444,28 @@ class _FuncBuilder:
 			if self.fn_info.declared_can_throw:
 				self.lines.append(f"  ret {FNRESULT_INT_ERROR} {val}")
 			else:
-				# Enforce scalar return shape for non-can-throw.
-				if self.value_types.get(val) != "i64":
-					raise NotImplementedError("LLVM codegen v1: non-can-throw return must be Int")
-				self.lines.append(f"  ret i64 {val}")
+				ty = self.value_types.get(val)
+				if ty == DRIFT_STRING_TYPE:
+					self.lines.append(f"  ret {DRIFT_STRING_TYPE} {val}")
+				elif ty == "i64":
+					self.lines.append(f"  ret i64 {val}")
+				else:
+					raise NotImplementedError(
+						f"LLVM codegen v1: non-can-throw return must be Int or String, got {ty}"
+					)
 		else:
 			raise NotImplementedError(f"LLVM codegen v1: unsupported terminator {type(term).__name__}")
 
 	def _return_llvm_type(self) -> str:
-		# v1 supports only Int or FnResult<Int, Error> return shapes.
+		# v1 supports Int, String, or FnResult<Int, Error> return shapes.
 		if self.fn_info.declared_can_throw:
 			return FNRESULT_INT_ERROR
-		td = self.fn_info.return_type_id
-		if td is None:
-			raise NotImplementedError("LLVM codegen v1: missing return_type_id")
-		# Only scalar Int supported for now.
+		rt_id = None
+		if self.fn_info.signature and self.fn_info.signature.return_type_id is not None:
+			rt_id = self.fn_info.signature.return_type_id
+		if self.string_type_id is not None and rt_id == self.string_type_id:
+			return DRIFT_STRING_TYPE
+		# Default to Int
 		return "i64"
 
 	def _llvm_scalar_type(self) -> str:
