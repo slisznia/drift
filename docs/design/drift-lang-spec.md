@@ -1743,14 +1743,14 @@ val explicit: Array<Int64> = [1, 2, 3]  // annotation still allowed when desired
 
 `Array<T>` integrates with the broader language design — it moves with `->`, can be captured with `^`, and will participate in trait implementations like `Display` once the stdlib grows. The literal syntax keeps sample programs succinct while we flesh out higher-level APIs.
 
-**Indexing and lengths.** All container lengths, capacities, and indices use `Size`:
+**Indexing and lengths.** In v1, container lengths/capacities use `Uint`; indices are `Int`:
 
-- `Array<T>.len: Size`
-- `Array<T>.capacity: Size`
-- `ByteBuffer.len: Size`
-- `ByteSlice.len: Size`
+- `Array<T>.len: Uint`
+- `Array<T>.capacity: Uint`
+- `ByteBuffer.len: Uint`
+- `ByteSlice.len: Uint`
 
-Any function that indexes into a container or string must accept a `Size` (or a value explicitly convertible to `Size` without narrowing). Examples in this document that show `Int64` for lengths or indices are illustrative only; the canonical type is `Size`.
+Any function that indexes into a container or string must accept an `Int` index; bounds checks reject negative indices and indices ≥ `len`. Lengths/capacities are unsigned counts (`Uint`). Examples elsewhere that show `Size`/`Int64` are illustrative; the canonical types for arrays/strings in v1 are `Uint` for lengths/capacities and `Int` for indices.
 
 ### 12.1. ByteBuffer, ByteSlice, and MutByteSlice
 

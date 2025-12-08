@@ -467,7 +467,7 @@ class _FuncBuilder:
 		neg_cmp = self._fresh("negcmp")
 		self.lines.append(f"  {neg_cmp} = icmp slt %drift.size {index}, 0")
 		oob_cmp = self._fresh("oobcmp")
-		self.lines.append(f"  {oob_cmp} = icmp uge %drift.size {index}, {len_tmp}")
+		self.lines.append(f"  {oob_cmp} = icmp uge %drift.size {index}, %drift.size {len_tmp}")
 		oob_or = self._fresh("oobor")
 		self.lines.append(f"  {oob_or} = or i1 {neg_cmp}, {oob_cmp}")
 		ok_block = self._fresh("array_ok")
@@ -504,7 +504,7 @@ class _FuncBuilder:
 		neg_cmp = self._fresh("negcmp")
 		self.lines.append(f"  {neg_cmp} = icmp slt %drift.size {index}, 0")
 		oob_cmp = self._fresh("oobcmp")
-		self.lines.append(f"  {oob_cmp} = icmp uge %drift.size {index}, {len_tmp}")
+		self.lines.append(f"  {oob_cmp} = icmp uge %drift.size {index}, %drift.size {len_tmp}")
 		oob_or = self._fresh("oobor")
 		self.lines.append(f"  {oob_or} = or i1 {neg_cmp}, {oob_cmp}")
 		ok_block = self._fresh("array_ok")
@@ -547,6 +547,7 @@ class _FuncBuilder:
 		Map an element TypeId to an LLVM type string.
 
 		v1 backend assumes Array<Int> only and maps to i64 element type.
+		Raises if an unexpected elem type is seen.
 		"""
 		return "i64"
 

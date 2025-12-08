@@ -143,24 +143,23 @@ ArrayIndexLoad { elem_ty=T, array=a, index=i }
 %data = extractvalue %drift.Array$T %arr, 2 ; T*
 ```
 
-### 5.2 Lower index (`Int`) to `%drift.size`
+### 5.2 Bounds-check the `Int` index as `%drift.size`
 
 ```llvm
-; %idx : %drift.int   (signed Int)
-%is.neg   = icmp slt %drift.int %idx, 0
-%idx.size = zext %drift.int %idx to %drift.size
+; %idx : %drift.int   (signed Int, same bit width as %drift.size in v1)
+%is.neg   = icmp slt %drift.size %idx, 0
 ```
 
 ### 5.3 Bounds check
 
 ```llvm
-%too.big = icmp uge %drift.size %idx.size, %len
+%too.big = icmp uge %drift.size %idx, %len
 %oob     = or i1 %is.neg, %too.big
 
 br i1 %oob, label %oob.block, label %ok.block
 
 oob.block:
-    call void @drift_bounds_check_fail(%drift.size %idx.size,
+    call void @drift_bounds_check_fail(%drift.size %idx,
                                        %drift.size %len)
     unreachable
 ```
@@ -169,7 +168,7 @@ oob.block:
 
 ```llvm
 ok.block:
-    %elem.ptr = getelementptr inbounds T, T* %data, %drift.size %idx.size
+    %elem.ptr = getelementptr inbounds T, T* %data, %drift.size %idx
     %elem     = load T, T* %elem.ptr, align alignof(T)
 ```
 
@@ -187,4 +186,3 @@ To keep the main language spec consistent:
 
 ABI/runtime use `drift_size`.
 LLVM backend uses `%drift.size`.
-
