@@ -6,7 +6,7 @@ From the blueprint:
 
   * `Array<T>` header is:
     `struct DriftArrayHeader { drift_size len; drift_size cap; void *data; }`
-  * `drift_size` is the C side of Drift’s `Size` type.
+  * `drift_size` is the C side of Drift’s `Uint` (v1 size/length type).
   * Helpers:
 
     ```c
@@ -36,17 +36,17 @@ From the blueprint:
   * `ArrayLit { elem_ty: TypeId, elements: [ValueId] }`
   * `ArrayIndexLoad { elem_ty: TypeId, array: ValueId, index: ValueId }`
   * `ArrayIndexStore { elem_ty: TypeId, array: ValueId, index: ValueId, value: ValueId }`
-  * (later) `ArrayLen/ArrayCap` → Size
+  * (later) `ArrayLen/ArrayCap` → Uint
 * **Lowering rules**
 
   * Literals call `drift_alloc_array`, store elements with GEP, then build `%drift.Array$T` via `insertvalue`.
-  * Indexing extracts `len` and `data`, uses the signed `Int` index as `%drift.size`, checks negative or `idx >= len`, calls `drift_bounds_check_fail` on OOB, then GEP+load/store.
+  * Indexing extracts `len` and `data`, uses the signed `Int` index as `%drift.size` (Uint carrier), checks negative or `idx >= len`, calls `drift_bounds_check_fail` on OOB, then GEP+load/store.
 
 Everything else is plumbing to make the above true in lang2.
 
 ### Progress so far (lang2)
 - Type core: added `TypeKind.ARRAY` and `TypeTable.new_array`; resolver maps `Array<T>` (string or AST) to array `TypeId`s on the shared `TypeTable`.
-- Parser/AST/HIR: grammar already had array literals/indexing; AstToHIR now lowers array literals to `HArrayLiteral`. Stage1 docs/exports are in sync.
+- Parser/AST/HIR: grammar already had array literals/indexing; stage0 now has `ArrayLiteral`, the parser adapter converts parser `ArrayLiteral` to stage0, and AstToHIR lowers array literals to `HArrayLiteral`. Stage1 docs/exports are in sync. Parser adapter now preserves parsed `TypeExpr` objects for param/return types so the resolver produces real `Array<T>` `TypeId`s (see parser array type tests).
 - Checker: shallow inference/validation for array literals, indexing, and indexed assignments; diagnostics for mixed element types, empty literal without type, non-Int index, non-array indexing, and assignment type mismatch. Fixed HIR field bugs (`HExprStmt.expr`, `HLoop.body`). Added positive/negative checker tests for arrays.
 - Stage2/MIR: added typed array MIR instructions (`ArrayLit`, `ArrayIndexLoad`, `ArrayIndexStore`) and HIR→MIR lowering for array literals, indexing, and indexed assignments. Lowering tags array ops with element `TypeId`s using the shared `TypeTable`. New MIR tests cover literal/index/store shapes.
 - LLVM backend: lowered array ops to IR per `drift-array-lowering` (drift_alloc_array + drift_bounds_check_fail, insertvalue {len, cap, data}, bounds checks, GEP+load/store). Removed bogus sext on indices (Int/Size both i64 in v1) and fixed ConstructError insertvalue syntax. Added IR tests asserting alloc/bounds/store patterns and absence of sext. Minimal runtime stub (`lang2/codegen/runtime/array_runtime.c`) provides `drift_alloc_array`/`drift_bounds_check_fail` for future linking.

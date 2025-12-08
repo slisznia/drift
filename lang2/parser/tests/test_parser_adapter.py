@@ -14,7 +14,7 @@ fn drift_main() returns Int {
 """)
 	func_hirs, sigs, _type_table = parse_drift_to_hir(src)
 	assert set(func_hirs.keys()) == {"drift_main"}
-	assert sigs["drift_main"].return_type == "Int"
+	assert sigs["drift_main"].return_type.name == "Int"
 	block = func_hirs["drift_main"]
 	assert len(block.statements) == 1
 	assert isinstance(block.statements[0], H.HReturn)
@@ -33,8 +33,8 @@ fn drift_main() returns Int {
 """)
 	func_hirs, sigs, _type_table = parse_drift_to_hir(src)
 	assert set(func_hirs.keys()) == {"callee", "drift_main"}
-	assert sigs["callee"].return_type.startswith("FnResult")
-	assert sigs["drift_main"].return_type == "Int"
+	assert sigs["callee"].return_type.name == "FnResult"
+	assert sigs["drift_main"].return_type.name == "Int"
 	callee = func_hirs["callee"]
 	main = func_hirs["drift_main"]
 	assert isinstance(callee.statements[0], H.HReturn)
@@ -52,7 +52,7 @@ fn drift_main() returns Int {
 """)
 	func_hirs, sigs, _type_table = parse_drift_to_hir(src)
 	assert set(func_hirs.keys()) == {"drift_main"}
-	assert sigs["drift_main"].return_type == "Int"
+	assert sigs["drift_main"].return_type.name == "Int"
 	main = func_hirs["drift_main"]
 	assert isinstance(main.statements[0], H.HReturn)
 	# ns.Ok should not be rewritten to HResultOk (attr call stays a normal call)
@@ -67,7 +67,7 @@ fn drift_main() returns FnResult<Int, Error> {
 }
 """)
 	func_hirs, sigs, _type_table = parse_drift_to_hir(src)
-	assert sigs["drift_main"].return_type.startswith("FnResult")
+	assert sigs["drift_main"].return_type.name == "FnResult"
 	main = func_hirs["drift_main"]
 	assert isinstance(main.statements[0], H.HThrow)
 
@@ -80,7 +80,7 @@ fn drift_main() returns FnResult<Int, Error> {
 }
 """)
 	func_hirs, sigs, _type_table = parse_drift_to_hir(src)
-	assert sigs["drift_main"].return_type.startswith("FnResult")
+	assert sigs["drift_main"].return_type.name == "FnResult"
 	main = func_hirs["drift_main"]
 	assert len(main.statements) == 1
 	assert isinstance(main.statements[0], H.HThrow)

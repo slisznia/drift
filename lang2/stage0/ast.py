@@ -100,7 +100,7 @@ class Index(Expr):
 @dataclass
 class ArrayLiteral(Expr):
 	"""Array literal placeholder used in early AST; semantics refined later."""
-	elems: List[Expr]
+	elements: List[Expr]
 	loc: Optional[object] = None
 
 

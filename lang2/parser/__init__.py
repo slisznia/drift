@@ -41,6 +41,8 @@ def _convert_expr(expr: parser_ast.Expr) -> s0.Expr:
 		return s0.Binary(op=expr.op, left=_convert_expr(expr.left), right=_convert_expr(expr.right), loc=getattr(expr, "loc", None))
 	if isinstance(expr, parser_ast.Unary):
 		return s0.Unary(op=expr.op, operand=_convert_expr(expr.operand), loc=getattr(expr, "loc", None))
+	if isinstance(expr, parser_ast.ArrayLiteral):
+		return s0.ArrayLiteral(elements=[_convert_expr(e) for e in expr.elements], loc=getattr(expr, "loc", None))
 	if isinstance(expr, parser_ast.Move):
 		return _convert_expr(expr.value)
 	raise NotImplementedError(f"Unsupported expression in adapter: {expr!r}")
@@ -125,7 +127,8 @@ def _decls_from_parser_program(prog: parser_ast.Module) -> list[object]:
 	class _FrontendParam:
 		def __init__(self, name: str, type_expr: parser_ast.TypeExpr, loc: Optional[parser_ast.Located]) -> None:
 			self.name = name
-			self.type = _type_expr_to_str(type_expr)
+			# Preserve the parsed type expression so the resolver can build real TypeIds.
+			self.type = type_expr
 			self.loc = loc
 
 	class _FrontendDecl:
@@ -133,7 +136,7 @@ def _decls_from_parser_program(prog: parser_ast.Module) -> list[object]:
 			self,
 			name: str,
 			params: list[_FrontendParam],
-			return_type: str,
+			return_type: parser_ast.TypeExpr,
 			loc: Optional[parser_ast.Located],
 		) -> None:
 			self.name = name
@@ -146,8 +149,7 @@ def _decls_from_parser_program(prog: parser_ast.Module) -> list[object]:
 
 	for fn in prog.functions:
 		params = [_FrontendParam(p.name, p.type_expr, getattr(p, "loc", None)) for p in fn.params]
-		ret_str = _type_expr_to_str(fn.return_type)
-		decls.append(_FrontendDecl(fn.name, params, ret_str, getattr(fn, "loc", None)))
+		decls.append(_FrontendDecl(fn.name, params, fn.return_type, getattr(fn, "loc", None)))
 	return decls
 
 
