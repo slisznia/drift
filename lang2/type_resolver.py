@@ -60,15 +60,22 @@ def resolve_program_signatures(func_decls: Iterable[object]) -> tuple[TypeTable,
 		# Return
 		raw_ret = getattr(decl, "return_type", None)
 		return_type_id = _resolve_type(raw_ret, table, int_ty, bool_ty, str_ty, err_ty)
+		error_type_id = None
+		ret_def = table.get(return_type_id)
+		if ret_def.kind is TypeKind.FNRESULT and len(ret_def.param_types) >= 2:
+			error_type_id = ret_def.param_types[1]
 
 		throws = _throws_from_decl(decl)
 		declared_can_throw = True if throws else None
+		if declared_can_throw is None and ret_def.kind is TypeKind.FNRESULT:
+			declared_can_throw = True
 
 		signatures[name] = FnSignature(
 			name=name,
 			loc=decl_loc,
 			param_type_ids=param_type_ids,
 			return_type_id=return_type_id,
+			error_type_id=error_type_id,
 			declared_can_throw=declared_can_throw,
 			is_extern=is_extern,
 			is_intrinsic=is_intrinsic,

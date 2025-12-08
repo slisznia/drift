@@ -97,3 +97,29 @@ fn drift_main() returns Int {
 """)
 	with pytest.raises(NotImplementedError):
 		parse_drift_to_hir(src)
+
+
+def test_fnresult_typeids_are_resolved(tmp_path: Path):
+	"""
+	Ensure resolver produces real TypeIds for FnResult return types (no fallback
+	string/tuple resolution). Return type and error side should map to Int/Error
+	TypeIds on the shared TypeTable.
+	"""
+	src = tmp_path / "main.drift"
+	src.write_text(
+		"""
+fn drift_main() returns FnResult<Int, Error> {
+    return Ok(1);
+}
+"""
+	)
+	_, sigs, type_table = parse_drift_to_hir(src)
+	sig = sigs["drift_main"]
+	assert sig.return_type_id is not None
+	assert sig.error_type_id is not None
+
+	ret_def = type_table.get(sig.return_type_id)
+	assert ret_def.name == "FnResult"
+	ok_ty, err_ty = ret_def.param_types
+	# error_type_id should match the FnResult err side produced by the resolver.
+	assert err_ty == sig.error_type_id
