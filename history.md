@@ -9,3 +9,8 @@
 - Module builder now emits `drift_string_eq`/`drift_string_concat` declares once when needed; array helper declares remain module-level.
 - Added LLVM IR tests for string len on a String operand and for string eq/concat; existing literal/pass-through tests remain green.
 - All tests passing: PYTHONPATH=.. ../.venv/bin/pytest.
+## 2025-12-08 – String ops via MIR, e2e len/eq/concat
+- HIR→MIR now emits explicit `StringLen`, `StringEq`, and `StringConcat` for `len(s)`, `s == t`, `s + t` on strings; BinaryOpInstr no longer handles string operands.
+- LLVM lowers these MIR ops: string len via `extractvalue %DriftString, 0`; eq/concat via runtime calls with module-level declares for `drift_string_eq` / `drift_string_concat`.
+- E2E runner links string_runtime; added e2e cases for string len (literal/roundtrip), concat len, and eq; all passing. Added negative LLVM test for unsupported string binops.
+- Array helper declares remain module-level; all tests green.

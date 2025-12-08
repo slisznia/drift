@@ -208,15 +208,30 @@ class HIRToMIR:
 		left = self.lower_expr(expr.left)
 		right = self.lower_expr(expr.right)
 		dest = self.b.new_temp()
+		# String-aware lowering: redirect +/== on strings to dedicated MIR ops.
+		left_ty = self._local_types.get(getattr(expr.left, "name", ""))
+		right_ty = self._local_types.get(getattr(expr.right, "name", ""))
+		if expr.op in (H.BinaryOp.ADD, H.BinaryOp.EQ) and left_ty == self._string_type and right_ty == self._string_type:
+			if expr.op is H.BinaryOp.ADD:
+				self.b.emit(M.StringConcat(dest=dest, left=left, right=right))
+				return dest
+			if expr.op is H.BinaryOp.EQ:
+				self.b.emit(M.StringEq(dest=dest, left=left, right=right))
+				return dest
 		self.b.emit(M.BinaryOpInstr(dest=dest, op=expr.op, left=left, right=right))
 		return dest
 
 	def _visit_expr_HField(self, expr: H.HField) -> M.ValueId:
 		subject = self.lower_expr(expr.subject)
-		# Array len/capacity sugar: field access on an array produces ArrayLen/ArrayCap.
+		# Array/String len/capacity sugar: field access produces ArrayLen/ArrayCap/StringLen.
 		if expr.name == "len":
 			dest = self.b.new_temp()
-			self.b.emit(M.ArrayLen(dest=dest, array=subject))
+			# Treat len on String specially; it should read the DriftString header.
+			subj_ty = self._infer_expr_type(expr.subject)
+			if subj_ty == self._string_type:
+				self.b.emit(M.StringLen(dest=dest, value=subject))
+			else:
+				self.b.emit(M.ArrayLen(dest=dest, array=subject))
 			return dest
 		if expr.name in ("cap", "capacity"):
 			dest = self.b.new_temp()

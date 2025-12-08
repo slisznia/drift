@@ -104,12 +104,11 @@ Do this in two steps: **literals + pass-through** first; **concat/print** second
 * LLVM module seeds `%DriftString = { %drift.size, i8* }`.
 * ConstString lowering emits a private UTF-8 global with escaped bytes and builds the struct inline (len/data); no runtime call.
 * Return/call lowering now understands `%DriftString` when a shared TypeTable is provided (headers and arguments use `%DriftString`; return types are `%DriftString`); Int remains the default fallback.
-* String binary ops are partially lowered:
-  * `==` on strings → call `drift_string_eq`.
-  * `+` on strings → call `drift_string_concat`.
-  * `len` on strings is handled by reusing `ArrayLen` lowering: if the operand is `%DriftString`, lowering emits `extractvalue %DriftString, 0` (Uint/i64).
-  * Module-level declares for `drift_string_eq`/`drift_string_concat` are emitted once when needed.
-* IR tests now cover a literal return, pass-through call, string eq/concat lowering, and string len via `ArrayLen` on a string operand.
+* String ops moved out of ad-hoc LLVM magic into explicit MIR lowering:
+  * HIR→MIR emits `StringLen`, `StringEq`, `StringConcat` for `len(s)`, `s == t`, and `s + t` on strings; `BinaryOpInstr` on strings should no longer appear.
+  * LLVM lowers these MIR ops to `extractvalue %DriftString, 0` (len) or runtime calls (`drift_string_eq` / `drift_string_concat`), with module-level declares emitted once.
+* IR tests now cover literal return, pass-through call, string eq/concat lowering, and string len on a string operand. Negative test ensures unsupported string binops raise.
+* E2E runner links `string_runtime.c`; new e2e cases exercise string len/concat/eq and are passing.
 
 Status:
 - String params/returns are supported in LLVM (headers/calls/returns typed).
