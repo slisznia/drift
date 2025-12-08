@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import List, Dict, Optional, Union
 
+from lang2.core.types_core import TypeId
 from lang2.stage1 import UnaryOp, BinaryOp
 
 
@@ -117,6 +118,32 @@ class LoadIndex(MInstr):
 class StoreIndex(MInstr):
 	"""subject[index] = value (array/map-like write)"""
 	subject: ValueId
+	index: ValueId
+	value: ValueId
+
+
+@dataclass
+class ArrayLit(MInstr):
+	"""dest = Array literal of the given element type."""
+	dest: ValueId
+	elem_ty: TypeId
+	elements: List[ValueId]
+
+
+@dataclass
+class ArrayIndexLoad(MInstr):
+	"""dest = array[index] (typed array load)."""
+	dest: ValueId
+	elem_ty: TypeId
+	array: ValueId
+	index: ValueId
+
+
+@dataclass
+class ArrayIndexStore(MInstr):
+	"""array[index] = value (typed array store)."""
+	elem_ty: TypeId
+	array: ValueId
 	index: ValueId
 	value: ValueId
 
@@ -275,18 +302,37 @@ class MirFunc:
 
 
 __all__ = [
-	"MNode", "MInstr", "MTerminator",
-	"UnaryOp", "BinaryOp",
-	"ConstInt", "ConstBool", "ConstString",
-	"LoadLocal", "AddrOfLocal", "StoreLocal",
-	"LoadField", "StoreField",
-	"LoadIndex", "StoreIndex",
-	"Call", "MethodCall",
+	"MNode",
+	"MInstr",
+	"MTerminator",
+	"UnaryOp",
+	"BinaryOp",
+	"ConstInt",
+	"ConstBool",
+	"ConstString",
+	"LoadLocal",
+	"AddrOfLocal",
+	"StoreLocal",
+	"LoadField",
+	"StoreField",
+	"LoadIndex",
+	"StoreIndex",
+	"ArrayLit",
+	"ArrayIndexLoad",
+	"ArrayIndexStore",
+	"Call",
+	"MethodCall",
 	"ConstructDV",
-	"ConstructError", "ConstructResultOk", "ConstructResultErr",
+	"ConstructError",
+	"ConstructResultOk",
+	"ConstructResultErr",
 	"ErrorEvent",
-	"UnaryOpInstr", "BinaryOpInstr",
+	"UnaryOpInstr",
+	"BinaryOpInstr",
 	"Phi",
-	"Goto", "IfTerminator", "Return",
-	"BasicBlock", "MirFunc",
+	"Goto",
+	"IfTerminator",
+	"Return",
+	"BasicBlock",
+	"MirFunc",
 ]

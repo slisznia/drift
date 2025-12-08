@@ -123,7 +123,7 @@ def compile_stubbed_funcs(
 
 	for name, hir_norm in normalized_hirs.items():
 		builder = MirBuilder(name=name)
-		HIRToMIR(builder, exc_env=exc_env).lower_block(hir_norm)
+		HIRToMIR(builder, type_table=shared_type_table, exc_env=exc_env).lower_block(hir_norm)
 		mir_funcs[name] = builder.func
 
 	# Stage3: summaries

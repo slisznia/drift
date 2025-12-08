@@ -27,9 +27,10 @@ Currently supported:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List, Set, Mapping
+from typing import List, Set, Mapping, Optional
 
 from lang2 import stage1 as H
+from lang2.core.types_core import TypeKind, TypeTable, TypeId
 from . import mir_nodes as M
 
 
@@ -129,7 +130,12 @@ class HIRToMIR:
 	lower_* methods above.
 	"""
 
-	def __init__(self, builder: MirBuilder, exc_env: Mapping[str, int] | None = None):
+	def __init__(
+		self,
+		builder: MirBuilder,
+		type_table: Optional[TypeTable] = None,
+		exc_env: Mapping[str, int] | None = None,
+	):
 		"""
 		Create a lowering context.
 
@@ -143,6 +149,19 @@ class HIRToMIR:
 		self._try_stack: list["_TryCtx"] = []
 		# Optional exception environment: maps DV/exception type name -> event code.
 		self._exc_env = exc_env
+		# Track best-effort local types (TypeId) to tag typed MIR nodes.
+		self._local_types: dict[str, TypeId] = {}
+		# Optional shared TypeTable for typed MIR nodes (arrays, etc.).
+		self._type_table = type_table or TypeTable()
+		# Cache some common types and expose them on the table for reuse when shared.
+		self._int_type = getattr(self._type_table, "_int_type", None) or self._type_table.new_scalar("Int")
+		self._type_table._int_type = self._int_type  # type: ignore[attr-defined]
+		self._bool_type = getattr(self._type_table, "_bool_type", None) or self._type_table.new_scalar("Bool")
+		self._type_table._bool_type = self._bool_type  # type: ignore[attr-defined]
+		self._string_type = getattr(self._type_table, "_string_type", None) or self._type_table.new_scalar("String")
+		self._type_table._string_type = self._string_type  # type: ignore[attr-defined]
+		self._unknown_type = getattr(self._type_table, "_unknown_type", None) or self._type_table.new_unknown("Unknown")
+		self._type_table._unknown_type = self._unknown_type  # type: ignore[attr-defined]
 
 	# --- Expression lowering ---
 
@@ -202,7 +221,15 @@ class HIRToMIR:
 		subject = self.lower_expr(expr.subject)
 		index = self.lower_expr(expr.index)
 		dest = self.b.new_temp()
-		self.b.emit(M.LoadIndex(dest=dest, subject=subject, index=index))
+		elem_ty = self._infer_array_elem_type(expr.subject)
+		self.b.emit(M.ArrayIndexLoad(dest=dest, elem_ty=elem_ty, array=subject, index=index))
+		return dest
+
+	def _visit_expr_HArrayLiteral(self, expr: H.HArrayLiteral) -> M.ValueId:
+		elem_ty = self._infer_array_literal_elem_type(expr)
+		values = [self.lower_expr(e) for e in expr.elements]
+		dest = self.b.new_temp()
+		self.b.emit(M.ArrayLit(dest=dest, elem_ty=elem_ty, elements=values))
 		return dest
 
 	# Stubs for unhandled expressions
@@ -313,12 +340,18 @@ class HIRToMIR:
 	def _visit_stmt_HLet(self, stmt: H.HLet) -> None:
 		self.b.ensure_local(stmt.name)
 		val = self.lower_expr(stmt.value)
+		val_ty = self._infer_expr_type(stmt.value)
+		if val_ty is not None:
+			self._local_types[stmt.name] = val_ty
 		self.b.emit(M.StoreLocal(local=stmt.name, value=val))
 
 	def _visit_stmt_HAssign(self, stmt: H.HAssign) -> None:
 		val = self.lower_expr(stmt.value)
 		if isinstance(stmt.target, H.HVar):
 			self.b.ensure_local(stmt.target.name)
+			val_ty = self._infer_expr_type(stmt.value)
+			if val_ty is not None:
+				self._local_types[stmt.target.name] = val_ty
 			self.b.emit(M.StoreLocal(local=stmt.target.name, value=val))
 		elif isinstance(stmt.target, H.HField):
 			subject = self.lower_expr(stmt.target.subject)
@@ -326,7 +359,8 @@ class HIRToMIR:
 		elif isinstance(stmt.target, H.HIndex):
 			subject = self.lower_expr(stmt.target.subject)
 			index = self.lower_expr(stmt.target.index)
-			self.b.emit(M.StoreIndex(subject=subject, index=index, value=val))
+			elem_ty = self._infer_array_elem_type(stmt.target.subject)
+			self.b.emit(M.ArrayIndexStore(elem_ty=elem_ty, array=subject, index=index, value=val))
 		else:
 			raise NotImplementedError(f"Unsupported assignment target: {type(stmt.target).__name__}")
 
@@ -600,6 +634,56 @@ class HIRToMIR:
 		self.b.set_block(cont_block)
 
 	# --- Helpers ---
+
+	def _infer_array_elem_type(self, subject: H.HExpr) -> TypeId:
+		"""
+		Best-effort element type inference for array subjects when lowering
+		index loads/stores. Falls back to an Unknown elem type.
+		"""
+		subj_ty = self._infer_expr_type(subject)
+		if subj_ty is None:
+			return self._unknown_type
+		ty_def = self._type_table.get(subj_ty)
+		if ty_def.kind is TypeKind.ARRAY and ty_def.param_types:
+			return ty_def.param_types[0]
+		return self._unknown_type
+
+	def _infer_array_literal_elem_type(self, expr: H.HArrayLiteral) -> TypeId:
+		"""
+		Best-effort element type inference for array literals.
+		"""
+		elem_types = [self._infer_expr_type(e) for e in expr.elements]
+		elem_types = [t for t in elem_types if t is not None]
+		if not elem_types:
+			return self._unknown_type
+		first = elem_types[0]
+		if all(t == first for t in elem_types):
+			return first
+		return self._unknown_type
+
+	def _infer_expr_type(self, expr: H.HExpr) -> TypeId | None:
+		"""
+		Minimal expression type inference to tag array instructions with elem types.
+		"""
+		if isinstance(expr, H.HLiteralInt):
+			return self._int_type
+		if isinstance(expr, H.HLiteralBool):
+			return self._bool_type
+		if isinstance(expr, H.HLiteralString):
+			return self._string_type
+		if isinstance(expr, H.HArrayLiteral):
+			elem_ty = self._infer_array_literal_elem_type(expr)
+			return self._type_table.new_array(elem_ty)
+		if isinstance(expr, H.HVar):
+			return self._local_types.get(expr.name)
+		if isinstance(expr, H.HIndex):
+			array_ty = self._infer_expr_type(expr.subject)
+			if array_ty is not None:
+				ty_def = self._type_table.get(array_ty)
+				if ty_def.kind is TypeKind.ARRAY and ty_def.param_types:
+					return ty_def.param_types[0]
+		# Unknown for other expressions (vars, calls, etc.)
+		return None
 
 	def _lookup_error_code(self, payload_expr: H.HExpr) -> int:
 		"""
