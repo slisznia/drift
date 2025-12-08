@@ -7,6 +7,8 @@
 - Work-progress notes updated accordingly; refactor considered complete, ready to tackle FnSignature enrichment and additional e2e coverage next.
 - FnSignature/FnInfo enrichment: TypeId fields are now primary (param_type_ids/return_type_id/declared_can_throw/flags/error_type_id); FnInfo owns the signature and inferred_may_throw. The checker prefers pre-resolved TypeIds in signatures, falls back to legacy raw resolution only when missing, defaults declared_can_throw from throws_events, and uses TypeKind.FNRESULT for try-sugar checks. A shallow HIR walk marks inferred_may_throw and diagnoses missing throws. All tests remain green.
 - Added a minimal type resolver (`lang2/type_resolver.py`) that builds a shared TypeTable and FnSignatures from declared types; `compile_stubbed_funcs` resolves signatures from HIR (via a fake decl shim) when none are provided, keeping the pipeline TypeId-first even before a real checker lands.
+- Threaded the resolver’s TypeTable everywhere and guarded against TypeId-carrying signatures without a shared table; string TypeId is shared across HIR/SSA. The parser adapter returns the shared table for Drift-source paths.
+- Call checking now uses shallow arg type inference (literals, simple calls, Result.Ok, basic ops) to enforce arity and simple param-type equality; added driver tests for mismatched Bool→Int (diagnostic), matching Int call (no diagnostic), and synthesized FnResult<Unknown, Error> via Result.Ok with no signature TypeIds (no crash/diagnostic).
 
 ## 2025-12-01
 - Hardened exception event codes: `Error.code` is `I64` with a 4+60 bit layout (kinds + payload), user exceptions hash their FQN via xxHash64, per-module collisions are rejected, and metadata now records FQN/kind/payload/event_code for future export.
