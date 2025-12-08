@@ -1785,15 +1785,15 @@ val from_utf8 = ByteBuffer.from_string("drift")
 
 Core operations:
 
-- `fn len(self: &ByteBuffer) returns Size` — number of initialized bytes.
-- `fn capacity(self: &ByteBuffer) returns Size` — reserved storage.
+- `fn len(self: &ByteBuffer) returns Uint` — number of initialized bytes.
+- `fn capacity(self: &ByteBuffer) returns Uint` — reserved storage.
 - `fn clear(self: &mut ByteBuffer) returns Void` — resets `len` to zero without freeing.
 - `fn push(self: &mut ByteBuffer, b: Byte) returns Void`
 - `fn extend(self: &mut ByteBuffer, slice: ByteSlice) returns Void`
 - `fn as_slice(self: &ByteBuffer) returns ByteSlice`
-- `fn slice(self: &ByteBuffer, start: Size, len: Size) returns ByteSlice`
+- `fn slice(self: &ByteBuffer, start: Uint, len: Uint) returns ByteSlice`
 - `fn as_mut_slice(self: &mut ByteBuffer) returns MutByteSlice`
-- `fn reserve(self: &mut ByteBuffer, additional: Size) returns Void`
+- `fn reserve(self: &mut ByteBuffer, additional: Uint) returns Void`
 
 `ByteSlice`/`MutByteSlice` are lightweight descriptors (`{ ptr, len }`). They do not own memory; borrow rules ensure the referenced storage stays alive for the duration of the borrow. `MutByteSlice` provides exclusive access, so you cannot obtain a second mutable slice while one is active.
 

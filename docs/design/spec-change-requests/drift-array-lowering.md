@@ -1,22 +1,22 @@
 # MIR → LLVM Lowering for Array Literals and Indexing  
-(Updated for `Size` type, consistent with String spec)
+(Updated for v1: lengths/caps use `Uint`, indices use `Int`)
 
 This document defines how `Array<T>` literals and indexed loads lower
-from MIR to LLVM IR, and the required runtime ABI. All size-related
-fields (`len`, `cap`, index bounds) use the language-level `Size` type,
-whose concrete representation is the target-dependent `%drift.size`.
+from MIR to LLVM IR, and the required runtime ABI. In v1, all length/
+capacity metadata uses the language-level `Uint`, and `%drift.size` is
+the LLVM representation of `Uint` on the target. Indices are `Int`.
 
 ---
 
 ## 1. Runtime / ABI Model
 
-Arrays share the same size/index model as Strings.
+Arrays share the same length/index model as Strings in v1:
 
 ### 1.1 Language-level types
 
-- `Array<T>.len: Size`
-- `Array<T>.capacity(): Size`
-- Indexing: `xs[i]`, where `i: Int`, is checked against `Size`.
+- `Array<T>.len: Uint`
+- `Array<T>.capacity(): Uint`
+- Indexing: `xs[i]`, where `i: Int`, is bounds-checked against `Uint len`.
 
 ### 1.2 Runtime C definitions
 
@@ -24,7 +24,7 @@ Arrays share the same size/index model as Strings.
 #include <stddef.h>
 #include <stdint.h>
 
-typedef size_t drift_size;        // mirror of Drift's Size
+typedef size_t drift_size;        // mirror of Drift's Uint on this platform
 
 typedef struct DriftArrayHeader {
 	drift_size len;
@@ -95,7 +95,7 @@ Steps:
 1. Evaluate all element expressions left → right in MIR.
 2. Compute compile-time constants:
 
-   * `len = elements.len() : %drift.size`
+   * `len = elements.len() : %drift.size` (Uint)
    * `cap = len`
 3. Call runtime allocator:
 
@@ -178,11 +178,9 @@ Result `%elem` is the MIR result value.
 
 ## 6. Spec Notes
 
-To keep the main language spec consistent:
+To keep the main language spec consistent for v1:
 
-* All collection lengths/capacities use `Size`.
-* Indexing uses runtime-checked semantics identical to Strings.
-* Bounds violations produce a standard “index-out-of-bounds” error.
-
-ABI/runtime use `drift_size`.
-LLVM backend uses `%drift.size`.
+* All collection lengths/capacities use `Uint`.
+* Indexing uses runtime-checked semantics identical to Strings: `Int` index, fail on `idx < 0` or `idx >= len`.
+* ABI/runtime use `drift_size` (C `size_t`) as the representation of `Uint`.
+* LLVM backend uses `%drift.size` to represent `Uint`.
