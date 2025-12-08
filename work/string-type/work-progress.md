@@ -55,47 +55,13 @@ You don’t change anything here; just take notes so the port isn’t guesswork.
 
 Goal: copy the working C code, adjust it to **Uint-based size semantics** and lang2’s directory layout.
 
-1. **Create lang2 runtime string module**
+**Done:** `lang2/codegen/runtime/string_runtime.[ch]` copied/adapted from lang/:
 
-   * Under `lang2/codegen/runtime/` (or wherever you keep runtime C):
+* Layout: `typedef uint64_t drift_size_t;` and `typedef struct DriftString { drift_size_t len; char *data; }`.
+* Helpers: `drift_string_from_cstr`, `_from_utf8_bytes`, `_from_int64`, `_from_bool`, `_literal`, `_concat`, `_free`, `_to_cstr`, `_eq`.
+* Notes: len is treated as Uint carrier (`i64` in v1). No frees inserted by the compiler yet.
 
-     * Add `drift_string.c` and `drift_string.h` copied from lang/.
-   * Keep the **struct layout** identical conceptually:
-
-     ```c
-     typedef <Uint-carrier> drift_size_t;   // see next bullet
-     typedef struct DriftString {
-         drift_size_t len;
-         char *data;
-     } DriftString;
-     ```
-
-2. **Map `drift_size_t` to lang2’s `Uint` carrier**
-
-   * Identify what LLVM and ABI use for `Uint` in lang2 (most likely `i64`).
-   * In `drift_string.h`, define:
-
-     ```c
-     typedef uint64_t drift_size_t;  // or whatever the Uint ABI is
-     ```
-   * This must match the `%drift.size` / `Uint` TypeId carrier you use in LLVM.
-
-3. **Adjust helper signatures if needed**
-
-   * Ensure all helpers use `drift_size_t` instead of `size_t` where appropriate.
-   * Keep the API set:
-
-     * `DriftString drift_string_from_cstr(const char *s);`
-     * `DriftString drift_string_from_utf8_bytes(const uint8_t *data, drift_size_t len);`
-     * `DriftString drift_string_concat(DriftString a, DriftString b);`
-     * `void drift_string_free(DriftString s);`
-     * `void drift_print_string(DriftString s);` or `char *drift_string_to_cstr(DriftString s);` if that’s what you had.
-   * Fix any `size_t` / `ssize_t` arithmetic to use `drift_size_t` consistently and guard against overflow on `len` additions.
-
-4. **Integrate with lang2 build**
-
-   * Add the new C files to whatever build system / CMake / ninja step builds the lang2 runtime.
-   * Confirm you get a compiled runtime library exposing these symbols.
+Remaining: wire these runtime files into the lang2 build when we start emitting String codegen.
 
 ---
 
@@ -306,4 +272,3 @@ Add targeted tests as you go:
      }
      ```
    * Run and check you get `3` (or whatever route you use to surface the result).
-

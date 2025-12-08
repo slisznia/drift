@@ -40,6 +40,7 @@ from lang2.stage2 import (
 	Call,
 	ConstBool,
 	ConstInt,
+	ConstString,
 	ConstructError,
 	ConstructResultErr,
 	ConstructResultOk,
@@ -52,10 +53,19 @@ from lang2.stage2 import (
 from lang2.stage4.ssa import SsaFunc
 from lang2.stage4.ssa import CfgKind
 
+"""LLVM codegen for lang2 SSA.
+
+This backend is intentionally narrow for v1: Int/Bool/Array and
+FnResult<Int, Error>. As we add String support, we treat it as a two-field
+struct { %drift.size, i8* } and lower literals to that shape without runtime
+calls.
+"""
+
 # ABI type names
 DRIFT_ERROR_TYPE = "%DriftError"
 FNRESULT_INT_ERROR = "%FnResult_Int_Error"
 DRIFT_SIZE_TYPE = "%drift.size"
+DRIFT_STRING_TYPE = "%DriftString"
 
 
 # Public API -------------------------------------------------------------------
@@ -123,6 +133,7 @@ class LlvmModuleBuilder:
 				f"{DRIFT_SIZE_TYPE} = type i64",
 				f"{DRIFT_ERROR_TYPE} = type {{ i64, ptr, ptr, ptr }}",
 				f"{FNRESULT_INT_ERROR} = type {{ i1, i64, {DRIFT_ERROR_TYPE} }}",
+				f"{DRIFT_STRING_TYPE} = type {{ {DRIFT_SIZE_TYPE}, i8* }}",
 			]
 		)
 
@@ -252,6 +263,8 @@ class _FuncBuilder:
 			val = 1 if instr.value else 0
 			self.value_types[dest] = "i1"
 			self.lines.append(f"  {dest} = add i1 0, {val}")
+		elif isinstance(instr, ConstString):
+			self._lower_const_string(instr)
 		elif isinstance(instr, ArrayLit):
 			self._lower_array_lit(instr)
 		elif isinstance(instr, ArrayIndexLoad):
@@ -315,6 +328,30 @@ class _FuncBuilder:
 			return
 		else:
 			raise NotImplementedError(f"LLVM codegen v1: unsupported instr {type(instr).__name__}")
+
+	def _lower_const_string(self, instr: ConstString) -> None:
+		"""
+		Lower a ConstString to a DriftString literal ({len: %drift.size, data: i8*}).
+		We emit a private unnamed constant for the bytes (with trailing NUL) and
+		build the struct inline; no runtime call is needed for literals.
+		"""
+		dest = self._map_value(instr.dest)
+		utf8_bytes = instr.value.encode("utf-8")
+		size = len(utf8_bytes)
+		global_name = f"@.str{len(self.module.consts)}"
+		self.module.consts.append(
+			f"{global_name} = private unnamed_addr constant [{size + 1} x i8] c\"{instr.value}\\00\""
+		)
+		ptr = self._fresh("strptr")
+		self.lines.append(
+			f"  {ptr} = getelementptr inbounds [{size + 1} x i8], [{size + 1} x i8]* {global_name}, i32 0, i32 0"
+		)
+		tmp0 = self._fresh("str0")
+		tmp1 = self._fresh("str1")
+		self.lines.append(f"  {tmp0} = insertvalue {DRIFT_STRING_TYPE} undef, {DRIFT_SIZE_TYPE} {size}, 0")
+		self.lines.append(f"  {tmp1} = insertvalue {DRIFT_STRING_TYPE} {tmp0}, i8* {ptr}, 1")
+		self.lines.append(f"  {dest} = add {DRIFT_STRING_TYPE} {tmp1}, zeroinitializer")
+		self.value_types[dest] = DRIFT_STRING_TYPE
 
 	def _lower_call(self, instr: Call) -> None:
 		dest = self._map_value(instr.dest) if instr.dest else None
