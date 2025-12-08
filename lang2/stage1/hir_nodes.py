@@ -253,6 +253,7 @@ class HLet(HStmt):
 	"""Immutable binding introduction."""
 	name: str
 	value: HExpr
+	declared_type_expr: Optional[object] = None
 
 
 @dataclass

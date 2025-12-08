@@ -102,7 +102,7 @@ class AstToHIR:
 
 	def _visit_stmt_LetStmt(self, stmt: ast.LetStmt) -> H.HStmt:
 		"""Immutable binding introduction."""
-		return H.HLet(name=stmt.name, value=self.lower_expr(stmt.value))
+		return H.HLet(name=stmt.name, value=self.lower_expr(stmt.value), declared_type_expr=getattr(stmt, "type_expr", None))
 
 	def _visit_stmt_ReturnStmt(self, stmt: ast.ReturnStmt) -> H.HStmt:
 		"""Return with optional value."""

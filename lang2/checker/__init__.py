@@ -137,6 +137,8 @@ class Checker:
 		self._type_table = type_table or TypeTable()
 
 		def _find_named(kind: TypeKind, name: str) -> TypeId | None:
+			# Best-effort lookup on a shared table to avoid minting duplicate TypeIds
+			# when the resolver already seeded common scalars/errors.
 			for ty_id, ty_def in getattr(self._type_table, "_defs", {}).items():  # type: ignore[attr-defined]
 				if ty_def.kind is kind and ty_def.name == name:
 					return ty_id
@@ -420,6 +422,7 @@ class Checker:
 		fn_infos: Mapping[str, FnInfo],
 		current_fn: Optional[FnInfo],
 		diagnostics: Optional[List[Diagnostic]] = None,
+		locals: Optional[Dict[str, TypeId]] = None,
 	) -> Optional[TypeId]:
 		"""
 		Very shallow expression type inference for call-arg checking.
@@ -436,6 +439,8 @@ class Checker:
 			return self._bool_type
 		if hasattr(H, "HLiteralString") and isinstance(expr, getattr(H, "HLiteralString")):
 			return self._string_type
+		if isinstance(expr, H.HVar) and locals is not None and expr.name in locals:
+			return locals[expr.name]
 		if isinstance(expr, H.HCall) and isinstance(expr.fn, H.HVar):
 			callee = fn_infos.get(expr.fn.name)
 			if callee is not None and callee.signature and callee.signature.return_type_id is not None:
@@ -448,13 +453,13 @@ class Checker:
 				return current_fn.signature.return_type_id
 			return self._type_table.new_fnresult(self._unknown_type, self._error_type)
 		if isinstance(expr, H.HBinary):
-			left_ty = self._infer_hir_expr_type(expr.left, fn_infos, current_fn, diagnostics)
-			right_ty = self._infer_hir_expr_type(expr.right, fn_infos, current_fn, diagnostics)
+			left_ty = self._infer_hir_expr_type(expr.left, fn_infos, current_fn, diagnostics, locals=locals)
+			right_ty = self._infer_hir_expr_type(expr.right, fn_infos, current_fn, diagnostics, locals=locals)
 			if left_ty == self._int_type and right_ty == self._int_type:
 				return self._int_type
 			return None
 		if isinstance(expr, H.HUnary):
-			return self._infer_hir_expr_type(expr.expr, fn_infos, current_fn, diagnostics)
+			return self._infer_hir_expr_type(expr.expr, fn_infos, current_fn, diagnostics, locals=locals)
 		if isinstance(expr, H.HArrayLiteral):
 			if not expr.elements:
 				if diagnostics is not None:
@@ -468,7 +473,7 @@ class Checker:
 				return None
 			elem_types: list[TypeId] = []
 			for el in expr.elements:
-				el_ty = self._infer_hir_expr_type(el, fn_infos, current_fn, diagnostics)
+				el_ty = self._infer_hir_expr_type(el, fn_infos, current_fn, diagnostics, locals=locals)
 				if el_ty is not None:
 					elem_types.append(el_ty)
 			if not elem_types:
@@ -487,8 +492,8 @@ class Checker:
 					return self._type_table.new_array(self._unknown_type)
 			return self._type_table.new_array(first)
 		if isinstance(expr, H.HIndex):
-			subject_ty = self._infer_hir_expr_type(expr.subject, fn_infos, current_fn, diagnostics)
-			idx_ty = self._infer_hir_expr_type(expr.index, fn_infos, current_fn, diagnostics)
+			subject_ty = self._infer_hir_expr_type(expr.subject, fn_infos, current_fn, diagnostics, locals=locals)
+			idx_ty = self._infer_hir_expr_type(expr.index, fn_infos, current_fn, diagnostics, locals=locals)
 			if idx_ty is not None and idx_ty != self._int_type and diagnostics is not None:
 				diagnostics.append(
 					Diagnostic(
@@ -730,6 +735,41 @@ class Checker:
 				return self._type_table.new_fnresult(ok, err)
 		return self._type_table.new_unknown(str(val))
 
+	def _resolve_typeexpr(self, raw: object) -> TypeId:
+		"""
+		Map a parser TypeExpr-like object (name/args) or simple string/tuple into a
+		TypeId using the shared TypeTable. This mirrors the resolver and is used for
+		declared local types.
+		"""
+		if raw is None:
+			return self._unknown_type
+		if isinstance(raw, TypeId):
+			return raw
+		if hasattr(raw, "name") and hasattr(raw, "args"):
+			name = getattr(raw, "name")
+			args = getattr(raw, "args")
+			if name == "FnResult":
+				ok = self._resolve_typeexpr(args[0] if args else None)
+				err = self._resolve_typeexpr(args[1] if len(args) > 1 else self._error_type)
+				return self._type_table.new_fnresult(ok, err)
+			if name == "Array":
+				elem = self._resolve_typeexpr(args[0] if args else None)
+				return self._type_table.new_array(elem)
+			if name == "Int":
+				return self._int_type
+			if name == "Bool":
+				return self._bool_type
+			if name == "String":
+				return self._string_type
+			if name == "Error":
+				return self._error_type
+			return self._type_table.new_scalar(str(name))
+		if isinstance(raw, str):
+			return self._map_opaque(raw)
+		if isinstance(raw, tuple):
+			return self._map_opaque(raw)
+		return self._unknown_type
+
 	def _validate_try_results(
 		self,
 		fn_name: str,
@@ -840,15 +880,29 @@ class Checker:
 		"""
 		from lang2 import stage1 as H
 
+		locals: Dict[str, TypeId] = {}
+
 		def walk_expr(expr: H.HExpr) -> Optional[TypeId]:
-			return self._infer_hir_expr_type(expr, fn_infos, current_fn, diagnostics)
+			return self._infer_hir_expr_type(expr, fn_infos, current_fn, diagnostics, locals=locals)
 
 		def walk_block(hb: H.HBlock) -> None:
 			for stmt in hb.statements:
 				if isinstance(stmt, H.HExprStmt):
 					walk_expr(stmt.expr)
 				elif isinstance(stmt, H.HLet):
-					walk_expr(stmt.value)
+					decl_ty: Optional[TypeId] = None
+					if getattr(stmt, "declared_type_expr", None) is not None:
+						decl_ty = self._resolve_typeexpr(stmt.declared_type_expr)
+					value_ty = walk_expr(stmt.value)
+					if decl_ty is not None and value_ty is not None and decl_ty != value_ty:
+						diagnostics.append(
+							Diagnostic(
+								message="let-binding type does not match declared type",
+								severity="error",
+								span=None,
+							)
+						)
+					locals[stmt.name] = decl_ty or value_ty or self._unknown_type
 				elif isinstance(stmt, H.HAssign):
 					target_ty = None
 					if isinstance(stmt.target, H.HIndex):

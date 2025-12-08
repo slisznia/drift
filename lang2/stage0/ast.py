@@ -160,6 +160,7 @@ class LetStmt(Stmt):
 	"""Let-binding statement: let name = value."""
 	name: str
 	value: Expr
+	type_expr: Optional[object] = None  # preserve parsed type annotation if present
 	loc: Optional[object] = None
 
 

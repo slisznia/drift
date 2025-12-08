@@ -57,7 +57,12 @@ def _convert_expr_stmt(stmt: parser_ast.ExprStmt) -> s0.Stmt:
 
 
 def _convert_let(stmt: parser_ast.LetStmt) -> s0.Stmt:
-	return s0.LetStmt(name=stmt.name, value=_convert_expr(stmt.value), loc=stmt.loc)
+	return s0.LetStmt(
+		name=stmt.name,
+		value=_convert_expr(stmt.value),
+		type_expr=getattr(stmt, "type_expr", None),
+		loc=stmt.loc,
+	)
 
 
 def _convert_assign(stmt: parser_ast.AssignStmt) -> s0.Stmt:
