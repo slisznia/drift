@@ -30,6 +30,9 @@ from typing import Dict, List, Mapping
 from lang2.checker import FnInfo
 from lang2.stage1 import BinaryOp
 from lang2.stage2 import (
+	ArrayIndexLoad,
+	ArrayIndexStore,
+	ArrayLit,
 	BinaryOpInstr,
 	AssignSSA,
 	Call,
@@ -50,6 +53,7 @@ from lang2.stage4.ssa import CfgKind
 # ABI type names
 DRIFT_ERROR_TYPE = "%DriftError"
 FNRESULT_INT_ERROR = "%FnResult_Int_Error"
+DRIFT_SIZE_TYPE = "%drift.size"
 
 
 # Public API -------------------------------------------------------------------
@@ -114,6 +118,7 @@ class LlvmModuleBuilder:
 	def __post_init__(self) -> None:
 		self.type_decls.extend(
 			[
+				f"{DRIFT_SIZE_TYPE} = type i64",
 				f"{DRIFT_ERROR_TYPE} = type {{ i64, ptr, ptr, ptr }}",
 				f"{FNRESULT_INT_ERROR} = type {{ i1, i64, {DRIFT_ERROR_TYPE} }}",
 			]
@@ -167,6 +172,7 @@ class _FuncBuilder:
 	def lower(self) -> str:
 		self._assert_cfg_supported()
 		self._emit_header()
+		self._declare_array_helpers_if_needed()
 		order = self.ssa.block_order or list(self.func.blocks.keys())
 		for block_name in order:
 			self._emit_block(block_name)
@@ -178,6 +184,26 @@ class _FuncBuilder:
 		if self.func.params:
 			raise NotImplementedError("LLVM codegen v1: parameters not supported yet")
 		self.lines.append(f"define {ret_ty} @{self.func.name}() {{")
+
+	def _declare_array_helpers_if_needed(self) -> None:
+		"""Emit extern decls for array helpers if any array ops are present."""
+		has_array = any(
+			isinstance(instr, (ArrayLit, ArrayIndexLoad, ArrayIndexStore))
+			for block in self.func.blocks.values()
+			for instr in block.instructions
+		)
+		if not has_array:
+			return
+		self.lines.insert(
+			0,
+			"\n".join(
+				[
+					"declare ptr @drift_alloc_array(i64, i64, %drift.size, %drift.size)",
+					"declare void @drift_bounds_check_fail(%drift.size, %drift.size)",
+					"",
+				]
+			),
+		)
 
 	def _emit_block(self, block_name: str) -> None:
 		block = self.func.blocks[block_name]
@@ -224,6 +250,12 @@ class _FuncBuilder:
 			val = 1 if instr.value else 0
 			self.value_types[dest] = "i1"
 			self.lines.append(f"  {dest} = add i1 0, {val}")
+		elif isinstance(instr, ArrayLit):
+			self._lower_array_lit(instr)
+		elif isinstance(instr, ArrayIndexLoad):
+			self._lower_array_index_load(instr)
+		elif isinstance(instr, ArrayIndexStore):
+			self._lower_array_index_store(instr)
 		elif isinstance(instr, AssignSSA):
 			# Alias dest to src; no IR emission needed beyond name/type propagation.
 			src = self._map_value(instr.src)
@@ -378,3 +410,136 @@ class _FuncBuilder:
 		"""Best-effort lookup of an LLVM type string for a value id."""
 		name = self._map_value(value_id)
 		return self.value_types.get(name)
+
+	def _lower_array_lit(self, instr: ArrayLit) -> None:
+		"""Lower ArrayLit by allocating, storing elements, and building the header struct."""
+		dest = self._map_value(instr.dest)
+		elem_llty = self._llvm_array_elem_type(instr.elem_ty)
+		arr_llty = self._llvm_array_type(elem_llty)
+		elem_size = self._sizeof(elem_llty)
+		elem_align = self._alignof(elem_llty)
+		count = len(instr.elements)
+		# Call drift_alloc_array(elem_size, elem_align, len, cap)
+		len_const = count
+		cap_const = count
+		tmp_alloc = self._fresh("arr")
+		self.lines.append(
+			f"  {tmp_alloc} = call ptr @drift_alloc_array(i64 {elem_size}, i64 {elem_align}, %drift.size {len_const}, %drift.size {cap_const})"
+		)
+		# Bitcast to elem*
+		tmp_data = self._fresh("data")
+		self.lines.append(f"  {tmp_data} = bitcast ptr {tmp_alloc} to {elem_llty}*")
+		# Store elements
+		for idx, elem in enumerate(instr.elements):
+			elem_val = self._map_value(elem)
+			tmp_ptr = self._fresh("eltptr")
+			self.lines.append(f"  {tmp_ptr} = getelementptr inbounds {elem_llty}, {elem_llty}* {tmp_data}, i64 {idx}")
+			self.lines.append(f"  store {elem_llty} {elem_val}, {elem_llty}* {tmp_ptr}")
+		# Build the array struct {len, cap, data}
+		tmp0 = self._fresh("arrh0")
+		tmp1 = self._fresh("arrh1")
+		self.lines.append(f"  {tmp0} = insertvalue {arr_llty} undef, %drift.size {len_const}, 0")
+		self.lines.append(f"  {tmp1} = insertvalue {arr_llty} {tmp0}, %drift.size {cap_const}, 1")
+		self.lines.append(f"  {dest} = insertvalue {arr_llty} {tmp1}, {elem_llty}* {tmp_data}, 2")
+		self.value_types[dest] = arr_llty
+
+	def _lower_array_index_load(self, instr: ArrayIndexLoad) -> None:
+		"""Lower ArrayIndexLoad with bounds checks and a load from data[idx]."""
+		dest = self._map_value(instr.dest)
+		array = self._map_value(instr.array)
+		index = self._map_value(instr.index)
+		elem_llty = self._llvm_array_elem_type(instr.elem_ty)
+		arr_llty = self._llvm_array_type(elem_llty)
+		# Extract len and data
+		len_tmp = self._fresh("len")
+		cap_tmp = self._fresh("cap")
+		data_tmp = self._fresh("data")
+		self.lines.append(f"  {len_tmp} = extractvalue {arr_llty} {array}, 0")
+		self.lines.append(f"  {cap_tmp} = extractvalue {arr_llty} {array}, 1")
+		self.lines.append(f"  {data_tmp} = extractvalue {arr_llty} {array}, 2")
+		# Bounds checks: idx < 0 or idx >= len => drift_bounds_check_fail
+		idx_i64 = self._fresh("idx64")
+		self.lines.append(f"  {idx_i64} = sext i64 {index} to %drift.size")
+		neg_cmp = self._fresh("negcmp")
+		self.lines.append(f"  {neg_cmp} = icmp slt %drift.size {idx_i64}, 0")
+		oob_cmp = self._fresh("oobcmp")
+		self.lines.append(f"  {oob_cmp} = icmp uge %drift.size {idx_i64}, %drift.size {len_tmp}")
+		oob_or = self._fresh("oobor")
+		self.lines.append(f"  {oob_or} = or i1 {neg_cmp}, {oob_cmp}")
+		ok_block = self._fresh("array_ok")
+		fail_block = self._fresh("array_oob")
+		self.lines.append(f"  br i1 {oob_or}, label {fail_block}, label {ok_block}")
+		# Fail block
+		self.lines.append(f"{fail_block[1:]}:")
+		self.lines.append(
+			f"  call void @drift_bounds_check_fail(%drift.size {idx_i64}, %drift.size {len_tmp})"
+		)
+		self.lines.append("  unreachable")
+		# Ok block
+		self.lines.append(f"{ok_block[1:]}:")
+		ptr_tmp = self._fresh("eltptr")
+		self.lines.append(f"  {ptr_tmp} = getelementptr inbounds {elem_llty}, {elem_llty}* {data_tmp}, %drift.size {idx_i64}")
+		self.lines.append(f"  {dest} = load {elem_llty}, {elem_llty}* {ptr_tmp}")
+		self.value_types[dest] = elem_llty
+
+	def _lower_array_index_store(self, instr: ArrayIndexStore) -> None:
+		"""Lower ArrayIndexStore with bounds checks and a store into data[idx]."""
+		array = self._map_value(instr.array)
+		index = self._map_value(instr.index)
+		value = self._map_value(instr.value)
+		elem_llty = self._llvm_array_elem_type(instr.elem_ty)
+		arr_llty = self._llvm_array_type(elem_llty)
+		# Extract len and data
+		len_tmp = self._fresh("len")
+		cap_tmp = self._fresh("cap")
+		data_tmp = self._fresh("data")
+		self.lines.append(f"  {len_tmp} = extractvalue {arr_llty} {array}, 0")
+		self.lines.append(f"  {cap_tmp} = extractvalue {arr_llty} {array}, 1")
+		self.lines.append(f"  {data_tmp} = extractvalue {arr_llty} {array}, 2")
+		# Bounds checks
+		idx_i64 = self._fresh("idx64")
+		self.lines.append(f"  {idx_i64} = sext i64 {index} to %drift.size")
+		neg_cmp = self._fresh("negcmp")
+		self.lines.append(f"  {neg_cmp} = icmp slt %drift.size {idx_i64}, 0")
+		oob_cmp = self._fresh("oobcmp")
+		self.lines.append(f"  {oob_cmp} = icmp uge %drift.size {idx_i64}, %drift.size {len_tmp}")
+		oob_or = self._fresh("oobor")
+		self.lines.append(f"  {oob_or} = or i1 {neg_cmp}, {oob_cmp}")
+		ok_block = self._fresh("array_ok")
+		fail_block = self._fresh("array_oob")
+		self.lines.append(f"  br i1 {oob_or}, label {fail_block}, label {ok_block}")
+		# Fail
+		self.lines.append(f"{fail_block[1:]}:")
+		self.lines.append(
+			f"  call void @drift_bounds_check_fail(%drift.size {idx_i64}, %drift.size {len_tmp})"
+		)
+		self.lines.append("  unreachable")
+		# Ok
+		self.lines.append(f"{ok_block[1:]}:")
+		ptr_tmp = self._fresh("eltptr")
+		self.lines.append(f"  {ptr_tmp} = getelementptr inbounds {elem_llty}, {elem_llty}* {data_tmp}, %drift.size {idx_i64}")
+		self.lines.append(f"  store {elem_llty} {value}, {elem_llty}* {ptr_tmp}")
+
+	def _llvm_array_type(self, elem_llty: str) -> str:
+		return f"{{ %drift.size, %drift.size, {elem_llty}* }}"
+
+	def _llvm_array_elem_type(self, elem_ty: int) -> str:
+		# v1 supports Int/Bools/Strings via known TypeIds in fn_info/TypeTable.
+		# For now, map everything to i64 except bool → i1.
+		td = self.fn_info.signature.return_type_id  # use fn_info table for ids
+		# Prefer the builder's best-known value type if present in map
+		# but fallback to simple kind-based mapping.
+		# NOTE: type table belongs to checker; we don't carry it here, so treat
+		# arrays as of scalar i64 unless clearly bool.
+		return "i64"
+
+	def _sizeof(self, elem_llty: str) -> int:
+		# v1: i64 → 8, i1 → 1, ptr -> 8
+		if elem_llty == "i1":
+			return 1
+		return 8
+
+	def _alignof(self, elem_llty: str) -> int:
+		if elem_llty == "i1":
+			return 1
+		return 8

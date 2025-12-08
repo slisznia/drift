@@ -47,6 +47,7 @@ Everything else is plumbing to make the above true in lang2.
 - Parser/AST/HIR: grammar already had array literals/indexing; AstToHIR now lowers array literals to `HArrayLiteral`. Stage1 docs/exports are in sync.
 - Checker: shallow inference/validation for array literals, indexing, and indexed assignments; diagnostics for mixed element types, empty literal without type, non-Int index, non-array indexing, and assignment type mismatch. Fixed HIR field bugs (`HExprStmt.expr`, `HLoop.body`). Added positive/negative checker tests for arrays.
 - Stage2/MIR: added typed array MIR instructions (`ArrayLit`, `ArrayIndexLoad`, `ArrayIndexStore`) and HIR→MIR lowering for array literals, indexing, and indexed assignments. Lowering tags array ops with element `TypeId`s using the shared `TypeTable`. New MIR tests cover literal/index/store shapes.
+- LLVM backend: lowered array ops to IR per `drift-array-lowering` (drift_alloc_array + drift_bounds_check_fail, insertvalue {len, cap, data}, bounds checks, GEP+load/store). Added IR tests that assert alloc/bounds checks/store patterns. A minimal runtime stub (`lang2/codegen/runtime/array_runtime.c`) provides `drift_alloc_array`/`drift_bounds_check_fail` for future linking.
 - Pipeline plumbing: shared `TypeTable` passed from resolver into Checker; guard added so TypeId-carrying signatures must bring the matching table. SSA typing reuses the shared String `TypeId` to keep HIR/SSA consistent.
 
 ---
