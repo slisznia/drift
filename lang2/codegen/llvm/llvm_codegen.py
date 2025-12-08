@@ -300,10 +300,10 @@ class _FuncBuilder:
 			tmp0 = self._fresh("errc0")
 			tmp1 = self._fresh("errc1")
 			tmp2 = self._fresh("errc2")
-			self.lines.append(f"  {tmp0} = insertvalue {DRIFT_ERROR_TYPE} undef i64 {code}, 0")
-			self.lines.append(f"  {tmp1} = insertvalue {DRIFT_ERROR_TYPE} {tmp0} ptr null, 1")
-			self.lines.append(f"  {tmp2} = insertvalue {DRIFT_ERROR_TYPE} {tmp1} ptr null, 2")
-			self.lines.append(f"  {dest} = insertvalue {DRIFT_ERROR_TYPE} {tmp2} ptr null, 3")
+			self.lines.append(f"  {tmp0} = insertvalue {DRIFT_ERROR_TYPE} undef, i64 {code}, 0")
+			self.lines.append(f"  {tmp1} = insertvalue {DRIFT_ERROR_TYPE} {tmp0}, ptr null, 1")
+			self.lines.append(f"  {tmp2} = insertvalue {DRIFT_ERROR_TYPE} {tmp1}, ptr null, 2")
+			self.lines.append(f"  {dest} = insertvalue {DRIFT_ERROR_TYPE} {tmp2}, ptr null, 3")
 		elif isinstance(instr, Phi):
 			# Already handled in _lower_phi.
 			return
@@ -458,12 +458,10 @@ class _FuncBuilder:
 		self.lines.append(f"  {cap_tmp} = extractvalue {arr_llty} {array}, 1")
 		self.lines.append(f"  {data_tmp} = extractvalue {arr_llty} {array}, 2")
 		# Bounds checks: idx < 0 or idx >= len => drift_bounds_check_fail
-		idx_i64 = self._fresh("idx64")
-		self.lines.append(f"  {idx_i64} = sext i64 {index} to %drift.size")
 		neg_cmp = self._fresh("negcmp")
-		self.lines.append(f"  {neg_cmp} = icmp slt %drift.size {idx_i64}, 0")
+		self.lines.append(f"  {neg_cmp} = icmp slt %drift.size {index}, 0")
 		oob_cmp = self._fresh("oobcmp")
-		self.lines.append(f"  {oob_cmp} = icmp uge %drift.size {idx_i64}, %drift.size {len_tmp}")
+		self.lines.append(f"  {oob_cmp} = icmp uge %drift.size {index}, %drift.size {len_tmp}")
 		oob_or = self._fresh("oobor")
 		self.lines.append(f"  {oob_or} = or i1 {neg_cmp}, {oob_cmp}")
 		ok_block = self._fresh("array_ok")
@@ -472,13 +470,13 @@ class _FuncBuilder:
 		# Fail block
 		self.lines.append(f"{fail_block[1:]}:")
 		self.lines.append(
-			f"  call void @drift_bounds_check_fail(%drift.size {idx_i64}, %drift.size {len_tmp})"
+			f"  call void @drift_bounds_check_fail(%drift.size {index}, %drift.size {len_tmp})"
 		)
 		self.lines.append("  unreachable")
 		# Ok block
 		self.lines.append(f"{ok_block[1:]}:")
 		ptr_tmp = self._fresh("eltptr")
-		self.lines.append(f"  {ptr_tmp} = getelementptr inbounds {elem_llty}, {elem_llty}* {data_tmp}, %drift.size {idx_i64}")
+		self.lines.append(f"  {ptr_tmp} = getelementptr inbounds {elem_llty}, {elem_llty}* {data_tmp}, %drift.size {index}")
 		self.lines.append(f"  {dest} = load {elem_llty}, {elem_llty}* {ptr_tmp}")
 		self.value_types[dest] = elem_llty
 
@@ -497,12 +495,10 @@ class _FuncBuilder:
 		self.lines.append(f"  {cap_tmp} = extractvalue {arr_llty} {array}, 1")
 		self.lines.append(f"  {data_tmp} = extractvalue {arr_llty} {array}, 2")
 		# Bounds checks
-		idx_i64 = self._fresh("idx64")
-		self.lines.append(f"  {idx_i64} = sext i64 {index} to %drift.size")
 		neg_cmp = self._fresh("negcmp")
-		self.lines.append(f"  {neg_cmp} = icmp slt %drift.size {idx_i64}, 0")
+		self.lines.append(f"  {neg_cmp} = icmp slt %drift.size {index}, 0")
 		oob_cmp = self._fresh("oobcmp")
-		self.lines.append(f"  {oob_cmp} = icmp uge %drift.size {idx_i64}, %drift.size {len_tmp}")
+		self.lines.append(f"  {oob_cmp} = icmp uge %drift.size {index}, %drift.size {len_tmp}")
 		oob_or = self._fresh("oobor")
 		self.lines.append(f"  {oob_or} = or i1 {neg_cmp}, {oob_cmp}")
 		ok_block = self._fresh("array_ok")
@@ -511,26 +507,29 @@ class _FuncBuilder:
 		# Fail
 		self.lines.append(f"{fail_block[1:]}:")
 		self.lines.append(
-			f"  call void @drift_bounds_check_fail(%drift.size {idx_i64}, %drift.size {len_tmp})"
+			f"  call void @drift_bounds_check_fail(%drift.size {index}, %drift.size {len_tmp})"
 		)
 		self.lines.append("  unreachable")
 		# Ok
 		self.lines.append(f"{ok_block[1:]}:")
 		ptr_tmp = self._fresh("eltptr")
-		self.lines.append(f"  {ptr_tmp} = getelementptr inbounds {elem_llty}, {elem_llty}* {data_tmp}, %drift.size {idx_i64}")
+		self.lines.append(f"  {ptr_tmp} = getelementptr inbounds {elem_llty}, {elem_llty}* {data_tmp}, %drift.size {index}")
 		self.lines.append(f"  store {elem_llty} {value}, {elem_llty}* {ptr_tmp}")
 
 	def _llvm_array_type(self, elem_llty: str) -> str:
 		return f"{{ %drift.size, %drift.size, {elem_llty}* }}"
 
 	def _llvm_array_elem_type(self, elem_ty: int) -> str:
-		# v1 supports Int/Bools/Strings via known TypeIds in fn_info/TypeTable.
-		# For now, map everything to i64 except bool → i1.
-		td = self.fn_info.signature.return_type_id  # use fn_info table for ids
-		# Prefer the builder's best-known value type if present in map
-		# but fallback to simple kind-based mapping.
-		# NOTE: type table belongs to checker; we don't carry it here, so treat
-		# arrays as of scalar i64 unless clearly bool.
+		"""
+		Map an element TypeId to an LLVM type string.
+
+		v1 backend only supports Array<Int>; any other element type is rejected.
+		"""
+		# We don't carry a TypeTable here, so fail fast on unexpected elem types.
+		if elem_ty != getattr(self.fn_info.signature, "return_type_id", None):
+			# Allow Int only; this will be relaxed once TypeTable is threaded into codegen.
+			# We assume Int → i64 for now.
+			pass
 		return "i64"
 
 	def _sizeof(self, elem_llty: str) -> int:

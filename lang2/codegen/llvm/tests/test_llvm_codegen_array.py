@@ -47,6 +47,9 @@ def test_array_literal_and_index_ir_contains_alloc_and_load():
 	assert "declare ptr @drift_alloc_array" in ir
 	assert "call ptr @drift_alloc_array" in ir
 	assert "drift_bounds_check_fail" in ir
+	assert "br i1" in ir
+	assert "unreachable" in ir
+	assert "sext" not in ir
 	assert "getelementptr inbounds i64" in ir
 
 
@@ -69,3 +72,4 @@ def test_array_index_store_ir_contains_store():
 	ir = lower_ssa_func_to_llvm(func, ssa, fn_info, {"f": fn_info})
 	assert "drift_bounds_check_fail" in ir
 	assert "store i64 %t2" in ir
+	assert "sext" not in ir
