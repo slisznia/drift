@@ -7,7 +7,7 @@ lang2 pipeline.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Callable, Dict, Tuple
+from typing import Callable, Dict, Tuple, Optional
 
 from . import parser as _parser
 from . import ast as parser_ast

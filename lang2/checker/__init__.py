@@ -135,13 +135,20 @@ class Checker:
 		self._hir_blocks = hir_blocks or {}
 		# Use shared TypeTable when supplied; otherwise create a local one.
 		self._type_table = type_table or TypeTable()
-		# Seed common scalars only when creating a fresh table. Cache them on
-		# the table so shared instances keep consistent ids.
-		self._int_type = getattr(self._type_table, "_int_type", None) or self._type_table.new_scalar("Int")
-		self._bool_type = getattr(self._type_table, "_bool_type", None) or self._type_table.new_scalar("Bool")
-		self._string_type = getattr(self._type_table, "_string_type", None) or self._type_table.new_scalar("String")
-		self._error_type = getattr(self._type_table, "_error_type", None) or self._type_table.new_error("Error")
-		self._unknown_type = getattr(self._type_table, "_unknown_type", None) or self._type_table.new_unknown("Unknown")
+
+		def _find_named(kind: TypeKind, name: str) -> TypeId | None:
+			for ty_id, ty_def in getattr(self._type_table, "_defs", {}).items():  # type: ignore[attr-defined]
+				if ty_def.kind is kind and ty_def.name == name:
+					return ty_id
+			return None
+
+		# Seed common scalars only when missing on the shared table. Cache them on
+		# the table so downstream reuse sees consistent ids.
+		self._int_type = getattr(self._type_table, "_int_type", None) or _find_named(TypeKind.SCALAR, "Int") or self._type_table.new_scalar("Int")
+		self._bool_type = getattr(self._type_table, "_bool_type", None) or _find_named(TypeKind.SCALAR, "Bool") or self._type_table.new_scalar("Bool")
+		self._string_type = getattr(self._type_table, "_string_type", None) or _find_named(TypeKind.SCALAR, "String") or self._type_table.new_scalar("String")
+		self._error_type = getattr(self._type_table, "_error_type", None) or _find_named(TypeKind.ERROR, "Error") or self._type_table.new_error("Error")
+		self._unknown_type = getattr(self._type_table, "_unknown_type", None) or _find_named(TypeKind.UNKNOWN, "Unknown") or self._type_table.new_unknown("Unknown")
 		# Cache seeds on the table so downstream reuse sees the same ids.
 		self._type_table._int_type = self._int_type  # type: ignore[attr-defined]
 		self._type_table._bool_type = self._bool_type  # type: ignore[attr-defined]
@@ -173,13 +180,18 @@ class Checker:
 			if sig is not None:
 				declared_events = frozenset(sig.throws_events) if sig.throws_events else None
 				# Prefer pre-resolved TypeIds if supplied; fall back to legacy resolution.
-				if sig.return_type_id is None or sig.error_type_id is None:
+				return_type_id = sig.return_type_id
+				error_type_id = sig.error_type_id
+				if return_type_id is None:
 					return_type_id, error_type_id = self._resolve_signature_types(sig)
 					sig.return_type_id = return_type_id
 					sig.error_type_id = error_type_id
-				else:
-					return_type_id = sig.return_type_id
-					error_type_id = sig.error_type_id
+				elif error_type_id is None:
+					# If the signature already carries a FnResult TypeId, derive the error side.
+					td = self._type_table.get(return_type_id)
+					if td.kind is TypeKind.FNRESULT and len(td.param_types) >= 2:
+						error_type_id = td.param_types[1]
+						sig.error_type_id = error_type_id
 
 				if sig.param_type_ids is None:
 					sig.param_type_ids = self._resolve_param_types(sig)
