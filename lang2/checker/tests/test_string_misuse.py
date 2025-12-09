@@ -1,6 +1,7 @@
 from lang2 import stage1 as H
 from lang2.checker import Checker, FnSignature
 from lang2.core.diagnostics import Diagnostic
+from lang2.core.types_core import TypeTable
 
 
 def _run_checker(block: H.HBlock) -> list[Diagnostic]:
@@ -37,4 +38,28 @@ def test_if_condition_rejects_string() -> None:
 		]
 	)
 	diagnostics = _run_checker(block)
+	assert any("if condition must be Bool" in d.message for d in diagnostics)
+
+
+def test_if_condition_rejects_param_string() -> None:
+	# Param types should seed locals so condition checks fire on params too.
+	table = TypeTable()
+	block = H.HBlock(
+		statements=[
+			H.HIf(
+				cond=H.HVar("s"),
+				then_block=H.HBlock(statements=[H.HReturn(value=H.HLiteralInt(0))]),
+				else_block=None,
+			)
+		]
+	)
+	sig = FnSignature(
+		name="main",
+		param_names=["s"],
+		param_type_ids=[table.ensure_string()],
+		return_type_id=table.ensure_int(),
+		declared_can_throw=False,
+	)
+	checker = Checker(signatures={"main": sig}, hir_blocks={"main": block}, type_table=table)
+	diagnostics = checker.check(["main"]).diagnostics
 	assert any("if condition must be Bool" in d.message for d in diagnostics)

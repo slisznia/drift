@@ -1029,6 +1029,10 @@ class Checker:
 		from lang2 import stage1 as H
 
 		def walk_expr(expr: H.HExpr) -> None:
+			# Run inference for all expressions up front so shared diagnostics
+			# (string/binop, bitwise, indexing, etc.) fire even when no specific
+			# validator hook is registered for that node.
+			ctx.infer(expr)
 			if on_expr:
 				on_expr(expr, ctx)
 			if isinstance(expr, H.HCall):

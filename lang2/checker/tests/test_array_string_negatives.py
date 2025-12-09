@@ -1,5 +1,6 @@
 from lang2 import stage1 as H
 from lang2.core.diagnostics import Diagnostic
+from lang2.core.types_core import TypeTable
 from lang2.checker import Checker
 from lang2.checker import FnInfo
 from lang2.checker import FnSignature
@@ -75,6 +76,32 @@ def test_array_literal_mixed_element_types_reports_diagnostic():
 	ctx = _typing_ctx(checker, fn_infos, diagnostics)
 	checker._validate_array_exprs(block, ctx)
 	assert any("array literal elements do not have a consistent type" in d.message for d in diagnostics)
+
+
+def test_array_param_index_string_reports_diagnostic():
+	# Ensure parameter types seed locals so array index validation sees them.
+	table = TypeTable()
+	array_of_string = table.new_array(table.ensure_string())
+	block = H.HBlock(
+		statements=[
+			H.HReturn(
+				value=H.HIndex(
+					subject=H.HVar(name="xs"),
+					index=H.HLiteralString("0"),
+				)
+			)
+		]
+	)
+	sig = FnSignature(
+		name="main",
+		param_names=["xs"],
+		param_type_ids=[array_of_string],
+		return_type_id=table.ensure_int(),
+		declared_can_throw=False,
+	)
+	checker = Checker(signatures={"main": sig}, hir_blocks={"main": block}, type_table=table)
+	diagnostics = checker.check(["main"]).diagnostics
+	assert any("array index must be Int" in d.message for d in diagnostics)
 
 
 def test_array_index_store_type_mismatch_reports_diagnostic():
