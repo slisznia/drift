@@ -123,40 +123,34 @@ def _convert_block(block: parser_ast.Block) -> list[s0.Stmt]:
 	return [_convert_stmt(s) for s in block.statements]
 
 
-def _decls_from_parser_program(prog: parser_ast.Module) -> list[object]:
-	"""
-	Build decl-like objects from parser AST FunctionDef nodes so downstream
-	resolvers can construct FnSignatures with real param/return types.
-	"""
-	decls: list[object] = []
+class _FrontendParam:
+	def __init__(self, name: str, type_expr: parser_ast.TypeExpr, loc: Optional[parser_ast.Located]) -> None:
+		self.name = name
+		# Preserve the parsed type expression so the resolver can build real TypeIds.
+		self.type = type_expr
+		self.loc = loc
 
-	class _FrontendParam:
-		def __init__(self, name: str, type_expr: parser_ast.TypeExpr, loc: Optional[parser_ast.Located]) -> None:
-			self.name = name
-			# Preserve the parsed type expression so the resolver can build real TypeIds.
-			self.type = type_expr
-			self.loc = loc
 
-	class _FrontendDecl:
-		def __init__(
-			self,
-			name: str,
-			params: list[_FrontendParam],
-			return_type: parser_ast.TypeExpr,
-			loc: Optional[parser_ast.Located],
-		) -> None:
-			self.name = name
-			self.params = params
-			self.return_type = return_type
-			self.throws = ()
-			self.loc = loc
-			self.is_extern = False
-			self.is_intrinsic = False
+class _FrontendDecl:
+	def __init__(
+		self,
+		name: str,
+		params: list[_FrontendParam],
+		return_type: parser_ast.TypeExpr,
+		loc: Optional[parser_ast.Located],
+	) -> None:
+		self.name = name
+		self.params = params
+		self.return_type = return_type
+		self.throws = ()
+		self.loc = loc
+		self.is_extern = False
+		self.is_intrinsic = False
 
-	for fn in prog.functions:
-		params = [_FrontendParam(p.name, p.type_expr, getattr(p, "loc", None)) for p in fn.params]
-		decls.append(_FrontendDecl(fn.name, params, fn.return_type, getattr(fn, "loc", None)))
-	return decls
+
+def _decl_from_parser_fn(fn: parser_ast.FunctionDef) -> _FrontendDecl:
+	params = [_FrontendParam(p.name, p.type_expr, getattr(p, "loc", None)) for p in fn.params]
+	return _FrontendDecl(fn.name, params, fn.return_type, getattr(fn, "loc", None))
 
 
 def parse_drift_to_hir(path: Path) -> Tuple[Dict[str, H.HBlock], Dict[str, FnSignature], "TypeTable", List[Diagnostic]]:
@@ -168,8 +162,8 @@ def parse_drift_to_hir(path: Path) -> Tuple[Dict[str, H.HBlock], Dict[str, FnSig
 	"""
 	source = path.read_text()
 	prog = _parser.parse_program(source)
-	decls = _decls_from_parser_program(prog)
 	func_hirs: Dict[str, H.HBlock] = {}
+	decls: list[_FrontendDecl] = []
 	signatures: Dict[str, FnSignature] = {}
 	lowerer = AstToHIR()
 	seen: set[str] = set()
@@ -186,6 +180,7 @@ def parse_drift_to_hir(path: Path) -> Tuple[Dict[str, H.HBlock], Dict[str, FnSig
 			# Skip adding a duplicate; keep the first definition.
 			continue
 		seen.add(fn.name)
+		decls.append(_decl_from_parser_fn(fn))
 		stmt_block = _convert_block(fn.body)
 		hir_block = lowerer.lower_block(stmt_block)
 		func_hirs[fn.name] = hir_block
