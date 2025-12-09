@@ -41,8 +41,10 @@ That’s exactly the Rust problem domain, but with a simpler surface: no raw poi
   - Expression visitor walks all HIR forms; Copy=scalar, everything else move-only; diagnostics reset per run.
   - Tests: move tracking (straight-line), branch/loop CFG cases, place builder coverage.
 - [ ] Implementation Phase 2 (basic loans + lvalue-only borrows, no regions).
-  - Coarse loans implemented: HBorrow (&/&mut) nodes lower to borrow checker; shared-vs-mut conflicts enforced with whole-place overlap and function-long regions; borrow-from-rvalue/moved rejected.
-  - TODO: region shortening (kill after last use), auto-borrow at call sites/receivers, overlap precision (field/slice), diagnostics with spans.
+  - Coarse loans implemented: HBorrow (&/&mut) nodes lower to borrow checker; shared-vs-mut conflicts enforced with whole-place overlap; borrow-from-rvalue/moved rejected.
+  - Temporary borrows in expr/cond are dropped after use (coarse NLL); assignments drop overlapping loans; moves are blocked while borrowed.
+  - Optional `enable_auto_borrow` flag (shared only) scaffolded; still need signature-driven auto-borrow.
+  - TODO: real regions (kill after last use), auto-borrow at call sites/receivers with mut/shared selection, overlap precision (field/slice), diagnostics with spans.
 - [ ] Implementation Phase 3 (regions/NLL + auto-borrow integration).
 - [ ] Implementation Phase 4 (escapes/struct fields/returns with refs).
 
@@ -50,12 +52,12 @@ That’s exactly the Rust problem domain, but with a simpler surface: no raw poi
 
 ## Next steps (near-term)
 
-1. Shorten loan lifetimes (Phase 3 prep):
-   * Kill loans after last use (region analysis), not function-long.
-   * Add overlap precision if needed (field/slice).
-2. Auto-borrow at call sites/receivers once regions exist; enforce lvalue-only auto-borrows.
-3. Wire borrow checker into pipeline behind a flag; add CLI/runner coverage.
-4. Consider CFG cleanup for loop terminators if it simplifies later region flow.
+1. Introduce regions/NLL:
+   * Add RegionId to loans with per-ref live ranges; kill loans after last use instead of union-of-function.
+   * Refine overlap precision if needed (field/slice).
+2. Auto-borrow at call sites/receivers (using signatures to pick shared vs mut); reuse borrow rules; reject rvalues/moved.
+3. Wire borrow checker into pipeline behind a flag; add CLI/runner coverage and spans in diagnostics.
+4. Consider CFG cleanup for loop terminators if it simplifies region flow.
 
 ---
 

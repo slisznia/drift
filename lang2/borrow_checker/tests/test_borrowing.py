@@ -49,8 +49,8 @@ def test_multiple_shared_borrows_allowed():
 	block = H.HBlock(
 		statements=[
 			H.HLet(name="x", value=H.HLiteralInt(1), declared_type_expr=None),
-			H.HExprStmt(expr=H.HBorrow(subject=H.HVar("x"), is_mut=False)),
-			H.HExprStmt(expr=H.HBorrow(subject=H.HVar("x"), is_mut=False)),
+			H.HLet(name="r1", value=H.HBorrow(subject=H.HVar("x"), is_mut=False), declared_type_expr=None),
+			H.HLet(name="r2", value=H.HBorrow(subject=H.HVar("x"), is_mut=False), declared_type_expr=None),
 		]
 	)
 	diags = _checker_with_types({"x": "Unknown"}).check_block(block)
@@ -62,11 +62,11 @@ def test_mut_borrow_conflicts_with_existing_shared():
 	block = H.HBlock(
 		statements=[
 			H.HLet(name="x", value=H.HLiteralInt(1), declared_type_expr=None),
-			H.HExprStmt(expr=H.HBorrow(subject=H.HVar("x"), is_mut=False)),  # shared
-			H.HExprStmt(expr=H.HBorrow(subject=H.HVar("x"), is_mut=True)),   # mut conflict
+			H.HLet(name="r", value=H.HBorrow(subject=H.HVar("x"), is_mut=False), declared_type_expr=None),  # shared
+			H.HLet(name="m", value=H.HBorrow(subject=H.HVar("x"), is_mut=True), declared_type_expr=None),   # mut conflict
 		]
 	)
-	diags = _checker_with_types({"x": "Unknown"}).check_block(block)
+	diags = _checker_with_types({"x": "Unknown", "r": "Unknown", "m": "Unknown"}).check_block(block)
 	assert any("mutable borrow" in d.message for d in diags)
 
 
@@ -75,11 +75,11 @@ def test_mut_borrow_conflicts_with_existing_mut():
 	block = H.HBlock(
 		statements=[
 			H.HLet(name="x", value=H.HLiteralInt(1), declared_type_expr=None),
-			H.HExprStmt(expr=H.HBorrow(subject=H.HVar("x"), is_mut=True)),   # first mut
-			H.HExprStmt(expr=H.HBorrow(subject=H.HVar("x"), is_mut=True)),   # second mut
+			H.HLet(name="m1", value=H.HBorrow(subject=H.HVar("x"), is_mut=True), declared_type_expr=None),   # first mut
+			H.HLet(name="m2", value=H.HBorrow(subject=H.HVar("x"), is_mut=True), declared_type_expr=None),   # second mut
 		]
 	)
-	diags = _checker_with_types({"x": "Unknown"}).check_block(block)
+	diags = _checker_with_types({"x": "Unknown", "m1": "Unknown", "m2": "Unknown"}).check_block(block)
 	assert any("mutable borrow" in d.message for d in diags)
 
 
@@ -88,11 +88,11 @@ def test_move_while_borrowed_reports_diagnostic():
 	block = H.HBlock(
 		statements=[
 			H.HLet(name="x", value=H.HLiteralInt(1), declared_type_expr=None),
-			H.HExprStmt(expr=H.HBorrow(subject=H.HVar("x"), is_mut=False)),  # shared loan
+			H.HLet(name="r", value=H.HBorrow(subject=H.HVar("x"), is_mut=False), declared_type_expr=None),  # shared loan
 			H.HExprStmt(expr=H.HVar("x")),  # move under loan
 		]
 	)
-	diags = _checker_with_types({"x": "Unknown"}).check_block(block)
+	diags = _checker_with_types({"x": "Unknown", "r": "Unknown"}).check_block(block)
 	assert any("while borrowed" in d.message for d in diags)
 
 

@@ -56,6 +56,7 @@ class Loan:
 
 	place: Place
 	kind: LoanKind
+	region_id: int
 
 
 @dataclass
@@ -80,6 +81,7 @@ class BorrowChecker:
 	fn_types: Mapping[str, TypeId]
 	base_lookup: Callable[[str], Optional[PlaceBase]] = lambda n: PlaceBase(PlaceKind.LOCAL, -1, n)
 	diagnostics: List[Diagnostic] = field(default_factory=list)
+	enable_auto_borrow: bool = False
 
 	def _is_copy(self, ty: Optional[TypeId]) -> bool:
 		"""Return True if the type is Copy per the core type table."""
@@ -96,6 +98,14 @@ class BorrowChecker:
 	def _set_state(self, state: _FlowState, place: Place, value: PlaceState) -> None:
 		"""Mutate the local state map for a given place."""
 		state.place_states[place] = value
+
+	def _new_region(self) -> int:
+		"""Allocate a coarse region id (function-scoped today)."""
+		if not hasattr(self, "_next_region"):
+			self._next_region = 1  # type: ignore[attr-defined]
+		rid = self._next_region  # type: ignore[attr-defined]
+		self._next_region += 1  # type: ignore[attr-defined]
+		return rid
 
 	def _diagnostic(self, message: str) -> None:
 		"""Append an error-level diagnostic with no span."""
@@ -125,6 +135,18 @@ class BorrowChecker:
 		"""
 		return a.base == b.base
 
+	def _eval_temporary(self, state: _FlowState, expr: H.HExpr) -> None:
+		"""
+		Evaluate an expression whose value does not escape (expr stmt / cond).
+
+		New loans created during evaluation are dropped immediately to model
+		temporary borrow lifetimes (coarse NLL approximation).
+		"""
+		before = set(state.loans)
+		self._visit_expr(state, expr, as_value=True)
+		new_loans = state.loans - before
+		state.loans -= new_loans
+
 	def _borrow_place(self, state: _FlowState, place: Place, kind: LoanKind) -> None:
 		"""
 		Process a borrow of `place` with the given kind, enforcing lvalue validity
@@ -143,7 +165,7 @@ class BorrowChecker:
 			if kind is LoanKind.MUT:
 				self._diagnostic(f"cannot take mutable borrow while borrow active on '{place.base.name}'")
 				return
-		state.loans.add(Loan(place=place, kind=kind))
+		state.loans.add(Loan(place=place, kind=kind, region_id=self._new_region()))
 
 	def _drop_overlapping_loans(self, state: _FlowState, place: Place) -> None:
 		"""Remove any loans that overlap the given place (assignment invalidates borrows)."""
@@ -174,11 +196,26 @@ class BorrowChecker:
 		if isinstance(expr, H.HCall):
 			self._visit_expr(state, expr.fn, as_value=True)
 			for arg in expr.args:
+				if self.enable_auto_borrow:
+					place = place_from_expr(arg, base_lookup=self.base_lookup)
+					if place is not None:
+						self._borrow_place(state, place, LoanKind.SHARED)
+						continue
 				self._visit_expr(state, arg, as_value=True)
 			return
 		if isinstance(expr, H.HMethodCall):
-			self._visit_expr(state, expr.receiver, as_value=True)
+			if self.enable_auto_borrow:
+				recv_place = place_from_expr(expr.receiver, base_lookup=self.base_lookup)
+				if recv_place is not None:
+					self._borrow_place(state, recv_place, LoanKind.SHARED)
+			else:
+				self._visit_expr(state, expr.receiver, as_value=True)
 			for arg in expr.args:
+				if self.enable_auto_borrow:
+					place = place_from_expr(arg, base_lookup=self.base_lookup)
+					if place is not None:
+						self._borrow_place(state, place, LoanKind.SHARED)
+						continue
 				self._visit_expr(state, arg, as_value=True)
 			return
 		if isinstance(expr, H.HBinary):
@@ -231,14 +268,14 @@ class BorrowChecker:
 					self._diagnostic("assignment target is not an lvalue")
 			elif isinstance(stmt, H.HReturn):
 				if stmt.value is not None:
-					self._visit_expr(state, stmt.value, as_value=True)
+					self._eval_temporary(state, stmt.value)
 			elif isinstance(stmt, H.HExprStmt):
-				self._visit_expr(state, stmt.expr, as_value=True)
+				self._eval_temporary(state, stmt.expr)
 			elif isinstance(stmt, H.HThrow):
-				self._visit_expr(state, stmt.value, as_value=True)
+				self._eval_temporary(state, stmt.value)
 			elif isinstance(stmt, H.HIf):
 				# Handled via CFG; still visit condition.
-				self._visit_expr(state, stmt.cond, as_value=True)
+				self._eval_temporary(state, stmt.cond)
 			elif isinstance(stmt, H.HLoop):
 				# Loop structure handled in CFG; body handled in child blocks.
 				pass
@@ -250,9 +287,8 @@ class BorrowChecker:
 		# Terminator expressions
 		term = block.terminator
 		if term and term.kind == "branch" and term.cond is not None:
-			self._visit_expr(state, term.cond, as_value=True)
-		if term and term.kind in ("return", "throw") and term.value is not None:
-			self._visit_expr(state, term.value, as_value=True)
+			self._eval_temporary(state, term.cond)
+		# return/throw values were evaluated (and temp-borrow dropped) in the stmt loop
 
 		return state
 

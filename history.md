@@ -1,7 +1,7 @@
 ## 2025-12-09 – Borrow checker Phase 2 (coarse loans) + borrow HIR
 - Added HBorrow HIR node and parser lowering for `&` / `&mut`; exported via stage1 API.
-- Extended borrow checker to track active loans (shared vs mut) in CFG/dataflow state, enforcing lvalue-only borrows, moved/uninit rejects, and conflict rules (whole-place overlap, function-long regions for now).
-- Added borrow-specific tests (rvalue/moved borrow errors, shared allowed, shared+mut and mut+mut conflicts) alongside existing move/CFG tests.
+- Extended borrow checker to track active loans (shared vs mut) in CFG/dataflow state, enforcing lvalue-only borrows, moved/uninit rejects, conflict rules (whole-place overlap), and moves-blocked-while-borrowed. Assignments drop overlapping loans; temporary borrows in expr/conds are dropped after use; Loan carries region_id for upcoming NLL work. Optional shared auto-borrow flag scaffolded.
+- Added borrow-specific tests (rvalue/moved borrow errors, shared allowed, shared+mut and mut+mut conflicts, move under loan, temp-borrow NLL approx) alongside existing move/CFG tests.
 - Updated progress tracking for Phase 2 and documented the new scaffolding; borrow checker docstrings now cover loans. Tests: `PYTHONPATH=. .venv/bin/pytest lang2/borrow_checker/tests`.
 
 ## 2025-12-09 – Borrow checker scaffolding (places + CFG/dataflow)
