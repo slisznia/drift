@@ -9,6 +9,3 @@ Done
 • Added checker negatives for Array<String> misuse (string index, mixed literal elems).
 • Added checker diagnostics/tests for string misuse (String + Int, String used as if-condition).
 • Parser now rejects duplicate function definitions; added test to ensure duplicates raise early.
-
-TODO:
-  - Missing negatives: add e2e/unit cases for other misuse (e.g., String + Int, if s where s: String).
