@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import Tuple, Optional
+from typing import Callable, Tuple, Optional
 
 from lang2 import stage1 as H
 
@@ -50,16 +50,57 @@ class IndexProj:
 Projection = FieldProj | IndexProj
 
 
+class PlaceState(Enum):
+	"""Validity state for a place: uninitialized, valid, or moved."""
+
+	UNINIT = auto()
+	VALID = auto()
+	MOVED = auto()
+
+
+def merge_place_state(a: PlaceState, b: PlaceState) -> PlaceState:
+	"""
+	Meet operation for place states used in dataflow joins.
+
+	Heuristic: MOVED dominates, then VALID, then UNINIT. Extend when finer
+	granularity (TOP/⊥) is introduced.
+	"""
+	if a is b:
+		return a
+	if PlaceState.MOVED in (a, b):
+		return PlaceState.MOVED
+	if PlaceState.VALID in (a, b):
+		return PlaceState.VALID
+	return PlaceState.UNINIT
+
+
+class PlaceKind(Enum):
+	LOCAL = auto()
+	PARAM = auto()
+	GLOBAL = auto()
+	CAPTURE = auto()
+	TEMP = auto()
+
+
+@dataclass(frozen=True)
+class PlaceBase:
+	"""Identity for the root of a Place (locals, params, globals)."""
+
+	kind: PlaceKind
+	local_id: int
+	name: str
+
+
 @dataclass(frozen=True)
 class Place:
 	"""
 	A borrowable/moveable storage location.
 
-	`base` is typically a local/param name. `projections` capture field/index
+	`base` carries identity (local/param/etc). `projections` capture field/index
 	accesses, so `foo.bar[0]` becomes base `foo` with projections `.bar`, `[0]`.
 	"""
 
-	base: str
+	base: PlaceBase
 	projections: Tuple[Projection, ...] = field(default_factory=tuple)
 
 	def with_projection(self, proj: Projection) -> "Place":
@@ -67,32 +108,35 @@ class Place:
 		return Place(self.base, self.projections + (proj,))
 
 
-def is_lvalue(expr: H.HExpr) -> bool:
+def is_lvalue(expr: H.HExpr, *, base_lookup: Callable[[str], Optional[PlaceBase]]) -> bool:
 	"""
 	Decide if a HIR expression denotes a storage location (`Place`) per spec:
 	- Locals/params (`HVar`) are lvalues.
 	- Field/index access of an lvalue is an lvalue.
 	- Everything else is an rvalue (temporaries, literals, calls, binops, etc.).
 	"""
-	return place_from_expr(expr) is not None
+	return place_from_expr(expr, base_lookup=base_lookup) is not None
 
 
-def place_from_expr(expr: H.HExpr) -> Optional[Place]:
+def place_from_expr(expr: H.HExpr, *, base_lookup: Callable[[str], Optional[PlaceBase]]) -> Optional[Place]:
 	"""
 	Construct a `Place` from a HIR expression when the expression is an lvalue.
 
 	Returns None for rvalues.
 	"""
 	if isinstance(expr, H.HVar):
-		return Place(expr.name)
-	if isinstance(expr, H.HField):
-		base = place_from_expr(expr.subject)
+		base = base_lookup(expr.name)
 		if base is None:
 			return None
-		return base.with_projection(FieldProj(expr.name))
+		return Place(base)
+	if isinstance(expr, H.HField):
+		base_place = place_from_expr(expr.subject, base_lookup=base_lookup)
+		if base_place is None:
+			return None
+		return base_place.with_projection(FieldProj(expr.name))
 	if isinstance(expr, H.HIndex):
-		base = place_from_expr(expr.subject)
-		if base is None:
+		base_place = place_from_expr(expr.subject, base_lookup=base_lookup)
+		if base_place is None:
 			return None
 		const_val: Optional[int] = None
 		if isinstance(expr.index, H.HLiteralInt):
@@ -101,6 +145,15 @@ def place_from_expr(expr: H.HExpr) -> Optional[Place]:
 			except Exception:
 				const_val = None
 		kind = IndexKind.CONST if const_val is not None else IndexKind.ANY
-		return base.with_projection(IndexProj(kind=kind, value=const_val))
+		return base_place.with_projection(IndexProj(kind=kind, value=const_val))
 	# Other expressions are rvalues: calls, literals, binops, method calls, etc.
 	return None
+
+
+def place_from_expr_default(expr: H.HExpr) -> Optional[Place]:
+	"""
+	Backward-compatible helper using base names as identity.
+
+	Prefer passing an explicit base_lookup in new code.
+	"""
+	return place_from_expr(expr, base_lookup=lambda n: PlaceBase(PlaceKind.LOCAL, -1, n))
