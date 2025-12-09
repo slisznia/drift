@@ -38,6 +38,8 @@ from lang2.stage4 import run_throw_checks
 from lang2.stage4 import MirToSSA
 from lang2.checker import Checker, CheckedProgram, FnSignature
 from lang2.checker.catch_arms import CatchArmInfo
+from lang2.borrow_checker_pass import BorrowChecker
+from lang2.borrow_checker import PlaceBase, PlaceKind
 from lang2.core.diagnostics import Diagnostic
 from lang2.core.types_core import TypeTable
 from lang2.codegen.llvm import lower_module_to_llvm
@@ -54,6 +56,7 @@ def compile_stubbed_funcs(
 	build_ssa: bool = False,
 	return_ssa: bool = False,
 	type_table: "TypeTable | None" = None,
+	run_borrow_check: bool = False,
 ) -> (
 	Dict[str, M.MirFunc]
 	| tuple[Dict[str, M.MirFunc], CheckedProgram]
@@ -81,6 +84,8 @@ def compile_stubbed_funcs(
 	    computed here. This keeps downstream helpers (e.g., LLVM codegen tests)
 	    from re-running MIR→SSA and ensures they share the same SSA graph used
 	    in throw checks.
+	  run_borrow_check: when True, run the borrow checker on HIR blocks and append
+	    diagnostics; this is a stubbed integration path (coarse regions).
 	  # TODO: drop declared_can_throw once all callers provide signatures/parsing.
 
 	Returns:

@@ -230,7 +230,7 @@ or a **CheckedProgram** containing diagnostics.
 
 ### Purpose
 
-Prevent use-after-move and conflicting borrows before codegen. Runs on typed HIR with a CFG (pre-MIR/SSA) and will be wired into the main driver behind a flag.
+Prevent use-after-move and conflicting borrows before codegen. Runs on typed HIR with a CFG (pre-MIR/SSA) and will become a mandatory stage once the typed checker/driver is in place (no flags).
 
 ### Current behavior (Phase 2 scaffold)
 
@@ -245,6 +245,14 @@ Prevent use-after-move and conflicting borrows before codegen. Runs on typed HIR
 * Region analysis (last-use–based) to drop loans when their region ends; region-aware merging instead of union.
 * Signature-driven auto-borrow for params/receivers typed as `&T` / `&mut T`, with call-scoped regions.
 * Wire into pipeline/CLI with spans in diagnostics; refine overlap precision (field/slice) if needed.
+
+### Planned integration (no flags, full enforcement)
+
+* Replace the stub checker with a typed checker that emits TypedFnHIR + TypeEnv, with ParamId/LocalId and TypeIds on every binding/expr; extend TypeKind to include reference types.
+* Thread binding IDs into HIR and base_lookup so borrow checker uses identities, not names.
+* Driver pipeline becomes: parse → type check → **borrow check (mandatory)** → lowering/codegen; single diagnostics sink, any error aborts.
+* Auto-borrow becomes signature-driven (param/receiver `&T` / `&mut T`) once ref types exist.
+* Region-aware loan liveness (NLL) replaces union-of-function loans before enforcement goes live.
 
 ---
 

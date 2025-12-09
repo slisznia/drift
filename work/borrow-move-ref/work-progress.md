@@ -52,12 +52,21 @@ That’s exactly the Rust problem domain, but with a simpler surface: no raw poi
 
 ## Next steps (near-term)
 
-1. Introduce regions/NLL:
+1. Build a real typed checker + IDs:
+   * Replace stub checker with a TypeChecker that produces typed HIR, ParamId/LocalId, and TypeIds on every expr/binding.
+   * Add reference types (`&T`/`&mut T`) to the type system.
+   * Thread IDs into HIR and expose a binding table for borrow checker base_lookup (no name-based lookup in production).
+2. Implement a full driver pipeline (driftc):
+   * parse → type check (TypedFnHIR + TypeEnv) → mandatory borrow check → lowering/codegen (or stubs).
+   * Unified diagnostics sink; any error aborts compilation. No flags/optional modes.
+3. Introduce regions/NLL:
    * Add RegionId to loans with per-ref live ranges; kill loans after last use instead of union-of-function.
    * Refine overlap precision if needed (field/slice).
-2. Auto-borrow at call sites/receivers (using signatures to pick shared vs mut); reuse borrow rules; reject rvalues/moved.
-3. Wire borrow checker into pipeline behind a flag; add CLI/runner coverage and spans in diagnostics.
-4. Consider CFG cleanup for loop terminators if it simplifies region flow.
+4. Signature-driven auto-borrow:
+   * Use param/receiver types (`&T`/`&mut T`) to synthesize borrows with call-scoped regions; reject rvalues/moved.
+5. Wire into CLI/e2e:
+   * Borrow checker becomes mandatory in the driver; diagnostics gain spans; add runner coverage once typed checker exists.
+6. Consider CFG cleanup for loop terminators if it simplifies region flow.
 
 ---
 

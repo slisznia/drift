@@ -15,6 +15,7 @@ from .hir_nodes import (
 	HNode,
 	HExpr,
 	HStmt,
+	BindingId,
 	HVar,
 	HLiteralInt,
 	HLiteralString,

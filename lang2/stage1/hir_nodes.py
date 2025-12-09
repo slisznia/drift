@@ -23,6 +23,10 @@ from dataclasses import dataclass
 from enum import Enum, auto
 from typing import List, Optional
 
+# Stable identifiers for bindings (locals/params). Populated by the typed
+# checker; optional today to preserve existing HIR construction.
+BindingId = int
+
 
 # Base node kinds
 
@@ -81,6 +85,7 @@ class BinaryOp(Enum):
 class HVar(HExpr):
 	"""Reference to a local/binding (resolved later)."""
 	name: str
+	binding_id: Optional[BindingId] = None
 
 
 @dataclass
@@ -262,6 +267,7 @@ class HLet(HStmt):
 	name: str
 	value: HExpr
 	declared_type_expr: Optional[object] = None
+	binding_id: Optional[BindingId] = None
 
 
 @dataclass
@@ -304,7 +310,7 @@ __all__ = [
 	"UnaryOp", "BinaryOp",
 	"HVar", "HLiteralInt", "HLiteralString", "HLiteralBool",
 	"HCall", "HMethodCall", "HTernary", "HTryResult", "HResultOk",
-	"HField", "HIndex", "HDVInit",
+	"HField", "HIndex", "HBorrow", "HDVInit",
 	"HUnary", "HBinary", "HArrayLiteral",
 	"HBlock", "HExprStmt", "HLet", "HAssign", "HIf", "HLoop",
 	"HBreak", "HContinue", "HReturn", "HThrow", "HTry", "HCatchArm",

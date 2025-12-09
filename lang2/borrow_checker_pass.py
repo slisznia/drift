@@ -90,8 +90,8 @@ class BorrowChecker:
 		if ty is None:
 			return False
 		td = self.type_table.get(ty)
-		# Conservatively treat scalars as Copy; everything else (incl. Unknown) is move-only.
-		return td.kind is TypeKind.SCALAR
+		# Conservatively treat scalars and references as Copy; everything else (incl. Unknown) is move-only.
+		return td.kind in (TypeKind.SCALAR, TypeKind.REF)
 
 	def _state_for(self, state: _FlowState, place: Place) -> PlaceState:
 		"""Lookup helper with UNINIT default for missing places."""

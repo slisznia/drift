@@ -25,6 +25,7 @@ class TypeKind(Enum):
 	FNRESULT = auto()
 	FUNCTION = auto()
 	ARRAY = auto()
+	REF = auto()
 	UNKNOWN = auto()
 
 
@@ -82,6 +83,26 @@ class TypeTable:
 			self._string_type = self.new_scalar("String")  # type: ignore[attr-defined]
 		return self._string_type  # type: ignore[attr-defined]
 
+	def ensure_ref(self, inner: TypeId) -> TypeId:
+		"""Return a stable shared reference TypeId to `inner`, creating it once."""
+		if not hasattr(self, "_ref_cache"):
+			self._ref_cache = {}  # type: ignore[attr-defined]
+		key = ("ref", inner)
+		cache = getattr(self, "_ref_cache")  # type: ignore[attr-defined]
+		if key not in cache:
+			cache[key] = self.new_ref(inner, is_mut=False)
+		return cache[key]
+
+	def ensure_ref_mut(self, inner: TypeId) -> TypeId:
+		"""Return a stable mutable reference TypeId to `inner`, creating it once."""
+		if not hasattr(self, "_ref_cache"):
+			self._ref_cache = {}  # type: ignore[attr-defined]
+		key = ("ref_mut", inner)
+		cache = getattr(self, "_ref_cache")  # type: ignore[attr-defined]
+		if key not in cache:
+			cache[key] = self.new_ref(inner, is_mut=True)
+		return cache[key]
+
 	def ensure_unknown(self) -> TypeId:
 		"""Return a stable Unknown TypeId, creating it once."""
 		if getattr(self, "_unknown_type", None) is None:
@@ -107,6 +128,14 @@ class TypeTable:
 			if ty_def.kind is TypeKind.ARRAY and ty_def.param_types and ty_def.param_types[0] == elem:
 				return ty_id
 		return self._add(TypeKind.ARRAY, "Array", [elem])
+
+	def new_ref(self, inner: TypeId, is_mut: bool) -> TypeId:
+		"""Register a reference type to `inner` (mutable vs shared encoded in the name)."""
+		name = "RefMut" if is_mut else "Ref"
+		for ty_id, ty_def in self._defs.items():
+			if ty_def.kind is TypeKind.REF and ty_def.param_types and ty_def.param_types[0] == inner and ty_def.name == name:
+				return ty_id
+		return self._add(TypeKind.REF, name, [inner])
 
 	def new_unknown(self, name: str = "Unknown") -> TypeId:
 		"""Register an unknown type (debug/fallback)."""
