@@ -2,10 +2,8 @@
 
   - Type inference logic is duplicated across _infer_hir_expr_type, _validate_array_exprs, and _validate_bool_conditions; they each
     maintain their own locals maps. This is brittle (now less urgent since params are seeded, but still a refactor target).
-  - Type table access still pokes at _uint_type/_string_type directly; a public API (ensure_uint, ensure_string) would be cleaner and
-    less error-prone. (DONE: TypeTable now exposes ensure_int/bool/string/uint/unknown and callers use them.)
   - HIR→MIR and checker both implement .len/.cap typing rules separately; they’re in sync today, but there’s no shared helper, so drift
-    risk is high.
+    risk is high. (We centralized the len/cap typing in HIR→MIR via a helper; checker still has its own inference rule.)
   - Error reporting: duplicate-function rejection uses a thrown ValueError instead of a diagnostic; also span info is generally None in
     checker diags (known limitation, but worth noting).
 
@@ -14,15 +12,12 @@
   1. Centralize expression typing helper
       - Factor out a single _infer_hir_expr_type-style helper that both array validation and bool-condition validation can use, seeded
         with the same locals. Avoid maintaining separate locals maps per pass.
-  2. Add a small TypeTable API and use it
-      - Replace direct _uint_type/_string_type access with ensure_uint()/ensure_string() (or add them if missing) in checker/type
-        resolution. This removes the remaining “poke private attrs” hacks. (DONE)
-  3. Unify .len/.cap typing rule
+  2. Unify .len/.cap typing rule
       - Move the “Array/String len → Uint” rule into one shared helper (or document clearly) so HIR→MIR and checker can’t drift.
-  4. Optional: change duplicate-function handling to a diagnostic
+  3. Optional: change duplicate-function handling to a diagnostic
       - Instead of raising ValueError in the parser adapter, surface a structured diagnostic (with a span when available). Not a blocker,
         but improves UX.
-  5. Add/adjust tests after cleanup
+  4. Add/adjust tests after cleanup
       - Add a checker test where a function param xs: Array<String> is indexed; expect correct type and diagnostics on misuse.
       - Add a checker test for an if condition using a param of the wrong type; ensure the Bool check fires.
 

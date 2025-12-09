@@ -231,12 +231,8 @@ class HIRToMIR:
 		# Array/String len/capacity sugar: field access produces ArrayLen/ArrayCap/StringLen.
 		if expr.name == "len":
 			dest = self.b.new_temp()
-			# Treat len on String specially; it should read the DriftString header.
 			subj_ty = self._infer_expr_type(expr.subject)
-			if subj_ty == self._string_type:
-				self.b.emit(M.StringLen(dest=dest, value=subject))
-			else:
-				self.b.emit(M.ArrayLen(dest=dest, array=subject))
+			self._lower_len(subj_ty, subject, dest)
 			return dest
 		if expr.name in ("cap", "capacity"):
 			dest = self.b.new_temp()
@@ -261,6 +257,20 @@ class HIRToMIR:
 		self.b.emit(M.ArrayLit(dest=dest, elem_ty=elem_ty, elements=values))
 		return dest
 
+	def _lower_len(self, subj_ty: Optional[TypeId], subj_val: M.ValueId, dest: M.ValueId) -> None:
+		"""Lower length for Array<T> and String to Uint."""
+		if subj_ty is None:
+			# Conservative fallback: assume array when type is unknown.
+			self.b.emit(M.ArrayLen(dest=dest, array=subj_val))
+			return
+		td = self._type_table.get(subj_ty)
+		if td.kind is TypeKind.ARRAY:
+			self.b.emit(M.ArrayLen(dest=dest, array=subj_val))
+		elif subj_ty == self._string_type:
+			self.b.emit(M.StringLen(dest=dest, value=subj_val))
+		else:
+			raise NotImplementedError("len(x): unsupported argument type")
+
 	# Stubs for unhandled expressions
 	def _visit_expr_HCall(self, expr: H.HCall) -> M.ValueId:
 		"""
@@ -276,14 +286,8 @@ class HIRToMIR:
 				arg_ty = self._infer_expr_type(arg_expr)
 				if arg_ty is None:
 					raise NotImplementedError(f"{name}(x): unable to infer argument type")
-				td = self._type_table.get(arg_ty)
 				dest = self.b.new_temp()
-				if td.kind is TypeKind.ARRAY:
-					self.b.emit(M.ArrayLen(dest=dest, array=arg_val))
-				elif arg_ty == self._string_type:
-					self.b.emit(M.StringLen(dest=dest, value=arg_val))
-				else:
-					raise NotImplementedError(f"{name}(x): unsupported argument type")
+				self._lower_len(arg_ty, arg_val, dest)
 				self._local_types[dest] = self._uint_type
 				return dest
 			# string_eq(a,b)

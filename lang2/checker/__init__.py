@@ -547,7 +547,7 @@ class Checker:
 				td = self._type_table.get(subj_ty)
 				if td.kind is TypeKind.ARRAY or (td.kind is TypeKind.SCALAR and td.name == "String"):
 					# Length/capacity are Uint in v1.
-					return getattr(self._type_table, "_uint_type", None) or self._type_table.ensure_uint()
+					return self._type_table.ensure_uint()
 				return None
 		if isinstance(expr, H.HIndex):
 			subject_ty = self._infer_hir_expr_type(expr.subject, fn_infos, current_fn, diagnostics, locals=locals)
