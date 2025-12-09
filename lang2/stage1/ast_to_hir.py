@@ -44,11 +44,32 @@ class AstToHIR:
 	def __init__(self):
 		# Simple counter for internal temporaries (e.g., for-loop bindings).
 		self._temp_counter = 0
+		# Binding id allocator and scope stack for locals/params.
+		self._next_binding_id = 1
+		self._scope_stack: list[dict[str, H.BindingId]] = [dict()]
 
 	def _fresh_temp(self, prefix: str = "__tmp") -> str:
 		"""Allocate a unique temporary name with a given prefix."""
 		self._temp_counter += 1
 		return f"{prefix}{self._temp_counter}"
+
+	def _push_scope(self) -> None:
+		self._scope_stack.append(dict())
+
+	def _pop_scope(self) -> None:
+		self._scope_stack.pop()
+
+	def _alloc_binding(self, name: str) -> H.BindingId:
+		bid = self._next_binding_id
+		self._next_binding_id += 1
+		self._scope_stack[-1][name] = bid
+		return bid
+
+	def _lookup_binding(self, name: str) -> H.BindingId | None:
+		for scope in reversed(self._scope_stack):
+			if name in scope:
+				return scope[name]
+		return None
 
 	def lower_expr(self, expr: ast.Expr) -> H.HExpr:
 		"""
@@ -81,14 +102,18 @@ class AstToHIR:
 		return method(stmt)
 
 	def lower_block(self, stmts: List[ast.Stmt]) -> H.HBlock:
-		"""Lower a list of AST statements into an HIR block."""
-		return H.HBlock(statements=[self.lower_stmt(s) for s in stmts])
+		"""Lower a list of AST statements into an HIR block with scoped bindings."""
+		self._push_scope()
+		try:
+			return H.HBlock(statements=[self.lower_stmt(s) for s in stmts])
+		finally:
+			self._pop_scope()
 
 	# --- minimal implemented handlers (trivial cases only) ---
 
 	def _visit_expr_Name(self, expr: ast.Name) -> H.HExpr:
 		"""Names become HVar; binding resolution happens later."""
-		return H.HVar(name=expr.ident)
+		return H.HVar(name=expr.ident, binding_id=self._lookup_binding(expr.ident))
 
 	def _visit_expr_Literal(self, expr: ast.Literal) -> H.HExpr:
 		"""Map literal to the appropriate HIR literal node."""
@@ -102,7 +127,13 @@ class AstToHIR:
 
 	def _visit_stmt_LetStmt(self, stmt: ast.LetStmt) -> H.HStmt:
 		"""Immutable binding introduction."""
-		return H.HLet(name=stmt.name, value=self.lower_expr(stmt.value), declared_type_expr=getattr(stmt, "type_expr", None))
+		bid = self._alloc_binding(stmt.name)
+		return H.HLet(
+			name=stmt.name,
+			value=self.lower_expr(stmt.value),
+			declared_type_expr=getattr(stmt, "type_expr", None),
+			binding_id=bid,
+		)
 
 	def _visit_stmt_ReturnStmt(self, stmt: ast.ReturnStmt) -> H.HStmt:
 		"""Return with optional value."""

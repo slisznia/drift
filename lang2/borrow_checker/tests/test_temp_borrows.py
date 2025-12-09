@@ -12,7 +12,7 @@ from lang2.core.types_core import TypeTable
 def _checker() -> BorrowChecker:
 	table = TypeTable()
 	type_ids = {"x": table.ensure_int()}
-	base_lookup = lambda hv: PlaceBase(PlaceKind.LOCAL, 0, hv.name if hasattr(hv, "name") else str(hv))
+	base_lookup = lambda hv: PlaceBase(PlaceKind.LOCAL, getattr(hv, "binding_id", 0) or 0, hv.name if hasattr(hv, "name") else str(hv))
 	fn_types = {PlaceBase(PlaceKind.LOCAL, 0, name): ty for name, ty in type_ids.items()}
 	return BorrowChecker(type_table=table, fn_types=fn_types, base_lookup=base_lookup)
 

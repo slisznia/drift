@@ -81,7 +81,11 @@ class BorrowChecker:
 
 	type_table: TypeTable
 	fn_types: Mapping[PlaceBase, TypeId]
-	base_lookup: Callable[[object], Optional[PlaceBase]] = lambda hv: PlaceBase(PlaceKind.LOCAL, -1, hv.name if hasattr(hv, "name") else str(hv))
+	base_lookup: Callable[[object], Optional[PlaceBase]] = lambda hv: PlaceBase(
+		PlaceKind.LOCAL,
+		getattr(hv, "binding_id", 0) if getattr(hv, "binding_id", None) is not None else 0,
+		hv.name if hasattr(hv, "name") else str(hv),
+	)
 	diagnostics: List[Diagnostic] = field(default_factory=list)
 	enable_auto_borrow: bool = False
 

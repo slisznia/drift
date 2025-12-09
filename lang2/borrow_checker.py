@@ -156,4 +156,11 @@ def place_from_expr_default(expr: H.HExpr) -> Optional[Place]:
 
 	Prefer passing an explicit base_lookup in new code.
 	"""
-	return place_from_expr(expr, base_lookup=lambda hv: PlaceBase(PlaceKind.LOCAL, -1, hv.name if hasattr(hv, "name") else str(hv)))
+	return place_from_expr(
+		expr,
+		base_lookup=lambda hv: PlaceBase(
+			PlaceKind.LOCAL,
+			getattr(hv, "binding_id", 0) if getattr(hv, "binding_id", None) is not None else 0,
+			hv.name if hasattr(hv, "name") else str(hv),
+		),
+	)
