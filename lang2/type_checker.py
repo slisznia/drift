@@ -115,7 +115,8 @@ class TypeChecker:
 							break
 				for scope in reversed(scope_env):
 					if expr.name in scope:
-						binding_for_var[id(expr)] = expr.binding_id or 0
+						if expr.binding_id is not None:
+							binding_for_var[id(expr)] = expr.binding_id
 						return record_expr(expr, scope[expr.name])
 				diagnostics.append(Diagnostic(message=f"unknown variable '{expr.name}'", severity="error", span=None))
 				return record_expr(expr, self._unknown)

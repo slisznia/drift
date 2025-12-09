@@ -6,26 +6,11 @@
 from lang2 import stage1 as H
 from lang2.type_checker import TypeChecker
 from lang2.borrow_checker_pass import BorrowChecker
-from lang2.borrow_checker import PlaceBase, PlaceKind
 from lang2.core.types_core import TypeTable
 
 
 def _borrow_checker_for_typed_fn(typed_fn, table: TypeTable) -> BorrowChecker:
-	fn_types = {
-		PlaceBase(PlaceKind.LOCAL, bid, typed_fn.binding_names.get(bid, f"_b{bid}")): ty
-		for bid, ty in typed_fn.binding_types.items()
-	}
-
-	def base_lookup(hv: object):
-		name = hv.name if hasattr(hv, "name") else str(hv)
-		bid = getattr(hv, "binding_id", None)
-		if bid is None:
-			bid = typed_fn.binding_for_var.get(id(hv))
-		if bid is None:
-			bid = -1
-		return PlaceBase(PlaceKind.LOCAL, bid, name)
-
-	return BorrowChecker(type_table=table, fn_types=fn_types, base_lookup=base_lookup)
+	return BorrowChecker.from_typed_fn(typed_fn, table)
 
 
 def test_use_after_move_via_typed_checker():

@@ -59,6 +59,7 @@ class Loan:
 	kind: LoanKind
 	region_id: int
 	temporary: bool = False
+	live_blocks: Optional[Set[int]] = None
 
 
 @dataclass
@@ -88,6 +89,31 @@ class BorrowChecker:
 	)
 	diagnostics: List[Diagnostic] = field(default_factory=list)
 	enable_auto_borrow: bool = False
+
+	@classmethod
+	def from_typed_fn(cls, typed_fn, type_table: TypeTable, *, enable_auto_borrow: bool = False) -> "BorrowChecker":
+		"""
+		Build a BorrowChecker from a TypedFn (binding-aware).
+
+		TypedFn is expected to expose:
+		  - binding_types: mapping binding_id -> TypeId
+		  - binding_names: mapping binding_id -> name
+		"""
+		fn_types = {
+			PlaceBase(PlaceKind.LOCAL, bid, getattr(typed_fn.binding_names, "get", lambda _id, _default=None: None)(bid) or "_b")
+			: ty
+			for bid, ty in typed_fn.binding_types.items()
+		}
+
+		def base_lookup(hv: object) -> Optional[PlaceBase]:
+			name = hv.name if hasattr(hv, "name") else str(hv)
+			bid = getattr(hv, "binding_id", None)
+			if bid is None and hasattr(typed_fn, "binding_for_var"):
+				bid = typed_fn.binding_for_var.get(id(hv))
+			local_id = bid if isinstance(bid, int) else -1
+			return PlaceBase(PlaceKind.LOCAL, local_id, name)
+
+		return cls(type_table=type_table, fn_types=fn_types, base_lookup=base_lookup, enable_auto_borrow=enable_auto_borrow)
 
 	def _is_copy(self, ty: Optional[TypeId]) -> bool:
 		"""Return True if the type is Copy per the core type table."""
@@ -171,11 +197,107 @@ class BorrowChecker:
 			if kind is LoanKind.MUT:
 				self._diagnostic(f"cannot take mutable borrow while borrow active on '{place.base.name}'")
 				return
-		state.loans.add(Loan(place=place, kind=kind, region_id=self._new_region(), temporary=temporary))
+		live_blocks = None
+		if hasattr(self, "_ref_use_blocks") and place.base.local_id in getattr(self, "_ref_use_blocks", {}):
+			live_blocks = getattr(self, "_ref_use_blocks")[place.base.local_id]
+		state.loans.add(Loan(place=place, kind=kind, region_id=self._new_region(), temporary=temporary, live_blocks=live_blocks))
 
 	def _drop_overlapping_loans(self, state: _FlowState, place: Place) -> None:
 		"""Remove any loans that overlap the given place (assignment invalidates borrows)."""
 		state.loans = {loan for loan in state.loans if not self._places_overlap(place, loan.place)}
+
+	def _loan_live_here(self, loan: Loan, block_id: Optional[int]) -> bool:
+		"""
+		Check if a loan is live at a given block. When live_blocks is None, treat as live everywhere.
+		"""
+		if loan.live_blocks is None:
+			return True
+		if block_id is None:
+			return False
+		return block_id in loan.live_blocks
+
+	def _filter_live_loans(self, loans: Set[Loan], block_id: int) -> Set[Loan]:
+		"""Filter a loan set to those live at the given block."""
+		return {ln for ln in loans if self._loan_live_here(ln, block_id)}
+
+	def _collect_ref_use_blocks(self, blocks: List[BasicBlock], local_types: Dict[int, TypeId]) -> Dict[int, Set[int]]:
+		"""
+		Collect blocks where reference-typed bindings are used.
+
+		Returns a mapping binding_id -> set(block_ids).
+		"""
+		use_map: Dict[int, Set[int]] = {}
+
+		def note_use(binding_id: int, bid: int) -> None:
+			use_map.setdefault(binding_id, set()).add(bid)
+
+		def walk_expr(expr: H.HExpr, bid: int) -> None:
+			if isinstance(expr, H.HVar):
+				bid_id = getattr(expr, "binding_id", None)
+				if bid_id is not None:
+					ty = local_types.get(bid_id)
+					if ty is not None:
+						ty_def = self.type_table.get(ty)
+						if ty_def.kind is TypeKind.REF:
+							note_use(bid_id, bid)
+				return
+			if isinstance(expr, H.HField):
+				walk_expr(expr.subject, bid)
+			elif isinstance(expr, H.HIndex):
+				walk_expr(expr.subject, bid)
+				walk_expr(expr.index, bid)
+			elif isinstance(expr, H.HBorrow):
+				walk_expr(expr.subject, bid)
+			elif isinstance(expr, H.HCall):
+				walk_expr(expr.fn, bid)
+				for a in expr.args:
+					walk_expr(a, bid)
+			elif isinstance(expr, H.HMethodCall):
+				walk_expr(expr.receiver, bid)
+				for a in expr.args:
+					walk_expr(a, bid)
+			elif isinstance(expr, H.HBinary):
+				walk_expr(expr.left, bid)
+				walk_expr(expr.right, bid)
+			elif isinstance(expr, H.HUnary):
+				walk_expr(expr.expr, bid)
+			elif isinstance(expr, H.HTernary):
+				walk_expr(expr.cond, bid)
+				walk_expr(expr.then_expr, bid)
+				walk_expr(expr.else_expr, bid)
+			elif isinstance(expr, H.HArrayLiteral):
+				for e in expr.elements:
+					walk_expr(e, bid)
+			elif isinstance(expr, H.HDVInit):
+				for a in expr.args:
+					walk_expr(a, bid)
+			elif isinstance(expr, H.HResultOk):
+				walk_expr(expr.value, bid)
+			elif isinstance(expr, H.HTryResult):
+				walk_expr(expr.expr, bid)
+
+		for blk in blocks:
+			for stmt in blk.statements:
+				if isinstance(stmt, H.HLet):
+					walk_expr(stmt.value, blk.id)
+				elif isinstance(stmt, H.HAssign):
+					walk_expr(stmt.value, blk.id)
+					walk_expr(stmt.target, blk.id)
+				elif isinstance(stmt, H.HExprStmt):
+					walk_expr(stmt.expr, blk.id)
+				elif isinstance(stmt, H.HReturn) and stmt.value is not None:
+					walk_expr(stmt.value, blk.id)
+				elif isinstance(stmt, H.HIf):
+					walk_expr(stmt.cond, blk.id)
+				elif isinstance(stmt, H.HThrow):
+					walk_expr(stmt.value, blk.id)
+			term = blk.terminator
+			if term and term.kind == "branch" and term.cond is not None:
+				walk_expr(term.cond, blk.id)
+			if term and term.kind in ("return", "throw") and term.value is not None:
+				walk_expr(term.value, blk.id)
+
+		return use_map
 
 	def _visit_expr(self, state: _FlowState, expr: H.HExpr, *, as_value: bool = True) -> None:
 		"""
@@ -267,7 +389,10 @@ class BorrowChecker:
 		Transfer function for a single basic block: walk statements and mutate
 		state to produce the outgoing place-state map.
 		"""
-		state = _FlowState(place_states=dict(in_state.place_states), loans=set(in_state.loans))
+		state = _FlowState(
+			place_states=dict(in_state.place_states),
+			loans=self._filter_live_loans(in_state.loans, block.id),
+		)
 		for stmt in block.statements:
 			if isinstance(stmt, H.HLet):
 				self._visit_expr(state, stmt.value, as_value=True)
@@ -306,32 +431,36 @@ class BorrowChecker:
 		"""Run move tracking on a HIR block by building a CFG and flowing states."""
 		self.diagnostics.clear()
 		blocks, entry_id = self._build_cfg(block)
+		local_types: Dict[int, TypeId] = {pb.local_id: ty for pb, ty in self.fn_types.items()}
+		ref_use_blocks = self._collect_ref_use_blocks(blocks, local_types)
 		in_states: Dict[int, _FlowState] = {b.id: _FlowState() for b in blocks}
 		worklist = [entry_id]
 		while worklist:
 			bid = worklist.pop()
 			blk = blocks[bid]
 			in_state = in_states[bid]
+			# attach uses map for borrow creation
+			self._ref_use_blocks = ref_use_blocks
 			out_state = self._transfer_block(blk, in_state)
 			succs = blk.terminator.targets if blk.terminator else []
 			for succ in succs:
 				prev = in_states.get(succ, _FlowState())
-				merged = self._merge_states(prev, out_state)
+				merged = self._merge_states(prev, out_state, succ)
 				if merged != prev:
 					in_states[succ] = merged
 					worklist.append(succ)
 		return self.diagnostics
 
-	def _merge_states(self, a: _FlowState, b: _FlowState) -> _FlowState:
+	def _merge_states(self, a: _FlowState, b: _FlowState, block_id: int) -> _FlowState:
 		"""Join two place-state maps using merge_place_state as the meet operator."""
-		result = _FlowState(place_states=dict(a.place_states), loans=set(a.loans))
+		result = _FlowState(place_states=dict(a.place_states), loans=self._filter_live_loans(a.loans, block_id))
 		for place, state_b in b.place_states.items():
 			state_a = result.place_states.get(place, PlaceState.UNINIT)
 			if state_a is state_b:
 				continue
 			result.place_states[place] = merge_place_state(state_a, state_b)
-		# Coarse region model: keep any loan that is active along any path (union).
-		result.loans |= b.loans
+		# Region-aware merge: keep only loans live at this join.
+		result.loans |= self._filter_live_loans(b.loans, block_id)
 		return result
 
 	def _build_cfg(self, block: H.HBlock) -> Tuple[List[BasicBlock], int]:

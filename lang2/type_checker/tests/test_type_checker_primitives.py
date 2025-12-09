@@ -75,3 +75,18 @@ def test_shadowing_respects_lexical_scope():
 	assert outer_bid is not None
 	assert res.typed_fn.binding_for_var[id(var_expr)] == outer_bid
 	assert tc.type_table.ensure_int() in res.typed_fn.expr_types.values()
+
+
+def test_param_binding_and_type_tracked():
+	tc = _checker()
+	int_ty = tc.type_table.ensure_int()
+	fn_body = H.HBlock(statements=[H.HExprStmt(expr=H.HVar("x"))])
+	res = tc.check_function("p", fn_body, param_types={"x": int_ty})
+	assert res.diagnostics == []
+	assert res.typed_fn.params
+	assert res.typed_fn.param_bindings
+	var_expr = fn_body.statements[0].expr
+	assert isinstance(var_expr, H.HVar)
+	p_binding = res.typed_fn.binding_for_var[id(var_expr)]
+	assert p_binding in res.typed_fn.param_bindings
+	assert res.typed_fn.binding_types[p_binding] == int_ty
