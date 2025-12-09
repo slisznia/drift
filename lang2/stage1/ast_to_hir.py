@@ -154,6 +154,9 @@ class AstToHIR:
 		Unary op lowering. Only maps the simple ops; more exotic ops can be
 		added later with explicit enum entries.
 		"""
+		# Borrowing (& / &mut) lowers to HBorrow (lvalue-only check happens later).
+		if expr.op in ("&", "&mut"):
+			return H.HBorrow(subject=self.lower_expr(expr.operand), is_mut=expr.op == "&mut")
 		op_map = {
 			"-": H.UnaryOp.NEG,
 			"not": H.UnaryOp.NOT,

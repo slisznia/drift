@@ -2,20 +2,21 @@
 # vim: set noexpandtab: -*- indent-tabs-mode: t -*-
 # author: Sławomir Liszniański; created: 2025-12-09
 """
-Minimal borrow-check pass (Phase 1): track moves per Place and report
-use-after-move diagnostics on typed HIR.
+Borrow-check pass (Phase 1/2): track moves per Place and coarse-grained loans.
 
 Scope:
 - Operates as a forward dataflow over a CFG derived from HIR.
 - Tracks place states (UNINIT/VALID/MOVED) and flags use-after-move.
 - Handles implicit moves for non-Copy values used by value.
-- Leaves borrowing/loans/regions/mutability for later phases.
+- Adds explicit borrow handling (& / &mut) with shared-vs-mut conflicts, with
+  coarse function-long regions (no NLL yet).
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Mapping, Callable, Tuple
+from enum import Enum, auto
+from typing import Dict, List, Optional, Mapping, Callable, Tuple, Set
 
 from lang2 import stage1 as H
 from lang2.borrow_checker import Place, PlaceBase, PlaceKind, PlaceState, place_from_expr, merge_place_state
@@ -42,10 +43,33 @@ class BasicBlock:
 	terminator: Optional[Terminator] = None
 
 
+class LoanKind(Enum):
+	"""Kinds of borrows supported in Phase 2."""
+
+	SHARED = auto()
+	MUT = auto()
+
+
+@dataclass(frozen=True)
+class Loan:
+	"""A loan of a place for the lifetime of its reference (coarse-grained for now)."""
+
+	place: Place
+	kind: LoanKind
+
+
+@dataclass
+class _FlowState:
+	"""Dataflow state at a CFG point: place validity + active loans."""
+
+	place_states: Dict[Place, PlaceState] = field(default_factory=dict)
+	loans: Set[Loan] = field(default_factory=set)
+
+
 @dataclass
 class BorrowChecker:
 	"""
-	Phase-1 borrow checker: move tracking on typed HIR (CFG/dataflow).
+	Phase-1/2 borrow checker: move tracking + coarse loans on typed HIR (CFG/dataflow).
 
 	Inputs:
 	- type_table: to answer Copy vs move-only.
@@ -65,19 +89,19 @@ class BorrowChecker:
 		# Conservatively treat scalars as Copy; everything else (incl. Unknown) is move-only.
 		return td.kind is TypeKind.SCALAR
 
-	def _state_for(self, state: Dict[Place, PlaceState], place: Place) -> PlaceState:
+	def _state_for(self, state: _FlowState, place: Place) -> PlaceState:
 		"""Lookup helper with UNINIT default for missing places."""
-		return state.get(place, PlaceState.UNINIT)
+		return state.place_states.get(place, PlaceState.UNINIT)
 
-	def _set_state(self, state: Dict[Place, PlaceState], place: Place, value: PlaceState) -> None:
+	def _set_state(self, state: _FlowState, place: Place, value: PlaceState) -> None:
 		"""Mutate the local state map for a given place."""
-		state[place] = value
+		state.place_states[place] = value
 
 	def _diagnostic(self, message: str) -> None:
 		"""Append an error-level diagnostic with no span."""
 		self.diagnostics.append(Diagnostic(message=message, severity="error", span=None))
 
-	def _consume_place_use(self, state: Dict[Place, PlaceState], place: Place) -> None:
+	def _consume_place_use(self, state: _FlowState, place: Place) -> None:
 		"""Consume a place in value position, marking moves and flagging use-after-move."""
 		curr = self._state_for(state, place)
 		if curr is PlaceState.MOVED:
@@ -86,9 +110,46 @@ class BorrowChecker:
 		ty = self.fn_types.get(place.base.name)
 		if self._is_copy(ty):
 			return
+		for loan in state.loans:
+			if self._places_overlap(place, loan.place):
+				self._diagnostic(f"cannot move '{place.base.name}' while borrowed")
+				return
 		self._set_state(state, place, PlaceState.MOVED)
 
-	def _visit_expr(self, state: Dict[Place, PlaceState], expr: H.HExpr, *, as_value: bool = True) -> None:
+	def _places_overlap(self, a: Place, b: Place) -> bool:
+		"""
+		Conservative overlap: any projection of the same base conflicts.
+
+		This is whole-place (base-level) overlap; field-level precision can be
+		added later if the spec allows disjoint field borrows.
+		"""
+		return a.base == b.base
+
+	def _borrow_place(self, state: _FlowState, place: Place, kind: LoanKind) -> None:
+		"""
+		Process a borrow of `place` with the given kind, enforcing lvalue validity
+		and active-loan conflict rules.
+		"""
+		curr = self._state_for(state, place)
+		if curr is PlaceState.MOVED or curr is PlaceState.UNINIT:
+			self._diagnostic(f"cannot borrow from moved or uninitialized '{place.base.name}'")
+			return
+		for loan in state.loans:
+			if not self._places_overlap(place, loan.place):
+				continue
+			if kind is LoanKind.SHARED and loan.kind is LoanKind.MUT:
+				self._diagnostic(f"cannot take shared borrow while mutable borrow active on '{place.base.name}'")
+				return
+			if kind is LoanKind.MUT:
+				self._diagnostic(f"cannot take mutable borrow while borrow active on '{place.base.name}'")
+				return
+		state.loans.add(Loan(place=place, kind=kind))
+
+	def _drop_overlapping_loans(self, state: _FlowState, place: Place) -> None:
+		"""Remove any loans that overlap the given place (assignment invalidates borrows)."""
+		state.loans = {loan for loan in state.loans if not self._places_overlap(place, loan.place)}
+
+	def _visit_expr(self, state: _FlowState, expr: H.HExpr, *, as_value: bool = True) -> None:
 		"""
 		Traverse expressions and consume moves for lvalues in value position.
 
@@ -102,6 +163,13 @@ class BorrowChecker:
 				place = place_from_expr(expr, base_lookup=self.base_lookup)
 				if place is not None:
 					self._consume_place_use(state, place)
+			return
+		if isinstance(expr, H.HBorrow):
+			place = place_from_expr(expr.subject, base_lookup=self.base_lookup)
+			if place is None:
+				self._diagnostic("cannot borrow from a non-lvalue expression")
+				return
+			self._borrow_place(state, place, LoanKind.MUT if expr.is_mut else LoanKind.SHARED)
 			return
 		if isinstance(expr, H.HCall):
 			self._visit_expr(state, expr.fn, as_value=True)
@@ -141,12 +209,12 @@ class BorrowChecker:
 			return
 		# Literals and other rvalues need no action.
 
-	def _transfer_block(self, block: BasicBlock, in_state: Dict[Place, PlaceState]) -> Dict[Place, PlaceState]:
+	def _transfer_block(self, block: BasicBlock, in_state: _FlowState) -> _FlowState:
 		"""
 		Transfer function for a single basic block: walk statements and mutate
 		state to produce the outgoing place-state map.
 		"""
-		state = dict(in_state)
+		state = _FlowState(place_states=dict(in_state.place_states), loans=set(in_state.loans))
 		for stmt in block.statements:
 			if isinstance(stmt, H.HLet):
 				self._visit_expr(state, stmt.value, as_value=True)
@@ -158,6 +226,7 @@ class BorrowChecker:
 				tgt = place_from_expr(stmt.target, base_lookup=self.base_lookup)
 				if tgt is not None:
 					self._set_state(state, tgt, PlaceState.VALID)
+					self._drop_overlapping_loans(state, tgt)
 				else:
 					self._diagnostic("assignment target is not an lvalue")
 			elif isinstance(stmt, H.HReturn):
@@ -191,7 +260,7 @@ class BorrowChecker:
 		"""Run move tracking on a HIR block by building a CFG and flowing states."""
 		self.diagnostics.clear()
 		blocks, entry_id = self._build_cfg(block)
-		in_states: Dict[int, Dict[Place, PlaceState]] = {b.id: {} for b in blocks}
+		in_states: Dict[int, _FlowState] = {b.id: _FlowState() for b in blocks}
 		worklist = [entry_id]
 		while worklist:
 			bid = worklist.pop()
@@ -200,21 +269,23 @@ class BorrowChecker:
 			out_state = self._transfer_block(blk, in_state)
 			succs = blk.terminator.targets if blk.terminator else []
 			for succ in succs:
-				prev = in_states.get(succ, {})
+				prev = in_states.get(succ, _FlowState())
 				merged = self._merge_states(prev, out_state)
 				if merged != prev:
 					in_states[succ] = merged
 					worklist.append(succ)
 		return self.diagnostics
 
-	def _merge_states(self, a: Dict[Place, PlaceState], b: Dict[Place, PlaceState]) -> Dict[Place, PlaceState]:
+	def _merge_states(self, a: _FlowState, b: _FlowState) -> _FlowState:
 		"""Join two place-state maps using merge_place_state as the meet operator."""
-		result = dict(a)
-		for place, state_b in b.items():
-			state_a = result.get(place, PlaceState.UNINIT)
+		result = _FlowState(place_states=dict(a.place_states), loans=set(a.loans))
+		for place, state_b in b.place_states.items():
+			state_a = result.place_states.get(place, PlaceState.UNINIT)
 			if state_a is state_b:
 				continue
-			result[place] = merge_place_state(state_a, state_b)
+			result.place_states[place] = merge_place_state(state_a, state_b)
+		# Coarse region model: keep any loan that is active along any path (union).
+		result.loans |= b.loans
 		return result
 
 	def _build_cfg(self, block: H.HBlock) -> Tuple[List[BasicBlock], int]:

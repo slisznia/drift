@@ -207,6 +207,14 @@ class HIndex(HExpr):
 
 
 @dataclass
+class HBorrow(HExpr):
+	"""Borrow an lvalue: &subject or &mut subject."""
+
+	subject: HExpr
+	is_mut: bool
+
+
+@dataclass
 class HDVInit(HExpr):
 	"""Desugared DiagnosticValue constructor call."""
 	dv_type_name: str
