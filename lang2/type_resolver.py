@@ -36,9 +36,9 @@ def resolve_program_signatures(func_decls: Iterable[object]) -> tuple[TypeTable,
 	table = TypeTable()
 
 	# Seed some common scalars; unknowns/new scalars are created on demand.
-	int_ty = table.new_scalar("Int")
-	bool_ty = table.new_scalar("Bool")
-	str_ty = table.new_scalar("String")
+	int_ty = table.ensure_int()
+	bool_ty = table.ensure_bool()
+	str_ty = table.ensure_string()
 	err_ty = table.new_error("Error")
 	uint_ty = table.ensure_uint()
 

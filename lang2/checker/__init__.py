@@ -138,8 +138,10 @@ class Checker:
 		self._type_table = type_table or TypeTable()
 
 		def _find_named(kind: TypeKind, name: str) -> TypeId | None:
-			# Best-effort lookup on a shared table to avoid minting duplicate TypeIds
-			# when the resolver already seeded common scalars/errors.
+			"""
+			Best-effort lookup on a shared table to avoid minting duplicate TypeIds
+			when the resolver already seeded common scalars/errors.
+			"""
 			for ty_id, ty_def in getattr(self._type_table, "_defs", {}).items():  # type: ignore[attr-defined]
 				if ty_def.kind is kind and ty_def.name == name:
 					return ty_id
@@ -147,19 +149,12 @@ class Checker:
 
 		# Seed common scalars only when missing on the shared table. Cache them on
 		# the table so downstream reuse sees consistent ids.
-		self._int_type = getattr(self._type_table, "_int_type", None) or _find_named(TypeKind.SCALAR, "Int") or self._type_table.new_scalar("Int")
-		self._bool_type = getattr(self._type_table, "_bool_type", None) or _find_named(TypeKind.SCALAR, "Bool") or self._type_table.new_scalar("Bool")
-		self._string_type = getattr(self._type_table, "_string_type", None) or _find_named(TypeKind.SCALAR, "String") or self._type_table.new_scalar("String")
-		self._uint_type = getattr(self._type_table, "_uint_type", None) or _find_named(TypeKind.SCALAR, "Uint") or self._type_table.ensure_uint()
-		self._error_type = getattr(self._type_table, "_error_type", None) or _find_named(TypeKind.ERROR, "Error") or self._type_table.new_error("Error")
-		self._unknown_type = getattr(self._type_table, "_unknown_type", None) or _find_named(TypeKind.UNKNOWN, "Unknown") or self._type_table.new_unknown("Unknown")
-		# Cache seeds on the table so downstream reuse sees the same ids.
-		self._type_table._int_type = self._int_type  # type: ignore[attr-defined]
-		self._type_table._bool_type = self._bool_type  # type: ignore[attr-defined]
-		self._type_table._string_type = self._string_type  # type: ignore[attr-defined]
-		self._type_table._uint_type = self._uint_type  # type: ignore[attr-defined]
-		self._type_table._error_type = self._error_type  # type: ignore[attr-defined]
-		self._type_table._unknown_type = self._unknown_type  # type: ignore[attr-defined]
+		self._int_type = _find_named(TypeKind.SCALAR, "Int") or self._type_table.ensure_int()
+		self._bool_type = _find_named(TypeKind.SCALAR, "Bool") or self._type_table.ensure_bool()
+		self._string_type = _find_named(TypeKind.SCALAR, "String") or self._type_table.ensure_string()
+		self._uint_type = _find_named(TypeKind.SCALAR, "Uint") or self._type_table.ensure_uint()
+		self._error_type = _find_named(TypeKind.ERROR, "Error") or self._type_table.new_error("Error")
+		self._unknown_type = _find_named(TypeKind.UNKNOWN, "Unknown") or self._type_table.ensure_unknown()
 		# TODO: remove declared_can_throw shim once real parser/type checker supplies signatures.
 
 	def check(self, fn_decls: Iterable[str]) -> CheckedProgram:

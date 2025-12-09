@@ -11,11 +11,10 @@ from lang2.stage2 import ArrayIndexLoad, ArrayIndexStore, ArrayLen, ArrayLit, HI
 
 def _make_type_table():
 	table = TypeTable()
-	int_ty = table.new_scalar("Int")
-	table._int_type = int_ty  # type: ignore[attr-defined]
-	table._bool_type = table.new_scalar("Bool")  # type: ignore[attr-defined]
-	table._string_type = table.new_scalar("String")  # type: ignore[attr-defined]
-	table._unknown_type = table.new_unknown("Unknown")  # type: ignore[attr-defined]
+	int_ty = table.ensure_int()
+	table.ensure_bool()
+	table.ensure_string()
+	table.ensure_unknown()
 	return table, int_ty
 
 

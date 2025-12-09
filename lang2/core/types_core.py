@@ -64,6 +64,30 @@ class TypeTable:
 			self._uint_type = self.new_scalar("Uint")  # type: ignore[attr-defined]
 		return self._uint_type  # type: ignore[attr-defined]
 
+	def ensure_int(self) -> TypeId:
+		"""Return a stable Int TypeId, creating it once."""
+		if getattr(self, "_int_type", None) is None:
+			self._int_type = self.new_scalar("Int")  # type: ignore[attr-defined]
+		return self._int_type  # type: ignore[attr-defined]
+
+	def ensure_bool(self) -> TypeId:
+		"""Return a stable Bool TypeId, creating it once."""
+		if getattr(self, "_bool_type", None) is None:
+			self._bool_type = self.new_scalar("Bool")  # type: ignore[attr-defined]
+		return self._bool_type  # type: ignore[attr-defined]
+
+	def ensure_string(self) -> TypeId:
+		"""Return a stable String TypeId, creating it once."""
+		if getattr(self, "_string_type", None) is None:
+			self._string_type = self.new_scalar("String")  # type: ignore[attr-defined]
+		return self._string_type  # type: ignore[attr-defined]
+
+	def ensure_unknown(self) -> TypeId:
+		"""Return a stable Unknown TypeId, creating it once."""
+		if getattr(self, "_unknown_type", None) is None:
+			self._unknown_type = self.new_unknown("Unknown")  # type: ignore[attr-defined]
+		return self._unknown_type  # type: ignore[attr-defined]
+
 	def new_error(self, name: str = "Error") -> TypeId:
 		"""Register the canonical error/event type."""
 		return self._add(TypeKind.ERROR, name, [])

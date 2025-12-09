@@ -223,10 +223,7 @@ def compile_to_llvm_ir_for_tests(
 			elem_td = checked.type_table.get(td.param_types[0])
 			if elem_td.name == "String":
 				# Guard: require return Int and exactly one param of Array<String>.
-				if entry_info.signature.return_type_id not in (
-					getattr(checked.type_table, "_int_type", None),
-					checked.type_table.new_scalar("Int"),
-				):
+				if entry_info.signature.return_type_id != checked.type_table.ensure_int():
 					raise ValueError("main(argv: Array<String>) must return Int")
 				rename_map["main"] = "drift_main"
 				argv_wrapper = "drift_main"

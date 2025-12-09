@@ -154,21 +154,16 @@ class HIRToMIR:
 		self._local_types: dict[str, TypeId] = dict(param_types) if param_types else {}
 		# Optional shared TypeTable for typed MIR nodes (arrays, etc.).
 		self._type_table = type_table or TypeTable()
-		# Cache some common types and expose them on the table for reuse when shared.
-		self._int_type = getattr(self._type_table, "_int_type", None) or self._type_table.new_scalar("Int")
-		self._type_table._int_type = self._int_type  # type: ignore[attr-defined]
-		self._bool_type = getattr(self._type_table, "_bool_type", None) or self._type_table.new_scalar("Bool")
-		self._type_table._bool_type = self._bool_type  # type: ignore[attr-defined]
-		self._string_type = getattr(self._type_table, "_string_type", None) or self._type_table.new_scalar("String")
-		self._type_table._string_type = self._string_type  # type: ignore[attr-defined]
+		# Cache some common types for reuse when shared.
+		self._int_type = self._type_table.ensure_int()
+		self._bool_type = self._type_table.ensure_bool()
+		self._string_type = self._type_table.ensure_string()
 		self._string_empty_const = self.b.new_temp()
 		# Inject a private empty string literal for String.EMPTY; this is a
 		# zero-length, null-data string produced at MIR lowering time.
 		self.b.emit(M.ConstString(dest=self._string_empty_const, value=""))
-		self._uint_type = getattr(self._type_table, "_uint_type", None) or self._type_table.ensure_uint()
-		self._type_table._uint_type = self._uint_type  # type: ignore[attr-defined]
-		self._unknown_type = getattr(self._type_table, "_unknown_type", None) or self._type_table.new_unknown("Unknown")
-		self._type_table._unknown_type = self._unknown_type  # type: ignore[attr-defined]
+		self._uint_type = self._type_table.ensure_uint()
+		self._unknown_type = self._type_table.ensure_unknown()
 
 	# --- Expression lowering ---
 
