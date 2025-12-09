@@ -57,7 +57,7 @@ parse-examples:
 	./.venv/bin/python3 tools/draft_linter.py examples
 
 # Lang2 staged compiler tests
-lang2-test: lang2-stage1-test lang2-stage2-test lang2-stage3-test lang2-stage4-test lang2-parser-test lang2-core-test lang2-driver-test lang2-llvm-test lang2-codegen-test
+lang2-test: lang2-stage1-test lang2-stage2-test lang2-stage3-test lang2-stage4-test lang2-parser-test lang2-core-test lang2-driver-test lang2-llvm-test lang2-codegen-test lang2-borrow-test
 	@echo "lang2 tests: Success."
 
 lang2-stage1-test:
@@ -137,6 +137,15 @@ lang2-codegen-test:
 	PYTHONPATH=. ./.venv/bin/python3 lang2/codegen/ir_cases/e2e_runner.py
 	# Run Drift-source e2e cases (per-case dirs under lang2/codegen/e2e).
 	PYTHONPATH=. ./.venv/bin/python3 lang2/codegen/e2e/runner.py
+
+# Borrow checker scaffolding tests.
+lang2-borrow-test:
+	# Ensure pytest is available in the venv
+	if ! ./.venv/bin/python3 -m pytest --version >/dev/null 2>&1; then \
+	  echo "pytest is missing in .venv; please install it (e.g., .venv/bin/python3 -m pip install pytest)"; \
+	  exit 1; \
+	fi
+	PYTHONPATH=. ./.venv/bin/python3 -m pytest -v lang2/borrow_checker/tests
 
 stage-for-review:
 	rm -rf staged
