@@ -20,7 +20,7 @@ from typing import Dict, List, Mapping, Optional, Set
 from lang2.core.diagnostics import Diagnostic
 from lang2.stage3 import ThrowSummary
 from lang2.stage2 import MirFunc, Return, ConstructResultOk, ConstructResultErr
-from lang2.core.types_core import TypeId
+from lang2.core.types_core import TypeId, TypeKind
 from lang2.core.types_protocol import TypeEnv
 
 
@@ -241,11 +241,28 @@ def enforce_fnresult_returns_typeaware(
 						)
 						break
 					if info.return_type_id is not None and ty != info.return_type_id:
-						fn_type_error = (
-							f"function {fname} returns value of type {ty!r} in block {block.name} "
-							f"but signature return type is {info.return_type_id!r}"
-						)
-						break
+						table = getattr(type_env, "_table", None)
+						if table is not None:
+							ret_def = table.get(info.return_type_id)
+							ty_def = table.get(ty)
+							if (
+								ret_def.kind is TypeKind.SCALAR
+								and ty_def.kind is TypeKind.SCALAR
+								and {ret_def.name, ty_def.name} <= {"Int", "Uint"}
+							):
+								pass
+							else:
+								fn_type_error = (
+									f"function {fname} returns value of type {ty!r} in block {block.name} "
+									f"but signature return type is {info.return_type_id!r}"
+								)
+								break
+						else:
+							fn_type_error = (
+								f"function {fname} returns value of type {ty!r} in block {block.name} "
+								f"but signature return type is {info.return_type_id!r}"
+							)
+							break
 		if fn_type_error is not None:
 			_report(msg=fn_type_error, diagnostics=diagnostics)
 

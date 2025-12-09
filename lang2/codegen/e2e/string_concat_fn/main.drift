@@ -1,4 +1,4 @@
-fn main() returns Uint {
+fn main() returns Int {
     val s = string_concat("foo", "bar");
     return byte_length(s);
 }

@@ -28,6 +28,23 @@ def test_array_literal_mismatched_types_reports_diagnostic():
 	assert any("array literal elements do not have a consistent type" in d.message for d in diagnostics)
 
 
+def test_array_string_literal_with_int_element_reports_diagnostic():
+	hir = H.HBlock(
+		statements=[
+			H.HExprStmt(
+				expr=H.HArrayLiteral(
+					elements=[
+						H.HLiteralString(value="a"),
+						H.HLiteralInt(value=1),
+					]
+				)
+			)
+		]
+	)
+	diagnostics = _run_checker(hir)
+	assert any("array literal elements do not have a consistent type" in d.message for d in diagnostics)
+
+
 def test_array_index_requires_int_index():
 	hir = H.HBlock(
 		statements=[
@@ -37,6 +54,25 @@ def test_array_index_requires_int_index():
 					index=H.HLiteralBool(value=True),
 				)
 			)
+		]
+	)
+	diagnostics = _run_checker(hir)
+	assert any("array index must be Int" in d.message for d in diagnostics)
+
+
+def test_array_string_index_requires_int_index():
+	hir = H.HBlock(
+		statements=[
+			H.HLet(
+				name="xs",
+				value=H.HArrayLiteral(elements=[H.HLiteralString(value="a"), H.HLiteralString(value="b")]),
+			),
+			H.HExprStmt(
+				expr=H.HIndex(
+					subject=H.HVar(name="xs"),
+					index=H.HLiteralString(value="0"),
+				)
+			),
 		]
 	)
 	diagnostics = _run_checker(hir)

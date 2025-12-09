@@ -128,8 +128,13 @@ def compile_stubbed_funcs(
 
 	for name, hir_norm in normalized_hirs.items():
 		builder = MirBuilder(name=name)
-		HIRToMIR(builder, type_table=shared_type_table, exc_env=exc_env).lower_block(hir_norm)
 		sig = signatures.get(name)
+		param_types: dict[str, "TypeId"] = {}
+		if sig is not None and sig.param_names is not None:
+			builder.func.params = list(sig.param_names)
+		if sig is not None and sig.param_names is not None and sig.param_type_ids is not None:
+			param_types = {pname: pty for pname, pty in zip(sig.param_names, sig.param_type_ids)}
+		HIRToMIR(builder, type_table=shared_type_table, exc_env=exc_env, param_types=param_types).lower_block(hir_norm)
 		if sig is not None and sig.param_names is not None:
 			builder.func.params = list(sig.param_names)
 		mir_funcs[name] = builder.func
@@ -200,10 +205,38 @@ def compile_to_llvm_ir_for_tests(
 	)
 
 	# Lower module to LLVM IR and append the OS entry wrapper when needed.
-	module = lower_module_to_llvm(mir_funcs, ssa_funcs, checked.fn_infos, type_table=checked.type_table)
-	# If the entry is already called "main", do not emit a wrapper that would
-	# call itself; otherwise emit a thin OS wrapper that calls the entry.
-	if entry != "main":
+	rename_map: dict[str, str] = {}
+	argv_wrapper: str | None = None
+	entry_info = checked.fn_infos.get(entry)
+	# Detect main(argv: Array<String>) and emit a C-ABI wrapper that builds argv.
+	if (
+		entry == "main"
+		and entry_info
+		and entry_info.signature
+		and entry_info.signature.param_type_ids
+		and len(entry_info.signature.param_type_ids) == 1
+		and checked.type_table is not None
+	):
+		param_ty = entry_info.signature.param_type_ids[0]
+		td = checked.type_table.get(param_ty)
+		if td.kind.name == "ARRAY" and td.param_types:
+			elem_td = checked.type_table.get(td.param_types[0])
+			if elem_td.name == "String":
+				rename_map["main"] = "drift_main"
+				argv_wrapper = "drift_main"
+
+	module = lower_module_to_llvm(
+		mir_funcs,
+		ssa_funcs,
+		checked.fn_infos,
+		type_table=checked.type_table,
+		rename_map=rename_map,
+		argv_wrapper=argv_wrapper,
+	)
+	# If the entry is already called "main" and has no argv wrapper, do not emit
+	# a wrapper that would call itself; otherwise emit a thin OS wrapper that
+	# calls the entry.
+	if argv_wrapper is None and entry != "main":
 		module.emit_entry_wrapper(entry)
 	return module.render(), checked
 

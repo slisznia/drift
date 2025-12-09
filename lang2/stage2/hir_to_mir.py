@@ -135,6 +135,7 @@ class HIRToMIR:
 		builder: MirBuilder,
 		type_table: Optional[TypeTable] = None,
 		exc_env: Mapping[str, int] | None = None,
+		param_types: Mapping[str, TypeId] | None = None,
 	):
 		"""
 		Create a lowering context.
@@ -150,7 +151,7 @@ class HIRToMIR:
 		# Optional exception environment: maps DV/exception type name -> event code.
 		self._exc_env = exc_env
 		# Track best-effort local types (TypeId) to tag typed MIR nodes.
-		self._local_types: dict[str, TypeId] = {}
+		self._local_types: dict[str, TypeId] = dict(param_types) if param_types else {}
 		# Optional shared TypeTable for typed MIR nodes (arrays, etc.).
 		self._type_table = type_table or TypeTable()
 		# Cache some common types and expose them on the table for reuse when shared.

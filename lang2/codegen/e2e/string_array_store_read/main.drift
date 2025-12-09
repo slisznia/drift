@@ -1,0 +1,6 @@
+fn main() returns Int {
+    val xs: Array<String> = ["a", "bb", "ccc"];
+    xs[1] = "dddd";
+    // lengths: 1 + 4 + 3 = 8
+    return xs[0].len + xs[1].len + xs[2].len;
+}

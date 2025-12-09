@@ -112,6 +112,8 @@ def lower_module_to_llvm(
 	ssa_funcs: Mapping[str, SsaFunc],
 	fn_infos: Mapping[str, FnInfo],
 	type_table: Optional[TypeTable] = None,
+	rename_map: Optional[Mapping[str, str]] = None,
+	argv_wrapper: Optional[str] = None,
 ) -> LlvmModuleBuilder:
 	"""
 	Lower a set of SSA functions to an LLVM module.
@@ -125,8 +127,19 @@ def lower_module_to_llvm(
 	for name, func in funcs.items():
 		ssa = ssa_funcs[name]
 		fn_info = fn_infos[name]
-		builder = _FuncBuilder(func=func, ssa=ssa, fn_info=fn_info, fn_infos=fn_infos, module=mod, type_table=type_table)
+		builder = _FuncBuilder(
+			func=func,
+			ssa=ssa,
+			fn_info=fn_info,
+			fn_infos=fn_infos,
+			module=mod,
+			type_table=type_table,
+			sym_name=rename_map.get(name) if rename_map else None,
+		)
 		mod.emit_func(builder.lower())
+	if argv_wrapper is not None:
+		array_llty = f"{{ {DRIFT_SIZE_TYPE}, {DRIFT_SIZE_TYPE}, {DRIFT_STRING_TYPE}* }}"
+		mod.emit_argv_entry_wrapper(user_main=argv_wrapper, array_type=array_llty)
 	return mod
 
 
@@ -159,6 +172,8 @@ class LlvmModuleBuilder:
 	needs_array_helpers: bool = False
 	needs_string_eq: bool = False
 	needs_string_concat: bool = False
+	needs_argv_helper: bool = False
+	array_string_type: Optional[str] = None
 
 	def __post_init__(self) -> None:
 		if DRIFT_SIZE_TYPE.startswith("%"):
@@ -168,6 +183,7 @@ class LlvmModuleBuilder:
 				f"{DRIFT_ERROR_TYPE} = type {{ i64, ptr, ptr, ptr }}",
 				f"{FNRESULT_INT_ERROR} = type {{ i1, i64, {DRIFT_ERROR_TYPE} }}",
 				f"{DRIFT_STRING_TYPE} = type {{ {DRIFT_SIZE_TYPE}, i8* }}",
+				"%DriftArrayHeader = type { i64, i64, ptr }",
 			]
 		)
 
@@ -195,12 +211,45 @@ class LlvmModuleBuilder:
 			)
 		)
 
+	def emit_argv_entry_wrapper(self, user_main: str, array_type: str) -> None:
+		"""
+		Emit an OS entry for `main(argv: Array<String>) returns Int`.
+
+		Builds Array<String> via the runtime helper and truncates the i64 Int
+		result to i32 for the process exit code.
+		"""
+		self.needs_argv_helper = True
+		self.array_string_type = array_type
+		lines = [
+			"define i32 @main(i32 %argc, i8** %argv) {",
+			"entry:",
+			"  %arr.ptr = alloca %DriftArrayHeader",
+			"  call void @drift_build_argv(%DriftArrayHeader* sret(%DriftArrayHeader) %arr.ptr, i32 %argc, i8** %argv)",
+			"  %arr = load %DriftArrayHeader, %DriftArrayHeader* %arr.ptr",
+			"  %len = extractvalue %DriftArrayHeader %arr, 0",
+			"  %cap = extractvalue %DriftArrayHeader %arr, 1",
+			"  %data_raw = extractvalue %DriftArrayHeader %arr, 2",
+			"  %data = bitcast ptr %data_raw to %DriftString*",
+			f"  %tmp0 = insertvalue {array_type} undef, {DRIFT_SIZE_TYPE} %len, 0",
+			f"  %tmp1 = insertvalue {array_type} %tmp0, {DRIFT_SIZE_TYPE} %cap, 1",
+			f"  %argv_typed = insertvalue {array_type} %tmp1, %DriftString* %data, 2",
+			f"  %ret = call i64 @{user_main}({array_type} %argv_typed)",
+			"  %trunc = trunc i64 %ret to i32",
+			"  ret i32 %trunc",
+			"}",
+		]
+		self.funcs.append("\n".join(lines))
+
 	def render(self) -> str:
 		lines: List[str] = []
 		lines.extend(self.type_decls)
 		lines.append("")
 		if self.consts:
 			lines.extend(self.consts)
+			lines.append("")
+		if self.needs_argv_helper:
+			array_type = self.array_string_type or f"{{ {DRIFT_SIZE_TYPE}, {DRIFT_SIZE_TYPE}, {DRIFT_STRING_TYPE}* }}"
+			lines.append(f"declare void @drift_build_argv(%DriftArrayHeader* sret(%DriftArrayHeader), i32, i8**)")
 			lines.append("")
 		if self.needs_array_helpers:
 			lines.extend(
@@ -236,6 +285,7 @@ class _FuncBuilder:
 	aliases: Dict[str, str] = field(default_factory=dict)
 	string_type_id: Optional[TypeId] = None
 	int_type_id: Optional[TypeId] = None
+	sym_name: Optional[str] = None
 
 	def lower(self) -> str:
 		self._assert_cfg_supported()
@@ -275,7 +325,8 @@ class _FuncBuilder:
 				self.value_types[llvm_name] = llty
 				param_parts.append(f"{llty} {llvm_name}")
 		params_str = ", ".join(param_parts)
-		self.lines.append(f"define {ret_ty} @{self.func.name}({params_str}) {{")
+		func_name = self.sym_name or self.func.name
+		self.lines.append(f"define {ret_ty} @{func_name}({params_str}) {{")
 
 	def _declare_array_helpers_if_needed(self) -> None:
 		"""Mark the module to emit array helper decls if any array ops are present."""
@@ -537,8 +588,17 @@ class _FuncBuilder:
 		"""
 		Map a TypeId to an LLVM type string for parameters/arguments.
 
-		v1 supports only Int (i64) and String (%DriftString) in params.
+		v1 supports Int (i64), String (%DriftString), and Array<T> (by value).
 		"""
+		if self.type_table is not None:
+			td = self.type_table.get(ty_id)
+			if td.kind is TypeKind.ARRAY and td.param_types:
+				elem_llty = self._llvm_type_for_typeid(td.param_types[0])
+				return self._llvm_array_type(elem_llty)
+			if td.kind is TypeKind.SCALAR and td.name == "Int":
+				return "i64"
+			if td.kind is TypeKind.SCALAR and td.name == "String":
+				return DRIFT_STRING_TYPE
 		if self.int_type_id is not None and ty_id == self.int_type_id:
 			return "i64"
 		if self.string_type_id is not None and ty_id == self.string_type_id:
@@ -581,6 +641,14 @@ class _FuncBuilder:
 			return "icmp eq"
 		if op == BinaryOp.NE:
 			return "icmp ne"
+		if op == BinaryOp.LT:
+			return "icmp slt"
+		if op == BinaryOp.LE:
+			return "icmp sle"
+		if op == BinaryOp.GT:
+			return "icmp sgt"
+		if op == BinaryOp.GE:
+			return "icmp sge"
 		raise NotImplementedError(f"LLVM codegen v1: unsupported binary op {op}")
 
 	def _lower_unary(self, instr: UnaryOpInstr) -> None:
@@ -660,7 +728,7 @@ class _FuncBuilder:
 
 		# Integer ops on i64.
 		op_str = self._map_binop(instr.op)
-		dest_ty = "i64" if instr.op not in (BinaryOp.EQ, BinaryOp.NE) else "i1"
+		dest_ty = "i64" if not op_str.startswith("icmp") else "i1"
 		self.value_types[dest] = dest_ty
 		self.lines.append(f"  {dest} = {op_str} i64 {left}, {right}")
 

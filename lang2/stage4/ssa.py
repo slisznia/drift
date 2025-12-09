@@ -295,6 +295,13 @@ class MirToSSA:
 				raise RuntimeError(f"SSA: load before store for local '{local}' in multi-block rename")
 			return stacks[local][-1]
 
+		# Seed parameter versions so loads in entry can read them.
+		for param in func.params:
+			new_name(param)
+		# Update the function params to the SSA-renamed symbols so headers and
+		# body stay consistent.
+		func.params = [current(p) for p in func.params]
+
 		def rename_block(block_name: str) -> None:
 			block = func.blocks[block_name]
 			locals_defined: list[str] = []
