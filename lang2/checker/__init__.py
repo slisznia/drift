@@ -955,8 +955,14 @@ class Checker:
 					target_ty = None
 					if isinstance(stmt.target, H.HIndex):
 						target_ty = walk_expr(stmt.target)
+						# Ensure the subject is an array; walk_expr already emits the
+						# "indexing requires an Array value" diagnostic, but keep locals in sync.
 					value_ty = walk_expr(stmt.value)
-					if target_ty is not None and value_ty is not None and target_ty != value_ty:
+					if (
+						target_ty is None
+						or value_ty is None
+						or target_ty != value_ty
+					) and isinstance(stmt.target, H.HIndex):
 						diagnostics.append(
 							Diagnostic(
 								message="assignment type mismatch for indexed array element",

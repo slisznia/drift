@@ -715,6 +715,13 @@ class HIRToMIR:
 		Best-effort element type inference for array subjects when lowering
 		index loads/stores. Falls back to an Unknown elem type.
 		"""
+		# Fast path: if the subject is a known local with an Array type, reuse it.
+		if isinstance(subject, H.HVar) and subject.name in self._local_types:
+			subj_ty = self._local_types[subject.name]
+			ty_def = self._type_table.get(subj_ty)
+			if ty_def.kind is TypeKind.ARRAY and ty_def.param_types:
+				return ty_def.param_types[0]
+
 		subj_ty = self._infer_expr_type(subject)
 		if subj_ty is None:
 			return self._unknown_type
