@@ -33,10 +33,13 @@ class TypedFn:
 
 	name: str
 	params: List[ParamId]
+	param_bindings: List[int]
 	locals: List[LocalId]
 	body: H.HBlock
 	expr_types: Dict[int, TypeId]  # keyed by id(expr)
 	binding_for_var: Dict[int, int]  # keyed by id(HVar)
+	binding_types: Dict[int, TypeId]  # binding_id -> TypeId
+	binding_names: Dict[int, str]  # binding_id -> name
 
 
 @dataclass
@@ -73,17 +76,23 @@ class TypeChecker:
 		scope_bindings: List[Dict[str, int]] = [dict()]
 		expr_types: Dict[int, TypeId] = {}
 		binding_for_var: Dict[int, int] = {}
+		binding_types: Dict[int, TypeId] = {}
+		binding_names: Dict[int, str] = {}
 		diagnostics: List[Diagnostic] = []
 
 		params: List[ParamId] = []
+		param_bindings: List[int] = []
 		locals: List[LocalId] = []
 
 		# Seed parameters if provided.
 		for pname, pty in (param_types or {}).items():
 			pid = self._alloc_param_id()
 			params.append(pid)
+			param_bindings.append(pid)
 			scope_env[-1][pname] = pty
 			scope_bindings[-1][pname] = pid
+			binding_types[pid] = pty
+			binding_names[pid] = pname
 
 		def record_expr(expr: H.HExpr, ty: TypeId) -> TypeId:
 			expr_id = id(expr)
@@ -168,6 +177,8 @@ class TypeChecker:
 				val_ty = type_expr(stmt.value)
 				scope_env[-1][stmt.name] = val_ty
 				scope_bindings[-1][stmt.name] = stmt.binding_id
+				binding_types[stmt.binding_id] = val_ty
+				binding_names[stmt.binding_id] = stmt.name
 			elif isinstance(stmt, H.HAssign):
 				type_expr(stmt.value)
 				type_expr(stmt.target)
@@ -206,10 +217,13 @@ class TypeChecker:
 		typed = TypedFn(
 			name=name,
 			params=params,
+			param_bindings=param_bindings,
 			locals=locals,
 			body=body,
 			expr_types={ref: ty for ref, ty in expr_types.items()},
 			binding_for_var=binding_for_var,
+			binding_types=binding_types,
+			binding_names=binding_names,
 		)
 		return TypeCheckResult(typed_fn=typed, diagnostics=diagnostics)
 

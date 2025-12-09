@@ -51,6 +51,9 @@ def test_borrow_types():
 	vals = list(res.typed_fn.expr_types.values())
 	assert tc.type_table.ensure_ref(tc.type_table.ensure_int()) in vals
 	assert tc.type_table.ensure_ref_mut(tc.type_table.ensure_int()) in vals
+	# binding metadata captured
+	assert res.typed_fn.binding_types
+	assert res.typed_fn.binding_names
 
 
 def test_shadowing_respects_lexical_scope():
