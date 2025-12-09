@@ -35,10 +35,26 @@ That’s exactly the Rust problem domain, but with a simpler surface: no raw poi
 ## Status / progress
 
 - [x] Spec review: drift-lang-spec.md is the canonical source for move/borrow semantics.
-- [ ] Implementation Phase 1 (places + move tracking).
+- [x] Implementation Phase 1 (places + move tracking).
+  - Place representation finalized (PlaceBase + projections) with hashable IndexKind/IndexProj.
+  - BorrowChecker runs as CFG-based forward dataflow; tracks UNINIT/VALID/MOVED; emits use-after-move diagnostics.
+  - Expression visitor walks all HIR forms; Copy=scalar, everything else move-only; diagnostics reset per run.
+  - Tests: move tracking (straight-line), branch/loop CFG cases, place builder coverage.
 - [ ] Implementation Phase 2 (basic loans + lvalue-only borrows, no regions).
 - [ ] Implementation Phase 3 (regions/NLL + auto-borrow integration).
 - [ ] Implementation Phase 4 (escapes/struct fields/returns with refs).
+
+---
+
+## Next steps (near-term)
+
+1. Implement Phase 2 loans (shared/mut) on top of existing place/move state:
+   * Add borrow expressions `&v` / `&mut v` and lvalue-only enforcement.
+   * Track active loans per place and block conflicts (shared vs mut).
+   * Keep regions coarse (function-long) until Phase 3.
+2. Extend tests to cover borrow-from-rvalue/moved diagnostics and shared-vs-mut conflicts.
+3. Consider CFG cleanup for loops (structured continue/exit terminators) if it simplifies Phase 2 dataflow.
+4. Keep borrow_checker_pass as the single entry point; add feature flag when wiring into pipeline.
 
 ---
 
