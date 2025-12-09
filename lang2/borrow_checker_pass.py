@@ -58,6 +58,7 @@ class Loan:
 	place: Place
 	kind: LoanKind
 	region_id: int
+	temporary: bool = False
 
 
 @dataclass
@@ -148,7 +149,7 @@ class BorrowChecker:
 		new_loans = state.loans - before
 		state.loans -= new_loans
 
-	def _borrow_place(self, state: _FlowState, place: Place, kind: LoanKind) -> None:
+	def _borrow_place(self, state: _FlowState, place: Place, kind: LoanKind, *, temporary: bool = False) -> None:
 		"""
 		Process a borrow of `place` with the given kind, enforcing lvalue validity
 		and active-loan conflict rules.
@@ -166,7 +167,7 @@ class BorrowChecker:
 			if kind is LoanKind.MUT:
 				self._diagnostic(f"cannot take mutable borrow while borrow active on '{place.base.name}'")
 				return
-		state.loans.add(Loan(place=place, kind=kind, region_id=self._new_region()))
+		state.loans.add(Loan(place=place, kind=kind, region_id=self._new_region(), temporary=temporary))
 
 	def _drop_overlapping_loans(self, state: _FlowState, place: Place) -> None:
 		"""Remove any loans that overlap the given place (assignment invalidates borrows)."""
@@ -195,29 +196,39 @@ class BorrowChecker:
 			self._borrow_place(state, place, LoanKind.MUT if expr.is_mut else LoanKind.SHARED)
 			return
 		if isinstance(expr, H.HCall):
+			pre_loans = set(state.loans)
 			self._visit_expr(state, expr.fn, as_value=True)
 			for arg in expr.args:
 				if self.enable_auto_borrow:
 					place = place_from_expr(arg, base_lookup=self.base_lookup)
 					if place is not None:
-						self._borrow_place(state, place, LoanKind.SHARED)
+						self._borrow_place(state, place, LoanKind.SHARED, temporary=True)
 						continue
 				self._visit_expr(state, arg, as_value=True)
+			if self.enable_auto_borrow:
+				new_loans = state.loans - pre_loans
+				state.loans -= {ln for ln in new_loans if ln.temporary}
 			return
 		if isinstance(expr, H.HMethodCall):
+			pre_loans = set(state.loans)
 			if self.enable_auto_borrow:
 				recv_place = place_from_expr(expr.receiver, base_lookup=self.base_lookup)
 				if recv_place is not None:
-					self._borrow_place(state, recv_place, LoanKind.SHARED)
+					self._borrow_place(state, recv_place, LoanKind.SHARED, temporary=True)
+				else:
+					self._visit_expr(state, expr.receiver, as_value=True)
 			else:
 				self._visit_expr(state, expr.receiver, as_value=True)
 			for arg in expr.args:
 				if self.enable_auto_borrow:
 					place = place_from_expr(arg, base_lookup=self.base_lookup)
 					if place is not None:
-						self._borrow_place(state, place, LoanKind.SHARED)
+						self._borrow_place(state, place, LoanKind.SHARED, temporary=True)
 						continue
 				self._visit_expr(state, arg, as_value=True)
+			if self.enable_auto_borrow:
+				new_loans = state.loans - pre_loans
+				state.loans -= {ln for ln in new_loans if ln.temporary}
 			return
 		if isinstance(expr, H.HBinary):
 			self._visit_expr(state, expr.left, as_value=True)

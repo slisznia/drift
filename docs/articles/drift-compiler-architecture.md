@@ -226,7 +226,29 @@ or a **CheckedProgram** containing diagnostics.
 
 ---
 
-# 9. SSA → LLVM IR (Codegen)
+# 9. Borrow checker (in progress)
+
+### Purpose
+
+Prevent use-after-move and conflicting borrows before codegen. Runs on typed HIR with a CFG (pre-MIR/SSA) and will be wired into the main driver behind a flag.
+
+### Current behavior (Phase 2 scaffold)
+
+* **Places**: `PlaceBase(kind, id, name)` + projections; whole-place overlap for conflicts.
+* **Moves**: UNINIT/VALID/MOVED per place; use-after-move diagnostics; moves blocked while a loan exists; assignments drop overlapping loans.
+* **Borrows**: explicit `HBorrow` (`&`/`&mut`) only from lvalues; reject borrows from moved/uninit/rvalues; shared-vs-mut conflicts enforced.
+* **Lifetime approximation**: loans carry `region_id` but are function-long; temporary borrows in expr/conds and auto-borrows are dropped after use (coarse NLL approximation).
+* **Auto-borrow scaffold**: optional flag treats call args/receivers as shared, call-scoped borrows; signature-driven shared vs mut is still TODO.
+
+### Next steps
+
+* Region analysis (last-use–based) to drop loans when their region ends; region-aware merging instead of union.
+* Signature-driven auto-borrow for params/receivers typed as `&T` / `&mut T`, with call-scoped regions.
+* Wire into pipeline/CLI with spans in diagnostics; refine overlap precision (field/slice) if needed.
+
+---
+
+# 10. SSA → LLVM IR (Codegen)
 
 ### Purpose
 
@@ -255,7 +277,7 @@ Lower well-typed SSA to LLVM IR using the v1 Drift ABI.
 
 ---
 
-# 9. LLVM IR → clang → Machine Code
+# 11. LLVM IR → clang → Machine Code
 
 ### Purpose
 

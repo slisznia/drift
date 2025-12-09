@@ -47,3 +47,50 @@ def test_condition_borrow_does_not_block_later_mut_borrow():
 	)
 	diags = _checker().check_block(block)
 	assert diags == []
+
+
+def test_auto_borrow_at_call_is_call_scoped_when_enabled():
+	"""
+	With auto-borrow enabled, call-site borrows should be temporary (released after call).
+	We approximate this by ensuring a later mutable borrow is allowed.
+	"""
+	table = TypeTable()
+	type_ids = {"x": table.ensure_int(), "f": table.ensure_unknown()}
+	base_lookup = lambda n: PlaceBase(PlaceKind.LOCAL, 0, n)
+	bc = BorrowChecker(type_table=table, fn_types=type_ids, base_lookup=base_lookup, enable_auto_borrow=True)
+
+	block = H.HBlock(
+		statements=[
+			H.HLet(name="x", value=H.HLiteralInt(1), declared_type_expr=None),
+			H.HExprStmt(expr=H.HCall(fn=H.HVar("f"), args=[H.HVar("x")])),  # auto-borrow x as temp
+			H.HExprStmt(expr=H.HBorrow(subject=H.HVar("x"), is_mut=True)),   # should be allowed after call
+		]
+	)
+	diags = bc.check_block(block)
+	assert diags == []
+
+
+def test_auto_borrow_method_receiver_still_evaluated():
+	"""
+	When auto-borrow is enabled, receivers that are not lvalues (e.g., call expressions)
+	must still be evaluated; auto-borrow is layered on lvalues only.
+	"""
+	table = TypeTable()
+	type_ids = {"x": table.ensure_int(), "make_obj": table.ensure_unknown()}
+	base_lookup = lambda n: PlaceBase(PlaceKind.LOCAL, 0, n)
+	bc = BorrowChecker(type_table=table, fn_types=type_ids, base_lookup=base_lookup, enable_auto_borrow=True)
+
+	block = H.HBlock(
+		statements=[
+			H.HLet(name="x", value=H.HLiteralInt(1), declared_type_expr=None),
+			H.HExprStmt(
+				expr=H.HMethodCall(
+					receiver=H.HCall(fn=H.HVar("make_obj"), args=[H.HVar("x")]),
+					method_name="m",
+					args=[],
+				)
+			),
+		]
+	)
+	diags = bc.check_block(block)
+	assert diags == []

@@ -43,7 +43,7 @@ That’s exactly the Rust problem domain, but with a simpler surface: no raw poi
 - [ ] Implementation Phase 2 (basic loans + lvalue-only borrows, no regions).
   - Coarse loans implemented: HBorrow (&/&mut) nodes lower to borrow checker; shared-vs-mut conflicts enforced with whole-place overlap; borrow-from-rvalue/moved rejected.
   - Temporary borrows in expr/cond are dropped after use (coarse NLL); assignments drop overlapping loans; moves are blocked while borrowed.
-  - Optional `enable_auto_borrow` flag (shared only) scaffolded; still need signature-driven auto-borrow.
+  - Optional `enable_auto_borrow` flag (shared only) scaffolded with call-scoped temporary loans; still need signature-driven auto-borrow.
   - TODO: real regions (kill after last use), auto-borrow at call sites/receivers with mut/shared selection, overlap precision (field/slice), diagnostics with spans.
 - [ ] Implementation Phase 3 (regions/NLL + auto-borrow integration).
 - [ ] Implementation Phase 4 (escapes/struct fields/returns with refs).
