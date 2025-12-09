@@ -15,8 +15,9 @@ def test_shared_reference_is_copy():
 	int_ty = table.ensure_int()
 	ref_int = table.ensure_ref(int_ty)
 	type_ids = {"r": ref_int, "make_ref": table.ensure_unknown(), "x": int_ty}
-	base_lookup = lambda n: PlaceBase(PlaceKind.LOCAL, 0, n)
-	bc = BorrowChecker(type_table=table, fn_types=type_ids, base_lookup=base_lookup)
+	base_lookup = lambda hv: PlaceBase(PlaceKind.LOCAL, 0, hv.name)
+	fn_types = {PlaceBase(PlaceKind.LOCAL, 0, name): ty for name, ty in type_ids.items()}
+	bc = BorrowChecker(type_table=table, fn_types=fn_types, base_lookup=base_lookup)
 
 	block = H.HBlock(
 		statements=[

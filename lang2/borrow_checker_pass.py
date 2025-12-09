@@ -80,8 +80,8 @@ class BorrowChecker:
 	"""
 
 	type_table: TypeTable
-	fn_types: Mapping[str, TypeId]
-	base_lookup: Callable[[str], Optional[PlaceBase]] = lambda n: PlaceBase(PlaceKind.LOCAL, -1, n)
+	fn_types: Mapping[PlaceBase, TypeId]
+	base_lookup: Callable[[object], Optional[PlaceBase]] = lambda hv: PlaceBase(PlaceKind.LOCAL, -1, hv.name if hasattr(hv, "name") else str(hv))
 	diagnostics: List[Diagnostic] = field(default_factory=list)
 	enable_auto_borrow: bool = False
 
@@ -119,7 +119,7 @@ class BorrowChecker:
 		if curr is PlaceState.MOVED:
 			self._diagnostic(f"use after move of '{place.base.name}'")
 			return
-		ty = self.fn_types.get(place.base.name)
+		ty = self.fn_types.get(place.base)
 		if self._is_copy(ty):
 			return
 		for loan in state.loans:
@@ -267,7 +267,7 @@ class BorrowChecker:
 		for stmt in block.statements:
 			if isinstance(stmt, H.HLet):
 				self._visit_expr(state, stmt.value, as_value=True)
-				base = self.base_lookup(stmt.name)
+				base = self.base_lookup(H.HVar(stmt.name))
 				if base is not None:
 					self._set_state(state, Place(base), PlaceState.VALID)
 			elif isinstance(stmt, H.HAssign):

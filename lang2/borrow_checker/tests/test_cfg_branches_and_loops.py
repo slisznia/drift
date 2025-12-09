@@ -18,8 +18,9 @@ def _checker_with_types(var_types: dict[str, str]) -> BorrowChecker:
 			type_ids[name] = table.ensure_int()
 		else:
 			type_ids[name] = table.ensure_unknown()
-	base_lookup = lambda n: PlaceBase(PlaceKind.LOCAL, 0, n)
-	return BorrowChecker(type_table=table, fn_types=type_ids, base_lookup=base_lookup)
+	base_lookup = lambda hv: PlaceBase(PlaceKind.LOCAL, 0, hv.name)
+	fn_types = {PlaceBase(PlaceKind.LOCAL, 0, name): ty for name, ty in type_ids.items()}
+	return BorrowChecker(type_table=table, fn_types=fn_types, base_lookup=base_lookup)
 
 
 def test_move_in_one_branch_does_not_affect_other():

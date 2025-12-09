@@ -108,7 +108,7 @@ class Place:
 		return Place(self.base, self.projections + (proj,))
 
 
-def is_lvalue(expr: H.HExpr, *, base_lookup: Callable[[str], Optional[PlaceBase]]) -> bool:
+def is_lvalue(expr: H.HExpr, *, base_lookup: Callable[[object], Optional[PlaceBase]]) -> bool:
 	"""
 	Decide if a HIR expression denotes a storage location (`Place`) per spec:
 	- Locals/params (`HVar`) are lvalues.
@@ -118,14 +118,14 @@ def is_lvalue(expr: H.HExpr, *, base_lookup: Callable[[str], Optional[PlaceBase]
 	return place_from_expr(expr, base_lookup=base_lookup) is not None
 
 
-def place_from_expr(expr: H.HExpr, *, base_lookup: Callable[[str], Optional[PlaceBase]]) -> Optional[Place]:
+def place_from_expr(expr: H.HExpr, *, base_lookup: Callable[[object], Optional[PlaceBase]]) -> Optional[Place]:
 	"""
 	Construct a `Place` from a HIR expression when the expression is an lvalue.
 
 	Returns None for rvalues.
 	"""
 	if isinstance(expr, H.HVar):
-		base = base_lookup(expr.name)
+		base = base_lookup(expr)
 		if base is None:
 			return None
 		return Place(base)
@@ -156,4 +156,4 @@ def place_from_expr_default(expr: H.HExpr) -> Optional[Place]:
 
 	Prefer passing an explicit base_lookup in new code.
 	"""
-	return place_from_expr(expr, base_lookup=lambda n: PlaceBase(PlaceKind.LOCAL, -1, n))
+	return place_from_expr(expr, base_lookup=lambda hv: PlaceBase(PlaceKind.LOCAL, -1, hv.name if hasattr(hv, "name") else str(hv)))

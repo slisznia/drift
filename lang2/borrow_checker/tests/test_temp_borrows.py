@@ -12,8 +12,9 @@ from lang2.core.types_core import TypeTable
 def _checker() -> BorrowChecker:
 	table = TypeTable()
 	type_ids = {"x": table.ensure_int()}
-	base_lookup = lambda n: PlaceBase(PlaceKind.LOCAL, 0, n)
-	return BorrowChecker(type_table=table, fn_types=type_ids, base_lookup=base_lookup)
+	base_lookup = lambda hv: PlaceBase(PlaceKind.LOCAL, 0, hv.name if hasattr(hv, "name") else str(hv))
+	fn_types = {PlaceBase(PlaceKind.LOCAL, 0, name): ty for name, ty in type_ids.items()}
+	return BorrowChecker(type_table=table, fn_types=fn_types, base_lookup=base_lookup)
 
 
 def test_temp_borrow_in_expr_stmt_does_not_block_later_mut_borrow():
@@ -56,8 +57,9 @@ def test_auto_borrow_at_call_is_call_scoped_when_enabled():
 	"""
 	table = TypeTable()
 	type_ids = {"x": table.ensure_int(), "f": table.ensure_unknown()}
-	base_lookup = lambda n: PlaceBase(PlaceKind.LOCAL, 0, n)
-	bc = BorrowChecker(type_table=table, fn_types=type_ids, base_lookup=base_lookup, enable_auto_borrow=True)
+	base_lookup = lambda hv: PlaceBase(PlaceKind.LOCAL, 0, hv.name if hasattr(hv, "name") else str(hv))
+	fn_types = {PlaceBase(PlaceKind.LOCAL, 0, name): ty for name, ty in type_ids.items()}
+	bc = BorrowChecker(type_table=table, fn_types=fn_types, base_lookup=base_lookup, enable_auto_borrow=True)
 
 	block = H.HBlock(
 		statements=[
@@ -77,8 +79,9 @@ def test_auto_borrow_method_receiver_still_evaluated():
 	"""
 	table = TypeTable()
 	type_ids = {"x": table.ensure_int(), "make_obj": table.ensure_unknown()}
-	base_lookup = lambda n: PlaceBase(PlaceKind.LOCAL, 0, n)
-	bc = BorrowChecker(type_table=table, fn_types=type_ids, base_lookup=base_lookup, enable_auto_borrow=True)
+	base_lookup = lambda hv: PlaceBase(PlaceKind.LOCAL, 0, hv.name if hasattr(hv, "name") else str(hv))
+	fn_types = {PlaceBase(PlaceKind.LOCAL, 0, name): ty for name, ty in type_ids.items()}
+	bc = BorrowChecker(type_table=table, fn_types=fn_types, base_lookup=base_lookup, enable_auto_borrow=True)
 
 	block = H.HBlock(
 		statements=[
