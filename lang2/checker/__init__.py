@@ -65,6 +65,7 @@ class FnSignature:
 	return_type: Any = None
 	throws_events: Tuple[str, ...] = ()
 	param_types: Optional[list[Any]] = None  # raw param type shapes (strings/tuples)
+	module: Optional[str] = None
 
 
 @dataclass

@@ -35,6 +35,7 @@ def resolve_program_signatures(func_decls: Iterable[object]) -> tuple[TypeTable,
 	  - is_method: bool (True when declared inside an `implement Type` block)
 	  - self_mode: optional str ("value", "ref", "ref_mut") for methods
 	  - impl_target: optional TypeExpr for the nominal type the impl targets
+	  - module: optional str module name
 	"""
 	table = TypeTable()
 
@@ -52,6 +53,7 @@ def resolve_program_signatures(func_decls: Iterable[object]) -> tuple[TypeTable,
 		decl_loc = getattr(decl, "loc", None)
 		is_extern = bool(getattr(decl, "is_extern", False))
 		is_intrinsic = bool(getattr(decl, "is_intrinsic", False))
+		module_name = getattr(decl, "module", None)
 
 		# Params
 		raw_params = []
@@ -100,6 +102,7 @@ def resolve_program_signatures(func_decls: Iterable[object]) -> tuple[TypeTable,
 			is_method=is_method,
 			self_mode=self_mode,
 			impl_target_type_id=impl_target_type_id,
+			module=module_name,
 		)
 
 	return table, signatures

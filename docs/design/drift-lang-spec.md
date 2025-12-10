@@ -1014,6 +1014,7 @@ Drift differentiates between **methods** (eligible for dot-call syntax) and **fr
   - (future) `move T`: consuming receiver
   `self` is the idiomatic name for the receiver, but the role comes from position/mode, not spelling.
 - The receiver’s nominal type is implied by the `implement` header; there is no magic receiver outside an `implement` block.
+- `implement` headers must use the nominal type (`Point`, `Vec<Int>`, etc.), not a reference-qualified type (`&Point`, `&mut Point`); reference headers are rejected.
 - Outside an `implement` block every function is a free function. A free function may take any parameters (including an explicit `&File`), but it is invoked with ordinary call syntax (`translate(point, 1, 2)`), not `point.translate(...)`.
 
 Example:

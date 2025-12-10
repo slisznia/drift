@@ -101,6 +101,20 @@ fn main() returns FnResult<Int, Error> {
 	assert isinstance(main.statements[0], H.HThrow)
 
 
+def test_implement_header_rejects_reference_target(tmp_path: Path):
+	src = tmp_path / "impl_ref.drift"
+	src.write_text(
+		"""
+implement &Point {
+    fn move(self: &Point) returns Void { return; }
+}
+"""
+	)
+	_, _sigs, _type_table, diagnostics = parse_drift_to_hir(src)
+	assert diagnostics, "expected diagnostic for reference-qualified implement header"
+	assert "nominal type" in diagnostics[0].message
+
+
 def test_parse_unsupported_stmt_fails_loudly(tmp_path: Path):
 	src = tmp_path / "main.drift"
 	src.write_text(

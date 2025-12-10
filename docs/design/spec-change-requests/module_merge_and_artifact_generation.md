@@ -1,101 +1,67 @@
-# Drift Module Merge & Artifact Generation (Design/Spec Hybrid)
+# Drift Module Merge and Artifact Generation
 
-## Goals
+## Motivation
 
-- Allow a single module to be defined across multiple source files.
-- Provide a **merge phase** that validates module-level coherence across files:
-  - No duplicate public exports (types, functions, interfaces, methods) within a module.
-  - No collisions between free functions and methods of the same module/key.
-  - Clear diagnostics when collisions occur.
-- Support two driver outcomes:
-  1. **Executable**: exactly one `main` function across all input files (in any module) is required.
-  2. **Signed Drift Module (package)**: produce a module artifact after validation, suitable for reuse/import.
-- Keep per-file parsing simple; merging is a distinct phase in the driver.
+We want to compile multiple Drift source files without forcing a single file per module. The compiler should:
 
-## Scope
+- Allow multiple files to contribute to the same module.
+- Detect cross-file collisions (types/functions/methods/interfaces).
+- Enforce a single `main` when producing an executable.
+- Support producing a reusable “Drift Object” artifact for later linking/packaging.
 
-- **In-scope**:
-  - Merging and validating declarations across multiple files that declare the same module.
-  - Defining keys for duplicate detection (free functions, methods, types/interfaces, etc.).
-  - CLI mode that builds either an executable or a module artifact and enforces `main` rules for executables.
-- **Out-of-scope (for now)**:
-  - Full package manager semantics, versioning, or dependency resolution.
-  - Incremental recompilation optimizations.
+## Proposed Flow
 
-## Terminology
+### Per-file compilation (`driftc --object`)
 
-- **Module**: logical namespace identified by its module path (e.g., `foo`, `foo.bar`). Multiple source files may contribute to the same module.
-- **Export**: a public item (type, function, interface, method) that the module exposes.
-- **Artifact**: the merged, validated output. Can be an executable or a signed module.
+Input: one `.drift` file.
 
-## Merge Phase Responsibilities
+Pipeline:
 
-Given a set of parsed source files (each with HIR + signatures + module id):
+1) Parse → HIR → type check → borrow check (mandatory).
+2) Lower to MIR (optionally SSA) as the persisted code stage.
+3) Emit a “Drift Object” (`.do`) artifact containing:
+   - Module name (from the source) and a stable module id (per driver).
+   - Public symbol table:
+     - Free functions: display name, module id, signature (param/ret `TypeId`s), callable_id.
+     - Methods: method name, `impl_target_type_id`, `self_mode`, signature, callable_id.
+     - Types/interfaces exported (for future collision checks).
+   - Visibility per symbol (public/private).
+   - Stage payload:
+     - Normalized HIR or MIR for each symbol (optional SSA/throw summaries if needed).
+   - TypeTable snapshot or a relocatable type index so `TypeId`s can be remapped at link time.
+   - Diagnostics (if any) to fail early.
 
-1. **Group by module path**:
-   - Collect all declarations (types, free functions, methods, interfaces, exceptions) per module path.
+### Link/merge phase (`driftc --link`)
 
-2. **Duplicate detection**:
-   - **Free functions**: key by `(module, name)`. Colliding definitions → diagnostic.
-   - **Methods**: key by `(module, impl_target_type_id, method_name)`. Colliding definitions for the same type/name → diagnostic. Methods on different types may share names.
-   - **Types/Structs/Interfaces/Exceptions**: key by `(module, name)`. Colliding definitions → diagnostic.
-   - **Free vs method collisions**: within a module, a name cannot be both a free function and a method (any type). Emit diagnostic if both exist.
+Inputs: one or more `.do` files.
 
-3. **Export consistency (public API)**:
-   - If you track visibility, ensure public exports are unique under their keys. If visibility is not yet implemented, treat all as exported and still apply the uniqueness rules.
+Responsibilities:
 
-4. **Main function check (executable mode)**:
-   - When building an executable, require **exactly one** `main` function across all modules/files. Diagnostic if zero or more than one.
-   - `main` can live in any module; specify resolution priority if multiple modules define `main` (currently: uniqueness required, no priority).
+- Assign stable module IDs across files (respecting module names).
+- Merge symbol tables and reject collisions:
+  - Free vs free with same `(module, name)`.
+  - Method duplicates per `(impl_target_type_id, method name)`.
+  - Free vs method name collisions within a module (per spec).
+  - Public type/interface collisions.
+- Enforce exactly one `main` when producing an executable; allow none for a library/package.
+- Reconcile `TypeTable`/`TypeId`s:
+  - Unify common builtins.
+  - Remap per-file `TypeId`s into a link-time table.
+- Build a unified `CallableRegistry` (module-aware) for any post-link resolution checks.
+- Optionally rerun cross-file invariants (type/borrow) if needed.
 
-5. **Method/Impl metadata integrity**:
-   - Ensure every method has `impl_target_type_id` and `self_mode` populated; missing metadata → diagnostic, skip registration.
-   - Ensure impl targets are nominal (reject `implement &T` in v1) and resolved to concrete `TypeId`s.
+Outputs:
 
-6. **Artifact assembly**:
-   - If **executable**: proceed to type check/borrow check/codegen after successful merge; include only the merged, validated declarations; enforce the single `main` requirement.
-   - If **signed module**: produce a module artifact containing the merged HIR/signatures/exports; sign/validate as per toolchain; no `main` required.
+- For a package: merged metadata and (optionally) codegen-ready IR.
+- For an executable: linked/codegen’d artifact from merged MIR/SSA.
 
-## Keys and Collision Rules (v1)
+### CLI sketch
 
-- **Module identity**: the `module` declaration at the top of a file (default `main` if absent) defines the module path. Used to group declarations.
-- **Free functions**: `(module, name)` must be unique.
-- **Methods**: `(module, impl_target_type_id, method_name)` must be unique. Method names may repeat across different impl targets. Methods do **not** create free-function aliases.
-- **Free vs method**: a given `name` in a module may not be both a free function and any method name (on any type) in that module.
-- **Types/Interfaces/Exceptions**: `(module, name)` must be unique.
+- Per-file object: `driftc --object file.drift -o file.do`
+- Link/merge: `driftc --link a.do b.do ... -o app` (executable) or `-o lib.do` (package)
 
-## Driver Modes
+## Rationale
 
-- **Executable mode** (default):
-  - Input: multiple Drift files.
-  - Merge per module; validate uniqueness as above.
-  - Require exactly one `main` function globally.
-  - On success: type check → borrow check → lower/codegen → link executable.
-
-- **Module/package mode** (`--emit-module` or similar):
-  - Input: multiple Drift files.
-  - Merge per module; validate uniqueness as above.
-  - No `main` requirement.
-  - On success: emit a signed module artifact containing the merged HIR/signatures/public API.
-
-## Diagnostics
-
-- Duplicate free function: `function 'foo' already defined in module 'm' (previous at ...).`
-- Duplicate method: `method 'm' for type 'T' already defined in module 'm'.`
-- Free vs method collision: `name 'foo' used for both free function and method in module 'm'.`
-- Missing receiver metadata: `method 'm' missing receiver type/mode.`
-- Multiple/zero mains in executable mode.
-
-## Implementation Notes
-
-- Keep per-file parsing simple; enrich declarations with `module` and method metadata (already present in `FnSignature`).
-- Add a merge/validation step in the driver that aggregates decls per module and applies the collision rules.
-- Extend the registry to be populated from the merged view (so functions/methods from all files in a module are registered once).
-- For now, use stringified type expr as impl target keys during merge; when TypeIds are available earlier, switch to TypeId keys to avoid aliasing issues.
-
-## Future Work (out of v1 scope)
-
-- Visibility (`pub`, `pub(crate)`, etc.) and export sets per module.
-- Generic impls/methods and their instantiation in the registry.
-- Package versioning and dependency resolution.
-- Incremental/reuse of compiled modules across builds.
+- Per-file compilation is fast and local; no need to load all sources at once.
+- The link phase is the single place to enforce cross-file correctness and visibility.
+- Callable resolution and borrow checking remain module-aware once `TypeId`s and `module_id`s are unified.

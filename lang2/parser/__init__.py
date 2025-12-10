@@ -142,6 +142,7 @@ class _FrontendDecl:
 		is_method: bool = False,
 		self_mode: Optional[str] = None,
 		impl_target: Optional[parser_ast.TypeExpr] = None,
+		module: Optional[str] = None,
 	) -> None:
 		self.name = name
 		self.method_name = method_name
@@ -154,11 +155,21 @@ class _FrontendDecl:
 		self.is_method = is_method
 		self.self_mode = self_mode
 		self.impl_target = impl_target
+		self.module = module
 
 
 def _decl_from_parser_fn(fn: parser_ast.FunctionDef) -> _FrontendDecl:
 	params = [_FrontendParam(p.name, p.type_expr, getattr(p, "loc", None)) for p in fn.params]
-	return _FrontendDecl(fn.name, fn.orig_name, params, fn.return_type, getattr(fn, "loc", None), fn.is_method, fn.self_mode, fn.impl_target)
+	return _FrontendDecl(
+		fn.name,
+		fn.orig_name,
+		params,
+		fn.return_type,
+		getattr(fn, "loc", None),
+		fn.is_method,
+		fn.self_mode,
+		fn.impl_target,
+	)
 
 
 def parse_drift_to_hir(path: Path) -> Tuple[Dict[str, H.HBlock], Dict[str, FnSignature], "TypeTable", List[Diagnostic]]:
@@ -170,6 +181,7 @@ def parse_drift_to_hir(path: Path) -> Tuple[Dict[str, H.HBlock], Dict[str, FnSig
 	"""
 	source = path.read_text()
 	prog = _parser.parse_program(source)
+	module_name = getattr(prog, "module", None)
 	func_hirs: Dict[str, H.HBlock] = {}
 	decls: list[_FrontendDecl] = []
 	signatures: Dict[str, FnSignature] = {}
@@ -189,7 +201,9 @@ def parse_drift_to_hir(path: Path) -> Tuple[Dict[str, H.HBlock], Dict[str, FnSig
 			# Skip adding a duplicate; keep the first definition.
 			continue
 		seen.add(fn.name)
-		decls.append(_decl_from_parser_fn(fn))
+		decl_decl = _decl_from_parser_fn(fn)
+		decl_decl.module = module_name
+		decls.append(decl_decl)
 		stmt_block = _convert_block(fn.body)
 		hir_block = lowerer.lower_block(stmt_block)
 		func_hirs[fn.name] = hir_block
@@ -264,6 +278,7 @@ def parse_drift_to_hir(path: Path) -> Tuple[Dict[str, H.HBlock], Dict[str, FnSig
 					is_method=True,
 					self_mode=self_mode,
 					impl_target=impl.target,
+					module=module_name,
 				)
 			)
 			stmt_block = _convert_block(fn.body)

@@ -252,10 +252,6 @@ class BorrowChecker:
 				return sig.param_type_ids
 		return None
 
-	def _param_types_for_method_call(self, expr: H.HMethodCall) -> Optional[List[TypeId]]:
-		"""Method param heuristics removed: registry/resolver metadata is required."""
-		return None
-
 	def _build_regions(self, blocks: List[BasicBlock]) -> Optional[Dict[int, Set[int]]]:
 		"""
 		Compute per-target live block sets based on ref def/use reachability.

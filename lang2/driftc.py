@@ -341,12 +341,14 @@ def main(argv: list[str] | None = None) -> int:
 	callable_registry = CallableRegistry()
 	next_callable_id = 1
 	type_diags: list[Diagnostic] = []
+	module_ids: dict[object, int] = {None: 0}
 
 	if signatures:
 		for sig_symbol, sig in signatures.items():
 			if sig.param_type_ids is None or sig.return_type_id is None:
 				continue
 			param_types_tuple = tuple(sig.param_type_ids)
+			module_id = module_ids.setdefault(sig.module, len(module_ids))
 			if sig.is_method:
 				if sig.impl_target_type_id is None or sig.self_mode is None:
 					type_diags.append(
@@ -374,7 +376,7 @@ def main(argv: list[str] | None = None) -> int:
 				callable_registry.register_inherent_method(
 					callable_id=next_callable_id,
 					name=sig.method_name or sig_symbol,
-					module_id=0,
+					module_id=module_id,
 					visibility=Visibility.public(),
 					signature=CallableSignature(param_types=param_types_tuple, result_type=sig.return_type_id),
 					impl_id=next_callable_id,
@@ -387,7 +389,7 @@ def main(argv: list[str] | None = None) -> int:
 				callable_registry.register_free_function(
 					callable_id=next_callable_id,
 					name=sig.method_name or sig_symbol,
-					module_id=0,
+					module_id=module_id,
 					visibility=Visibility.public(),
 					signature=CallableSignature(param_types=param_types_tuple, result_type=sig.return_type_id),
 					is_generic=False,
@@ -407,14 +409,15 @@ def main(argv: list[str] | None = None) -> int:
 		sig = signatures.get(fn_name) if signatures else None
 		if sig and sig.param_names and sig.param_type_ids:
 			param_types = {pname: pty for pname, pty in zip(sig.param_names, sig.param_type_ids) if pty is not None}
+		fn_module_id = module_ids.get(sig.module, 0) if sig is not None else 0
 		result = type_checker.check_function(
 			fn_name,
 			hir_block,
 			param_types=param_types,
 			call_signatures=call_sigs_by_name,
 			callable_registry=callable_registry,
-			visible_modules=(0,),
-			current_module=0,
+			visible_modules=tuple(module_ids.values()),
+			current_module=fn_module_id,
 		)
 		type_diags.extend(result.diagnostics)
 		typed_fns[fn_name] = result.typed_fn

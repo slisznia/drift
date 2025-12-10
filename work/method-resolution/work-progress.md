@@ -28,13 +28,6 @@ Implement real method/function resolution per `docs/design/spec-change-requests/
 
 ## Next Steps
 - Add module IDs end-to-end (registry entries, resolution visibility), not hardcoded `0`.  
-- Implement module-merge validation (multi-file modules, public interface collisions, single `main` when building executables/packages).  
-- Remove legacy method-signature fallback in the borrow checker once all calls resolve via registry.  
 - Harden method resolution tests: shared method names across types, visibility/module filtering, ambiguity errors, receiver by-value cases.  
 - Wire registry with method entries into the merge/driver phase so codegen/borrow check use resolved methods across files.
-
-### TODOs
-- Add registry population during a module-merge phase (multi-file modules) with collision checks.
-- Replace hardcoded module_id in driftc with real module IDs from the parser/merge context.
 - Expand method-resolution tests for ambiguity/visibility and receiver by-value cases.
-- Remove `_param_types_for_method_call` heuristic once all paths rely on resolved callees.

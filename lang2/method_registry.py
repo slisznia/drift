@@ -89,11 +89,26 @@ class CallableRegistry:
 	This does not resolve overloads; it only buckets by name/type/module and
 	returns candidates. The resolver applies type/auto-borrow rules to choose
 	the winner.
+
+	Short-term (single-file driver):
+	  - We populate this registry from parser/type-resolver signatures for one
+	    compilation unit. Module ids come from the source module name.
+
+	Long-term (multi-file merge/link with .do artifacts):
+	  - Each per-file build emits a Drift Object (.do) with:
+	      * Module name/id
+	      * CallableDecl metadata (free + methods) including impl_target/self_mode
+	      * Visibility
+	    The link/merge phase will read those .do metas, assign stable module ids
+	    across files, detect collisions, and repopulate a merged CallableRegistry
+	    for resolution/codegen. No code changes are needed here; the caller simply
+	    feeds the merged registry into the resolver/type checker.
 	"""
 
 	def __init__(self) -> None:
 		self._free_by_name: Dict[str, List[CallableDecl]] = {}
-		self._methods_by_type_and_name: Dict[Tuple[TypeId, str], List[CallableDecl]] = {}
+		# Methods bucketed per module: module_id -> {(impl_target_type_id, name) -> [CallableDecl]}
+		self._methods_by_module: Dict[ModuleId, Dict[Tuple[TypeId, str], List[CallableDecl]]] = {}
 		self._by_id: Dict[CallableId, CallableDecl] = {}
 
 	def register_free_function(
@@ -148,7 +163,8 @@ class CallableRegistry:
 			is_generic=is_generic,
 		)
 		self._by_id[callable_id] = decl
-		self._methods_by_type_and_name.setdefault((impl_target_type_id, name), []).append(decl)
+		bucket = self._methods_by_module.setdefault(module_id, {})
+		bucket.setdefault((impl_target_type_id, name), []).append(decl)
 
 	def register_trait_method(
 		self,
@@ -180,7 +196,8 @@ class CallableRegistry:
 			is_generic=is_generic,
 		)
 		self._by_id[callable_id] = decl
-		self._methods_by_type_and_name.setdefault((impl_target_type_id, name), []).append(decl)
+		bucket = self._methods_by_module.setdefault(module_id, {})
+		bucket.setdefault((impl_target_type_id, name), []).append(decl)
 
 	def get_free_candidates(
 		self,
@@ -209,17 +226,21 @@ class CallableRegistry:
 		visible_modules: Iterable[ModuleId],
 		include_private_in: Optional[ModuleId] = None,
 	) -> List[CallableDecl]:
-		key = (receiver_nominal_type_id, name)
-		all_candidates = self._methods_by_type_and_name.get(key, [])
-		if not all_candidates:
-			return []
 		visible_modules_set = set(visible_modules)
 		result: List[CallableDecl] = []
-		for decl in all_candidates:
-			if decl.visibility.is_public and decl.module_id in visible_modules_set:
-				result.append(decl)
-			elif include_private_in is not None and decl.module_id == include_private_in:
-				result.append(decl)
+		for mod_id, bucket in self._methods_by_module.items():
+			is_visible_module = mod_id in visible_modules_set
+			is_private_ok = include_private_in is not None and mod_id == include_private_in
+			if not (is_visible_module or is_private_ok):
+				continue
+			cands = bucket.get((receiver_nominal_type_id, name), [])
+			if not cands:
+				continue
+			for decl in cands:
+				if decl.visibility.is_public and is_visible_module:
+					result.append(decl)
+				elif is_private_ok and decl.module_id == include_private_in:
+					result.append(decl)
 		return result
 
 	def get_by_id(self, callable_id: CallableId) -> CallableDecl:
