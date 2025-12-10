@@ -25,6 +25,8 @@ from lang2.borrow_checker import Place, PlaceBase, PlaceKind, PlaceState, place_
 from lang2.core.diagnostics import Diagnostic
 from lang2.core.types_core import TypeKind, TypeTable, TypeId
 from lang2.checker import FnSignature
+from lang2.method_registry import CallableDecl
+from lang2.method_resolver import MethodResolution, SelfMode
 from collections import deque
 
 
@@ -86,6 +88,7 @@ class BorrowChecker:
 	fn_types: Mapping[PlaceBase, TypeId]
 	binding_types: Optional[Dict[int, TypeId]] = None
 	signatures: Optional[Mapping[str, FnSignature]] = None
+	call_resolutions: Optional[Mapping[int, object]] = None
 	base_lookup: Callable[[object], Optional[PlaceBase]] = lambda hv: PlaceBase(
 		PlaceKind.LOCAL,
 		getattr(hv, "binding_id", -1) if getattr(hv, "binding_id", None) is not None else -1,
@@ -128,6 +131,7 @@ class BorrowChecker:
 			fn_types=fn_types,
 			binding_types=dict(typed_fn.binding_types),
 			signatures=signatures,
+			call_resolutions=getattr(typed_fn, "call_resolutions", None),
 			base_lookup=base_lookup,
 			enable_auto_borrow=enable_auto_borrow,
 		)
@@ -422,7 +426,12 @@ class BorrowChecker:
 		if isinstance(expr, H.HCall):
 			pre_loans = set(state.loans)
 			self._visit_expr(state, expr.fn, as_value=True)
-			param_types = self._param_types_for_call(expr) if self.enable_auto_borrow else None
+			resolution = self.call_resolutions.get(id(expr)) if self.call_resolutions is not None else None
+			param_types = None
+			if isinstance(resolution, CallableDecl):
+				param_types = list(resolution.signature.param_types)
+			elif self.enable_auto_borrow:
+				param_types = self._param_types_for_call(expr)
 			for idx, arg in enumerate(expr.args):
 				kind_for_arg: Optional[LoanKind] = None
 				if param_types and idx < len(param_types):
@@ -446,26 +455,38 @@ class BorrowChecker:
 			return
 		if isinstance(expr, H.HMethodCall):
 			pre_loans = set(state.loans)
-			param_types = self._param_types_for_method_call(expr) if self.enable_auto_borrow else None
+			resolution = self.call_resolutions.get(id(expr)) if self.call_resolutions is not None else None
+			param_types = None
+			receiver_autoborrow: Optional[SelfMode] = None
+			if isinstance(resolution, MethodResolution):
+				param_types = list(resolution.decl.signature.param_types)
+				receiver_autoborrow = resolution.receiver_autoborrow
+			elif self.enable_auto_borrow:
+				param_types = self._param_types_for_method_call(expr)
+
 			if param_types:
 				recv_kind: Optional[LoanKind] = None
-				if param_types:
-					pty = param_types[0]
-					if pty is not None:
-						td = self.type_table.get(pty)
-						if td.kind is TypeKind.REF:
-							if td.ref_mut is True:
-								recv_kind = LoanKind.MUT
-							elif td.ref_mut is False:
-								recv_kind = LoanKind.SHARED
-				if recv_kind is not None:
+				pty = param_types[0]
+				if pty is not None:
+					td = self.type_table.get(pty)
+					if td.kind is TypeKind.REF:
+						if td.ref_mut is True:
+							recv_kind = LoanKind.MUT
+						elif td.ref_mut is False:
+							recv_kind = LoanKind.SHARED
+				if recv_kind is not None or receiver_autoborrow is not None:
 					recv_place = place_from_expr(expr.receiver, base_lookup=self.base_lookup)
-					if recv_place is not None:
-						self._borrow_place(state, recv_place, recv_kind, temporary=True)
+					if recv_place is not None and (recv_kind is not None or receiver_autoborrow is not None):
+						kind_to_use = recv_kind
+						if kind_to_use is None and receiver_autoborrow is not None:
+							kind_to_use = LoanKind.MUT if receiver_autoborrow is SelfMode.SELF_BY_REF_MUT else LoanKind.SHARED
+						if kind_to_use is not None:
+							self._borrow_place(state, recv_place, kind_to_use, temporary=True)
 					else:
 						self._visit_expr(state, expr.receiver, as_value=True)
 				else:
 					self._visit_expr(state, expr.receiver, as_value=True)
+
 				for idx, arg in enumerate(expr.args):
 					kind_for_arg = None
 					param_idx = idx + 1

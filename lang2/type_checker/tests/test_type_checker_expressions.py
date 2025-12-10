@@ -7,6 +7,7 @@ from lang2 import stage1 as H
 from lang2.type_checker import TypeChecker
 from lang2.core.types_core import TypeTable, TypeKind
 from lang2.checker import FnSignature
+from lang2.method_registry import CallableRegistry, CallableSignature, Visibility
 
 
 def _tc() -> TypeChecker:
@@ -105,6 +106,37 @@ def test_call_return_type_uses_signature():
 		]
 	)
 	res = tc.check_function("c", block, param_types=None, call_signatures={"foo": sig})
+	assert res.diagnostics == []
+	assert ret_ty in res.typed_fn.expr_types.values()
+
+
+def test_call_resolution_uses_registry_and_types():
+	table = TypeTable()
+	tc = TypeChecker(table)
+	int_ty = table.ensure_int()
+	ret_ty = table.ensure_string()
+	registry = CallableRegistry()
+	registry.register_free_function(
+		callable_id=1,
+		name="foo",
+		module_id=0,
+		visibility=Visibility.public(),
+		signature=CallableSignature(param_types=(int_ty,), result_type=ret_ty),
+	)
+	block = H.HBlock(
+		statements=[
+			H.HLet(name="x", value=H.HLiteralInt(1), declared_type_expr=None, binding_id=1),
+			H.HExprStmt(expr=H.HCall(fn=H.HVar("foo"), args=[H.HVar("x", binding_id=1)])),
+		]
+	)
+	res = tc.check_function(
+		"c",
+		block,
+		param_types={"x": int_ty},
+		callable_registry=registry,
+		visible_modules=(0,),
+		current_module=0,
+	)
 	assert res.diagnostics == []
 	assert ret_ty in res.typed_fn.expr_types.values()
 

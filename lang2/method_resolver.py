@@ -21,8 +21,10 @@ from lang2.core.types_core import TypeId, TypeKind, TypeTable
 from lang2.method_registry import (
 	CallableRegistry,
 	CallableDecl,
+	CallableSignature,
 	SelfMode,
 	Visibility,
+	ModuleId,
 )
 
 
@@ -52,7 +54,7 @@ def _receiver_compat(
 	Check if a receiver type is compatible with the decl's receiver param and self_mode.
 	Returns (is_compatible, autoborrow_kind)
 	"""
-	if not decl.signature.param_types:
+	if decl.self_mode is None or not decl.signature.param_types:
 		return False, None
 	param_self = decl.signature.param_types[0]
 	mode = decl.self_mode
@@ -89,8 +91,8 @@ def resolve_function_call(
 	*,
 	name: str,
 	arg_types: List[TypeId],
-	visible_modules: Iterable[int],
-	current_module: Optional[int] = None,
+	visible_modules: Iterable[ModuleId],
+	current_module: Optional[ModuleId] = None,
 ) -> CallableDecl:
 	candidates = registry.get_free_candidates(
 		name=name, visible_modules=visible_modules, include_private_in=current_module
@@ -118,8 +120,8 @@ def resolve_method_call(
 	receiver_type: TypeId,
 	method_name: str,
 	arg_types: List[TypeId],
-	visible_modules: Iterable[int],
-	current_module: Optional[int] = None,
+	visible_modules: Iterable[ModuleId],
+	current_module: Optional[ModuleId] = None,
 ) -> MethodResolution:
 	receiver_nominal = _unwrap_ref(type_table, receiver_type)
 	candidates = registry.get_method_candidates(
@@ -148,11 +150,6 @@ def resolve_method_call(
 
 
 __all__ = [
-	"CallableRegistry",
-	"CallableDecl",
-	"CallableSignature",
-	"SelfMode",
-	"Visibility",
 	"resolve_function_call",
 	"resolve_method_call",
 	"ResolutionError",

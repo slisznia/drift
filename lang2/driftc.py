@@ -46,6 +46,7 @@ from lang2.codegen.llvm import lower_module_to_llvm
 from lang2.parser import parse_drift_to_hir
 from lang2.type_resolver import resolve_program_signatures
 from lang2.type_checker import TypeChecker
+from lang2.method_registry import CallableRegistry, CallableSignature, Visibility
 
 
 def compile_stubbed_funcs(
@@ -337,6 +338,21 @@ def main(argv: list[str] | None = None) -> int:
 
 	# Type check each function with the shared TypeTable/signatures.
 	type_checker = TypeChecker(type_table=type_table)
+	callable_registry = CallableRegistry()
+	next_callable_id = 1
+	if signatures:
+		for sig_name, sig in signatures.items():
+			if sig.param_type_ids is None or sig.return_type_id is None:
+				continue
+			callable_registry.register_free_function(
+				callable_id=next_callable_id,
+				name=sig_name,
+				module_id=0,
+				visibility=Visibility.public(),
+				signature=CallableSignature(param_types=tuple(sig.param_type_ids), result_type=sig.return_type_id),
+				is_generic=False,
+			)
+			next_callable_id += 1
 	type_diags: list[Diagnostic] = []
 	typed_fns: dict[str, object] = {}
 	for fn_name, hir_block in func_hirs.items():
@@ -345,7 +361,15 @@ def main(argv: list[str] | None = None) -> int:
 		sig = signatures.get(fn_name) if signatures else None
 		if sig and sig.param_names and sig.param_type_ids:
 			param_types = {pname: pty for pname, pty in zip(sig.param_names, sig.param_type_ids) if pty is not None}
-		result = type_checker.check_function(fn_name, hir_block, param_types=param_types, call_signatures=signatures)
+		result = type_checker.check_function(
+			fn_name,
+			hir_block,
+			param_types=param_types,
+			call_signatures=signatures,
+			callable_registry=callable_registry,
+			visible_modules=(0,),
+			current_module=0,
+		)
 		type_diags.extend(result.diagnostics)
 		typed_fns[fn_name] = result.typed_fn
 

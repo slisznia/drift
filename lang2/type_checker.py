@@ -16,12 +16,14 @@ checker integration will consume TypedFn once this matures.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Mapping
+from typing import Dict, List, Optional, Mapping, Tuple
 
 from lang2 import stage1 as H
 from lang2.core.diagnostics import Diagnostic
 from lang2.core.types_core import TypeId, TypeTable, TypeKind
 from lang2.checker import FnSignature
+from lang2.method_registry import CallableDecl, CallableRegistry, ModuleId
+from lang2.method_resolver import MethodResolution, ResolutionError, resolve_function_call, resolve_method_call
 
 # Identifier aliases for clarity.
 ParamId = int
@@ -41,6 +43,7 @@ class TypedFn:
 	binding_for_var: Dict[int, int]  # keyed by id(HVar)
 	binding_types: Dict[int, TypeId]  # binding_id -> TypeId
 	binding_names: Dict[int, str]  # binding_id -> name
+	call_resolutions: Dict[int, CallableDecl | MethodResolution] = field(default_factory=dict)
 
 
 @dataclass
@@ -73,6 +76,9 @@ class TypeChecker:
 		body: H.HBlock,
 		param_types: Mapping[str, TypeId] | None = None,
 		call_signatures: Mapping[str, FnSignature] | None = None,
+		callable_registry: CallableRegistry | None = None,
+		visible_modules: Optional[Tuple[ModuleId, ...]] = None,
+		current_module: ModuleId = 0,
 	) -> TypeCheckResult:
 		scope_env: List[Dict[str, TypeId]] = [dict()]
 		scope_bindings: List[Dict[str, int]] = [dict()]
@@ -81,6 +87,7 @@ class TypeChecker:
 		binding_types: Dict[int, TypeId] = {}
 		binding_names: Dict[int, str] = {}
 		diagnostics: List[Diagnostic] = []
+		call_resolutions: Dict[int, CallableDecl | MethodResolution] = {}
 
 		params: List[ParamId] = []
 		param_bindings: List[int] = []
@@ -126,19 +133,61 @@ class TypeChecker:
 				ref_ty = self.type_table.ensure_ref_mut(inner_ty) if expr.is_mut else self.type_table.ensure_ref(inner_ty)
 				return record_expr(expr, ref_ty)
 			if isinstance(expr, H.HCall):
-				if not (call_signatures and isinstance(expr.fn, H.HVar) and expr.fn.name in call_signatures):
+				# Always type fn and args first for side-effects/subexpressions.
+				should_type_fn = True
+				if isinstance(expr.fn, H.HVar):
+					if callable_registry is not None:
+						should_type_fn = False
+					elif call_signatures and expr.fn.name in call_signatures:
+						should_type_fn = False
+				if should_type_fn:
 					type_expr(expr.fn)
-				for a in expr.args:
-					type_expr(a)
+				arg_types = [type_expr(a) for a in expr.args]
+
+				# Try registry-based resolution when available.
+				if callable_registry and isinstance(expr.fn, H.HVar):
+					try:
+						decl = resolve_function_call(
+							callable_registry,
+							self.type_table,
+							name=expr.fn.name,
+							arg_types=arg_types,
+							visible_modules=visible_modules or (current_module,),
+							current_module=current_module,
+						)
+						call_resolutions[id(expr)] = decl
+						return record_expr(expr, decl.signature.result_type)
+					except ResolutionError as err:
+						diagnostics.append(Diagnostic(message=str(err), severity="error", span=None))
+						return record_expr(expr, self._unknown)
+
+				# Fallback: signature map by name.
 				if call_signatures and isinstance(expr.fn, H.HVar):
 					sig = call_signatures.get(expr.fn.name)
 					if sig and sig.return_type_id is not None:
 						return record_expr(expr, sig.return_type_id)
 				return record_expr(expr, self._unknown)
 			if isinstance(expr, H.HMethodCall):
-				type_expr(expr.receiver)
-				for a in expr.args:
-					type_expr(a)
+				recv_ty = type_expr(expr.receiver)
+				arg_types = [type_expr(a) for a in expr.args]
+
+				if callable_registry:
+					try:
+						resolution = resolve_method_call(
+							callable_registry,
+							self.type_table,
+							receiver_type=recv_ty,
+							method_name=expr.method_name,
+							arg_types=arg_types,
+							visible_modules=visible_modules or (current_module,),
+							current_module=current_module,
+						)
+						call_resolutions[id(expr)] = resolution
+						return record_expr(expr, resolution.decl.signature.result_type)
+					except ResolutionError as err:
+						diagnostics.append(Diagnostic(message=str(err), severity="error", span=None))
+						return record_expr(expr, self._unknown)
+
 				if call_signatures:
 					sig = call_signatures.get(expr.method_name)
 					if sig and sig.return_type_id is not None:
@@ -271,6 +320,7 @@ class TypeChecker:
 			binding_for_var=binding_for_var,
 			binding_types=binding_types,
 			binding_names=binding_names,
+			call_resolutions=call_resolutions,
 		)
 		return TypeCheckResult(typed_fn=typed, diagnostics=diagnostics)
 
