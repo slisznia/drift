@@ -124,3 +124,49 @@ def test_borrow_used_after_join_keeps_mut_blocked_until_then():
 	)
 	diags = _bc({"x": (1, "Int"), "r": (2, "RefInt")}).check_block(block)
 	assert any("borrow" in d.message for d in diags)
+
+
+def test_borrow_live_in_loop_allows_mut_after_loop_exit():
+	# Borrow is used inside the loop; loan should not extend to the continuation after the loop.
+	block = H.HBlock(
+		statements=[
+			H.HLet(name="x", value=H.HLiteralInt(1), declared_type_expr=None, binding_id=1),
+			H.HLet(
+				name="r",
+				value=H.HBorrow(subject=H.HVar("x", binding_id=1), is_mut=False),
+				declared_type_expr=None,
+				binding_id=2,
+			),
+			H.HLoop(body=H.HBlock(statements=[H.HExprStmt(expr=H.HVar("r", binding_id=2))])),
+			H.HExprStmt(expr=H.HBorrow(subject=H.HVar("x", binding_id=1), is_mut=True)),  # should be allowed after loop
+		]
+	)
+	diags = _bc({"x": (1, "Int"), "r": (2, "RefInt")}).check_block(block)
+	assert diags == []
+
+
+def test_multiple_refs_union_region_blocks_mut_until_all_dead():
+	# Two refs to the same target; loan should stay live until both are dead.
+	block = H.HBlock(
+		statements=[
+			H.HLet(name="x", value=H.HLiteralInt(1), declared_type_expr=None, binding_id=1),
+			H.HLet(
+				name="r1",
+				value=H.HBorrow(subject=H.HVar("x", binding_id=1), is_mut=False),
+				declared_type_expr=None,
+				binding_id=2,
+			),
+			H.HExprStmt(expr=H.HVar("r1", binding_id=2)),
+			H.HLet(
+				name="r2",
+				value=H.HBorrow(subject=H.HVar("x", binding_id=1), is_mut=False),
+				declared_type_expr=None,
+				binding_id=3,
+			),
+			H.HExprStmt(expr=H.HVar("r2", binding_id=3)),
+			H.HIf(cond=H.HLiteralBool(True), then_block=H.HBlock(statements=[]), else_block=H.HBlock(statements=[])),
+			H.HExprStmt(expr=H.HBorrow(subject=H.HVar("x", binding_id=1), is_mut=True)),  # only after both uses
+		]
+	)
+	diags = _bc({"x": (1, "Int"), "r1": (2, "RefInt"), "r2": (3, "RefInt")}).check_block(block)
+	assert diags == []

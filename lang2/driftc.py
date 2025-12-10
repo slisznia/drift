@@ -345,7 +345,7 @@ def main(argv: list[str] | None = None) -> int:
 		sig = signatures.get(fn_name) if signatures else None
 		if sig and sig.param_names and sig.param_type_ids:
 			param_types = {pname: pty for pname, pty in zip(sig.param_names, sig.param_type_ids) if pty is not None}
-		result = type_checker.check_function(fn_name, hir_block, param_types=param_types)
+		result = type_checker.check_function(fn_name, hir_block, param_types=param_types, call_signatures=signatures)
 		type_diags.extend(result.diagnostics)
 		typed_fns[fn_name] = result.typed_fn
 

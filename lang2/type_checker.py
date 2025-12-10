@@ -21,6 +21,7 @@ from typing import Dict, List, Optional, Mapping
 from lang2 import stage1 as H
 from lang2.core.diagnostics import Diagnostic
 from lang2.core.types_core import TypeId, TypeTable, TypeKind
+from lang2.checker import FnSignature
 
 # Identifier aliases for clarity.
 ParamId = int
@@ -71,6 +72,7 @@ class TypeChecker:
 		name: str,
 		body: H.HBlock,
 		param_types: Mapping[str, TypeId] | None = None,
+		call_signatures: Mapping[str, FnSignature] | None = None,
 	) -> TypeCheckResult:
 		scope_env: List[Dict[str, TypeId]] = [dict()]
 		scope_bindings: List[Dict[str, int]] = [dict()]
@@ -124,14 +126,23 @@ class TypeChecker:
 				ref_ty = self.type_table.ensure_ref_mut(inner_ty) if expr.is_mut else self.type_table.ensure_ref(inner_ty)
 				return record_expr(expr, ref_ty)
 			if isinstance(expr, H.HCall):
-				type_expr(expr.fn)
+				if not (call_signatures and isinstance(expr.fn, H.HVar) and expr.fn.name in call_signatures):
+					type_expr(expr.fn)
 				for a in expr.args:
 					type_expr(a)
+				if call_signatures and isinstance(expr.fn, H.HVar):
+					sig = call_signatures.get(expr.fn.name)
+					if sig and sig.return_type_id is not None:
+						return record_expr(expr, sig.return_type_id)
 				return record_expr(expr, self._unknown)
 			if isinstance(expr, H.HMethodCall):
 				type_expr(expr.receiver)
 				for a in expr.args:
 					type_expr(a)
+				if call_signatures:
+					sig = call_signatures.get(expr.method_name)
+					if sig and sig.return_type_id is not None:
+						return record_expr(expr, sig.return_type_id)
 				return record_expr(expr, self._unknown)
 			if isinstance(expr, H.HField):
 				type_expr(expr.subject)
