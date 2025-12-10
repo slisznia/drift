@@ -72,3 +72,32 @@ def test_hmethod_signature_driven_auto_borrow_prevents_move():
 	call_resolutions = {id(call_expr): MethodResolution(decl=decl, receiver_autoborrow=SelfMode.SELF_BY_REF)}
 	diags = _bc_with_sig(table, ref_sig, call_resolutions=call_resolutions).check_block(block)
 	assert diags == []
+
+
+def test_method_value_receiver_moves_and_later_use_errors():
+	table = TypeTable()
+	int_ty = table.ensure_int()
+	call_expr = H.HMethodCall(receiver=H.HVar("x", binding_id=1), method_name="m", args=[])
+	block = H.HBlock(
+		statements=[
+			H.HLet(name="x", value=H.HLiteralInt(1), declared_type_expr=None, binding_id=1),
+			H.HExprStmt(expr=call_expr),
+			H.HExprStmt(expr=H.HVar("x", binding_id=1)),
+		]
+	)
+	decl = CallableDecl(
+		callable_id=10,
+		name="m",
+		kind=CallableKind.METHOD_INHERENT,
+		module_id=0,
+		visibility=Visibility.public(),
+		signature=CallableSignature(param_types=(int_ty,), result_type=int_ty),
+		impl_id=10,
+		impl_target_type_id=int_ty,
+		self_mode=SelfMode.SELF_BY_VALUE,
+	)
+	call_resolutions = {id(call_expr): MethodResolution(decl=decl, receiver_autoborrow=None)}
+	ref_sig = FnSignature(name="m", param_type_ids=[int_ty])
+	diags = _bc_with_sig(table, ref_sig, call_resolutions=call_resolutions).check_block(block)
+	assert diags
+	assert any("use after move" in d.message for d in diags)
