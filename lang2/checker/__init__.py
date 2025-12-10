@@ -1209,6 +1209,7 @@ class Checker:
 			ArrayCap,
 			StringLen,
 		)
+		signatures_by_display_name = self._sigs_by_display_name
 		value_types: Dict[tuple[str, str], TypeId] = {}
 
 		# Helper to fetch a mapped type with Unknown fallback.

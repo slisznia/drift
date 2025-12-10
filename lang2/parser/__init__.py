@@ -195,6 +195,16 @@ def parse_drift_to_hir(path: Path) -> Tuple[Dict[str, H.HBlock], Dict[str, FnSig
 		func_hirs[fn.name] = hir_block
 	# Methods inside implement blocks.
 	for impl in getattr(prog, "implements", []):
+		# Reject reference-qualified impl headers in v1 (must be nominal types).
+		if getattr(impl.target, "name", None) in {"&", "&mut"}:
+			diagnostics.append(
+				Diagnostic(
+					message="implement header must use a nominal type, not a reference type",
+					severity="error",
+					span=getattr(impl, "loc", None),
+				)
+			)
+			continue
 		for fn in impl.methods:
 			if not fn.params:
 				diagnostics.append(
