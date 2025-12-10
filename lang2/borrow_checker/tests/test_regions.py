@@ -238,3 +238,61 @@ def test_nested_branches_borrow_dies_when_last_use_done():
 	)
 	diags = _bc({"x": (1, "Int"), "r": (2, "RefInt")}).check_block(block)
 	assert diags == []
+
+
+def test_try_body_borrow_allows_mut_after_try():
+	# Borrow in try body, used there, should end before code after try.
+	block = H.HBlock(
+		statements=[
+			H.HLet(name="x", value=H.HLiteralInt(1), declared_type_expr=None, binding_id=1),
+			H.HTry(
+				body=H.HBlock(
+					statements=[
+						H.HLet(
+							name="r",
+							value=H.HBorrow(subject=H.HVar("x", binding_id=1), is_mut=False),
+							declared_type_expr=None,
+							binding_id=2,
+						),
+						H.HExprStmt(expr=H.HVar("r", binding_id=2)),
+					]
+				),
+				catches=[],
+			),
+			H.HExprStmt(expr=H.HBorrow(subject=H.HVar("x", binding_id=1), is_mut=True)),
+		]
+	)
+	diags = _bc({"x": (1, "Int"), "r": (2, "RefInt")}).check_block(block)
+	assert diags == []
+
+
+def test_borrow_used_in_catch_blocks_mut_until_catch_done():
+	# Borrow created before try and used in catch should keep loan live through catch.
+	block = H.HBlock(
+		statements=[
+			H.HLet(name="x", value=H.HLiteralInt(1), declared_type_expr=None, binding_id=1),
+			H.HLet(
+				name="r",
+				value=H.HBorrow(subject=H.HVar("x", binding_id=1), is_mut=False),
+				declared_type_expr=None,
+				binding_id=2,
+			),
+			H.HTry(
+				body=H.HBlock(
+					statements=[
+						H.HThrow(value=H.HLiteralString("err")),
+					]
+				),
+				catches=[
+					H.HCatchArm(
+						event_name=None,
+						binder=None,
+						block=H.HBlock(statements=[H.HExprStmt(expr=H.HVar("r", binding_id=2))]),
+					)
+				],
+			),
+			H.HExprStmt(expr=H.HBorrow(subject=H.HVar("x", binding_id=1), is_mut=True)),  # should wait until catch done
+		]
+	)
+	diags = _bc({"x": (1, "Int"), "r": (2, "RefInt")}).check_block(block)
+	assert diags == []
