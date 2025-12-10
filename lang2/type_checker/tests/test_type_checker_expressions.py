@@ -8,6 +8,7 @@ from lang2.type_checker import TypeChecker
 from lang2.core.types_core import TypeTable, TypeKind
 from lang2.checker import FnSignature
 from lang2.method_registry import CallableRegistry, CallableSignature, Visibility, SelfMode
+from lang2.method_resolver import MethodResolution
 
 
 def _tc() -> TypeChecker:
@@ -174,6 +175,13 @@ def test_method_resolution_uses_registry_and_types():
 	)
 	assert res.diagnostics == []
 	assert str_ty in res.typed_fn.expr_types.values()
+	# Verify resolved callee metadata is recorded on the call.
+	call_expr = block.statements[1].expr
+	resolution = res.typed_fn.call_resolutions.get(id(call_expr))
+	assert isinstance(resolution, MethodResolution)
+	assert resolution.decl.callable_id == 1
+	assert resolution.decl.signature.result_type == str_ty
+	assert resolution.receiver_autoborrow == SelfMode.SELF_BY_REF
 
 
 def test_result_ok_uses_fnresult_type():
