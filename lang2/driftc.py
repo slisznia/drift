@@ -22,6 +22,8 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import shutil
+import subprocess
 from pathlib import Path
 from typing import Dict, Mapping, List, Tuple
 
@@ -313,6 +315,8 @@ def main(argv: list[str] | None = None) -> int:
 	"""
 	parser = argparse.ArgumentParser(description="lang2 driftc stub")
 	parser.add_argument("source", type=Path, help="Path to Drift source file")
+	parser.add_argument("-o", "--output", type=Path, help="Path to output executable")
+	parser.add_argument("--emit-ir", type=Path, help="Write LLVM IR to the given path")
 	parser.add_argument(
 		"--json",
 		action="store_true",
@@ -454,7 +458,77 @@ def main(argv: list[str] | None = None) -> int:
 				print(f"{source_path}:{loc}: {d.severity}: {d.message}", file=sys.stderr)
 		return 1
 
-	# No diagnostics produced. Borrow checker/codegen not yet wired; acknowledge success.
+	# If no codegen requested, acknowledge success.
+	if args.output is None and args.emit_ir is None:
+		if args.json:
+			print(json.dumps({"exit_code": 0, "diagnostics": []}))
+		return 0
+
+	# Require entry point main for codegen.
+	if "main" not in func_hirs:
+		msg = "missing entry point 'main' for code generation"
+		if args.json:
+			print(json.dumps({"exit_code": 1, "diagnostics": [{"phase": "codegen", "message": msg, "severity": "error", "file": str(source_path), "line": None, "column": None}]}))
+		else:
+			print(f"{source_path}:?:?: error: {msg}", file=sys.stderr)
+		return 1
+
+	ir, _checked = compile_to_llvm_ir_for_tests(
+		func_hirs=func_hirs,
+		signatures=signatures,
+		entry="main",
+		type_table=type_table,
+	)
+
+	# Emit IR if requested.
+	if args.emit_ir is not None:
+		args.emit_ir.parent.mkdir(parents=True, exist_ok=True)
+		args.emit_ir.write_text(ir)
+
+	# If only IR emission requested, we are done.
+	if args.output is None:
+		if args.json:
+			print(json.dumps({"exit_code": 0, "diagnostics": []}))
+		return 0
+
+	clang = shutil.which("clang-15") or shutil.which("clang")
+	if clang is None:
+		msg = "clang not available for code generation"
+		if args.json:
+			print(json.dumps({"exit_code": 1, "diagnostics": [{"phase": "codegen", "message": msg, "severity": "error", "file": str(source_path), "line": None, "column": None}]}))
+		else:
+			print(f"{source_path}:?:?: error: {msg}", file=sys.stderr)
+		return 1
+
+	args.output.parent.mkdir(parents=True, exist_ok=True)
+	ir_path = args.output.with_suffix(".ll")
+	ir_path.write_text(ir)
+
+	runtime_sources = [
+		str(ROOT / "lang2" / "codegen" / "runtime" / "array_runtime.c"),
+		str(ROOT / "lang2" / "codegen" / "runtime" / "string_runtime.c"),
+		str(ROOT / "lang2" / "codegen" / "runtime" / "argv_runtime.c"),
+	]
+	link_cmd = [
+		clang,
+		"-x",
+		"ir",
+		str(ir_path),
+		"-x",
+		"c",
+		*runtime_sources,
+		"-o",
+		str(args.output),
+	]
+	link_res = subprocess.run(link_cmd, capture_output=True, text=True, cwd=ROOT)
+	if link_res.returncode != 0:
+		msg = f"clang failed: {link_res.stderr.strip()}"
+		if args.json:
+			print(json.dumps({"exit_code": 1, "diagnostics": [{"phase": "codegen", "message": msg, "severity": "error", "file": str(source_path), "line": None, "column": None}]}))
+		else:
+			print(f"{source_path}:?:?: error: {msg}", file=sys.stderr)
+		return 1
+
 	if args.json:
 		print(json.dumps({"exit_code": 0, "diagnostics": []}))
 	return 0

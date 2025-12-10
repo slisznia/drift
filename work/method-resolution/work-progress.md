@@ -15,3 +15,4 @@ Implement real method/function resolution per `docs/design/spec-change-requests/
 ## Next Steps
 - Harden method resolution tests: shared method names across types, visibility/module filtering, ambiguity errors, receiver by-value cases.  
 - Expand method-resolution tests for ambiguity/visibility and receiver by-value cases.
+- Blocker: lang2/driftc is still compile-only; to move e2e run cases off the legacy driver we need lang2/driftc to emit IR/object binaries (clang link with lang2 runtimes) behind `-o`, then update the e2e runner to use it for run-mode cases. Confirm priority/plan before proceeding.

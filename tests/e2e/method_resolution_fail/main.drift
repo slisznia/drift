@@ -1,0 +1,8 @@
+implement Int {
+    fn bump(self: &mut Int) returns Void { }
+}
+
+fn main() returns Void {
+    val flag = false
+    flag.bump()  // no method for Bool
+}

@@ -1,0 +1,11 @@
+{
+  "mode": "compile",
+  "use_json": true,
+  "exit_code": 1,
+  "diagnostics": [
+    {
+      "phase": "parser",
+      "message_contains": "duplicate function definition for 'main'"
+    }
+  ]
+}

@@ -37,6 +37,7 @@ def _find_clang() -> str | None:
 def _run_case(case_dir: Path) -> str:
     expected = json.loads((case_dir / "expected.json").read_text())
     mode = expected.get("mode", "compile")  # "compile" or "run"
+    use_json = expected.get("use_json", False) or "diagnostics" in expected
     requires_llvmlite = expected.get("skip_if", {}).get("requires_llvmlite", False)
     if (mode == "run" or requires_llvmlite) and not _have_llvmlite():
         return "skipped (llvmlite missing)"
@@ -46,17 +47,55 @@ def _run_case(case_dir: Path) -> str:
     build_dir.mkdir(parents=True, exist_ok=True)
     env = dict(os.environ)
     env["PYTHONPATH"] = str(ROOT)
-    cmd = [
-        str(DRIFTC),
-        "-m",
-        DRIFTC_MODULE,
-        str(case_dir / "main.drift"),
-        "-o",
-        str(build_dir / "a.o"),
-        "--ssa-check",
-        "--ssa-simplify",
-    ]
+    if use_json:
+        cmd = [
+            str(DRIFTC),
+            "-m",
+            "lang2.driftc",
+            str(case_dir / "main.drift"),
+            "--json",
+        ]
+    else:
+        cmd = [
+            str(DRIFTC),
+            "-m",
+            DRIFTC_MODULE,
+            str(case_dir / "main.drift"),
+            "-o",
+            str(build_dir / "a.o"),
+            "--ssa-check",
+            "--ssa-simplify",
+        ]
     compile_res = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, env=env)
+
+    # JSON-mode diagnostics check (compile-only).
+    if use_json:
+        try:
+            payload = json.loads(compile_res.stdout)
+        except json.JSONDecodeError as err:
+            return f"FAIL (expected JSON diagnostics, got parse error: {err})"
+        exit_expected = expected.get("exit_code", 1)
+        if payload.get("exit_code") != exit_expected:
+            return f"FAIL (exit {payload.get('exit_code')} != expected {exit_expected})"
+        diag_expect = expected.get("diagnostics", [])
+        diags = payload.get("diagnostics", [])
+        for exp in diag_expect:
+            msg_sub = exp.get("message_contains")
+            phase = exp.get("phase")
+            match_found = False
+            for d in diags:
+                if phase is not None and d.get("phase") != phase:
+                    continue
+                if msg_sub is not None and msg_sub not in d.get("message", ""):
+                    continue
+                match_found = True
+                break
+            if not match_found:
+                return "FAIL (missing expected diagnostic)"
+        # JSON path only supports compile-time expectations today.
+        if mode != "compile":
+            return "FAIL (json diagnostics path only supports mode=compile)"
+        return "ok"
 
     compile_err = expected.get("compile_error")
     if compile_err is not None:

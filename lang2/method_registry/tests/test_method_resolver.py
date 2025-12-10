@@ -3,6 +3,8 @@
 # author: Sławomir Liszniański; created: 2025-12-09
 """Resolver smoke tests for functions/methods."""
 
+import pytest
+
 from lang2.core.types_core import TypeTable
 from lang2.method_registry import (
 	CallableRegistry,
@@ -144,3 +146,57 @@ def test_method_and_free_same_name_resolve_separately():
 		visible_modules=[0],
 	)
 	assert method_res.decl.callable_id == 2
+
+
+def test_methods_with_same_name_on_different_types_resolve_correctly():
+	table = TypeTable()
+	reg = CallableRegistry()
+	point_ty = table.new_scalar("Point")
+	circle_ty = table.new_scalar("Circle")
+	reg.register_inherent_method(
+		callable_id=20,
+		name="move",
+		module_id=0,
+		visibility=Visibility.public(),
+		signature=CallableSignature((point_ty,), point_ty),
+		impl_id=20,
+		impl_target_type_id=point_ty,
+		self_mode=SelfMode.SELF_BY_VALUE,
+	)
+	reg.register_inherent_method(
+		callable_id=21,
+		name="move",
+		module_id=0,
+		visibility=Visibility.public(),
+		signature=CallableSignature((circle_ty,), circle_ty),
+		impl_id=21,
+		impl_target_type_id=circle_ty,
+		self_mode=SelfMode.SELF_BY_VALUE,
+	)
+	res_point = resolve_method_call(reg, table, receiver_type=point_ty, method_name="move", arg_types=[], visible_modules=[0])
+	assert res_point.decl.callable_id == 20
+	res_circle = resolve_method_call(reg, table, receiver_type=circle_ty, method_name="move", arg_types=[], visible_modules=[0])
+	assert res_circle.decl.callable_id == 21
+
+
+def test_by_value_receiver_does_not_auto_borrow():
+	table = TypeTable()
+	reg = CallableRegistry()
+	foo_ty = table.new_scalar("Foo")
+	foo_ref = table.ensure_ref(foo_ty)
+	reg.register_inherent_method(
+		callable_id=30,
+		name="consume",
+		module_id=0,
+		visibility=Visibility.public(),
+		signature=CallableSignature((foo_ty,), foo_ty),
+		impl_id=30,
+		impl_target_type_id=foo_ty,
+		self_mode=SelfMode.SELF_BY_VALUE,
+	)
+	# Exact receiver type matches.
+	res_val = resolve_method_call(reg, table, receiver_type=foo_ty, method_name="consume", arg_types=[], visible_modules=[0])
+	assert res_val.decl.callable_id == 30
+	# Reference receiver should not be auto-borrowed to a by-value self; expect ambiguity/failure.
+	with pytest.raises(ResolutionError):
+		resolve_method_call(reg, table, receiver_type=foo_ref, method_name="consume", arg_types=[], visible_modules=[0])

@@ -1,0 +1,11 @@
+{
+  "mode": "compile",
+  "use_json": true,
+  "exit_code": 1,
+  "diagnostics": [
+    {
+      "phase": "typecheck",
+      "message_contains": "no matching method 'bump'"
+    }
+  ]
+}
