@@ -150,11 +150,12 @@ lang2-borrow-test:
 stage-for-review:
 	#!/usr/bin/env bash
 	staged_dir=staged
-	rm -rf "$staged_dir" staged.tar.gz
+	rm -rf "$staged_dir"
 	mkdir -p "$staged_dir"
 	git ls-files -m -o --exclude-standard | while IFS= read -r f; do
 		[ -f "$f" ] || continue
 		mkdir -p "$staged_dir/$(dirname "$f")"
 		cp -- "$f" "$staged_dir/$f"
 	done
-	tar -vczf staged.tar.gz -C "$staged_dir" .
+	# rm -f staged.tar.gz
+	# zip -r staged.zip "$staged_dir"

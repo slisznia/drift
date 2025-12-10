@@ -2,46 +2,53 @@
 import sys
 from llvmlite import ir, binding as llvm
 
-# --- argument check ---
-if len(sys.argv) != 2:
-    print("usage: python test_codegen.py <output.o>")
-    sys.exit(1)
 
-out_path = sys.argv[1]
+def main() -> int:
+    """Generate a tiny LLVM object file for an `add` function."""
+    if len(sys.argv) != 2:
+        print("usage: python test_codegen.py <output.o>")
+        return 1
 
-# --- LLVM init ---
-llvm.initialize()
-llvm.initialize_native_target()
-llvm.initialize_native_asmprinter()
+    out_path = sys.argv[1]
 
-target = llvm.Target.from_default_triple()
-tm = target.create_target_machine()
+    # --- LLVM init ---
+    llvm.initialize()
+    llvm.initialize_native_target()
+    llvm.initialize_native_asmprinter()
 
-# --- IR: int add(int a, int b) { return a + b; } ---
-module = ir.Module(name="add_module")
-module.triple = llvm.get_default_triple()
-module.data_layout = tm.target_data
+    target = llvm.Target.from_default_triple()
+    tm = target.create_target_machine()
 
-int32 = ir.IntType(32)
-fn_type = ir.FunctionType(int32, [int32, int32])
-fn = ir.Function(module, fn_type, name="add_i32")
+    # --- IR: int add(int a, int b) { return a + b; } ---
+    module = ir.Module(name="add_module")
+    module.triple = llvm.get_default_triple()
+    module.data_layout = tm.target_data
 
-block = fn.append_basic_block(name="entry")
-builder = ir.IRBuilder(block)
-a, b = fn.args
-res = builder.add(a, b, name="res")
-builder.ret(res)
+    int32 = ir.IntType(32)
+    fn_type = ir.FunctionType(int32, [int32, int32])
+    fn = ir.Function(module, fn_type, name="add_i32")
 
-print("=== LLVM IR ===")
-print(module)
+    block = fn.append_basic_block(name="entry")
+    builder = ir.IRBuilder(block)
+    a, b = fn.args
+    res = builder.add(a, b, name="res")
+    builder.ret(res)
 
-# --- IR → object ---
-llvm_module = llvm.parse_assembly(str(module))
-llvm_module.verify()
+    print("=== LLVM IR ===")
+    print(module)
 
-obj = tm.emit_object(llvm_module)
+    # --- IR → object ---
+    llvm_module = llvm.parse_assembly(str(module))
+    llvm_module.verify()
 
-with open(out_path, "wb") as f:
-    f.write(obj)
+    obj = tm.emit_object(llvm_module)
 
-print(f"Wrote object file to: {out_path}")
+    with open(out_path, "wb") as f:
+        f.write(obj)
+
+    print(f"Wrote object file to: {out_path}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

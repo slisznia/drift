@@ -304,7 +304,8 @@ def _diag_to_json(diag: Diagnostic, phase: str, source: Path) -> dict:
 
 def main(argv: list[str] | None = None) -> int:
 	"""
-	Minimal CLI: parses a Drift file and emits diagnostics.
+	Minimal CLI: parses a Drift file, type checks, then borrow checks. If any stage
+	emits errors, compilation fails.
 
 	With --json, prints structured diagnostics (phase/message/severity/file/line/column)
 	and an exit_code; otherwise prints human-readable messages to stderr.
@@ -337,6 +338,7 @@ def main(argv: list[str] | None = None) -> int:
 	# Type check each function with the shared TypeTable/signatures.
 	type_checker = TypeChecker(type_table=type_table)
 	type_diags: list[Diagnostic] = []
+	typed_fns: dict[str, object] = {}
 	for fn_name, hir_block in func_hirs.items():
 		# Build param type map from signatures when available.
 		param_types: dict[str, "TypeId"] = {}
@@ -345,6 +347,7 @@ def main(argv: list[str] | None = None) -> int:
 			param_types = {pname: pty for pname, pty in zip(sig.param_names, sig.param_type_ids) if pty is not None}
 		result = type_checker.check_function(fn_name, hir_block, param_types=param_types)
 		type_diags.extend(result.diagnostics)
+		typed_fns[fn_name] = result.typed_fn
 
 	if type_diags:
 		if args.json:
@@ -355,6 +358,25 @@ def main(argv: list[str] | None = None) -> int:
 			print(json.dumps(payload))
 		else:
 			for d in type_diags:
+				loc = f"{getattr(d.span, 'line', '?')}:{getattr(d.span, 'column', '?')}" if d.span else "?:?"
+				print(f"{source_path}:{loc}: {d.severity}: {d.message}", file=sys.stderr)
+		return 1
+
+	# Borrow check each typed function (mandatory stage).
+	borrow_diags: list[Diagnostic] = []
+	for fn_name, typed_fn in typed_fns.items():
+		bc = BorrowChecker.from_typed_fn(typed_fn, type_table=type_table)
+		borrow_diags.extend(bc.check_block(typed_fn.body))
+
+	if borrow_diags:
+		if args.json:
+			payload = {
+				"exit_code": 1,
+				"diagnostics": [_diag_to_json(d, "borrowcheck", source_path) for d in borrow_diags],
+			}
+			print(json.dumps(payload))
+		else:
+			for d in borrow_diags:
 				loc = f"{getattr(d.span, 'line', '?')}:{getattr(d.span, 'column', '?')}" if d.span else "?:?"
 				print(f"{source_path}:{loc}: {d.severity}: {d.message}", file=sys.stderr)
 		return 1

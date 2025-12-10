@@ -59,10 +59,8 @@ class Loan:
 
 	place: Place
 	kind: LoanKind
-	region_id: int
 	temporary: bool = False
 	live_blocks: Optional[frozenset[int]] = None  # None = function-wide; set filled by RegionBuilder once implemented.
-	ref_binding: Optional[int] = None
 
 
 @dataclass
@@ -140,14 +138,6 @@ class BorrowChecker:
 		"""Mutate the local state map for a given place."""
 		state.place_states[place] = value
 
-	def _new_region(self) -> int:
-		"""Allocate a coarse region id (function-scoped today)."""
-		if not hasattr(self, "_next_region"):
-			self._next_region = 1  # type: ignore[attr-defined]
-		rid = self._next_region  # type: ignore[attr-defined]
-		self._next_region += 1  # type: ignore[attr-defined]
-		return rid
-
 	def _diagnostic(self, message: str) -> None:
 		"""Append an error-level diagnostic with no span."""
 		self.diagnostics.append(Diagnostic(message=message, severity="error", span=None))
@@ -215,10 +205,8 @@ class BorrowChecker:
 			Loan(
 				place=place,
 				kind=kind,
-				region_id=self._new_region(),
 				temporary=temporary,
 				live_blocks=live_blocks,
-				ref_binding=None,
 			)
 		)
 
@@ -390,104 +378,6 @@ class BorrowChecker:
 				if p not in seen:
 					q.append(p)
 		return seen
-
-	def _collect_ref_use_blocks(self, blocks: List[BasicBlock], local_types: Dict[int, TypeId]) -> Dict[int, Set[int]]:
-		"""
-		Collect blocks where reference-typed bindings are used.
-
-		Returns a mapping binding_id -> set(block_ids).
-		"""
-		use_map: Dict[int, Set[int]] = {}
-
-		def note_use(binding_id: int, bid: int) -> None:
-			use_map.setdefault(binding_id, set()).add(bid)
-
-		def walk_expr(expr: H.HExpr, bid: int) -> None:
-			if isinstance(expr, H.HVar):
-				bid_id = getattr(expr, "binding_id", None)
-				if bid_id is not None:
-					ty = local_types.get(bid_id)
-					if ty is not None:
-						ty_def = self.type_table.get(ty)
-						if ty_def.kind is TypeKind.REF:
-							note_use(bid_id, bid)
-				return
-			if isinstance(expr, H.HField):
-				walk_expr(expr.subject, bid)
-			elif isinstance(expr, H.HIndex):
-				walk_expr(expr.subject, bid)
-				walk_expr(expr.index, bid)
-			elif isinstance(expr, H.HBorrow):
-				walk_expr(expr.subject, bid)
-			elif isinstance(expr, H.HCall):
-				walk_expr(expr.fn, bid)
-				for a in expr.args:
-					walk_expr(a, bid)
-			elif isinstance(expr, H.HMethodCall):
-				walk_expr(expr.receiver, bid)
-				for a in expr.args:
-					walk_expr(a, bid)
-			elif isinstance(expr, H.HBinary):
-				walk_expr(expr.left, bid)
-				walk_expr(expr.right, bid)
-			elif isinstance(expr, H.HUnary):
-				walk_expr(expr.expr, bid)
-			elif isinstance(expr, H.HTernary):
-				walk_expr(expr.cond, bid)
-				walk_expr(expr.then_expr, bid)
-				walk_expr(expr.else_expr, bid)
-			elif isinstance(expr, H.HArrayLiteral):
-				for e in expr.elements:
-					walk_expr(e, bid)
-			elif isinstance(expr, H.HDVInit):
-				for a in expr.args:
-					walk_expr(a, bid)
-			elif isinstance(expr, H.HResultOk):
-				walk_expr(expr.value, bid)
-			elif isinstance(expr, H.HTryResult):
-				walk_expr(expr.expr, bid)
-
-		for blk in blocks:
-			for stmt in blk.statements:
-				if isinstance(stmt, H.HLet):
-					walk_expr(stmt.value, blk.id)
-				elif isinstance(stmt, H.HAssign):
-					walk_expr(stmt.value, blk.id)
-					walk_expr(stmt.target, blk.id)
-				elif isinstance(stmt, H.HExprStmt):
-					walk_expr(stmt.expr, blk.id)
-				elif isinstance(stmt, H.HReturn) and stmt.value is not None:
-					walk_expr(stmt.value, blk.id)
-				elif isinstance(stmt, H.HIf):
-					walk_expr(stmt.cond, blk.id)
-				elif isinstance(stmt, H.HThrow):
-					walk_expr(stmt.value, blk.id)
-			term = blk.terminator
-			if term and term.kind == "branch" and term.cond is not None:
-				walk_expr(term.cond, blk.id)
-			if term and term.kind in ("return", "throw") and term.value is not None:
-				walk_expr(term.value, blk.id)
-
-		return use_map
-
-	def _collect_ref_to_target(self, blocks: List[BasicBlock]) -> Dict[int, int]:
-		"""
-		Collect mapping of ref binding_id -> target binding_id for HBorrow in lets.
-
-		This is conservative: only HLet with HBorrow RHS are considered.
-		"""
-		ref_map: Dict[int, int] = {}
-		for blk in blocks:
-			for stmt in blk.statements:
-				if isinstance(stmt, H.HLet) and isinstance(stmt.value, H.HBorrow):
-					ref_bid = getattr(stmt, "binding_id", None)
-					if ref_bid is None:
-						continue
-					subject_place = place_from_expr(stmt.value.subject, base_lookup=self.base_lookup)
-					if subject_place is None:
-						continue
-					ref_map[ref_bid] = subject_place.base.local_id
-		return ref_map
 
 	def _visit_expr(self, state: _FlowState, expr: H.HExpr, *, as_value: bool = True) -> None:
 		"""

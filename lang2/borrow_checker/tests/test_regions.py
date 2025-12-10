@@ -13,9 +13,16 @@ def _bc(bindings: dict[str, tuple[int, str]]) -> BorrowChecker:
 	table = TypeTable()
 	type_ids = {}
 	fn_types = {}
+	int_ty = table.ensure_int()
 	for name, (bid, kind) in bindings.items():
-		if kind == "Int":
-			type_ids[name] = table.ensure_int()
+		if kind in ("Int", "int"):
+			type_ids[name] = int_ty
+		elif kind in ("RefInt", "&Int"):
+			type_ids[name] = table.ensure_ref(int_ty)
+		elif kind in ("RefMutInt", "&mut Int"):
+			type_ids[name] = table.ensure_ref_mut(int_ty)
+		elif kind in ("Bool", "bool"):
+			type_ids[name] = table.ensure_bool()
 		else:
 			type_ids[name] = table.ensure_unknown()
 		fn_types[PlaceBase(PlaceKind.LOCAL, bid, name)] = type_ids[name]
@@ -48,7 +55,7 @@ def test_borrow_ends_after_last_use_allows_later_mut():
 			),
 		]
 	)
-	diags = _bc({"x": (1, "Int"), "r": (2, "Int")}).check_block(block)
+	diags = _bc({"x": (1, "Int"), "r": (2, "RefInt")}).check_block(block)
 	assert diags == []
 
 
@@ -66,5 +73,54 @@ def test_borrow_still_live_before_first_use_blocks_mut():
 			H.HExprStmt(expr=H.HVar("r", binding_id=2)),  # use ref
 		]
 	)
-	diags = _bc({"x": (1, "Int"), "r": (2, "Int")}).check_block(block)
+	diags = _bc({"x": (1, "Int"), "r": (2, "RefInt")}).check_block(block)
+	assert any("borrow" in d.message for d in diags)
+
+
+def test_borrow_in_one_branch_allows_mut_after_join_when_no_later_use():
+	block = H.HBlock(
+		statements=[
+			H.HLet(name="x", value=H.HLiteralInt(1), declared_type_expr=None, binding_id=1),
+			H.HLet(
+				name="r",
+				value=H.HBorrow(subject=H.HVar("x", binding_id=1), is_mut=False),
+				declared_type_expr=None,
+				binding_id=2,
+			),
+			H.HIf(
+				cond=H.HLiteralBool(True),
+				then_block=H.HBlock(statements=[H.HExprStmt(expr=H.HVar("r", binding_id=2))]),
+				else_block=H.HBlock(statements=[]),
+			),
+			# Region for r should end before this block because r is never used after the if.
+			H.HExprStmt(expr=H.HBorrow(subject=H.HVar("x", binding_id=1), is_mut=True)),
+		]
+	)
+	diags = _bc({"x": (1, "Int"), "r": (2, "RefInt")}).check_block(block)
+	assert diags == []
+
+
+def test_borrow_used_after_join_keeps_mut_blocked_until_then():
+	# Even if branches themselves do not use the ref, a later use should keep the loan live
+	# through the join block and block &mut borrows placed before that use.
+	block = H.HBlock(
+		statements=[
+			H.HLet(name="x", value=H.HLiteralInt(1), declared_type_expr=None, binding_id=1),
+			H.HLet(
+				name="r",
+				value=H.HBorrow(subject=H.HVar("x", binding_id=1), is_mut=False),
+				declared_type_expr=None,
+				binding_id=2,
+			),
+			H.HIf(
+				cond=H.HLiteralBool(True),
+				then_block=H.HBlock(statements=[]),
+				else_block=H.HBlock(statements=[]),
+			),
+			# This mut borrow happens in the continuation block before the final use of r.
+			H.HExprStmt(expr=H.HBorrow(subject=H.HVar("x", binding_id=1), is_mut=True)),
+			H.HExprStmt(expr=H.HVar("r", binding_id=2)),
+		]
+	)
+	diags = _bc({"x": (1, "Int"), "r": (2, "RefInt")}).check_block(block)
 	assert any("borrow" in d.message for d in diags)
