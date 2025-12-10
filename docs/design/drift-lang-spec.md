@@ -316,7 +316,7 @@ Borrowing from rvalues (temporaries, moved values) is an error. The explicit for
 
 ### 3.8. Method receivers and overloading
 
-Receivers inside an `implement` block are written as `self: T` (by value), `self: &T` (shared borrow), or `self: &mut T` (exclusive borrow):
+Receivers inside an `implement` block are written with an explicit mode: `T` (by value), `&T` (shared borrow), or `&mut T` (exclusive borrow):
 
 - A call on an lvalue prefers `self: &T`, then `self: &mut T`, then `self: T` (which copies if `Copy`, otherwise requires `obj->`).
 - A call on an rvalue (`obj->`, `make()`) can bind only to a `self` receiver; borrowed receivers are not allowed on rvalues.
@@ -1012,8 +1012,8 @@ Drift differentiates between **methods** (eligible for dot-call syntax) and **fr
   - `&T`: shared borrow
   - `&mut T`: exclusive/mutable borrow
   - (future) `move T`: consuming receiver
-  `self` remains the idiomatic name for the receiver, but the role comes from position/mode, not spelling.
-- The receiver’s nominal type is implied by the `implement` header, so you write `self: &File`, not `File self`.
+  `self` is the idiomatic name for the receiver, but the role comes from position/mode, not spelling.
+- The receiver’s nominal type is implied by the `implement` header; there is no magic receiver outside an `implement` block.
 - Outside an `implement` block every function is a free function. A free function may take any parameters (including an explicit `&File`), but it is invoked with ordinary call syntax (`translate(point, 1, 2)`), not `point.translate(...)`.
 
 Example:

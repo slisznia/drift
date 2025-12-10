@@ -62,6 +62,7 @@ module_path: NAME (DOT NAME)*
 ?item: func_def
      | struct_def
      | exception_def
+     | implement_def
      | stmt
 
 func_def: "fn" NAME "(" [params] ")" return_sig block
@@ -69,6 +70,11 @@ return_sig: RETURNS type_expr
 
 params: param (COMMA param)*
 param: NAME COLON type_expr
+
+# implement Type { fn ... }
+implement_def: "implement" type_expr implement_body
+implement_body: "{" (implement_item | TERMINATOR)* "}"
+implement_item: func_def   -> implement_func
 
 type_expr: ref_type
          | base_type

@@ -110,6 +110,9 @@ class FunctionDef:
     return_type: TypeExpr
     body: Block
     loc: Located
+    is_method: bool = False
+    self_mode: str | None = None  # "value", "ref", "ref_mut"
+    impl_target: TypeExpr | None = None
 
 
 class Expr:
@@ -190,11 +193,19 @@ class ArrayLiteral(Expr):
 
 @dataclass
 class Program:
-    functions: List[FunctionDef]
-    statements: List[Stmt]
-    structs: List[StructDef]
-    exceptions: List[ExceptionDef]
-    module: Optional[str] = None
+	functions: List[FunctionDef] = field(default_factory=list)
+	implements: List["ImplementDef"] = field(default_factory=list)
+	statements: List[Stmt] = field(default_factory=list)
+	structs: List[StructDef] = field(default_factory=list)
+	exceptions: List[ExceptionDef] = field(default_factory=list)
+	module: Optional[str] = None
+
+
+@dataclass
+class ImplementDef:
+	target: TypeExpr
+	loc: Located
+	methods: List[FunctionDef] = field(default_factory=list)
 
 
 @dataclass

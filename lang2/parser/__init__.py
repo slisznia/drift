@@ -138,6 +138,9 @@ class _FrontendDecl:
 		params: list[_FrontendParam],
 		return_type: parser_ast.TypeExpr,
 		loc: Optional[parser_ast.Located],
+		is_method: bool = False,
+		self_mode: Optional[str] = None,
+		impl_target: Optional[parser_ast.TypeExpr] = None,
 	) -> None:
 		self.name = name
 		self.params = params
@@ -146,11 +149,14 @@ class _FrontendDecl:
 		self.loc = loc
 		self.is_extern = False
 		self.is_intrinsic = False
+		self.is_method = is_method
+		self.self_mode = self_mode
+		self.impl_target = impl_target
 
 
 def _decl_from_parser_fn(fn: parser_ast.FunctionDef) -> _FrontendDecl:
 	params = [_FrontendParam(p.name, p.type_expr, getattr(p, "loc", None)) for p in fn.params]
-	return _FrontendDecl(fn.name, params, fn.return_type, getattr(fn, "loc", None))
+	return _FrontendDecl(fn.name, params, fn.return_type, getattr(fn, "loc", None), fn.is_method, fn.self_mode, fn.impl_target)
 
 
 def parse_drift_to_hir(path: Path) -> Tuple[Dict[str, H.HBlock], Dict[str, FnSignature], "TypeTable", List[Diagnostic]]:
@@ -184,6 +190,49 @@ def parse_drift_to_hir(path: Path) -> Tuple[Dict[str, H.HBlock], Dict[str, FnSig
 		stmt_block = _convert_block(fn.body)
 		hir_block = lowerer.lower_block(stmt_block)
 		func_hirs[fn.name] = hir_block
+	# Methods inside implement blocks.
+	for impl in getattr(prog, "implements", []):
+		for fn in impl.methods:
+			if not fn.params:
+				diagnostics.append(
+					Diagnostic(
+						message=f"method '{fn.name}' must have a receiver parameter",
+						severity="error",
+						span=getattr(fn, "loc", None),
+					)
+				)
+				continue
+			receiver_ty = fn.params[0].type_expr
+			self_mode = "value"
+			if receiver_ty.name == "&":
+				self_mode = "ref"
+			elif receiver_ty.name == "&mut":
+				self_mode = "ref_mut"
+			# Reject nested refs for v1 (e.g., &&T).
+			if receiver_ty.name in {"&", "&mut"} and receiver_ty.args and receiver_ty.args[0].name in {"&", "&mut"}:
+				diagnostics.append(
+					Diagnostic(
+						message=f"unsupported receiver type for method '{fn.name}'",
+						severity="error",
+						span=getattr(fn, "loc", None),
+					)
+				)
+				continue
+			params = [_FrontendParam(p.name, p.type_expr, getattr(p, "loc", None)) for p in fn.params]
+			decls.append(
+				_FrontendDecl(
+					fn.name,
+					params,
+					fn.return_type,
+					getattr(fn, "loc", None),
+					is_method=True,
+					self_mode=self_mode,
+					impl_target=impl.target,
+				)
+			)
+			stmt_block = _convert_block(fn.body)
+			hir_block = lowerer.lower_block(stmt_block)
+			func_hirs[fn.name] = hir_block
 	# Build signatures with resolved TypeIds from parser decls.
 	from lang2.type_resolver import resolve_program_signatures
 

@@ -80,6 +80,10 @@ def resolve_program_signatures(func_decls: Iterable[object]) -> tuple[TypeTable,
 		self_mode = getattr(decl, "self_mode", None)
 		impl_target_type_id = getattr(decl, "impl_target_type_id", None)
 
+		impl_target_type_id: TypeId | None = None
+		if is_method and getattr(decl, "impl_target", None) is not None:
+			impl_target_type_id = _resolve_type(decl.impl_target, table, int_ty, bool_ty, str_ty, err_ty)
+
 		signatures[name] = FnSignature(
 			name=name,
 			loc=decl_loc,

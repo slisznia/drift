@@ -30,3 +30,15 @@ Implement real method/function resolution per `docs/design/spec-change-requests/
 - Implement resolution in the type checker using receiver/arg types and registry; drop name-only method lookup.  
 - Hook borrow checker to resolved call metadata for receiver auto-borrow/moves.  
 - Add tests for disambiguation (module/name, receiver type, overloaded args) and for correct auto-borrow based on `self_mode`.
+
+**Blocker:** The current front-end/parser does not support `implement Type { ... }` blocks or method decl metadata. To proceed with real method entries we need parser/AST support for implement blocks, method receiver position/mode, and to emit `is_method/self_mode/impl_target_type_id` on signatures. Please advise if we should reprioritize adding implement-block parsing first.
+
+### TODO (front-end to unblock method metadata)
+- Extend grammar/AST to parse `implement Type { ... }` blocks.
+- In implement blocks, enforce at least one parameter (receiver) and derive `self_mode` from the first param type; reject unsupported receiver shapes (e.g., nested refs) for v1.
+- Thread `is_method/self_mode/impl_target_type_id` from implement decls into `FnSignature` during signature building.
+- Add tests:
+  * Valid implement method → `is_method`/`self_mode`/`impl_target_type_id` set.
+  * Top-level `fn` with a `self` param is not a method.
+  * Implement fn with no params or bad receiver type produces a front-end error.
+  * Resolver sees free vs method separately when metadata is present.

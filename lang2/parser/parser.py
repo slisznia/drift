@@ -8,44 +8,45 @@ from typing import List, Optional
 from lark import Lark, Token, Tree
 
 from .ast import (
-    ArrayLiteral,
-    AssignStmt,
-    Attr,
-    Binary,
-    Block,
-    Call,
-    CatchClause,
-    ExceptionArg,
-    ExceptionDef,
-    Expr,
-    ExprStmt,
-    ForStmt,
-    FunctionDef,
-    IfStmt,
-    ImportStmt,
-    Index,
-    KwArg,
-    LetStmt,
-    Literal,
-    Located,
-    Move,
-    Name,
-    Placeholder,
-    Param,
-    Program,
-    RaiseStmt,
-    ReturnStmt,
-    StructDef,
-    StructField,
-    TypeExpr,
-    Ternary,
-    TryCatchExpr,
-    CatchExprArm,
-    TryStmt,
-    WhileStmt,
-    BreakStmt,
-    ContinueStmt,
-    Unary,
+	ArrayLiteral,
+	AssignStmt,
+	Attr,
+	Binary,
+	Block,
+	Call,
+	CatchClause,
+	ExceptionArg,
+	ExceptionDef,
+	Expr,
+	ExprStmt,
+	ForStmt,
+	FunctionDef,
+	IfStmt,
+	ImportStmt,
+	ImplementDef,
+	Index,
+	KwArg,
+	LetStmt,
+	Literal,
+	Located,
+	Move,
+	Name,
+	Placeholder,
+	Param,
+	Program,
+	RaiseStmt,
+	ReturnStmt,
+	StructDef,
+	StructField,
+	TypeExpr,
+	Ternary,
+	TryCatchExpr,
+	CatchExprArm,
+	TryStmt,
+	WhileStmt,
+	BreakStmt,
+	ContinueStmt,
+	Unary,
 )
 
 _GRAMMAR_PATH = Path(__file__).with_name("grammar.lark")
@@ -172,35 +173,39 @@ def parse_program(source: str) -> Program:
 
 
 def _build_program(tree: Tree) -> Program:
-    functions: List[FunctionDef] = []
-    statements: List[ExprStmt | LetStmt | ReturnStmt | RaiseStmt | ImportStmt] = []
-    structs: List[StructDef] = []
-    exceptions: List[ExceptionDef] = []
-    module_name: Optional[str] = None
-    for child in tree.children:
-        if not isinstance(child, Tree):
-            continue
-        kind = _name(child)
-        if kind == "module_decl":
-            module_name = _build_module_decl(child)
-            continue
-        if kind == "func_def":
-            functions.append(_build_function(child))
-        elif kind == "struct_def":
-            structs.append(_build_struct_def(child))
-        elif kind == "exception_def":
-            exceptions.append(_build_exception_def(child))
-        else:
-            stmt = _build_stmt(child)
-            if stmt is not None:
-                statements.append(stmt)
-    return Program(
-        functions=functions,
-        statements=statements,
-        structs=structs,
-        exceptions=exceptions,
-        module=module_name,
-    )
+	functions: List[FunctionDef] = []
+	implements: List[ImplementDef] = []
+	statements: List[ExprStmt | LetStmt | ReturnStmt | RaiseStmt | ImportStmt] = []
+	structs: List[StructDef] = []
+	exceptions: List[ExceptionDef] = []
+	module_name: Optional[str] = None
+	for child in tree.children:
+		if not isinstance(child, Tree):
+			continue
+		kind = _name(child)
+		if kind == "module_decl":
+			module_name = _build_module_decl(child)
+			continue
+		if kind == "func_def":
+			functions.append(_build_function(child))
+		elif kind == "implement_def":
+			implements.append(_build_implement_def(child))
+		elif kind == "struct_def":
+			structs.append(_build_struct_def(child))
+		elif kind == "exception_def":
+			exceptions.append(_build_exception_def(child))
+		else:
+			stmt = _build_stmt(child)
+			if stmt is not None:
+				statements.append(stmt)
+	return Program(
+		functions=functions,
+		implements=implements,
+		statements=statements,
+		structs=structs,
+		exceptions=exceptions,
+		module=module_name,
+	)
 
 
 def _build_module_decl(tree: Tree) -> str:
@@ -248,27 +253,44 @@ def _build_exception_arg(tree: Tree) -> ExceptionArg:
 
 
 def _build_function(tree: Tree) -> FunctionDef:
-    loc = _loc(tree)
-    children = list(tree.children)
-    idx = 0
-    name_token = children[idx]
-    idx += 1
-    params: List[Param] = []
-    if idx < len(children) and _name(children[idx]) == "params":
-        params = [_build_param(p) for p in children[idx].children if isinstance(p, Tree)]
-        idx += 1
-    return_sig = children[idx]
-    type_child = next(child for child in return_sig.children if isinstance(child, Tree))
-    return_type = _build_type_expr(type_child)
-    idx += 1
-    body = _build_block(children[idx])
-    return FunctionDef(
-        name=name_token.value,
-        params=params,
-        return_type=return_type,
-        body=body,
-        loc=loc,
-    )
+	loc = _loc(tree)
+	children = list(tree.children)
+	idx = 0
+	name_token = children[idx]
+	idx += 1
+	params: List[Param] = []
+	if idx < len(children) and _name(children[idx]) == "params":
+		params = [_build_param(p) for p in children[idx].children if isinstance(p, Tree)]
+		idx += 1
+	return_sig = children[idx]
+	type_child = next(child for child in return_sig.children if isinstance(child, Tree))
+	return_type = _build_type_expr(type_child)
+	idx += 1
+	body = _build_block(children[idx])
+	return FunctionDef(
+		name=name_token.value,
+		params=params,
+		return_type=return_type,
+		body=body,
+		loc=loc,
+	)
+
+
+def _build_implement_def(tree: Tree) -> ImplementDef:
+	loc = _loc(tree)
+	target_node = next(child for child in tree.children if isinstance(child, Tree) and _name(child) == "type_expr")
+	target = _build_type_expr(target_node)
+	methods: List[FunctionDef] = []
+	body_node = next(child for child in tree.children if isinstance(child, Tree) and _name(child) == "implement_body")
+	for item in body_node.children:
+		if isinstance(item, Tree) and _name(item) == "implement_item":
+			fn_node = next((c for c in item.children if isinstance(c, Tree) and _name(c) == "func_def"), None)
+			if fn_node is not None:
+				fn = _build_function(fn_node)
+				fn.is_method = True
+				fn.impl_target = target
+				methods.append(fn)
+	return ImplementDef(target=target, methods=methods, loc=loc)
 
 
 def _build_block(tree: Tree) -> Block:

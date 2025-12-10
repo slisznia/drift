@@ -352,12 +352,30 @@ def main(argv: list[str] | None = None) -> int:
 			if sig.param_type_ids is None or sig.return_type_id is None:
 				continue
 			param_types_tuple = tuple(sig.param_type_ids)
-			if sig.is_method and sig.impl_target_type_id is not None and sig.self_mode is not None:
+			if sig.is_method:
+				if sig.impl_target_type_id is None or sig.self_mode is None:
+					type_diags.append(
+						Diagnostic(
+							message=f"method '{sig_name}' missing receiver metadata (impl target/self_mode)",
+							severity="error",
+							span=getattr(sig, "loc", None),
+						)
+					)
+					continue
 				self_mode = {
 					"value": SelfMode.SELF_BY_VALUE,
 					"ref": SelfMode.SELF_BY_REF,
 					"ref_mut": SelfMode.SELF_BY_REF_MUT,
-				}.get(sig.self_mode, SelfMode.SELF_BY_VALUE)
+				}.get(sig.self_mode)
+				if self_mode is None:
+					type_diags.append(
+						Diagnostic(
+							message=f"method '{sig_name}' has unsupported self_mode '{sig.self_mode}'",
+							severity="error",
+							span=getattr(sig, "loc", None),
+						)
+					)
+					continue
 				callable_registry.register_inherent_method(
 					callable_id=next_callable_id,
 					name=sig_name,
