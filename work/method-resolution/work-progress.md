@@ -20,25 +20,21 @@ Implement real method/function resolution per `docs/design/spec-change-requests/
    - If overloading is kept, include arg types in selection; module is part of `method_id`/visibility. No return-type overloading; no inference-based overload picking in v1.
 
 ## Status
-- Auto-borrow uses signatures for functions/methods, but method resolution is still **name-only** (no registry, no receiver-type key).  
-- Borrow checker still guesses method signatures by name; typed HIR has no resolved callee metadata.  
-- Type checker produces per-expression types; `ref_mut` plumbed; good foundation for proper resolution.
+- Parser/AST/HIR support `implement Type { ... }` blocks; methods carry `is_method/self_mode/impl_target_type_id`, symbol names (`Type::method`), and display `method_name`.  
+- Per-type duplicate method checks enforced; free-vs-method name collisions are rejected.  
+- Type resolver builds signatures keyed by symbol; method names are preserved for registry display.  
+- Callable registry + resolver drive type checker call resolution for both functions and methods; typed HIR stores resolved callees.  
+- Borrow checker consumes resolved callees for auto-borrow; name-based method heuristics are only a legacy fallback.
 
 ## Next Steps
-- Define the registry data structure and emit entries (incl. module) during symbol collection.  
-- Extend TypedFn/typed call info to store resolved method/function IDs and param/return types.  
-- Implement resolution in the type checker using receiver/arg types and registry; drop name-only method lookup.  
-- Hook borrow checker to resolved call metadata for receiver auto-borrow/moves.  
-- Add tests for disambiguation (module/name, receiver type, overloaded args) and for correct auto-borrow based on `self_mode`.
+- Add module IDs end-to-end (registry entries, resolution visibility), not hardcoded `0`.  
+- Implement module-merge validation (multi-file modules, public interface collisions, single `main` when building executables/packages).  
+- Remove legacy method-signature fallback in the borrow checker once all calls resolve via registry.  
+- Harden method resolution tests: shared method names across types, visibility/module filtering, ambiguity errors, receiver by-value cases.  
+- Wire registry with method entries into the merge/driver phase so codegen/borrow check use resolved methods across files.
 
-**Blocker:** The current front-end/parser does not support `implement Type { ... }` blocks or method decl metadata. To proceed with real method entries we need parser/AST support for implement blocks, method receiver position/mode, and to emit `is_method/self_mode/impl_target_type_id` on signatures. Please advise if we should reprioritize adding implement-block parsing first.
-
-### TODO (front-end to unblock method metadata)
-- Extend grammar/AST to parse `implement Type { ... }` blocks.
-- In implement blocks, enforce at least one parameter (receiver) and derive `self_mode` from the first param type; reject unsupported receiver shapes (e.g., nested refs) for v1.
-- Thread `is_method/self_mode/impl_target_type_id` from implement decls into `FnSignature` during signature building.
-- Add tests:
-  * Valid implement method → `is_method`/`self_mode`/`impl_target_type_id` set.
-  * Top-level `fn` with a `self` param is not a method.
-  * Implement fn with no params or bad receiver type produces a front-end error.
-  * Resolver sees free vs method separately when metadata is present.
+### TODOs
+- Add registry population during a module-merge phase (multi-file modules) with collision checks.
+- Replace hardcoded module_id in driftc with real module IDs from the parser/merge context.
+- Expand method-resolution tests for ambiguity/visibility and receiver by-value cases.
+- Remove `_param_types_for_method_call` heuristic once all paths rely on resolved callees.

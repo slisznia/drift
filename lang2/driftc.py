@@ -343,7 +343,7 @@ def main(argv: list[str] | None = None) -> int:
 	type_diags: list[Diagnostic] = []
 
 	if signatures:
-		for sig_name, sig in signatures.items():
+		for sig_symbol, sig in signatures.items():
 			if sig.param_type_ids is None or sig.return_type_id is None:
 				continue
 			param_types_tuple = tuple(sig.param_type_ids)
@@ -351,7 +351,7 @@ def main(argv: list[str] | None = None) -> int:
 				if sig.impl_target_type_id is None or sig.self_mode is None:
 					type_diags.append(
 						Diagnostic(
-							message=f"method '{sig_name}' missing receiver metadata (impl target/self_mode)",
+							message=f"method '{sig_symbol}' missing receiver metadata (impl target/self_mode)",
 							severity="error",
 							span=getattr(sig, "loc", None),
 						)
@@ -365,7 +365,7 @@ def main(argv: list[str] | None = None) -> int:
 				if self_mode is None:
 					type_diags.append(
 						Diagnostic(
-							message=f"method '{sig_name}' has unsupported self_mode '{sig.self_mode}'",
+							message=f"method '{sig_symbol}' has unsupported self_mode '{sig.self_mode}'",
 							severity="error",
 							span=getattr(sig, "loc", None),
 						)
@@ -373,7 +373,7 @@ def main(argv: list[str] | None = None) -> int:
 					continue
 				callable_registry.register_inherent_method(
 					callable_id=next_callable_id,
-					name=sig_name,
+					name=sig.method_name or sig_symbol,
 					module_id=0,
 					visibility=Visibility.public(),
 					signature=CallableSignature(param_types=param_types_tuple, result_type=sig.return_type_id),
@@ -386,13 +386,20 @@ def main(argv: list[str] | None = None) -> int:
 			else:
 				callable_registry.register_free_function(
 					callable_id=next_callable_id,
-					name=sig_name,
+					name=sig.method_name or sig_symbol,
 					module_id=0,
 					visibility=Visibility.public(),
 					signature=CallableSignature(param_types=param_types_tuple, result_type=sig.return_type_id),
 					is_generic=False,
 				)
 				next_callable_id += 1
+	# Build a name-keyed map for free-function signatures (fallback path only).
+	call_sigs_by_name: dict[str, FnSignature] = {}
+	if signatures:
+		for sig in signatures.values():
+			if not sig.is_method:
+				call_sigs_by_name[sig.method_name or sig.name] = sig
+
 	typed_fns: dict[str, object] = {}
 	for fn_name, hir_block in func_hirs.items():
 		# Build param type map from signatures when available.
@@ -404,7 +411,7 @@ def main(argv: list[str] | None = None) -> int:
 			fn_name,
 			hir_block,
 			param_types=param_types,
-			call_signatures=signatures,
+			call_signatures=call_sigs_by_name,
 			callable_registry=callable_registry,
 			visible_modules=(0,),
 			current_module=0,

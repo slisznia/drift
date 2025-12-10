@@ -105,14 +105,15 @@ class ExprStmt(Stmt):
 
 @dataclass
 class FunctionDef:
-    name: str
-    params: Sequence[Param]
-    return_type: TypeExpr
-    body: Block
-    loc: Located
-    is_method: bool = False
-    self_mode: str | None = None  # "value", "ref", "ref_mut"
-    impl_target: TypeExpr | None = None
+	name: str
+	orig_name: str
+	params: Sequence[Param]
+	return_type: TypeExpr
+	body: Block
+	loc: Located
+	is_method: bool = False
+	self_mode: str | None = None  # "value", "ref", "ref_mut"
+	impl_target: TypeExpr | None = None
 
 
 class Expr:

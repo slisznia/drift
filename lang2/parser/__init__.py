@@ -135,6 +135,7 @@ class _FrontendDecl:
 	def __init__(
 		self,
 		name: str,
+		method_name: Optional[str],
 		params: list[_FrontendParam],
 		return_type: parser_ast.TypeExpr,
 		loc: Optional[parser_ast.Located],
@@ -143,6 +144,7 @@ class _FrontendDecl:
 		impl_target: Optional[parser_ast.TypeExpr] = None,
 	) -> None:
 		self.name = name
+		self.method_name = method_name
 		self.params = params
 		self.return_type = return_type
 		self.throws = ()
@@ -156,7 +158,7 @@ class _FrontendDecl:
 
 def _decl_from_parser_fn(fn: parser_ast.FunctionDef) -> _FrontendDecl:
 	params = [_FrontendParam(p.name, p.type_expr, getattr(p, "loc", None)) for p in fn.params]
-	return _FrontendDecl(fn.name, params, fn.return_type, getattr(fn, "loc", None), fn.is_method, fn.self_mode, fn.impl_target)
+	return _FrontendDecl(fn.name, fn.orig_name, params, fn.return_type, getattr(fn, "loc", None), fn.is_method, fn.self_mode, fn.impl_target)
 
 
 def parse_drift_to_hir(path: Path) -> Tuple[Dict[str, H.HBlock], Dict[str, FnSignature], "TypeTable", List[Diagnostic]]:
@@ -173,7 +175,7 @@ def parse_drift_to_hir(path: Path) -> Tuple[Dict[str, H.HBlock], Dict[str, FnSig
 	signatures: Dict[str, FnSignature] = {}
 	lowerer = AstToHIR()
 	seen: set[str] = set()
-	method_names: set[str] = set()
+	method_keys: set[tuple[str, str]] = set()  # (impl_target_repr, method_name)
 	diagnostics: list[Diagnostic] = []
 	for fn in prog.functions:
 		if fn.name in seen:
@@ -229,19 +231,23 @@ def parse_drift_to_hir(path: Path) -> Tuple[Dict[str, H.HBlock], Dict[str, FnSig
 					)
 				)
 				continue
-			if fn.name in method_names:
+			target_str = _type_expr_to_str(impl.target)
+			key = (target_str, fn.name)
+			if key in method_keys:
 				diagnostics.append(
 					Diagnostic(
-						message=f"duplicate method definition for '{fn.name}'",
+						message=f"duplicate method definition '{fn.name}' for type '{target_str}'",
 						severity="error",
 						span=getattr(fn, "loc", None),
 					)
 				)
 				continue
-			method_names.add(fn.name)
+			method_keys.add(key)
+			symbol_name = f"{target_str}::{fn.name}"
 			decls.append(
 				_FrontendDecl(
-					fn.name,
+					symbol_name,
+					fn.orig_name,
 					params,
 					fn.return_type,
 					getattr(fn, "loc", None),
@@ -252,7 +258,7 @@ def parse_drift_to_hir(path: Path) -> Tuple[Dict[str, H.HBlock], Dict[str, FnSig
 			)
 			stmt_block = _convert_block(fn.body)
 			hir_block = lowerer.lower_block(stmt_block)
-			func_hirs[fn.name] = hir_block
+			func_hirs[symbol_name] = hir_block
 	# Build signatures with resolved TypeIds from parser decls.
 	from lang2.type_resolver import resolve_program_signatures
 

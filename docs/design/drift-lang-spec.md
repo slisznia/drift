@@ -1036,7 +1036,7 @@ fn translate(p: &mut Point, dx: Int64, dy: Int64) returns Void {
 point.move_by(1, 2)     // method call (auto-borrows &mut point)
 translate(point, 3, 4)  // free function call (auto-borrows &mut point)
 
-// Free function and method names may not collide within the same module.
+Within a module, a given name may not be used both for a free function and for a method; method names may be reused across different types as long as each (type, method name) pair is unique.
 ```
 
 This rule set makes the receiver’s ownership mode explicit and prevents implicit, C++-style magic receivers.
@@ -1468,7 +1468,7 @@ try {
 ## 9. Reserved keywords and operators
 
 Keywords and literals are reserved and cannot be used as identifiers (functions, variables, modules, structs, exceptions, etc.):  
-`fn`, `val`, `var`, `returns`, `if`, `else`, `while`, `break`, `continue`, `try`, `catch`, `throw`, `raise`, `return`, `exception`, `import`, `module`, `true`, `false`, `not`, `and`, `or`, plus language/FFI/legacy keywords (`auto`, `pragma`, `bool`, `int`, `float`, `string`, `void`, `abstract`, `assert`, `boolean`, `byte`, `case`, `char`, `class`, `const`, `default`, `do`, `double`, `enum`, `extends`, `final`, `finally`, `for`, `goto`, `implements`, `instanceof`, `interface`, `long`, `native`, `new`, `package`, `private`, `protected`, `public`, `short`, `static`, `strictfp`, `super`, `switch`, `synchronized`, `this`, `throws`, `transient`, `volatile`).
+`fn`, `val`, `var`, `returns`, `if`, `else`, `while`, `break`, `continue`, `try`, `catch`, `throw`, `raise`, `return`, `exception`, `import`, `module`, `implement`, `true`, `false`, `not`, `and`, `or`, plus language/FFI/legacy keywords (`auto`, `pragma`, `bool`, `int`, `float`, `string`, `void`, `abstract`, `assert`, `boolean`, `byte`, `case`, `char`, `class`, `const`, `default`, `do`, `double`, `enum`, `extends`, `final`, `finally`, `for`, `goto`, `instanceof`, `interface`, `long`, `native`, `new`, `package`, `private`, `protected`, `public`, `short`, `static`, `strictfp`, `super`, `switch`, `synchronized`, `this`, `throws`, `transient`, `volatile`).
 
 **Operator tokens (reserved):** `+`, `-`, `*`, `/`, `%`, `==`, `!=`, `<`, `<=`, `>`, `>=`, `and`, `or`, `not`, `? :`, `>>` (pipeline), `<<`, `|>`, `<|`, indexing brackets `[]`, and member access `.`. These participate in precedence/associativity rules; identifiers cannot reuse them.
 

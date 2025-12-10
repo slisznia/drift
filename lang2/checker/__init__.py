@@ -46,6 +46,8 @@ class FnSignature:
 	name: str
 	loc: Optional[Any] = None
 
+	# Display name used at call sites (e.g., method name without type scoping).
+	method_name: Optional[str] = None
 	# Canonical, type-checked fields (preferred).
 	param_type_ids: Optional[list[TypeId]] = None
 	return_type_id: Optional[TypeId] = None
@@ -140,6 +142,11 @@ class Checker:
 		self._hir_blocks = hir_blocks or {}
 		# Use shared TypeTable when supplied; otherwise create a local one.
 		self._type_table = type_table or TypeTable()
+		# Index signatures by display name for approximate method lookups.
+		self._sigs_by_display_name: Dict[str, list[FnSignature]] = {}
+		for sig in self._signatures.values():
+			disp = sig.method_name or sig.name
+			self._sigs_by_display_name.setdefault(disp, []).append(sig)
 
 		def _find_named(kind: TypeKind, name: str) -> TypeId | None:
 			"""
@@ -950,12 +957,12 @@ class Checker:
 		def validate_try_expr(expr: H.HExpr, span_descr: str) -> None:
 			# Only accept simple calls/method calls to signatures we know are FnResult.
 			if isinstance(expr, H.HCall) and isinstance(expr.fn, H.HVar):
-				sig = self._signatures.get(expr.fn.name)
-				if is_fnresult_sig(sig):
+				cands = self._sigs_by_display_name.get(expr.fn.name, [])
+				if len(cands) == 1 and is_fnresult_sig(cands[0]):
 					return
 			if isinstance(expr, H.HMethodCall):
-				sig = self._signatures.get(expr.method_name)
-				if is_fnresult_sig(sig):
+				cands = self._sigs_by_display_name.get(expr.method_name, [])
+				if len(cands) == 1 and is_fnresult_sig(cands[0]):
 					return
 			report(
 				msg=(
@@ -1316,7 +1323,8 @@ class Checker:
 								else:
 									dest_ty = self._unknown_type
 							else:
-								callee_sig = signatures.get(instr.method_name)
+								cands = signatures_by_display_name.get(instr.method_name, [])
+								callee_sig = cands[0] if len(cands) == 1 else None
 								if callee_sig is not None:
 									if callee_sig.return_type_id is None:
 										rt_id, err_id = self._resolve_signature_types(callee_sig)

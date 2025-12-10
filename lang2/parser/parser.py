@@ -258,6 +258,7 @@ def _build_function(tree: Tree) -> FunctionDef:
 	idx = 0
 	name_token = children[idx]
 	idx += 1
+	orig_name = name_token.value
 	params: List[Param] = []
 	if idx < len(children) and _name(children[idx]) == "params":
 		params = [_build_param(p) for p in children[idx].children if isinstance(p, Tree)]
@@ -269,6 +270,7 @@ def _build_function(tree: Tree) -> FunctionDef:
 	body = _build_block(children[idx])
 	return FunctionDef(
 		name=name_token.value,
+		orig_name=orig_name,
 		params=params,
 		return_type=return_type,
 		body=body,
