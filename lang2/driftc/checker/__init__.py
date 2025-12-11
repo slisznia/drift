@@ -1198,11 +1198,6 @@ class Checker:
 					ctx._append_diag(
 						Diagnostic(message="cannot return a value from a Void function", severity="error", span=None)
 					)
-				val_ty = ctx.infer(stmt.value)
-				if ret_tid is not None and val_ty is not None and not fn_is_void and val_ty != ret_tid:
-					ctx._append_diag(
-						Diagnostic(message="return value does not match function return type", severity="error", span=None)
-					)
 			return
 
 		if isinstance(stmt, H.HLet):

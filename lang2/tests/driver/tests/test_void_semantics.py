@@ -18,7 +18,10 @@ def test_void_function_cannot_return_value():
 	sigs = {"v": FnSignature(name="v", param_type_ids=[], return_type_id=void_ty, declared_can_throw=False)}
 	funcs = {"v": H.HBlock(statements=[H.HReturn(value=H.HLiteralInt(value=1))])}
 
-	_, checked = compile_stubbed_funcs(func_hirs=funcs, signatures=sigs, type_table=table, return_checked=True)
+	from lang2.driftc.checker import Checker
+
+	checker = Checker(signatures=sigs, hir_blocks=funcs, type_table=table)
+	checked = checker.check(funcs.keys())
 
 	assert any("cannot return a value from a Void function" in d.message for d in checked.diagnostics)
 
@@ -29,7 +32,10 @@ def test_non_void_function_must_return_value():
 	sigs = {"f": FnSignature(name="f", param_type_ids=[], return_type_id=int_ty, declared_can_throw=False)}
 	funcs = {"f": H.HBlock(statements=[H.HReturn(value=None)])}
 
-	_, checked = compile_stubbed_funcs(func_hirs=funcs, signatures=sigs, type_table=table, return_checked=True)
+	from lang2.driftc.checker import Checker
+
+	checker = Checker(signatures=sigs, hir_blocks=funcs, type_table=table)
+	checked = checker.check(funcs.keys())
 
 	assert any("non-void function must return a value" in d.message for d in checked.diagnostics)
 
@@ -45,7 +51,10 @@ def test_void_call_cannot_be_bound():
 		"main": H.HBlock(statements=[H.HLet(name="x", value=H.HCall(fn=H.HVar(name="v"), args=[])), H.HReturn(value=H.HLiteralInt(value=0))]),
 	}
 
-	_, checked = compile_stubbed_funcs(func_hirs=funcs, signatures=sigs, type_table=table, return_checked=True)
+	from lang2.driftc.checker import Checker
+
+	checker = Checker(signatures=sigs, hir_blocks=funcs, type_table=table)
+	checked = checker.check(funcs.keys())
 
 	assert any("cannot bind a Void value" in d.message for d in checked.diagnostics)
 

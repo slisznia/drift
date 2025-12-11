@@ -25,7 +25,7 @@ def test_driver_collects_catch_arms_and_reports_diagnostics():
 					H.HCatchArm(event_name="UnknownEvt", binder=None, block=H.HBlock(statements=[])),
 				],
 			),
-			H.HReturn(value=None),
+			H.HReturn(value=H.HLiteralInt(value=0)),
 		]
 	)
 

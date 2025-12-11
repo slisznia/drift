@@ -605,16 +605,17 @@ class _FuncBuilder:
 				f"  br i1 {cond}, label %{term.then_target}, label %{term.else_target}"
 			)
 		elif isinstance(term, Return):
-			if term.value is None:
-				if self._is_void_return():
-					self.lines.append("  ret void")
-					return
-				raise AssertionError("LLVM codegen v1: bare return unsupported")
+			is_void = self._is_void_return()
+			if is_void and term.value is not None:
+				raise AssertionError("Void function must not return a value (MIR bug)")
+			if not is_void and term.value is None:
+				raise AssertionError("non-void bare return reached LLVM codegen (MIR bug)")
+			if is_void:
+				self.lines.append("  ret void")
+				return
 			val = self._map_value(term.value)
 			if self.fn_info.declared_can_throw:
 				self.lines.append(f"  ret {FNRESULT_INT_ERROR} {val}")
-			elif self._is_void_return():
-				self.lines.append("  ret void")
 			else:
 				ty = self.value_types.get(val)
 				if ty == DRIFT_STRING_TYPE:

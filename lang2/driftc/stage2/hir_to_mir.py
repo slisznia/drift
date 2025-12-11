@@ -322,18 +322,13 @@ class HIRToMIR:
 			raise NotImplementedError("Only direct function-name calls are supported in MIR lowering")
 		result = self._lower_call(expr)
 		if result is None:
-			# Should be caught by checker; emit a placeholder so lowering can continue.
-			placeholder = self.b.new_temp()
-			self.b.emit(M.ConstInt(dest=placeholder, value=0))
-			return placeholder
+			raise AssertionError("Void-returning call used in expression context (checker bug)")
 		return result
 
 	def _visit_expr_HMethodCall(self, expr: H.HMethodCall) -> M.ValueId:
 		result = self._lower_method_call(expr)
 		if result is None:
-			placeholder = self.b.new_temp()
-			self.b.emit(M.ConstInt(dest=placeholder, value=0))
-			return placeholder
+			raise AssertionError("Void-returning method call used in expression context (checker bug)")
 		return result
 
 	def _visit_expr_HDVInit(self, expr: H.HDVInit) -> M.ValueId:
@@ -457,9 +452,13 @@ class HIRToMIR:
 			return
 		fn_is_void = self._ret_type is not None and self._type_table.is_void(self._ret_type)
 		if fn_is_void:
+			if stmt.value is not None:
+				raise AssertionError("Void function must not have a return value (checker bug)")
 			self.b.set_terminator(M.Return(value=None))
 			return
-		val = self.lower_expr(stmt.value) if stmt.value is not None else None
+		if stmt.value is None:
+			raise AssertionError("non-void bare return reached MIR lowering (checker bug)")
+		val = self.lower_expr(stmt.value)
 		self.b.set_terminator(M.Return(value=val))
 
 	def _visit_stmt_HBreak(self, stmt: H.HBreak) -> None:

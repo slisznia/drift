@@ -58,7 +58,7 @@ def _inject_prelude(signatures: dict[str, FnSignature], type_table: TypeTable) -
 	Ensure the lang.core prelude trio is present in the signatures map.
 
 	These are pure functions (not macros) that write UTF-8 text to stdout/stderr.
-	They return Int (v1 has no Void type).
+	They return Void (v2 wires a real Void type through the pipeline).
 	"""
 	string_id = type_table.ensure_string()
 	void_id = type_table.ensure_void()
@@ -169,6 +169,10 @@ def compile_stubbed_funcs(
 		if not isinstance(info.declared_can_throw, bool):
 			info.declared_can_throw = bool(info.declared_can_throw)
 	declared = {name: info.declared_can_throw for name, info in checked.fn_infos.items()}
+	# Prefer the checker's table when the caller did not supply one so TypeIds
+	# stay coherent across lowering/codegen.
+	if shared_type_table is None and checked.type_table is not None:
+		shared_type_table = checked.type_table
 	mir_funcs: Dict[str, M.MirFunc] = {}
 
 	for name, hir_norm in normalized_hirs.items():
