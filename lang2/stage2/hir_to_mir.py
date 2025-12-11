@@ -29,7 +29,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import List, Set, Mapping, Optional
 
-from lang2 import stage1 as H
+from lang2.driftc import stage1 as H
 from lang2.driftc.core.types_core import TypeKind, TypeTable, TypeId
 from . import mir_nodes as M
 

@@ -22,7 +22,7 @@ from enum import Enum
 from typing import List, Dict, Optional, Union
 
 from lang2.driftc.core.types_core import TypeId
-from lang2.stage1 import UnaryOp, BinaryOp
+from lang2.driftc.stage1 import UnaryOp, BinaryOp
 
 
 class MNode:

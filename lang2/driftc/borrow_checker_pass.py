@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Dict, List, Optional, Mapping, Callable, Tuple, Set
 
-from lang2 import stage1 as H
+from lang2.driftc import stage1 as H
 from lang2.driftc.borrow_checker import Place, PlaceBase, PlaceKind, PlaceState, place_from_expr, merge_place_state
 from lang2.driftc.core.diagnostics import Diagnostic
 from lang2.driftc.core.types_core import TypeKind, TypeTable, TypeId

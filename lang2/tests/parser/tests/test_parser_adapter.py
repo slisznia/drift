@@ -1,7 +1,7 @@
 from pathlib import Path
 import pytest
 
-from lang2 import stage1 as H
+from lang2.driftc import stage1 as H
 from lang2.parser import parse_drift_to_hir
 
 

@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import pytest
 
-from lang2 import stage1 as H
-from lang2.stage1 import normalize_hir
+from lang2.driftc import stage1 as H
+from lang2.driftc.stage1 import normalize_hir
 from lang2.stage2 import HIRToMIR, MirBuilder, mir_nodes as M
 from lang2.stage3.throw_summary import ThrowSummaryBuilder
 from lang2.stage4 import run_throw_checks

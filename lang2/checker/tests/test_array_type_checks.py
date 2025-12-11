@@ -1,4 +1,4 @@
-from lang2 import stage1 as H
+from lang2.driftc import stage1 as H
 from lang2.checker import Checker, FnSignature
 
 

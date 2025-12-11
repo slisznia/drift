@@ -7,7 +7,7 @@ AST→HIR lowering tests for try/throw.
 import pytest
 
 from lang2.stage0 import ast
-from lang2.stage1 import AstToHIR, HThrow, HTry, HBlock, HExprStmt, HVar, HCatchArm
+from lang2.driftc.stage1 import AstToHIR, HThrow, HTry, HBlock, HExprStmt, HVar, HCatchArm
 
 
 def test_throw_stmt_to_hthrow():

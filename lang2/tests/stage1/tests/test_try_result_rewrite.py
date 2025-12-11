@@ -8,8 +8,8 @@ canonical `if is_err { throw unwrap_err } else { unwrap }` shape using
 normal HIR nodes. This keeps the sugar out of lowering.
 """
 
-from lang2 import stage1 as H
-from lang2.stage1.try_result_rewrite import TryResultRewriter
+from lang2.driftc import stage1 as H
+from lang2.driftc.stage1.try_result_rewrite import TryResultRewriter
 
 
 def test_try_result_desugars_to_if_throw_unwrap():

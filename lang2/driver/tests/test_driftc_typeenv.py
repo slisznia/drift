@@ -4,7 +4,7 @@ Integration: driver builds SSA + TypeEnv for type-aware throw checks.
 
 from __future__ import annotations
 
-from lang2 import stage1 as H
+from lang2.driftc import stage1 as H
 from lang2.driftc.driftc import compile_stubbed_funcs
 from lang2.test_support import build_exception_catalog, make_signatures
 

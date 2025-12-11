@@ -12,7 +12,7 @@ import pytest
 
 from lang2.checker import FnSignature
 from lang2.driftc.driftc import compile_to_llvm_ir_for_tests
-from lang2 import stage1 as H
+from lang2.driftc import stage1 as H
 
 
 BUILD_ROOT = Path("build/tests/lang2/driftc_codegen_scalar")

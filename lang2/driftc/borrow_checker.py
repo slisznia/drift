@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Callable, Tuple, Optional
 
-from lang2 import stage1 as H
+from lang2.driftc import stage1 as H
 
 
 class IndexKind(Enum):

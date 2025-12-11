@@ -11,7 +11,7 @@ Additional try/catch lowering coverage:
 from __future__ import annotations
 
 from lang2.stage2 import HIRToMIR, MirBuilder, mir_nodes as M
-from lang2 import stage1 as H
+from lang2.driftc import stage1 as H
 
 
 def test_catch_binder_and_no_binder():

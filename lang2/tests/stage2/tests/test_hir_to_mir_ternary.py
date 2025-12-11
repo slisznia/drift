@@ -4,7 +4,7 @@
 HIR→MIR ternary lowering tests.
 """
 
-from lang2 import stage1 as H
+from lang2.driftc import stage1 as H
 from lang2.stage2 import MirBuilder, HIRToMIR
 
 

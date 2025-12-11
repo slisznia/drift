@@ -8,7 +8,7 @@ outer try (in the same function) before ultimately rethrowing as FnResult.Err.
 from __future__ import annotations
 
 from lang2.stage2 import HIRToMIR, MirBuilder, mir_nodes as M
-from lang2 import stage1 as H
+from lang2.driftc import stage1 as H
 
 
 def _walk_dispatch_else(func: M.MirFunc, start: M.BasicBlock) -> M.BasicBlock:

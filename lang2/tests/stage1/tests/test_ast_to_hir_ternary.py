@@ -5,7 +5,7 @@ AST→HIR ternary lowering tests.
 """
 
 from lang2.stage0 import ast
-from lang2.stage1 import AstToHIR, HTernary, HVar, HLiteralInt
+from lang2.driftc.stage1 import AstToHIR, HTernary, HVar, HLiteralInt
 
 
 def test_ternary_expr_lowered():

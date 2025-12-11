@@ -28,7 +28,7 @@ from lang2.checker.catch_arms import CatchArmInfo, validate_catch_arms
 from lang2.driftc.core.types_core import TypeTable, TypeId, TypeKind
 
 if TYPE_CHECKING:
-	from lang2 import stage1 as H
+	from lang2.driftc import stage1 as H
 
 
 @dataclass
@@ -366,7 +366,7 @@ class Checker:
 		Any `HThrow` or call to a function marked can-throw sets the flag. This is
 		context-insensitive: try/catch coverage is ignored in this stub.
 		"""
-		from lang2 import stage1 as H
+		from lang2.driftc import stage1 as H
 		may_throw = False
 
 		def walk_expr(expr: H.HExpr) -> None:
@@ -522,7 +522,7 @@ class Checker:
 			trigger when both sides of an operation are known (string/binop,
 			bitwise ops) or when array indexing rules are clearly violated.
 			"""
-			from lang2 import stage1 as H
+			from lang2.driftc import stage1 as H
 
 			checker = self.checker
 			bitwise_ops = {
@@ -679,7 +679,7 @@ class Checker:
 		calls, Result.Ok in a FnResult-returning function). Full expression
 		typing is still deferred.
 		"""
-		from lang2 import stage1 as H
+		from lang2.driftc import stage1 as H
 
 		def walk_expr(expr: H.HExpr) -> None:
 			if isinstance(expr, H.HCall) and isinstance(expr.fn, H.HVar):
@@ -944,7 +944,7 @@ class Checker:
 		target signature return_type_id is FnResult; everything else is flagged so
 		that try-sugar cannot wrap non-FnResult values.
 		"""
-		from lang2 import stage1 as H
+		from lang2.driftc import stage1 as H
 
 		def report(msg: str) -> None:
 			diagnostics.append(Diagnostic(message=msg, severity="error", span=None))
@@ -1038,7 +1038,7 @@ class Checker:
 		mutations (let/assign) are centralized and every validation sees a
 		consistent environment.
 		"""
-		from lang2 import stage1 as H
+		from lang2.driftc import stage1 as H
 
 		def walk_expr(expr: H.HExpr) -> None:
 			# Run inference for all expressions up front so shared diagnostics
@@ -1147,7 +1147,7 @@ class Checker:
 
 	def _array_validator_on_expr(self, expr: "H.HExpr", ctx: "_TypingContext") -> None:
 		"""Trigger array literal/index inference to surface diagnostics."""
-		from lang2 import stage1 as H
+		from lang2.driftc import stage1 as H
 
 		if isinstance(expr, (H.HArrayLiteral, H.HIndex)):
 			# Reuse shared infer to emit array-specific diagnostics without extra
@@ -1156,7 +1156,7 @@ class Checker:
 
 	def _bool_validator_on_stmt(self, stmt: "H.HStmt", ctx: "_TypingContext") -> None:
 		"""Require Boolean conditions when the type is known."""
-		from lang2 import stage1 as H
+		from lang2.driftc import stage1 as H
 
 		if isinstance(stmt, H.HIf):
 			cond_ty = ctx.infer(stmt.cond)

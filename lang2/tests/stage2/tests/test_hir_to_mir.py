@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import pytest
 
-from lang2.stage1 import (
+from lang2.driftc.stage1 import (
 	HBlock,
 	HLet,
 	HAssign,

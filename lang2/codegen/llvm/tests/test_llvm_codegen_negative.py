@@ -20,7 +20,7 @@ from lang2.stage2 import (
 )
 from lang2.stage4 import MirToSSA
 from lang2.driftc.core.types_core import TypeTable
-from lang2.stage1 import BinaryOp
+from lang2.driftc.stage1 import BinaryOp
 
 
 def test_branch_condition_must_be_bool():

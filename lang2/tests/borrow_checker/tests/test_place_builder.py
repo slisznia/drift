@@ -2,7 +2,7 @@
 # vim: set noexpandtab: -*- indent-tabs-mode: t -*-
 # author: Sławomir Liszniański; created: 2025-12-09
 
-from lang2 import stage1 as H
+from lang2.driftc import stage1 as H
 from lang2.driftc.borrow_checker import (
 	FieldProj,
 	IndexProj,

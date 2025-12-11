@@ -31,7 +31,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Mapping, Optional
 
 from lang2.checker import FnInfo
-from lang2.stage1 import BinaryOp, UnaryOp
+from lang2.driftc.stage1 import BinaryOp, UnaryOp
 from lang2.stage2 import (
 	ArrayCap,
 	ArrayIndexLoad,

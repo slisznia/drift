@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import List
 
-from lang2.stage1 import hir_nodes as H
+from lang2.driftc.stage1 import hir_nodes as H
 from lang2.checker.catch_arms import CatchArmInfo
 
 

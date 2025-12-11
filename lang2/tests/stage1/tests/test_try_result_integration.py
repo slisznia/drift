@@ -9,8 +9,8 @@ the existing lowering pipeline and does not leave HTryResult behind.
 
 from __future__ import annotations
 
-from lang2 import stage1 as H
-from lang2.stage1 import normalize_hir
+from lang2.driftc import stage1 as H
+from lang2.driftc.stage1 import normalize_hir
 from lang2.stage2 import HIRToMIR, MirBuilder
 
 

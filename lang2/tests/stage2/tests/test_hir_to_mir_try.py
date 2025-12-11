@@ -4,7 +4,7 @@
 Stage 2 test: HIR→MIR lowering for try/catch routing throws intra-function.
 """
 
-from lang2 import stage1 as H
+from lang2.driftc import stage1 as H
 from lang2.stage2 import (
 	MirBuilder,
 	HIRToMIR,
