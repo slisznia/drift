@@ -39,13 +39,14 @@ from lang2.driftc.stage2 import HIRToMIR, MirBuilder, mir_nodes as M
 from lang2.driftc.stage3.throw_summary import ThrowSummaryBuilder
 from lang2.driftc.stage4 import run_throw_checks
 from lang2.driftc.stage4 import MirToSSA
-from lang2.driftc.checker import Checker, CheckedProgram, FnSignature
+from lang2.driftc.checker import Checker, CheckedProgram, FnSignature, FnInfo
 from lang2.driftc.checker.catch_arms import CatchArmInfo
 from lang2.driftc.borrow_checker_pass import BorrowChecker
 from lang2.driftc.borrow_checker import PlaceBase, PlaceKind
 from lang2.driftc.core.diagnostics import Diagnostic
 from lang2.driftc.core.types_core import TypeTable
 from lang2.codegen.llvm import lower_module_to_llvm
+from lang2.drift_core.runtime import get_runtime_sources
 from lang2.driftc.parser import parse_drift_to_hir
 from lang2.driftc.type_resolver import resolve_program_signatures
 from lang2.driftc.type_checker import TypeChecker
@@ -68,7 +69,7 @@ def _inject_prelude(signatures: dict[str, FnSignature], type_table: TypeTable) -
 			continue
 		signatures[sym_name] = FnSignature(
 			name=name,
-			method_name=None,
+			method_name=name,
 			param_names=["text"],
 			param_type_ids=[string_id],
 			return_type_id=int_id,
@@ -238,7 +239,8 @@ def compile_to_llvm_ir_for_tests(
 	Returns IR text and the CheckedProgram so callers can assert diagnostics.
 	"""
 	# Ensure prelude signatures are present for tests that bypass the CLI.
-	_inject_prelude(signatures, type_table or TypeTable())
+	shared_type_table = type_table or TypeTable()
+	_inject_prelude(signatures, shared_type_table)
 	# First, run the normal pipeline to get MIR + FnInfos + SSA (and diagnostics).
 	mir_funcs, checked, ssa_funcs = compile_stubbed_funcs(
 		func_hirs=func_hirs,
@@ -247,7 +249,7 @@ def compile_to_llvm_ir_for_tests(
 		return_checked=True,
 		build_ssa=True,
 		return_ssa=True,
-		type_table=type_table,
+		type_table=shared_type_table,
 	)
 
 	# Lower module to LLVM IR and append the OS entry wrapper when needed.
@@ -274,10 +276,16 @@ def compile_to_llvm_ir_for_tests(
 				rename_map["main"] = "drift_main"
 				argv_wrapper = "drift_main"
 
+	# Add prelude FnInfos so codegen can recognize console intrinsics by module/name.
+	fn_infos = dict(checked.fn_infos)
+	for name in ("print", "println", "eprintln"):
+		if name in signatures and name not in fn_infos:
+			fn_infos[name] = FnInfo(name=name, declared_can_throw=False, signature=signatures[name])
+
 	module = lower_module_to_llvm(
 		mir_funcs,
 		ssa_funcs,
-		checked.fn_infos,
+		fn_infos,
 		type_table=checked.type_table,
 		rename_map=rename_map,
 		argv_wrapper=argv_wrapper,
@@ -533,12 +541,7 @@ def main(argv: list[str] | None = None) -> int:
 	ir_path = args.output.with_suffix(".ll")
 	ir_path.write_text(ir)
 
-	runtime_sources = [
-		str(ROOT / "lang2" / "drift_core" / "runtime" / "array_runtime.c"),
-		str(ROOT / "lang2" / "drift_core" / "runtime" / "string_runtime.c"),
-		str(ROOT / "lang2" / "drift_core" / "runtime" / "argv_runtime.c"),
-		str(ROOT / "lang2" / "drift_core" / "runtime" / "console_runtime.c"),
-	]
+	runtime_sources = [str(p) for p in get_runtime_sources(ROOT)]
 	link_cmd = [
 		clang,
 		"-x",

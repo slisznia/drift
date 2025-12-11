@@ -27,6 +27,7 @@ from typing import Iterable, Optional
 
 from lang2.driftc.parser import parse_drift_to_hir
 from lang2.driftc.driftc import compile_to_llvm_ir_for_tests
+from lang2.drift_core.runtime import get_runtime_sources
 
 
 ROOT = Path(__file__).resolve().parents[4]
@@ -44,12 +45,7 @@ def _run_ir_with_clang(ir: str, build_dir: Path, argv: list[str] | None = None) 
 	bin_path = build_dir / "a.out"
 	ir_path.write_text(ir)
 
-	runtime_sources = [
-		ROOT / "lang2" / "drift_core" / "runtime" / "array_runtime.c",
-		ROOT / "lang2" / "drift_core" / "runtime" / "string_runtime.c",
-		ROOT / "lang2" / "drift_core" / "runtime" / "argv_runtime.c",
-		ROOT / "lang2" / "drift_core" / "runtime" / "console_runtime.c",
-	]
+	runtime_sources = get_runtime_sources(ROOT)
 	compile_res = subprocess.run(
 		[
 			clang,
@@ -87,7 +83,7 @@ def _run_case(case_dir: Path) -> str:
 	expected = json.loads(expected_path.read_text())
 	# Compile-error path: delegate to driftc --json for structured diags.
 	if expected.get("diagnostics"):
-		cmd = [str(Path(sys.executable)), "-m", "lang2.driftc", str(source_path), "--json"]
+		cmd = [str(Path(sys.executable)), "-m", "lang2.driftc.driftc", str(source_path), "--json"]
 		res = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True)
 		try:
 			payload = json.loads(res.stdout)

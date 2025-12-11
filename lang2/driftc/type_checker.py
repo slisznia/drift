@@ -67,6 +67,7 @@ class TypeChecker:
 		self._int = self.type_table.ensure_int()
 		self._bool = self.type_table.ensure_bool()
 		self._unknown = self.type_table.ensure_unknown()
+		self._uint = self.type_table.ensure_uint()
 		self._next_param_id: ParamId = 1
 		self._next_local_id: LocalId = 1
 
@@ -200,10 +201,10 @@ class TypeChecker:
 				sub_ty = type_expr(expr.subject)
 				idx_ty = type_expr(expr.index)
 				td = self.type_table.get(sub_ty)
-				if idx_ty is not None and idx_ty != self._int:
+				if idx_ty is not None and idx_ty not in (self._int, self._uint):
 					diagnostics.append(
 						Diagnostic(
-							message="array index must be Int",
+							message="array index must be an integer type",
 							severity="error",
 							span=getattr(expr, "loc", None),
 						)
