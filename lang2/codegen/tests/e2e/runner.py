@@ -85,6 +85,33 @@ def _run_case(case_dir: Path) -> str:
 		return "skipped (missing expected.json or main.drift)"
 
 	expected = json.loads(expected_path.read_text())
+	# Compile-error path: delegate to driftc --json for structured diags.
+	if expected.get("diagnostics"):
+		cmd = [str(Path(sys.executable)), "-m", "lang2.driftc", str(source_path), "--json"]
+		res = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True)
+		try:
+			payload = json.loads(res.stdout)
+		except json.JSONDecodeError as err:
+			return f"FAIL (expected JSON diagnostics, got parse error: {err})"
+		exit_expected = expected.get("exit_code", 1)
+		if payload.get("exit_code") != exit_expected:
+			return f"FAIL (exit {payload.get('exit_code')} != expected {exit_expected})"
+		diag_expect = expected.get("diagnostics", [])
+		diags = payload.get("diagnostics", [])
+		for exp in diag_expect:
+			msg_sub = exp.get("message_contains")
+			phase = exp.get("phase")
+			match_found = False
+			for d in diags:
+				if phase is not None and d.get("phase") != phase:
+					continue
+				if msg_sub is not None and msg_sub not in d.get("message", ""):
+					continue
+				match_found = True
+				break
+			if not match_found:
+				return "FAIL (missing expected diagnostic)"
+		return "ok"
 	func_hirs, signatures, type_table, parse_diags = parse_drift_to_hir(source_path)
 	expected_phase = expected.get("phase")
 
@@ -125,6 +152,26 @@ def _run_case(case_dir: Path) -> str:
 		entry=entry,
 		type_table=type_table,
 	)
+
+	if checked.diagnostics:
+		expected_exit = expected.get("exit_code", 1)
+		expected_phase = expected.get("phase", "typecheck")
+		if expected.get("diagnostics") is None:
+			return "FAIL (unexpected diagnostics during compilation)"
+		if expected_exit != 1:
+			return f"FAIL (diagnostics present, expected exit {expected_exit})"
+		for exp in expected.get("diagnostics", []):
+			msg_sub = exp.get("message_contains")
+			phase = exp.get("phase", expected_phase)
+			match_found = False
+			for d in checked.diagnostics:
+				if msg_sub is not None and msg_sub not in d.message:
+					continue
+				match_found = True
+				break
+			if not match_found:
+				return "FAIL (missing expected diagnostic)"
+		return "ok"
 
 	build_dir = BUILD_ROOT / case_dir.name
 	run_args = expected.get("args", [])

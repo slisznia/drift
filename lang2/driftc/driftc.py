@@ -61,16 +61,14 @@ def _inject_prelude(signatures: dict[str, FnSignature], type_table: TypeTable) -
 	"""
 	string_id = type_table.ensure_string()
 	int_id = type_table.ensure_int()
-	for sym_name, disp_name in [
-		("lang.core::print", "print"),
-		("lang.core::println", "println"),
-		("lang.core::eprintln", "eprintln"),
-	]:
+	for name in ("print", "println", "eprintln"):
+		sym_name = name
+		# Keyed by short name; module carries qualification.
 		if sym_name in signatures:
 			continue
 		signatures[sym_name] = FnSignature(
-			name=sym_name,
-			method_name=disp_name,
+			name=name,
+			method_name=None,
 			param_names=["text"],
 			param_type_ids=[string_id],
 			return_type_id=int_id,
@@ -239,6 +237,8 @@ def compile_to_llvm_ir_for_tests(
 	v1 ABI.
 	Returns IR text and the CheckedProgram so callers can assert diagnostics.
 	"""
+	# Ensure prelude signatures are present for tests that bypass the CLI.
+	_inject_prelude(signatures, type_table or TypeTable())
 	# First, run the normal pipeline to get MIR + FnInfos + SSA (and diagnostics).
 	mir_funcs, checked, ssa_funcs = compile_stubbed_funcs(
 		func_hirs=func_hirs,

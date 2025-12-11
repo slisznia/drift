@@ -510,7 +510,9 @@ class _FuncBuilder:
 
 	def _lower_call(self, instr: Call) -> None:
 		dest = self._map_value(instr.dest) if instr.dest else None
-		if instr.fn in ("print", "println", "eprintln"):
+		callee_info = self.fn_infos.get(instr.fn)
+		# Allow intrinsic console trio even without FnInfo (e.g., prelude).
+		if callee_info is None and instr.fn in {"print", "println", "eprintln"}:
 			if len(instr.args) != 1:
 				raise NotImplementedError(f"LLVM codegen v1: {instr.fn} expects exactly one argument")
 			arg_val = self._map_value(instr.args[0])
@@ -526,9 +528,27 @@ class _FuncBuilder:
 				self.lines.append(f"  {dest} = add i64 0, 0")
 				self.value_types[dest] = "i64"
 			return
-		callee_info = self.fn_infos.get(instr.fn)
 		if callee_info is None:
 			raise NotImplementedError(f"LLVM codegen v1: missing FnInfo for callee {instr.fn}")
+
+		# Prelude console trio: treat lang.core::print/println/eprintln as runtime intrinsics.
+		if callee_info.signature and callee_info.signature.method_name in {"print", "println", "eprintln"}:
+			if getattr(callee_info.signature, "module", None) == "lang.core":
+				if len(instr.args) != 1:
+					raise NotImplementedError(f"LLVM codegen v1: {instr.fn} expects exactly one argument")
+				arg_val = self._map_value(instr.args[0])
+				self.value_types.setdefault(arg_val, DRIFT_STRING_TYPE)
+				runtime_name = {
+					"print": "drift_console_write",
+					"println": "drift_console_writeln",
+					"eprintln": "drift_console_eprintln",
+				}[callee_info.signature.method_name]
+				self.module.needs_console_runtime = True
+				self.lines.append(f"  call void @{runtime_name}({DRIFT_STRING_TYPE} {arg_val})")
+				if dest:
+					self.lines.append(f"  {dest} = add i64 0, 0")
+					self.value_types[dest] = "i64"
+				return
 
 		arg_parts: list[str] = []
 		if callee_info.signature and callee_info.signature.param_type_ids is not None:

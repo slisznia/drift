@@ -198,10 +198,26 @@ class TypeChecker:
 				return record_expr(expr, self._unknown)
 			if isinstance(expr, H.HIndex):
 				sub_ty = type_expr(expr.subject)
-				type_expr(expr.index)
+				idx_ty = type_expr(expr.index)
 				td = self.type_table.get(sub_ty)
+				if idx_ty is not None and idx_ty != self._int:
+					diagnostics.append(
+						Diagnostic(
+							message="array index must be Int",
+							severity="error",
+							span=getattr(expr, "loc", None),
+						)
+					)
+					return record_expr(expr, self._unknown)
 				if td.kind is TypeKind.ARRAY and td.param_types:
 					return record_expr(expr, td.param_types[0])
+				diagnostics.append(
+					Diagnostic(
+						message="indexing requires an Array value",
+						severity="error",
+						span=getattr(expr, "loc", None),
+					)
+				)
 				return record_expr(expr, self._unknown)
 			if isinstance(expr, H.HUnary):
 				sub_ty = type_expr(expr.expr)
