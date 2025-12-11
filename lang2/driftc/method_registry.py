@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from enum import Enum, auto
 from typing import Dict, Iterable, List, Optional, Tuple
 
-from lang2.core.types_core import TypeId
+from lang2.driftc.core.types_core import TypeId
 
 # Opaque identifiers; use stable ints (or real symbol IDs) to keep hashing reliable.
 ModuleId = int

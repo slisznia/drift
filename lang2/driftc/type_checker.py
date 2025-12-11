@@ -19,8 +19,8 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Mapping, Tuple
 
 from lang2 import stage1 as H
-from lang2.core.diagnostics import Diagnostic
-from lang2.core.types_core import TypeId, TypeTable, TypeKind
+from lang2.driftc.core.diagnostics import Diagnostic
+from lang2.driftc.core.types_core import TypeId, TypeTable, TypeKind
 from lang2.checker import FnSignature
 from lang2.driftc.method_registry import CallableDecl, CallableRegistry, ModuleId
 from lang2.driftc.method_resolver import MethodResolution, ResolutionError, resolve_function_call, resolve_method_call

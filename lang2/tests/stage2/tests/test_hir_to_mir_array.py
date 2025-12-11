@@ -4,7 +4,7 @@
 HIR → MIR lowering for array literals and indexing.
 """
 
-from lang2.core.types_core import TypeTable
+from lang2.driftc.core.types_core import TypeTable
 from lang2.stage1 import HArrayLiteral, HAssign, HBlock, HExprStmt, HField, HIndex, HLet, HLiteralInt, HVar
 from lang2.stage2 import ArrayIndexLoad, ArrayIndexStore, ArrayLen, ArrayLit, HIRToMIR, MirBuilder
 

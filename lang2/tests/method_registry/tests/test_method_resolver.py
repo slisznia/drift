@@ -5,7 +5,7 @@
 
 import pytest
 
-from lang2.core.types_core import TypeTable
+from lang2.driftc.core.types_core import TypeTable
 from lang2.driftc.method_registry import (
 	CallableRegistry,
 	CallableSignature,

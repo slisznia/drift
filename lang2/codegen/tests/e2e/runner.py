@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Iterable, Optional
 
 from lang2.parser import parse_drift_to_hir
-from lang2.driftc import compile_to_llvm_ir_for_tests
+from lang2.driftc.driftc import compile_to_llvm_ir_for_tests
 
 
 ROOT = Path(__file__).resolve().parents[4]
@@ -44,6 +44,12 @@ def _run_ir_with_clang(ir: str, build_dir: Path, argv: list[str] | None = None) 
 	bin_path = build_dir / "a.out"
 	ir_path.write_text(ir)
 
+	runtime_sources = [
+		ROOT / "lang2" / "drift_core" / "runtime" / "array_runtime.c",
+		ROOT / "lang2" / "drift_core" / "runtime" / "string_runtime.c",
+		ROOT / "lang2" / "drift_core" / "runtime" / "argv_runtime.c",
+		ROOT / "lang2" / "drift_core" / "runtime" / "console_runtime.c",
+	]
 	compile_res = subprocess.run(
 		[
 			clang,
@@ -52,11 +58,7 @@ def _run_ir_with_clang(ir: str, build_dir: Path, argv: list[str] | None = None) 
 			str(ir_path),
 			"-x",
 			"c",
-			# Link the runtimes for String/Array helpers used in codegen.
-			str(ROOT / "lang2" / "codegen" / "runtime" / "array_runtime.c"),
-			str(ROOT / "lang2" / "codegen" / "runtime" / "string_runtime.c"),
-			str(ROOT / "lang2" / "codegen" / "runtime" / "argv_runtime.c"),
-			str(ROOT / "lang2" / "codegen" / "runtime" / "console_runtime.c"),
+			*(str(p) for p in runtime_sources),
 			"-o",
 			str(bin_path),
 		],

@@ -27,7 +27,8 @@ import subprocess
 from pathlib import Path
 from typing import Dict, Mapping, List, Tuple
 
-ROOT = Path(__file__).resolve().parents[1]
+# Repository root (lang2 lives under this).
+ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
 	sys.path.insert(0, str(ROOT))
 
@@ -42,8 +43,8 @@ from lang2.checker import Checker, CheckedProgram, FnSignature
 from lang2.checker.catch_arms import CatchArmInfo
 from lang2.driftc.borrow_checker_pass import BorrowChecker
 from lang2.driftc.borrow_checker import PlaceBase, PlaceKind
-from lang2.core.diagnostics import Diagnostic
-from lang2.core.types_core import TypeTable
+from lang2.driftc.core.diagnostics import Diagnostic
+from lang2.driftc.core.types_core import TypeTable
 from lang2.codegen.llvm import lower_module_to_llvm
 from lang2.parser import parse_drift_to_hir
 from lang2.driftc.type_resolver import resolve_program_signatures
@@ -533,10 +534,10 @@ def main(argv: list[str] | None = None) -> int:
 	ir_path.write_text(ir)
 
 	runtime_sources = [
-		str(ROOT / "lang2" / "codegen" / "runtime" / "array_runtime.c"),
-		str(ROOT / "lang2" / "codegen" / "runtime" / "string_runtime.c"),
-		str(ROOT / "lang2" / "codegen" / "runtime" / "argv_runtime.c"),
-		str(ROOT / "lang2" / "codegen" / "runtime" / "console_runtime.c"),
+		str(ROOT / "lang2" / "drift_core" / "runtime" / "array_runtime.c"),
+		str(ROOT / "lang2" / "drift_core" / "runtime" / "string_runtime.c"),
+		str(ROOT / "lang2" / "drift_core" / "runtime" / "argv_runtime.c"),
+		str(ROOT / "lang2" / "drift_core" / "runtime" / "console_runtime.c"),
 	]
 	link_cmd = [
 		clang,

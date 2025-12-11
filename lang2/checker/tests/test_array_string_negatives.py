@@ -1,6 +1,6 @@
 from lang2 import stage1 as H
-from lang2.core.diagnostics import Diagnostic
-from lang2.core.types_core import TypeTable
+from lang2.driftc.core.diagnostics import Diagnostic
+from lang2.driftc.core.types_core import TypeTable
 from lang2.checker import Checker
 from lang2.checker import FnInfo
 from lang2.checker import FnSignature

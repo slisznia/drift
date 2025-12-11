@@ -5,7 +5,7 @@
 
 from lang2 import stage1 as H
 from lang2.driftc.type_checker import TypeChecker
-from lang2.core.types_core import TypeTable, TypeKind
+from lang2.driftc.core.types_core import TypeTable, TypeKind
 
 
 def _checker():

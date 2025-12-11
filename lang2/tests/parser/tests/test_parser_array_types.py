@@ -6,7 +6,7 @@ Ensure parsed Array<T> annotations flow into signatures with real TypeIds.
 
 from pathlib import Path
 
-from lang2.core.types_core import TypeKind
+from lang2.driftc.core.types_core import TypeKind
 from lang2.parser import parse_drift_to_hir
 
 

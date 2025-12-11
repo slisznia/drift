@@ -5,7 +5,7 @@
 
 from pathlib import Path
 
-from lang2 import driftc
+from lang2.driftc import driftc
 
 
 def test_method_resolution_failure_reports_diagnostic(tmp_path):

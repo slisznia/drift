@@ -1,5 +1,5 @@
 """
-lang2.core: shared core types/diagnostics/type-env shims used across stages.
+lang2.driftc.core: shared core types/diagnostics/type-env shims used across stages.
 
 Modules:
   - diagnostics: minimal Diagnostic placeholder

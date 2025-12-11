@@ -18,7 +18,7 @@ from __future__ import annotations
 from typing import Iterable, Tuple
 
 from lang2.checker import FnSignature
-from lang2.core.types_core import TypeId, TypeKind, TypeTable
+from lang2.driftc.core.types_core import TypeId, TypeKind, TypeTable
 
 
 def resolve_program_signatures(func_decls: Iterable[object]) -> tuple[TypeTable, dict[str, FnSignature]]:

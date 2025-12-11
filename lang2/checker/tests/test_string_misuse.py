@@ -1,7 +1,7 @@
 from lang2 import stage1 as H
 from lang2.checker import Checker, FnSignature
-from lang2.core.diagnostics import Diagnostic
-from lang2.core.types_core import TypeTable
+from lang2.driftc.core.diagnostics import Diagnostic
+from lang2.driftc.core.types_core import TypeTable
 
 
 def _run_checker(block: H.HBlock) -> list[Diagnostic]:

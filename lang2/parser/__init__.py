@@ -15,7 +15,7 @@ from lang2.stage0 import ast as s0
 from lang2.stage1 import AstToHIR
 from lang2 import stage1 as H
 from lang2.checker import FnSignature
-from lang2.core.diagnostics import Diagnostic
+from lang2.driftc.core.diagnostics import Diagnostic
 
 
 def _type_expr_to_str(typ: parser_ast.TypeExpr) -> str:

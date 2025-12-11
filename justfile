@@ -108,7 +108,7 @@ lang2-core-test:
 	  echo "pytest is missing in .venv; please install it (e.g., .venv/bin/python3 -m pip install pytest)"; \
 	  exit 1; \
 	fi
-	PYTHONPATH=. ./.venv/bin/python3 -m pytest -v lang2/core/tests
+	PYTHONPATH=. ./.venv/bin/python3 -m pytest -v lang2/tests/core
 
 # Type checker tests (typed HIR + resolution).
 lang2-type-checker-test:

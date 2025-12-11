@@ -2,6 +2,7 @@
 #include "string_runtime.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 DriftString drift_string_from_cstr(const char *cstr) {

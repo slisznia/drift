@@ -1,7 +1,7 @@
 from lang2 import stage1 as H
 from lang2.checker import FnSignature
-from lang2.core.types_core import TypeTable
-from lang2.driftc import compile_stubbed_funcs
+from lang2.driftc.core.types_core import TypeTable
+from lang2.driftc.driftc import compile_stubbed_funcs
 
 
 def _int_table():

@@ -3,11 +3,8 @@
 """
 lang2 compiler package (`driftc`).
 
-Exports the CLI entrypoints and key helpers so existing imports of
-`lang2.driftc` continue to work after reorganizing compiler modules
-under this package.
+Compiler/front-end modules live under this package. The CLI entrypoint is
+`lang2.driftc.driftc:main`.
 """
 
-from .driftc import compile_stubbed_funcs, compile_to_llvm_ir_for_tests, main
-
-__all__ = ["compile_stubbed_funcs", "compile_to_llvm_ir_for_tests", "main"]
+__all__ = []

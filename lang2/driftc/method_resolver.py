@@ -17,7 +17,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Iterable, List, Optional, Tuple
 
-from lang2.core.types_core import TypeId, TypeKind, TypeTable
+from lang2.driftc.core.types_core import TypeId, TypeKind, TypeTable
 from lang2.driftc.method_registry import (
 	CallableRegistry,
 	CallableDecl,

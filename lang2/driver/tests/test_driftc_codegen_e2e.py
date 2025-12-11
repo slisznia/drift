@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from lang2.checker import FnSignature
-from lang2.driftc import compile_to_llvm_ir_for_tests
+from lang2.driftc.driftc import compile_to_llvm_ir_for_tests
 from lang2 import stage1 as H
 
 

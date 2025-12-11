@@ -59,7 +59,7 @@ from lang2.stage2 import (
 )
 from lang2.stage4.ssa import SsaFunc
 from lang2.stage4.ssa import CfgKind
-from lang2.core.types_core import TypeKind, TypeTable, TypeId
+from lang2.driftc.core.types_core import TypeKind, TypeTable, TypeId
 
 """LLVM codegen for lang2 SSA.
 
