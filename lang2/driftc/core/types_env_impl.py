@@ -14,6 +14,7 @@ from __future__ import annotations
 from typing import Any, Dict, Mapping, Tuple
 
 from lang2.driftc.core.types_protocol import TypeEnv
+from lang2.driftc.core.types_core import TypeTable, TypeKind
 from lang2.driftc.stage4.ssa import SsaFunc
 from lang2.driftc.stage2 import (
 	AssignSSA,
@@ -99,6 +100,7 @@ class InferredTypeEnv(TypeEnv):
 def build_type_env_from_ssa(
 	ssa_funcs: Mapping[str, SsaFunc],
 	signatures: Mapping[str, FnSignature] | None = None,
+	type_table: TypeTable | None = None,
 ) -> InferredTypeEnv:
 	"""
 	Derive a TypeEnv from SSA functions and (optionally) known signatures.
@@ -109,6 +111,18 @@ def build_type_env_from_ssa(
 	"""
 	types: Dict[tuple[str, str], Any] = {}
 	sig_map = signatures or {}
+
+	def is_void(ty: Any) -> bool:
+		if type_table is None:
+			return False
+		if isinstance(ty, int):
+			try:
+				return type_table.is_void(ty)
+			except KeyError:
+				return False
+		if isinstance(ty, str):
+			return ty == "Void"
+		return False
 
 	for fname, ssa in ssa_funcs.items():
 		# Seed parameter types from signatures when available so downstream
@@ -129,11 +143,15 @@ def build_type_env_from_ssa(
 					sig = sig_map.get(instr.fn)
 					if sig is not None:
 						ret_ty = sig.return_type_id if sig.return_type_id is not None else sig.return_type
+						if is_void(ret_ty):
+							continue
 						types[(fname, instr.dest)] = ret_ty
 				elif isinstance(instr, MethodCall) and instr.dest is not None:
 					sig = sig_map.get(instr.method_name)
 					if sig is not None:
 						ret_ty = sig.return_type_id if sig.return_type_id is not None else sig.return_type
+						if is_void(ret_ty):
+							continue
 						types[(fname, instr.dest)] = ret_ty
 				elif isinstance(instr, AssignSSA):
 					src_ty = types.get((fname, instr.src))

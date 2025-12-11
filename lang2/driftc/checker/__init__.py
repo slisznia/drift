@@ -1285,6 +1285,14 @@ class Checker:
 		def ty_for(fn: str, val: str) -> TypeId:
 			return value_types.get((fn, val), self._unknown_type)
 
+		def is_void_tid(tid: TypeId | None) -> bool:
+			if tid is None:
+				return False
+			try:
+				return self._type_table.is_void(tid)
+			except KeyError:
+				return False
+
 		# Seed parameter types from signatures when available so callers and returns
 		# see concrete types for params immediately.
 		for fn_name, ssa in ssa_funcs.items():
@@ -1303,10 +1311,12 @@ class Checker:
 			for fn_name, ssa in ssa_funcs.items():
 				sig = signatures.get(fn_name)
 				fn_return_parts: tuple[TypeId, TypeId] | None = None
+				fn_is_void = False
 				if sig and sig.return_type_id is not None:
 					td = self._type_table.get(sig.return_type_id)
 					if td.kind is TypeKind.FNRESULT and len(td.param_types) == 2:
 						fn_return_parts = (td.param_types[0], td.param_types[1])
+					fn_is_void = self._type_table.is_void(sig.return_type_id)
 
 				for block in ssa.func.blocks.values():
 					for instr in block.instructions:
@@ -1374,6 +1384,8 @@ class Checker:
 									callee_sig.return_type_id = rt_id
 									callee_sig.error_type_id = err_id
 								dest_ty = callee_sig.return_type_id or self._unknown_type
+								if is_void_tid(dest_ty):
+									continue
 							else:
 								dest_ty = self._unknown_type
 							if value_types.get((fn_name, dest)) != dest_ty:
@@ -1401,6 +1413,8 @@ class Checker:
 										callee_sig.return_type_id = rt_id
 										callee_sig.error_type_id = err_id
 									dest_ty = callee_sig.return_type_id or self._unknown_type
+									if is_void_tid(dest_ty):
+										continue
 								else:
 									dest_ty = self._unknown_type
 							if value_types.get((fn_name, dest)) != dest_ty:
@@ -1446,7 +1460,7 @@ class Checker:
 						val = term.value
 						# Do not overwrite an existing concrete type; only seed a type for
 						# returns that have not been seen yet.
-						if (fn_name, val) not in value_types:
+						if (fn_name, val) not in value_types and not fn_is_void:
 							if fn_return_parts is not None:
 								ty = self._type_table.new_fnresult(fn_return_parts[0], fn_return_parts[1])
 							else:

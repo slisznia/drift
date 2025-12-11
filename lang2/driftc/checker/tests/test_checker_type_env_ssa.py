@@ -74,3 +74,26 @@ def test_checker_types_basic_numeric_ops():
 	sum_td = checker._type_table.get(sum_ty)
 	assert sum_td.kind == int_td.kind
 	assert sum_td.name == int_td.name
+
+
+def test_checker_type_env_ignores_void_calls():
+	"""
+	SSA typing should not assign types to dests of void-returning calls.
+	"""
+	entry = BasicBlock(
+		name="entry",
+		instructions=[
+			ConstInt(dest="t0", value=1),
+		],
+		terminator=Return(value=None),
+	)
+	mir_func = MirFunc(name="noop", params=[], locals=[], blocks={"entry": entry}, entry="entry")
+	ssa = MirToSSA().run(mir_func)
+
+	checker = Checker(
+		signatures={"noop": FnSignature(name="noop", return_type_id=None, return_type="Void")},
+	)
+	checker.check(["noop"])
+
+	type_env = checker.build_type_env_from_ssa({"noop": ssa}, checker._signatures)
+	assert type_env is None or ("noop", "t0") not in getattr(type_env, "_types", {})
