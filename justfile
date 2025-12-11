@@ -153,12 +153,12 @@ lang2-codegen-test:
 	PYTHONPATH=. ./.venv/bin/python3 -m pytest -v lang2/codegen/llvm/tests
 	# Run clang-based IR cases (per-case dirs under lang2/codegen/ir_cases).
 	PYTHONPATH=. ./.venv/bin/python3 lang2/codegen/ir_cases/e2e_runner.py
-	# Run Drift-source e2e cases (per-case dirs under lang2/codegen/e2e).
-	PYTHONPATH=. ./.venv/bin/python3 lang2/codegen/e2e/runner.py
+	# Run Drift-source e2e cases (per-case dirs under lang2/codegen/tests/e2e).
+	PYTHONPATH=. ./.venv/bin/python3 lang2/codegen/tests/e2e/runner.py
 
 # Lang2 e2e runner (lang2.driftc: json + run modes against tests/e2e)
 lang2-e2e CASES="":
-	PYTHONPATH=. ./.venv/bin/python3 lang2/e2e/runner.py {{CASES}}
+	PYTHONPATH=. ./.venv/bin/python3 lang2/codegen/codegen_runner.py {{CASES}}
 
 # Borrow checker scaffolding tests.
 lang2-borrow-test:

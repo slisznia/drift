@@ -1,0 +1,4 @@
+fn main() returns Int {
+	println("hello, Drift")
+	return 0
+}

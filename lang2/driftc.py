@@ -51,6 +51,33 @@ from lang2.type_checker import TypeChecker
 from lang2.method_registry import CallableRegistry, CallableSignature, Visibility, SelfMode
 
 
+def _inject_prelude(signatures: dict[str, FnSignature], type_table: TypeTable) -> None:
+	"""
+	Ensure the lang.core prelude trio is present in the signatures map.
+
+	These are pure functions (not macros) that write UTF-8 text to stdout/stderr.
+	They return Int (v1 has no Void type).
+	"""
+	string_id = type_table.ensure_string()
+	int_id = type_table.ensure_int()
+	for sym_name, disp_name in [
+		("lang.core::print", "print"),
+		("lang.core::println", "println"),
+		("lang.core::eprintln", "eprintln"),
+	]:
+		if sym_name in signatures:
+			continue
+		signatures[sym_name] = FnSignature(
+			name=sym_name,
+			method_name=disp_name,
+			param_names=["text"],
+			param_type_ids=[string_id],
+			return_type_id=int_id,
+			is_method=False,
+			module="lang.core",
+		)
+
+
 def compile_stubbed_funcs(
 	func_hirs: Mapping[str, H.HBlock],
 	declared_can_throw: Mapping[str, bool] | None = None,
@@ -326,6 +353,7 @@ def main(argv: list[str] | None = None) -> int:
 
 	source_path: Path = args.source
 	func_hirs, signatures, type_table, parse_diags = parse_drift_to_hir(source_path)
+	_inject_prelude(signatures, type_table)
 
 	if parse_diags:
 		if args.json:
@@ -508,6 +536,7 @@ def main(argv: list[str] | None = None) -> int:
 		str(ROOT / "lang2" / "codegen" / "runtime" / "array_runtime.c"),
 		str(ROOT / "lang2" / "codegen" / "runtime" / "string_runtime.c"),
 		str(ROOT / "lang2" / "codegen" / "runtime" / "argv_runtime.c"),
+		str(ROOT / "lang2" / "codegen" / "runtime" / "console_runtime.c"),
 	]
 	link_cmd = [
 		clang,

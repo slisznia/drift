@@ -1,7 +1,7 @@
 """
 Drift-source end-to-end runner (clang-based).
 
-Each case lives under `lang2/codegen/e2e/<case>/` and must provide:
+Each case lives under `lang2/codegen/tests/e2e/<case>/` and must provide:
   - main.drift   (parsed with the copied lang2 parser)
   - expected.json with exit_code/stdout/stderr fields
 
@@ -29,8 +29,8 @@ from lang2.parser import parse_drift_to_hir
 from lang2.driftc import compile_to_llvm_ir_for_tests
 
 
-ROOT = Path(__file__).resolve().parents[3]
-BUILD_ROOT = ROOT / "build" / "tests" / "lang2" / "codegen" / "e2e"
+ROOT = Path(__file__).resolve().parents[4]
+BUILD_ROOT = ROOT / "build" / "tests" / "lang2" / "codegen" / "tests" / "e2e"
 
 
 def _run_ir_with_clang(ir: str, build_dir: Path, argv: list[str] | None = None) -> tuple[int, str, str]:
@@ -56,6 +56,7 @@ def _run_ir_with_clang(ir: str, build_dir: Path, argv: list[str] | None = None) 
 			str(ROOT / "lang2" / "codegen" / "runtime" / "array_runtime.c"),
 			str(ROOT / "lang2" / "codegen" / "runtime" / "string_runtime.c"),
 			str(ROOT / "lang2" / "codegen" / "runtime" / "argv_runtime.c"),
+			str(ROOT / "lang2" / "codegen" / "runtime" / "console_runtime.c"),
 			"-o",
 			str(bin_path),
 		],
@@ -160,11 +161,11 @@ def main(argv: Iterable[str] | None = None) -> int:
 	ap.add_argument(
 		"cases",
 		nargs="*",
-		help="Specific test case names to run (directories under lang2/codegen/e2e)",
+		help="Specific test case names to run (directories under lang2/codegen/tests/e2e)",
 	)
 	args = ap.parse_args(argv)
 
-	case_root = ROOT / "lang2" / "codegen" / "e2e"
+	case_root = ROOT / "lang2" / "codegen" / "tests" / "e2e"
 	case_dirs = sorted(d for d in case_root.iterdir() if d.is_dir()) if case_root.exists() else []
 	if args.cases:
 		names = set(args.cases)

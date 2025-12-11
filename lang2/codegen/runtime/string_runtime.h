@@ -9,8 +9,8 @@
 extern "C" {
 #endif
 
-// Length carrier: mirror lang2's Uint / %drift.size representation.
-typedef uint64_t drift_size_t;
+// Length carrier: mirror platform word size.
+typedef size_t drift_size_t;
 
 // Simple heap-allocated UTF-8 string representation.
 // Ownership: caller owns the heap buffer unless it points to static storage.

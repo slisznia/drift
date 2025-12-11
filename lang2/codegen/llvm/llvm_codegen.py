@@ -173,6 +173,7 @@ class LlvmModuleBuilder:
 	needs_string_eq: bool = False
 	needs_string_concat: bool = False
 	needs_argv_helper: bool = False
+	needs_console_runtime: bool = False
 	array_string_type: Optional[str] = None
 
 	def __post_init__(self) -> None:
@@ -265,6 +266,15 @@ class LlvmModuleBuilder:
 			lines.append(f"declare {DRIFT_STRING_TYPE} @drift_string_concat({DRIFT_STRING_TYPE}, {DRIFT_STRING_TYPE})")
 		if self.needs_string_eq or self.needs_string_concat:
 			lines.append("")
+		if self.needs_console_runtime:
+			lines.extend(
+				[
+					f"declare void @drift_console_write({DRIFT_STRING_TYPE})",
+					f"declare void @drift_console_writeln({DRIFT_STRING_TYPE})",
+					f"declare void @drift_console_eprintln({DRIFT_STRING_TYPE})",
+					"",
+				]
+			)
 		lines.extend(self.funcs)
 		lines.append("")
 		return "\n".join(lines)
@@ -500,6 +510,22 @@ class _FuncBuilder:
 
 	def _lower_call(self, instr: Call) -> None:
 		dest = self._map_value(instr.dest) if instr.dest else None
+		if instr.fn in ("print", "println", "eprintln"):
+			if len(instr.args) != 1:
+				raise NotImplementedError(f"LLVM codegen v1: {instr.fn} expects exactly one argument")
+			arg_val = self._map_value(instr.args[0])
+			self.value_types.setdefault(arg_val, DRIFT_STRING_TYPE)
+			runtime_name = {
+				"print": "drift_console_write",
+				"println": "drift_console_writeln",
+				"eprintln": "drift_console_eprintln",
+			}[instr.fn]
+			self.module.needs_console_runtime = True
+			self.lines.append(f"  call void @{runtime_name}({DRIFT_STRING_TYPE} {arg_val})")
+			if dest:
+				self.lines.append(f"  {dest} = add i64 0, 0")
+				self.value_types[dest] = "i64"
+			return
 		callee_info = self.fn_infos.get(instr.fn)
 		if callee_info is None:
 			raise NotImplementedError(f"LLVM codegen v1: missing FnInfo for callee {instr.fn}")

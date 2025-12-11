@@ -3,7 +3,7 @@
 """
 lang2-only e2e runner.
 
-Each case lives under `tests/e2e/<case>/` with:
+Default layout: each case lives under `tests/lang2-e2e/<case>/` with:
   - main.drift
   - expected.json
 
@@ -24,13 +24,14 @@ import sys
 from pathlib import Path
 from typing import Iterable
 
-ROOT = Path(__file__).resolve().parents[2]
-DRIFTC = ROOT / ".venv" / "bin" / "python3"
+ROOT = Path(__file__).resolve().parent
+REPO = ROOT.parent
+DRIFTC = REPO / ".venv" / "bin" / "python3"
 DRIFTC_MODULE = "lang2.driftc"
-BUILD_ROOT = ROOT / "build" / "tests" / "lang2" / "e2e"
+BUILD_BASE = REPO / "build" / "tests" / "lang2" / "e2e"
 
 
-def _run_case(case_dir: Path) -> str:
+def _run_case(case_dir: Path, build_root: Path) -> str:
 	expected_path = case_dir / "expected.json"
 	source_path = case_dir / "main.drift"
 	if not expected_path.exists() or not source_path.exists():
@@ -39,7 +40,7 @@ def _run_case(case_dir: Path) -> str:
 	expected = json.loads(expected_path.read_text())
 	mode = expected.get("mode", "compile")
 	use_json = expected.get("use_json", False) or "diagnostics" in expected
-	build_dir = BUILD_ROOT / case_dir.name
+	build_dir = build_root / case_dir.name
 	if build_dir.exists():
 		shutil.rmtree(build_dir)
 	build_dir.mkdir(parents=True, exist_ok=True)
@@ -109,11 +110,26 @@ def _run_case(case_dir: Path) -> str:
 
 
 def main(argv: Iterable[str] | None = None) -> int:
-	ap = argparse.ArgumentParser(description="Run lang2 e2e tests")
-	ap.add_argument("cases", nargs="*", help="Specific test case names (dirs under tests/e2e)")
+	ap = argparse.ArgumentParser(description="Run lang2 e2e tests via lang2.driftc")
+	ap.add_argument("cases", nargs="*", help="Specific test case names (subdirs under --root)")
+	ap.add_argument(
+		"--root",
+		default="tests/lang2-e2e",
+		help="Root directory containing per-case subdirs (default: tests/lang2-e2e)",
+	)
 	args = ap.parse_args(argv)
 
-	case_dirs = sorted((ROOT / "tests" / "e2e").iterdir())
+	root_dir = Path(args.root)
+	if not root_dir.is_absolute():
+		root_dir = ROOT / root_dir
+
+	if not root_dir.exists():
+		print(f"{root_dir}: no such directory", file=sys.stderr)
+		return 1
+
+	build_root = BUILD_BASE / root_dir.name
+
+	case_dirs = sorted(d for d in root_dir.iterdir() if d.is_dir())
 	if args.cases:
 		names = set(args.cases)
 		case_dirs = [d for d in case_dirs if d.name in names]
@@ -122,7 +138,7 @@ def main(argv: Iterable[str] | None = None) -> int:
 	for case_dir in case_dirs:
 		if not (case_dir / "main.drift").exists():
 			continue
-		status = _run_case(case_dir)
+		status = _run_case(case_dir, build_root)
 		print(f"{case_dir.name}: {status}")
 		if not status.startswith("ok") and not status.startswith("skipped"):
 			failures.append((case_dir, status))
