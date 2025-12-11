@@ -22,6 +22,7 @@ class TypeKind(Enum):
 
 	SCALAR = auto()
 	ERROR = auto()
+	VOID = auto()
 	FNRESULT = auto()
 	FUNCTION = auto()
 	ARRAY = auto()
@@ -55,6 +56,8 @@ class TypeTable:
 		self._int_type: TypeId | None = None  # type: ignore[var-annotated]
 		self._bool_type: TypeId | None = None  # type: ignore[var-annotated]
 		self._string_type: TypeId | None = None  # type: ignore[var-annotated]
+		self._void_type: TypeId | None = None  # type: ignore[var-annotated]
+		self._error_type: TypeId | None = None  # type: ignore[var-annotated]
 
 	def new_scalar(self, name: str) -> TypeId:
 		"""Register a scalar type (e.g., Int, Bool) and return its TypeId."""
@@ -83,6 +86,27 @@ class TypeTable:
 		if getattr(self, "_string_type", None) is None:
 			self._string_type = self.new_scalar("String")  # type: ignore[attr-defined]
 		return self._string_type  # type: ignore[attr-defined]
+
+	def ensure_error(self) -> TypeId:
+		"""
+		Return the canonical Error TypeId, creating it once.
+
+		Error is modeled as a builtin event type; callers should prefer this
+		over minting duplicate TypeIds for the same logical error type.
+		"""
+		if getattr(self, "_error_type", None) is None:
+			self._error_type = self.new_error("Error")  # type: ignore[attr-defined]
+		return self._error_type  # type: ignore[attr-defined]
+
+	def ensure_void(self) -> TypeId:
+		"""
+		Return a stable Void TypeId, creating it once.
+
+		Void represents “no value” and is distinct from scalar/unit types.
+		"""
+		if getattr(self, "_void_type", None) is None:
+			self._void_type = self._add(TypeKind.VOID, "Void", [])  # type: ignore[attr-defined]
+		return self._void_type  # type: ignore[attr-defined]
 
 	def ensure_ref(self, inner: TypeId) -> TypeId:
 		"""Return a stable shared reference TypeId to `inner`, creating it once."""
@@ -151,6 +175,10 @@ class TypeTable:
 	def get(self, ty: TypeId) -> TypeDef:
 		"""Fetch the TypeDef for a given TypeId."""
 		return self._defs[ty]
+
+	def is_void(self, ty: TypeId) -> bool:
+		"""Return True when the TypeId refers to the canonical Void type."""
+		return self.get(ty).kind is TypeKind.VOID
 
 
 __all__ = ["TypeId", "TypeKind", "TypeDef", "TypeTable"]

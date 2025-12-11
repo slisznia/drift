@@ -25,6 +25,7 @@ from typing import Any, Dict, Iterable, List, Optional, Callable, FrozenSet, Map
 from lang2.driftc.core.diagnostics import Diagnostic
 from lang2.driftc.core.types_protocol import TypeEnv
 from lang2.driftc.checker.catch_arms import CatchArmInfo, validate_catch_arms
+from lang2.driftc.core.type_resolve_common import resolve_opaque_type
 from lang2.driftc.core.types_core import TypeTable, TypeId, TypeKind
 
 if TYPE_CHECKING:
@@ -165,7 +166,8 @@ class Checker:
 		self._bool_type = _find_named(TypeKind.SCALAR, "Bool") or self._type_table.ensure_bool()
 		self._string_type = _find_named(TypeKind.SCALAR, "String") or self._type_table.ensure_string()
 		self._uint_type = _find_named(TypeKind.SCALAR, "Uint") or self._type_table.ensure_uint()
-		self._error_type = _find_named(TypeKind.ERROR, "Error") or self._type_table.new_error("Error")
+		self._void_type = _find_named(TypeKind.VOID, "Void") or self._type_table.ensure_void()
+		self._error_type = _find_named(TypeKind.ERROR, "Error") or self._type_table.ensure_error()
 		self._unknown_type = _find_named(TypeKind.UNKNOWN, "Unknown") or self._type_table.ensure_unknown()
 		# TODO: remove declared_can_throw shim once real parser/type checker supplies signatures.
 
@@ -861,27 +863,17 @@ class Checker:
 		return resolved
 
 	def _map_opaque(self, val: Any) -> TypeId:
-		"""Naively map an opaque return component into a TypeId."""
-		if isinstance(val, str):
-			if val == "Int":
-				return self._int_type
-			if val == "Uint":
-				return self._uint_type
-			if val == "Bool":
-				return self._bool_type
-			if "Error" in val:
-				return self._error_type
-			return self._type_table.new_scalar(val)
-		if isinstance(val, tuple):
-			if len(val) == 2:
-				ok = self._map_opaque(val[0])
-				err = self._map_opaque(val[1])
-				return self._type_table.new_fnresult(ok, err)
-			if len(val) >= 3 and val[0] == "FnResult":
-				ok = self._map_opaque(val[1])
-				err = self._map_opaque(val[2])
-				return self._type_table.new_fnresult(ok, err)
-		return self._type_table.new_unknown(str(val))
+		"""
+		Naively map an opaque return component into a TypeId.
+
+		This delegates builtin mapping to the shared resolver to keep behavior
+		consistent across the compiler. The only local heuristic we retain is
+		treating any string containing "Error" as the builtin error type, which
+		matches legacy test fixtures.
+		"""
+		if isinstance(val, str) and "Error" in val:
+			return self._error_type
+		return resolve_opaque_type(val, self._type_table)
 
 	def _resolve_typeexpr(self, raw: object) -> TypeId:
 		"""
@@ -889,39 +881,8 @@ class Checker:
 		TypeId using the shared TypeTable. This mirrors the resolver and is used for
 		declared local types. The len/cap rule (Array/String → Uint) is centralized
 		in the type resolver; this helper simply resolves declared type names.
-	"""
-		if raw is None:
-			return self._unknown_type
-		if isinstance(raw, TypeId):
-			return raw
-		if hasattr(raw, "name") and hasattr(raw, "args"):
-			name = getattr(raw, "name")
-			args = getattr(raw, "args")
-			if name == "FnResult":
-				ok = self._resolve_typeexpr(args[0] if args else None)
-				err = self._resolve_typeexpr(args[1] if len(args) > 1 else self._error_type)
-				return self._type_table.new_fnresult(ok, err)
-			if name == "Array":
-				elem = self._resolve_typeexpr(args[0] if args else None)
-				return self._type_table.new_array(elem)
-			if name == "Uint":
-				return self._type_table.ensure_uint()
-			if name == "Int":
-				return self._type_table.ensure_int()
-			if name == "Bool":
-				return self._type_table.ensure_bool()
-			if name == "String":
-				return self._type_table.ensure_string()
-			if name == "Error":
-				return self._error_type
-			return self._type_table.new_scalar(str(name))
-		if isinstance(raw, str):
-			if raw == "Uint":
-				return self._type_table.ensure_uint()
-			return self._map_opaque(raw)
-		if isinstance(raw, tuple):
-			return self._map_opaque(raw)
-		return self._unknown_type
+		"""
+		return resolve_opaque_type(raw, self._type_table)
 
 	def _len_cap_result_type(self, subj_ty: TypeId) -> Optional[TypeId]:
 		"""Return Uint when length/capacity is requested on Array or String; otherwise None."""

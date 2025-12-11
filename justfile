@@ -179,5 +179,5 @@ stage-for-review:
 		mkdir -p "$staged_dir/$(dirname "$f")"
 		cp -- "$f" "$staged_dir/$f"
 	done
-	# rm -f staged.tar.gz
-	# zip -r staged.zip "$staged_dir"
+	rm -f staged.tar.gz
+	zip -r staged.zip "$staged_dir"

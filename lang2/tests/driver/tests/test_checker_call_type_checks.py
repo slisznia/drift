@@ -6,12 +6,9 @@ from lang2.driftc.driftc import compile_stubbed_funcs
 
 def _int_table():
 	table = TypeTable()
-	int_ty = table.new_scalar("Int")
-	bool_ty = table.new_scalar("Bool")
-	err_ty = table.new_error("Error")
-	table._int_type = int_ty  # type: ignore[attr-defined]
-	table._bool_type = bool_ty  # type: ignore[attr-defined]
-	table._error_type = err_ty  # type: ignore[attr-defined]
+	int_ty = table.ensure_int()
+	bool_ty = table.ensure_bool()
+	table.ensure_error()
 	return table, int_ty, bool_ty
 
 

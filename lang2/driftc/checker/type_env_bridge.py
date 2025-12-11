@@ -44,7 +44,7 @@ def build_checker_type_env_from_inferred(
 			elif "Bool" in opaque:
 				ty_id = table.new_scalar("Bool")
 			elif "Error" in opaque:
-				ty_id = table.new_error("Error")
+				ty_id = table.ensure_error()
 			elif "FnResult" in opaque:
 				# Unknown ok/err parts; keep Unknown placeholders.
 				unknown_ok = table.new_unknown("UnknownOk")

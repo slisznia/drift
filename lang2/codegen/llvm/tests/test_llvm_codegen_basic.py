@@ -33,7 +33,7 @@ def test_codegen_plain_int_return():
 	ssa = MirToSSA().run(mir)
 
 	table = TypeTable()
-	int_ty = table.new_scalar("Int")
+	int_ty = table.ensure_int()
 	fn_info = _fn_info("main", False, int_ty)
 
 	ir = lower_ssa_func_to_llvm(mir, ssa, fn_info)
@@ -58,8 +58,8 @@ def test_codegen_fnresult_ok_return():
 	ssa = MirToSSA().run(mir)
 
 	table = TypeTable()
-	int_ty = table.new_scalar("Int")
-	error_ty = table.new_error("Error")
+	int_ty = table.ensure_int()
+	error_ty = table.ensure_error()
 	fnresult_ty = table.new_fnresult(int_ty, error_ty)
 	fn_info = _fn_info("f", True, fnresult_ty)
 

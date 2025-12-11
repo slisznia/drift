@@ -68,7 +68,7 @@ def test_e2e_scalar_main_returns_42():
 	ssa = MirToSSA().run(mir)
 
 	table = TypeTable()
-	int_ty = table.new_scalar("Int")
+	int_ty = table.ensure_int()
 	fn_infos = {"drift_main": FnInfo(name="drift_main", declared_can_throw=False, return_type_id=int_ty)}
 
 	mod = lower_module_to_llvm({"drift_main": mir}, {"drift_main": ssa}, fn_infos)
@@ -102,8 +102,8 @@ def test_e2e_fnresult_callee_ok_path():
 	main_ssa = MirToSSA().run(main_mir)
 
 	table = TypeTable()
-	int_ty = table.new_scalar("Int")
-	err_ty = table.new_error("Error")
+	int_ty = table.ensure_int()
+	err_ty = table.ensure_error()
 	fnresult_ty = table.new_fnresult(int_ty, err_ty)
 	fn_infos = {
 		"callee": FnInfo(name="callee", declared_can_throw=True, return_type_id=fnresult_ty, error_type_id=err_ty),

@@ -8,8 +8,8 @@ from lang2.driftc.checker.type_env_impl import CheckerTypeEnv
 
 def test_checker_type_env_handles_fnresult_parts():
 	table = TypeTable()
-	int_ty = table.new_scalar("Int")
-	err_ty = table.new_error("Error")
+	int_ty = table.ensure_int()
+	err_ty = table.ensure_error()
 	fnres_ty = table.new_fnresult(int_ty, err_ty)
 	value_types = {("f", "v0"): fnres_ty}
 
@@ -23,7 +23,7 @@ def test_checker_type_env_handles_fnresult_parts():
 
 def test_checker_type_env_rejects_non_fnresult_parts():
 	table = TypeTable()
-	int_ty = table.new_scalar("Int")
+	int_ty = table.ensure_int()
 	env = CheckerTypeEnv(table, {("f", "v0"): int_ty})
 
 	assert not env.is_fnresult(int_ty)

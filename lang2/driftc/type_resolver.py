@@ -18,6 +18,7 @@ from __future__ import annotations
 from typing import Iterable, Tuple
 
 from lang2.driftc.checker import FnSignature
+from lang2.driftc.core.type_resolve_common import resolve_opaque_type
 from lang2.driftc.core.types_core import TypeId, TypeKind, TypeTable
 
 
@@ -39,12 +40,13 @@ def resolve_program_signatures(func_decls: Iterable[object]) -> tuple[TypeTable,
 	"""
 	table = TypeTable()
 
-	# Seed some common scalars; unknowns/new scalars are created on demand.
-	int_ty = table.ensure_int()
-	bool_ty = table.ensure_bool()
-	str_ty = table.ensure_string()
-	err_ty = table.new_error("Error")
-	uint_ty = table.ensure_uint()
+	# Seed common scalars; unknowns/new scalars are created on demand.
+	table.ensure_int()
+	table.ensure_bool()
+	table.ensure_string()
+	table.ensure_error()
+	table.ensure_uint()
+	table.ensure_void()
 
 	signatures: dict[str, FnSignature] = {}
 
@@ -63,11 +65,11 @@ def resolve_program_signatures(func_decls: Iterable[object]) -> tuple[TypeTable,
 			raw_ty = getattr(p, "type", None)
 			raw_params.append(raw_ty)
 			param_names.append(getattr(p, "name", f"p{len(param_names)}"))
-			param_type_ids.append(_resolve_type(raw_ty, table, int_ty, bool_ty, str_ty, err_ty))
+			param_type_ids.append(resolve_opaque_type(raw_ty, table))
 
 		# Return
 		raw_ret = getattr(decl, "return_type", None)
-		return_type_id = _resolve_type(raw_ret, table, int_ty, bool_ty, str_ty, err_ty)
+		return_type_id = resolve_opaque_type(raw_ret, table)
 		error_type_id = None
 		ret_def = table.get(return_type_id)
 		if ret_def.kind is TypeKind.FNRESULT and len(ret_def.param_types) >= 2:
@@ -82,7 +84,7 @@ def resolve_program_signatures(func_decls: Iterable[object]) -> tuple[TypeTable,
 		self_mode = getattr(decl, "self_mode", None)
 		impl_target_type_id: TypeId | None = None
 		if is_method and getattr(decl, "impl_target", None) is not None:
-			impl_target_type_id = _resolve_type(decl.impl_target, table, int_ty, bool_ty, str_ty, err_ty)
+			impl_target_type_id = resolve_opaque_type(decl.impl_target, table)
 
 		signatures[name] = FnSignature(
 			name=name,
@@ -106,76 +108,6 @@ def resolve_program_signatures(func_decls: Iterable[object]) -> tuple[TypeTable,
 		)
 
 	return table, signatures
-
-
-def _resolve_type(raw: object, table: TypeTable, int_ty: TypeId, bool_ty: TypeId, str_ty: TypeId, err_ty: TypeId) -> TypeId:
-	"""
-	Map a raw type annotation into a TypeId using the provided TypeTable.
-
-	Supported shapes:
-	  - "Int", "Bool", "String", "Error" (strings)
-	  - tuples of the form ("FnResult", ok, err) or (ok, err)
-	  - strings containing "FnResult" (treated as FnResult<Int, Error>)
-	  - strings containing "Array<...>" (treated as Array<inner>)
-	Unknown shapes are registered as scalar/unknown to keep resolution total.
-	"""
-	if raw is None:
-		return table.new_unknown("Unknown")
-	if isinstance(raw, TypeId):
-		return raw
-	# Accept duck-typed TypeExpr from the parser adapter.
-	if hasattr(raw, "name") and hasattr(raw, "args"):
-		name = getattr(raw, "name")
-		args = getattr(raw, "args")
-		if name == "FnResult":
-			ok = _resolve_type(args[0] if args else None, table, int_ty, bool_ty, str_ty, err_ty)
-			err = _resolve_type(args[1] if len(args) > 1 else err_ty, table, int_ty, bool_ty, str_ty, err_ty)
-			return table.new_fnresult(ok, err)
-		if name == "Array":
-			elem = _resolve_type(args[0] if args else None, table, int_ty, bool_ty, str_ty, err_ty)
-			return table.new_array(elem)
-		if name == "Uint":
-			return table.ensure_uint()
-		if name == "Int":
-			return int_ty
-		if name == "Bool":
-			return bool_ty
-		if name == "String":
-			return str_ty
-		if name == "Error":
-			return err_ty
-		# Generic with unknown name: register as scalar to keep total.
-		return table.new_scalar(str(name))
-	if isinstance(raw, str):
-		if raw == "Int":
-			return int_ty
-		if raw == "Bool":
-			return bool_ty
-		if raw == "String":
-			return str_ty
-		if raw == "Error":
-			return err_ty
-		if raw == "Uint":
-			return table.ensure_uint()
-		if "FnResult" in raw:
-			return table.new_fnresult(int_ty, err_ty)
-		if raw.startswith("Array<") and raw.endswith(">"):
-			inner = raw[len("Array<"):-1]
-			elem_ty = _resolve_type(inner, table, int_ty, bool_ty, str_ty, err_ty)
-			return table.new_array(elem_ty)
-		return table.new_scalar(raw)
-	if isinstance(raw, tuple):
-		# Tuple forms: ('FnResult', ok, err) or (ok, err)
-		if len(raw) >= 3 and raw[0] == "FnResult":
-			ok = _resolve_type(raw[1], table, int_ty, bool_ty, str_ty, err_ty)
-			err = _resolve_type(raw[2], table, int_ty, bool_ty, str_ty, err_ty)
-			return table.new_fnresult(ok, err)
-		if len(raw) == 2:
-			ok = _resolve_type(raw[0], table, int_ty, bool_ty, str_ty, err_ty)
-			err = _resolve_type(raw[1], table, int_ty, bool_ty, str_ty, err_ty)
-			return table.new_fnresult(ok, err)
-		return table.new_unknown(str(raw))
-	return table.new_unknown(str(raw))
 
 
 def _throws_from_decl(decl: object) -> Tuple[str, ...]:

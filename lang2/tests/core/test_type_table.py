@@ -26,3 +26,23 @@ def test_type_table_registers_basic_kinds():
 	assert fn_def.param_types == [int_ty, bool_ty]
 
 	assert table.get(unknown_ty).kind is TypeKind.UNKNOWN
+
+
+def test_type_table_seeds_void():
+	table = TypeTable()
+
+	void_ty = table.ensure_void()
+
+	# Canonical Void is a dedicated kind and id should be stable.
+	assert table.get(void_ty).kind is TypeKind.VOID
+	assert void_ty == table.ensure_void()
+
+
+def test_type_table_seeds_error_canonically():
+	table = TypeTable()
+
+	err_ty = table.ensure_error()
+
+	assert table.get(err_ty).kind is TypeKind.ERROR
+	assert table.get(err_ty).name == "Error"
+	assert err_ty == table.ensure_error()
