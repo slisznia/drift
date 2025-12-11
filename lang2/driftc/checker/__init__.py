@@ -337,9 +337,11 @@ class Checker:
 
 			def combined_on_expr(expr: "H.HExpr", typing_ctx: Checker._TypingContext = ctx) -> None:
 				self._array_validator_on_expr(expr, typing_ctx)
+				self._void_usage_on_expr(expr, typing_ctx)
 
 			def combined_on_stmt(stmt: "H.HStmt", typing_ctx: Checker._TypingContext = ctx) -> None:
 				self._bool_validator_on_stmt(stmt, typing_ctx)
+				self._void_rules_on_stmt(stmt, typing_ctx)
 
 			self._walk_hir(hir_block, ctx, on_expr=combined_on_expr, on_stmt=combined_on_stmt)
 
@@ -1115,6 +1117,46 @@ class Checker:
 			# traversal logic here.
 			ctx.infer(expr)
 
+	def _void_usage_on_expr(self, expr: "H.HExpr", ctx: "_TypingContext") -> None:
+		"""
+		Forbid Void where a value is required (binary ops, call args, unary ops).
+
+		Expression statements are allowed to discard Void-returning calls, so the
+		expr-stmt case is handled in the stmt validator.
+		"""
+		from lang2.driftc import stage1 as H
+
+		def is_void(tid: TypeId | None) -> bool:
+			return tid is not None and self._type_table.is_void(tid)
+
+		if isinstance(expr, H.HBinary):
+			left_ty = ctx.infer(expr.left)
+			right_ty = ctx.infer(expr.right)
+			if is_void(left_ty) or is_void(right_ty):
+				ctx._append_diag(
+					Diagnostic(message="Void value is not allowed in a binary operation", severity="error", span=None)
+				)
+		elif isinstance(expr, H.HUnary):
+			sub_ty = ctx.infer(expr.expr)
+			if is_void(sub_ty):
+				ctx._append_diag(
+					Diagnostic(message="Void value is not allowed in a unary operation", severity="error", span=None)
+				)
+		elif isinstance(expr, H.HCall):
+			for arg in expr.args:
+				arg_ty = ctx.infer(arg)
+				if is_void(arg_ty):
+					ctx._append_diag(
+						Diagnostic(message="Void value is not allowed as a function argument", severity="error", span=None)
+					)
+		elif isinstance(expr, H.HMethodCall):
+			for arg in expr.args:
+				arg_ty = ctx.infer(arg)
+				if is_void(arg_ty):
+					ctx._append_diag(
+						Diagnostic(message="Void value is not allowed as a method argument", severity="error", span=None)
+					)
+
 	def _bool_validator_on_stmt(self, stmt: "H.HStmt", ctx: "_TypingContext") -> None:
 		"""Require Boolean conditions when the type is known."""
 		from lang2.driftc import stage1 as H
@@ -1128,6 +1170,61 @@ class Checker:
 						severity="error",
 						span=None,
 					)
+				)
+
+	def _void_rules_on_stmt(self, stmt: "H.HStmt", ctx: "_TypingContext") -> None:
+		"""
+		Enforce Void placement rules on statements:
+		- Void return type: only bare `return` allowed.
+		- Non-void return type: must return a value.
+		- Void cannot be stored in let/assign or declared explicitly.
+		"""
+		from lang2.driftc import stage1 as H
+
+		def is_void(tid: TypeId | None) -> bool:
+			return tid is not None and self._type_table.is_void(tid)
+
+		if isinstance(stmt, H.HReturn):
+			ret_tid = None
+			if ctx.current_fn and ctx.current_fn.signature:
+				ret_tid = ctx.current_fn.signature.return_type_id
+			fn_is_void = is_void(ret_tid)
+			if stmt.value is None and ret_tid is not None and not fn_is_void:
+				ctx._append_diag(
+					Diagnostic(message="non-void function must return a value", severity="error", span=None)
+				)
+			if stmt.value is not None:
+				if fn_is_void:
+					ctx._append_diag(
+						Diagnostic(message="cannot return a value from a Void function", severity="error", span=None)
+					)
+				val_ty = ctx.infer(stmt.value)
+				if ret_tid is not None and val_ty is not None and not fn_is_void and val_ty != ret_tid:
+					ctx._append_diag(
+						Diagnostic(message="return value does not match function return type", severity="error", span=None)
+					)
+			return
+
+		if isinstance(stmt, H.HLet):
+			decl_ty = None
+			if getattr(stmt, "declared_type_expr", None) is not None:
+				decl_ty = self._resolve_typeexpr(stmt.declared_type_expr)
+			if is_void(decl_ty):
+				ctx._append_diag(
+					Diagnostic(message="cannot declare a binding of type Void", severity="error", span=None)
+				)
+			val_ty = ctx.infer(stmt.value)
+			if is_void(val_ty):
+				ctx._append_diag(
+					Diagnostic(message="cannot bind a Void value", severity="error", span=None)
+				)
+			return
+
+		if isinstance(stmt, H.HAssign):
+			val_ty = ctx.infer(stmt.value)
+			if is_void(val_ty):
+				ctx._append_diag(
+					Diagnostic(message="cannot assign a Void value", severity="error", span=None)
 				)
 
 	def _validate_array_exprs(self, block: "H.HBlock", ctx: "_TypingContext") -> None:

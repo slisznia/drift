@@ -30,6 +30,7 @@ from dataclasses import dataclass
 from typing import List, Set, Mapping, Optional
 
 from lang2.driftc import stage1 as H
+from lang2.driftc.checker import FnSignature
 from lang2.driftc.core.types_core import TypeKind, TypeTable, TypeId
 from . import mir_nodes as M
 
@@ -136,6 +137,8 @@ class HIRToMIR:
 		type_table: Optional[TypeTable] = None,
 		exc_env: Mapping[str, int] | None = None,
 		param_types: Mapping[str, TypeId] | None = None,
+		signatures: Mapping[str, FnSignature] | None = None,
+		return_type: TypeId | None = None,
 	):
 		"""
 		Create a lowering context.
@@ -164,6 +167,9 @@ class HIRToMIR:
 		self.b.emit(M.ConstString(dest=self._string_empty_const, value=""))
 		self._uint_type = self._type_table.ensure_uint()
 		self._unknown_type = self._type_table.ensure_unknown()
+		self._void_type = self._type_table.ensure_void()
+		self._signatures = signatures or {}
+		self._ret_type = return_type
 
 	# --- Expression lowering ---
 
@@ -314,19 +320,21 @@ class HIRToMIR:
 				return dest
 		if not isinstance(expr.fn, H.HVar):
 			raise NotImplementedError("Only direct function-name calls are supported in MIR lowering")
-		arg_vals = [self.lower_expr(a) for a in expr.args]
-		dest = self.b.new_temp()
-		self.b.emit(M.Call(dest=dest, fn=expr.fn.name, args=arg_vals))
-		return dest
+		result = self._lower_call(expr)
+		if result is None:
+			# Should be caught by checker; emit a placeholder so lowering can continue.
+			placeholder = self.b.new_temp()
+			self.b.emit(M.ConstInt(dest=placeholder, value=0))
+			return placeholder
+		return result
 
 	def _visit_expr_HMethodCall(self, expr: H.HMethodCall) -> M.ValueId:
-		receiver = self.lower_expr(expr.receiver)
-		arg_vals = [self.lower_expr(a) for a in expr.args]
-		dest = self.b.new_temp()
-		self.b.emit(
-			M.MethodCall(dest=dest, receiver=receiver, method_name=expr.method_name, args=arg_vals)
-		)
-		return dest
+		result = self._lower_method_call(expr)
+		if result is None:
+			placeholder = self.b.new_temp()
+			self.b.emit(M.ConstInt(dest=placeholder, value=0))
+			return placeholder
+		return result
 
 	def _visit_expr_HDVInit(self, expr: H.HDVInit) -> M.ValueId:
 		arg_vals = [self.lower_expr(a) for a in expr.args]
@@ -408,7 +416,13 @@ class HIRToMIR:
 			self.lower_stmt(stmt)
 
 	def _visit_stmt_HExprStmt(self, stmt: H.HExprStmt) -> None:
-		# Evaluate and discard
+		# Evaluate and discard; allow dropping Void-returning calls.
+		if isinstance(stmt.expr, H.HCall) and self._call_returns_void(stmt.expr):
+			self._lower_call(expr=stmt.expr)
+			return
+		if isinstance(stmt.expr, H.HMethodCall) and self._call_returns_void(stmt.expr):
+			self._lower_method_call(expr=stmt.expr)
+			return
 		self.lower_expr(stmt.expr)
 
 	def _visit_stmt_HLet(self, stmt: H.HLet) -> None:
@@ -440,6 +454,10 @@ class HIRToMIR:
 
 	def _visit_stmt_HReturn(self, stmt: H.HReturn) -> None:
 		if self.b.block.terminator is not None:
+			return
+		fn_is_void = self._ret_type is not None and self._type_table.is_void(self._ret_type)
+		if fn_is_void:
+			self.b.set_terminator(M.Return(value=None))
 			return
 		val = self.lower_expr(stmt.value) if stmt.value is not None else None
 		self.b.set_terminator(M.Return(value=val))
@@ -745,6 +763,49 @@ class HIRToMIR:
 			return first
 		return self._unknown_type
 
+	def _return_type_for_name(self, name: str) -> TypeId | None:
+		"""Look up a return TypeId for a given function/method name when available."""
+		sig = self._signatures.get(name)
+		if sig and sig.return_type_id is not None:
+			return sig.return_type_id
+		# Try display-name matches (method_name).
+		for cand in self._signatures.values():
+			if cand.method_name == name and cand.return_type_id is not None:
+				return cand.return_type_id
+		return None
+
+	def _call_returns_void(self, expr: H.HExpr) -> bool:
+		if isinstance(expr, H.HCall) and isinstance(expr.fn, H.HVar):
+			ret = self._return_type_for_name(expr.fn.name)
+			return ret is not None and self._type_table.is_void(ret)
+		if isinstance(expr, H.HMethodCall):
+			ret = self._return_type_for_name(expr.method_name)
+			return ret is not None and self._type_table.is_void(ret)
+		return False
+
+	def _lower_call(self, expr: H.HCall) -> M.ValueId | None:
+		if not isinstance(expr.fn, H.HVar):
+			raise NotImplementedError("Only direct function-name calls are supported in MIR lowering")
+		arg_vals = [self.lower_expr(a) for a in expr.args]
+		ret_tid = self._return_type_for_name(expr.fn.name)
+		if ret_tid is not None and self._type_table.is_void(ret_tid):
+			self.b.emit(M.Call(dest=None, fn=expr.fn.name, args=arg_vals))
+			return None
+		dest = self.b.new_temp()
+		self.b.emit(M.Call(dest=dest, fn=expr.fn.name, args=arg_vals))
+		return dest
+
+	def _lower_method_call(self, expr: H.HMethodCall) -> M.ValueId | None:
+		receiver = self.lower_expr(expr.receiver)
+		arg_vals = [self.lower_expr(a) for a in expr.args]
+		ret_tid = self._return_type_for_name(expr.method_name)
+		if ret_tid is not None and self._type_table.is_void(ret_tid):
+			self.b.emit(M.MethodCall(dest=None, receiver=receiver, method_name=expr.method_name, args=arg_vals))
+			return None
+		dest = self.b.new_temp()
+		self.b.emit(M.MethodCall(dest=dest, receiver=receiver, method_name=expr.method_name, args=arg_vals))
+		return dest
+
 	def _infer_expr_type(self, expr: H.HExpr) -> TypeId | None:
 		"""
 		Minimal expression type inference to tag array instructions with elem types.
@@ -757,6 +818,9 @@ class HIRToMIR:
 			return self._string_type
 		if isinstance(expr, H.HCall) and isinstance(expr.fn, H.HVar):
 			name = expr.fn.name
+			sig_ret = self._return_type_for_name(name)
+			if sig_ret is not None:
+				return sig_ret
 			if name == "string_concat":
 				return self._string_type
 			if name == "string_eq":
@@ -785,6 +849,10 @@ class HIRToMIR:
 				ty_def = self._type_table.get(array_ty)
 				if ty_def.kind is TypeKind.ARRAY and ty_def.param_types:
 					return ty_def.param_types[0]
+		if isinstance(expr, H.HMethodCall):
+			ret = self._return_type_for_name(expr.method_name)
+			if ret is not None:
+				return ret
 		# Unknown for other expressions (vars, calls, etc.)
 		return None
 

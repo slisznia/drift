@@ -469,6 +469,6 @@ For now, this plan gets you a correct, clean `Void` type wired end‑to‑end th
 - [x] Add `Void` to `TypeKind`/`TypeTable` with helpers (`ensure_void`, `is_void`, storage rules, size/scalar helpers).
 - [x] Thread `Void` through resolver/parser builtin mapping so `returns Void` resolves to the canonical TypeId, and stub checker helper now understands `Void` in declared/opaque types. Added unit test for stable `Void` TypeId seeding.
 - [x] Centralize raw→TypeId mapping via `resolve_opaque_type` and use it in resolver + checker; added canonical `ensure_error` to avoid duplicate `Error` TypeIds and covered both with tests.
-- [ ] Extend checker rules for `Void` (return statement validation, forbid use as value, expression statements ok).
-- [ ] Update MIR/LLVM lowering to treat `Void` as no SSA value and emit `ret void`/void calls.
-- [ ] Update prelude signatures to use `Void` where appropriate and add tests from checklist.
+- [x] Extend checker rules for `Void` (return statement validation, forbid use as value, expression statements ok).
+- [x] Update MIR/LLVM lowering to treat `Void` as no SSA value and emit `ret void`/void calls.
+- [x] Update prelude signatures to use `Void` where appropriate and add tests from checklist.

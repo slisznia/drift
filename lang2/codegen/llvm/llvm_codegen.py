@@ -295,6 +295,7 @@ class _FuncBuilder:
 	aliases: Dict[str, str] = field(default_factory=dict)
 	string_type_id: Optional[TypeId] = None
 	int_type_id: Optional[TypeId] = None
+	void_type_id: Optional[TypeId] = None
 	sym_name: Optional[str] = None
 
 	def lower(self) -> str:
@@ -316,6 +317,8 @@ class _FuncBuilder:
 				self.string_type_id = ty_id
 			if ty_def.kind is TypeKind.SCALAR and ty_def.name == "Int":
 				self.int_type_id = ty_id
+			if ty_def.kind is TypeKind.VOID:
+				self.void_type_id = ty_id
 
 	def _emit_header(self) -> None:
 		ret_ty = self._return_llvm_type()
@@ -525,8 +528,7 @@ class _FuncBuilder:
 			self.module.needs_console_runtime = True
 			self.lines.append(f"  call void @{runtime_name}({DRIFT_STRING_TYPE} {arg_val})")
 			if dest:
-				self.lines.append(f"  {dest} = add i64 0, 0")
-				self.value_types[dest] = "i64"
+				raise NotImplementedError("console intrinsics return Void; result cannot be captured")
 			return
 		if callee_info is None:
 			raise NotImplementedError(f"LLVM codegen v1: missing FnInfo for callee {instr.fn}")
@@ -546,8 +548,7 @@ class _FuncBuilder:
 				self.module.needs_console_runtime = True
 				self.lines.append(f"  call void @{runtime_name}({DRIFT_STRING_TYPE} {arg_val})")
 				if dest:
-					self.lines.append(f"  {dest} = add i64 0, 0")
-					self.value_types[dest] = "i64"
+					raise NotImplementedError("console intrinsics return Void; result cannot be captured")
 				return
 
 		arg_parts: list[str] = []
@@ -573,18 +574,22 @@ class _FuncBuilder:
 				self.lines.append(f"  {dest} = extractvalue {FNRESULT_INT_ERROR} {tmp}, 1")
 				self.value_types[dest] = "i64"
 		else:
-			ret_ty = "i64"
+			ret_tid = None
+			if callee_info.signature and callee_info.signature.return_type_id is not None:
+				ret_tid = callee_info.signature.return_type_id
+			is_void_ret = ret_tid is not None and self._is_void_typeid(ret_tid)
+			ret_ty = "void" if is_void_ret else "i64"
 			if (
 				self.string_type_id is not None
 				and callee_info.signature
 				and callee_info.signature.return_type_id == self.string_type_id
 			):
 				ret_ty = DRIFT_STRING_TYPE
-			if dest is None and ret_ty != "void":
-				raise NotImplementedError("LLVM codegen v1: cannot drop non-void call result")
 			if dest is None:
-				self.lines.append(f"  call void @{instr.fn}({args})")
+				self.lines.append(f"  call {ret_ty} @{instr.fn}({args})")
 			else:
+				if ret_ty == "void":
+					raise NotImplementedError("LLVM codegen v1: cannot capture result of a void call")
 				self.lines.append(f"  {dest} = call {ret_ty} @{instr.fn}({args})")
 				self.value_types[dest] = ret_ty
 
@@ -601,10 +606,15 @@ class _FuncBuilder:
 			)
 		elif isinstance(term, Return):
 			if term.value is None:
+				if self._is_void_return():
+					self.lines.append("  ret void")
+					return
 				raise AssertionError("LLVM codegen v1: bare return unsupported")
 			val = self._map_value(term.value)
 			if self.fn_info.declared_can_throw:
 				self.lines.append(f"  ret {FNRESULT_INT_ERROR} {val}")
+			elif self._is_void_return():
+				self.lines.append("  ret void")
 			else:
 				ty = self.value_types.get(val)
 				if ty == DRIFT_STRING_TYPE:
@@ -622,6 +632,8 @@ class _FuncBuilder:
 		# v1 supports Int, String, or FnResult<Int, Error> return shapes.
 		if self.fn_info.declared_can_throw:
 			return FNRESULT_INT_ERROR
+		if self._is_void_return():
+			return "void"
 		rt_id = None
 		if self.fn_info.signature and self.fn_info.signature.return_type_id is not None:
 			rt_id = self.fn_info.signature.return_type_id
@@ -630,6 +642,16 @@ class _FuncBuilder:
 		# Default to Int
 		return "i64"
 
+	def _is_void_return(self) -> bool:
+		if self.fn_info.signature and self.fn_info.signature.return_type_id is not None:
+			return self._is_void_typeid(self.fn_info.signature.return_type_id)
+		return False
+
+	def _is_void_typeid(self, ty_id: TypeId) -> bool:
+		if self.type_table is not None:
+			return self.type_table.is_void(ty_id)
+		return self.void_type_id is not None and ty_id == self.void_type_id
+
 	def _llvm_type_for_typeid(self, ty_id: TypeId) -> str:
 		"""
 		Map a TypeId to an LLVM type string for parameters/arguments.
@@ -637,6 +659,8 @@ class _FuncBuilder:
 		v1 supports Int (i64), String (%DriftString), and Array<T> (by value).
 		"""
 		if self.type_table is not None:
+			if self.type_table.is_void(ty_id):
+				raise NotImplementedError("LLVM codegen v1: Void is not a valid parameter type")
 			td = self.type_table.get(ty_id)
 			if td.kind is TypeKind.ARRAY and td.param_types:
 				elem_llty = self._llvm_type_for_typeid(td.param_types[0])

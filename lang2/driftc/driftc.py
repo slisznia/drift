@@ -61,7 +61,7 @@ def _inject_prelude(signatures: dict[str, FnSignature], type_table: TypeTable) -
 	They return Int (v1 has no Void type).
 	"""
 	string_id = type_table.ensure_string()
-	int_id = type_table.ensure_int()
+	void_id = type_table.ensure_void()
 	for name in ("print", "println", "eprintln"):
 		sym_name = name
 		# Keyed by short name; module carries qualification.
@@ -72,7 +72,7 @@ def _inject_prelude(signatures: dict[str, FnSignature], type_table: TypeTable) -
 			method_name=name,
 			param_names=["text"],
 			param_type_ids=[string_id],
-			return_type_id=int_id,
+			return_type_id=void_id,
 			is_method=False,
 			module="lang.core",
 		)
@@ -179,7 +179,14 @@ def compile_stubbed_funcs(
 			builder.func.params = list(sig.param_names)
 		if sig is not None and sig.param_names is not None and sig.param_type_ids is not None:
 			param_types = {pname: pty for pname, pty in zip(sig.param_names, sig.param_type_ids)}
-		HIRToMIR(builder, type_table=shared_type_table, exc_env=exc_env, param_types=param_types).lower_block(hir_norm)
+		HIRToMIR(
+			builder,
+			type_table=shared_type_table,
+			exc_env=exc_env,
+			param_types=param_types,
+			signatures=signatures,
+			return_type=sig.return_type_id if sig is not None else None,
+		).lower_block(hir_norm)
 		if sig is not None and sig.param_names is not None:
 			builder.func.params = list(sig.param_names)
 		mir_funcs[name] = builder.func
