@@ -156,6 +156,10 @@ lang2-codegen-test:
 	# Run Drift-source e2e cases (per-case dirs under lang2/codegen/e2e).
 	PYTHONPATH=. ./.venv/bin/python3 lang2/codegen/e2e/runner.py
 
+# Lang2 e2e runner (lang2.driftc: json + run modes against tests/e2e)
+lang2-e2e CASES="":
+	PYTHONPATH=. ./.venv/bin/python3 lang2/e2e/runner.py {{CASES}}
+
 # Borrow checker scaffolding tests.
 lang2-borrow-test:
 	# Ensure pytest is available in the venv
