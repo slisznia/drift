@@ -13,6 +13,7 @@ from typing import List
 
 from lang2.driftc.stage1 import hir_nodes as H
 from lang2.driftc.checker.catch_arms import CatchArmInfo
+from lang2.driftc.core.span import Span
 
 
 def collect_catch_arms_from_block(block: H.HBlock) -> List[CatchArmInfo]:
@@ -31,7 +32,8 @@ def collect_catch_arms_from_block(block: H.HBlock) -> List[CatchArmInfo]:
 	def collect_stmt(stmt: H.HStmt) -> None:
 		if isinstance(stmt, H.HTry):
 			for arm in stmt.catches:
-				arms.append(CatchArmInfo(event_name=arm.event_name))
+				assert isinstance(arm.loc, Span)
+				arms.append(CatchArmInfo(event_name=arm.event_name, span=arm.loc))
 				collect_block(arm.block)
 			collect_block(stmt.body)
 		elif isinstance(stmt, H.HIf):

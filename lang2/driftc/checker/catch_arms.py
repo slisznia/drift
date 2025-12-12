@@ -10,24 +10,42 @@ shapes, but user-facing diagnostics belong here.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional, Sequence, Set
 
 from lang2.driftc.core.diagnostics import Diagnostic
+from lang2.driftc.core.span import Span
 
 
 @dataclass
 class CatchArmInfo:
-	"""Syntactic info about a catch arm (event name and optional span/binder)."""
+	"""Syntactic info about a catch arm (event name and optional source loc)."""
 
 	event_name: Optional[str]  # None = catch-all
-	span: Optional[str] = None  # placeholder for a real Span/Loc type; TODO wire real spans
+	span: Span = field(default_factory=Span)
 
 
-def _report(msg: str, diagnostics: Optional[list[Diagnostic]]) -> None:
+def _format_span(span: Span | None) -> str:
+	if span is None:
+		return "<unknown location>"
+	parts = []
+	if span.file:
+		parts.append(span.file)
+	if span.line is not None:
+		col = span.column if span.column is not None else 0
+		parts.append(f"{span.line}:{col}")
+	return ":".join(parts) if parts else "<unknown location>"
+
+
+def _report(
+	msg: str,
+	diagnostics: Optional[list[Diagnostic]],
+	span: Span | None,
+	notes: Optional[list[str]] = None,
+) -> None:
 	"""Append a diagnostic if provided, otherwise raise RuntimeError."""
 	if diagnostics is not None:
-		diagnostics.append(Diagnostic(message=msg, severity="error", span=None))
+		diagnostics.append(Diagnostic(message=msg, severity="error", span=span, notes=notes or []))
 	else:
 		raise RuntimeError(msg)
 
@@ -49,17 +67,26 @@ def validate_catch_arms(
 	"""
 	seen_events: Set[str] = set()
 	catch_all_seen = False
+	catch_all_idx: int | None = None
+	catch_all_span: Span | None = None
+	event_spans: dict[str, Span] = {}
 	for idx, arm in enumerate(arms):
 		if arm.event_name is None:
 			if catch_all_seen:
-				_report("multiple catch-all arms are not allowed", diagnostics)
+				notes = [f"first catch-all is here: {_format_span(catch_all_span)}"] if catch_all_span else None
+				_report("multiple catch-all arms are not allowed", diagnostics, arm.span, notes=notes)
 			catch_all_seen = True
+			catch_all_idx = idx
+			catch_all_span = arm.span
 		else:
 			if arm.event_name in seen_events:
-				_report(f"duplicate catch arm for event {arm.event_name}", diagnostics)
+				prev_span = event_spans.get(arm.event_name)
+				notes = [f"previous catch for '{arm.event_name}' is here: {_format_span(prev_span)}"] if prev_span else None
+				_report(f"duplicate catch arm for event {arm.event_name}", diagnostics, arm.span, notes=notes)
 			if arm.event_name not in known_events:
-				_report(f"unknown catch event {arm.event_name}", diagnostics)
+				_report(f"unknown catch event {arm.event_name}", diagnostics, arm.span)
 			seen_events.add(arm.event_name)
-		# catch-all must be last
-		if catch_all_seen and idx != len(arms) - 1:
-			_report("catch-all must be the last catch arm", diagnostics)
+			event_spans.setdefault(arm.event_name, arm.span)
+	# catch-all must be last
+	if catch_all_seen and catch_all_idx is not None and catch_all_idx != len(arms) - 1:
+		_report("catch-all must be the last catch arm", diagnostics, catch_all_span)

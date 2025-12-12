@@ -8,15 +8,21 @@ The real compiler can extend this with richer location/types as needed.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Optional
+
+from .span import Span
 
 
 @dataclass
 class Diagnostic:
-    """Represents a compiler diagnostic (error/warning/etc.)."""
+	"""Represents a compiler diagnostic (error/warning/etc.)."""
 
-    message: str
-    severity: str = "error"
-    span: Optional[Any] = None  # Placeholder until a real Span type exists.
-    notes: list[str] = field(default_factory=list)
+	message: str
+	severity: str = "error"
+	span: Span = field(default_factory=Span)  # Source location (Span() denotes unknown).
+	notes: list[str] = field(default_factory=list)
 
+	def __post_init__(self) -> None:
+		# Normalize missing spans to the sentinel Span() so downstream tooling
+		# can rely on a structured object instead of None.
+		if self.span is None:  # type: ignore[unreachable]
+			self.span = Span()

@@ -27,6 +27,7 @@ from typing import List
 # Import stage0 AST via package API to keep stage layering explicit.
 from lang2.driftc.stage0 import ast
 from . import hir_nodes as H
+from lang2.driftc.core.span import Span
 
 
 class AstToHIR:
@@ -296,7 +297,8 @@ class AstToHIR:
 			event_name = arm.event
 			binder = arm.binder
 			handler_block = self.lower_block(arm.block)
-			catch_arms.append(H.HCatchArm(event_name=event_name, binder=binder, block=handler_block))
+			catch_loc = Span.from_loc(arm.loc)
+			catch_arms.append(H.HCatchArm(event_name=event_name, binder=binder, block=handler_block, loc=catch_loc))
 
 		return H.HTry(body=body_block, catches=catch_arms)
 

@@ -19,9 +19,11 @@ Guiding rules:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import List, Optional
+
+from lang2.driftc.core.span import Span
 
 # Stable identifiers for bindings (locals/params). Populated by the typed
 # checker; optional today to preserve existing HIR construction.
@@ -195,6 +197,7 @@ class HCatchArm(HStmt):
 	event_name: Optional[str]
 	binder: Optional[str]
 	block: "HBlock"
+	loc: Span = field(default_factory=Span)
 
 
 @dataclass

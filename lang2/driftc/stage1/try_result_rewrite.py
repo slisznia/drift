@@ -107,7 +107,12 @@ class TryResultRewriter:
 		if isinstance(stmt, H.HTry):
 			body = self.rewrite_block(stmt.body)
 			catches = [
-				H.HCatchArm(event_name=arm.event_name, binder=arm.binder, block=self.rewrite_block(arm.block))
+				H.HCatchArm(
+					event_name=arm.event_name,
+					binder=arm.binder,
+					block=self.rewrite_block(arm.block),
+					loc=arm.loc,
+				)
 				for arm in stmt.catches
 			]
 			return [H.HTry(body=body, catches=catches)]
@@ -173,7 +178,11 @@ class TryResultRewriter:
 				arg_pfx, arg = self._rewrite_expr(a)
 				pfx.extend(arg_pfx)
 				new_args.append(arg)
-			return pfx, H.HDVInit(dv_type_name=expr.dv_type_name, args=new_args)
+			return pfx, H.HDVInit(
+				dv_type_name=expr.dv_type_name,
+				args=new_args,
+				attr_names=expr.attr_names,
+			)
 		if isinstance(expr, H.HArrayLiteral):
 			elem_pfx: List[H.HStmt] = []
 			new_elems: List[H.HExpr] = []
