@@ -74,6 +74,31 @@ def test_non_can_throw_returning_fnresult_rejected():
 		lower_ssa_func_to_llvm(mir, ssa, fn_info, {"f": fn_info}, type_table=table)
 
 
+def test_can_throw_fnresult_with_unsupported_ok_type_is_rejected():
+	"""
+	Can-throw FnResult with an unsupported ok payload (Array<Int>) should fail fast with a clear diagnostic.
+	"""
+	table = TypeTable()
+	int_ty = table.ensure_int()
+	array_ty = table.new_array(int_ty)
+	err_ty = table.ensure_error()
+	fnresult_ty = table.new_fnresult(array_ty, err_ty)
+
+	entry = BasicBlock(
+		name="entry",
+		instructions=[
+			ConstructResultOk(dest="res", value="v0"),
+		],
+		terminator=Return(value="res"),
+	)
+	mir = MirFunc(name="f", params=[], locals=[], blocks={"entry": entry}, entry="entry")
+	ssa = MirToSSA().run(mir)
+	fn_info = FnInfo(name="f", declared_can_throw=True, return_type_id=fnresult_ty, error_type_id=err_ty)
+
+	with pytest.raises(NotImplementedError, match="FnResult ok type Array_Int is not supported"):
+		lower_ssa_func_to_llvm(mir, ssa, fn_info, {"f": fn_info}, type_table=table)
+
+
 def test_string_binaryop_unsupported():
 	"""String binary ops other than ==/+ should raise, not emit garbage IR."""
 	entry = BasicBlock(
