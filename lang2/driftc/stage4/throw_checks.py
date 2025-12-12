@@ -108,6 +108,68 @@ def enforce_can_throw_invariants(
 			)
 
 
+def enforce_can_throw_signature_shape(
+	func_infos: Dict[str, FuncThrowInfo],
+	type_env: TypeEnv | None,
+	diagnostics: Optional[List[Diagnostic]] = None,
+) -> None:
+	"""
+	Ensure declared can-throw functions actually have a FnResult<_, Error> return
+	type according to the available type environment. This defends the ABI shape
+	upstream of codegen so we do not silently treat non-FnResult signatures as
+	can-throw.
+	"""
+	if type_env is None:
+		return
+	table = getattr(type_env, "_table", None)
+	for fname, info in func_infos.items():
+		if not info.declared_can_throw:
+			continue
+		ret_ty = info.return_type_id
+		if ret_ty is None:
+			# No type information available; stay lenient to avoid penalizing
+			# untyped/legacy tests. Typed paths should always populate a return TypeId.
+			continue
+		try:
+			is_fnres = type_env.is_fnresult(ret_ty)
+		# TypeEnv implementations are allowed to raise on unknown types; treat as non-FnResult.
+		except Exception:
+			is_fnres = False
+		if not is_fnres:
+			_report(
+				msg=(
+					f"function {fname} is declared can-throw but signature return type "
+					f"is not FnResult"
+				),
+				diagnostics=diagnostics,
+			)
+			continue
+		try:
+			ok_ty, err_ty = type_env.fnresult_parts(ret_ty)
+		except Exception:
+			_report(
+				msg=(
+					f"function {fname} is declared can-throw but FnResult parts could not "
+					f"be determined from the type environment"
+				),
+				diagnostics=diagnostics,
+			)
+			continue
+		if table is not None:
+			try:
+				err_def = table.get(err_ty)
+			except Exception:
+				err_def = None
+			if err_def is not None and err_def.kind is not TypeKind.ERROR:
+				_report(
+					msg=(
+						f"function {fname} is declared can-throw but FnResult error type "
+						f"is {err_def.name}, expected Error"
+					),
+					diagnostics=diagnostics,
+				)
+
+
 def enforce_return_shape_for_can_throw(
 	func_infos: Dict[str, FuncThrowInfo],
 	funcs: Dict[str, MirFunc],
@@ -306,15 +368,18 @@ def run_throw_checks(
 	from stage3, and the checker-supplied `declared_can_throw` map, we:
 	  1. build FuncThrowInfo,
 	  2. enforce can-throw invariants,
-	  3. enforce return-shape invariants for can-throw functions (structural),
-	  4. enforce FnResult shape:
+	  3. ensure can-throw signatures are FnResult<_, Error> when type
+	     information is available,
+	  4. enforce return-shape invariants for can-throw functions (structural),
+	  5. enforce FnResult shape:
 	     - structural guard for untyped/unit tests,
 	     - type-aware FnResult check when SSA + TypeEnv are provided (structural
 	       guard is skipped in that case to allow forwarding/aliasing),
-	  5. return the FuncThrowInfo map for further stages to consume.
+	  6. return the FuncThrowInfo map for further stages to consume.
 	"""
 	func_infos = build_func_throw_info(summaries, declared_can_throw, fn_infos=fn_infos)
 	enforce_can_throw_invariants(func_infos, diagnostics=diagnostics)
+	enforce_can_throw_signature_shape(func_infos, type_env, diagnostics=diagnostics)
 	enforce_return_shape_for_can_throw(func_infos, funcs, diagnostics=diagnostics)
 	enforce_declared_events_superset(func_infos, diagnostics=diagnostics)
 	# FnResult shape: run either the structural guard (untyped/unit tests) or
