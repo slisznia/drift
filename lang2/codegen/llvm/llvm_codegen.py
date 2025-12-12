@@ -6,13 +6,14 @@ SSA → LLVM IR lowering for the v1 Drift ABI (textual emitter).
 Scope (v1 bring-up):
   - Input: SSA (`SsaFunc`) plus MIR (`MirFunc`) and `FnInfo` metadata.
   - Supported types: Int (i64), Bool (i1 in regs), String ({%drift.size, i8*}),
-    Array<T>, and FnResult<ok, Error> where ok ∈ {Int, String, Void-like}.
+    Array<T>, and FnResult<ok, Error> where ok ∈ {Int, String, Void-like, Ref<T>}
+    (arrays are supported as values but not as FnResult ok payloads yet).
   - Supported ops: ConstInt/Bool/String, AssignSSA aliases, BinaryOpInstr (int),
     Call (Int/String or FnResult return), Phi, ConstructResultOk/Err,
     ConstructError (attrs zeroed), Return, IfTerminator/Goto, Array ops.
   - FnResult lowering requires a TypeTable so we can map ok/error TypeIds to
     LLVM payloads; we fail fast without it for can-throw functions. FnResult
-    ok payloads outside {Int, String, Void-like} are currently rejected.
+    ok payloads outside {Int, String, Void-like, Ref<T>} are currently rejected.
   - Control flow: straight-line + if/else (acyclic CFGs); loops/backedges are
     rejected explicitly.
 
@@ -66,14 +67,6 @@ from lang2.driftc.stage4.ssa import SsaFunc
 from lang2.driftc.stage4.ssa import CfgKind
 from lang2.driftc.core.types_core import TypeKind, TypeTable, TypeId
 
-"""LLVM codegen for lang2 SSA.
-
-This backend is intentionally narrow for v1: Int/Bool/Array and
-FnResult<Int, Error>. As we add String support, we treat it as a two-field
-struct { %drift.size, i8* } and lower literals to that shape without runtime
-calls.
-"""
-
 # ABI type names
 DRIFT_ERROR_TYPE = "%DriftError"
 FNRESULT_INT_ERROR = "%FnResult_Int_Error"
@@ -102,7 +95,8 @@ def lower_ssa_func_to_llvm(
 	  LLVM IR string for the function definition.
 
 	Limitations:
-	  - Returns: Int, String, or FnResult<ok, Error> (ok ∈ {Int, String, Void-like}) in v1.
+	  - Returns: Int, String, or FnResult<ok, Error> (ok ∈ {Int, String, Void-like, Ref<T>}) in v1;
+	    arrays are supported as values but not as FnResult ok payloads yet.
 	  - No loops/backedges; CFG must be acyclic (if/else diamonds ok).
 	"""
 	all_infos = dict(fn_infos) if fn_infos is not None else {fn_info.name: fn_info}
@@ -213,6 +207,8 @@ class LlvmModuleBuilder:
 			return self._declare_fnresult_named_type(ok_key, ok_llty, "%FnResult_String_Error")
 		if ok_key == "Void":
 			return self._declare_fnresult_named_type(ok_key, ok_llty, "%FnResult_Void_Error")
+		if ok_key.startswith("Ref_"):
+			return self._declare_fnresult_named_type(ok_key, ok_llty)
 		raise NotImplementedError(
 			f"LLVM codegen v1: unsupported FnResult ok payload type {ok_key!r}"
 		)
@@ -495,7 +491,13 @@ class _FuncBuilder:
 			ok_llty, fnres_llty = self._fnresult_types_for_current_fn()
 			self.value_types[dest] = fnres_llty
 			val_ty = self.value_types.get(val)
-			if val_ty is not None and val_ty != ok_llty:
+			if val_ty is not None and ok_llty == "ptr":
+				if val_ty != "ptr":
+					raise NotImplementedError(
+						f"LLVM codegen v1: ok payload type mismatch for ConstructResultOk in {self.fn_info.name}: "
+						f"have {val_ty}, expected ptr"
+					)
+			elif val_ty is not None and val_ty != ok_llty:
 				raise NotImplementedError(
 					f"LLVM codegen v1: ok payload type mismatch for ConstructResultOk in {self.fn_info.name}: "
 					f"have {val_ty}, expected {ok_llty}"
@@ -731,6 +733,8 @@ class _FuncBuilder:
 				return "i64"
 			if td.kind is TypeKind.SCALAR and td.name == "String":
 				return DRIFT_STRING_TYPE
+			if td.kind is TypeKind.REF:
+				return "ptr"
 		if self.int_type_id is not None and ty_id == self.int_type_id:
 			return "i64"
 		if self.string_type_id is not None and ty_id == self.string_type_id:
@@ -761,7 +765,7 @@ class _FuncBuilder:
 		"""
 		Map an Ok TypeId to (ok_llty, ok_key) for FnResult payloads.
 
-		Supported in v1: Int -> i64, String -> %DriftString, Void -> i8.
+		Supported in v1: Int -> i64, String -> %DriftString, Void -> i8, Ref<T> -> ptr.
 		Other kinds are rejected with a clear diagnostic.
 		"""
 		if self.type_table is None:
@@ -774,7 +778,12 @@ class _FuncBuilder:
 			return DRIFT_STRING_TYPE, key
 		if td.kind is TypeKind.VOID:
 			return "i8", key
-		raise NotImplementedError(f"LLVM codegen v1: FnResult ok type {key} is not supported yet")
+		if td.kind is TypeKind.REF:
+			return "ptr", key
+		supported = "Int, String, Void, Ref<T>"
+		raise NotImplementedError(
+			f"LLVM codegen v1: FnResult ok type {key} is not supported yet; supported ok payloads: {supported}"
+		)
 
 	def _llvm_scalar_type(self) -> str:
 		# All lowered values are i64 or i1; phis currently assume Int.
@@ -829,7 +838,7 @@ class _FuncBuilder:
 			return "i64 0"
 		if ok_llty == "i1":
 			return "i1 0"
-		if ok_llty.endswith("*"):
+		if ok_llty == "ptr" or ok_llty.endswith("*"):
 			return f"{ok_llty} null"
 		# Structs/arrays and placeholder i8 can use zeroinitializer.
 		return f"{ok_llty} zeroinitializer"

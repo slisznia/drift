@@ -76,13 +76,14 @@ def test_non_can_throw_returning_fnresult_rejected():
 
 def test_can_throw_fnresult_with_unsupported_ok_type_is_rejected():
 	"""
-	Can-throw FnResult with an unsupported ok payload (Array<Int>) should fail fast with a clear diagnostic.
+	Can-throw FnResult with an unsupported ok payload should fail fast with a clear diagnostic.
 	"""
 	table = TypeTable()
 	int_ty = table.ensure_int()
-	array_ty = table.new_array(int_ty)
+	# Array<Int> stands in for an unsupported ok payload in v1 (arrays not yet allowed as FnResult ok).
+	opt_ty = table.new_array(int_ty)
 	err_ty = table.ensure_error()
-	fnresult_ty = table.new_fnresult(array_ty, err_ty)
+	fnresult_ty = table.new_fnresult(opt_ty, err_ty)
 
 	entry = BasicBlock(
 		name="entry",
