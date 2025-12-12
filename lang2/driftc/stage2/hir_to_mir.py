@@ -635,18 +635,14 @@ class HIRToMIR:
 			self.b.emit(M.ConstString(dest=event_name_val, value=stmt.value.event_fqn))
 			field_count = len(stmt.value.field_values)
 			if field_count == 0:
-				# No declared fields: seed with an empty DV under the event name.
-				payload_val = self.b.new_temp()
-				self.b.emit(M.ConstructDV(dest=payload_val, dv_type_name=stmt.value.event_fqn, args=[]))
-				key_val = self.b.new_temp()
-				self.b.emit(M.ConstString(dest=key_val, value=stmt.value.event_fqn))
+				# No declared fields: build error with no attrs.
 				self.b.emit(
 					M.ConstructError(
 						dest=err_val,
 						code=code_val,
 						event_name=event_name_val,
-						payload=payload_val,
-						attr_key=key_val,
+						payload=None,
+						attr_key=None,
 					)
 				)
 			else:
@@ -983,6 +979,12 @@ class HIRToMIR:
 		if isinstance(payload_expr, H.HExceptionInit) and self._exc_env is not None:
 			short_name = getattr(payload_expr, "event_name", None)
 			return self._exc_env.get(short_name, 0) if short_name is not None else 0
+		if isinstance(payload_expr, H.HExceptionInit) and self._exc_env is not None:
+			# Fall back to short name derived from FQN if catalog uses short keys.
+			fqn = getattr(payload_expr, "event_fqn", None)
+			if fqn:
+				short = fqn.split(":")[-1]
+				return self._exc_env.get(fqn, self._exc_env.get(short, 0))
 		if isinstance(payload_expr, H.HDVInit) and self._exc_env is not None:
 			return self._exc_env.get(payload_expr.dv_type_name, 0)
 		return 0

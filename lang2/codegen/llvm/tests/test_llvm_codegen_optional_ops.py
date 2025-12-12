@@ -31,16 +31,16 @@ def test_optional_ops_round_trip_payload():
 	dv_ty = table.ensure_diagnostic_value()
 	opt_int_ty = table.new_optional(int_ty)
 
-	fnres_main = FnSignature(name="drift_main", return_type_id=int_ty, declared_can_throw=False)
-	fn_info_main = FnInfo(name="drift_main", declared_can_throw=False, return_type_id=int_ty, signature=fnres_main)
+fnres_main = FnSignature(name="drift_main", return_type_id=int_ty, declared_can_throw=False)
+fn_info_main = FnInfo(name="drift_main", declared_can_throw=False, return_type_id=int_ty, signature=fnres_main)
 
-	# Runtime helper signature for error constructor
-	sig_err_new = FnSignature(
-		name="drift_error_new_with_payload",
-		param_type_ids=[int_ty, table.ensure_string(), table.ensure_string(), dv_ty],
-		return_type_id=err_ty,
-		declared_can_throw=False,
-	)
+# Runtime helper signature for error constructor
+sig_err_new = FnSignature(
+	name="drift_error_new_with_payload",
+	param_type_ids=[int_ty, table.ensure_string(), table.ensure_string(), dv_ty],
+	return_type_id=err_ty,
+	declared_can_throw=False,
+)
 	fn_err_new = FnInfo(
 		name="drift_error_new_with_payload",
 		declared_can_throw=False,

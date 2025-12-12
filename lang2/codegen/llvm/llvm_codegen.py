@@ -346,6 +346,7 @@ class LlvmModuleBuilder:
 		if self.needs_error_runtime:
 			lines.extend(
 				[
+					f"declare {DRIFT_ERROR_PTR} @drift_error_new(i64, {DRIFT_STRING_TYPE})",
 					f"declare {DRIFT_ERROR_PTR} @drift_error_new_with_payload(i64, {DRIFT_STRING_TYPE}, {DRIFT_STRING_TYPE}, {DRIFT_DV_TYPE})",
 					f"declare void @drift_error_add_attr_dv({DRIFT_ERROR_PTR}, {DRIFT_STRING_TYPE}, {DRIFT_DV_TYPE}*)",
 					"",
@@ -614,8 +615,8 @@ class _FuncBuilder:
 			dest = self._map_value(instr.dest)
 			code = self._map_value(instr.code)
 			event_name = self._map_value(instr.event_name)
-			payload = self._map_value(instr.payload)
-			attr_key = self._map_value(instr.attr_key)
+			payload = self._map_value(instr.payload) if instr.payload is not None else None
+			attr_key = self._map_value(instr.attr_key) if instr.attr_key is not None else None
 			self.value_types[dest] = DRIFT_ERROR_PTR
 			self.module.needs_error_runtime = True
 			code_ty = self.value_types.get(code)
@@ -628,10 +629,15 @@ class _FuncBuilder:
 				raise NotImplementedError(
 					f"LLVM codegen v1: event_name must be String ({DRIFT_STRING_TYPE}), got {event_name_ty}"
 				)
-			# Attach payload via runtime helper; payload is expected to be a DiagnosticValue.
-			self.lines.append(
-				f"  {dest} = call {DRIFT_ERROR_PTR} @drift_error_new_with_payload(i64 {code}, {DRIFT_STRING_TYPE} {event_name}, {DRIFT_STRING_TYPE} {attr_key}, {DRIFT_DV_TYPE} {payload})"
-			)
+			if payload is None or attr_key is None:
+				self.lines.append(
+					f"  {dest} = call {DRIFT_ERROR_PTR} @drift_error_new(i64 {code}, {DRIFT_STRING_TYPE} {event_name})"
+				)
+			else:
+				# Attach payload via runtime helper; payload is expected to be a DiagnosticValue.
+				self.lines.append(
+					f"  {dest} = call {DRIFT_ERROR_PTR} @drift_error_new_with_payload(i64 {code}, {DRIFT_STRING_TYPE} {event_name}, {DRIFT_STRING_TYPE} {attr_key}, {DRIFT_DV_TYPE} {payload})"
+				)
 		elif isinstance(instr, ErrorAttrsGetDV):
 			self.module.needs_dv_runtime = True
 			dest = self._map_value(instr.dest)

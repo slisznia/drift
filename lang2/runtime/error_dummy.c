@@ -134,3 +134,8 @@ struct DriftError* drift_error_new_with_payload(int64_t code, struct DriftString
     drift_error_add_attr_dv(err, key, &payload);
     return err;
 }
+
+struct DriftError* drift_error_new(int64_t code, struct DriftString event_name) {
+    struct DriftError* err = drift_error_new_dummy(code, event_name, (struct DriftString){0, NULL}, (struct DriftString){0, NULL});
+    return err;
+}

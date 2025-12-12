@@ -31,7 +31,7 @@ def test_can_throw_function_passes_checks():
 		H.HBlock(
 			statements=[
 				H.HThrow(
-					value=H.HExceptionInit(event_name="EvtX", field_names=[], field_values=[]),
+					value=H.HExceptionInit(event_fqn="m:EvtX", field_names=[], field_values=[]),
 				)
 			]
 		),
@@ -54,7 +54,7 @@ def test_non_can_throw_function_violates_invariant():
 		H.HBlock(
 			statements=[
 				H.HThrow(
-					value=H.HExceptionInit(event_name="EvtX", field_names=[], field_values=[]),
+					value=H.HExceptionInit(event_fqn="m:EvtX", field_names=[], field_values=[]),
 				)
 			]
 		),
@@ -82,7 +82,7 @@ def test_can_throw_try_catch_and_return_ok_shape():
 					body=H.HBlock(
 						statements=[
 							H.HThrow(
-								value=H.HExceptionInit(event_name="Evt", field_names=[], field_values=[]),
+								value=H.HExceptionInit(event_fqn="m:Evt", field_names=[], field_values=[]),
 							)
 						]
 					),

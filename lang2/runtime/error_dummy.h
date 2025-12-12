@@ -33,6 +33,7 @@ struct DriftError {
 };
 
 struct DriftError* drift_error_new_dummy(int64_t code, struct DriftString event_name, struct DriftString key, struct DriftString payload);
+struct DriftError* drift_error_new(int64_t code, struct DriftString event_name);
 void drift_error_add_attr_dv(struct DriftError* err, struct DriftString key, const struct DriftDiagnosticValue* value);
 void drift_error_add_local_dv(struct DriftError* err, struct DriftString frame, struct DriftString key, struct DriftDiagnosticValue value);
 int64_t drift_error_get_code(struct DriftError* err);

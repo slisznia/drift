@@ -219,14 +219,14 @@ class ConstructError(MInstr):
 
 	`code` is the 64-bit event code (as per drift-abi-exceptions).
 	`event_name` is the canonical FQN label (for logging/telemetry; not used for matching).
-	`payload` is a DiagnosticValue representing structured attrs.
-	`attr_key` is the attr name under which to store the payload.
+	`payload` is a DiagnosticValue representing structured attrs (optional).
+	`attr_key` is the attr name under which to store the payload (optional).
 	"""
 	dest: ValueId
 	code: ValueId
 	event_name: ValueId
-	payload: ValueId
-	attr_key: ValueId
+	payload: ValueId | None
+	attr_key: ValueId | None
 
 
 @dataclass
