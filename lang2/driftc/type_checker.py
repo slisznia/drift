@@ -132,7 +132,13 @@ class TypeChecker:
 						if expr.binding_id is not None:
 							binding_for_var[id(expr)] = expr.binding_id
 						return record_expr(expr, scope[expr.name])
-				diagnostics.append(Diagnostic(message=f"unknown variable '{expr.name}'", severity="error", span=None))
+				diagnostics.append(
+					Diagnostic(
+						message=f"unknown variable '{expr.name}'",
+						severity="error",
+						span=getattr(expr, "loc", None),
+					)
+				)
 				return record_expr(expr, self._unknown)
 			if isinstance(expr, H.HBorrow):
 				inner_ty = type_expr(expr.subject)
@@ -164,7 +170,9 @@ class TypeChecker:
 						call_resolutions[id(expr)] = decl
 						return record_expr(expr, decl.signature.result_type)
 					except ResolutionError as err:
-						diagnostics.append(Diagnostic(message=str(err), severity="error", span=None))
+						diagnostics.append(
+							Diagnostic(message=str(err), severity="error", span=getattr(expr, "loc", None))
+						)
 						return record_expr(expr, self._unknown)
 
 				# Fallback: signature map by name.
@@ -191,7 +199,9 @@ class TypeChecker:
 						call_resolutions[id(expr)] = resolution
 						return record_expr(expr, resolution.decl.signature.result_type)
 					except ResolutionError as err:
-						diagnostics.append(Diagnostic(message=str(err), severity="error", span=None))
+						diagnostics.append(
+							Diagnostic(message=str(err), severity="error", span=getattr(expr, "loc", None))
+						)
 						return record_expr(expr, self._unknown)
 
 				if call_signatures:
@@ -212,7 +222,7 @@ class TypeChecker:
 						Diagnostic(
 							message=f"{expr.method_name} is only valid on DiagnosticValue",
 							severity="error",
-							span=None,
+							span=getattr(expr, "loc", None),
 						)
 					)
 					return record_expr(expr, self._unknown)
@@ -224,7 +234,7 @@ class TypeChecker:
 						Diagnostic(
 							message='attrs must be indexed: use error.attrs["key"]',
 							severity="error",
-							span=None,
+							span=getattr(expr, "loc", None),
 						)
 					)
 					return record_expr(expr, self._unknown)
@@ -239,7 +249,7 @@ class TypeChecker:
 							Diagnostic(
 								message="attrs access is only supported on Error values",
 								severity="error",
-								span=None,
+								span=getattr(expr, "loc", None),
 							)
 						)
 						return record_expr(expr, self._unknown)
@@ -248,7 +258,7 @@ class TypeChecker:
 							Diagnostic(
 								message="Error.attrs expects a String key",
 								severity="error",
-								span=None,
+								span=getattr(expr, "loc", None),
 							)
 						)
 					return record_expr(expr, self._dv)
@@ -269,6 +279,15 @@ class TypeChecker:
 				diagnostics.append(
 					Diagnostic(
 						message="indexing requires an Array value",
+						severity="error",
+						span=getattr(expr, "loc", None),
+					)
+				)
+				return record_expr(expr, self._unknown)
+			if isinstance(expr, H.HCall) and isinstance(expr.fn, H.HField) and expr.fn.name == "attrs":
+				diagnostics.append(
+					Diagnostic(
+						message="attrs values must be DiagnosticValue; implicit setters are not supported",
 						severity="error",
 						span=getattr(expr, "loc", None),
 					)

@@ -207,7 +207,7 @@ Your last open question asks about staging. My recommendation:
 - LLVM codegen now requires TypeTable info for can-throw FnResult lowering, emits named FnResult types for supported ok payloads (Int/String/Void-like), checks payload type consistency on ConstructResultOk/Err, and fails fast on unsupported shapes instead of falling back silently.
 - Fixed FnResult<Ref<T>> Err lowering to zero the ptr ok slot correctly (opaque pointer literal) and added coverage; headers now call out that arrays are supported as values but not yet as FnResult ok payloads.
 - Phase 2 scaffolding started: TypeTable/resolve support for DiagnosticValue and Optional<T>; checker knows Error.attrs[String] returns DiagnosticValue and dv.as_{int,bool,string} return Optional<T>; HIR→MIR lowers Error.attrs[...] to ErrorAttrsGetDV and dv.as_* to dedicated DVAs* MIR ops with new tests. LLVM backend still fails fast on DV ops (to be implemented next).
-- TODO: Once spans are plumbed, thread real locations into `CatchArmInfo.span` via `collect_catch_arms_from_block` so `validate_catch_arms` emits precise diagnostics.
+- Catch-arm spans are now threaded end-to-end: HIR nodes carry a `Span`, normalization preserves it, collection asserts it, and `validate_catch_arms` attaches it (with notes pointing to first occurrences for duplicates/catch-alls).
 ---
 
 ## 7. Answering your open questions directly
