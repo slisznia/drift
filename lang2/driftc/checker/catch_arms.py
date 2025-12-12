@@ -5,8 +5,7 @@ Catch arm validation helpers (checker-side).
 
 These helpers live in the checker so that structural rules around catch arms
 are enforced before lowering. Lowering still defends against obviously bad
-shapes (multiple catch-alls, catch-all not last) as a last-resort guard, but
-user-facing diagnostics belong here.
+shapes, but user-facing diagnostics belong here.
 """
 
 from __future__ import annotations
@@ -22,7 +21,7 @@ class CatchArmInfo:
 	"""Syntactic info about a catch arm (event name and optional span/binder)."""
 
 	event_name: Optional[str]  # None = catch-all
-	span: Optional[str] = None  # placeholder for a real Span/Loc type
+	span: Optional[str] = None  # placeholder for a real Span/Loc type; TODO wire real spans
 
 
 def _report(msg: str, diagnostics: Optional[list[Diagnostic]]) -> None:
@@ -46,8 +45,7 @@ def validate_catch_arms(
 	- no duplicate specific event arms
 	- specific event names must be in the known_events set
 
-	Raises RuntimeError on the first violation; real checker will emit proper
-	diagnostics instead of exceptions.
+	Diagnostics are appended when provided; otherwise a RuntimeError is raised.
 	"""
 	seen_events: Set[str] = set()
 	catch_all_seen = False

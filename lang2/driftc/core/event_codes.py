@@ -9,7 +9,7 @@ fatal diagnostics by callers; this module only computes codes.
 
 from __future__ import annotations
 
-from lang.xxhash64 import hash64  # ABI-stable hash used in lang/
+from lang2.driftc.core.xxhash64 import hash64  # ABI-stable hash used in lang/; copied locally
 
 # High 4 bits encode the "exception" domain; low 60 bits carry the hash payload.
 EVENT_DOMAIN_TAG = 0b0001 << 60

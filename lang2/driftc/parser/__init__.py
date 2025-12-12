@@ -98,6 +98,7 @@ def _convert_if(stmt: parser_ast.IfStmt) -> s0.Stmt:
 		cond=_convert_expr(stmt.condition),
 		then_block=_convert_block(stmt.then_block),
 		else_block=_convert_block(stmt.else_block) if stmt.else_block else [],
+		loc=stmt.loc,
 	)
 
 

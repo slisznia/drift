@@ -187,7 +187,9 @@ class StringConcat(MInstr):
 
 @dataclass
 class Call(MInstr):
-	"""dest = fn(args...) (plain function call; dest may be None for void)."""
+	"""
+	dest = fn(args...) (plain function call; dest may be None for void returns).
+	"""
 	dest: Optional[ValueId]  # None for void calls
 	fn: str
 	args: List[ValueId]

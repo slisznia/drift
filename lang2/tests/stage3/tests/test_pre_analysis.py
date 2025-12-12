@@ -51,7 +51,7 @@ def test_address_taken_detected():
 	assert result.may_fail == set()
 
 
-def test_calls_marked_may_fail():
+def test_calls_tracked_separately_from_may_fail():
 	entry = BasicBlock(
 		name="entry",
 		instructions=[
@@ -72,8 +72,9 @@ def test_calls_marked_may_fail():
 		entry="entry",
 	)
 	result = MirPreAnalysis(code_to_exc={1234: "MyException"}).analyze(func)
-	assert ("entry", 0) in result.may_fail
-	assert ("entry", 1) in result.may_fail
+	# Calls are tracked separately; only constructors count as may_fail in v1.
+	assert ("entry", 0) in result.call_sites
+	assert ("entry", 1) in result.call_sites
 	assert ("entry", 2) in result.may_fail
 	assert ("entry", 4) in result.may_fail
 	assert ("entry", 4) in result.construct_error_sites

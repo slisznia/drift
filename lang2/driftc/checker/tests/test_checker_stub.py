@@ -28,13 +28,21 @@ def test_checker_infers_fnresult_and_declared_events_from_signature():
 def test_checker_validates_catch_arms_and_accumulates_diagnostics():
 	"""Checker should run catch-arm validation and accumulate diagnostics."""
 	signatures = {"f": FnSignature(name="f", return_type="Int")}
-	catch_arms = {
-		"f": [
-			CatchArmInfo(event_name=None),
-			CatchArmInfo(event_name=None),
+	# Provide a minimal HIR with invalid catch arms so the checker discovers them.
+	from lang2.driftc import stage1 as H  # local import to avoid circular test deps
+
+	hir = H.HBlock(
+		statements=[
+			H.HTry(
+				body=H.HBlock(statements=[]),
+				catches=[
+					H.HCatchArm(event_name=None, binder=None, block=H.HBlock(statements=[])),
+					H.HCatchArm(event_name=None, binder=None, block=H.HBlock(statements=[])),
+				],
+			)
 		]
-	}
-	checker = Checker(signatures=signatures, catch_arms=catch_arms, exception_catalog={"Evt": 1})
+	)
+	checker = Checker(signatures=signatures, exception_catalog={"Evt": 1}, hir_blocks={"f": hir})
 
 	checked = checker.check(["f"])
 

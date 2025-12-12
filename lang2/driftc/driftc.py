@@ -34,13 +34,11 @@ if str(ROOT) not in sys.path:
 
 from lang2.driftc import stage1 as H
 from lang2.driftc.stage1 import normalize_hir
-from lang2.driftc.stage1.hir_utils import collect_catch_arms_from_block
 from lang2.driftc.stage2 import HIRToMIR, MirBuilder, mir_nodes as M
 from lang2.driftc.stage3.throw_summary import ThrowSummaryBuilder
 from lang2.driftc.stage4 import run_throw_checks
 from lang2.driftc.stage4 import MirToSSA
 from lang2.driftc.checker import Checker, CheckedProgram, FnSignature, FnInfo
-from lang2.driftc.checker.catch_arms import CatchArmInfo
 from lang2.driftc.borrow_checker_pass import BorrowChecker
 from lang2.driftc.borrow_checker import PlaceBase, PlaceKind
 from lang2.driftc.core.diagnostics import Diagnostic
@@ -139,14 +137,7 @@ def compile_stubbed_funcs(
 				raise ValueError("signatures with TypeIds require a shared type_table")
 
 	# Normalize upfront so catch-arm collection and lowering share the same HIR.
-	catch_arms_map: Dict[str, List[CatchArmInfo]] = {}
-	normalized_hirs: Dict[str, H.HBlock] = {}
-	for name, hir_block in func_hirs.items():
-		hir_norm = normalize_hir(hir_block)
-		normalized_hirs[name] = hir_norm
-		arms = collect_catch_arms_from_block(hir_norm)
-		if arms:
-			catch_arms_map[name] = arms
+	normalized_hirs: Dict[str, H.HBlock] = {name: normalize_hir(hir_block) for name, hir_block in func_hirs.items()}
 
 	# If no signatures were supplied, resolve basic signatures from normalized HIR.
 	shared_type_table = type_table
@@ -168,7 +159,6 @@ def compile_stubbed_funcs(
 		declared_can_throw=declared_can_throw,
 		signatures=signatures,
 		exception_catalog=exc_env,
-		catch_arms=catch_arms_map,
 		hir_blocks=func_hirs,
 		type_table=shared_type_table,
 	)
@@ -429,7 +419,6 @@ def main(argv: list[str] | None = None) -> int:
 		declared_can_throw=None,
 		signatures=signatures,
 		exception_catalog=exception_catalog,
-		catch_arms=None,
 		hir_blocks=func_hirs,
 		type_table=type_table,
 	)

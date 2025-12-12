@@ -82,6 +82,7 @@ def build_func_throw_info(
 			constructs_error=summary.constructs_error,
 			exception_types=set(summary.exception_types),
 			may_fail_sites=set(summary.may_fail_sites),
+			# call_sites are currently informational only; invariants are value-based.
 			declared_can_throw=declared_can_throw.get(fname, False),
 			return_type_id=return_ty,
 			declared_events=decl_events,
@@ -94,9 +95,10 @@ def enforce_can_throw_invariants(
 	diagnostics: Optional[List[Diagnostic]] = None,
 ) -> None:
 	"""
-	Basic invariants:
-	  - If a function is not declared can-throw, it must not construct errors.
-	More invariants (e.g., Returns carry FnResult) can be layered on later.
+	Basic invariants (value-based error model):
+	  - If a function is not declared can-throw, it must not construct errors
+	    (ConstructError/throw). Calls alone are not treated as failing in v1.
+	More invariants (e.g., Returns carry FnResult) are layered in other helpers.
 	"""
 	for fname, info in func_infos.items():
 		if info.constructs_error and not info.declared_can_throw:

@@ -32,6 +32,7 @@ def test_build_func_throw_info_combines_summary_and_decl():
 			constructs_error=True,
 			exception_types={"MyExc"},
 			may_fail_sites={("entry", 0)},
+			call_sites=set(),
 		)
 	}
 	func_infos = build_func_throw_info(
@@ -56,6 +57,7 @@ def test_enforce_can_throw_invariants_raises_for_non_declared_thrower():
 			constructs_error=True,
 			exception_types=set(),
 			may_fail_sites=set(),
+			call_sites=set(),
 		)
 	}
 	func_infos = build_func_throw_info(
@@ -77,6 +79,7 @@ def test_enforce_can_throw_invariants_allows_declared_thrower():
 			constructs_error=True,
 			exception_types=set(),
 			may_fail_sites=set(),
+			call_sites=set(),
 		)
 	}
 	func_infos = build_func_throw_info(
@@ -96,6 +99,7 @@ def test_return_shape_enforced_for_can_throw():
 			constructs_error=False,
 			exception_types=set(),
 			may_fail_sites=set(),
+			call_sites=set(),
 		)
 	}
 	func_infos = build_func_throw_info(
@@ -127,6 +131,7 @@ def test_fnresult_return_shape_enforced_for_can_throw():
 			constructs_error=False,
 			exception_types=set(),
 			may_fail_sites=set(),
+			call_sites=set(),
 		)
 	}
 	func_infos = build_func_throw_info(
@@ -168,6 +173,7 @@ def test_run_throw_checks_wrapper_executes_all_invariants():
 		constructs_error=True,
 		exception_types={"E"},
 		may_fail_sites=set(),
+		call_sites=set(),
 	)
 	func_infos = run_throw_checks(
 		funcs=funcs,

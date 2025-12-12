@@ -12,8 +12,8 @@ purely structural: all semantic flags are computed here.
 
 Current analyses:
   - address_taken: locals whose address is observed (AddrOfLocal)
-  - may_fail: instruction sites that can fail/throw (calls, method calls,
-    ConstructDV, ConstructError)
+  - may_fail: instruction sites that *construct* errors (ConstructDV,
+    ConstructError). Call sites are recorded separately for future refinement.
   - throw summary: per-function flags/sets for error construction and the
     exception DV types involved (when a code→exception mapping is provided)
 """
@@ -41,7 +41,8 @@ class MirAnalysisResult:
 	"""Holds pre-analysis results for a single MirFunc."""
 
 	address_taken: Set[str]  # locals whose address is taken
-	may_fail: Set[tuple[str, int]]  # instruction sites that can fail (block_name, instruction_index)
+	may_fail: Set[tuple[str, int]]  # instruction sites that construct errors (block_name, instruction_index)
+	call_sites: Set[tuple[str, int]]  # all Call/MethodCall sites (informational)
 	construct_error_sites: Set[tuple[str, int]]  # where ConstructError appears
 	exception_types: Set[str] = field(default_factory=set)  # DV type names seen via event-code mapping
 
@@ -50,7 +51,8 @@ class MirPreAnalysis:
 	"""
 	Run MIR pre-analyses:
 	  - address_taken: which locals have their address observed
-	  - may_fail: which instruction sites can fail (conservative)
+	  - may_fail: instruction sites that construct errors (ConstructDV,
+	    ConstructError); calls are tracked separately for future invariants
 	  - construct_error_sites: where Errors are constructed (throw sites)
 	  - exception_types: DV type names used in ConstructError
 
@@ -69,6 +71,7 @@ class MirPreAnalysis:
 	def analyze(self, func: MirFunc) -> MirAnalysisResult:
 		addr_taken: Set[str] = set()
 		may_fail: Set[tuple[str, int]] = set()
+		call_sites: Set[tuple[str, int]] = set()
 		construct_error_sites: Set[tuple[str, int]] = set()
 		exception_types: Set[str] = set()
 
@@ -83,6 +86,7 @@ class MirPreAnalysis:
 					instr,
 					addr_taken,
 					may_fail,
+					call_sites,
 					construct_error_sites,
 					exception_types,
 					const_ints,
@@ -93,6 +97,7 @@ class MirPreAnalysis:
 		return MirAnalysisResult(
 			address_taken=addr_taken,
 			may_fail=may_fail,
+			call_sites=call_sites,
 			construct_error_sites=construct_error_sites,
 			exception_types=exception_types,
 		)
@@ -104,6 +109,7 @@ class MirPreAnalysis:
 		instr: MInstr,
 		addr_taken: Set[str],
 		may_fail: Set[tuple[str, int]],
+		call_sites: Set[tuple[str, int]],
 		construct_error_sites: Set[tuple[str, int]],
 		exception_types: Set[str],
 		const_ints: Dict[str, int],
@@ -112,16 +118,12 @@ class MirPreAnalysis:
 		if isinstance(instr, AddrOfLocal):
 			addr_taken.add(instr.local)
 
-		may_fail_ops = (
-			Call,
-			MethodCall,
-			ConstructDV,
-			ConstructError,
-			# Conservatively include field/index ops if you treat them as potentially failing.
-			# This can be refined later.
-			# LoadField, StoreField, LoadIndex, StoreIndex, ...
-		)
-		if isinstance(instr, may_fail_ops):
+		if isinstance(instr, (Call, MethodCall)):
+			# Track call sites separately; v1 does not treat calls alone as hard
+			# may-fail for invariants.
+			call_sites.add((block_name, idx))
+		if isinstance(instr, (ConstructDV, ConstructError)):
+			# ConstructError (and DV ctor used by throw) is a hard may-fail site.
 			may_fail.add((block_name, idx))
 
 		if isinstance(instr, ConstructError):

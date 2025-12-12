@@ -170,6 +170,29 @@ class HIRToMIR:
 		self._void_type = self._type_table.ensure_void()
 		self._signatures = signatures or {}
 		self._ret_type = return_type
+		# Cache the current function signature for invariants (can-throw checks).
+		self._fn_sig = self._signatures.get(self.b.func.name)
+
+	def _fn_can_throw(self) -> bool | None:
+		"""
+		Best-effort can-throw flag for the current function.
+
+		Preferred source is the signature's declared_can_throw; we fall back to
+		the return type being FnResult to keep invariants defensive when
+		declared_can_throw is absent.
+		"""
+		if self._fn_sig is None:
+			return None
+		if self._fn_sig.declared_can_throw is not None:
+			# Only treat False as authoritative when explicitly set; inferred
+			# non-FnResult return types do not imply non-can-throw here.
+			return bool(self._fn_sig.declared_can_throw)
+		rt = self._fn_sig.return_type_id
+		if rt is not None:
+			td = self._type_table.get(rt)
+			if td.kind is TypeKind.FNRESULT:
+				return True
+		return None
 
 	# --- Expression lowering ---
 
@@ -558,6 +581,11 @@ class HIRToMIR:
 		"""
 		if self.b.block.terminator is not None:
 			return
+		can_throw = self._fn_can_throw()
+		if can_throw is False:
+			# Known non-can-throw functions must never reach here; this is a
+			# checker/pipeline bug.
+			raise AssertionError("throw in non-can-throw function (checker bug)")
 
 		# Payload of the error (already a DiagnosticValue expression in HIR).
 		payload_val = self.lower_expr(stmt.value)
@@ -622,6 +650,9 @@ class HIRToMIR:
 			return
 		if not stmt.catches:
 			raise RuntimeError("HTry lowering requires at least one catch arm")
+		can_throw = self._fn_can_throw()
+		if can_throw is False:
+			raise AssertionError("try/catch in non-can-throw function (checker bug)")
 
 		body_block = self.b.new_block("try_body")
 		dispatch_block = self.b.new_block("try_dispatch")

@@ -27,6 +27,8 @@ from lang2.driftc.core.types_protocol import TypeEnv
 from lang2.driftc.checker.catch_arms import CatchArmInfo, validate_catch_arms
 from lang2.driftc.core.type_resolve_common import resolve_opaque_type
 from lang2.driftc.core.types_core import TypeTable, TypeId, TypeKind
+from lang2.driftc.stage1.hir_utils import collect_catch_arms_from_block
+from lang2.driftc.stage1.normalize import normalize_hir
 
 if TYPE_CHECKING:
 	from lang2.driftc import stage1 as H
@@ -128,7 +130,6 @@ class Checker:
 		self,
 		declared_can_throw: Mapping[str, bool] | None = None,
 		signatures: Mapping[str, FnSignature] | None = None,
-		catch_arms: Mapping[str, Sequence[CatchArmInfo]] | None = None,
 		exception_catalog: Mapping[str, int] | None = None,
 		hir_blocks: Mapping[str, "H.HBlock"] | None = None,  # type: ignore[name-defined]
 		type_table: "TypeTable" | None = None,
@@ -139,7 +140,7 @@ class Checker:
 		#    on the return type resembling FnResult.
 		self._declared_map = declared_can_throw or {}
 		self._signatures = signatures or {}
-		self._catch_arms = catch_arms or {}
+		self._catch_arms = self._normalize_and_collect_catch_arms(hir_blocks or {})
 		self._exception_catalog = dict(exception_catalog) if exception_catalog else None
 		self._hir_blocks = hir_blocks or {}
 		# Use shared TypeTable when supplied; otherwise create a local one.
@@ -170,6 +171,20 @@ class Checker:
 		self._error_type = _find_named(TypeKind.ERROR, "Error") or self._type_table.ensure_error()
 		self._unknown_type = _find_named(TypeKind.UNKNOWN, "Unknown") or self._type_table.ensure_unknown()
 		# TODO: remove declared_can_throw shim once real parser/type checker supplies signatures.
+
+	def _normalize_and_collect_catch_arms(self, hir_blocks: Mapping[str, "H.HBlock"]) -> dict[str, list[CatchArmInfo]]:
+		"""
+		Normalize HIR blocks and collect catch-arm info uniformly for all callers.
+
+		This keeps catch validation consistent between the CLI and stub helpers.
+		"""
+		catch_arms: dict[str, list[CatchArmInfo]] = {}
+		for name, block in hir_blocks.items():
+			hir_norm = normalize_hir(block)
+			arms = collect_catch_arms_from_block(hir_norm)
+			if arms:
+				catch_arms[name] = arms
+		return catch_arms
 
 	def check(self, fn_decls: Iterable[str]) -> CheckedProgram:
 		"""
