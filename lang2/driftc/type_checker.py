@@ -21,6 +21,7 @@ from typing import Dict, List, Optional, Mapping, Tuple
 from lang2.driftc import stage1 as H
 from lang2.driftc.core.diagnostics import Diagnostic
 from lang2.driftc.core.types_core import TypeId, TypeTable, TypeKind
+from lang2.driftc.core.span import Span
 from lang2.driftc.checker import FnSignature
 from lang2.driftc.method_registry import CallableDecl, CallableRegistry, ModuleId
 from lang2.driftc.method_resolver import MethodResolution, ResolutionError, resolve_function_call, resolve_method_call
@@ -136,7 +137,7 @@ class TypeChecker:
 					Diagnostic(
 						message=f"unknown variable '{expr.name}'",
 						severity="error",
-						span=getattr(expr, "loc", None),
+						span=getattr(expr, "loc", Span()),
 					)
 				)
 				return record_expr(expr, self._unknown)
@@ -171,7 +172,7 @@ class TypeChecker:
 						return record_expr(expr, decl.signature.result_type)
 					except ResolutionError as err:
 						diagnostics.append(
-							Diagnostic(message=str(err), severity="error", span=getattr(expr, "loc", None))
+							Diagnostic(message=str(err), severity="error", span=getattr(expr, "loc", Span()))
 						)
 						return record_expr(expr, self._unknown)
 
@@ -200,7 +201,7 @@ class TypeChecker:
 						return record_expr(expr, resolution.decl.signature.result_type)
 					except ResolutionError as err:
 						diagnostics.append(
-							Diagnostic(message=str(err), severity="error", span=getattr(expr, "loc", None))
+							Diagnostic(message=str(err), severity="error", span=getattr(expr, "loc", Span()))
 						)
 						return record_expr(expr, self._unknown)
 
@@ -218,13 +219,13 @@ class TypeChecker:
 							return record_expr(expr, self._opt_bool)
 						if expr.method_name == "as_string":
 							return record_expr(expr, self._opt_string)
-					diagnostics.append(
-						Diagnostic(
-							message=f"{expr.method_name} is only valid on DiagnosticValue",
-							severity="error",
-							span=getattr(expr, "loc", None),
+						diagnostics.append(
+							Diagnostic(
+								message=f"{expr.method_name} is only valid on DiagnosticValue",
+								severity="error",
+								span=getattr(expr, "loc", Span()),
+							)
 						)
-					)
 					return record_expr(expr, self._unknown)
 				return record_expr(expr, self._unknown)
 			if isinstance(expr, H.HField):
@@ -234,7 +235,7 @@ class TypeChecker:
 						Diagnostic(
 							message='attrs must be indexed: use error.attrs["key"]',
 							severity="error",
-							span=getattr(expr, "loc", None),
+							span=getattr(expr, "loc", Span()),
 						)
 					)
 					return record_expr(expr, self._unknown)
@@ -249,7 +250,7 @@ class TypeChecker:
 							Diagnostic(
 								message="attrs access is only supported on Error values",
 								severity="error",
-								span=getattr(expr, "loc", None),
+								span=getattr(expr, "loc", Span()),
 							)
 						)
 						return record_expr(expr, self._unknown)
@@ -258,7 +259,7 @@ class TypeChecker:
 							Diagnostic(
 								message="Error.attrs expects a String key",
 								severity="error",
-								span=getattr(expr, "loc", None),
+								span=getattr(expr, "loc", Span()),
 							)
 						)
 					return record_expr(expr, self._dv)
@@ -270,7 +271,7 @@ class TypeChecker:
 						Diagnostic(
 							message="array index must be an integer type",
 							severity="error",
-							span=getattr(expr, "loc", None),
+							span=getattr(expr, "loc", Span()),
 						)
 					)
 					return record_expr(expr, self._unknown)
@@ -280,7 +281,7 @@ class TypeChecker:
 					Diagnostic(
 						message="indexing requires an Array value",
 						severity="error",
-						span=getattr(expr, "loc", None),
+						span=getattr(expr, "loc", Span()),
 					)
 				)
 				return record_expr(expr, self._unknown)
@@ -289,7 +290,7 @@ class TypeChecker:
 					Diagnostic(
 						message="attrs values must be DiagnosticValue; implicit setters are not supported",
 						severity="error",
-						span=getattr(expr, "loc", None),
+						span=getattr(expr, "loc", Span()),
 					)
 				)
 				return record_expr(expr, self._unknown)
