@@ -48,7 +48,7 @@ def test_branch_condition_must_be_bool():
 	fn_info = FnInfo(name="f", declared_can_throw=False, return_type_id=int_ty)
 
 	with pytest.raises(NotImplementedError, match="branch condition must be bool"):
-		lower_ssa_func_to_llvm(mir, ssa, fn_info, {"f": fn_info})
+		lower_ssa_func_to_llvm(mir, ssa, fn_info, {"f": fn_info}, type_table=table)
 
 
 def test_non_can_throw_returning_fnresult_rejected():
@@ -70,8 +70,8 @@ def test_non_can_throw_returning_fnresult_rejected():
 	int_ty = table.new_scalar("Int")
 	fn_info = FnInfo(name="f", declared_can_throw=False, return_type_id=int_ty)
 
-	with pytest.raises(NotImplementedError, match="non-can-throw return must be Int"):
-		lower_ssa_func_to_llvm(mir, ssa, fn_info, {"f": fn_info})
+	with pytest.raises(NotImplementedError, match="FnResult construction in non-can-throw function"):
+		lower_ssa_func_to_llvm(mir, ssa, fn_info, {"f": fn_info}, type_table=table)
 
 
 def test_string_binaryop_unsupported():

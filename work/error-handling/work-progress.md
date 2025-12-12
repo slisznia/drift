@@ -202,6 +202,7 @@ Your last open question asks about staging. My recommendation:
 - Rolled back MIR call edges in favor of the value-based FnResult model; pre-analysis now records call sites separately and treats only error constructors as `may_fail`, and stage4 invariants forbid ConstructError in non-can-throw functions while keeping ordinary calls allowed.
 - Added MIR Call/MethodCall shape tests to lock the plain-instruction form (no error edges).
 - Stage4 now enforces that can-throw signatures are real FnResult<_, Error> via the available TypeEnv to keep the ABI honest before codegen; added targeted tests.
+- LLVM codegen now requires TypeTable info for can-throw FnResult lowering, emits named FnResult types for supported ok payloads (Int/String/Void-like), checks payload type consistency on ConstructResultOk/Err, and fails fast on unsupported shapes instead of falling back silently.
 - TODO: Once spans are plumbed, thread real locations into `CatchArmInfo.span` via `collect_catch_arms_from_block` so `validate_catch_arms` emits precise diagnostics.
 ---
 

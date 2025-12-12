@@ -6,16 +6,20 @@ SSA → LLVM IR lowering for the v1 Drift ABI (textual emitter).
 Scope (v1 bring-up):
   - Input: SSA (`SsaFunc`) plus MIR (`MirFunc`) and `FnInfo` metadata.
   - Supported types: Int (i64), Bool (i1 in regs), String ({%drift.size, i8*}),
-    FnResult<Int, Error>.
+    FnResult<ok, Error> where ok ∈ {Int, String, Void-like}, and Array.
   - Supported ops: ConstInt/Bool/String, AssignSSA aliases, BinaryOpInstr (int),
-    Call (Int/String or FnResult<Int, Error> return), Phi, ConstructResultOk/Err,
+    Call (Int/String or FnResult return), Phi, ConstructResultOk/Err,
     ConstructError (attrs zeroed), Return, IfTerminator/Goto, Array ops.
+  - FnResult lowering requires a TypeTable so we can map ok/error TypeIds to
+    LLVM payloads; we fail fast without it for can-throw functions.
   - Control flow: straight-line + if/else (acyclic CFGs); loops/backedges are
     rejected explicitly.
 
 ABI (from docs/design/drift-lang-abi.md):
   - %DriftError           = { i64 code, ptr attrs, ptr ctx_frames, ptr stack }
   - %FnResult_Int_Error   = { i1 is_err, i64 ok, %DriftError err }
+  - %FnResult_String_Error= { i1 is_err, %DriftString ok, %DriftError err }
+  - %FnResult_Void_Error  = { i1 is_err, i8 ok, %DriftError err } (void-like ok)
   - %DriftString          = { %drift.size, i8* }
   - %drift.size           = i64 (Uint carrier)
   - Drift Int is i64; Bool is i1 in registers.
@@ -97,7 +101,7 @@ def lower_ssa_func_to_llvm(
 	  LLVM IR string for the function definition.
 
 	Limitations:
-	  - Returns: Int, String, or FnResult<Int, Error> in v1.
+	  - Returns: Int, String, or FnResult<ok, Error> (ok ∈ {Int, String, Void-like}) in v1.
 	  - No loops/backedges; CFG must be acyclic (if/else diamonds ok).
 	"""
 	all_infos = dict(fn_infos) if fn_infos is not None else {fn_info.name: fn_info}
@@ -175,6 +179,8 @@ class LlvmModuleBuilder:
 	needs_argv_helper: bool = False
 	needs_console_runtime: bool = False
 	array_string_type: Optional[str] = None
+	_fnresult_types: Dict[str, str] = field(default_factory=dict)
+	_fnresult_names: Dict[str, str] = field(default_factory=dict)
 
 	def __post_init__(self) -> None:
 		if DRIFT_SIZE_TYPE.startswith("%"):
@@ -187,6 +193,41 @@ class LlvmModuleBuilder:
 				"%DriftArrayHeader = type { i64, i64, ptr }",
 			]
 		)
+		# Seed the canonical FnResult<Int, Error> type; other FnResult shapes get
+		# named types when first requested.
+		self._fnresult_types["i64"] = FNRESULT_INT_ERROR
+		self._fnresult_names["i64"] = FNRESULT_INT_ERROR
+		# Predeclare the other known shapes for clarity.
+		self._declare_fnresult_named_type("i8", "%FnResult_Void_Error")
+		self._declare_fnresult_named_type(DRIFT_STRING_TYPE, "%FnResult_String_Error")
+
+	def fnresult_type(self, ok_llty: str) -> str:
+		"""
+		Return the LLVM struct type for FnResult<ok_llty, Error>.
+
+		We emit named types per ok payload for readability/ABI stability. Supported
+		ok payloads in v1: i64 (Int), %DriftString (String), and i8 (void-like).
+		"""
+		if ok_llty in self._fnresult_types:
+			return self._fnresult_types[ok_llty]
+		if ok_llty == "i64":
+			return FNRESULT_INT_ERROR
+		if ok_llty == DRIFT_STRING_TYPE:
+			return self._declare_fnresult_named_type(ok_llty, "%FnResult_String_Error")
+		if ok_llty == "i8":
+			return self._declare_fnresult_named_type(ok_llty, "%FnResult_Void_Error")
+		raise NotImplementedError(
+			f"LLVM codegen v1: unsupported FnResult ok payload type {ok_llty!r}"
+		)
+
+	def _declare_fnresult_named_type(self, ok_llty: str, name: str) -> str:
+		"""Declare and cache a named FnResult type for the given ok payload."""
+		if ok_llty in self._fnresult_types:
+			return self._fnresult_types[ok_llty]
+		self.type_decls.append(f"{name} = type {{ i1, {ok_llty}, {DRIFT_ERROR_TYPE} }}")
+		self._fnresult_types[ok_llty] = name
+		self._fnresult_names[ok_llty] = name
+		return name
 
 	def emit_func(self, text: str) -> None:
 		self.funcs.append(text)
@@ -448,25 +489,42 @@ class _FuncBuilder:
 		elif isinstance(instr, Call):
 			self._lower_call(instr)
 		elif isinstance(instr, ConstructResultOk):
+			if not self.fn_info.declared_can_throw:
+				raise NotImplementedError(
+					f"LLVM codegen v1: FnResult construction in non-can-throw function {self.fn_info.name} is not allowed"
+				)
 			dest = self._map_value(instr.dest)
 			val = self._map_value(instr.value)
-			self.value_types[dest] = FNRESULT_INT_ERROR
+			ok_llty, fnres_llty = self._fnresult_types_for_current_fn()
+			self.value_types[dest] = fnres_llty
+			val_ty = self.value_types.get(val)
+			if val_ty is not None and val_ty != ok_llty:
+				raise NotImplementedError(
+					f"LLVM codegen v1: ok payload type mismatch for ConstructResultOk in {self.fn_info.name}: "
+					f"have {val_ty}, expected {ok_llty}"
+				)
 			tmp0 = self._fresh("ok0")
 			tmp1 = self._fresh("ok1")
 			err_zero = f"{DRIFT_ERROR_TYPE} zeroinitializer"
-			self.lines.append(f"  {tmp0} = insertvalue {FNRESULT_INT_ERROR} undef, i1 0, 0")
-			self.lines.append(f"  {tmp1} = insertvalue {FNRESULT_INT_ERROR} {tmp0}, i64 {val}, 1")
-			self.lines.append(f"  {dest} = insertvalue {FNRESULT_INT_ERROR} {tmp1}, {err_zero}, 2")
+			self.lines.append(f"  {tmp0} = insertvalue {fnres_llty} undef, i1 0, 0")
+			self.lines.append(f"  {tmp1} = insertvalue {fnres_llty} {tmp0}, {ok_llty} {val}, 1")
+			self.lines.append(f"  {dest} = insertvalue {fnres_llty} {tmp1}, {err_zero}, 2")
 		elif isinstance(instr, ConstructResultErr):
+			if not self.fn_info.declared_can_throw:
+				raise NotImplementedError(
+					f"LLVM codegen v1: FnResult.Err construction in non-can-throw function {self.fn_info.name} is not allowed"
+				)
 			dest = self._map_value(instr.dest)
 			err_val = self._map_value(instr.error)
-			self.value_types[dest] = FNRESULT_INT_ERROR
+			ok_llty, fnres_llty = self._fnresult_types_for_current_fn()
+			self.value_types[dest] = fnres_llty
 			tmp0 = self._fresh("err0")
 			tmp1 = self._fresh("err1")
-			self.lines.append(f"  {tmp0} = insertvalue {FNRESULT_INT_ERROR} undef, i1 1, 0")
-			self.lines.append(f"  {tmp1} = insertvalue {FNRESULT_INT_ERROR} {tmp0}, i64 0, 1")
+			ok_zero = self._zero_value_for_ok(ok_llty)
+			self.lines.append(f"  {tmp0} = insertvalue {fnres_llty} undef, i1 1, 0")
+			self.lines.append(f"  {tmp1} = insertvalue {fnres_llty} {tmp0}, {ok_zero}, 1")
 			self.lines.append(
-				f"  {dest} = insertvalue {FNRESULT_INT_ERROR} {tmp1}, {DRIFT_ERROR_TYPE} {err_val}, 2"
+				f"  {dest} = insertvalue {fnres_llty} {tmp1}, {DRIFT_ERROR_TYPE} {err_val}, 2"
 			)
 		elif isinstance(instr, ConstructError):
 			dest = self._map_value(instr.dest)
@@ -568,11 +626,13 @@ class _FuncBuilder:
 		args = ", ".join(arg_parts)
 
 		if callee_info.declared_can_throw:
+			ok_llty, fnres_llty = self._fnresult_types_for_fn(callee_info)
 			tmp = self._fresh("call")
-			self.lines.append(f"  {tmp} = call {FNRESULT_INT_ERROR} @{instr.fn}({args})")
+			self.lines.append(f"  {tmp} = call {fnres_llty} @{instr.fn}({args})")
+			self.value_types[tmp] = fnres_llty
 			if dest:
-				self.lines.append(f"  {dest} = extractvalue {FNRESULT_INT_ERROR} {tmp}, 1")
-				self.value_types[dest] = "i64"
+				self.lines.append(f"  {dest} = extractvalue {fnres_llty} {tmp}, 1")
+				self.value_types[dest] = ok_llty
 		else:
 			ret_tid = None
 			if callee_info.signature and callee_info.signature.return_type_id is not None:
@@ -615,7 +675,8 @@ class _FuncBuilder:
 				return
 			val = self._map_value(term.value)
 			if self.fn_info.declared_can_throw:
-				self.lines.append(f"  ret {FNRESULT_INT_ERROR} {val}")
+				fnres_llty = self._fnresult_type_for_current_fn()
+				self.lines.append(f"  ret {fnres_llty} {val}")
 			else:
 				ty = self.value_types.get(val)
 				if ty == DRIFT_STRING_TYPE:
@@ -630,9 +691,9 @@ class _FuncBuilder:
 			raise NotImplementedError(f"LLVM codegen v1: unsupported terminator {type(term).__name__}")
 
 	def _return_llvm_type(self) -> str:
-		# v1 supports Int, String, or FnResult<Int, Error> return shapes.
+		# v1 supports Int, String, or FnResult<ok, Error> return shapes (ok ∈ {Int, String, Void-like}).
 		if self.fn_info.declared_can_throw:
-			return FNRESULT_INT_ERROR
+			return self._fnresult_type_for_current_fn()
 		if self._is_void_return():
 			return "void"
 		rt_id = None
@@ -653,7 +714,7 @@ class _FuncBuilder:
 			return self.type_table.is_void(ty_id)
 		return self.void_type_id is not None and ty_id == self.void_type_id
 
-	def _llvm_type_for_typeid(self, ty_id: TypeId) -> str:
+	def _llvm_type_for_typeid(self, ty_id: TypeId, *, allow_void_ok: bool = False) -> str:
 		"""
 		Map a TypeId to an LLVM type string for parameters/arguments.
 
@@ -661,6 +722,9 @@ class _FuncBuilder:
 		"""
 		if self.type_table is not None:
 			if self.type_table.is_void(ty_id):
+				if allow_void_ok:
+					# Void ok-payloads are represented as an unused i8 slot.
+					return "i8"
 				raise NotImplementedError("LLVM codegen v1: Void is not a valid parameter type")
 			td = self.type_table.get(ty_id)
 			if td.kind is TypeKind.ARRAY and td.param_types:
@@ -681,6 +745,60 @@ class _FuncBuilder:
 	def _llvm_scalar_type(self) -> str:
 		# All lowered values are i64 or i1; phis currently assume Int.
 		return "i64"
+
+	def _fnresult_typeids_for_fn(self, info: FnInfo | None = None) -> tuple[TypeId, TypeId]:
+		"""Extract (ok, err) TypeIds from a FnResult return type for the given function."""
+		fn = info or self.fn_info
+		ret_tid: TypeId | None = None
+		if fn.signature is not None and fn.signature.return_type_id is not None:
+			ret_tid = fn.signature.return_type_id
+		elif fn.return_type_id is not None:
+			ret_tid = fn.return_type_id
+		if ret_tid is None:
+			raise NotImplementedError(
+				f"LLVM codegen v1: missing FnResult return type for function {fn.name}"
+			)
+		if self.type_table is None:
+			raise NotImplementedError(
+				"LLVM codegen v1: FnResult lowering requires a TypeTable for can-throw functions"
+			)
+		td = self.type_table.get(ret_tid)
+		if td.kind is not TypeKind.FNRESULT or len(td.param_types) < 2:
+			raise NotImplementedError(
+				f"LLVM codegen v1: function {fn.name} return type is not FnResult<_, Error>"
+			)
+		return td.param_types[0], td.param_types[1]
+
+	def _fnresult_types_for_fn(self, info: FnInfo) -> tuple[str, str]:
+		"""Return (ok_llty, fnresult_llty) for the given FnInfo."""
+		ok_tid, err_tid = self._fnresult_typeids_for_fn(info)
+		ok_llty = self._llvm_type_for_typeid(ok_tid, allow_void_ok=True)
+		fnres_llty = self.module.fnresult_type(ok_llty)
+		if self.type_table is not None:
+			err_def = self.type_table.get(err_tid)
+			if err_def.kind is not TypeKind.ERROR:
+				raise NotImplementedError(
+					f"LLVM codegen v1: FnResult error type for {info.name} is {err_def.name}, expected Error"
+				)
+		return ok_llty, fnres_llty
+
+	def _fnresult_types_for_current_fn(self) -> tuple[str, str]:
+		return self._fnresult_types_for_fn(self.fn_info)
+
+	def _fnresult_type_for_current_fn(self) -> str:
+		_, fnres_llty = self._fnresult_types_for_current_fn()
+		return fnres_llty
+
+	def _zero_value_for_ok(self, ok_llty: str) -> str:
+		"""Return a typed zero literal for the ok payload slot of a FnResult."""
+		if ok_llty == "i64":
+			return "i64 0"
+		if ok_llty == "i1":
+			return "i1 0"
+		if ok_llty.endswith("*"):
+			return f"{ok_llty} null"
+		# Structs/arrays and placeholder i8 can use zeroinitializer.
+		return f"{ok_llty} zeroinitializer"
 
 	def _fresh(self, hint: str = "tmp") -> str:
 		self.tmp_counter += 1

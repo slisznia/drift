@@ -114,6 +114,7 @@ def test_e2e_fnresult_callee_ok_path():
 		{"callee": callee_mir, "drift_main": main_mir},
 		{"callee": callee_ssa, "drift_main": main_ssa},
 		fn_infos,
+		type_table=table,
 	)
 	mod.emit_entry_wrapper("drift_main")
 	ir = mod.render()

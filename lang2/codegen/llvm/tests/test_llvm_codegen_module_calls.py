@@ -87,6 +87,7 @@ def test_module_lowering_can_throw_callee_call():
 		funcs={"callee": callee_mir, "drift_main": main_mir},
 		ssa_funcs={"callee": callee_ssa, "drift_main": main_ssa},
 		fn_infos=fn_infos,
+		type_table=table,
 	)
 	ir = mod.render()
 

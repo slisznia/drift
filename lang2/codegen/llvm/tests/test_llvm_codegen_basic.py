@@ -36,7 +36,7 @@ def test_codegen_plain_int_return():
 	int_ty = table.ensure_int()
 	fn_info = _fn_info("main", False, int_ty)
 
-	ir = lower_ssa_func_to_llvm(mir, ssa, fn_info)
+	ir = lower_ssa_func_to_llvm(mir, ssa, fn_info, type_table=table)
 
 	assert "define i64 @main()" in ir
 	assert "ret i64 %t0" in ir
@@ -64,7 +64,7 @@ def test_codegen_fnresult_ok_return():
 	fn_info = _fn_info("f", True, fnresult_ty)
 
 	mod = LlvmModuleBuilder()
-	mod.emit_func(lower_ssa_func_to_llvm(mir, ssa, fn_info))
+	mod.emit_func(lower_ssa_func_to_llvm(mir, ssa, fn_info, type_table=table))
 	ir = mod.render()
 
 	assert "%FnResult_Int_Error" in ir
