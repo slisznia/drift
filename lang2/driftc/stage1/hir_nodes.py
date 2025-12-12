@@ -224,6 +224,7 @@ class HDVInit(HExpr):
 	"""Desugared DiagnosticValue constructor call."""
 	dv_type_name: str
 	args: List[HExpr]
+	attr_names: List[str] | None = None
 
 
 @dataclass

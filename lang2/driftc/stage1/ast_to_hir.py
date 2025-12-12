@@ -242,8 +242,9 @@ class AstToHIR:
 
 		Fields are a mapping name -> expression; ordering is not enforced yet.
 		"""
-		arg_exprs = [self.lower_expr(v) for _, v in expr.fields.items()]
-		return H.HDVInit(dv_type_name=expr.name, args=arg_exprs)
+		ordered_names = getattr(expr, "arg_order", None) or list(expr.fields.keys())
+		arg_exprs = [self.lower_expr(expr.fields[name]) for name in ordered_names]
+		return H.HDVInit(dv_type_name=expr.name, args=arg_exprs, attr_names=ordered_names)
 
 	def _visit_expr_Ternary(self, expr: ast.Ternary) -> H.HExpr:
 		"""Lower ternary expression: cond ? then_expr : else_expr."""

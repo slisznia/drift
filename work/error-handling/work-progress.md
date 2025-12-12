@@ -195,6 +195,7 @@ Your last open question asks about staging. My recommendation:
 
 ## Phase 1 progress (in-flight)
 
+- Multi-attr throw lowering is now deterministic: payload is always stored under the fixed "payload" key, all named fields are attached via `ErrorAddAttrDV`, and DV construction uses the exception/ctor name (not the attr key) to keep semantics stable.
 - Parser adapter now handles try/catch/while/for/import/exception ctors/ternary/placeholder, so lang2 front end accepts the same surface constructs as lang/.
 - Exception declarations emit event codes via the shared xxhash64 ABI helper (`event_code`), with diagnostics for duplicates/payload collisions; catalog is threaded through driver/e2e runner, checker, and HIR→MIR lowering (`exc_env`).
 - Added parser + driver tests covering event-code generation, duplicate exception diagnostics, and checker rejection of unknown catch events when no exception is declared.

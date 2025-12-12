@@ -228,6 +228,15 @@ class ConstructError(MInstr):
 
 
 @dataclass
+class ErrorAddAttrDV(MInstr):
+	"""error.attrs[key] = dv (in-place)."""
+
+	error: ValueId
+	key: ValueId
+	value: ValueId
+
+
+@dataclass
 class ConstructResultOk(MInstr):
 	"""Construct FnResult.Ok(value)."""
 	dest: ValueId
@@ -417,6 +426,7 @@ __all__ = [
 	"MethodCall",
 	"ConstructDV",
 	"ConstructError",
+	"ErrorAddAttrDV",
 	"ConstructResultOk",
 	"ConstructResultErr",
 	"ErrorAttrsGetDV",

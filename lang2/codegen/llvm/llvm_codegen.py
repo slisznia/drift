@@ -52,6 +52,7 @@ from lang2.driftc.stage2 import (
 	ConstInt,
 	ConstString,
 	ConstructError,
+	ErrorAddAttrDV,
 	ConstructResultErr,
 	ConstructResultOk,
 	DVAsBool,
@@ -346,6 +347,7 @@ class LlvmModuleBuilder:
 			lines.extend(
 				[
 					f"declare {DRIFT_ERROR_PTR} @drift_error_new_with_payload(i64, {DRIFT_STRING_TYPE}, {DRIFT_DV_TYPE})",
+					f"declare void @drift_error_add_attr_dv({DRIFT_ERROR_PTR}, {DRIFT_STRING_TYPE}, {DRIFT_DV_TYPE}*)",
 					"",
 				]
 			)
@@ -641,6 +643,18 @@ class _FuncBuilder:
 				f"  call void @__exc_attrs_get_dv({DRIFT_DV_TYPE}* {tmp_ptr}, {DRIFT_ERROR_PTR} {err_val}, {DRIFT_STRING_TYPE} {key_val})"
 			)
 			self.lines.append(f"  {dest} = load {DRIFT_DV_TYPE}, {DRIFT_DV_TYPE}* {tmp_ptr}")
+		elif isinstance(instr, ErrorAddAttrDV):
+			self.module.needs_error_runtime = True
+			self.module.needs_dv_runtime = True
+			err_val = self._map_value(instr.error)
+			key_val = self._map_value(instr.key)
+			val = self._map_value(instr.value)
+			tmp_ptr = self._fresh("dvptr")
+			self.lines.append(f"  {tmp_ptr} = alloca {DRIFT_DV_TYPE}")
+			self.lines.append(f"  store {DRIFT_DV_TYPE} {val}, {DRIFT_DV_TYPE}* {tmp_ptr}")
+			self.lines.append(
+				f"  call void @drift_error_add_attr_dv({DRIFT_ERROR_PTR} {err_val}, {DRIFT_STRING_TYPE} {key_val}, {DRIFT_DV_TYPE}* {tmp_ptr})"
+			)
 		elif isinstance(instr, OptionalIsSome):
 			opt_val = self._map_value(instr.opt)
 			opt_ty = self.value_types.get(opt_val)
