@@ -200,6 +200,7 @@ Your last open question asks about staging. My recommendation:
 - Exception declarations emit event codes via the shared xxhash64 ABI helper (`event_code`), with diagnostics for duplicates/payload collisions; catalog is threaded through driver/e2e runner, checker, and HIR→MIR lowering (`exc_env`).
 - Added parser + driver tests covering event-code generation, duplicate exception diagnostics, and checker rejection of unknown catch events when no exception is declared.
 - HIR→MIR now enforces can-throw semantics when known (asserts on throw/try in known non-can-throw functions; allows when undecided) to keep invariants tight without breaking legacy tests.
+- LLVM DV/attrs path now has an end-to-end round-trip test that constructs an Error, attaches an additional attr, retrieves it via `Error.attrs[...]`, converts with `dv.as_int`, unwraps Optional, and returns the value to lock the ABI.
 - Rolled back MIR call edges in favor of the value-based FnResult model; pre-analysis now records call sites separately and treats only error constructors as `may_fail`, and stage4 invariants forbid ConstructError in non-can-throw functions while keeping ordinary calls allowed.
 - Added MIR Call/MethodCall shape tests to lock the plain-instruction form (no error edges).
 - Stage4 now enforces that can-throw signatures are real FnResult<_, Error> via the available TypeEnv to keep the ABI honest before codegen; added targeted tests.

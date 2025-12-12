@@ -643,7 +643,7 @@ class HIRToMIR:
 			self.b.emit(
 				M.ConstructError(dest=err_val, code=code_val, payload=first_dv, attr_key=payload_key)
 			)
-			for name, dv in field_dvs:
+			for name, dv in field_dvs[1:]:
 				key = self.b.new_temp()
 				self.b.emit(M.ConstString(dest=key, value=name))
 				self.b.emit(M.ErrorAddAttrDV(error=err_val, key=key, value=dv))

@@ -12,6 +12,9 @@ from lang2.driftc.stage2 import (
 	ConstructResultErr,
 	ErrorAttrsGetDV,
 	DVAsInt,
+	OptionalIsSome,
+	OptionalValue,
+	IfTerminator,
 	ConstInt,
 	ConstString,
 	MirFunc,
@@ -120,3 +123,64 @@ def test_error_additional_attr_lowered_to_runtime_call():
 	ir = mod.render()
 
 	assert "call void @drift_error_add_attr_dv" in ir
+
+
+def test_error_attr_round_trip_additional_key():
+	table = TypeTable()
+	int_ty = table.ensure_int()
+	err_ty = table.ensure_error()
+
+	sig = FnSignature(name="attr_round_trip", param_type_ids=[], return_type_id=int_ty, declared_can_throw=False)
+	fn_info = FnInfo(name="attr_round_trip", declared_can_throw=False, return_type_id=int_ty, signature=sig)
+
+	entry = BasicBlock(
+		name="entry",
+		instructions=[
+			ConstInt(dest="code", value=4),
+			ConstString(dest="payload_key", value="payload"),
+			ConstInt(dest="payload_int", value=0),
+			ConstructDV(dest="payload_dv", dv_type_name="Evt", args=["payload_int"]),
+			ConstructError(dest="err", code="code", payload="payload_dv", attr_key="payload_key"),
+			ConstString(dest="attr_key", value="answer"),
+			ConstInt(dest="attr_val", value=7),
+			ConstructDV(dest="attr_dv", dv_type_name="Evt", args=["attr_val"]),
+			ErrorAddAttrDV(error="err", key="attr_key", value="attr_dv"),
+			ErrorAttrsGetDV(dest="dv_out", error="err", key="attr_key"),
+			DVAsInt(dest="opt", dv="dv_out"),
+			OptionalIsSome(dest="some", opt="opt"),
+		],
+		terminator=IfTerminator(cond="some", then_target="then", else_target="else"),
+	)
+	then_block = BasicBlock(
+		name="then",
+		instructions=[
+			OptionalValue(dest="val", opt="opt"),
+		],
+		terminator=Return(value="val"),
+	)
+	else_block = BasicBlock(
+		name="else",
+		instructions=[ConstInt(dest="zero", value=0)],
+		terminator=Return(value="zero"),
+	)
+	mir = MirFunc(
+		name="attr_round_trip",
+		params=[],
+		locals=[],
+		blocks={"entry": entry, "then": then_block, "else": else_block},
+		entry="entry",
+	)
+	ssa = MirToSSA().run(mir)
+
+	mod = LlvmModuleBuilder()
+	mod.emit_func(lower_ssa_func_to_llvm(mir, ssa, fn_info, type_table=table))
+	ir = mod.render()
+
+	assert "call %DriftDiagnosticValue @drift_dv_int" in ir
+	assert "call %DriftError* @drift_error_new_with_payload" in ir
+	assert "call void @drift_error_add_attr_dv" in ir
+	assert "call void @__exc_attrs_get_dv" in ir
+	assert "@drift_dv_as_int" in ir
+	assert "%DriftOptionalInt" in ir
+	assert "extractvalue %DriftOptionalInt %opt, 0" in ir
+	assert "extractvalue %DriftOptionalInt %opt, 1" in ir
