@@ -240,6 +240,40 @@ class ConstructResultErr(MInstr):
 
 
 @dataclass
+class ErrorAttrsGetDV(MInstr):
+	"""
+	dest = error.attrs[key] (DiagnosticValue lookup; missing yields DV_MISSING).
+	"""
+
+	dest: ValueId
+	error: ValueId
+	key: ValueId
+
+
+@dataclass
+class DVAsInt(MInstr):
+	"""dest = drift_dv_as_int(dv) (returns Optional<Int>)."""
+
+	dest: ValueId
+	dv: ValueId
+
+
+@dataclass
+class DVAsBool(MInstr):
+	"""dest = drift_dv_as_bool(dv) (returns Optional<Bool>)."""
+
+	dest: ValueId
+	dv: ValueId
+
+
+@dataclass
+class DVAsString(MInstr):
+	"""dest = drift_dv_as_string(dv) (returns Optional<String>)."""
+
+	dest: ValueId
+	dv: ValueId
+
+@dataclass
 class ErrorEvent(MInstr):
 	"""
 	Project the event code from an Error value.
@@ -367,6 +401,10 @@ __all__ = [
 	"ConstructError",
 	"ConstructResultOk",
 	"ConstructResultErr",
+	"ErrorAttrsGetDV",
+	"DVAsInt",
+	"DVAsBool",
+	"DVAsString",
 	"ErrorEvent",
 	"UnaryOpInstr",
 	"BinaryOpInstr",

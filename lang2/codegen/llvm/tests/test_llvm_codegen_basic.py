@@ -12,6 +12,7 @@ from lang2.driftc.stage2 import (
 	ConstructError,
 	ConstructResultErr,
 	ConstructResultOk,
+	ConstructDV,
 	MirFunc,
 	Return,
 )
@@ -104,7 +105,7 @@ def test_codegen_fnresult_ref_ok_return():
 	mod.emit_func(lower_ssa_func_to_llvm(mir, ssa, fn_info, type_table=table))
 	ir = mod.render()
 
-	assert "%FnResult_Ref_Int_Error = type { i1, ptr, %DriftError }" in ir
+	assert "%FnResult_Ref_Int_Error = type { i1, ptr, %DriftError* }" in ir
 	assert "define %FnResult_Ref_Int_Error @f_ref(ptr %p0)" in ir
 
 
@@ -116,7 +117,8 @@ def test_codegen_fnresult_ref_err_zero_ok_slot():
 		name="entry",
 		instructions=[
 			ConstInt(dest="code", value=1),
-			ConstructError(dest="err", code="code", payload="code"),
+			ConstructDV(dest="dv", dv_type_name="Missing", args=[]),
+			ConstructError(dest="err", code="code", payload="dv"),
 			ConstructResultErr(dest="res", error="err"),
 		],
 		terminator=Return(value="res"),
@@ -135,7 +137,7 @@ def test_codegen_fnresult_ref_err_zero_ok_slot():
 	mod.emit_func(lower_ssa_func_to_llvm(mir, ssa, fn_info, type_table=table))
 	ir = mod.render()
 
-	assert "%FnResult_Ref_Int_Error = type { i1, ptr, %DriftError }" in ir
+	assert "%FnResult_Ref_Int_Error = type { i1, ptr, %DriftError* }" in ir
 	assert "define %FnResult_Ref_Int_Error @f_ref_err()" in ir
 	assert any(
 		"%FnResult_Ref_Int_Error" in line and ", ptr null, 1" in line for line in ir.splitlines()

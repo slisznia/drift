@@ -66,6 +66,11 @@ class TypeChecker:
 		self.type_table = type_table or TypeTable()
 		self._int = self.type_table.ensure_int()
 		self._bool = self.type_table.ensure_bool()
+		self._string = self.type_table.ensure_string()
+		self._dv = self.type_table.ensure_diagnostic_value()
+		self._opt_int = self.type_table.new_optional(self._int)
+		self._opt_bool = self.type_table.new_optional(self._bool)
+		self._opt_string = self.type_table.new_optional(self._string)
 		self._unknown = self.type_table.ensure_unknown()
 		self._uint = self.type_table.ensure_uint()
 		self._next_param_id: ParamId = 1
@@ -115,7 +120,7 @@ class TypeChecker:
 			if isinstance(expr, H.HLiteralBool):
 				return record_expr(expr, self._bool)
 			if isinstance(expr, H.HLiteralString):
-				return record_expr(expr, self.type_table.ensure_string())
+				return record_expr(expr, self._string)
 			if isinstance(expr, H.HVar):
 				if expr.binding_id is None:
 					for scope in reversed(scope_bindings):
@@ -193,11 +198,60 @@ class TypeChecker:
 					sig = call_signatures.get(expr.method_name)
 					if sig and sig.return_type_id is not None:
 						return record_expr(expr, sig.return_type_id)
+				# Built-in DiagnosticValue helpers.
+				if expr.method_name in ("as_int", "as_bool", "as_string"):
+					recv_def = self.type_table.get(recv_ty)
+					if recv_def.kind is TypeKind.DIAGNOSTICVALUE:
+						if expr.method_name == "as_int":
+							return record_expr(expr, self._opt_int)
+						if expr.method_name == "as_bool":
+							return record_expr(expr, self._opt_bool)
+						if expr.method_name == "as_string":
+							return record_expr(expr, self._opt_string)
+					diagnostics.append(
+						Diagnostic(
+							message=f"{expr.method_name} is only valid on DiagnosticValue",
+							severity="error",
+							span=None,
+						)
+					)
+					return record_expr(expr, self._unknown)
 				return record_expr(expr, self._unknown)
 			if isinstance(expr, H.HField):
-				type_expr(expr.subject)
+				sub_ty = type_expr(expr.subject)
+				if expr.name == "attrs":
+					diagnostics.append(
+						Diagnostic(
+							message='attrs must be indexed: use error.attrs["key"]',
+							severity="error",
+							span=None,
+						)
+					)
+					return record_expr(expr, self._unknown)
 				return record_expr(expr, self._unknown)
 			if isinstance(expr, H.HIndex):
+				# Special-case Error.attrs["key"] → DiagnosticValue.
+				if isinstance(expr.subject, H.HField) and expr.subject.name == "attrs":
+					sub_ty = type_expr(expr.subject.subject)
+					key_ty = type_expr(expr.index)
+					if self.type_table.get(sub_ty).kind is not TypeKind.ERROR:
+						diagnostics.append(
+							Diagnostic(
+								message="attrs access is only supported on Error values",
+								severity="error",
+								span=None,
+							)
+						)
+						return record_expr(expr, self._unknown)
+					if self.type_table.get(key_ty).name != "String":
+						diagnostics.append(
+							Diagnostic(
+								message="Error.attrs expects a String key",
+								severity="error",
+								span=None,
+							)
+						)
+					return record_expr(expr, self._dv)
 				sub_ty = type_expr(expr.subject)
 				idx_ty = type_expr(expr.index)
 				td = self.type_table.get(sub_ty)
@@ -272,7 +326,7 @@ class TypeChecker:
 			if isinstance(expr, H.HDVInit):
 				for a in expr.args:
 					type_expr(a)
-				return record_expr(expr, self._unknown)
+				return record_expr(expr, self._dv)
 			if isinstance(expr, H.HResultOk):
 				ok_ty = type_expr(expr.value)
 				err_ty = self._unknown

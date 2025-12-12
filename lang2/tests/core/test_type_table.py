@@ -46,3 +46,17 @@ def test_type_table_seeds_error_canonically():
 	assert table.get(err_ty).kind is TypeKind.ERROR
 	assert table.get(err_ty).name == "Error"
 	assert err_ty == table.ensure_error()
+
+
+def test_type_table_seeds_diagnostic_value_and_optional():
+	table = TypeTable()
+	dv_ty = table.ensure_diagnostic_value()
+	opt_int = table.new_optional(table.ensure_int())
+	opt_int_again = table.new_optional(table.ensure_int())
+
+	assert table.get(dv_ty).kind is TypeKind.DIAGNOSTICVALUE
+	assert dv_ty == table.ensure_diagnostic_value()
+	assert table.get(opt_int).kind is TypeKind.OPTIONAL
+	assert table.get(opt_int).param_types == [table.ensure_int()]
+	# Optional cache should reuse the same id for the same inner.
+	assert opt_int == opt_int_again

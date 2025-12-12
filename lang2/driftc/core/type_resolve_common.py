@@ -4,7 +4,7 @@ from __future__ import annotations
 Shared helpers for resolving raw/builtin type shapes into TypeIds.
 
 This centralizes the knowledge of builtin names (`Int`, `Bool`, `String`,
-`Uint`, `Void`, `Error`, `Array`, `FnResult`) so resolver and checker code
+`Uint`, `Void`, `Error`, `DiagnosticValue`, `Array`, `Optional`, `FnResult`) so resolver and checker code
 stay in sync as the language evolves.
 """
 
@@ -17,8 +17,8 @@ def resolve_opaque_type(raw: object, table: TypeTable) -> TypeId:
 
 	Supported inputs:
 	- TypeExpr-like objects exposing `name` and `args`.
-	- Strings naming builtins (Int/Bool/String/Uint/Void/Error), Array<...>,
-	  and FnResult (by name or substring).
+	- Strings naming builtins (Int/Bool/String/Uint/Void/Error/DiagnosticValue),
+	  Array<...>, Optional<...>, and FnResult<ok, err>.
 	- Tuples encoding FnResult, e.g. ("FnResult", ok, err) or (ok, err).
 	Unknown shapes return the canonical Unknown TypeId for the table.
 	"""
@@ -40,6 +40,11 @@ def resolve_opaque_type(raw: object, table: TypeTable) -> TypeId:
 		if name == "Array":
 			elem = resolve_opaque_type(args[0] if args else None, table)
 			return table.new_array(elem)
+		if name == "Optional":
+			inner = resolve_opaque_type(args[0] if args else None, table)
+			return table.new_optional(inner)
+		if name == "DiagnosticValue":
+			return table.ensure_diagnostic_value()
 		if name == "Uint":
 			return table.ensure_uint()
 		if name == "Int":
@@ -64,14 +69,29 @@ def resolve_opaque_type(raw: object, table: TypeTable) -> TypeId:
 			return table.ensure_string()
 		if raw == "Error":
 			return table.ensure_error()
+		if raw == "DiagnosticValue":
+			return table.ensure_diagnostic_value()
 		if raw == "Uint":
 			return table.ensure_uint()
-		if "FnResult" in raw:
-			return table.new_fnresult(table.ensure_int(), table.ensure_error())
+		if raw.startswith("FnResult<") and raw.endswith(">"):
+			inner = raw[len("FnResult<"):-1]
+			parts = inner.split(",", 1)
+			if len(parts) == 2:
+				ok_raw, err_raw = parts[0].strip(), parts[1].strip()
+				ok_ty = resolve_opaque_type(ok_raw, table)
+				err_ty = resolve_opaque_type(err_raw, table)
+				return table.new_fnresult(ok_ty, err_ty)
+			return table.ensure_unknown()
+		if raw == "FnResult":
+			return table.ensure_unknown()
 		if raw.startswith("Array<") and raw.endswith(">"):
 			inner = raw[len("Array<"):-1]
 			elem_ty = resolve_opaque_type(inner, table)
 			return table.new_array(elem_ty)
+		if raw.startswith("Optional<") and raw.endswith(">"):
+			inner = raw[len("Optional<"):-1]
+			inner_ty = resolve_opaque_type(inner, table)
+			return table.new_optional(inner_ty)
 		return table.new_scalar(raw)
 
 	# Tuple forms used by legacy call sites.

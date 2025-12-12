@@ -22,6 +22,8 @@ class TypeKind(Enum):
 
 	SCALAR = auto()
 	ERROR = auto()
+	DIAGNOSTICVALUE = auto()
+	OPTIONAL = auto()
 	VOID = auto()
 	FNRESULT = auto()
 	FUNCTION = auto()
@@ -58,6 +60,7 @@ class TypeTable:
 		self._string_type: TypeId | None = None  # type: ignore[var-annotated]
 		self._void_type: TypeId | None = None  # type: ignore[var-annotated]
 		self._error_type: TypeId | None = None  # type: ignore[var-annotated]
+		self._dv_type: TypeId | None = None  # type: ignore[var-annotated]
 
 	def new_scalar(self, name: str) -> TypeId:
 		"""Register a scalar type (e.g., Int, Bool) and return its TypeId."""
@@ -107,6 +110,23 @@ class TypeTable:
 		if getattr(self, "_void_type", None) is None:
 			self._void_type = self._add(TypeKind.VOID, "Void", [])  # type: ignore[attr-defined]
 		return self._void_type  # type: ignore[attr-defined]
+
+	def ensure_diagnostic_value(self) -> TypeId:
+		"""Return the canonical DiagnosticValue TypeId, creating it once."""
+		if getattr(self, "_dv_type", None) is None:
+			self._dv_type = self._add(TypeKind.DIAGNOSTICVALUE, "DiagnosticValue", [])  # type: ignore[attr-defined]
+		return self._dv_type  # type: ignore[attr-defined]
+
+	def new_optional(self, inner: TypeId) -> TypeId:
+		"""Register Optional<inner> (cached for stability)."""
+		if not hasattr(self, "_optional_cache"):
+			self._optional_cache = {}  # type: ignore[attr-defined]
+		cache = getattr(self, "_optional_cache")  # type: ignore[attr-defined]
+		if inner in cache:
+			return cache[inner]
+		opt_id = self._add(TypeKind.OPTIONAL, "Optional", [inner])
+		cache[inner] = opt_id
+		return opt_id
 
 	def ensure_ref(self, inner: TypeId) -> TypeId:
 		"""Return a stable shared reference TypeId to `inner`, creating it once."""

@@ -168,6 +168,10 @@ class HIRToMIR:
 		self._uint_type = self._type_table.ensure_uint()
 		self._unknown_type = self._type_table.ensure_unknown()
 		self._void_type = self._type_table.ensure_void()
+		self._dv_type = self._type_table.ensure_diagnostic_value()
+		self._opt_int = self._type_table.new_optional(self._int_type)
+		self._opt_bool = self._type_table.new_optional(self._bool_type)
+		self._opt_string = self._type_table.new_optional(self._string_type)
 		self._signatures = signatures or {}
 		self._ret_type = return_type
 		# Cache the current function signature for invariants (can-throw checks).
@@ -267,11 +271,20 @@ class HIRToMIR:
 			dest = self.b.new_temp()
 			self.b.emit(M.ArrayCap(dest=dest, array=subject))
 			return dest
+		if expr.name == "attrs":
+			raise NotImplementedError("attrs view must be indexed: Error.attrs[\"key\"]")
 		dest = self.b.new_temp()
 		self.b.emit(M.LoadField(dest=dest, subject=subject, field=expr.name))
 		return dest
 
 	def _visit_expr_HIndex(self, expr: H.HIndex) -> M.ValueId:
+		if isinstance(expr.subject, H.HField) and expr.subject.name == "attrs":
+			err_val = self.lower_expr(expr.subject.subject)
+			key_val = self.lower_expr(expr.index)
+			dest = self.b.new_temp()
+			self.b.emit(M.ErrorAttrsGetDV(dest=dest, error=err_val, key=key_val))
+			self._local_types[dest] = self._dv_type
+			return dest
 		subject = self.lower_expr(expr.subject)
 		index = self.lower_expr(expr.index)
 		dest = self.b.new_temp()
@@ -349,6 +362,23 @@ class HIRToMIR:
 		return result
 
 	def _visit_expr_HMethodCall(self, expr: H.HMethodCall) -> M.ValueId:
+		if expr.method_name in ("as_int", "as_bool", "as_string"):
+			if expr.args:
+				raise NotImplementedError(f"{expr.method_name} takes no arguments")
+			dv_val = self.lower_expr(expr.receiver)
+			dest = self.b.new_temp()
+			if expr.method_name == "as_int":
+				self.b.emit(M.DVAsInt(dest=dest, dv=dv_val))
+				self._local_types[dest] = self._opt_int
+				return dest
+			if expr.method_name == "as_bool":
+				self.b.emit(M.DVAsBool(dest=dest, dv=dv_val))
+				self._local_types[dest] = self._opt_bool
+				return dest
+			if expr.method_name == "as_string":
+				self.b.emit(M.DVAsString(dest=dest, dv=dv_val))
+				self._local_types[dest] = self._opt_string
+				return dest
 		result = self._lower_method_call(expr)
 		if result is None:
 			raise AssertionError("Void-returning method call used in expression context (checker bug)")
@@ -868,6 +898,8 @@ class HIRToMIR:
 			ty_def = self._type_table.get(subj_ty)
 			if ty_def.kind is TypeKind.ARRAY or (ty_def.kind is TypeKind.SCALAR and ty_def.name == "String"):
 				return self._uint_type
+			if expr.name == "attrs" and ty_def.kind is TypeKind.ERROR:
+				return self._dv_type
 		if isinstance(expr, H.HArrayLiteral):
 			elem_ty = self._infer_array_literal_elem_type(expr)
 			return self._type_table.new_array(elem_ty)
@@ -883,6 +915,16 @@ class HIRToMIR:
 			ret = self._return_type_for_name(expr.method_name)
 			if ret is not None:
 				return ret
+			recv_ty = self._infer_expr_type(expr.receiver)
+			if recv_ty is not None:
+				recv_def = self._type_table.get(recv_ty)
+				if recv_def.kind is TypeKind.DIAGNOSTICVALUE:
+					if expr.method_name == "as_int":
+						return self._opt_int
+					if expr.method_name == "as_bool":
+						return self._opt_bool
+					if expr.method_name == "as_string":
+						return self._opt_string
 		# Unknown for other expressions (vars, calls, etc.)
 		return None
 

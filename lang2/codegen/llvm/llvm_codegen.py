@@ -18,10 +18,10 @@ Scope (v1 bring-up):
     rejected explicitly.
 
 ABI (from docs/design/drift-lang-abi.md):
-  - %DriftError           = { i64 code, ptr attrs, ptr ctx_frames, ptr stack }
-  - %FnResult_Int_Error   = { i1 is_err, i64 ok, %DriftError err }
-  - %FnResult_String_Error= { i1 is_err, %DriftString ok, %DriftError err }
-  - %FnResult_Void_Error  = { i1 is_err, i8 ok, %DriftError err } (void-like ok)
+  - %DriftError           = { i64 code, ptr attrs, i64 attr_count, ptr frames, i64 frame_count }
+  - %FnResult_Int_Error   = { i1 is_err, i64 ok, %DriftError* err }
+  - %FnResult_String_Error= { i1 is_err, %DriftString ok, %DriftError* err }
+  - %FnResult_Void_Error  = { i1 is_err, i8 ok, %DriftError* err } (void-like ok)
   - %DriftString          = { %drift.size, i8* }
   - %drift.size           = i64 (Uint carrier)
   - Drift Int is i64; Bool is i1 in registers.
@@ -47,12 +47,17 @@ from lang2.driftc.stage2 import (
 	AssignSSA,
 	BinaryOpInstr,
 	Call,
+	ConstructDV,
 	ConstBool,
 	ConstInt,
 	ConstString,
 	ConstructError,
 	ConstructResultErr,
 	ConstructResultOk,
+	DVAsBool,
+	DVAsInt,
+	DVAsString,
+	ErrorAttrsGetDV,
 	Goto,
 	IfTerminator,
 	MirFunc,
@@ -69,9 +74,14 @@ from lang2.driftc.core.types_core import TypeKind, TypeTable, TypeId
 
 # ABI type names
 DRIFT_ERROR_TYPE = "%DriftError"
+DRIFT_ERROR_PTR = f"{DRIFT_ERROR_TYPE}*"
 FNRESULT_INT_ERROR = "%FnResult_Int_Error"
 DRIFT_SIZE_TYPE = "%drift.size"
 DRIFT_STRING_TYPE = "%DriftString"
+DRIFT_DV_TYPE = "%DriftDiagnosticValue"
+DRIFT_OPT_INT_TYPE = "%DriftOptionalInt"
+DRIFT_OPT_BOOL_TYPE = "%DriftOptionalBool"
+DRIFT_OPT_STRING_TYPE = "%DriftOptionalString"
 
 
 # Public API -------------------------------------------------------------------
@@ -173,6 +183,8 @@ class LlvmModuleBuilder:
 	needs_string_concat: bool = False
 	needs_argv_helper: bool = False
 	needs_console_runtime: bool = False
+	needs_dv_runtime: bool = False
+	needs_error_runtime: bool = False
 	array_string_type: Optional[str] = None
 	_fnresult_types_by_key: Dict[str, str] = field(default_factory=dict)
 
@@ -181,9 +193,13 @@ class LlvmModuleBuilder:
 			self.type_decls.append(f"{DRIFT_SIZE_TYPE} = type i64")
 		self.type_decls.extend(
 			[
-				f"{DRIFT_ERROR_TYPE} = type {{ i64, ptr, ptr, ptr }}",
-				f"{FNRESULT_INT_ERROR} = type {{ i1, i64, {DRIFT_ERROR_TYPE} }}",
+				f"{DRIFT_ERROR_TYPE} = type {{ i64, ptr, {DRIFT_SIZE_TYPE}, ptr, {DRIFT_SIZE_TYPE} }}",
+				f"{FNRESULT_INT_ERROR} = type {{ i1, i64, {DRIFT_ERROR_PTR} }}",
 				f"{DRIFT_STRING_TYPE} = type {{ {DRIFT_SIZE_TYPE}, i8* }}",
+				f"{DRIFT_DV_TYPE} = type {{ i8, [7 x i8], [2 x i64] }}",
+				f"{DRIFT_OPT_INT_TYPE} = type {{ i8, i64 }}",
+				f"{DRIFT_OPT_BOOL_TYPE} = type {{ i8, i8 }}",
+				f"{DRIFT_OPT_STRING_TYPE} = type {{ i8, {DRIFT_STRING_TYPE} }}",
 				"%DriftArrayHeader = type { i64, i64, ptr }",
 			]
 		)
@@ -197,7 +213,8 @@ class LlvmModuleBuilder:
 		Return the LLVM struct type for FnResult<ok_llty, Error>.
 
 		We emit named types per ok payload for readability/ABI stability. Supported
-		ok payloads in v1: i64 (Int), %DriftString (String), and i8 (void-like).
+		ok payloads in v1: i64 (Int), %DriftString (String), i8 (void-like), and
+		ptr (Ref<T>). Error slot is always %DriftError*.
 		"""
 		if ok_key in self._fnresult_types_by_key:
 			return self._fnresult_types_by_key[ok_key]
@@ -218,7 +235,7 @@ class LlvmModuleBuilder:
 		if ok_key in self._fnresult_types_by_key:
 			return self._fnresult_types_by_key[ok_key]
 		type_name = name or f"%FnResult_{ok_key}_Error"
-		self.type_decls.append(f"{type_name} = type {{ i1, {ok_llty}, {DRIFT_ERROR_TYPE} }}")
+		self.type_decls.append(f"{type_name} = type {{ i1, {ok_llty}, {DRIFT_ERROR_PTR} }}")
 		self._fnresult_types_by_key[ok_key] = type_name
 		return type_name
 
@@ -309,6 +326,24 @@ class LlvmModuleBuilder:
 					"",
 				]
 			)
+		if self.needs_dv_runtime:
+			lines.extend(
+				[
+					f"declare void @__exc_attrs_get_dv({DRIFT_DV_TYPE}*, {DRIFT_ERROR_PTR}, {DRIFT_STRING_TYPE})",
+					f"declare {DRIFT_DV_TYPE} @drift_dv_missing()",
+					f"declare {DRIFT_OPT_INT_TYPE} @drift_dv_as_int({DRIFT_DV_TYPE}*)",
+					f"declare {DRIFT_OPT_BOOL_TYPE} @drift_dv_as_bool({DRIFT_DV_TYPE}*)",
+					f"declare {DRIFT_OPT_STRING_TYPE} @drift_dv_as_string({DRIFT_DV_TYPE}*)",
+					"",
+				]
+			)
+		if self.needs_error_runtime:
+			lines.extend(
+				[
+					f"declare {DRIFT_ERROR_PTR} @drift_error_new_with_payload(i64, {DRIFT_DV_TYPE})",
+					"",
+				]
+			)
 		lines.extend(self.funcs)
 		lines.append("")
 		return "\n".join(lines)
@@ -329,7 +364,12 @@ class _FuncBuilder:
 	aliases: Dict[str, str] = field(default_factory=dict)
 	string_type_id: Optional[TypeId] = None
 	int_type_id: Optional[TypeId] = None
+	bool_type_id: Optional[TypeId] = None
 	void_type_id: Optional[TypeId] = None
+	dv_type_id: Optional[TypeId] = None
+	opt_int_type_id: Optional[TypeId] = None
+	opt_bool_type_id: Optional[TypeId] = None
+	opt_string_type_id: Optional[TypeId] = None
 	sym_name: Optional[str] = None
 
 	def lower(self) -> str:
@@ -351,8 +391,20 @@ class _FuncBuilder:
 				self.string_type_id = ty_id
 			if ty_def.kind is TypeKind.SCALAR and ty_def.name == "Int":
 				self.int_type_id = ty_id
+			if ty_def.kind is TypeKind.SCALAR and ty_def.name == "Bool":
+				self.bool_type_id = ty_id
 			if ty_def.kind is TypeKind.VOID:
 				self.void_type_id = ty_id
+			if ty_def.kind is TypeKind.DIAGNOSTICVALUE:
+				self.dv_type_id = ty_id
+			if ty_def.kind is TypeKind.OPTIONAL and ty_def.param_types:
+				inner = ty_def.param_types[0]
+				if inner == self.int_type_id:
+					self.opt_int_type_id = ty_id
+				if inner == self.bool_type_id:
+					self.opt_bool_type_id = ty_id
+				if inner == self.string_type_id:
+					self.opt_string_type_id = ty_id
 
 	def _emit_header(self) -> None:
 		ret_ty = self._return_llvm_type()
@@ -504,7 +556,7 @@ class _FuncBuilder:
 				)
 			tmp0 = self._fresh("ok0")
 			tmp1 = self._fresh("ok1")
-			err_zero = f"{DRIFT_ERROR_TYPE} zeroinitializer"
+			err_zero = f"{DRIFT_ERROR_PTR} null"
 			self.lines.append(f"  {tmp0} = insertvalue {fnres_llty} undef, i1 0, 0")
 			self.lines.append(f"  {tmp1} = insertvalue {fnres_llty} {tmp0}, {ok_llty} {val}, 1")
 			self.lines.append(f"  {dest} = insertvalue {fnres_llty} {tmp1}, {err_zero}, 2")
@@ -523,19 +575,64 @@ class _FuncBuilder:
 			self.lines.append(f"  {tmp0} = insertvalue {fnres_llty} undef, i1 1, 0")
 			self.lines.append(f"  {tmp1} = insertvalue {fnres_llty} {tmp0}, {ok_zero}, 1")
 			self.lines.append(
-				f"  {dest} = insertvalue {fnres_llty} {tmp1}, {DRIFT_ERROR_TYPE} {err_val}, 2"
+				f"  {dest} = insertvalue {fnres_llty} {tmp1}, {DRIFT_ERROR_PTR} {err_val}, 2"
 			)
+		elif isinstance(instr, ConstructDV):
+			dest = self._map_value(instr.dest)
+			self.value_types[dest] = DRIFT_DV_TYPE
+			if instr.args:
+				raise NotImplementedError(
+					"LLVM codegen v1: ConstructDV with arguments not yet supported; expected zero-arg DV constructor"
+				)
+			self.module.needs_dv_runtime = True
+			# DV_MISSING is a runtime-defined constant (tag=0); call helper to avoid
+			# baking layout assumptions here.
+			self.lines.append(f"  {dest} = call {DRIFT_DV_TYPE} @drift_dv_missing()")
 		elif isinstance(instr, ConstructError):
 			dest = self._map_value(instr.dest)
 			code = self._map_value(instr.code)
-			self.value_types[dest] = DRIFT_ERROR_TYPE
-			tmp0 = self._fresh("errc0")
-			tmp1 = self._fresh("errc1")
-			tmp2 = self._fresh("errc2")
-			self.lines.append(f"  {tmp0} = insertvalue {DRIFT_ERROR_TYPE} undef, i64 {code}, 0")
-			self.lines.append(f"  {tmp1} = insertvalue {DRIFT_ERROR_TYPE} {tmp0}, ptr null, 1")
-			self.lines.append(f"  {tmp2} = insertvalue {DRIFT_ERROR_TYPE} {tmp1}, ptr null, 2")
-			self.lines.append(f"  {dest} = insertvalue {DRIFT_ERROR_TYPE} {tmp2}, ptr null, 3")
+			payload = self._map_value(instr.payload)
+			self.value_types[dest] = DRIFT_ERROR_PTR
+			self.module.needs_error_runtime = True
+			code_ty = self.value_types.get(code)
+			if code_ty != "i64":
+				raise NotImplementedError(
+					f"LLVM codegen v1: error code must be Int (i64), got {code_ty}"
+				)
+			# Attach payload via runtime helper; payload is expected to be a DiagnosticValue.
+			self.lines.append(
+				f"  {dest} = call {DRIFT_ERROR_PTR} @drift_error_new_with_payload(i64 {code}, {DRIFT_DV_TYPE} {payload})"
+			)
+		elif isinstance(instr, ErrorAttrsGetDV):
+			self.module.needs_dv_runtime = True
+			dest = self._map_value(instr.dest)
+			err_val = self._map_value(instr.error)
+			key_val = self._map_value(instr.key)
+			self.value_types[dest] = DRIFT_DV_TYPE
+			tmp_ptr = self._fresh("dvptr")
+			self.lines.append(f"  {tmp_ptr} = alloca {DRIFT_DV_TYPE}")
+			self.lines.append(
+				f"  call void @__exc_attrs_get_dv({DRIFT_DV_TYPE}* {tmp_ptr}, {DRIFT_ERROR_PTR} {err_val}, {DRIFT_STRING_TYPE} {key_val})"
+			)
+			self.lines.append(f"  {dest} = load {DRIFT_DV_TYPE}, {DRIFT_DV_TYPE}* {tmp_ptr}")
+		elif isinstance(instr, (DVAsInt, DVAsBool, DVAsString)):
+			self.module.needs_dv_runtime = True
+			dest = self._map_value(instr.dest)
+			dv_val = self._map_value(instr.dv)
+			tmp_ptr = self._fresh("dvarg")
+			self.lines.append(f"  {tmp_ptr} = alloca {DRIFT_DV_TYPE}")
+			self.lines.append(f"  store {DRIFT_DV_TYPE} {dv_val}, {DRIFT_DV_TYPE}* {tmp_ptr}")
+			if isinstance(instr, DVAsInt):
+				self.value_types[dest] = DRIFT_OPT_INT_TYPE
+				self.lines.append(f"  {dest} = call {DRIFT_OPT_INT_TYPE} @drift_dv_as_int({DRIFT_DV_TYPE}* {tmp_ptr})")
+			elif isinstance(instr, DVAsBool):
+				self.value_types[dest] = DRIFT_OPT_BOOL_TYPE
+				self.lines.append(f"  {dest} = call {DRIFT_OPT_BOOL_TYPE} @drift_dv_as_bool({DRIFT_DV_TYPE}* {tmp_ptr})")
+			else:
+				self.value_types[dest] = DRIFT_OPT_STRING_TYPE
+				self.lines.append(
+					f"  {dest} = call {DRIFT_OPT_STRING_TYPE} @drift_dv_as_string({DRIFT_DV_TYPE}* {tmp_ptr})"
+				)
 		elif isinstance(instr, Phi):
 			# Already handled in _lower_phi.
 			return
@@ -690,7 +787,7 @@ class _FuncBuilder:
 			raise NotImplementedError(f"LLVM codegen v1: unsupported terminator {type(term).__name__}")
 
 	def _return_llvm_type(self) -> str:
-		# v1 supports Int, String, or FnResult<ok, Error> return shapes (ok ∈ {Int, String, Void-like}).
+		# v1 supports Int, String, or FnResult<ok, Error> return shapes (ok ∈ {Int, String, Void-like, Ref<T>}).
 		if self.fn_info.declared_can_throw:
 			return self._fnresult_type_for_current_fn()
 		if self._is_void_return():
@@ -735,6 +832,22 @@ class _FuncBuilder:
 				return DRIFT_STRING_TYPE
 			if td.kind is TypeKind.REF:
 				return "ptr"
+			if td.kind is TypeKind.DIAGNOSTICVALUE:
+				return DRIFT_DV_TYPE
+			if td.kind is TypeKind.ERROR:
+				return DRIFT_ERROR_PTR
+			if td.kind is TypeKind.OPTIONAL and td.param_types:
+				inner = td.param_types[0]
+				inner_def = self.type_table.get(inner)
+				if inner_def.kind is TypeKind.SCALAR and inner_def.name == "Int":
+					return DRIFT_OPT_INT_TYPE
+				if inner_def.kind is TypeKind.SCALAR and inner_def.name == "Bool":
+					return DRIFT_OPT_BOOL_TYPE
+				if inner_def.kind is TypeKind.SCALAR and inner_def.name == "String":
+					return DRIFT_OPT_STRING_TYPE
+				raise NotImplementedError(
+					f"LLVM codegen v1: Optional<{inner_def.name}> not supported (function {self.func.name})"
+				)
 		if self.int_type_id is not None and ty_id == self.int_type_id:
 			return "i64"
 		if self.string_type_id is not None and ty_id == self.string_type_id:
