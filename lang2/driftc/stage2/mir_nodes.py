@@ -251,6 +251,22 @@ class ErrorAttrsGetDV(MInstr):
 
 
 @dataclass
+class OptionalIsSome(MInstr):
+	"""dest = opt.is_some (Bool)."""
+
+	dest: ValueId
+	opt: ValueId
+
+
+@dataclass
+class OptionalValue(MInstr):
+	"""dest = opt.value (inner payload; undefined if not some)."""
+
+	dest: ValueId
+	opt: ValueId
+
+
+@dataclass
 class DVAsInt(MInstr):
 	"""dest = drift_dv_as_int(dv) (returns Optional<Int>)."""
 
@@ -402,6 +418,8 @@ __all__ = [
 	"ConstructResultOk",
 	"ConstructResultErr",
 	"ErrorAttrsGetDV",
+	"OptionalIsSome",
+	"OptionalValue",
 	"DVAsInt",
 	"DVAsBool",
 	"DVAsString",

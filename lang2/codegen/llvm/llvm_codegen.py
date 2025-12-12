@@ -58,6 +58,8 @@ from lang2.driftc.stage2 import (
 	DVAsInt,
 	DVAsString,
 	ErrorAttrsGetDV,
+	OptionalIsSome,
+	OptionalValue,
 	Goto,
 	IfTerminator,
 	MirFunc,
@@ -615,6 +617,39 @@ class _FuncBuilder:
 				f"  call void @__exc_attrs_get_dv({DRIFT_DV_TYPE}* {tmp_ptr}, {DRIFT_ERROR_PTR} {err_val}, {DRIFT_STRING_TYPE} {key_val})"
 			)
 			self.lines.append(f"  {dest} = load {DRIFT_DV_TYPE}, {DRIFT_DV_TYPE}* {tmp_ptr}")
+		elif isinstance(instr, OptionalIsSome):
+			opt_val = self._map_value(instr.opt)
+			opt_ty = self.value_types.get(opt_val)
+			if opt_ty not in (DRIFT_OPT_INT_TYPE, DRIFT_OPT_BOOL_TYPE, DRIFT_OPT_STRING_TYPE):
+				raise NotImplementedError(
+					f"LLVM codegen v1: OptionalIsSome requires Optional<Int|Bool|String>, got {opt_ty}"
+				)
+			tmp = self._fresh("opt_tag")
+			self.lines.append(f"  {tmp} = extractvalue {opt_ty} {opt_val}, 0")
+			dest = self._map_value(instr.dest)
+			self.lines.append(f"  {dest} = icmp ne i8 {tmp}, 0")
+			self.value_types[dest] = "i1"
+		elif isinstance(instr, OptionalValue):
+			opt_val = self._map_value(instr.opt)
+			opt_ty = self.value_types.get(opt_val)
+			if opt_ty == DRIFT_OPT_INT_TYPE:
+				inner_ty = "i64"
+			elif opt_ty == DRIFT_OPT_BOOL_TYPE:
+				inner_ty = "i1"
+			elif opt_ty == DRIFT_OPT_STRING_TYPE:
+				inner_ty = DRIFT_STRING_TYPE
+			else:
+				raise NotImplementedError(
+					f"LLVM codegen v1: OptionalValue requires Optional<Int|Bool|String>, got {opt_ty}"
+				)
+			dest = self._map_value(instr.dest)
+			raw = self._fresh("opt_val")
+			self.lines.append(f"  {raw} = extractvalue {opt_ty} {opt_val}, 1")
+			if inner_ty == "i1":
+				self.lines.append(f"  {dest} = icmp ne i8 {raw}, 0")
+			else:
+				self.lines.append(f"  {dest} = add {inner_ty} {raw}, 0")
+			self.value_types[dest] = inner_ty
 		elif isinstance(instr, (DVAsInt, DVAsBool, DVAsString)):
 			self.module.needs_dv_runtime = True
 			dest = self._map_value(instr.dest)
@@ -735,12 +770,8 @@ class _FuncBuilder:
 				ret_tid = callee_info.signature.return_type_id
 			is_void_ret = ret_tid is not None and self._is_void_typeid(ret_tid)
 			ret_ty = "void" if is_void_ret else "i64"
-			if (
-				self.string_type_id is not None
-				and callee_info.signature
-				and callee_info.signature.return_type_id == self.string_type_id
-			):
-				ret_ty = DRIFT_STRING_TYPE
+			if ret_tid is not None and self.type_table is not None and not is_void_ret:
+				ret_ty = self._llvm_type_for_typeid(ret_tid)
 			if dest is None:
 				self.lines.append(f"  call {ret_ty} @{instr.fn}({args})")
 			else:
