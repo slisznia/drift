@@ -208,6 +208,14 @@ Your last open question asks about staging. My recommendation:
 - Fixed FnResult<Ref<T>> Err lowering to zero the ptr ok slot correctly (opaque pointer literal) and added coverage; headers now call out that arrays are supported as values but not yet as FnResult ok payloads.
 - Phase 2 scaffolding started: TypeTable/resolve support for DiagnosticValue and Optional<T>; checker knows Error.attrs[String] returns DiagnosticValue and dv.as_{int,bool,string} return Optional<T>; HIR→MIR lowers Error.attrs[...] to ErrorAttrsGetDV and dv.as_* to dedicated DVAs* MIR ops with new tests. LLVM backend still fails fast on DV ops (to be implemented next).
 - Catch-arm spans are now threaded end-to-end: HIR nodes carry a `Span`, normalization preserves it, collection asserts it, and `validate_catch_arms` attaches it (with notes pointing to first occurrences for duplicates/catch-alls).
+- DV helper methods (`as_int` / `as_bool` / `as_string`) now short-circuit before registry/signature resolution; misuse on non-DiagnosticValue receivers emits a span-carrying diagnostic rather than falling through.
+- Checker now enforces DiagnosticValue-only throw payloads and attr field values (with span diagnostics), and parser exception diagnostics wrap parser locs in structured `Span`.
+
+### Next steps (attr/DV correctness focus)
+
+- Checker (surface-level): require throw payloads and any attr/value constructs to be `DiagnosticValue`; emit span-carrying diagnostics on the source nodes for unsupported payload types. Keep checker rules independent of MIR op names (e.g., no coupling to `ErrorAddAttrDV`).
+- Spans: extend structured spans to remaining exception diagnostics (duplicate/unknown exception declarations/catches) for UX parity.
+- Tests: (1) checker-level negative for non-DV attr payload rejected with span, (2) LLVM/codegen round-trip for a multi-attr error using DV payloads only to exercise runtime/ABI.
 ---
 
 ## 7. Answering your open questions directly

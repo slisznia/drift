@@ -183,6 +183,27 @@ class TypeChecker:
 						return record_expr(expr, sig.return_type_id)
 				return record_expr(expr, self._unknown)
 			if isinstance(expr, H.HMethodCall):
+				# Built-in DiagnosticValue helpers are reserved method names and take precedence.
+				if expr.method_name in ("as_int", "as_bool", "as_string"):
+					recv_ty = type_expr(expr.receiver)
+					recv_def = self.type_table.get(recv_ty)
+					if recv_def.kind is not TypeKind.DIAGNOSTICVALUE:
+						diagnostics.append(
+							Diagnostic(
+								message=f"{expr.method_name} is only valid on DiagnosticValue",
+								severity="error",
+								span=getattr(expr, "loc", Span()),
+							)
+						)
+						return record_expr(expr, self._unknown)
+					if expr.method_name == "as_int":
+						return record_expr(expr, self._opt_int)
+					if expr.method_name == "as_bool":
+						return record_expr(expr, self._opt_bool)
+					if expr.method_name == "as_string":
+						return record_expr(expr, self._opt_string)
+					return record_expr(expr, self._unknown)
+
 				recv_ty = type_expr(expr.receiver)
 				arg_types = [type_expr(a) for a in expr.args]
 
@@ -204,26 +225,6 @@ class TypeChecker:
 							Diagnostic(message=str(err), severity="error", span=getattr(expr, "loc", Span()))
 						)
 						return record_expr(expr, self._unknown)
-
-				# Built-in DiagnosticValue helpers are reserved method names.
-				if expr.method_name in ("as_int", "as_bool", "as_string"):
-					recv_def = self.type_table.get(recv_ty)
-					if recv_def.kind is not TypeKind.DIAGNOSTICVALUE:
-						diagnostics.append(
-							Diagnostic(
-								message=f"{expr.method_name} is only valid on DiagnosticValue",
-								severity="error",
-								span=getattr(expr, "loc", Span()),
-							)
-						)
-						return record_expr(expr, self._unknown)
-					if expr.method_name == "as_int":
-						return record_expr(expr, self._opt_int)
-					if expr.method_name == "as_bool":
-						return record_expr(expr, self._opt_bool)
-					if expr.method_name == "as_string":
-						return record_expr(expr, self._opt_string)
-					return record_expr(expr, self._unknown)
 
 				if call_signatures:
 					sig = call_signatures.get(expr.method_name)
@@ -346,8 +347,17 @@ class TypeChecker:
 				else_ty = type_expr(expr.else_expr)
 				return record_expr(expr, then_ty if then_ty == else_ty else self._unknown)
 			if isinstance(expr, H.HDVInit):
-				for a in expr.args:
-					type_expr(a)
+				arg_types = [type_expr(a) for a in expr.args]
+				if expr.attr_names:
+					for name, arg_ty, arg_expr in zip(expr.attr_names, arg_types, expr.args):
+						if arg_ty is not self._dv:
+							diagnostics.append(
+								Diagnostic(
+									message=f"attribute '{name}' value must be DiagnosticValue",
+									severity="error",
+									span=getattr(arg_expr, "loc", Span()),
+								)
+							)
 				return record_expr(expr, self._dv)
 			if isinstance(expr, H.HResultOk):
 				ok_ty = type_expr(expr.value)
@@ -388,7 +398,15 @@ class TypeChecker:
 				for arm in stmt.catches:
 					type_block(arm.block)
 			elif isinstance(stmt, H.HThrow):
-				type_expr(stmt.value)
+				val_ty = type_expr(stmt.value)
+				if val_ty is not self._dv:
+					diagnostics.append(
+						Diagnostic(
+							message="throw payload must be DiagnosticValue",
+							severity="error",
+							span=getattr(stmt, "loc", Span()),
+						)
+					)
 			# HBreak/HContinue are typeless here.
 
 		def type_block(block: H.HBlock) -> None:

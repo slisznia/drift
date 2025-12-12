@@ -16,6 +16,7 @@ from lang2.driftc.stage1 import AstToHIR
 from lang2.driftc import stage1 as H
 from lang2.driftc.checker import FnSignature
 from lang2.driftc.core.diagnostics import Diagnostic
+from lang2.driftc.core.span import Span
 from lang2.driftc.core.event_codes import event_code, PAYLOAD_MASK
 
 
@@ -222,7 +223,7 @@ def _decl_from_parser_fn(fn: parser_ast.FunctionDef) -> _FrontendDecl:
 
 def _diagnostic(message: str, loc: object | None) -> Diagnostic:
 	"""Helper to create a Diagnostic from a parser location."""
-	return Diagnostic(message=message, severity="error", span=loc)
+	return Diagnostic(message=message, severity="error", span=Span.from_loc(loc))
 
 
 def _build_exception_catalog(exceptions: list[parser_ast.ExceptionDef], module_name: str | None, diagnostics: list[Diagnostic]) -> dict[str, int]:
