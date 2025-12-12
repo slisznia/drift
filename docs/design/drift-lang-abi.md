@@ -53,7 +53,8 @@ Drift has two classes of scalars:
 
 `Error` is a structured error object capturing:
 
-* A 64-bit **event code**
+* A 64-bit **event code** (derived from the canonical FQN)
+* A canonical **event FQN string** label for logging/telemetry
 * A map of diagnostic attributes (“context fields”)
 * A list of **captured context frames**
 * A **stack snapshot token** used by the runtime
@@ -68,7 +69,8 @@ typedef uint64_t DriftErrorCode;
 typedef struct DriftError DriftError;
 
 struct DriftError {
-    DriftErrorCode code;  // Exception event code (see next section)
+    DriftErrorCode code;      // Exception event code (see next section)
+    DriftString    event_fqn; // Canonical FQN label ("module.sub:Event"), for logging only
 
     // Opaque implementation-defined runtime pointers:
     void *attrs;       // attribute map: key -> DiagnosticValue
@@ -80,9 +82,10 @@ struct DriftError {
 ### 2.2 Guarantees
 
 * `sizeof(DriftErrorCode) == 8`
-* `DriftError.code` uses the ABI-stable event-code format described below
-* The three pointer fields have ABI-stable *positions*, but the contents behind them are **not ABI-stable** and are opaque to external callers
-* `Error` is passed by value in FnResult internally, but by pointer (`Error*`) at module boundaries
+* `DriftError.code` uses the ABI-stable event-code format described below; `0` is reserved for “unknown/unmapped”.
+* The pointer fields have ABI-stable *positions*, but the contents behind them are **not ABI-stable** and are opaque to external callers.
+* `event_fqn` stores the canonical FQN string; routing/matching is always by `code`, never by string compare.
+* `Error` is passed by value in FnResult internally, but by pointer (`Error*`) at module boundaries.
 
 ---
 
@@ -93,61 +96,19 @@ struct DriftError {
 Every error carries a **64-bit event code**:
 
 ```
-bits 63..60 : kind    (4 bits)
-bits 59..0  : payload (60 bits)
+bits 63..60 : domain tag (0b0001 for exceptions)
+bits 59..0  : payload (60-bit hash)
 ```
 
-### 3.1 Event kinds (`ErrorCodeKind`)
-
-| Kind      | Value | Usage                              |
-| --------- | ----- | ---------------------------------- |
-| `TEST`    | 0     | Internal testing / unit errors     |
-| `USER`    | 1     | User-defined exceptions (hashed)   |
-| `BUILTIN` | 2     | Core language / runtime exceptions |
-
-All **user-defined exception types** get a hashed payload:
+User-defined exception events use:
 
 ```text
-payload = xxHash64(ExceptionFQN)[59:0]
+event_code = (0b0001 << 60) | (xxHash64(fqn_utf8) & ((1 << 60) - 1))
 ```
 
-Where FQN = `"module.ExceptionName"`.
+Where `fqn` is the canonical fully-qualified name `"module.sub:Event"` (dot-separated module path, colon before the event name, UTF-8 encoding, no aliases). No other domains (builtin/test) are defined in lang2 v1.
 
-### 3.2 Builtin event codes
-
-These occupy the `BUILTIN` space and have reserved small integer payloads:
-
-```text
-BUILTIN:IllegalNullUnwrap        = (2 << 60) | 1
-BUILTIN:ArrayOutOfBounds         = (2 << 60) | 2
-BUILTIN:InvalidDowncast          = (2 << 60) | 3
-BUILTIN:UnreachableCode          = (2 << 60) | 4
-BUILTIN:FailedAssertion          = (2 << 60) | 5
-... (expandable)
-```
-
-Rules:
-
-* Builtins use *fixed numeric payloads* (1, 2, 3, …).
-* Adding a new builtin event code is **ABI-compatible** if it uses an unused payload.
-* Changing the value of an existing builtin is **ABI-breaking**.
-
-### 3.3 TEST event codes
-
-Used only for:
-
-* unit tests
-* compiler internal errors
-* code paths where a stable, module-specific event is not needed
-
-They use:
-
-```text
-kind = TEST
-payload = incrementing counter or fixed value (implementation-defined)
-```
-
-NEVER leak TEST events into exported ABI.
+`event_code == 0` is reserved as an **“unknown/unmapped” sentinel** (e.g., missing catalog entry) and must not be produced by declared events. The encoded domain+hash form above always sets the high tag (`0b0001`), so valid events cannot collide with the reserved zero value.
 
 ---
 
