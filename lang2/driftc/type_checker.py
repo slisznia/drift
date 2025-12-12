@@ -205,20 +205,10 @@ class TypeChecker:
 						)
 						return record_expr(expr, self._unknown)
 
-				if call_signatures:
-					sig = call_signatures.get(expr.method_name)
-					if sig and sig.return_type_id is not None:
-						return record_expr(expr, sig.return_type_id)
-				# Built-in DiagnosticValue helpers.
+				# Built-in DiagnosticValue helpers are reserved method names.
 				if expr.method_name in ("as_int", "as_bool", "as_string"):
 					recv_def = self.type_table.get(recv_ty)
-					if recv_def.kind is TypeKind.DIAGNOSTICVALUE:
-						if expr.method_name == "as_int":
-							return record_expr(expr, self._opt_int)
-						if expr.method_name == "as_bool":
-							return record_expr(expr, self._opt_bool)
-						if expr.method_name == "as_string":
-							return record_expr(expr, self._opt_string)
+					if recv_def.kind is not TypeKind.DIAGNOSTICVALUE:
 						diagnostics.append(
 							Diagnostic(
 								message=f"{expr.method_name} is only valid on DiagnosticValue",
@@ -226,7 +216,19 @@ class TypeChecker:
 								span=getattr(expr, "loc", Span()),
 							)
 						)
+						return record_expr(expr, self._unknown)
+					if expr.method_name == "as_int":
+						return record_expr(expr, self._opt_int)
+					if expr.method_name == "as_bool":
+						return record_expr(expr, self._opt_bool)
+					if expr.method_name == "as_string":
+						return record_expr(expr, self._opt_string)
 					return record_expr(expr, self._unknown)
+
+				if call_signatures:
+					sig = call_signatures.get(expr.method_name)
+					if sig and sig.return_type_id is not None:
+						return record_expr(expr, sig.return_type_id)
 				return record_expr(expr, self._unknown)
 			if isinstance(expr, H.HField):
 				sub_ty = type_expr(expr.subject)
