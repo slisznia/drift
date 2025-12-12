@@ -20,7 +20,7 @@ from lang2.driftc.stage2 import (
 def test_try_routes_throw_to_catch_block():
 	"""
 	Lower:
-	  try { throw "x" } catch e { }
+	  try { throw Evt{msg="x"} } catch e { }
 
 	Shape expectations:
 	  - entry branches to try_body
@@ -34,7 +34,17 @@ def test_try_routes_throw_to_catch_block():
 	hir = H.HBlock(
 		statements=[
 			H.HTry(
-				body=H.HBlock(statements=[H.HThrow(value=H.HLiteralString("boom"))]),
+				body=H.HBlock(
+					statements=[
+						H.HThrow(
+							value=H.HExceptionInit(
+								event_name="Evt",
+								field_names=["msg"],
+								field_values=[H.HDVInit(dv_type_name="Evt", args=[H.HLiteralString("boom")])],
+							)
+						)
+					]
+				),
 				catches=[
 					H.HCatchArm(event_name=None, binder="e", block=H.HBlock(statements=[]))
 				],
@@ -55,7 +65,7 @@ def test_try_routes_throw_to_catch_block():
 	instrs = try_body.instructions
 	consts = [i for i in instrs if isinstance(i, ConstString)]
 	assert any(c.value == "boom" for c in consts)
-	assert any(c.value == "payload" for c in consts)
+	assert any(c.value == "msg" for c in consts)
 	assert any(isinstance(i, ConstInt) for i in instrs)
 	assert any(isinstance(i, ConstructError) for i in instrs)
 	assert isinstance(try_body.terminator, Goto)

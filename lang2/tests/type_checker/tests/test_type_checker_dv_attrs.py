@@ -12,7 +12,12 @@ def _tc() -> TypeChecker:
 
 def test_throw_payload_must_be_diagnostic_value():
 	tc = _tc()
-	block = H.HBlock(statements=[H.HThrow(value=H.HLiteralInt(1))])
+	exc = H.HExceptionInit(
+		event_name="Exc",
+		field_names=["detail"],
+		field_values=[H.HLiteralInt(1)],
+	)
+	block = H.HBlock(statements=[H.HThrow(value=exc)])
 	res = tc.check_function("f", block)
 	assert any("throw payload must be DiagnosticValue" in d.message for d in res.diagnostics)
 
@@ -61,3 +66,10 @@ def test_exception_ctor_outside_throw_is_rejected():
 	block = H.HBlock(statements=[H.HLet(name="x", value=exc_init)])
 	res = tc.check_function("f", block)
 	assert any("exception constructors are only valid as throw payloads" in d.message for d in res.diagnostics)
+
+
+def test_non_exception_throw_payload_is_rejected():
+	tc = _tc()
+	block = H.HBlock(statements=[H.HThrow(value=H.HDVInit(dv_type_name="Evt", args=[]))])
+	res = tc.check_function("f", block)
+	assert any("throw payload must be an exception constructor" in d.message for d in res.diagnostics)

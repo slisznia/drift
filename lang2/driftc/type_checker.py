@@ -439,15 +439,27 @@ class TypeChecker:
 				for arm in stmt.catches:
 					type_block(arm.block)
 			elif isinstance(stmt, H.HThrow):
-				val_ty = type_expr(stmt.value, allow_exception_init=True)
-				if val_ty != self._dv:
+				if isinstance(stmt.value, H.HMethodCall) and stmt.value.method_name == "unwrap_err":
+					type_expr(stmt.value)
+				elif not isinstance(stmt.value, H.HExceptionInit):
 					diagnostics.append(
 						Diagnostic(
-							message="throw payload must be DiagnosticValue",
+							message="throw payload must be an exception constructor",
 							severity="error",
 							span=getattr(stmt, "loc", Span()),
 						)
 					)
+					type_expr(stmt.value)
+				else:
+					val_ty = type_expr(stmt.value, allow_exception_init=True)
+					if val_ty != self._dv:
+						diagnostics.append(
+							Diagnostic(
+								message="throw payload must be DiagnosticValue",
+								severity="error",
+								span=getattr(stmt, "loc", Span()),
+							)
+						)
 			# HBreak/HContinue are typeless here.
 
 		def type_block(block: H.HBlock) -> None:

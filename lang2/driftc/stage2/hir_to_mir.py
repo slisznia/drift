@@ -633,46 +633,30 @@ class HIRToMIR:
 		if isinstance(stmt.value, H.HExceptionInit):
 			field_count = len(stmt.value.field_values)
 			if field_count == 0:
+				# No declared fields: seed with an empty DV under the event name.
 				payload_val = self.b.new_temp()
 				self.b.emit(M.ConstructDV(dest=payload_val, dv_type_name=stmt.value.event_name, args=[]))
-				payload_key = self.b.new_temp()
-				self.b.emit(M.ConstString(dest=payload_key, value="payload"))
-				self.b.emit(
-					M.ConstructError(dest=err_val, code=code_val, payload=payload_val, attr_key=payload_key)
-				)
+				key_val = self.b.new_temp()
+				self.b.emit(M.ConstString(dest=key_val, value=stmt.value.event_name))
+				self.b.emit(M.ConstructError(dest=err_val, code=code_val, payload=payload_val, attr_key=key_val))
 			else:
 				field_dvs: list[tuple[str, M.ValueId]] = []
 				for name, field_expr in zip(stmt.value.field_names, stmt.value.field_values):
 					val = self.lower_expr(field_expr)
 					field_dvs.append((name, val))
-				payload_key = self.b.new_temp()
-				self.b.emit(M.ConstString(dest=payload_key, value="payload"))
 				first_name, first_dv = field_dvs[0]
+				first_key = self.b.new_temp()
+				self.b.emit(M.ConstString(dest=first_key, value=first_name))
 				self.b.emit(
-					M.ConstructError(dest=err_val, code=code_val, payload=first_dv, attr_key=payload_key)
+					M.ConstructError(dest=err_val, code=code_val, payload=first_dv, attr_key=first_key)
 				)
-				# Also store the first field under its declared name if it is not literally "payload".
-				if first_name != "payload":
-					first_key = self.b.new_temp()
-					self.b.emit(M.ConstString(dest=first_key, value=first_name))
-					self.b.emit(M.ErrorAddAttrDV(error=err_val, key=first_key, value=first_dv))
 				for name, dv in field_dvs[1:]:
 					key = self.b.new_temp()
 					self.b.emit(M.ConstString(dest=key, value=name))
 					self.b.emit(M.ErrorAddAttrDV(error=err_val, key=key, value=dv))
 		else:
-			# Payload of the error (already a DiagnosticValue expression in HIR).
-			payload_val = self.lower_expr(stmt.value)
-
-			# Attr key: use the DV ctor name if available, else "payload".
-			key_val = self.b.new_temp()
-			key_literal = "payload"
-			if isinstance(stmt.value, H.HDVInit):
-				key_literal = stmt.value.dv_type_name
-			self.b.emit(M.ConstString(dest=key_val, value=key_literal))
-
-			# Build the Error value.
-			self.b.emit(M.ConstructError(dest=err_val, code=code_val, payload=payload_val, attr_key=key_val))
+			# Throwing an existing Error value (e.g., from try-result sugar unwrap_err).
+			err_val = self.lower_expr(stmt.value)
 
 		# If we are inside a try, route to the catch block instead of returning.
 		if self._try_stack and self.b.block.terminator is None:

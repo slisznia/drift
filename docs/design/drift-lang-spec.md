@@ -2060,7 +2060,7 @@ exception IndexError {
 Event name of the exception (`"BadArgument"`).
 
 #### 14.2.2. attrs
-All exception attributes as typed `DiagnosticValue` entries (see §5.13.8). Values are produced via `Diagnostic.to_diag()`; no stringification is implied.
+All exception attributes as typed `DiagnosticValue` entries (see §5.13.8). Values are produced via `Diagnostic.to_diag()`; no stringification is implied. Any value recorded in `Error.attrs` (exception fields or later-added attrs) must implement `Diagnostic`; attempting to attach a non-Diagnostic value is a compile-time error.
 
 #### 14.2.3. ctx_frames
 Per-frame captured locals:
@@ -2093,7 +2093,7 @@ exception Timeout {
 }
 ```
 
-Each field type must implement `Diagnostic` (see §5.13.7).
+Each field type must implement the `Diagnostic` trait (see §5.13.7).
 
 #### 14.3.2. Throwing
 ```drift
@@ -2102,7 +2102,7 @@ throw InvalidOrder { order_id: order.id, code: "order.invalid" }
 
 Runtime builds an `Error` with:
 - event name
-- attrs (each declared field converted via `Diagnostic.to_diag()` into `Map<String, DiagnosticValue>`; every declared field is stored under its name, and the primary field is also stored under the fixed `"payload"` key)
+- attrs (each declared field converted via `Diagnostic.to_diag()` into `Map<String, DiagnosticValue>`; every declared field is stored under its name—there is no special “primary payload” field; every value must implement the `Diagnostic` trait (§5.13.7))
 - empty ctx_frames (filled during unwind)
 - backtrace
 

@@ -10,6 +10,7 @@ from lang2.driftc.stage2 import (
 	HIRToMIR,
 	ConstInt,
 	ConstString,
+	ConstructDV,
 	ConstructError,
 	ErrorAddAttrDV,
 	ConstructResultErr,
@@ -19,30 +20,34 @@ from lang2.driftc.stage2 import (
 
 def test_throw_lowers_to_error_and_result_err_return():
 	"""
-	`throw payload` should:
+	`throw ExceptionInit` should:
 	  - emit a ConstInt for the event code placeholder,
-	  - ConstructError(code, payload),
+	  - ConstructError(code, first field DV, key=field name),
 	  - ConstructResultErr(error),
 	  - Return that result.
 	"""
 	builder = MirBuilder(name="throw_fn")
 	lower = HIRToMIR(builder)
 
-	hir_block = H.HBlock(statements=[H.HThrow(value=H.HLiteralString("boom"))])
+	exc = H.HExceptionInit(
+		event_name="Boom",
+		field_names=["msg"],
+		field_values=[H.HDVInit(dv_type_name="Boom", args=[H.HLiteralString("boom")])],
+	)
+	hir_block = H.HBlock(statements=[H.HThrow(value=exc)])
 	lower.lower_block(hir_block)
 
 	entry = builder.func.blocks["entry"]
 	instrs = entry.instructions
 
-	# Expect: payload literal, event-code const, ConstructError, ConstructResultErr.
-	# HIRToMIR now injects a ConstString for String.EMPTY; filter out any leading
-	# injected empty-string literal when asserting.
+	# Expect: DV ctor, event-code const, ConstructError, ConstructResultErr.
+	dv_ctor = next(i for i in instrs if isinstance(i, ConstructDV))
 	payload_const = next(i for i in instrs if isinstance(i, ConstString) and i.value == "boom")
 	const_int = next(i for i in instrs if isinstance(i, ConstInt))
-	key_const = next(i for i in instrs if isinstance(i, ConstString) and i.value == "payload")
+	key_const = next(i for i in instrs if isinstance(i, ConstString) and i.value == "msg")
 	err = next(i for i in instrs if isinstance(i, ConstructError))
 	err_result = next(i for i in instrs if isinstance(i, ConstructResultErr))
-	assert err.payload == payload_const.dest
+	assert err.payload == dv_ctor.dest
 	assert err.code == const_int.dest
 	assert err.attr_key == key_const.dest
 	assert err_result.error == err.dest
@@ -55,7 +60,7 @@ def test_throw_lowers_to_error_and_result_err_return():
 def test_exception_init_throw_attaches_all_fields():
 	"""
 	throw ExceptionInit{a, b} should store:
-	  - payload under \"payload\"
+	  - first field under its declared name via ConstructError
 	  - field 'a' under its declared name
 	  - field 'b' under its declared name
 	"""
@@ -75,8 +80,8 @@ def test_exception_init_throw_attaches_all_fields():
 
 	entry = builder.func.blocks["entry"]
 	add_attr_instrs = [i for i in entry.instructions if isinstance(i, ErrorAddAttrDV)]
-	# Expect attrs for both fields (first field is stored under its name in addition to payload).
-	assert len(add_attr_instrs) == 2
+	# First field is seeded via ConstructError; remaining fields are added via ErrorAddAttrDV.
+	assert len(add_attr_instrs) == 1
 	# Keys come from ConstString instructions; verify the literal values.
 	key_literals = [i.value for i in entry.instructions if isinstance(i, ConstString)]
 	assert "a" in key_literals and "b" in key_literals
