@@ -218,13 +218,13 @@ class ConstructError(MInstr):
 	Construct an Error value from an event code and diagnostic payload.
 
 	`code` is the 64-bit event code (as per drift-abi-exceptions).
-	`event_name` is the canonical FQN label (for logging/telemetry; not used for matching).
+	`event_fqn` is the canonical FQN label (for logging/telemetry; not used for matching).
 	`payload` is a DiagnosticValue representing structured attrs (optional).
 	`attr_key` is the attr name under which to store the payload (optional).
 	"""
 	dest: ValueId
 	code: ValueId
-	event_name: ValueId
+	event_fqn: ValueId
 	payload: ValueId | None
 	attr_key: ValueId | None
 

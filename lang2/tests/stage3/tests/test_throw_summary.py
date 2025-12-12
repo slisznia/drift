@@ -24,7 +24,7 @@ def test_throw_summary_records_construct_error_and_exc_types():
 		ConstructDV(dest="p", dv_type_name="Err", args=[]),
 		ConstString(dest="ename", value="Err"),
 		ConstString(dest="pkey", value="payload"),
-		ConstructError(dest="e0", code="c0", event_name="ename", payload="p", attr_key="pkey"),
+		ConstructError(dest="e0", code="c0", event_fqn="m:Err", payload="p", attr_key="pkey"),
 	],
 		terminator=Goto(target="exit"),
 	)

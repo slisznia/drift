@@ -34,15 +34,15 @@ def test_error_attrs_lookup_lowered_to_runtime_call():
 
 	entry = BasicBlock(
 		name="entry",
-		instructions=[
-			ConstInt(dest="code", value=1),
-			ConstString(dest="ename", value="Evt"),
-			ConstString(dest="key", value="payload"),
-			ConstructDV(dest="dv", dv_type_name="Missing", args=[]),
-			ConstructError(dest="err", code="code", event_name="ename", payload="dv", attr_key="key"),
-			ErrorAttrsGetDV(dest="dv", error="err", key="key"),
-			ConstructResultErr(dest="res", error="err"),
-		],
+	instructions=[
+		ConstInt(dest="code", value=1),
+		ConstString(dest="ename", value="m:Evt"),
+		ConstString(dest="key", value="k"),
+		ConstructDV(dest="dv", dv_type_name="Missing", args=[]),
+		ConstructError(dest="err", code="code", event_fqn="ename", payload="dv", attr_key="key"),
+		ErrorAttrsGetDV(dest="dv", error="err", key="key"),
+		ConstructResultErr(dest="res", error="err"),
+	],
 		terminator=Return(value="res"),
 	)
 	mir = MirFunc(name="f", params=[], locals=[], blocks={"entry": entry}, entry="entry")
@@ -69,15 +69,15 @@ def test_dv_as_int_returns_optional_int():
 
 	entry = BasicBlock(
 		name="entry",
-		instructions=[
-			ConstInt(dest="code", value=2),
-			ConstString(dest="ename", value="Evt"),
-			ConstString(dest="key", value="payload"),
-			ConstructDV(dest="dv", dv_type_name="Missing", args=[]),
-			ConstructError(dest="err", code="code", event_name="ename", payload="dv", attr_key="key"),
-			ErrorAttrsGetDV(dest="dv", error="err", key="key"),
-			DVAsInt(dest="opt", dv="dv"),
-			ConstructResultErr(dest="res", error="err"),
+	instructions=[
+		ConstInt(dest="code", value=2),
+		ConstString(dest="ename", value="m:Evt"),
+		ConstString(dest="key", value="k"),
+		ConstructDV(dest="dv", dv_type_name="Missing", args=[]),
+		ConstructError(dest="err", code="code", event_fqn="ename", payload="dv", attr_key="key"),
+		ErrorAttrsGetDV(dest="dv", error="err", key="key"),
+		DVAsInt(dest="opt", dv="dv"),
+		ConstructResultErr(dest="res", error="err"),
 		],
 		terminator=Return(value="res"),
 	)
@@ -103,13 +103,13 @@ def test_error_additional_attr_lowered_to_runtime_call():
 
 	entry = BasicBlock(
 		name="entry",
-		instructions=[
-			ConstInt(dest="code", value=3),
-			ConstString(dest="ename", value="Evt"),
-			ConstString(dest="k1", value="a"),
-			ConstInt(dest="v1", value=10),
+	instructions=[
+		ConstInt(dest="code", value=3),
+		ConstString(dest="ename", value="m:Evt"),
+		ConstString(dest="k1", value="a"),
+		ConstInt(dest="v1", value=10),
 			ConstructDV(dest="dv1", dv_type_name="a", args=["v1"]),
-			ConstructError(dest="err", code="code", event_name="ename", payload="dv1", attr_key="k1"),
+			ConstructError(dest="err", code="code", event_fqn="ename", payload="dv1", attr_key="k1"),
 			ConstString(dest="k2", value="b"),
 			ConstInt(dest="v2", value=20),
 			ConstructDV(dest="dv2", dv_type_name="b", args=["v2"]),
@@ -140,11 +140,11 @@ def test_error_attr_round_trip_additional_key():
 		name="entry",
 		instructions=[
 			ConstInt(dest="code", value=4),
-			ConstString(dest="ename", value="Evt"),
-			ConstString(dest="payload_key", value="payload"),
+			ConstString(dest="ename", value="m:Evt"),
+			ConstString(dest="payload_key", value="k"),
 			ConstInt(dest="payload_int", value=0),
 			ConstructDV(dest="payload_dv", dv_type_name="Evt", args=["payload_int"]),
-			ConstructError(dest="err", code="code", event_name="ename", payload="payload_dv", attr_key="payload_key"),
+		ConstructError(dest="err", code="code", event_fqn="ename", payload="payload_dv", attr_key="payload_key"),
 			ConstString(dest="attr_key", value="answer"),
 			ConstInt(dest="attr_val", value=7),
 			ConstructDV(dest="attr_dv", dv_type_name="Evt", args=["attr_val"]),

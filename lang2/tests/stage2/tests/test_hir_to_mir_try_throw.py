@@ -50,7 +50,7 @@ def test_throw_lowers_to_error_and_result_err_return():
 	err_result = next(i for i in instrs if isinstance(i, ConstructResultErr))
 	assert err.payload == dv_ctor.dest
 	assert err.code == const_int.dest
-	assert err.event_name == event_name_const.dest
+	assert err.event_fqn == event_name_const.dest
 	assert err.attr_key == key_const.dest
 	assert err_result.error == err.dest
 

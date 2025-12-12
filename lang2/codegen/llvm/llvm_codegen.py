@@ -614,7 +614,7 @@ class _FuncBuilder:
 		elif isinstance(instr, ConstructError):
 			dest = self._map_value(instr.dest)
 			code = self._map_value(instr.code)
-			event_name = self._map_value(instr.event_name)
+			event_fqn = self._map_value(instr.event_fqn)
 			payload = self._map_value(instr.payload) if instr.payload is not None else None
 			attr_key = self._map_value(instr.attr_key) if instr.attr_key is not None else None
 			self.value_types[dest] = DRIFT_ERROR_PTR
@@ -624,19 +624,19 @@ class _FuncBuilder:
 				raise NotImplementedError(
 					f"LLVM codegen v1: error code must be Int (i64), got {code_ty}"
 				)
-			event_name_ty = self.value_types.get(event_name)
-			if event_name_ty != DRIFT_STRING_TYPE:
+			event_fqn_ty = self.value_types.get(event_fqn)
+			if event_fqn_ty != DRIFT_STRING_TYPE:
 				raise NotImplementedError(
-					f"LLVM codegen v1: event_name must be String ({DRIFT_STRING_TYPE}), got {event_name_ty}"
+					f"LLVM codegen v1: event_fqn must be String ({DRIFT_STRING_TYPE}), got {event_fqn_ty}"
 				)
 			if payload is None or attr_key is None:
 				self.lines.append(
-					f"  {dest} = call {DRIFT_ERROR_PTR} @drift_error_new(i64 {code}, {DRIFT_STRING_TYPE} {event_name})"
+					f"  {dest} = call {DRIFT_ERROR_PTR} @drift_error_new(i64 {code}, {DRIFT_STRING_TYPE} {event_fqn})"
 				)
 			else:
 				# Attach payload via runtime helper; payload is expected to be a DiagnosticValue.
 				self.lines.append(
-					f"  {dest} = call {DRIFT_ERROR_PTR} @drift_error_new_with_payload(i64 {code}, {DRIFT_STRING_TYPE} {event_name}, {DRIFT_STRING_TYPE} {attr_key}, {DRIFT_DV_TYPE} {payload})"
+					f"  {dest} = call {DRIFT_ERROR_PTR} @drift_error_new_with_payload(i64 {code}, {DRIFT_STRING_TYPE} {event_fqn}, {DRIFT_STRING_TYPE} {attr_key}, {DRIFT_DV_TYPE} {payload})"
 				)
 		elif isinstance(instr, ErrorAttrsGetDV):
 			self.module.needs_dv_runtime = True

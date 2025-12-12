@@ -179,4 +179,18 @@ stage-for-review:
 		mkdir -p "$staged_dir/$(dirname "$f")"
 		cp -- "$f" "$staged_dir/$f"
 	done
-	rm -f staged.zip && zip -r staged.zip "$staged_dir"
+	mapfile -d '' files < <(find "$staged_dir/" -type f -print0 | sort -z)
+	{
+		echo "[==== FILE LIST ====]"
+		printf '%s\n' "${files[@]}"
+		echo
+
+		# feed awk a NUL-separated list so xargs -0 is happy
+		printf '%s\0' "${files[@]}" |
+			xargs -0 awk '
+				FNR==1 { print "\n[==== File: " FILENAME " =====]" }
+				{ print }
+			'
+	} > combined.txt
+
+	# rm -f staged.zip && zip -r staged.zip "$staged_dir"

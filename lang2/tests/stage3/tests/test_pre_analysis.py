@@ -62,7 +62,7 @@ def test_calls_tracked_separately_from_may_fail():
 			ConstInt(dest="c0", value=1234),
 			ConstString(dest="ename", value="Err"),
 			ConstString(dest="pkey", value="payload"),
-			ConstructError(dest="t3", code="c0", event_name="ename", payload="t2", attr_key="pkey"),
+			ConstructError(dest="t3", code="c0", event_fqn="ename", payload="t2", attr_key="pkey"),
 		],
 		terminator=Goto(target="exit"),
 	)

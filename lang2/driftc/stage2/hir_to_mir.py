@@ -640,7 +640,7 @@ class HIRToMIR:
 					M.ConstructError(
 						dest=err_val,
 						code=code_val,
-						event_name=event_name_val,
+						event_fqn=event_name_val,
 						payload=None,
 						attr_key=None,
 					)
@@ -657,7 +657,7 @@ class HIRToMIR:
 					M.ConstructError(
 						dest=err_val,
 						code=code_val,
-						event_name=event_name_val,
+						event_fqn=event_name_val,
 						payload=first_dv,
 						attr_key=first_key,
 					)
