@@ -173,13 +173,13 @@ class Checker:
 		self._unknown_type = _find_named(TypeKind.UNKNOWN, "Unknown") or self._type_table.ensure_unknown()
 		# TODO: remove declared_can_throw shim once real parser/type checker supplies signatures.
 
-	def _normalize_and_collect_catch_arms(self, hir_blocks: Mapping[str, "H.HBlock"]) -> dict[str, list[CatchArmInfo]]:
+	def _normalize_and_collect_catch_arms(self, hir_blocks: Mapping[str, "H.HBlock"]) -> dict[str, list[list[CatchArmInfo]]]:
 		"""
 		Normalize HIR blocks and collect catch-arm info uniformly for all callers.
 
 		This keeps catch validation consistent between the CLI and stub helpers.
 		"""
-		catch_arms: dict[str, list[CatchArmInfo]] = {}
+		catch_arms: dict[str, list[list[CatchArmInfo]]] = {}
 		for name, block in hir_blocks.items():
 			hir_norm = normalize_hir(block)
 			arms = collect_catch_arms_from_block(hir_norm)
@@ -246,9 +246,10 @@ class Checker:
 				else:
 					declared_can_throw = False
 
-			catch_arms = self._catch_arms.get(name)
-			if catch_arms is not None:
-				validate_catch_arms(catch_arms, known_events, diagnostics)
+			catch_arms_groups = self._catch_arms.get(name)
+			if catch_arms_groups is not None:
+				for arms in catch_arms_groups:
+					validate_catch_arms(arms, known_events, diagnostics)
 
 			fn_infos[name] = FnInfo(
 				name=name,

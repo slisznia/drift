@@ -1,0 +1,13 @@
+module m
+
+exception E()
+
+fn main() returns Int {
+    try {
+        throw E { msg = "boom" };
+        print("UNREACHABLE");
+    } catch err {
+        print("caught");
+    }
+    return 0;
+}

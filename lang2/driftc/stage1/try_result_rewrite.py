@@ -117,7 +117,7 @@ class TryResultRewriter:
 			]
 			return [H.HTry(body=body, catches=catches)]
 		# Simple statements unchanged
-		if isinstance(stmt, (H.HBreak, H.HContinue)):
+		if isinstance(stmt, (H.HBreak, H.HContinue, H.HRethrow)):
 			return [stmt]
 		raise NotImplementedError(f"TryResultRewriter does not handle stmt {type(stmt).__name__}")
 

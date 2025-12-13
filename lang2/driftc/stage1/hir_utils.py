@@ -16,14 +16,15 @@ from lang2.driftc.checker.catch_arms import CatchArmInfo
 from lang2.driftc.core.span import Span
 
 
-def collect_catch_arms_from_block(block: H.HBlock) -> List[CatchArmInfo]:
+def collect_catch_arms_from_block(block: H.HBlock) -> List[List[CatchArmInfo]]:
 	"""
-	Walk an HIR block and collect all catch arms (including nested try/catch).
+	Walk an HIR block and collect catch arms grouped by try/catch.
 
 	This keeps the checker aware of catch-arm shapes when validating against
 	the exception catalog. Only syntactic info (event FQN) is gathered here.
+	Nested tries each produce their own group so validation applies per-try.
 	"""
-	arms: List[CatchArmInfo] = []
+	arms: List[List[CatchArmInfo]] = []
 
 	def collect_block(b: H.HBlock) -> None:
 		for stmt in b.statements:
@@ -31,10 +32,12 @@ def collect_catch_arms_from_block(block: H.HBlock) -> List[CatchArmInfo]:
 
 	def collect_stmt(stmt: H.HStmt) -> None:
 		if isinstance(stmt, H.HTry):
+			arm_group: List[CatchArmInfo] = []
 			for arm in stmt.catches:
 				assert isinstance(arm.loc, Span)
-				arms.append(CatchArmInfo(event_fqn=arm.event_fqn, span=arm.loc))
+				arm_group.append(CatchArmInfo(event_fqn=arm.event_fqn, span=arm.loc))
 				collect_block(arm.block)
+			arms.append(arm_group)
 			collect_block(stmt.body)
 		elif isinstance(stmt, H.HIf):
 			collect_block(stmt.then_block)

@@ -1,0 +1,16 @@
+module m
+
+exception E()
+
+fn main() returns Int {
+    try {
+        try {
+            throw E {};
+        } catch m:E(err) {
+            rethrow;
+        }
+    } catch m:E(err) {
+        print("ok");
+    }
+    return 0;
+}

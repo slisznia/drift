@@ -81,6 +81,8 @@ def _run_case(case_dir: Path) -> str:
 		return "skipped (missing expected.json or main.drift)"
 
 	expected = json.loads(expected_path.read_text())
+	if expected.get("skip"):
+		return "skipped (marked)"
 	# Compile-error path: delegate to driftc --json for structured diags.
 	if expected.get("diagnostics"):
 		cmd = [str(Path(sys.executable)), "-m", "lang2.driftc.driftc", str(source_path), "--json"]
@@ -125,6 +127,43 @@ def _run_case(case_dir: Path) -> str:
 		if expected.get("stderr", actual_stderr) != actual_stderr:
 			return "FAIL (parser phase stderr mismatch)"
 		return "ok"
+	try:
+		ir, checked = compile_to_llvm_ir_for_tests(
+			func_hirs=func_hirs,
+			signatures=signatures,
+			exc_env=exception_catalog,
+			entry="main",
+			type_table=type_table,
+		)
+	except Exception as err:  # pragma: no cover - defensive for negative e2e cases
+		expected_diags = expected.get("diagnostics", [])
+		if expected_diags:
+			msg = str(err)
+			for exp in expected_diags:
+				if exp.get("message_contains") and exp["message_contains"] not in msg:
+					return f"FAIL (missing expected diagnostic; saw exception {msg})"
+			return "ok"
+		raise
+
+	# If the checker produced diagnostics and the test expects them, validate and
+	# short-circuit before running codegen output.
+	checked_diags = getattr(checked, "diagnostics", [])
+	expected_diags = expected.get("diagnostics")
+	if expected_diags is not None:
+		for exp in expected_diags:
+			msg_sub = exp.get("message_contains")
+			match_found = False
+			for d in checked_diags:
+				if msg_sub is not None and msg_sub not in d.message:
+					continue
+				match_found = True
+				break
+			if not match_found:
+				return "FAIL (missing expected diagnostic)"
+		return "ok"
+	if checked_diags:
+		return "FAIL (unexpected checker diagnostics)"
+
 	# Require exactly one user-facing main. Prefer a zero-arg Int main; if a single
 	# param main exists, assume it's Array<String> and let the backend emit the
 	# argv wrapper.
@@ -141,14 +180,6 @@ def _run_case(case_dir: Path) -> str:
 			elem_def = type_table.get(td.param_types[0])
 			if elem_def.name == "String":
 				needs_argv = True
-
-	ir, checked = compile_to_llvm_ir_for_tests(
-		func_hirs=func_hirs,
-		signatures=signatures,
-		exc_env=exception_catalog,
-		entry=entry,
-		type_table=type_table,
-	)
 
 	if checked.diagnostics:
 		expected_exit = expected.get("exit_code", 1)

@@ -1,0 +1,6 @@
+{
+  "exit_code": 1,
+  "diagnostics": [
+    { "message_contains": "rethrow is only valid inside a catch block" }
+  ]
+}

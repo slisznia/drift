@@ -1,0 +1,8 @@
+{
+  "exit_code": 1,
+  "diagnostics": [
+    {
+      "message_contains": "may throw but is not declared can-throw"
+    }
+  ]
+}

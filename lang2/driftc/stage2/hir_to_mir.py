@@ -151,6 +151,8 @@ class HIRToMIR:
 		self._loop_stack: list[tuple[str, str]] = []
 		# Stack of try contexts for nested try/catch (innermost on top).
 		self._try_stack: list["_TryCtx"] = []
+		# Error value bound by the innermost catch block (if any) for rethrow.
+		self._current_catch_error: M.ValueId | None = None
 		# Optional exception environment: maps exception FQN -> event code.
 		self._exc_env = exc_env
 		# Track best-effort local types (TypeId) to tag typed MIR nodes.
@@ -734,11 +736,10 @@ class HIRToMIR:
 		"""
 		if self.b.block.terminator is not None:
 			return
-		if not self._try_stack:
+		if self._current_catch_error is None:
 			raise AssertionError("rethrow outside catch (checker bug)")
-		ctx = self._try_stack[-1]
 		err_val = self.b.new_temp()
-		self.b.emit(M.LoadLocal(dest=err_val, local=ctx.error_local))
+		self.b.emit(M.LoadLocal(dest=err_val, local=self._current_catch_error))
 		self._propagate_error(err_val)
 
 	def _visit_stmt_HTry(self, stmt: H.HTry) -> None:
@@ -865,15 +866,10 @@ class HIRToMIR:
 			code_again = self.b.new_temp()
 			self.b.emit(M.ErrorEvent(dest=code_again, error=err_again))
 			# Make the caught error available to `rethrow` inside this catch arm.
-			self._try_stack.append(
-				_TryCtx(
-					error_local=try_ctx.error_local,
-					dispatch_block_name=try_ctx.dispatch_block_name,
-					cont_block_name=try_ctx.cont_block_name,
-				)
-			)
+			prev_catch_err = self._current_catch_error
+			self._current_catch_error = error_local
 			self.lower_block(arm.block)
-			self._try_stack.pop()
+			self._current_catch_error = prev_catch_err
 			if self.b.block.terminator is None:
 				self.b.set_terminator(M.Goto(target=cont_block.name))
 

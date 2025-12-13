@@ -1,0 +1,10 @@
+module m
+
+fn main() returns Int {
+    try {
+        rethrow
+    } catch err {
+        print("caught");
+    }
+    return 0;
+}

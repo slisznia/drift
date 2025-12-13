@@ -1,0 +1,9 @@
+module m
+
+exception E()
+
+fn mk() returns Int { return 5; }
+
+fn main() returns Int {
+    throw E { code = mk() };
+}
