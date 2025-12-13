@@ -313,7 +313,8 @@ class Checker:
 			info = fn_infos.get(fn_name)
 			if info is None:
 				continue
-			if self._function_may_throw(hir_block, fn_infos):
+			may_throw, throw_span = self._function_may_throw(hir_block, fn_infos)
+			if may_throw:
 				info.inferred_may_throw = True
 				if not info.declared_can_throw:
 					diagnostics.append(
@@ -323,7 +324,7 @@ class Checker:
 								f"declare a FnResult return type or mark it can-throw explicitly"
 							),
 							severity="error",
-							span=Span(),
+							span=throw_span,
 						)
 					)
 
@@ -382,7 +383,7 @@ class Checker:
 			return True
 		return info.inferred_may_throw
 
-	def _function_may_throw(self, block: "H.HBlock", fn_infos: Mapping[str, FnInfo]) -> bool:  # type: ignore[name-defined]
+	def _function_may_throw(self, block: "H.HBlock", fn_infos: Mapping[str, FnInfo]) -> tuple[bool, Span]:  # type: ignore[name-defined]
 		"""
 		Walk a HIR block and conservatively decide if it may throw.
 
@@ -392,13 +393,17 @@ class Checker:
 		"""
 		from lang2.driftc import stage1 as H
 		may_throw = False
+		first_span: Span | None = None
 
 		def walk_expr(expr: H.HExpr) -> None:
 			nonlocal may_throw
+			nonlocal first_span
 			if isinstance(expr, H.HCall):
 				if isinstance(expr.fn, H.HVar):
 					if self._call_may_throw(expr.fn.name, fn_infos):
 						may_throw = True
+						if first_span is None:
+							first_span = Span.from_loc(getattr(expr, "loc", None))
 				for arg in expr.args:
 					walk_expr(arg)
 			elif isinstance(expr, H.HMethodCall):
@@ -432,6 +437,7 @@ class Checker:
 
 		def walk_block(b: H.HBlock, caught: set[str] | None = None, catch_all: bool = False) -> None:
 			nonlocal may_throw
+			nonlocal first_span
 			for stmt in b.statements:
 				if isinstance(stmt, H.HThrow):
 					# If we know this throw's event is caught locally, do not mark may_throw.
@@ -442,6 +448,8 @@ class Checker:
 					elif catch_all:
 						continue
 					may_throw = True
+					if first_span is None:
+						first_span = Span.from_loc(getattr(stmt, "loc", None))
 					continue
 				if isinstance(stmt, H.HTry):
 					catch_all_local = any(arm.event_fqn is None for arm in stmt.catches)
@@ -474,7 +482,7 @@ class Checker:
 				# other statements: continue
 
 		walk_block(block)
-		return may_throw
+		return may_throw, (first_span or Span())
 
 	@dataclass
 	class _TypingContext:

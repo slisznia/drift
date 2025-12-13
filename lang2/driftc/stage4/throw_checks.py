@@ -41,6 +41,7 @@ class FuncThrowInfo:
 	declared_can_throw: bool
 	return_type_id: Optional[TypeId] = None
 	declared_events: Optional[Set[str]] = None
+	inferred_may_throw: bool = False
 
 
 def _report(msg: str, diagnostics: Optional[List[Diagnostic]]) -> None:
@@ -72,10 +73,12 @@ def build_func_throw_info(
 	for fname, summary in summaries.items():
 		return_ty: Optional[TypeId] = None
 		decl_events: Optional[Set[str]] = None
+		inferred: bool = summary.constructs_error or bool(summary.may_fail_sites)
 		if fn_infos is not None:
 			fn_info = fn_infos.get(fname)
 			if fn_info is not None:
 				return_ty = fn_info.return_type_id
+				inferred = getattr(fn_info, "inferred_may_throw", inferred)
 				if getattr(fn_info, "declared_events", None) is not None:
 					decl_events = set(fn_info.declared_events)  # type: ignore[arg-type]
 		out[fname] = FuncThrowInfo(
@@ -86,6 +89,7 @@ def build_func_throw_info(
 			declared_can_throw=declared_can_throw.get(fname, False),
 			return_type_id=return_ty,
 			declared_events=decl_events,
+			inferred_may_throw=inferred,
 		)
 	return out
 
@@ -101,7 +105,7 @@ def enforce_can_throw_invariants(
 	More invariants (e.g., Returns carry FnResult) are layered in other helpers.
 	"""
 	for fname, info in func_infos.items():
-		if info.constructs_error and not info.declared_can_throw:
+		if info.constructs_error and info.inferred_may_throw and not info.declared_can_throw:
 			_report(
 				msg=f"function {fname} constructs an Error but is not declared can-throw",
 				diagnostics=diagnostics,

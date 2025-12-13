@@ -648,8 +648,15 @@ class HIRToMIR:
 			else:
 				field_dvs: list[tuple[str, M.ValueId]] = []
 				for name, field_expr in zip(stmt.value.field_names, stmt.value.field_values):
-					val = self.lower_expr(field_expr)
-					field_dvs.append((name, val))
+					if isinstance(field_expr, H.HDVInit):
+						dv_val = self.lower_expr(field_expr)
+					else:
+						inner_val = self.lower_expr(field_expr)
+						dv_val = self.b.new_temp()
+						# Wrap non-DV field values into a DiagnosticValue via the generic
+						# constructor. `dv_type_name` is informational only here.
+						self.b.emit(M.ConstructDV(dest=dv_val, dv_type_name=name, args=[inner_val]))
+					field_dvs.append((name, dv_val))
 				first_name, first_dv = field_dvs[0]
 				first_key = self.b.new_temp()
 				self.b.emit(M.ConstString(dest=first_key, value=first_name))
