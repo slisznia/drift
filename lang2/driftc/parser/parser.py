@@ -670,25 +670,25 @@ def _fqn_from_tree(tree: Tree) -> str:
 
 
 def _build_catch_clause(tree: Tree) -> CatchClause:
-    event: str | None = None
-    binder: str | None = None
-    block_node = None
-    for child in tree.children:
-        if isinstance(child, Tree):
-            name = _name(child)
-            if name in {"catch_pattern", "catch_event", "catch_all"}:
-                event_node = next((c for c in child.children if isinstance(c, Tree) and _name(c) == "event_fqn"), None)
-                if event_node is not None:
-                    event = _fqn_from_tree(event_node)
-                binder_tok = next((tok for tok in child.children if isinstance(tok, Token) and tok.type == "NAME"), None)
-                if binder_tok is not None:
-                    binder = binder_tok.value
-            elif name == "block":
-                block_node = child
-    if block_node is None:
-        raise ValueError("catch clause missing block")
-    block = _build_block(block_node)
-    return CatchClause(event=event, binder=binder, block=block)
+	event: str | None = None
+	binder: str | None = None
+	block_node = None
+	for child in tree.children:
+		if isinstance(child, Tree):
+			name = _name(child)
+			if name in {"catch_pattern", "catch_event", "catch_all", "catch_all_empty"}:
+				event_node = next((c for c in child.children if isinstance(c, Tree) and _name(c) == "event_fqn"), None)
+				if event_node is not None:
+					event = _fqn_from_tree(event_node)
+				binder_tok = next((tok for tok in child.children if isinstance(tok, Token) and tok.type == "NAME"), None)
+				if binder_tok is not None:
+					binder = binder_tok.value
+			elif name == "block":
+				block_node = child
+	if block_node is None:
+		raise ValueError("catch clause missing block")
+	block = _build_block(block_node)
+	return CatchClause(event=event, binder=binder, block=block)
 
 
 def _build_expr(node) -> Expr:

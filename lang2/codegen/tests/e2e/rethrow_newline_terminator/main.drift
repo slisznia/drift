@@ -6,12 +6,12 @@ fn main() returns Int {
     try {
         try {
             throw E {};
-        } catch m:E(err) {
+        } catch err {
             print("inner");
             rethrow
         }
         print("UNREACHABLE");
-    } catch m:E(err) {
+    } catch err {
         print("outer");
     }
     return 0;

@@ -6,10 +6,10 @@ fn main() returns Int {
     try {
         try {
             throw E {};
-        } catch m:E(err) {
+        } catch err {
             rethrow;
         }
-    } catch m:E(err) {
+    } catch err {
         print("ok");
     }
     return 0;

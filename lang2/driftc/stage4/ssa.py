@@ -248,16 +248,23 @@ class MirToSSA:
 		# Definition sites and values per local.
 		def_sites: Dict[str, set[str]] = {}
 		def_values: Dict[str, Dict[str, str]] = {}
+		use_sites: Dict[str, set[str]] = {}
 		for bname, block in func.blocks.items():
 			for instr in block.instructions:
 				if isinstance(instr, StoreLocal):
 					def_sites.setdefault(instr.local, set()).add(bname)
 					def_values.setdefault(instr.local, {})[bname] = instr.value
+				elif isinstance(instr, LoadLocal):
+					use_sites.setdefault(instr.local, set()).add(bname)
 
 		# Place φ nodes using dominance frontiers (simple Cytron iteration).
 		placed: set[tuple[str, str]] = set()
 		for local, def_blocks in def_sites.items():
 			if len(def_blocks) < 2:
+				continue
+			# If all uses are contained within the defining blocks, no merge is needed.
+			use_blocks = use_sites.get(local, set())
+			if not use_blocks or use_blocks.issubset(def_blocks):
 				continue
 			worklist = list(def_blocks)
 			while worklist:

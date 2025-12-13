@@ -884,12 +884,13 @@ class HIRToMIR:
 				self._propagate_error(err_tmp)
 
 		# Lower each catch arm: bind error if requested, emit ErrorEvent for handler logic, then body.
-		for arm, cb in catch_blocks:
+		for arm_idx, (arm, cb) in enumerate(catch_blocks):
 			self.b.set_block(cb)
 			err_again = self.b.new_temp()
 			self.b.emit(M.LoadLocal(dest=err_again, local=error_local))
 			if arm.binder:
 				self.b.ensure_local(arm.binder)
+				self._local_types[arm.binder] = self._type_table.ensure_error()
 				self.b.emit(M.StoreLocal(local=arm.binder, value=err_again))
 			code_again = self.b.new_temp()
 			self.b.emit(M.ErrorEvent(dest=code_again, error=err_again))

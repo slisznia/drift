@@ -109,6 +109,7 @@ try_stmt: TRY block terminator_opt catch_clause (terminator_opt catch_clause)* t
 catch_clause: CATCH catch_pattern block
 catch_pattern: event_fqn "(" NAME ")"   -> catch_event
              | NAME                     -> catch_all
+             |                          -> catch_all_empty
 
 assign_stmt: expr EQUAL expr
 
