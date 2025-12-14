@@ -119,11 +119,19 @@ class AstToHIR:
 		return H.HVar(name=expr.ident, binding_id=self._lookup_binding(expr.ident))
 
 	def _visit_expr_Literal(self, expr: ast.Literal) -> H.HExpr:
-		"""Map literal to the appropriate HIR literal node."""
+		"""
+		Map a stage0 literal to the appropriate HIR literal node.
+
+		This is intentionally strict for production correctness: if the parser
+		starts producing new literal value kinds, we want a loud failure here so
+		we don't silently mis-lower the program.
+		"""
 		if isinstance(expr.value, bool):
 			return H.HLiteralBool(value=bool(expr.value))
 		if isinstance(expr.value, int):
 			return H.HLiteralInt(value=int(expr.value))
+		if isinstance(expr.value, float):
+			return H.HLiteralFloat(value=float(expr.value))
 		if isinstance(expr.value, str):
 			return H.HLiteralString(value=str(expr.value))
 		raise NotImplementedError(f"Literal of unsupported type: {type(expr.value).__name__}")

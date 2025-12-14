@@ -70,6 +70,19 @@ class ConstString(MInstr):
 
 
 @dataclass
+class ConstFloat(MInstr):
+	"""
+	dest = constant Float
+
+	In lang2 v1, `Float` is IEEE-754 double precision and maps to LLVM `double`.
+	This instruction carries the Python `float` value that should be emitted as a
+	`double` constant in LLVM IR.
+	"""
+	dest: ValueId
+	value: float
+
+
+@dataclass
 class StringFromInt(MInstr):
 	"""
 	dest = String(value)
@@ -98,6 +111,21 @@ class StringFromUint(MInstr):
 	dest = String(value)
 
 	Converts a `Uint` value to a decimal `String`.
+	"""
+	dest: ValueId
+	value: ValueId
+
+
+@dataclass
+class StringFromFloat(MInstr):
+	"""
+	dest = String(value)
+
+	Converts a `Float` (`double`) value to a decimal `String` using the runtime's
+	canonical formatting.
+
+	This is used by f-string interpolation. The runtime implementation is
+	deterministic (Ryu-based) so codegen does not depend on libc `snprintf`.
 	"""
 	dest: ValueId
 	value: ValueId
@@ -493,9 +521,11 @@ __all__ = [
 	"ConstInt",
 	"ConstBool",
 	"ConstString",
+	"ConstFloat",
 	"StringFromInt",
 	"StringFromBool",
 	"StringFromUint",
+	"StringFromFloat",
 	"LoadLocal",
 	"AddrOfLocal",
 	"StoreLocal",

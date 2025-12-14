@@ -24,6 +24,51 @@ fn main() returns Int {
 	assert isinstance(block.statements[0].value, H.HLiteralInt)
 
 
+def test_parse_float_literal(tmp_path: Path):
+	src = tmp_path / "main.drift"
+	src.write_text(
+		"""
+	fn main() returns Float {
+	    return 1.25;
+	}
+	"""
+	)
+	func_hirs, sigs, _type_table, _exc_catalog, diagnostics = parse_drift_to_hir(src)
+	assert diagnostics == []
+	assert set(func_hirs.keys()) == {"main"}
+	assert sigs["main"].return_type.name == "Float"
+	block = func_hirs["main"]
+	assert isinstance(block.statements[0], H.HReturn)
+	assert isinstance(block.statements[0].value, H.HLiteralFloat)
+
+
+@pytest.mark.parametrize(
+	"lit",
+	[
+		"1.",
+		".5",
+		"1e-3",
+		"1.0e",
+		"1.0e+",
+		"1_0.0",
+	],
+)
+def test_invalid_float_literals_produce_diagnostics(tmp_path: Path, lit: str):
+	"""
+	Float literal MVP rules (see work/float-type/work-progress.md):
+	- dot required with digits on both sides
+	- exponent requires dot form
+	- no underscores
+
+	These should be rejected as normal parser diagnostics (not hard crashes).
+	"""
+	src = tmp_path / "main.drift"
+	src.write_text(f"fn main() returns Float {{ return {lit}; }}\n")
+	_func_hirs, _sigs, _type_table, _exc_catalog, diagnostics = parse_drift_to_hir(src)
+	assert diagnostics, f"expected diagnostics for invalid float literal {lit!r}"
+	assert any(d.severity == "error" for d in diagnostics)
+
+
 def test_parse_fnresult_ok(tmp_path: Path):
 	"""
 	FnResult is an internal ABI carrier in lang2, not a surface type.

@@ -12,8 +12,8 @@ The runner:
   4) Compiles IR with clang and executes the binary.
   5) Asserts diagnostics are empty and compares exit/stdout/stderr to expected.json.
 
-Artifacts are written to `build/tests/lang2/codegen/tests/e2e/<case>/`.
-"""
+	Artifacts are written to `build/tests/lang2/codegen/e2e/<case>/`.
+	"""
 
 from __future__ import annotations
 
@@ -31,7 +31,7 @@ from lang2.drift_core.runtime import get_runtime_sources
 
 
 ROOT = Path(__file__).resolve().parents[4]
-BUILD_ROOT = ROOT / "build" / "tests" / "lang2" / "codegen" / "tests" / "e2e"
+BUILD_ROOT = ROOT / "build" / "tests" / "lang2" / "codegen" / "e2e"
 
 
 def _run_ir_with_clang(ir: str, build_dir: Path, argv: list[str] | None = None) -> tuple[int, str, str]:

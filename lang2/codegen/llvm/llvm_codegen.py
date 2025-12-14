@@ -78,8 +78,10 @@ from lang2.driftc.stage2 import (
 	StringFromBool,
 	StringFromInt,
 	StringFromUint,
+	StringFromFloat,
 	StoreLocal,
 	UnaryOpInstr,
+	ConstFloat,
 )
 from lang2.driftc.stage4.ssa import SsaFunc
 from lang2.driftc.stage4.ssa import CfgKind
@@ -197,6 +199,7 @@ class LlvmModuleBuilder:
 	needs_string_from_int64: bool = False
 	needs_string_from_uint64: bool = False
 	needs_string_from_bool: bool = False
+	needs_string_from_f64: bool = False
 	needs_argv_helper: bool = False
 	needs_console_runtime: bool = False
 	needs_dv_runtime: bool = False
@@ -341,12 +344,15 @@ class LlvmModuleBuilder:
 		if self.needs_string_from_bool:
 			# Runtime takes an `int` (i32) for portability; caller must extend i1.
 			lines.append(f"declare {DRIFT_STRING_TYPE} @drift_string_from_bool(i32)")
+		if self.needs_string_from_f64:
+			lines.append(f"declare {DRIFT_STRING_TYPE} @drift_string_from_f64(double)")
 		if (
 			self.needs_string_eq
 			or self.needs_string_concat
 			or self.needs_string_from_int64
 			or self.needs_string_from_uint64
 			or self.needs_string_from_bool
+			or self.needs_string_from_f64
 		):
 			lines.append("")
 		if self.needs_console_runtime:
@@ -402,6 +408,7 @@ class _FuncBuilder:
 	string_type_id: Optional[TypeId] = None
 	int_type_id: Optional[TypeId] = None
 	bool_type_id: Optional[TypeId] = None
+	float_type_id: Optional[TypeId] = None
 	void_type_id: Optional[TypeId] = None
 	dv_type_id: Optional[TypeId] = None
 	opt_int_type_id: Optional[TypeId] = None
@@ -430,6 +437,8 @@ class _FuncBuilder:
 				self.int_type_id = ty_id
 			if ty_def.kind is TypeKind.SCALAR and ty_def.name == "Bool":
 				self.bool_type_id = ty_id
+			if ty_def.kind is TypeKind.SCALAR and ty_def.name == "Float":
+				self.float_type_id = ty_id
 			if ty_def.kind is TypeKind.VOID:
 				self.void_type_id = ty_id
 			if ty_def.kind is TypeKind.DIAGNOSTICVALUE:
@@ -524,6 +533,13 @@ class _FuncBuilder:
 			val = 1 if instr.value else 0
 			self.value_types[dest] = "i1"
 			self.lines.append(f"  {dest} = add i1 0, {val}")
+		elif isinstance(instr, ConstFloat):
+			dest = self._map_value(instr.dest)
+			# Use Python's repr(...) to preserve sufficient precision for round-trips.
+			# LLVM accepts decimal `double` literals in textual IR.
+			lit = repr(instr.value)
+			self.value_types[dest] = "double"
+			self.lines.append(f"  {dest} = fadd double 0.0, {lit}")
 		elif isinstance(instr, UnaryOpInstr):
 			self._lower_unary(instr)
 		elif isinstance(instr, ConstString):
@@ -593,6 +609,19 @@ class _FuncBuilder:
 			self.lines.append(f"  {ext} = zext i1 {val} to i32")
 			self.lines.append(
 				f"  {dest} = call {DRIFT_STRING_TYPE} @drift_string_from_bool(i32 {ext})"
+			)
+			self.value_types[dest] = DRIFT_STRING_TYPE
+		elif isinstance(instr, StringFromFloat):
+			dest = self._map_value(instr.dest)
+			val = self._map_value(instr.value)
+			val_ty = self.value_types.get(val)
+			if val_ty != "double":
+				raise NotImplementedError(
+					f"LLVM codegen v1: StringFromFloat requires double operand (have {val_ty})"
+				)
+			self.module.needs_string_from_f64 = True
+			self.lines.append(
+				f"  {dest} = call {DRIFT_STRING_TYPE} @drift_string_from_f64(double {val})"
 			)
 			self.value_types[dest] = DRIFT_STRING_TYPE
 		elif isinstance(instr, StringEq):
@@ -990,7 +1019,9 @@ class _FuncBuilder:
 	def _lower_term(self, term: object) -> None:
 		if isinstance(term, Goto):
 			self.lines.append(f"  br label %{term.target}")
-		elif isinstance(term, IfTerminator):
+			return
+
+		if isinstance(term, IfTerminator):
 			cond = self._map_value(term.cond)
 			cond_ty = self.value_types.get(cond, "i1")
 			if cond_ty != "i1":
@@ -998,7 +1029,9 @@ class _FuncBuilder:
 			self.lines.append(
 				f"  br i1 {cond}, label %{term.then_target}, label %{term.else_target}"
 			)
-		elif isinstance(term, Return):
+			return
+
+		if isinstance(term, Return):
 			if self.fn_info.declared_can_throw:
 				# Can-throw functions always return the internal `FnResult<ok, Error>`
 				# carrier type, even when the surface ok type is `Void`.
@@ -1017,23 +1050,30 @@ class _FuncBuilder:
 			if is_void:
 				self.lines.append("  ret void")
 				return
+
 			val = self._map_value(term.value)
 			ty = self.value_types.get(val)
 			if ty == DRIFT_STRING_TYPE:
 				self.lines.append(f"  ret {DRIFT_STRING_TYPE} {val}")
 			elif ty in ("i64", DRIFT_SIZE_TYPE):
 				self.lines.append(f"  ret i64 {val}")
+			elif ty == "double":
+				self.lines.append(f"  ret double {val}")
 			else:
 				raise NotImplementedError(
-					f"LLVM codegen v1: non-can-throw return must be Int or String, got {ty}"
+					f"LLVM codegen v1: non-can-throw return must be Int, Float, or String, got {ty}"
 				)
-		elif isinstance(term, Unreachable):
+			return
+
+		if isinstance(term, Unreachable):
 			self.lines.append("  unreachable")
-		else:
-			raise NotImplementedError(f"LLVM codegen v1: unsupported terminator {type(term).__name__}")
+			return
+
+		raise NotImplementedError(f"LLVM codegen v1: unsupported terminator {type(term).__name__}")
 
 	def _return_llvm_type(self) -> str:
-		# v1 supports Int, String, or FnResult<ok, Error> return shapes (ok ∈ {Int, String, Void-like, Ref<T>}).
+		# v1 supports Int, Float, String, or FnResult<ok, Error> return shapes
+		# (ok ∈ {Int, String, Void-like, Ref<T>}).
 		if self.fn_info.declared_can_throw:
 			return self._fnresult_type_for_current_fn()
 		if self._is_void_return():
@@ -1043,6 +1083,8 @@ class _FuncBuilder:
 			rt_id = self.fn_info.signature.return_type_id
 		if self.string_type_id is not None and rt_id == self.string_type_id:
 			return DRIFT_STRING_TYPE
+		if self.float_type_id is not None and rt_id == self.float_type_id:
+			return "double"
 		# Default to Int
 		return "i64"
 
@@ -1072,8 +1114,12 @@ class _FuncBuilder:
 			if td.kind is TypeKind.ARRAY and td.param_types:
 				elem_llty = self._llvm_type_for_typeid(td.param_types[0])
 				return self._llvm_array_type(elem_llty)
-			if td.kind is TypeKind.SCALAR and td.name == "Int":
+			if td.kind is TypeKind.SCALAR and td.name in {"Int", "Uint"}:
 				return "i64"
+			if td.kind is TypeKind.SCALAR and td.name == "Bool":
+				return "i1"
+			if td.kind is TypeKind.SCALAR and td.name == "Float":
+				return "double"
 			if td.kind is TypeKind.SCALAR and td.name == "String":
 				return DRIFT_STRING_TYPE
 			if td.kind is TypeKind.REF:
@@ -1094,10 +1140,12 @@ class _FuncBuilder:
 				raise NotImplementedError(
 					f"LLVM codegen v1: Optional<{inner_def.name}> not supported (function {self.func.name})"
 				)
-		if self.int_type_id is not None and ty_id == self.int_type_id:
-			return "i64"
-		if self.string_type_id is not None and ty_id == self.string_type_id:
-			return DRIFT_STRING_TYPE
+			if self.int_type_id is not None and ty_id == self.int_type_id:
+				return "i64"
+			if self.float_type_id is not None and ty_id == self.float_type_id:
+				return "double"
+			if self.string_type_id is not None and ty_id == self.string_type_id:
+				return DRIFT_STRING_TYPE
 		raise NotImplementedError(
 			f"LLVM codegen v1: unsupported param type id {ty_id!r} for function {self.func.name}"
 		)

@@ -23,6 +23,7 @@ from lang2.driftc.stage1 import (
 	HLiteralInt,
 	HLiteralBool,
 	HLiteralString,
+	HLiteralFloat,
 	HBinary,
 	HField,
 	HIndex,
@@ -46,6 +47,7 @@ def test_literals_and_names():
 	assert isinstance(l.lower_expr(ast.Literal(1)), HLiteralInt)
 	assert isinstance(l.lower_expr(ast.Literal(True)), HLiteralBool)
 	assert isinstance(l.lower_expr(ast.Literal("s")), HLiteralString)
+	assert isinstance(l.lower_expr(ast.Literal(1.25)), HLiteralFloat)
 	v = l.lower_expr(ast.Name("x"))
 	assert isinstance(v, HVar)
 	assert v.name == "x"

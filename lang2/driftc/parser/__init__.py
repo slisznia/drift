@@ -9,6 +9,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Callable, Dict, Tuple, Optional, List
 
+from lark.exceptions import UnexpectedInput
+
 from . import parser as _parser
 from . import ast as parser_ast
 from lang2.driftc.stage0 import ast as s0
@@ -357,6 +359,19 @@ def parse_drift_to_hir(path: Path) -> Tuple[Dict[str, H.HBlock], Dict[str, FnSig
 		diagnostics: list[Diagnostic] = [
 			Diagnostic(message=str(err), severity="error", span=Span.from_loc(err.loc))
 		]
+		return {}, {}, TypeTable(), {}, diagnostics
+	except UnexpectedInput as err:
+		# Parse errors are user errors; do not crash the compiler pipeline.
+		#
+		# The Span best-effort extracts `line`/`column` from the lark exception, and
+		# we also thread the file name so diagnostics are source-anchored.
+		span = Span(
+			file=str(path),
+			line=getattr(err, "line", None),
+			column=getattr(err, "column", None),
+			raw=err,
+		)
+		diagnostics = [Diagnostic(message=str(err), severity="error", span=span)]
 		return {}, {}, TypeTable(), {}, diagnostics
 	module_name = getattr(prog, "module", None)
 	func_hirs: Dict[str, H.HBlock] = {}

@@ -287,6 +287,9 @@ class TerminatorInserter:
     TERMINABLE = {
         "NAME",
         "SIGNED_INT",
+        # Float literals in lang2 MVP use the `FLOAT` token (dot required).
+        "FLOAT",
+        # Legacy/compat token name; keep for safety if the grammar changes.
         "SIGNED_FLOAT",
         "STRING",
         "TRUE",

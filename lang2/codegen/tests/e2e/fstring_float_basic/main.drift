@@ -6,6 +6,6 @@ fn main() returns Int {
 	val s = "x"
 	val f = 1.25
 	println(f"i={i} b={b} s={s} f={f}")
-	println(f"{{}}")
 	return 0
 }
+

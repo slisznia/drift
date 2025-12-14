@@ -139,38 +139,39 @@ class Checker:
 		# 1) an explicit name -> bool map, or
 		# 2) a name -> FnSignature map, from which we can infer can-throw based
 		#    on the return type resembling FnResult.
-		self._declared_map = declared_can_throw or {}
-		self._signatures = signatures or {}
-		self._catch_arms = self._normalize_and_collect_catch_arms(hir_blocks or {})
-		self._exception_catalog = dict(exception_catalog) if exception_catalog else None
-		self._hir_blocks = hir_blocks or {}
-		# Use shared TypeTable when supplied; otherwise create a local one.
-		self._type_table = type_table or TypeTable()
-		# Index signatures by display name for approximate method lookups.
-		self._sigs_by_display_name: Dict[str, list[FnSignature]] = {}
-		for sig in self._signatures.values():
-			disp = sig.method_name or sig.name
-			self._sigs_by_display_name.setdefault(disp, []).append(sig)
+			self._declared_map = declared_can_throw or {}
+			self._signatures = signatures or {}
+			self._catch_arms = self._normalize_and_collect_catch_arms(hir_blocks or {})
+			self._exception_catalog = dict(exception_catalog) if exception_catalog else None
+			self._hir_blocks = hir_blocks or {}
+			# Use shared TypeTable when supplied; otherwise create a local one.
+			self._type_table = type_table or TypeTable()
+			# Index signatures by display name for approximate method lookups.
+			self._sigs_by_display_name: Dict[str, list[FnSignature]] = {}
+			for sig in self._signatures.values():
+				disp = sig.method_name or sig.name
+				self._sigs_by_display_name.setdefault(disp, []).append(sig)
 
-		def _find_named(kind: TypeKind, name: str) -> TypeId | None:
-			"""
-			Best-effort lookup on a shared table to avoid minting duplicate TypeIds
-			when the resolver already seeded common scalars/errors.
-			"""
-			for ty_id, ty_def in getattr(self._type_table, "_defs", {}).items():  # type: ignore[attr-defined]
-				if ty_def.kind is kind and ty_def.name == name:
-					return ty_id
-			return None
+			def _find_named(kind: TypeKind, name: str) -> TypeId | None:
+				"""
+				Best-effort lookup on a shared table to avoid minting duplicate TypeIds
+				when the resolver already seeded common scalars/errors.
+				"""
+				for ty_id, ty_def in getattr(self._type_table, "_defs", {}).items():  # type: ignore[attr-defined]
+					if ty_def.kind is kind and ty_def.name == name:
+						return ty_id
+				return None
 
-		# Seed common scalars only when missing on the shared table. Cache them on
-		# the table so downstream reuse sees consistent ids.
-		self._int_type = _find_named(TypeKind.SCALAR, "Int") or self._type_table.ensure_int()
-		self._bool_type = _find_named(TypeKind.SCALAR, "Bool") or self._type_table.ensure_bool()
-		self._string_type = _find_named(TypeKind.SCALAR, "String") or self._type_table.ensure_string()
-		self._uint_type = _find_named(TypeKind.SCALAR, "Uint") or self._type_table.ensure_uint()
-		self._void_type = _find_named(TypeKind.VOID, "Void") or self._type_table.ensure_void()
-		self._error_type = _find_named(TypeKind.ERROR, "Error") or self._type_table.ensure_error()
-		self._unknown_type = _find_named(TypeKind.UNKNOWN, "Unknown") or self._type_table.ensure_unknown()
+			# Seed common scalars only when missing on the shared table. Cache them on
+			# the table so downstream reuse sees consistent ids.
+			self._int_type = _find_named(TypeKind.SCALAR, "Int") or self._type_table.ensure_int()
+			self._float_type = _find_named(TypeKind.SCALAR, "Float") or self._type_table.ensure_float()
+			self._bool_type = _find_named(TypeKind.SCALAR, "Bool") or self._type_table.ensure_bool()
+			self._string_type = _find_named(TypeKind.SCALAR, "String") or self._type_table.ensure_string()
+			self._uint_type = _find_named(TypeKind.SCALAR, "Uint") or self._type_table.ensure_uint()
+			self._void_type = _find_named(TypeKind.VOID, "Void") or self._type_table.ensure_void()
+			self._error_type = _find_named(TypeKind.ERROR, "Error") or self._type_table.ensure_error()
+			self._unknown_type = _find_named(TypeKind.UNKNOWN, "Unknown") or self._type_table.ensure_unknown()
 		# TODO: remove declared_can_throw shim once real parser/type checker supplies signatures.
 
 	def _normalize_and_collect_catch_arms(self, hir_blocks: Mapping[str, "H.HBlock"]) -> dict[str, list[list[CatchArmInfo]]]:
@@ -589,286 +590,289 @@ class Checker:
 				self.diagnostics.append(diag)
 
 		def _infer_expr_type(self, expr: "H.HExpr") -> Optional[TypeId]:
-				"""
-				Very shallow expression type inference for call-arg checking.
+			"""
+			Very shallow expression type inference for call-arg checking.
 
-				This intentionally handles only a small set of expression shapes:
+			This intentionally handles only a small set of expression shapes:
 
-				- primitive literals
-				- local variables (as seeded by signatures/let bindings)
-				- direct function calls `foo(...)` when a signature is available
-				- selected builtins (`String.EMPTY`)
-				- f-strings (always `String`, with MVP validation)
-				- `try/catch` expression (MVP typing rules only)
+			- primitive literals
+			- local variables (as seeded by signatures/let bindings)
+			- direct function calls `foo(...)` when a signature is available
+			- selected builtins (`String.EMPTY`)
+			- f-strings (always `String`, with MVP validation)
+			- `try/catch` expression (MVP typing rules only)
 
-				Everything else returns `None` to avoid guessing.
-				"""
-				from lang2.driftc import stage1 as H
+			Everything else returns `None` to avoid guessing.
+			"""
+			from lang2.driftc import stage1 as H
 
-				checker = self.checker
-				bitwise_ops = {
-					H.BinaryOp.BIT_AND,
-					H.BinaryOp.BIT_OR,
-					H.BinaryOp.BIT_XOR,
-					H.BinaryOp.SHL,
-					H.BinaryOp.SHR,
-				}
-				string_binops = {H.BinaryOp.ADD, H.BinaryOp.EQ}
+			checker = self.checker
+			bitwise_ops = {
+				H.BinaryOp.BIT_AND,
+				H.BinaryOp.BIT_OR,
+				H.BinaryOp.BIT_XOR,
+				H.BinaryOp.SHL,
+				H.BinaryOp.SHR,
+			}
+			string_binops = {H.BinaryOp.ADD, H.BinaryOp.EQ}
 
-				if isinstance(expr, H.HLiteralInt):
-					return checker._int_type
-				if isinstance(expr, H.HLiteralBool):
-					return checker._bool_type
-				if hasattr(H, "HLiteralString") and isinstance(expr, getattr(H, "HLiteralString")):
-					return checker._string_type
+			if isinstance(expr, H.HLiteralInt):
+				return checker._int_type
+			if hasattr(H, "HLiteralFloat") and isinstance(expr, getattr(H, "HLiteralFloat")):
+				return checker._float_type
+			if isinstance(expr, H.HLiteralBool):
+				return checker._bool_type
+			if hasattr(H, "HLiteralString") and isinstance(expr, getattr(H, "HLiteralString")):
+				return checker._string_type
 
-				if hasattr(H, "HFString") and isinstance(expr, getattr(H, "HFString")):
-					for hole in expr.holes:
-						if hole.spec.strip():
-							self._append_diag(
-								Diagnostic(
-									message=f"E-FSTR-BAD-SPEC: format spec is not supported yet (have '{hole.spec}')",
-									severity="error",
-									span=getattr(hole, "loc", Span()),
-								)
+			if hasattr(H, "HFString") and isinstance(expr, getattr(H, "HFString")):
+				for hole in expr.holes:
+					if hole.spec.strip():
+						self._append_diag(
+							Diagnostic(
+								message=f"E-FSTR-BAD-SPEC: format spec is not supported yet (have '{hole.spec}')",
+								severity="error",
+								span=getattr(hole, "loc", Span()),
 							)
-						hole_ty = self._infer_expr_type(hole.expr)
-						if hole_ty is None:
-							continue
-						if hole_ty not in (
-							checker._bool_type,
-							checker._int_type,
-							checker._uint_type,
-							checker._string_type,
-						):
-							self._append_diag(
-								Diagnostic(
-									message="E-FSTR-UNSUPPORTED-TYPE: f-string hole type is not supported in MVP",
-									severity="error",
-									span=getattr(hole, "loc", Span()),
-								)
-							)
-					return checker._string_type
-
-				if isinstance(expr, H.HVar):
-					if expr.name == "String.EMPTY":
-						return checker._string_type
-					if expr.name in self.locals:
-						return self.locals[expr.name]
-
-				if isinstance(expr, H.HCall) and isinstance(expr.fn, H.HVar):
-					callee = self.fn_infos.get(expr.fn.name)
-					if callee is not None and callee.signature and callee.signature.return_type_id is not None:
-						return callee.signature.return_type_id
-					return None
-
-				if isinstance(expr, H.HResultOk):
-					if (
-						self.current_fn
-						and self.current_fn.signature
-						and self.current_fn.signature.return_type_id is not None
+						)
+					hole_ty = self._infer_expr_type(hole.expr)
+					if hole_ty is None:
+						continue
+					if hole_ty not in (
+						checker._bool_type,
+						checker._int_type,
+						checker._uint_type,
+						checker._float_type,
+						checker._string_type,
 					):
-						return self.current_fn.signature.return_type_id
-					return self.table.new_fnresult(checker._unknown_type, checker._error_type)
-
-				if isinstance(expr, H.HBinary):
-					left_ty = self._infer_expr_type(expr.left)
-					right_ty = self._infer_expr_type(expr.right)
-					string_left = left_ty == checker._string_type
-					string_right = right_ty == checker._string_type
-					if string_left or string_right:
-						if string_left and string_right and expr.op in string_binops:
-							if expr.op is H.BinaryOp.ADD:
-								return checker._string_type
-							if expr.op is H.BinaryOp.EQ:
-								return checker._bool_type
-						non_string_known = (string_left and right_ty is not None and right_ty != checker._string_type) or (
-							string_right and left_ty is not None and left_ty != checker._string_type
-						)
-						if non_string_known:
-							self._append_diag(
-								Diagnostic(
-									message="string binary ops require String operands and support only + or ==",
-									severity="error",
-									span=getattr(expr, "loc", Span()),
-								)
-							)
-						return None
-					if expr.op in bitwise_ops:
-						if left_ty == checker._uint_type and right_ty == checker._uint_type:
-							return checker._uint_type
 						self._append_diag(
 							Diagnostic(
-								message="bitwise ops require Uint operands",
+								message="E-FSTR-UNSUPPORTED-TYPE: f-string hole type is not supported in MVP",
+								severity="error",
+								span=getattr(hole, "loc", Span()),
+							)
+						)
+				return checker._string_type
+
+			if isinstance(expr, H.HVar):
+				if expr.name == "String.EMPTY":
+					return checker._string_type
+				if expr.name in self.locals:
+					return self.locals[expr.name]
+
+			if isinstance(expr, H.HCall) and isinstance(expr.fn, H.HVar):
+				callee = self.fn_infos.get(expr.fn.name)
+				if callee is not None and callee.signature and callee.signature.return_type_id is not None:
+					return callee.signature.return_type_id
+				return None
+
+			if isinstance(expr, H.HResultOk):
+				if (
+					self.current_fn
+					and self.current_fn.signature
+					and self.current_fn.signature.return_type_id is not None
+				):
+					return self.current_fn.signature.return_type_id
+				return self.table.new_fnresult(checker._unknown_type, checker._error_type)
+
+			if isinstance(expr, H.HBinary):
+				left_ty = self._infer_expr_type(expr.left)
+				right_ty = self._infer_expr_type(expr.right)
+				string_left = left_ty == checker._string_type
+				string_right = right_ty == checker._string_type
+				if string_left or string_right:
+					if string_left and string_right and expr.op in string_binops:
+						if expr.op is H.BinaryOp.ADD:
+							return checker._string_type
+						if expr.op is H.BinaryOp.EQ:
+							return checker._bool_type
+					non_string_known = (string_left and right_ty is not None and right_ty != checker._string_type) or (
+						string_right and left_ty is not None and left_ty != checker._string_type
+					)
+					if non_string_known:
+						self._append_diag(
+							Diagnostic(
+								message="string binary ops require String operands and support only + or ==",
 								severity="error",
 								span=getattr(expr, "loc", Span()),
 							)
 						)
+					return None
+				if expr.op in bitwise_ops:
+					if left_ty == checker._uint_type and right_ty == checker._uint_type:
+						return checker._uint_type
+					self._append_diag(
+						Diagnostic(
+							message="bitwise ops require Uint operands",
+							severity="error",
+							span=getattr(expr, "loc", Span()),
+						)
+					)
+					return None
+				if left_ty == checker._int_type and right_ty == checker._int_type:
+					return checker._int_type
+				return None
+
+			if isinstance(expr, H.HUnary):
+				return self._infer_expr_type(expr.expr)
+
+			if isinstance(expr, H.HArrayLiteral):
+				if not expr.elements:
+					self.report_empty_array_literal()
+					return None
+				elem_types: list[TypeId] = []
+				for el in expr.elements:
+					el_ty = self._infer_expr_type(el)
+					if el_ty is not None:
+						elem_types.append(el_ty)
+				if not elem_types:
+					return None
+				first = elem_types[0]
+				for el_ty in elem_types[1:]:
+					if el_ty != first:
+						self.report_mixed_array_literal()
+						return self.table.new_array(checker._unknown_type)
+				return self.table.new_array(first)
+
+			if isinstance(expr, H.HField):
+				subj_ty = None
+				if expr.name in ("len", "cap", "capacity"):
+					subj_ty = self._infer_expr_type(expr.subject)
+				if subj_ty is None:
+					return None
+				return checker._len_cap_result_type(subj_ty)
+
+			if isinstance(expr, H.HIndex):
+				if isinstance(expr.subject, H.HField) and expr.subject.name == "attrs":
+					err_ty = self._infer_expr_type(expr.subject.subject)
+					if err_ty is None:
 						return None
-					if left_ty == checker._int_type and right_ty == checker._int_type:
-						return checker._int_type
+					err_def = self.table.get(err_ty)
+					if err_def.kind is TypeKind.ERROR:
+						idx_ty = self._infer_expr_type(expr.index)
+						if idx_ty is not None:
+							idx_def = self.table.get(idx_ty)
+							if idx_def.name != "String":
+								self.report_index_not_int()
+						return checker._dv
+				subject_ty = self._infer_expr_type(expr.subject)
+				idx_ty = self._infer_expr_type(expr.index)
+				if idx_ty is not None and idx_ty != checker._int_type:
+					self.report_index_not_int()
+				if subject_ty is None:
+					return None
+				td = self.table.get(subject_ty)
+				if td.kind is TypeKind.ARRAY and td.param_types:
+					return td.param_types[0]
+				self.report_index_subject_not_array()
+				return None
+
+			if hasattr(H, "HTryExpr") and isinstance(expr, getattr(H, "HTryExpr")):
+				if not isinstance(expr.attempt, (H.HCall, H.HMethodCall)):
+					self._append_diag(
+						Diagnostic(
+							message="try/catch attempt must be a function call",
+							severity="error",
+							span=getattr(expr, "loc", Span()),
+						)
+					)
 					return None
 
-				if isinstance(expr, H.HUnary):
-					return self._infer_expr_type(expr.expr)
-
-				if isinstance(expr, H.HArrayLiteral):
-					if not expr.elements:
-						self.report_empty_array_literal()
-						return None
-					elem_types: list[TypeId] = []
-					for el in expr.elements:
-						el_ty = self._infer_expr_type(el)
-						if el_ty is not None:
-							elem_types.append(el_ty)
-					if not elem_types:
-						return None
-					first = elem_types[0]
-					for el_ty in elem_types[1:]:
-						if el_ty != first:
-							self.report_mixed_array_literal()
-							return self.table.new_array(checker._unknown_type)
-					return self.table.new_array(first)
-
-				if isinstance(expr, H.HField):
-					subj_ty = None
-					if expr.name in ("len", "cap", "capacity"):
-						subj_ty = self._infer_expr_type(expr.subject)
-					if subj_ty is None:
-						return None
-					return checker._len_cap_result_type(subj_ty)
-
-				if isinstance(expr, H.HIndex):
-					if isinstance(expr.subject, H.HField) and expr.subject.name == "attrs":
-						err_ty = self._infer_expr_type(expr.subject.subject)
-						if err_ty is None:
-							return None
-						err_def = self.table.get(err_ty)
-						if err_def.kind is TypeKind.ERROR:
-							idx_ty = self._infer_expr_type(expr.index)
-							if idx_ty is not None:
-								idx_def = self.table.get(idx_ty)
-								if idx_def.name != "String":
-									self.report_index_not_int()
-							return checker._dv
-					subject_ty = self._infer_expr_type(expr.subject)
-					idx_ty = self._infer_expr_type(expr.index)
-					if idx_ty is not None and idx_ty != checker._int_type:
-						self.report_index_not_int()
-					if subject_ty is None:
-						return None
-					td = self.table.get(subject_ty)
-					if td.kind is TypeKind.ARRAY and td.param_types:
-						return td.param_types[0]
-					self.report_index_subject_not_array()
+				attempt_ty = self._infer_expr_type(expr.attempt)
+				if attempt_ty is not None and self.table.is_void(attempt_ty):
+					self._append_diag(
+						Diagnostic(
+							message="try/catch attempt must produce a value (not Void)",
+							severity="error",
+							span=getattr(expr, "loc", Span()),
+						)
+					)
 					return None
 
-				if hasattr(H, "HTryExpr") and isinstance(expr, getattr(H, "HTryExpr")):
-					if not isinstance(expr.attempt, (H.HCall, H.HMethodCall)):
-						self._append_diag(
-							Diagnostic(
-								message="try/catch attempt must be a function call",
-								severity="error",
-								span=getattr(expr, "loc", Span()),
-							)
-						)
-						return None
+				seen_events: set[str] = set()
+				catch_all_seen = False
 
-					attempt_ty = self._infer_expr_type(expr.attempt)
-					if attempt_ty is not None and self.table.is_void(attempt_ty):
-						self._append_diag(
-							Diagnostic(
-								message="try/catch attempt must produce a value (not Void)",
-								severity="error",
-								span=getattr(expr, "loc", Span()),
-							)
-						)
-						return None
-
-					seen_events: set[str] = set()
-					catch_all_seen = False
-
-					def arm_result_type(
-						block: "H.HBlock", result_expr: Optional["H.HExpr"], arm_span: Span
-					) -> Optional[TypeId]:
-						for stmt in block.statements:
-							if isinstance(stmt, (H.HReturn, H.HBreak, H.HContinue, H.HRethrow)):
-								self._append_diag(
-									Diagnostic(
-										message=(
-											"E-TRYEXPR-CONTROLFLOW: control-flow statement not allowed in try-expression "
-											"catch block; use statement try { ... } catch { ... } instead"
-										),
-										severity="error",
-										span=getattr(stmt, "loc", arm_span),
-									)
-								)
-								return None
-						if result_expr is None:
-							self._append_diag(
-								Diagnostic(
-									message="catch arm must produce a value",
-									severity="error",
-									span=arm_span,
-								)
-							)
-							return None
-						return self._infer_expr_type(result_expr)
-
-					for arm in expr.arms:
-						if arm.event_fqn is None:
-							if catch_all_seen:
-								self._append_diag(
-									Diagnostic(
-										message="catch-all must be the last catch arm",
-										severity="error",
-										span=arm.loc,
-									)
-								)
-							catch_all_seen = True
-						else:
-							if arm.event_fqn in seen_events:
-								self._append_diag(
-									Diagnostic(
-										message=f"duplicate catch arm for event {arm.event_fqn}",
-										severity="error",
-										span=arm.loc,
-									)
-								)
-							if catch_all_seen:
-								self._append_diag(
-									Diagnostic(
-										message="catch-all before this arm makes it unreachable",
-										severity="error",
-										span=arm.loc,
-									)
-								)
-							seen_events.add(arm.event_fqn)
-
-						prev = None
-						if arm.binder:
-							prev = self.locals.get(arm.binder)
-							self.locals[arm.binder] = self.table.ensure_error()
-						arm_ty = arm_result_type(arm.block, arm.result, arm.loc)
-						if arm.binder:
-							if prev is None:
-								self.locals.pop(arm.binder, None)
-							else:
-								self.locals[arm.binder] = prev
-						if attempt_ty is not None and arm_ty is not None and arm_ty != attempt_ty:
+				def arm_result_type(
+					block: "H.HBlock", result_expr: Optional["H.HExpr"], arm_span: Span
+				) -> Optional[TypeId]:
+					for stmt in block.statements:
+						if isinstance(stmt, (H.HReturn, H.HBreak, H.HContinue, H.HRethrow)):
 							self._append_diag(
 								Diagnostic(
 									message=(
-										f"catch arm type {self.table.get(arm_ty).name} does not match "
-										f"attempt type {self.table.get(attempt_ty).name}"
+										"E-TRYEXPR-CONTROLFLOW: control-flow statement not allowed in try-expression "
+										"catch block; use statement try { ... } catch { ... } instead"
 									),
+									severity="error",
+									span=getattr(stmt, "loc", arm_span),
+								)
+							)
+							return None
+					if result_expr is None:
+						self._append_diag(
+							Diagnostic(
+								message="catch arm must produce a value",
+								severity="error",
+								span=arm_span,
+							)
+						)
+						return None
+					return self._infer_expr_type(result_expr)
+
+				for arm in expr.arms:
+					if arm.event_fqn is None:
+						if catch_all_seen:
+							self._append_diag(
+								Diagnostic(
+									message="catch-all must be the last catch arm",
 									severity="error",
 									span=arm.loc,
 								)
 							)
-					return attempt_ty
+						catch_all_seen = True
+					else:
+						if arm.event_fqn in seen_events:
+							self._append_diag(
+								Diagnostic(
+									message=f"duplicate catch arm for event {arm.event_fqn}",
+									severity="error",
+									span=arm.loc,
+								)
+							)
+						if catch_all_seen:
+							self._append_diag(
+								Diagnostic(
+									message="catch-all before this arm makes it unreachable",
+									severity="error",
+									span=arm.loc,
+								)
+							)
+						seen_events.add(arm.event_fqn)
 
-				return None
+					prev = None
+					if arm.binder:
+						prev = self.locals.get(arm.binder)
+						self.locals[arm.binder] = self.table.ensure_error()
+					arm_ty = arm_result_type(arm.block, arm.result, arm.loc)
+					if arm.binder:
+						if prev is None:
+							self.locals.pop(arm.binder, None)
+						else:
+							self.locals[arm.binder] = prev
+					if attempt_ty is not None and arm_ty is not None and arm_ty != attempt_ty:
+						self._append_diag(
+							Diagnostic(
+								message=(
+									f"catch arm type {self.table.get(arm_ty).name} does not match "
+									f"attempt type {self.table.get(attempt_ty).name}"
+								),
+								severity="error",
+								span=arm.loc,
+							)
+						)
+				return attempt_ty
+
+			return None
 
 	def _seed_locals_from_signature(self, ctx: "_TypingContext") -> None:
 		"""Populate ctx.locals with parameter types when available."""

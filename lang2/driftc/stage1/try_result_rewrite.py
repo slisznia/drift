@@ -129,7 +129,7 @@ class TryResultRewriter:
 			return self._expand_try_result(expr)
 		if isinstance(expr, H.HVar):
 			return [], expr
-		if isinstance(expr, (H.HLiteralInt, H.HLiteralString, H.HLiteralBool)):
+		if isinstance(expr, (H.HLiteralInt, H.HLiteralFloat, H.HLiteralString, H.HLiteralBool)):
 			return [], expr
 		if isinstance(expr, H.HCall):
 			prefix_fn, fn = self._rewrite_expr(expr.fn)

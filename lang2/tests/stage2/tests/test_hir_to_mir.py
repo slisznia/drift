@@ -25,6 +25,7 @@ from lang2.driftc.stage1 import (
 	HBinary,
 	HVar,
 	HLiteralInt,
+	HLiteralFloat,
 	HIf,
 	HLoop,
 	HBreak,
@@ -32,6 +33,8 @@ from lang2.driftc.stage1 import (
 	HCall,
 	HMethodCall,
 	HDVInit,
+	HFString,
+	HFStringHole,
 	HExprStmt,
 	BinaryOp,
 )
@@ -39,6 +42,8 @@ from lang2.driftc.stage2 import (
 	MirBuilder,
 	HIRToMIR,
 	ConstInt,
+	ConstFloat,
+	StringFromFloat,
 	BinaryOpInstr,
 	StoreLocal,
 	LoadLocal,
@@ -133,6 +138,21 @@ def test_calls_and_dv():
 	assert Call in kinds
 	assert MethodCall in kinds
 	assert ConstructDV in kinds
+
+
+def test_float_literal_lowers_to_const_float():
+	block = HBlock(statements=[HExprStmt(expr=HLiteralFloat(1.25))])
+	func = _build_and_lower(block)
+	entry = func.blocks[func.entry]
+	assert any(isinstance(op, ConstFloat) for op in entry.instructions)
+
+
+def test_fstring_float_hole_emits_string_from_float():
+	f = HFString(parts=["x=", ""], holes=[HFStringHole(expr=HLiteralFloat(1.25))])
+	block = HBlock(statements=[HExprStmt(expr=f)])
+	func = _build_and_lower(block)
+	entry = func.blocks[func.entry]
+	assert any(isinstance(op, StringFromFloat) for op in entry.instructions)
 
 
 def test_call_with_non_var_fn_raises():

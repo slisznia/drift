@@ -6,14 +6,13 @@ This tracker follows `docs/design/spec-change-requests/feature-string-interpolat
 
 - f-strings are a **compiler feature** for now (no `std.fmt` module yet).
 - Only `f"..."` is supported; `'` is reserved for single-character input.
-- Float formatting will be deterministic via **Ryu**, but **`Float` is not implemented end-to-end in lang2 yet**, so float holes are deferred.
+- Float formatting is deterministic via **Ryu** (`drift_string_from_f64`) and becomes available once `Float` is implemented end-to-end in lang2 (tracked separately in `work/float-type/work-progress.md`).
 
 ## Scope and invariants (MVP)
 
 - Surface syntax: `f"..."` with holes `{ <expr> [ ":" <spec> ] }` and brace escaping via `{{` / `}}`.
 - Evaluation order: holes evaluate left-to-right, exactly once.
-- Typing (MVP): hole expressions must be one of `Bool`, `Int`/`Uint`, `String`.
-  - Float is deferred until `Float` exists as a first-class surface type.
+- Typing (MVP): hole expressions must be one of `Bool`, `Int`/`Uint`, `String`, `Float`.
 - Spec string: compile-time substring (no nested `{}` in MVP); non-empty spec currently yields a compile-time error.
 - Lowering contract (current implementation):
   - The compiler lowers f-strings into explicit string literals + per-hole formatting + concatenation.
@@ -57,14 +56,14 @@ This tracker follows `docs/design/spec-change-requests/feature-string-interpolat
   - [x] `drift_string_from_int64` / `drift_string_from_uint64`.
 - [x] Bool:
   - [x] `drift_string_from_bool`.
-- [x] Float (prepared for later):
-  - [x] Vendor Ryu and expose `drift_string_from_f64` (not used until `Float` exists in lang2).
+- [x] Float:
+  - [x] Vendor Ryu and expose `drift_string_from_f64`.
 - [x] Ownership: returned `DriftString` uses the existing allocation rules.
 
 ### 7) Codegen / linking
-- [x] Ensure e2e runner links runtime C sources needed for formatting (`ryu_d2s.c` included for future Float).
+- [x] Ensure e2e runner links runtime C sources needed for formatting.
 - [x] Lowering: stage2 expands f-strings into `StringConcat` and `StringFrom*` MIR ops.
-- [x] LLVM codegen: lowers `StringFromInt/Uint/Bool` to runtime helpers.
+- [x] LLVM codegen: lowers `StringFromInt/Uint/Bool/String/Float` to runtime helpers.
 
 ### 8) Tests (parser → checker → e2e)
 - [x] Parser tests:
@@ -79,8 +78,7 @@ This tracker follows `docs/design/spec-change-requests/feature-string-interpolat
   - [x] Basic: `fstring_basic` (holes for Int/Bool/String and `{{}}` escaping).
   - [x] Negative: `fstring_bad_spec` expects `E-FSTR-BAD-SPEC`.
   - [x] Negative: `fstring_bad_type` expects `E-FSTR-UNSUPPORTED-TYPE`.
-  - [ ] Spec formatting (hex/width) deferred (requires real spec parser/formatter policy).
-  - [ ] Float formatting deferred until `Float` exists in lang2.
+  - [ ] Float hole round-trip (requires `Float` feature work to be fully integrated and tested).
 
 ## Current status
 
@@ -89,9 +87,10 @@ This tracker follows `docs/design/spec-change-requests/feature-string-interpolat
   - Type-checking: holes type to `String`, and non-empty spec errors (`E-FSTR-BAD-SPEC`).
   - MIR + LLVM lowering: concat + primitive-to-string helpers.
   - E2E coverage (basic + bad spec).
-  - Ryu vendored into runtime for future deterministic Float formatting.
+  - Runtime float formatting via Ryu (`drift_string_from_f64`).
 - In progress:
-  - Add parser-only unit tests (brace/empty-hole/nested-spec errors).
+  - Add checker-only unit tests for supported/unsupported hole types.
+  - Add an e2e Float hole test once `Float` is fully wired end-to-end.
 - Deferred:
   - `std.fmt` module surface.
-  - `Float` surface type + float holes.
+

@@ -3,7 +3,9 @@
 // prefers `and`, `or`, `val`, etc. as their own tokens instead of `NAME`.
 NAME.0: /[A-Za-z][A-Za-z0-9_]*/ | /_[A-Za-z0-9_]*(?<!__)/
 %import common.SIGNED_INT
-%import common.SIGNED_FLOAT
+// Float literals: decimal only, digits on both sides of '.', optional exponent.
+// Important: float literals never include a leading sign; unary '-' is parsed separately.
+FLOAT.2: /[0-9]+\.[0-9]+([eE][+-]?[0-9]+)?/
 // String literal with basic escapes plus \xHH hex byte escapes (UTF-8).
 STRING: /"(?:[^"\\]|\\["\\ntbrf]|\\x[0-9A-Fa-f]{2})*"/
 // f-string prefix: `f` immediately followed by a quote starts an f-string literal.
@@ -257,7 +259,7 @@ call_args: call_arg (COMMA call_arg)*
 call_arg: NAME EQUAL expr -> kwarg
         | expr
 
-literal: SIGNED_FLOAT -> float_lit
+literal: FLOAT        -> float_lit
        | SIGNED_INT   -> int_lit
        | STRING       -> str_lit
        | FSTRING_PREFIX STRING -> fstr_lit

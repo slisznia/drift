@@ -144,9 +144,9 @@ class HIRToMIR:
 		"""
 		Create a lowering context.
 
-		`exc_env` (optional) maps exception FQNs to event codes so
-		throw lowering can emit real codes instead of placeholders.
-		"""
+			`exc_env` (optional) maps exception FQNs to event codes so
+			throw lowering can emit real codes instead of placeholders.
+			"""
 		self.b = builder
 		# Stack of (continue_target, break_target) block names for nested loops.
 		self._loop_stack: list[tuple[str, str]] = []
@@ -163,6 +163,7 @@ class HIRToMIR:
 		self._exception_schemas: dict[str, tuple[str, list[str]]] = getattr(self._type_table, "exception_schemas", {}) or {}
 		# Cache some common types for reuse when shared.
 		self._int_type = self._type_table.ensure_int()
+		self._float_type = self._type_table.ensure_float()
 		self._bool_type = self._type_table.ensure_bool()
 		self._string_type = self._type_table.ensure_string()
 		self._string_empty_const = self.b.new_temp()
@@ -227,6 +228,18 @@ class HIRToMIR:
 		self.b.emit(M.ConstInt(dest=dest, value=expr.value))
 		return dest
 
+	def _visit_expr_HLiteralFloat(self, expr: H.HLiteralFloat) -> M.ValueId:
+		"""
+		Lower a Float literal.
+
+		Float is a surface type in lang2 v1 and maps to IEEE-754 `double` in LLVM.
+		The parser enforces strict float literal syntax; by the time we reach HIR,
+		the literal value is already a Python `float`.
+		"""
+		dest = self.b.new_temp()
+		self.b.emit(M.ConstFloat(dest=dest, value=expr.value))
+		return dest
+
 	def _visit_expr_HLiteralBool(self, expr: H.HLiteralBool) -> M.ValueId:
 		dest = self.b.new_temp()
 		self.b.emit(M.ConstBool(dest=dest, value=expr.value))
@@ -247,7 +260,7 @@ class HIRToMIR:
 
 		MVP limitations:
 		- Only empty `:spec` is supported (non-empty specs are rejected).
-		- Supported hole value types are Bool/Int/Uint/String.
+		- Supported hole value types are Bool/Int/Uint/Float/String.
 		"""
 		if len(expr.parts) != len(expr.holes) + 1:
 			raise AssertionError("HFString invariant violated: parts.len != holes.len + 1")
@@ -280,6 +293,9 @@ class HIRToMIR:
 			elif ty == self._uint_type:
 				val_str = self.b.new_temp()
 				self.b.emit(M.StringFromUint(dest=val_str, value=val))
+			elif ty == self._float_type:
+				val_str = self.b.new_temp()
+				self.b.emit(M.StringFromFloat(dest=val_str, value=val))
 			else:
 				raise AssertionError("unsupported f-string hole type reached stage2 (checker bug)")
 
@@ -898,58 +914,56 @@ class HIRToMIR:
 
 		err_val = self.b.new_temp()
 		if isinstance(stmt.value, H.HExceptionInit):
-			code_const = self._lookup_error_code(event_fqn=getattr(stmt.value, "event_fqn", None))
-			code_val = self.b.new_temp()
-			self.b.emit(M.ConstInt(dest=code_val, value=code_const))
-			event_name_val = self.b.new_temp()
-			self.b.emit(M.ConstString(dest=event_name_val, value=stmt.value.event_fqn))
-			field_count = len(stmt.value.field_values)
-			if field_count == 0:
-				# No declared fields: build error with no attrs.
-				self.b.emit(
-					M.ConstructError(
-						dest=err_val,
-						code=code_val,
-						event_fqn=event_name_val,
-						payload=None,
-						attr_key=None,
-					)
-				)
-			else:
-				field_dvs: list[tuple[str, M.ValueId]] = []
-				for name, field_expr in zip(stmt.value.field_names, stmt.value.field_values):
-					if isinstance(field_expr, H.HDVInit):
-						dv_val = self.lower_expr(field_expr)
-					elif isinstance(field_expr, (H.HLiteralInt, H.HLiteralBool)) or (
-						hasattr(H, "HLiteralString") and isinstance(field_expr, getattr(H, "HLiteralString"))
-					):
-						inner_val = self.lower_expr(field_expr)
-						dv_val = self.b.new_temp()
-						# Only primitive literals are auto-wrapped into DiagnosticValue. This
-						# keeps exception field attrs aligned with the DV ABI and avoids
-						# silently accepting unsupported payload shapes.
-						self.b.emit(M.ConstructDV(dest=dv_val, dv_type_name=name, args=[inner_val]))
-					else:
-						raise NotImplementedError(
-							f"exception field {name!r} must be a DiagnosticValue or primitive literal"
+				code_const = self._lookup_error_code(event_fqn=getattr(stmt.value, "event_fqn", None))
+				code_val = self.b.new_temp()
+				self.b.emit(M.ConstInt(dest=code_val, value=code_const))
+				event_name_val = self.b.new_temp()
+				self.b.emit(M.ConstString(dest=event_name_val, value=stmt.value.event_fqn))
+				field_count = len(stmt.value.field_values)
+				if field_count == 0:
+					# No declared fields: build error with no attrs.
+					self.b.emit(
+						M.ConstructError(
+							dest=err_val,
+							code=code_val,
+							event_fqn=event_name_val,
+							payload=None,
+							attr_key=None,
 						)
-					field_dvs.append((name, dv_val))
-				first_name, first_dv = field_dvs[0]
-				first_key = self.b.new_temp()
-				self.b.emit(M.ConstString(dest=first_key, value=first_name))
-				self.b.emit(
-					M.ConstructError(
-						dest=err_val,
-						code=code_val,
-						event_fqn=event_name_val,
-						payload=first_dv,
-						attr_key=first_key,
 					)
-				)
-				for name, dv in field_dvs[1:]:
-					key = self.b.new_temp()
-					self.b.emit(M.ConstString(dest=key, value=name))
-					self.b.emit(M.ErrorAddAttrDV(error=err_val, key=key, value=dv))
+				else:
+					field_dvs: list[tuple[str, M.ValueId]] = []
+					for name, field_expr in zip(stmt.value.field_names, stmt.value.field_values):
+						if isinstance(field_expr, H.HDVInit):
+							dv_val = self.lower_expr(field_expr)
+						elif isinstance(field_expr, (H.HLiteralInt, H.HLiteralBool, H.HLiteralString)):
+							inner_val = self.lower_expr(field_expr)
+							dv_val = self.b.new_temp()
+							# Only primitive literals are auto-wrapped into DiagnosticValue. This
+							# keeps exception field attrs aligned with the DV ABI and avoids
+							# silently accepting unsupported payload shapes.
+							self.b.emit(M.ConstructDV(dest=dv_val, dv_type_name=name, args=[inner_val]))
+						else:
+							raise NotImplementedError(
+								f"exception field {name!r} must be a DiagnosticValue or primitive literal"
+							)
+						field_dvs.append((name, dv_val))
+					first_name, first_dv = field_dvs[0]
+					first_key = self.b.new_temp()
+					self.b.emit(M.ConstString(dest=first_key, value=first_name))
+					self.b.emit(
+						M.ConstructError(
+							dest=err_val,
+							code=code_val,
+							event_fqn=event_name_val,
+							payload=first_dv,
+							attr_key=first_key,
+						)
+					)
+					for name, dv in field_dvs[1:]:
+						key = self.b.new_temp()
+						self.b.emit(M.ConstString(dest=key, value=name))
+						self.b.emit(M.ErrorAddAttrDV(error=err_val, key=key, value=dv))
 		else:
 			# Throwing an existing Error value (e.g., from try-result sugar unwrap_err).
 			err_val = self.lower_expr(stmt.value)
@@ -1383,6 +1397,8 @@ class HIRToMIR:
 		"""
 		if isinstance(expr, H.HLiteralInt):
 			return self._int_type
+		if isinstance(expr, H.HLiteralFloat):
+			return self._float_type
 		if isinstance(expr, H.HLiteralBool):
 			return self._bool_type
 		if isinstance(expr, H.HLiteralString):

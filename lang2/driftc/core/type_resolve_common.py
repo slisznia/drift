@@ -4,7 +4,7 @@ from __future__ import annotations
 Shared helpers for resolving raw/builtin type shapes into TypeIds.
 
 This centralizes the knowledge of builtin names (`Int`, `Bool`, `String`,
-`Uint`, `Void`, `Error`, `DiagnosticValue`, `Array`, `Optional`, `FnResult`) so resolver and checker code
+`Uint`, `Float`, `Void`, `Error`, `DiagnosticValue`, `Array`, `Optional`, `FnResult`) so resolver and checker code
 stay in sync as the language evolves.
 """
 
@@ -17,7 +17,7 @@ def resolve_opaque_type(raw: object, table: TypeTable) -> TypeId:
 
 	Supported inputs:
 	- TypeExpr-like objects exposing `name` and `args`.
-	- Strings naming builtins (Int/Bool/String/Uint/Void/Error/DiagnosticValue),
+	- Strings naming builtins (Int/Bool/String/Uint/Float/Void/Error/DiagnosticValue),
 	  Array<...>, Optional<...>, and FnResult<ok, err>.
 	- Tuples encoding FnResult, e.g. ("FnResult", ok, err) or (ok, err).
 	Unknown shapes return the canonical Unknown TypeId for the table.
@@ -53,6 +53,8 @@ def resolve_opaque_type(raw: object, table: TypeTable) -> TypeId:
 			return table.ensure_bool()
 		if name == "String":
 			return table.ensure_string()
+		if name == "Float":
+			return table.ensure_float()
 		if name == "Error":
 			return table.ensure_error()
 		return table.new_scalar(str(name))
@@ -67,6 +69,8 @@ def resolve_opaque_type(raw: object, table: TypeTable) -> TypeId:
 			return table.ensure_bool()
 		if raw == "String":
 			return table.ensure_string()
+		if raw == "Float":
+			return table.ensure_float()
 		if raw == "Error":
 			return table.ensure_error()
 		if raw == "DiagnosticValue":

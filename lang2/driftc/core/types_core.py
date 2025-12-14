@@ -56,6 +56,7 @@ class TypeTable:
 		# Seed well-known scalars if callers stash them here.
 		self._uint_type: TypeId | None = None  # type: ignore[var-annotated]
 		self._int_type: TypeId | None = None  # type: ignore[var-annotated]
+		self._float_type: TypeId | None = None  # type: ignore[var-annotated]
 		self._bool_type: TypeId | None = None  # type: ignore[var-annotated]
 		self._string_type: TypeId | None = None  # type: ignore[var-annotated]
 		self._void_type: TypeId | None = None  # type: ignore[var-annotated]
@@ -93,6 +94,17 @@ class TypeTable:
 		if getattr(self, "_string_type", None) is None:
 			self._string_type = self.new_scalar("String")  # type: ignore[attr-defined]
 		return self._string_type  # type: ignore[attr-defined]
+
+	def ensure_float(self) -> TypeId:
+		"""
+		Return a stable Float TypeId, creating it once.
+
+		In lang2 v1, `Float` is IEEE-754 double precision and maps to C `double`
+		and LLVM `double`.
+		"""
+		if getattr(self, "_float_type", None) is None:
+			self._float_type = self.new_scalar("Float")  # type: ignore[attr-defined]
+		return self._float_type  # type: ignore[attr-defined]
 
 	def ensure_error(self) -> TypeId:
 		"""

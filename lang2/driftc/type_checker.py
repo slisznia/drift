@@ -19,10 +19,10 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Mapping, Tuple
 
 from lang2.driftc import stage1 as H
-from lang2.driftc.core.diagnostics import Diagnostic
-from lang2.driftc.core.types_core import TypeId, TypeTable, TypeKind
-from lang2.driftc.core.span import Span
 from lang2.driftc.checker import FnSignature
+from lang2.driftc.core.diagnostics import Diagnostic
+from lang2.driftc.core.span import Span
+from lang2.driftc.core.types_core import TypeId, TypeTable, TypeKind
 from lang2.driftc.method_registry import CallableDecl, CallableRegistry, ModuleId
 from lang2.driftc.method_resolver import MethodResolution, ResolutionError, resolve_function_call, resolve_method_call
 
@@ -59,13 +59,16 @@ class TypeChecker:
 	"""
 	Minimal HIR type checker that assigns binding IDs and basic types.
 
-	This is a skeleton: it understands literals, vars, lets, borrows, and calls.
-	More constructs will be added as the language matures.
+	This is a skeleton: it understands literals, vars, lets, borrows, calls, and
+	a small set of builtin constructs (f-strings, exceptions, DiagnosticValue
+	helpers).
 	"""
 
 	def __init__(self, type_table: Optional[TypeTable] = None):
 		self.type_table = type_table or TypeTable()
+		self._uint = self.type_table.ensure_uint()
 		self._int = self.type_table.ensure_int()
+		self._float = self.type_table.ensure_float()
 		self._bool = self.type_table.ensure_bool()
 		self._string = self.type_table.ensure_string()
 		self._dv = self.type_table.ensure_diagnostic_value()
@@ -73,7 +76,6 @@ class TypeChecker:
 		self._opt_bool = self.type_table.new_optional(self._bool)
 		self._opt_string = self.type_table.new_optional(self._string)
 		self._unknown = self.type_table.ensure_unknown()
-		self._uint = self.type_table.ensure_uint()
 		self._next_param_id: ParamId = 1
 		self._next_local_id: LocalId = 1
 
@@ -116,8 +118,11 @@ class TypeChecker:
 			return ty
 
 		def type_expr(expr: H.HExpr, *, allow_exception_init: bool = False) -> TypeId:
+			# Literals.
 			if isinstance(expr, H.HLiteralInt):
 				return record_expr(expr, self._int)
+			if hasattr(H, "HLiteralFloat") and isinstance(expr, getattr(H, "HLiteralFloat")):
+				return record_expr(expr, self._float)
 			if isinstance(expr, H.HLiteralBool):
 				return record_expr(expr, self._bool)
 			if isinstance(expr, H.HLiteralString):
@@ -126,7 +131,7 @@ class TypeChecker:
 				# f-strings are sugar that ultimately produce a String.
 				#
 				# MVP rules (from spec-change request):
-				# - Each hole expression must be one of {Bool, Int, Uint, String}.
+				# - Each hole expression must be one of {Bool, Int, Uint, Float, String}.
 				# - `:spec` is supported syntactically, but only the empty spec is
 				#   accepted for now (future work will validate a richer subset).
 				for hole in expr.holes:
@@ -139,7 +144,7 @@ class TypeChecker:
 								span=getattr(hole, "loc", Span()),
 							)
 						)
-					if hole_ty not in (self._bool, self._int, self._uint, self._string):
+					if hole_ty not in (self._bool, self._int, self._uint, self._float, self._string):
 						pretty = self.type_table.get(hole_ty).name if hole_ty is not None else "Unknown"
 						diagnostics.append(
 							Diagnostic(
@@ -149,6 +154,8 @@ class TypeChecker:
 							)
 						)
 				return record_expr(expr, self._string)
+
+			# Names and bindings.
 			if isinstance(expr, H.HVar):
 				if expr.binding_id is None:
 					for scope in reversed(scope_bindings):
@@ -168,10 +175,14 @@ class TypeChecker:
 					)
 				)
 				return record_expr(expr, self._unknown)
+
+			# Borrow.
 			if isinstance(expr, H.HBorrow):
 				inner_ty = type_expr(expr.subject)
 				ref_ty = self.type_table.ensure_ref_mut(inner_ty) if expr.is_mut else self.type_table.ensure_ref(inner_ty)
 				return record_expr(expr, ref_ty)
+
+			# Calls.
 			if isinstance(expr, H.HCall):
 				# Always type fn and args first for side-effects/subexpressions.
 				should_type_fn = True
@@ -209,6 +220,7 @@ class TypeChecker:
 					if sig and sig.return_type_id is not None:
 						return record_expr(expr, sig.return_type_id)
 				return record_expr(expr, self._unknown)
+
 			if isinstance(expr, H.HMethodCall):
 				# Built-in DiagnosticValue helpers are reserved method names and take precedence.
 				if expr.method_name in ("as_int", "as_bool", "as_string"):
@@ -258,6 +270,8 @@ class TypeChecker:
 					if sig and sig.return_type_id is not None:
 						return record_expr(expr, sig.return_type_id)
 				return record_expr(expr, self._unknown)
+
+			# Field access and indexing.
 			if isinstance(expr, H.HField):
 				sub_ty = type_expr(expr.subject)
 				if expr.name == "attrs":
@@ -269,7 +283,10 @@ class TypeChecker:
 						)
 					)
 					return record_expr(expr, self._unknown)
+				# Placeholder until we model structs/records.
+				_ = sub_ty
 				return record_expr(expr, self._unknown)
+
 			if isinstance(expr, H.HIndex):
 				# Special-case Error.attrs["key"] → DiagnosticValue.
 				if isinstance(expr.subject, H.HField) and expr.subject.name == "attrs":
@@ -293,6 +310,7 @@ class TypeChecker:
 							)
 						)
 					return record_expr(expr, self._dv)
+
 				sub_ty = type_expr(expr.subject)
 				idx_ty = type_expr(expr.index)
 				td = self.type_table.get(sub_ty)
@@ -315,6 +333,8 @@ class TypeChecker:
 					)
 				)
 				return record_expr(expr, self._unknown)
+
+			# Disallow implicit setters; attrs require explicit runtime helpers in MIR.
 			if isinstance(expr, H.HCall) and isinstance(expr.fn, H.HField) and expr.fn.name == "attrs":
 				diagnostics.append(
 					Diagnostic(
@@ -324,15 +344,18 @@ class TypeChecker:
 					)
 				)
 				return record_expr(expr, self._unknown)
+
+			# Unary/binary ops (MVP).
 			if isinstance(expr, H.HUnary):
 				sub_ty = type_expr(expr.expr)
 				if expr.op is H.UnaryOp.NEG:
-					return record_expr(expr, sub_ty if sub_ty == self._int else self._unknown)
+					return record_expr(expr, sub_ty if sub_ty in (self._int, self._float) else self._unknown)
 				if expr.op in (H.UnaryOp.NOT,):
 					return record_expr(expr, self._bool)
 				if expr.op is H.UnaryOp.BIT_NOT:
 					return record_expr(expr, sub_ty if sub_ty == self._int else self._unknown)
 				return record_expr(expr, self._unknown)
+
 			if isinstance(expr, H.HBinary):
 				left_ty = type_expr(expr.left)
 				right_ty = type_expr(expr.right)
@@ -363,16 +386,21 @@ class TypeChecker:
 				if expr.op in (H.BinaryOp.AND, H.BinaryOp.OR):
 					return record_expr(expr, self._bool)
 				return record_expr(expr, self._unknown)
+
+			# Arrays/ternary.
 			if isinstance(expr, H.HArrayLiteral):
 				elem_types = [type_expr(e) for e in expr.elements]
 				if elem_types and all(t == elem_types[0] for t in elem_types):
 					return record_expr(expr, self.type_table.new_array(elem_types[0]))
 				return record_expr(expr, self._unknown)
+
 			if isinstance(expr, H.HTernary):
 				type_expr(expr.cond)
 				then_ty = type_expr(expr.then_expr)
 				else_ty = type_expr(expr.else_expr)
 				return record_expr(expr, then_ty if then_ty == else_ty else self._unknown)
+
+			# Exception constructors are only legal as throw payloads.
 			if isinstance(expr, H.HExceptionInit):
 				if not allow_exception_init:
 					diagnostics.append(
@@ -394,14 +422,12 @@ class TypeChecker:
 					return record_expr(expr, self._dv)
 				for name, val_expr in zip(expr.field_names, expr.field_values):
 					val_ty = type_expr(val_expr)
-					is_primitive_literal = isinstance(
-						val_expr,
-						(
-							H.HLiteralInt,
-							H.HLiteralBool,
-							getattr(H, "HLiteralString", tuple()),
-						),
-					)
+					# For now, exception ctor fields may be DiagnosticValue or a primitive
+					# literal that the lowering can auto-wrap into a DiagnosticValue.
+					#
+					# NOTE: this is intentionally stricter than "any Int-typed expression";
+					# MVP only supports implicit DV conversion for literal primitives.
+					is_primitive_literal = isinstance(val_expr, (H.HLiteralInt, H.HLiteralBool, H.HLiteralString))
 					if val_ty != self._dv and not is_primitive_literal:
 						diagnostics.append(
 							Diagnostic(
@@ -414,6 +440,8 @@ class TypeChecker:
 							)
 						)
 				return record_expr(expr, self._dv)
+
+			# DiagnosticValue constructors.
 			if isinstance(expr, H.HDVInit):
 				arg_types = [type_expr(a) for a in expr.args]
 				if expr.args:
@@ -438,12 +466,15 @@ class TypeChecker:
 						)
 						return record_expr(expr, self._unknown)
 				return record_expr(expr, self._dv)
+
+			# Result/try sugar.
 			if isinstance(expr, H.HResultOk):
 				ok_ty = type_expr(expr.value)
 				err_ty = self._unknown
 				return record_expr(expr, self.type_table.new_fnresult(ok_ty, err_ty))
 			if isinstance(expr, H.HTryResult):
 				return record_expr(expr, type_expr(expr.expr))
+
 			# Fallback: unknown type.
 			return record_expr(expr, self._unknown)
 
@@ -542,3 +573,4 @@ class TypeChecker:
 		lid = self._next_local_id
 		self._next_local_id += 1
 		return lid
+

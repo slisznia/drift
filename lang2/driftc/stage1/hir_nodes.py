@@ -109,6 +109,16 @@ class HLiteralBool(HExpr):
 
 
 @dataclass
+class HLiteralFloat(HExpr):
+	"""
+	Float literal (as parsed).
+
+	Surface `Float` in lang2 v1 is IEEE-754 double precision (`f64` / LLVM `double`).
+	"""
+	value: float
+
+
+@dataclass
 class HFStringHole(HNode):
 	"""
 	Single `{expr[:spec]}` hole inside an f-string.
@@ -119,7 +129,7 @@ class HFStringHole(HNode):
 	- lower the formatting operation appropriately.
 
 	MVP: `spec` is opaque text (no nested `{}`), and only a small set of hole
-	value types are supported (Bool/Int/Uint/String).
+	value types are supported (Bool/Int/Uint/Float/String).
 	"""
 	expr: HExpr
 	spec: str = ""
@@ -397,7 +407,7 @@ class HReturn(HStmt):
 __all__ = [
 	"HNode", "HExpr", "HStmt",
 	"UnaryOp", "BinaryOp",
-	"HVar", "HLiteralInt", "HLiteralString", "HLiteralBool",
+	"HVar", "HLiteralInt", "HLiteralString", "HLiteralBool", "HLiteralFloat",
 	"HFString", "HFStringHole",
 	"HCall", "HMethodCall", "HTernary", "HTryResult", "HResultOk",
 	"HField", "HIndex", "HBorrow", "HDVInit",
