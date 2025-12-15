@@ -1,3 +1,5 @@
+# Drift Language Specification 1.0
+
 ## 1. Overview
 
 Drift is a modern systems language built on a simple premise: programming should be pleasant, expressive, and safe by default — without giving up the ability to write efficient, low-level code when you actually need it.

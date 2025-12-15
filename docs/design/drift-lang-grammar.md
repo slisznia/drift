@@ -1,4 +1,4 @@
-# Drift Language Grammar (syntax-only, normative for parsing)
+# Drift Language Grammar 1.0 (syntax-only, normative for parsing)
 
 This file defines the lexical rules, precedence, and productions for Drift. It is authoritative for **syntax**. The main language specification (`drift-lang-spec.md`) remains authoritative for **semantics** (ownership, types, runtime behavior). If syntax and semantics appear to conflict, parsing follows this document; meaning follows the main spec.
 

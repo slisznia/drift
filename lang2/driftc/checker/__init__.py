@@ -614,6 +614,15 @@ class Checker:
 				H.BinaryOp.SHL,
 				H.BinaryOp.SHR,
 			}
+			comparison_ops = {
+				H.BinaryOp.EQ,
+				H.BinaryOp.NE,
+				H.BinaryOp.LT,
+				H.BinaryOp.LE,
+				H.BinaryOp.GT,
+				H.BinaryOp.GE,
+			}
+			bool_ops = {H.BinaryOp.AND, H.BinaryOp.OR}
 			string_binops = {H.BinaryOp.ADD, H.BinaryOp.EQ}
 
 			if isinstance(expr, H.HLiteralInt):
@@ -709,7 +718,15 @@ class Checker:
 						)
 					)
 					return None
+				if left_ty == checker._bool_type and right_ty == checker._bool_type:
+					if expr.op in bool_ops:
+						return checker._bool_type
+					if expr.op in (H.BinaryOp.EQ, H.BinaryOp.NE):
+						return checker._bool_type
+					return None
 				if left_ty == checker._int_type and right_ty == checker._int_type:
+					if expr.op in comparison_ops:
+						return checker._bool_type
 					return checker._int_type
 				return None
 

@@ -1,3 +1,6 @@
+// Drift Language Grammar 1.0
+// This file defines the surface syntax accepted by the Drift compiler frontend.
+
 // Identifiers: allow leading underscore, but reserve double-underscore (compiler use).
 // Give identifiers a lower priority than keyword terminals so the basic lexer
 // prefers `and`, `or`, `val`, etc. as their own tokens instead of `NAME`.

@@ -1,0 +1,32 @@
+module m
+
+exception Boom()
+
+fn maybe_fail(flag: Int) returns Void {
+	if flag == 0 {
+		return;
+	}
+	throw Boom {};
+}
+
+fn main() returns Int {
+	// Success path.
+	try {
+		maybe_fail(0);
+	} catch err {
+		println("unexpected");
+		return 2;
+	}
+	println("ok");
+
+	// Error path.
+	try {
+		maybe_fail(1);
+	} catch err {
+		println("err");
+		return 1;
+	}
+
+	println("should-not-reach");
+	return 0;
+}
