@@ -3,7 +3,7 @@ module m
 exception Boom()
 
 fn foo() returns Int {
-	throw Boom {};
+	throw Boom();
 }
 
 fn main() returns Int {

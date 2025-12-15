@@ -70,8 +70,21 @@ class Call(Expr):
 	"""Function or method call prior to desugaring."""
 	func: Expr
 	args: List[Expr]
-	kwargs: List[object]  # keep shape compatible; specifics not needed yet
+	kwargs: List["KwArg"]
 	loc: Optional[object] = None
+
+
+@dataclass
+class KwArg:
+	"""
+	Keyword argument `name = value` (used by calls and exception constructors).
+
+	We keep `loc` so later passes can point diagnostics at the keyword name
+	(token) rather than at the value expression.
+	"""
+	name: str
+	value: Expr
+	loc: Span = field(default_factory=Span)
 
 
 @dataclass
@@ -109,12 +122,17 @@ class ArrayLiteral(Expr):
 @dataclass
 class ExceptionCtor(Expr):
 	"""
-	Exception constructor application. Fields map parameter name -> expression.
-	arg_order is omitted for now; HIR lowering can impose ordering if needed.
+	Exception constructor application (throw-only in the surface language).
+
+	Supports both positional and keyword arguments; positional arguments must
+	precede keyword arguments (enforced by the parser).
+
+	Semantics of mapping arguments to declared exception fields is handled later
+	once exception schemas are available.
 	"""
 	name: str
-	fields: dict  # mapping str -> Expr; kept loose for the rewrite
-	arg_order: Optional[list[str]] = None
+	args: List[Expr]
+	kwargs: List[KwArg]
 	loc: Optional[object] = None
 
 

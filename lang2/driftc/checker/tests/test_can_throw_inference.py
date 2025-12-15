@@ -27,7 +27,7 @@ def test_uncaught_throw_infers_can_throw_without_diagnostic():
 	func_hirs = {
 		"f": H.HBlock(
 			statements=[
-				H.HThrow(value=H.HExceptionInit(event_fqn="m:Boom", field_names=[], field_values=[])),
+				H.HThrow(value=H.HExceptionInit(event_fqn="m:Boom", pos_args=[], kw_args=[])),
 			]
 		)
 	}
@@ -46,7 +46,7 @@ def test_explicit_nothrow_rejects_uncaught_throw_with_span():
 	func_hirs = {
 		"f": H.HBlock(
 			statements=[
-				H.HThrow(value=H.HExceptionInit(event_fqn="m:Boom", field_names=[], field_values=[])),
+				H.HThrow(value=H.HExceptionInit(event_fqn="m:Boom", pos_args=[], kw_args=[])),
 			]
 		)
 	}
@@ -56,4 +56,3 @@ def test_explicit_nothrow_rejects_uncaught_throw_with_span():
 	msgs = [d.message for d in checked.diagnostics]
 	assert any("declared nothrow but may throw" in m for m in msgs)
 	assert any(getattr(d, "span", None) is not None for d in checked.diagnostics)
-

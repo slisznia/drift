@@ -4,7 +4,7 @@ exception Boom(a: Int, b: String)
 
 fn handle() returns Int {
     try {
-        throw Boom { a = 7, b = "hi" };
+        throw Boom(a = 7, b = "hi");
     } catch m:Boom(e) {
         // Exercise attrs retrieval and DV helpers end-to-end; results are ignored.
         val dv_a = e.attrs["a"];

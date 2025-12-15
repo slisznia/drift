@@ -1202,24 +1202,21 @@ def _build_ternary(tree: Tree) -> Ternary:
 
 
 def _build_exception_ctor(tree: Tree) -> ExceptionCtor:
-    """
-    Exception constructor expression: Name { field = expr, ... }
-    """
-    name_tok = next((c for c in tree.children if isinstance(c, Token) and c.type == "NAME"), None)
-    if name_tok is None:
-        raise ValueError("exception_ctor missing name")
-    fields: dict[str, Expr] = {}
-    order: list[str] = []
-    for child in tree.children:
-        if isinstance(child, Tree) and _name(child) == "exception_ctor_field":
-            field_name_tok = next((t for t in child.children if isinstance(t, Token) and t.type == "NAME"), None)
-            value_node = next((c for c in child.children if isinstance(c, Tree)), None)
-            if field_name_tok is None or value_node is None:
-                raise ValueError("malformed exception_ctor_field")
-            fname = field_name_tok.value
-            fields[fname] = _build_expr(value_node)
-            order.append(fname)
-    return ExceptionCtor(name=name_tok.value, event_code=None, fields=fields, arg_order=order, loc=_loc(tree))
+	"""
+	Exception constructor expression (throw-only):
+	  Name(arg0, field = expr, ...)
+
+	This mirrors call argument parsing rules:
+	  - Positional arguments must precede keyword arguments.
+	"""
+	name_tok = next((c for c in tree.children if isinstance(c, Token) and c.type == "NAME"), None)
+	if name_tok is None:
+		raise ValueError("exception_ctor missing name")
+
+	# Grammar shape: NAME "(" [call_args] ")"
+	args_node = next((c for c in tree.children if isinstance(c, Tree) and _name(c) == "call_args"), None)
+	args, kwargs = _build_call_args(args_node)
+	return ExceptionCtor(name=name_tok.value, args=args, kwargs=kwargs, loc=_loc(tree))
 
 
 def _build_postfix(tree: Tree) -> Expr:
@@ -1292,7 +1289,7 @@ def _build_kwarg(tree: Tree) -> KwArg:
     name_token = next(child for child in tree.children if isinstance(child, Token) and child.type == "NAME")
     value_node = next(child for child in tree.children if isinstance(child, Tree))
     value = _build_expr(value_node)
-    return KwArg(name=name_token.value, value=value)
+    return KwArg(name=name_token.value, value=value, loc=_loc(tree))
 
 
 def _loc(tree: Tree) -> Located:

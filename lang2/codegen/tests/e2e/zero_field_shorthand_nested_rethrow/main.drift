@@ -5,7 +5,7 @@ exception E()
 fn main() returns Int {
     try {
         try {
-            throw E;
+            throw E();
         } catch {
             rethrow;
         }

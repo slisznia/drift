@@ -1,6 +1,6 @@
 {
   "exit_code": 1,
   "diagnostics": [
-    { "message_contains": "requires fields" }
+    { "message_contains": "missing exception field" }
   ]
 }

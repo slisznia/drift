@@ -4,7 +4,7 @@ exception E()
 
 fn main() returns Int {
     try {
-        throw E {};
+        throw E();
     } catch {
         print("handled");
     }

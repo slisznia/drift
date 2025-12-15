@@ -255,8 +255,16 @@ leading_suffix: call_suffix
 
 array_literal: "[" [expr (COMMA expr)*] "]"
 
-exception_ctor: NAME "{" [exception_ctor_field (COMMA exception_ctor_field)*] "}"
-exception_ctor_field: NAME EQUAL expr
+// Exception constructor call syntax (used only in `throw`).
+//
+// Design choice:
+// - Exceptions are thrown using constructor syntax `throw E(...)` (parens required),
+//   not brace initializers. This matches user expectations and keeps `{...}` for
+//   struct initializers and map literals.
+// - Positional args are allowed and map to declared exception fields by
+//   declaration order. Keyword args use `=` and follow the same rule as normal calls:
+//   positional arguments must precede keyword arguments.
+exception_ctor: NAME "(" [call_args] ")"
 
 call_args: call_arg (COMMA call_arg)*
 call_arg: NAME EQUAL expr -> kwarg

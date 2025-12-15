@@ -14,12 +14,20 @@ from lang2.driftc.stage1 import normalize_hir
 from lang2.driftc.stage2 import HIRToMIR, MirBuilder, mir_nodes as M
 from lang2.driftc.stage3.throw_summary import ThrowSummaryBuilder
 from lang2.driftc.stage4 import run_throw_checks
+from lang2.driftc.core.types_core import TypeTable
 
 
 def _lower_fn(name: str, hir_block: H.HBlock, *, can_throw: bool) -> tuple[str, object]:
 	builder = MirBuilder(name=name)
 	can_throw_map = {name: True} if can_throw else {}
-	HIRToMIR(builder, can_throw_by_name=can_throw_map).lower_block(hir_block)
+	# Stage2 lowering for exception constructors requires schemas; these tests
+	# use only zero-field events, so we seed minimal entries here.
+	type_table = TypeTable()
+	type_table.exception_schemas = {
+		"m:EvtX": ("m:EvtX", []),
+		"m:Evt": ("m:Evt", []),
+	}
+	HIRToMIR(builder, type_table=type_table, can_throw_by_name=can_throw_map).lower_block(hir_block)
 	return name, builder.func
 
 
@@ -30,7 +38,7 @@ def test_can_throw_function_passes_checks():
 		H.HBlock(
 			statements=[
 				H.HThrow(
-					value=H.HExceptionInit(event_fqn="m:EvtX", field_names=[], field_values=[]),
+					value=H.HExceptionInit(event_fqn="m:EvtX", pos_args=[], kw_args=[]),
 				)
 			]
 		),
@@ -56,7 +64,7 @@ def test_can_throw_try_catch_and_return_ok_shape():
 					body=H.HBlock(
 						statements=[
 							H.HThrow(
-								value=H.HExceptionInit(event_fqn="m:Evt", field_names=[], field_values=[]),
+								value=H.HExceptionInit(event_fqn="m:Evt", pos_args=[], kw_args=[]),
 							)
 						]
 					),

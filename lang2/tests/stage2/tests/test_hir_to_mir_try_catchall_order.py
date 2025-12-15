@@ -8,6 +8,7 @@ import pytest
 
 from lang2.driftc.stage2 import HIRToMIR, MirBuilder, mir_nodes as M
 from lang2.driftc import stage1 as H
+from lang2.driftc.core.types_core import TypeTable
 
 
 def test_multiple_catch_all_rejected():
@@ -33,12 +34,14 @@ def test_multiple_catch_all_rejected():
 def test_catch_all_not_last_is_rejected():
 	"""Catch-all before event arms is rejected to avoid unreachable handlers."""
 	builder = MirBuilder(name="try_catchall_first")
-	lower = HIRToMIR(builder, exc_env={"EvtA": 1})
+	type_table = TypeTable()
+	type_table.exception_schemas = {"m:X": ("m:X", [])}
+	lower = HIRToMIR(builder, type_table=type_table, exc_env={"m:EvtA": 1})
 
 	hir = H.HBlock(
 		statements=[
 			H.HTry(
-				body=H.HBlock(statements=[H.HThrow(value=H.HExceptionInit(event_fqn="m:X", field_names=[], field_values=[]))]),
+				body=H.HBlock(statements=[H.HThrow(value=H.HExceptionInit(event_fqn="m:X", pos_args=[], kw_args=[]))]),
 				catches=[
 					H.HCatchArm(event_fqn=None, binder=None, block=H.HBlock(statements=[])),
 					H.HCatchArm(event_fqn="m:EvtA", binder="a", block=H.HBlock(statements=[])),

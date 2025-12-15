@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from lang2.driftc.stage2 import HIRToMIR, MirBuilder, mir_nodes as M
 from lang2.driftc import stage1 as H
+from lang2.driftc.core.types_core import TypeTable
 
 
 def _walk_else(func: M.MirFunc, block: M.BasicBlock) -> M.BasicBlock:
@@ -27,10 +28,20 @@ def test_throw_b_skips_inner_catch_a_hits_outer_catch_b():
 	"""
 	exc_env = {"m:EvtA": 1, "m:EvtB": 2}
 	builder = MirBuilder(name="legacy_inner_outer_events")
-	lower = HIRToMIR(builder, exc_env=exc_env, can_throw_by_name={"legacy_inner_outer_events": True})
+	type_table = TypeTable()
+	type_table.exception_schemas = {
+		"m:EvtA": ("m:EvtA", []),
+		"m:EvtB": ("m:EvtB", []),
+	}
+	lower = HIRToMIR(
+		builder,
+		type_table=type_table,
+		exc_env=exc_env,
+		can_throw_by_name={"legacy_inner_outer_events": True},
+	)
 
 	inner_try = H.HTry(
-		body=H.HBlock(statements=[H.HThrow(value=H.HExceptionInit(event_fqn="m:EvtB", field_names=[], field_values=[]))]),
+		body=H.HBlock(statements=[H.HThrow(value=H.HExceptionInit(event_fqn="m:EvtB", pos_args=[], kw_args=[]))]),
 		catches=[H.HCatchArm(event_fqn="m:EvtA", binder=None, block=H.HBlock(statements=[]))],
 	)
 	outer_try = H.HTry(
@@ -71,12 +82,17 @@ def test_multi_event_with_catch_all_matches_specific_arm():
 	"""
 	exc_env = {"m:EvtA": 1, "m:EvtB": 2}
 	builder = MirBuilder(name="legacy_multi_event")
-	lower = HIRToMIR(builder, exc_env=exc_env, can_throw_by_name={"legacy_multi_event": True})
+	type_table = TypeTable()
+	type_table.exception_schemas = {
+		"m:EvtA": ("m:EvtA", []),
+		"m:EvtB": ("m:EvtB", []),
+	}
+	lower = HIRToMIR(builder, type_table=type_table, exc_env=exc_env, can_throw_by_name={"legacy_multi_event": True})
 
 	hir = H.HBlock(
 		statements=[
 			H.HTry(
-				body=H.HBlock(statements=[H.HThrow(value=H.HExceptionInit(event_fqn="m:EvtB", field_names=[], field_values=[]))]),
+				body=H.HBlock(statements=[H.HThrow(value=H.HExceptionInit(event_fqn="m:EvtB", pos_args=[], kw_args=[]))]),
 				catches=[
 					H.HCatchArm(event_fqn="m:EvtA", binder=None, block=H.HBlock(statements=[])),
 					H.HCatchArm(event_fqn="m:EvtB", binder="b", block=H.HBlock(statements=[])),
@@ -114,15 +130,20 @@ def test_throw_inside_catch_rethrows_to_outer_try():
 	"""
 	exc_env = {"m:EvtA": 1, "m:EvtB": 2}
 	builder = MirBuilder(name="legacy_throw_in_catch")
-	lower = HIRToMIR(builder, exc_env=exc_env, can_throw_by_name={"legacy_throw_in_catch": True})
+	type_table = TypeTable()
+	type_table.exception_schemas = {
+		"m:EvtA": ("m:EvtA", []),
+		"m:EvtB": ("m:EvtB", []),
+	}
+	lower = HIRToMIR(builder, type_table=type_table, exc_env=exc_env, can_throw_by_name={"legacy_throw_in_catch": True})
 
 	inner_try = H.HTry(
-		body=H.HBlock(statements=[H.HThrow(value=H.HExceptionInit(event_fqn="m:EvtA", field_names=[], field_values=[]))]),
+		body=H.HBlock(statements=[H.HThrow(value=H.HExceptionInit(event_fqn="m:EvtA", pos_args=[], kw_args=[]))]),
 		catches=[
 			H.HCatchArm(
 				event_fqn="m:EvtA",
 				binder=None,
-				block=H.HBlock(statements=[H.HThrow(value=H.HExceptionInit(event_fqn="m:EvtB", field_names=[], field_values=[]))]),
+				block=H.HBlock(statements=[H.HThrow(value=H.HExceptionInit(event_fqn="m:EvtB", pos_args=[], kw_args=[]))]),
 			)
 		],
 	)
@@ -164,10 +185,17 @@ def test_inner_catch_all_handles_error_before_outer_specific_arm():
 	"""
 	exc_env = {"m:EvtX": 7}
 	builder = MirBuilder(name="legacy_inner_catchall_outer_specific")
-	lower = HIRToMIR(builder, exc_env=exc_env, can_throw_by_name={"legacy_inner_catchall_outer_specific": True})
+	type_table = TypeTable()
+	type_table.exception_schemas = {"m:EvtX": ("m:EvtX", [])}
+	lower = HIRToMIR(
+		builder,
+		type_table=type_table,
+		exc_env=exc_env,
+		can_throw_by_name={"legacy_inner_catchall_outer_specific": True},
+	)
 
 	inner_try = H.HTry(
-		body=H.HBlock(statements=[H.HThrow(value=H.HExceptionInit(event_fqn="m:EvtX", field_names=[], field_values=[]))]),
+		body=H.HBlock(statements=[H.HThrow(value=H.HExceptionInit(event_fqn="m:EvtX", pos_args=[], kw_args=[]))]),
 		catches=[H.HCatchArm(event_fqn=None, binder=None, block=H.HBlock(statements=[]))],
 	)
 	outer_try = H.HTry(
@@ -198,7 +226,11 @@ def test_inner_matching_catch_handles_and_stops_propagation():
 	"""
 	exc_env = {"m:EvtInner": 11, "m:EvtOuter": 22}
 	builder = MirBuilder(name="legacy_inner_matches")
-	lower = HIRToMIR(builder, exc_env=exc_env, can_throw_by_name={"legacy_inner_matches": True})
+	type_table = TypeTable()
+	type_table.exception_schemas = {
+		"m:EvtInner": ("m:EvtInner", []),
+	}
+	lower = HIRToMIR(builder, type_table=type_table, exc_env=exc_env, can_throw_by_name={"legacy_inner_matches": True})
 
 	hir = H.HBlock(
 		statements=[
@@ -207,7 +239,7 @@ def test_inner_matching_catch_handles_and_stops_propagation():
 					statements=[
 						H.HTry(
 							body=H.HBlock(
-								statements=[H.HThrow(value=H.HExceptionInit(event_fqn="m:EvtInner", field_names=[], field_values=[]))]
+								statements=[H.HThrow(value=H.HExceptionInit(event_fqn="m:EvtInner", pos_args=[], kw_args=[]))]
 							),
 							catches=[
 								H.HCatchArm(

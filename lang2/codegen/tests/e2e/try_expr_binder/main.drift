@@ -6,7 +6,7 @@ fn may_fail(flag: Int) returns Int {
 	if flag == 0 {
 		return 0;
 	}
-	throw Boom {};
+	throw Boom();
 }
 
 fn main() returns Int {

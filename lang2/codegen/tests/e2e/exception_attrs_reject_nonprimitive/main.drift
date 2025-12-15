@@ -5,5 +5,5 @@ exception E(code: Int)
 fn mk() returns Int { return 5; }
 
 fn main() returns Int {
-    throw E { code = mk() };
+    throw E(code = mk());
 }

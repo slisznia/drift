@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from lang2.driftc import stage1 as H
 from lang2.driftc.driftc import compile_stubbed_funcs
+from lang2.driftc.core.types_core import TypeTable
 from lang2.test_support import build_exception_catalog, make_signatures
 
 
@@ -16,15 +17,18 @@ def test_compile_stubbed_funcs_builds_ssa_and_type_env():
 	"""
 	hir_block = H.HBlock(
 		statements=[
-			H.HThrow(value=H.HExceptionInit(event_fqn="m:Evt", field_names=[], field_values=[])),
+			H.HThrow(value=H.HExceptionInit(event_fqn="m:Evt", pos_args=[], kw_args=[])),
 		]
 	)
 
 	signatures = make_signatures({"f": "Int"}, declared_can_throw={"f": True})
+	type_table = TypeTable()
+	type_table.exception_schemas = {"m:Evt": ("m:Evt", [])}
 	mir_funcs, checked = compile_stubbed_funcs(
 		func_hirs={"f": hir_block},
 		signatures=signatures,
 		exc_env=build_exception_catalog({"m:Evt": 1}),
+		type_table=type_table,
 		build_ssa=True,
 		return_checked=True,
 	)

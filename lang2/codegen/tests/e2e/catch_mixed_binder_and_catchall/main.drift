@@ -5,7 +5,7 @@ exception B()
 
 fn main() returns Int {
     try {
-        throw A {};
+        throw A();
     } catch m:A(e) {
         print("a");
     } catch {

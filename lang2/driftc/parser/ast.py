@@ -151,8 +151,15 @@ class Attr(Expr):
 
 @dataclass
 class KwArg:
+    """
+    Keyword argument `name = value`.
+
+    Note: we carry `loc` so later stages can emit precise diagnostics for
+    unknown/duplicate keyword names without guessing from the value span.
+    """
     name: str
     value: Expr
+    loc: Located
 
 
 @dataclass
@@ -293,13 +300,21 @@ class ThrowStmt(Stmt):
 
 @dataclass
 class ExceptionCtor(Expr):
-    """Semantic node representing an exception constructor application."""
+    """
+    Semantic node representing an exception constructor application.
+
+    This is *not* a general expression in the language: it only appears under a
+    `throw` statement (see grammar). We still represent it as an Expr node so it
+    can share parsing infrastructure with calls and literals.
+
+    Args may be positional or keyword. Positional arguments must precede keyword
+    arguments (the parser enforces this).
+    """
 
     loc: Located
     name: str
-    event_code: int
-    fields: Dict[str, Expr]
-    arg_order: Optional[list[str]] = None
+    args: List[Expr]
+    kwargs: List[KwArg]
 
 
 @dataclass

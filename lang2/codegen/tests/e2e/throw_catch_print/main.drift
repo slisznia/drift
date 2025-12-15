@@ -4,7 +4,7 @@ exception E(msg: String)
 
 fn main() returns Int {
     try {
-        throw E { msg = "boom" };
+        throw E(msg = "boom");
         print("UNREACHABLE");
     } catch err {
         print("caught");

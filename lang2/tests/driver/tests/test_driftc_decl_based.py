@@ -8,6 +8,7 @@ from dataclasses import dataclass
 
 from lang2.driftc import stage1 as H
 from lang2.driftc.driftc import compile_stubbed_funcs
+from lang2.driftc.core.types_core import TypeTable
 from lang2.test_support import (
 	build_exception_catalog,
 	signatures_from_decl_nodes,
@@ -41,16 +42,19 @@ def test_driver_accepts_decl_based_signatures_and_catalog():
 	hirs = {
 		"f_can": H.HBlock(
 			statements=[
-				H.HThrow(value=H.HExceptionInit(event_fqn="m:EvtA", field_names=[], field_values=[]))
+				H.HThrow(value=H.HExceptionInit(event_fqn="m:EvtA", pos_args=[], kw_args=[]))
 			]
 		),
 		"g_plain": H.HBlock(statements=[H.HReturn(value=H.HLiteralInt(value=1))]),
 	}
+	type_table = TypeTable()
+	type_table.exception_schemas = {"m:EvtA": ("m:EvtA", [])}
 
 	mir_funcs, checked = compile_stubbed_funcs(
 		func_hirs=hirs,
 		signatures=signatures,
 		exc_env=exc_catalog,
+		type_table=type_table,
 		build_ssa=True,
 		return_checked=True,
 	)
@@ -82,15 +86,18 @@ def test_driver_reports_decl_based_mismatch_diagnostics():
 	hirs = {
 		"g_plain": H.HBlock(
 			statements=[
-				H.HThrow(value=H.HExceptionInit(event_fqn="m:EvtX", field_names=[], field_values=[]))
+				H.HThrow(value=H.HExceptionInit(event_fqn="m:EvtX", pos_args=[], kw_args=[]))
 			]
 		),
 	}
+	type_table = TypeTable()
+	type_table.exception_schemas = {"m:EvtX": ("m:EvtX", [])}
 
 	mir_funcs, checked = compile_stubbed_funcs(
 		func_hirs=hirs,
 		signatures=signatures,
 		exc_env=exc_catalog,
+		type_table=type_table,
 		build_ssa=True,
 		return_checked=True,
 	)

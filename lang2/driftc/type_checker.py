@@ -411,29 +411,43 @@ class TypeChecker:
 						)
 					)
 					return record_expr(expr, self._unknown)
-				if len(expr.field_names) != len(expr.field_values):
-					diagnostics.append(
-						Diagnostic(
-							message="attribute names/values mismatch in exception constructor",
-							severity="error",
-							span=getattr(expr, "loc", Span()),
-						)
-					)
-					return record_expr(expr, self._dv)
-				for name, val_expr in zip(expr.field_names, expr.field_values):
+				from lang2.driftc.core.exception_ctor_args import KwArg as _KwArg, resolve_exception_ctor_args
+
+				schemas: dict[str, tuple[str, list[str]]] = getattr(self.type_table, "exception_schemas", {}) or {}
+				schema = schemas.get(expr.event_fqn)
+				decl_fields: list[str] | None
+				if schema is None:
+					decl_fields = None
+				else:
+					_decl_fqn, decl_fields = schema
+
+				resolved, diags = resolve_exception_ctor_args(
+					event_fqn=expr.event_fqn,
+					declared_fields=decl_fields,
+					pos_args=[(a, getattr(a, "loc", Span())) for a in expr.pos_args],
+					kw_args=[
+						_KwArg(name=kw.name, value=kw.value, name_span=getattr(kw, "loc", Span()))
+						for kw in expr.kw_args
+					],
+					span=getattr(expr, "loc", Span()),
+				)
+				diagnostics.extend(diags)
+
+				values_to_validate = [v for _name, v in resolved]
+				if decl_fields is None:
+					# Unknown schema: we cannot map positional args to names, but we
+					# still validate that provided values are DV or supported literals.
+					values_to_validate = list(expr.pos_args) + [kw.value for kw in expr.kw_args]
+
+				for val_expr in values_to_validate:
 					val_ty = type_expr(val_expr)
-					# For now, exception ctor fields may be DiagnosticValue or a primitive
-					# literal that the lowering can auto-wrap into a DiagnosticValue.
-					#
-					# NOTE: this is intentionally stricter than "any Int-typed expression";
-					# MVP only supports implicit DV conversion for literal primitives.
 					is_primitive_literal = isinstance(val_expr, (H.HLiteralInt, H.HLiteralBool, H.HLiteralString))
 					if val_ty != self._dv and not is_primitive_literal:
 						diagnostics.append(
 							Diagnostic(
 								message=(
-									f"attribute '{name}' value must be a DiagnosticValue or a primitive literal "
-									f"(Int/Bool/String)"
+									"exception field value must be a DiagnosticValue or a primitive literal "
+									"(Int/Bool/String)"
 								),
 								severity="error",
 								span=getattr(val_expr, "loc", Span()),
@@ -573,4 +587,3 @@ class TypeChecker:
 		lid = self._next_local_id
 		self._next_local_id += 1
 		return lid
-

@@ -6,10 +6,10 @@ exception B()
 fn main() returns Int {
     try {
         try {
-            throw A {};
+            throw A();
         } catch m:A(a) {
             print("inner");
-            throw B {};
+            throw B();
         }
         print("UNREACHABLE");
     } catch m:B(b) {

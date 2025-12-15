@@ -41,7 +41,14 @@ def _convert_expr(expr: parser_ast.Expr) -> s0.Expr:
 		return s0.Call(
 			func=_convert_expr(expr.func),
 			args=[_convert_expr(a) for a in expr.args],
-			kwargs=[],
+			kwargs=[
+				s0.KwArg(
+					name=kw.name,
+					value=_convert_expr(kw.value),
+					loc=Span.from_loc(getattr(kw, "loc", None)),
+				)
+				for kw in getattr(expr, "kwargs", [])
+			],
 			loc=Span.from_loc(getattr(expr, "loc", None)),
 		)
 	if isinstance(expr, parser_ast.Attr):
@@ -96,8 +103,15 @@ def _convert_expr(expr: parser_ast.Expr) -> s0.Expr:
 	if isinstance(expr, parser_ast.ExceptionCtor):
 		return s0.ExceptionCtor(
 			name=expr.name,
-			fields={k: _convert_expr(v) for k, v in expr.fields.items()},
-			arg_order=getattr(expr, "arg_order", None),
+			args=[_convert_expr(a) for a in expr.args],
+			kwargs=[
+				s0.KwArg(
+					name=kw.name,
+					value=_convert_expr(kw.value),
+					loc=Span.from_loc(getattr(kw, "loc", None)),
+				)
+				for kw in expr.kwargs
+			],
 			loc=Span.from_loc(getattr(expr, "loc", None)),
 		)
 	if isinstance(expr, parser_ast.FString):
@@ -388,8 +402,6 @@ def parse_drift_to_hir(path: Path) -> Tuple[Dict[str, H.HBlock], Dict[str, FnSig
 		fqn = f"{module_name}:{exc.name}" if module_name else exc.name
 		field_names = [arg.name for arg in getattr(exc, "args", [])]
 		exception_schemas[fqn] = (fqn, field_names)
-		if module_name:
-			exception_schemas[exc.name] = (fqn, field_names)
 	for fn in prog.functions:
 		if fn.name in seen:
 			diagnostics.append(

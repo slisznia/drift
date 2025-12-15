@@ -4,7 +4,7 @@ exception E(code: Int, fatal: Bool, msg: String)
 
 fn main() returns Int {
     try {
-        throw E { code = 123, fatal = true, msg = "hello" };
+        throw E(code = 123, fatal = true, msg = "hello");
     } catch err {
         print("caught");
     }

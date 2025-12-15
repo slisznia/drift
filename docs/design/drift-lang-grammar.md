@@ -109,8 +109,8 @@ ContinueStmt ::= "continue" TERMINATOR
 TryStmt      ::= "try" Block (TryElse | TryCatch)?
 TryElse      ::= "else" Block
 TryCatch     ::= "catch" (Ident)? Block
-ThrowStmt    ::= "throw" ExceptionInit TERMINATOR
-ExceptionInit::= Ident ("{" FieldAssignList? "}")?
+ThrowStmt    ::= "throw" ExceptionCtor TERMINATOR
+ExceptionCtor::= Ident "(" CallArgs? ")"
 ```
 
 Expressions:

@@ -5,9 +5,9 @@ exception Other()
 
 fn foo(flag: Int) returns Int {
 	if flag == 1 {
-		throw MyErr { msg = "one" };
+		throw MyErr(msg = "one");
 	}
-	throw Other {};
+	throw Other();
 }
 
 fn main() returns Int {

@@ -316,12 +316,30 @@ class HExceptionInit(HExpr):
 	Structured exception/event constructor.
 
 	event_fqn: str  # canonical fully-qualified name (<module>.<submodules>:<event>)
-	field_names/field_values: ordered lists of declared field names and
-	  their expressions (already desugared to HIR)
+	pos_args: positional arguments in source order (already lowered to HIR)
+	kw_args: keyword arguments in source order (already lowered to HIR)
+
+	Semantics note:
+	  The mapping of (positional + keyword) arguments to declared exception
+	  fields is validated once exception schemas are known (checker / lowering).
 	"""
 	event_fqn: str
-	field_names: List[str]
-	field_values: List[HExpr]
+	pos_args: List[HExpr]
+	kw_args: List["HKwArg"]
+	loc: Span = field(default_factory=Span)
+
+
+@dataclass
+class HKwArg:
+	"""
+	Keyword argument in HIR (used for exception constructors and call lowering).
+
+	We preserve a dedicated `loc` for the keyword name token so diagnostics can
+	highlight `name =` precisely instead of pointing at the value expression.
+	"""
+
+	name: str
+	value: HExpr
 	loc: Span = field(default_factory=Span)
 
 
@@ -411,7 +429,12 @@ __all__ = [
 	"HFString", "HFStringHole",
 	"HCall", "HMethodCall", "HTernary", "HTryResult", "HResultOk",
 	"HField", "HIndex", "HBorrow", "HDVInit",
+	"HKwArg",
+	"HExceptionInit",
 	"HUnary", "HBinary", "HArrayLiteral",
 	"HBlock", "HExprStmt", "HLet", "HAssign", "HIf", "HLoop",
-	"HBreak", "HContinue", "HReturn", "HThrow", "HTry", "HCatchArm", "HTryExpr", "HTryExprArm",
+	"HBreak", "HContinue", "HReturn",
+	"HThrow", "HRethrow",
+	"HTry", "HCatchArm",
+	"HTryExpr", "HTryExprArm",
 ]

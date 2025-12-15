@@ -284,20 +284,29 @@ class AstToHIR:
 		"""
 		Exception constructor → structured exception init node.
 
-		Fields are a mapping name -> expression; ordering follows parser arg_order
-		if present, otherwise the dict order.
+		Exception constructors support positional and keyword arguments.
+
+		Mapping arguments to declared exception field names happens later once
+		exception schemas are available (checker / MIR lowering).
 		"""
-		ordered_names = getattr(expr, "arg_order", None) or list(expr.fields.keys())
-		field_exprs = [self.lower_expr(expr.fields[name]) for name in ordered_names]
 		if not self._module_name:
 			raise NotImplementedError(
 				"Exception constructor lowering requires a module name to build an event FQN"
 			)
 		fqn = f"{self._module_name}:{expr.name}"
+		pos_args = [self.lower_expr(a) for a in getattr(expr, "args", [])]
+		kw_pairs = getattr(expr, "kwargs", []) or []
 		return H.HExceptionInit(
 			event_fqn=fqn,
-			field_names=ordered_names,
-			field_values=field_exprs,
+			pos_args=pos_args,
+			kw_args=[
+				H.HKwArg(
+					name=kw.name,
+					value=self.lower_expr(kw.value),
+					loc=Span.from_loc(getattr(kw, "loc", None)),
+				)
+				for kw in kw_pairs
+			],
 			loc=Span.from_loc(getattr(expr, "loc", None)),
 		)
 

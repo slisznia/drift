@@ -27,12 +27,16 @@ def test_throw_lowers_to_error_and_result_err_return():
 	  - Return that result.
 	"""
 	builder = MirBuilder(name="throw_fn")
-	lower = HIRToMIR(builder, can_throw_by_name={"throw_fn": True})
+	from lang2.driftc.core.types_core import TypeTable
+
+	type_table = TypeTable()
+	type_table.exception_schemas = {"m:Boom": ("m:Boom", ["msg"])}
+	lower = HIRToMIR(builder, type_table=type_table, can_throw_by_name={"throw_fn": True})
 
 	exc = H.HExceptionInit(
 		event_fqn="m:Boom",
-		field_names=["msg"],
-		field_values=[H.HDVInit(dv_type_name="Boom", args=[H.HLiteralString("boom")])],
+		pos_args=[],
+		kw_args=[H.HKwArg(name="msg", value=H.HDVInit(dv_type_name="Boom", args=[H.HLiteralString("boom")]))],
 	)
 	hir_block = H.HBlock(statements=[H.HThrow(value=exc)])
 	lower.lower_block(hir_block)
@@ -61,20 +65,24 @@ def test_throw_lowers_to_error_and_result_err_return():
 
 def test_exception_init_throw_attaches_all_fields():
 	"""
-	throw ExceptionInit{a, b} should store:
+	throw ExceptionInit(a = ..., b = ...) should store:
 	  - first field under its declared name via ConstructError
 	  - field 'a' under its declared name
 	  - field 'b' under its declared name
 	"""
 	builder = MirBuilder(name="throw_exc")
-	lower = HIRToMIR(builder, can_throw_by_name={"throw_exc": True})
+	from lang2.driftc.core.types_core import TypeTable
+
+	type_table = TypeTable()
+	type_table.exception_schemas = {"m:Evt": ("m:Evt", ["a", "b"])}
+	lower = HIRToMIR(builder, type_table=type_table, can_throw_by_name={"throw_exc": True})
 
 	exc = H.HExceptionInit(
 		event_fqn="m:Evt",
-		field_names=["a", "b"],
-		field_values=[
-			H.HDVInit(dv_type_name="Evt", args=[H.HLiteralInt(1)]),
-			H.HDVInit(dv_type_name="Evt", args=[H.HLiteralInt(2)]),
+		pos_args=[],
+		kw_args=[
+			H.HKwArg(name="a", value=H.HDVInit(dv_type_name="Evt", args=[H.HLiteralInt(1)])),
+			H.HKwArg(name="b", value=H.HDVInit(dv_type_name="Evt", args=[H.HLiteralInt(2)])),
 		],
 	)
 	hir_block = H.HBlock(statements=[H.HThrow(value=exc)])

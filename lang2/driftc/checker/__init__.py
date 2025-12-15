@@ -1517,11 +1517,22 @@ class Checker:
 
 	def _exception_init_rules_on_stmt(self, stmt: "H.HStmt", ctx: "_TypingContext") -> None:
 		"""
-		Enforce exception field/braces rules:
-		- Zero-field exceptions: allow `throw E` and `throw E {}` but reject provided fields.
-		- Non-empty exceptions: require braces and exact field set.
+		Enforce exception constructor argument rules for `throw`.
+
+		Surface syntax uses constructor-call form only:
+		  throw E(...)
+
+		Argument mapping rules:
+		- positional arguments map to declared exception fields in declaration order
+		- keyword arguments fill remaining fields
+		- exact coverage required (no missing/unknown/duplicates)
+
+		Attribute payload rule (Phase 2, MVP):
+		- exception field values must be DiagnosticValue or primitive literals
+		  (Int/Bool/String) that the compiler can auto-wrap into DiagnosticValue.
 		"""
 		from lang2.driftc import stage1 as H
+		from lang2.driftc.core.exception_ctor_args import KwArg as _KwArg, resolve_exception_ctor_args
 
 		schemas: dict[str, tuple[str, list[str]]] = getattr(self._type_table, "exception_schemas", {})
 
@@ -1531,63 +1542,34 @@ class Checker:
 		if not isinstance(stmt, H.HThrow):
 			return
 
-		# Exception init with braces present.
 		if isinstance(stmt.value, H.HExceptionInit):
 			schema = _schema(stmt.value.event_fqn)
+			schema_fields: list[str] | None
 			if schema is None:
-				# Still validate field value shapes (DV/primitive-only) even when
+				# Still validate argument value shapes (DV/primitive-only) even when
 				# we don't have a schema entry (e.g., undeclared exception).
-				schema_fields: list[str] | None = None
+				schema_fields = None
 			else:
 				_decl_fqn, schema_fields = schema
-			provided = list(stmt.value.field_names)
-			decl_fields = list(schema_fields) if schema_fields is not None else None
-			if decl_fields is not None and not decl_fields:
-				if provided:
-					ctx._append_diag(
-						Diagnostic(
-							message=f"exception '{stmt.value.event_fqn}' declares no fields; cannot provide initializer fields",
-							severity="error",
-							span=getattr(stmt.value, "loc", Span()),
-						)
-					)
-				# No fields are allowed; nothing more to validate.
-				return
-			if decl_fields is not None:
-				decl_set = set(decl_fields)
-				provided_set = set(provided)
-				unknown = provided_set - decl_set
-				missing = decl_set - provided_set
-				if unknown:
-					ctx._append_diag(
-						Diagnostic(
-							message=f"unknown exception field(s): {', '.join(sorted(unknown))}",
-							severity="error",
-							span=getattr(stmt.value, "loc", Span()),
-						)
-					)
-				if missing:
-					ctx._append_diag(
-						Diagnostic(
-							message=f"missing exception field(s): {', '.join(sorted(missing))}",
-							severity="error",
-							span=getattr(stmt.value, "loc", Span()),
-						)
-					)
 
-			# Field payload rule (Phase 2): each declared exception field must be
-			# either a DiagnosticValue (HDVInit) or a primitive literal that the
-			# compiler can auto-wrap into a DiagnosticValue (Int/Bool/String).
-			if len(stmt.value.field_names) != len(stmt.value.field_values):
-				ctx._append_diag(
-					Diagnostic(
-						message="internal error: exception initializer field name/value arity mismatch",
-						severity="error",
-						span=getattr(stmt.value, "loc", Span()),
-					)
-				)
-				return
-			for fname, fexpr in zip(stmt.value.field_names, stmt.value.field_values):
+			resolved, diags = resolve_exception_ctor_args(
+				event_fqn=stmt.value.event_fqn,
+				declared_fields=schema_fields,
+				pos_args=[(a, getattr(a, "loc", Span())) for a in stmt.value.pos_args],
+				kw_args=[
+					_KwArg(name=kw.name, value=kw.value, name_span=getattr(kw, "loc", Span()))
+					for kw in stmt.value.kw_args
+				],
+				span=getattr(stmt.value, "loc", Span()),
+			)
+			for d in diags:
+				ctx._append_diag(d)
+
+			values_to_validate = [v for _name, v in resolved]
+			if schema_fields is None:
+				values_to_validate = list(stmt.value.pos_args) + [kw.value for kw in stmt.value.kw_args]
+
+			for fexpr in values_to_validate:
 				if isinstance(fexpr, H.HDVInit):
 					continue
 				if isinstance(fexpr, (H.HLiteralInt, H.HLiteralBool)):
@@ -1596,25 +1578,9 @@ class Checker:
 					continue
 				ctx._append_diag(
 					Diagnostic(
-						message=f"exception field '{fname}' must be a DiagnosticValue or primitive literal",
+						message="exception field value must be a DiagnosticValue or primitive literal",
 						severity="error",
 						span=getattr(fexpr, "loc", getattr(stmt.value, "loc", Span())),
-					)
-				)
-			return
-
-		# Bare throw of an exception name without braces.
-		if isinstance(stmt.value, H.HVar):
-			schema = _schema(stmt.value.name)
-			if schema is None:
-				return
-			_decl_fqn, decl_fields = schema
-			if decl_fields:
-				ctx._append_diag(
-					Diagnostic(
-						message=f"exception '{stmt.value.name}' requires fields; use `throw {stmt.value.name} {{ ... }}`",
-						severity="error",
-						span=getattr(stmt.value, "loc", Span()),
 					)
 				)
 			return

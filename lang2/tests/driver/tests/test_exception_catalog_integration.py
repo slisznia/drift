@@ -30,7 +30,7 @@ exception Boom()
 
 fn main() returns Int {
     try {
-        throw Boom {};
+        throw Boom();
     } catch m:Unknown(e) {
     }
     return 1;
@@ -51,7 +51,7 @@ exception Boom(msg: String)
 
 fn main() returns Int {
     try {
-        throw Boom { msg = "boom" };
+        throw Boom(msg = "boom");
     } catch m:Boom(e) {
         return 0;
     }

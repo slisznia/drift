@@ -31,6 +31,7 @@ from typing import List, Set, Mapping, Optional
 
 from lang2.driftc import stage1 as H
 from lang2.driftc.checker import FnSignature
+from lang2.driftc.core.span import Span
 from lang2.driftc.core.types_core import TypeKind, TypeTable, TypeId
 from . import mir_nodes as M
 
@@ -892,87 +893,84 @@ class HIRToMIR:
 			return
 		can_throw = self._fn_can_throw()
 
-		# Zero-field shorthand: throw E (no braces) when E declares no fields.
-		if isinstance(stmt.value, H.HVar):
-			schema = self._exception_schemas.get(stmt.value.name)
-			if schema and not schema[1]:
-				event_fqn = schema[0]
-				code_const = self._lookup_error_code(event_fqn=event_fqn)
-				code_val = self.b.new_temp()
-				self.b.emit(M.ConstInt(dest=code_val, value=code_const))
-				event_name_val = self.b.new_temp()
-				self.b.emit(M.ConstString(dest=event_name_val, value=event_fqn))
-				err_val = self.b.new_temp()
+		err_val = self.b.new_temp()
+		if isinstance(stmt.value, H.HExceptionInit):
+			from lang2.driftc.core.exception_ctor_args import KwArg as _KwArg, resolve_exception_ctor_args
+
+			code_const = self._lookup_error_code(event_fqn=stmt.value.event_fqn)
+			code_val = self.b.new_temp()
+			self.b.emit(M.ConstInt(dest=code_val, value=code_const))
+
+			event_fqn_val = self.b.new_temp()
+			self.b.emit(M.ConstString(dest=event_fqn_val, value=stmt.value.event_fqn))
+
+			schema = self._exception_schemas.get(stmt.value.event_fqn)
+			if schema is None:
+				raise AssertionError(f"missing exception schema for {stmt.value.event_fqn!r} (checker bug)")
+			_decl_fqn, schema_fields = schema
+
+			resolved, diags = resolve_exception_ctor_args(
+				event_fqn=stmt.value.event_fqn,
+				declared_fields=schema_fields,
+				pos_args=[(a, getattr(a, "loc", Span())) for a in stmt.value.pos_args],
+				kw_args=[
+					_KwArg(name=kw.name, value=kw.value, name_span=getattr(kw, "loc", Span()))
+					for kw in stmt.value.kw_args
+				],
+				span=getattr(stmt.value, "loc", Span()),
+			)
+			if diags:
+				# The checker is responsible for reporting these to the user.
+				raise AssertionError("exception ctor args reached MIR lowering with diagnostics (checker bug)")
+
+			if not resolved:
+				# No declared fields: build error with no attrs.
 				self.b.emit(
 					M.ConstructError(
 						dest=err_val,
 						code=code_val,
-						event_fqn=event_name_val,
+						event_fqn=event_fqn_val,
 						payload=None,
 						attr_key=None,
 					)
 				)
-				if self._try_stack and self.b.block.terminator is None:
-					ctx = self._try_stack[-1]
-					self.b.ensure_local(ctx.error_local)
-					self.b.emit(M.StoreLocal(local=ctx.error_local, value=err_val))
-					self.b.set_terminator(M.Goto(target=ctx.dispatch_block_name))
-					return
-				self._propagate_error(err_val)
-				return
+			else:
+				field_dvs: list[tuple[str, M.ValueId]] = []
+				for name, field_expr in resolved:
+					if isinstance(field_expr, H.HDVInit):
+						dv_val = self.lower_expr(field_expr)
+					elif isinstance(field_expr, (H.HLiteralInt, H.HLiteralBool, H.HLiteralString)):
+						inner_val = self.lower_expr(field_expr)
+						dv_val = self.b.new_temp()
+						# Only primitive literals are auto-wrapped into DiagnosticValue. This
+						# keeps exception field attrs aligned with the DV ABI and avoids
+						# silently accepting unsupported payload shapes.
+						kind_name = "Int" if isinstance(field_expr, H.HLiteralInt) else "Bool"
+						if isinstance(field_expr, H.HLiteralString):
+							kind_name = "String"
+						self.b.emit(M.ConstructDV(dest=dv_val, dv_type_name=kind_name, args=[inner_val]))
+					else:
+						raise AssertionError(
+							f"exception field {name!r} must be a DiagnosticValue or primitive literal (checker bug)"
+						)
+					field_dvs.append((name, dv_val))
 
-		err_val = self.b.new_temp()
-		if isinstance(stmt.value, H.HExceptionInit):
-				code_const = self._lookup_error_code(event_fqn=getattr(stmt.value, "event_fqn", None))
-				code_val = self.b.new_temp()
-				self.b.emit(M.ConstInt(dest=code_val, value=code_const))
-				event_name_val = self.b.new_temp()
-				self.b.emit(M.ConstString(dest=event_name_val, value=stmt.value.event_fqn))
-				field_count = len(stmt.value.field_values)
-				if field_count == 0:
-					# No declared fields: build error with no attrs.
-					self.b.emit(
-						M.ConstructError(
-							dest=err_val,
-							code=code_val,
-							event_fqn=event_name_val,
-							payload=None,
-							attr_key=None,
-						)
+				first_name, first_dv = field_dvs[0]
+				first_key = self.b.new_temp()
+				self.b.emit(M.ConstString(dest=first_key, value=first_name))
+				self.b.emit(
+					M.ConstructError(
+						dest=err_val,
+						code=code_val,
+						event_fqn=event_fqn_val,
+						payload=first_dv,
+						attr_key=first_key,
 					)
-				else:
-					field_dvs: list[tuple[str, M.ValueId]] = []
-					for name, field_expr in zip(stmt.value.field_names, stmt.value.field_values):
-						if isinstance(field_expr, H.HDVInit):
-							dv_val = self.lower_expr(field_expr)
-						elif isinstance(field_expr, (H.HLiteralInt, H.HLiteralBool, H.HLiteralString)):
-							inner_val = self.lower_expr(field_expr)
-							dv_val = self.b.new_temp()
-							# Only primitive literals are auto-wrapped into DiagnosticValue. This
-							# keeps exception field attrs aligned with the DV ABI and avoids
-							# silently accepting unsupported payload shapes.
-							self.b.emit(M.ConstructDV(dest=dv_val, dv_type_name=name, args=[inner_val]))
-						else:
-							raise NotImplementedError(
-								f"exception field {name!r} must be a DiagnosticValue or primitive literal"
-							)
-						field_dvs.append((name, dv_val))
-					first_name, first_dv = field_dvs[0]
-					first_key = self.b.new_temp()
-					self.b.emit(M.ConstString(dest=first_key, value=first_name))
-					self.b.emit(
-						M.ConstructError(
-							dest=err_val,
-							code=code_val,
-							event_fqn=event_name_val,
-							payload=first_dv,
-							attr_key=first_key,
-						)
-					)
-					for name, dv in field_dvs[1:]:
-						key = self.b.new_temp()
-						self.b.emit(M.ConstString(dest=key, value=name))
-						self.b.emit(M.ErrorAddAttrDV(error=err_val, key=key, value=dv))
+				)
+				for name, dv in field_dvs[1:]:
+					key = self.b.new_temp()
+					self.b.emit(M.ConstString(dest=key, value=name))
+					self.b.emit(M.ErrorAddAttrDV(error=err_val, key=key, value=dv))
 		else:
 			# Throwing an existing Error value (e.g., from try-result sugar unwrap_err).
 			err_val = self.lower_expr(stmt.value)

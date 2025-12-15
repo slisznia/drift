@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from lang2.driftc.stage2 import HIRToMIR, MirBuilder, mir_nodes as M
 from lang2.driftc import stage1 as H
+from lang2.driftc.core.types_core import TypeTable
 
 
 def _walk_dispatch_else(func: M.MirFunc, start: M.BasicBlock) -> M.BasicBlock:
@@ -26,14 +27,23 @@ def test_inner_unmatched_unwinds_to_outer_try():
 	"""
 	builder = MirBuilder(name="try_nested_unwind")
 	exc_env = {"m:Inner": 10, "m:Outer": 20}
-	lower = HIRToMIR(builder, exc_env=exc_env, can_throw_by_name={"try_nested_unwind": True})
+	type_table = TypeTable()
+	type_table.exception_schemas = {
+		"m:Inner": ("m:Inner", []),
+	}
+	lower = HIRToMIR(
+		builder,
+		type_table=type_table,
+		exc_env=exc_env,
+		can_throw_by_name={"try_nested_unwind": True},
+	)
 
 	# Structure:
 	# outer try {
 	#   inner try { throw Inner } catch Other { }
 	# } catch Outer { }
 	inner_try = H.HTry(
-		body=H.HBlock(statements=[H.HThrow(value=H.HExceptionInit(event_fqn="m:Inner", field_names=[], field_values=[]))]),
+		body=H.HBlock(statements=[H.HThrow(value=H.HExceptionInit(event_fqn="m:Inner", pos_args=[], kw_args=[]))]),
 		catches=[H.HCatchArm(event_fqn="m:Other", binder=None, block=H.HBlock(statements=[]))],
 	)
 	outer_try = H.HTry(
@@ -70,10 +80,14 @@ def test_inner_and_outer_unmatched_rethrow_err():
 	Inner try unmatched, outer also unmatched: rethrow should ultimately return Err.
 	"""
 	builder = MirBuilder(name="try_nested_rethrow")
-	lower = HIRToMIR(builder, exc_env={}, can_throw_by_name={"try_nested_rethrow": True})
+	type_table = TypeTable()
+	type_table.exception_schemas = {
+		"m:X": ("m:X", []),
+	}
+	lower = HIRToMIR(builder, type_table=type_table, exc_env={}, can_throw_by_name={"try_nested_rethrow": True})
 
 	inner_try = H.HTry(
-		body=H.HBlock(statements=[H.HThrow(value=H.HExceptionInit(event_fqn="m:X", field_names=[], field_values=[]))]),
+		body=H.HBlock(statements=[H.HThrow(value=H.HExceptionInit(event_fqn="m:X", pos_args=[], kw_args=[]))]),
 		catches=[H.HCatchArm(event_fqn="m:EvtA", binder=None, block=H.HBlock(statements=[]))],
 	)
 	outer_try = H.HTry(

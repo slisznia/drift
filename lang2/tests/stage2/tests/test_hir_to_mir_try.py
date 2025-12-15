@@ -20,7 +20,7 @@ from lang2.driftc.stage2 import (
 def test_try_routes_throw_to_catch_block():
 	"""
 	Lower:
-	  try { throw Evt{msg="x"} } catch e { }
+	  try { throw Evt(msg = "x") } catch e { }
 
 	Shape expectations:
 	  - entry branches to try_body
@@ -29,7 +29,11 @@ def test_try_routes_throw_to_catch_block():
 	  - catch arm projects ErrorEvent and falls through to cont
 	"""
 	builder = MirBuilder(name="try_fn")
-	lower = HIRToMIR(builder)
+	from lang2.driftc.core.types_core import TypeTable
+
+	type_table = TypeTable()
+	type_table.exception_schemas = {"m:Evt": ("m:Evt", ["msg"])}
+	lower = HIRToMIR(builder, type_table=type_table)
 
 	hir = H.HBlock(
 		statements=[
@@ -39,8 +43,13 @@ def test_try_routes_throw_to_catch_block():
 						H.HThrow(
 							value=H.HExceptionInit(
 								event_fqn="m:Evt",
-								field_names=["msg"],
-								field_values=[H.HDVInit(dv_type_name="Evt", args=[H.HLiteralString("boom")])],
+								pos_args=[],
+								kw_args=[
+									H.HKwArg(
+										name="msg",
+										value=H.HDVInit(dv_type_name="Evt", args=[H.HLiteralString("boom")]),
+									)
+								],
 							)
 						)
 					]
@@ -89,7 +98,11 @@ def test_try_dispatches_on_event_codes():
 	Multi-arm try/catch should dispatch on ErrorEvent codes.
 	"""
 	builder = MirBuilder(name="try_evt")
-	lower = HIRToMIR(builder, exc_env={"m:EvtA": 123})
+	from lang2.driftc.core.types_core import TypeTable
+
+	type_table = TypeTable()
+	type_table.exception_schemas = {"m:EvtA": ("m:EvtA", ["msg"])}
+	lower = HIRToMIR(builder, type_table=type_table, exc_env={"m:EvtA": 123})
 
 	hir = H.HBlock(
 		statements=[
@@ -99,8 +112,13 @@ def test_try_dispatches_on_event_codes():
 						H.HThrow(
 							value=H.HExceptionInit(
 								event_fqn="m:EvtA",
-								field_names=["msg"],
-								field_values=[H.HDVInit(dv_type_name="EvtA", args=[H.HLiteralString("boom")])],
+								pos_args=[],
+								kw_args=[
+									H.HKwArg(
+										name="msg",
+										value=H.HDVInit(dv_type_name="EvtA", args=[H.HLiteralString("boom")]),
+									)
+								],
 							)
 						)
 					]

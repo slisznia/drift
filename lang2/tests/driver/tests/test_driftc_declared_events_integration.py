@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from lang2.driftc import stage1 as H
 from lang2.driftc.driftc import compile_stubbed_funcs
+from lang2.driftc.core.types_core import TypeTable
 from lang2.test_support import make_signatures, build_exception_catalog
 
 
@@ -17,7 +18,7 @@ def test_declared_events_subset_enforced_by_driver():
 	hir = H.HBlock(
 		statements=[
 			H.HThrow(
-				value=H.HExceptionInit(event_fqn="m:EvtB", field_names=[], field_values=[]),
+				value=H.HExceptionInit(event_fqn="m:EvtB", pos_args=[], kw_args=[]),
 			),
 		]
 	)
@@ -28,11 +29,17 @@ def test_declared_events_subset_enforced_by_driver():
 		declared_can_throw={"f_decl": True},
 	)
 	exc_env = build_exception_catalog({"m:EvtA": 1, "m:EvtB": 2})
+	type_table = TypeTable()
+	type_table.exception_schemas = {
+		"m:EvtA": ("m:EvtA", []),
+		"m:EvtB": ("m:EvtB", []),
+	}
 
 	_, checked = compile_stubbed_funcs(
 		func_hirs={fn_name: hir},
 		signatures=signatures,
 		exc_env=exc_env,
+		type_table=type_table,
 		build_ssa=True,
 		return_checked=True,
 	)

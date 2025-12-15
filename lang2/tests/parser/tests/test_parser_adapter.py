@@ -117,7 +117,7 @@ module m
 exception Boom()
 
 fn main() returns Int {
-    throw Boom {};
+    throw Boom();
 }
 """
 	)

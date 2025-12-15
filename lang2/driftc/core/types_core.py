@@ -62,9 +62,11 @@ class TypeTable:
 		self._void_type: TypeId | None = None  # type: ignore[var-annotated]
 		self._error_type: TypeId | None = None  # type: ignore[var-annotated]
 		self._dv_type: TypeId | None = None  # type: ignore[var-annotated]
-		# Exception schemas keyed by FQN (and optionally short names). Values are
-		# (canonical_fqn, [declared_field_names]) so later stages can enforce field
-		# rules and shorthand throws.
+		# Exception schemas keyed by canonical event FQN strings. Values are
+		# (canonical_fqn, [declared_field_names]) so later stages can:
+		# - resolve constructor-call args (positional/keyword) to declared fields
+		# - enforce exact coverage (no missing/unknown/duplicates)
+		# - attach attrs deterministically in lowering.
 		self.exception_schemas: dict[str, tuple[str, list[str]]] = {}
 
 	def new_scalar(self, name: str) -> TypeId:

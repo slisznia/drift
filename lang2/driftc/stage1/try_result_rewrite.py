@@ -32,6 +32,7 @@ from dataclasses import dataclass
 from typing import List, Tuple
 
 from . import hir_nodes as H
+from lang2.driftc.core.span import Span
 
 
 @dataclass
@@ -174,16 +175,21 @@ class TryResultRewriter:
 			pfx, inner = self._rewrite_expr(expr.value)
 			return pfx, H.HResultOk(value=inner)
 		if isinstance(expr, H.HExceptionInit):
-			field_pfx: List[H.HStmt] = []
-			new_fields: List[H.HExpr] = []
-			for fv in expr.field_values:
-				pfx, new_fv = self._rewrite_expr(fv)
-				field_pfx.extend(pfx)
-				new_fields.append(new_fv)
-			return field_pfx, H.HExceptionInit(
+			pfx: List[H.HStmt] = []
+			new_pos: List[H.HExpr] = []
+			for a in expr.pos_args:
+				apfx, av = self._rewrite_expr(a)
+				pfx.extend(apfx)
+				new_pos.append(av)
+			new_kw_args: List[H.HKwArg] = []
+			for kw in expr.kw_args:
+				vpfx, vv = self._rewrite_expr(kw.value)
+				pfx.extend(vpfx)
+				new_kw_args.append(H.HKwArg(name=kw.name, value=vv, loc=getattr(kw, "loc", Span())))
+			return pfx, H.HExceptionInit(
 				event_fqn=expr.event_fqn,
-				field_names=list(expr.field_names),
-				field_values=new_fields,
+				pos_args=new_pos,
+				kw_args=new_kw_args,
 				loc=expr.loc,
 			)
 		if isinstance(expr, H.HDVInit):

@@ -4,7 +4,7 @@ exception Timeout()
 
 fn main() returns Int {
     try {
-        throw Timeout;
+        throw Timeout();
     } catch err {
         // handled
     }

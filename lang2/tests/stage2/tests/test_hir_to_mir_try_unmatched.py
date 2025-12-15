@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from lang2.driftc.stage2 import HIRToMIR, MirBuilder, mir_nodes as M
 from lang2.driftc import stage1 as H
+from lang2.driftc.core.types_core import TypeTable
 
 
 def test_try_unmatched_event_rethrows_as_err():
@@ -17,14 +18,27 @@ def test_try_unmatched_event_rethrows_as_err():
 	FnResult.Err when no arm matches the thrown event code.
 	"""
 	builder = MirBuilder(name="try_unmatched")
+	type_table = TypeTable()
+	type_table.exception_schemas = {
+		"m:Other": ("m:Other", []),
+	}
 	# Only catch EvtA; exc_env maps it to 123.
-	lower = HIRToMIR(builder, exc_env={"m:EvtA": 123}, can_throw_by_name={"try_unmatched": True})
+	lower = HIRToMIR(
+		builder,
+		type_table=type_table,
+		exc_env={"m:EvtA": 123},
+		can_throw_by_name={"try_unmatched": True},
+	)
 
 	# Throw a DV with a different event name (no code mapping => 0), so it won't match.
 	hir = H.HBlock(
 		statements=[
 			H.HTry(
-				body=H.HBlock(statements=[H.HThrow(value=H.HExceptionInit(event_fqn="m:Other", field_names=[], field_values=[]))]),
+				body=H.HBlock(
+					statements=[
+						H.HThrow(value=H.HExceptionInit(event_fqn="m:Other", pos_args=[], kw_args=[]))
+					]
+				),
 				catches=[
 					H.HCatchArm(event_fqn="m:EvtA", binder="a", block=H.HBlock(statements=[])),
 				],
