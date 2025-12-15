@@ -74,6 +74,7 @@ from lang2.driftc.stage2 import (
 	Unreachable,
 	StringConcat,
 	StringEq,
+	StringCmp,
 	StringLen,
 	StringFromBool,
 	StringFromInt,
@@ -195,6 +196,7 @@ class LlvmModuleBuilder:
 	funcs: List[str] = field(default_factory=list)
 	needs_array_helpers: bool = False
 	needs_string_eq: bool = False
+	needs_string_cmp: bool = False
 	needs_string_concat: bool = False
 	needs_string_from_int64: bool = False
 	needs_string_from_uint64: bool = False
@@ -335,6 +337,8 @@ class LlvmModuleBuilder:
 			)
 		if self.needs_string_eq:
 			lines.append(f"declare i1 @drift_string_eq({DRIFT_STRING_TYPE}, {DRIFT_STRING_TYPE})")
+		if self.needs_string_cmp:
+			lines.append(f"declare i32 @drift_string_cmp({DRIFT_STRING_TYPE}, {DRIFT_STRING_TYPE})")
 		if self.needs_string_concat:
 			lines.append(f"declare {DRIFT_STRING_TYPE} @drift_string_concat({DRIFT_STRING_TYPE}, {DRIFT_STRING_TYPE})")
 		if self.needs_string_from_int64:
@@ -348,6 +352,7 @@ class LlvmModuleBuilder:
 			lines.append(f"declare {DRIFT_STRING_TYPE} @drift_string_from_f64(double)")
 		if (
 			self.needs_string_eq
+			or self.needs_string_cmp
 			or self.needs_string_concat
 			or self.needs_string_from_int64
 			or self.needs_string_from_uint64
@@ -633,6 +638,23 @@ class _FuncBuilder:
 				f"  {dest} = call i1 @drift_string_eq({DRIFT_STRING_TYPE} {left}, {DRIFT_STRING_TYPE} {right})"
 			)
 			self.value_types[dest] = "i1"
+		elif isinstance(instr, StringCmp):
+			dest = self._map_value(instr.dest)
+			left = self._map_value(instr.left)
+			right = self._map_value(instr.right)
+			left_ty = self.value_types.get(left)
+			right_ty = self.value_types.get(right)
+			if left_ty != DRIFT_STRING_TYPE or right_ty != DRIFT_STRING_TYPE:
+				raise NotImplementedError("LLVM codegen v1: StringCmp requires String operands")
+			self.module.needs_string_cmp = True
+			tmp = self._fresh("strcmp")
+			self.lines.append(
+				f"  {tmp} = call i32 @drift_string_cmp({DRIFT_STRING_TYPE} {left}, {DRIFT_STRING_TYPE} {right})"
+			)
+			# Normalize to the compiler's Int carrier (i64) so downstream comparisons
+			# use the same integer pipeline as other BinaryOpInstr nodes.
+			self.lines.append(f"  {dest} = sext i32 {tmp} to i64")
+			self.value_types[dest] = "i64"
 		elif isinstance(instr, AssignSSA):
 			# Alias dest to src; no IR emission needed beyond name/type propagation.
 			src = self._map_value(instr.src)

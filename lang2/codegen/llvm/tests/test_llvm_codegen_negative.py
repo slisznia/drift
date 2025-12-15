@@ -107,7 +107,7 @@ def test_string_binaryop_unsupported():
 		instructions=[
 			ConstString(dest="t0", value="a"),
 			ConstString(dest="t1", value="b"),
-			BinaryOpInstr(dest="t2", op=BinaryOp.NE, left="t0", right="t1"),
+			BinaryOpInstr(dest="t2", op=BinaryOp.SUB, left="t0", right="t1"),
 		],
 		terminator=Return(value="t2"),
 	)

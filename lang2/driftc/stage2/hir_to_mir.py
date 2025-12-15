@@ -333,12 +333,21 @@ class HIRToMIR:
 		# String-aware lowering: redirect +/== on strings to dedicated MIR ops.
 		left_ty = self._infer_expr_type(expr.left)
 		right_ty = self._infer_expr_type(expr.right)
-		if expr.op in (H.BinaryOp.ADD, H.BinaryOp.EQ) and left_ty == self._string_type and right_ty == self._string_type:
+		if left_ty == self._string_type and right_ty == self._string_type:
 			if expr.op is H.BinaryOp.ADD:
 				self.b.emit(M.StringConcat(dest=dest, left=left, right=right))
 				return dest
 			if expr.op is H.BinaryOp.EQ:
 				self.b.emit(M.StringEq(dest=dest, left=left, right=right))
+				return dest
+			# Ordering comparisons are defined as a deterministic, locale-independent
+			# lexicographic comparison on the underlying UTF-8 byte sequences.
+			if expr.op in (H.BinaryOp.NE, H.BinaryOp.LT, H.BinaryOp.LE, H.BinaryOp.GT, H.BinaryOp.GE):
+				cmp_tmp = self.b.new_temp()
+				self.b.emit(M.StringCmp(dest=cmp_tmp, left=left, right=right))
+				zero = self.b.new_temp()
+				self.b.emit(M.ConstInt(dest=zero, value=0))
+				self.b.emit(M.BinaryOpInstr(dest=dest, op=expr.op, left=cmp_tmp, right=zero))
 				return dest
 		self.b.emit(M.BinaryOpInstr(dest=dest, op=expr.op, left=left, right=right))
 		return dest

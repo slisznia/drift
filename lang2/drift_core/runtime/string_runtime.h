@@ -22,6 +22,16 @@ DriftString drift_string_from_f64(double v);
 DriftString drift_string_from_bool(int v);
 DriftString drift_string_concat(DriftString a, DriftString b);
 int drift_string_eq(DriftString a, DriftString b);
+// DriftString lexicographic comparison by unsigned bytes.
+//
+// This is a deterministic, locale-independent ordering suitable for the
+// language-level `String` comparison operators (`<`, `<=`, `>`, `>=`).
+//
+// Contract:
+//   - Returns <0 if a < b, 0 if a == b, >0 if a > b.
+//   - Comparison is lexicographic on the underlying UTF-8 byte sequences
+//     (i.e., unsigned byte comparison), with shorter prefix ordering first.
+int drift_string_cmp(DriftString a, DriftString b);
 void drift_string_free(DriftString s);
 char *drift_string_to_cstr(DriftString s);
 

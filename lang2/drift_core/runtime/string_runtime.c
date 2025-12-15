@@ -144,3 +144,27 @@ int drift_string_eq(DriftString a, DriftString b) {
 	}
 	return memcmp(a.data, b.data, (size_t)a.len) == 0;
 }
+
+int drift_string_cmp(DriftString a, DriftString b) {
+	const size_t a_len = (size_t)a.len;
+	const size_t b_len = (size_t)b.len;
+	const size_t min_len = a_len < b_len ? a_len : b_len;
+
+	if (min_len > 0) {
+		// memcmp uses unsigned byte ordering; this matches our spec for
+		// `String` comparison operators.
+		const int cmp = memcmp(a.data, b.data, min_len);
+		if (cmp != 0) {
+			return cmp;
+		}
+	}
+
+	// Shared prefix is equal; shorter string sorts first.
+	if (a_len < b_len) {
+		return -1;
+	}
+	if (a_len > b_len) {
+		return 1;
+	}
+	return 0;
+}

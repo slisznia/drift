@@ -623,7 +623,15 @@ class Checker:
 				H.BinaryOp.GE,
 			}
 			bool_ops = {H.BinaryOp.AND, H.BinaryOp.OR}
-			string_binops = {H.BinaryOp.ADD, H.BinaryOp.EQ}
+			string_binops = {
+				H.BinaryOp.ADD,
+				H.BinaryOp.EQ,
+				H.BinaryOp.NE,
+				H.BinaryOp.LT,
+				H.BinaryOp.LE,
+				H.BinaryOp.GT,
+				H.BinaryOp.GE,
+			}
 
 			if isinstance(expr, H.HLiteralInt):
 				return checker._int_type
@@ -693,15 +701,15 @@ class Checker:
 					if string_left and string_right and expr.op in string_binops:
 						if expr.op is H.BinaryOp.ADD:
 							return checker._string_type
-						if expr.op is H.BinaryOp.EQ:
-							return checker._bool_type
+						# String comparisons are bytewise and yield Bool.
+						return checker._bool_type
 					non_string_known = (string_left and right_ty is not None and right_ty != checker._string_type) or (
 						string_right and left_ty is not None and left_ty != checker._string_type
 					)
 					if non_string_known:
 						self._append_diag(
 							Diagnostic(
-								message="string binary ops require String operands and support only + or ==",
+								message="string binary ops require String operands and support only +, ==, !=, <, <=, >, >=",
 								severity="error",
 								span=getattr(expr, "loc", Span()),
 							)

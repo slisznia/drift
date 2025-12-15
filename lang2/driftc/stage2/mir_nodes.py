@@ -240,6 +240,25 @@ class StringEq(MInstr):
 
 
 @dataclass
+class StringCmp(MInstr):
+	"""
+	dest = string_cmp(left, right) (Int).
+
+	This is a deterministic, locale-independent lexicographic comparison of the
+	underlying UTF-8 byte sequences (unsigned byte ordering).
+
+	Contract:
+	  - dest < 0 if left < right
+	  - dest == 0 if left == right
+	  - dest > 0 if left > right
+	"""
+
+	dest: ValueId
+	left: ValueId
+	right: ValueId
+
+
+@dataclass
 class StringConcat(MInstr):
 	"""dest = left + right for strings."""
 	dest: ValueId
@@ -526,6 +545,10 @@ __all__ = [
 	"StringFromBool",
 	"StringFromUint",
 	"StringFromFloat",
+	"StringLen",
+	"StringEq",
+	"StringCmp",
+	"StringConcat",
 	"LoadLocal",
 	"AddrOfLocal",
 	"StoreLocal",
