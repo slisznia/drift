@@ -97,15 +97,56 @@ def test_move_while_borrowed_reports_diagnostic():
 	assert any("while borrowed" in d.message for d in diags)
 
 
-def test_assignment_kills_overlapping_loans():
-	"""Assigning to a place should drop existing loans on that place."""
+def test_write_while_borrowed_is_rejected():
+	"""Writing to a place while it is borrowed should be rejected (MVP freeze rule)."""
 	block = H.HBlock(
 		statements=[
 			H.HLet(name="x", value=H.HLiteralInt(1), declared_type_expr=None),
-			H.HExprStmt(expr=H.HBorrow(subject=H.HVar("x"), is_mut=False)),  # shared
-			H.HAssign(target=H.HVar("x"), value=H.HLiteralInt(2)),  # overwrite -> invalidate loans
-			H.HExprStmt(expr=H.HBorrow(subject=H.HVar("x"), is_mut=True)),   # now allowed
+			H.HLet(name="r", value=H.HBorrow(subject=H.HVar("x"), is_mut=False), declared_type_expr=None),  # shared loan
+			H.HAssign(target=H.HVar("x"), value=H.HLiteralInt(2)),  # rejected: cannot write while borrowed
+			H.HExprStmt(expr=H.HBorrow(subject=H.HVar("x"), is_mut=True)),   # still conflicts (borrow still live)
 		]
 	)
 	diags = _checker_with_types({"x": "Unknown"}).check_block(block)
+	assert any("cannot write" in d.message for d in diags)
+
+
+def test_const_index_borrows_are_disjoint():
+	"""Constant indices are treated as disjoint places: &arr[0] does not freeze arr[1]."""
+	block = H.HBlock(
+		statements=[
+			H.HLet(name="arr", value=H.HArrayLiteral(elements=[]), declared_type_expr=None),
+			H.HLet(
+				name="r0",
+				value=H.HBorrow(subject=H.HIndex(subject=H.HVar("arr"), index=H.HLiteralInt(0)), is_mut=False),
+				declared_type_expr=None,
+			),
+			H.HAssign(
+				target=H.HIndex(subject=H.HVar("arr"), index=H.HLiteralInt(1)),
+				value=H.HLiteralInt(123),
+			),
+		]
+	)
+	diags = _checker_with_types({"arr": "Unknown"}).check_block(block)
 	assert diags == []
+
+
+def test_unknown_index_overlaps_all_indices():
+	"""Unknown indices conservatively overlap: &arr[i] freezes writes to arr[0]."""
+	block = H.HBlock(
+		statements=[
+			H.HLet(name="arr", value=H.HArrayLiteral(elements=[]), declared_type_expr=None),
+			H.HLet(name="i", value=H.HLiteralInt(0), declared_type_expr=None),
+			H.HLet(
+				name="ri",
+				value=H.HBorrow(subject=H.HIndex(subject=H.HVar("arr"), index=H.HVar("i")), is_mut=False),
+				declared_type_expr=None,
+			),
+			H.HAssign(
+				target=H.HIndex(subject=H.HVar("arr"), index=H.HLiteralInt(0)),
+				value=H.HLiteralInt(123),
+			),
+		]
+	)
+	diags = _checker_with_types({"arr": "Unknown", "i": "Int"}).check_block(block)
+	assert any("cannot write" in d.message for d in diags)

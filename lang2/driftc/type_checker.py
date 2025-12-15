@@ -77,8 +77,14 @@ class TypeChecker:
 		self._opt_bool = self.type_table.new_optional(self._bool)
 		self._opt_string = self.type_table.new_optional(self._string)
 		self._unknown = self.type_table.ensure_unknown()
-		self._next_param_id: ParamId = 1
-		self._next_local_id: LocalId = 1
+		# Binding ids (params and locals) share a single id-space.
+		#
+		# This is critical for correctness: many downstream passes (including the
+		# borrow checker) treat `binding_id` as a stable identity. If ParamId and
+		# LocalId were allocated from separate counters, their numeric ids could
+		# collide (e.g. param 1 and local 1), silently corrupting identity-based
+		# maps like `binding_types`.
+		self._next_binding_id: int = 1
 
 	def check_function(
 		self,
@@ -651,11 +657,11 @@ class TypeChecker:
 		return TypeCheckResult(typed_fn=typed, diagnostics=diagnostics)
 
 	def _alloc_param_id(self) -> ParamId:
-		pid = self._next_param_id
-		self._next_param_id += 1
+		pid = self._next_binding_id
+		self._next_binding_id += 1
 		return pid
 
 	def _alloc_local_id(self) -> LocalId:
-		lid = self._next_local_id
-		self._next_local_id += 1
+		lid = self._next_binding_id
+		self._next_binding_id += 1
 		return lid

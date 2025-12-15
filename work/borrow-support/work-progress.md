@@ -27,6 +27,33 @@ You can:
 - store refs in locals
 - dereference refs for reads/writes (`*p` and `*p = v`)
 
+### Lifetime + closures (Pinned policy; MVP-friendly, no new syntax)
+- Borrowed return support:
+  - `returns &U` / `returns &mut U` is allowed only when every returned reference is **derived from a reference parameter**
+    (same base parameter, plus projections like `.field`, `[i]`, `*p`).
+  - Returning borrows of locals/temporaries is rejected.
+  - If multiple reference parameters exist, all returns must derive from the **same** parameter (otherwise reject as ambiguous).
+- Ref storage:
+  - Refs may be stored in **local variables** (within a scope), but remain subject to freeze/escape rules.
+  - Refs stored into structs/globals/heap objects are rejected in MVP.
+- Freeze while borrowed:
+  - When a reference is taken to an element/place derived from a base owner (e.g. `items[i]`), the base owner is considered **frozen**
+    (operations that can invalidate element storage are rejected) for as long as the borrow is live.
+  - MVP liveness: lexical (“until end of scope”) for local ref variables.
+- Aliasing rule (per-place):
+  - While `&place` (shared borrow) is live, writes to `place` (or overlapping projections) are rejected.
+  - While `&mut place` (mutable borrow) is live, any other read/write borrow of `place` (or overlapping projections) is rejected.
+  - Intuition: many readers or one writer, never both.
+- Projection overlap (MVP precision):
+  - Constant indices are distinguished: `items[0]` and `items[1]` are treated as disjoint for conflict checks.
+  - Unknown/non-constant indices are treated as overlapping everything (`IndexProj.ANY` overlaps any index).
+- Closures:
+  - Two classes of closures:
+    - Borrowing closures (capture `&`/`&mut` or take `&` params): **non-escaping only**, allowed only in compiler-known non-escaping contexts.
+      During such a call, borrowed bases are frozen for the duration of the call.
+    - Escaping closures: **by-value only** (cannot capture or accept `&`/`&mut`, cannot return refs).
+  - Borrowing closures cannot be stored/returned/captured or passed to unknown functions in MVP.
+
 Restrictions we keep explicit (reject with diagnostics):
 - returning references to locals (until we have a lifetime model)
 - storing references into long-lived heap objects (future)
@@ -54,6 +81,13 @@ Restrictions we keep explicit (reject with diagnostics):
   - Type deref `*p` and enforce `*p = v` requires `&mut`.
 - Borrow checker (CFG/dataflow scaffold):
   - Treat `*p` as an lvalue place (deref projection) so `*p = v` is accepted.
+  - Projection-aware overlap:
+    - Fields with different names are disjoint (`x.a` vs `x.b`).
+    - Constant indices are disjoint (`arr[0]` vs `arr[1]`).
+    - Unknown indices overlap everything (`arr[i]` overlaps `arr[0]`).
+    - Prefix overlap counts (`x` overlaps `x.a` and `x[0]`).
+  - Freeze while borrowed:
+    - Reject writes to any place overlapping a live loan (no “dropping loans on assignment”).
 - MIR:
   - Lower `HBorrow(&local)` → `AddrOfLocal(local, is_mut=...)`.
   - Lower `*p` → `LoadRef(inner_ty=...)`.
@@ -71,6 +105,10 @@ Restrictions we keep explicit (reject with diagnostics):
     - `lang2/codegen/tests/e2e/borrow_string_param` (`&String` passed into a function).
     - `lang2/codegen/tests/e2e/borrow_mut_int` (`&mut Int` + `*p = *p + 1`).
     - negative cases: `&mut` of `val`, borrow of rvalue.
+  - Added unit coverage:
+    - Write-while-borrowed is rejected.
+    - Const-vs-unknown index overlap rules.
+    - `BorrowChecker.from_typed_fn` preserves param vs local `PlaceKind`.
 
 ### Remaining Work
 
@@ -81,6 +119,7 @@ Restrictions we keep explicit (reject with diagnostics):
   - `&s.field`
   - `&arr[i]`
   - nested projections
+  - Extend the typed checker to accept borrowing from projections (today it only accepts locals/params as borrow operands).
 
 #### 2) Temporary materialization
 - Keep rejecting `&(rvalue)` for MVP.

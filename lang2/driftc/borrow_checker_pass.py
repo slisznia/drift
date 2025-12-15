@@ -21,7 +21,15 @@ from enum import Enum, auto
 from typing import Dict, List, Optional, Mapping, Callable, Tuple, Set
 
 from lang2.driftc import stage1 as H
-from lang2.driftc.borrow_checker import Place, PlaceBase, PlaceKind, PlaceState, place_from_expr, merge_place_state
+from lang2.driftc.borrow_checker import (
+	Place,
+	PlaceBase,
+	PlaceKind,
+	PlaceState,
+	merge_place_state,
+	place_from_expr,
+	places_overlap,
+)
 from lang2.driftc.core.diagnostics import Diagnostic
 from lang2.driftc.core.types_core import TypeKind, TypeTable, TypeId
 from lang2.driftc.checker import FnSignature
@@ -113,10 +121,15 @@ class BorrowChecker:
 		  - binding_types: mapping binding_id -> TypeId
 		  - binding_names: mapping binding_id -> name
 		"""
-		fn_types = {
-			PlaceBase(PlaceKind.LOCAL, bid, typed_fn.binding_names.get(bid, "_b")): ty
-			for bid, ty in typed_fn.binding_types.items()
-		}
+		# Preserve binding identity kind (param vs local). This matters for:
+		# - future ABI/calling convention decisions,
+		# - diagnostics/readability (param vs local),
+		# - avoiding accidental overlaps if/when we introduce nested binding scopes.
+		param_ids = set(getattr(typed_fn, "param_bindings", []) or [])
+		fn_types = {}
+		for bid, ty in typed_fn.binding_types.items():
+			kind = PlaceKind.PARAM if bid in param_ids else PlaceKind.LOCAL
+			fn_types[PlaceBase(kind, bid, typed_fn.binding_names.get(bid, "_b"))] = ty
 
 		def base_lookup(hv: object) -> Optional[PlaceBase]:
 			name = hv.name if hasattr(hv, "name") else str(hv)
@@ -124,7 +137,8 @@ class BorrowChecker:
 			if bid is None and hasattr(typed_fn, "binding_for_var"):
 				bid = typed_fn.binding_for_var.get(id(hv))
 			local_id = bid if isinstance(bid, int) else -1
-			return PlaceBase(PlaceKind.LOCAL, local_id, name)
+			kind = PlaceKind.PARAM if local_id in param_ids else PlaceKind.LOCAL
+			return PlaceBase(kind, local_id, name)
 
 		return cls(
 			type_table=type_table,
@@ -145,8 +159,23 @@ class BorrowChecker:
 		return td.kind in (TypeKind.SCALAR, TypeKind.REF)
 
 	def _state_for(self, state: _FlowState, place: Place) -> PlaceState:
-		"""Lookup helper with UNINIT default for missing places."""
-		return state.place_states.get(place, PlaceState.UNINIT)
+		"""
+		Lookup helper with UNINIT default for missing places.
+
+		MVP precision: if a projected place (e.g. `x.field` or `arr[0]`) has no
+		explicit state entry, fall back to the closest prefix state (`x`).
+		This keeps move/borrow checks usable before we implement full per-subplace
+		state propagation.
+		"""
+		if place in state.place_states:
+			return state.place_states[place]
+		# Prefix fallback: treat unknown subplace state as the base place state.
+		if place.projections:
+			for n in range(len(place.projections) - 1, -1, -1):
+				prefix = Place(place.base, place.projections[:n])
+				if prefix in state.place_states:
+					return state.place_states[prefix]
+		return PlaceState.UNINIT
 
 	def _set_state(self, state: _FlowState, place: Place, value: PlaceState) -> None:
 		"""Mutate the local state map for a given place."""
@@ -173,12 +202,13 @@ class BorrowChecker:
 
 	def _places_overlap(self, a: Place, b: Place) -> bool:
 		"""
-		Conservative overlap: any projection of the same base conflicts.
+		Delegation hook for the "place overlap" predicate.
 
-		This is whole-place (base-level) overlap; field-level precision can be
-		added later if the spec allows disjoint field borrows.
+		We keep this as a method so the pass can be instrumented in tests, but the
+		actual overlap semantics live in `lang2.driftc.borrow_checker.places_overlap`
+		as a single source of truth.
 		"""
-		return a.base == b.base
+		return places_overlap(a, b)
 
 	def _eval_temporary(self, state: _FlowState, expr: H.HExpr) -> None:
 		"""
@@ -224,9 +254,22 @@ class BorrowChecker:
 			)
 		)
 
-	def _drop_overlapping_loans(self, state: _FlowState, place: Place) -> None:
-		"""Remove any loans that overlap the given place (assignment invalidates borrows)."""
-		state.loans = {loan for loan in state.loans if not self._places_overlap(place, loan.place)}
+	def _reject_write_while_borrowed(self, state: _FlowState, place: Place) -> bool:
+		"""
+		Enforce the MVP "freeze while borrowed" rule.
+
+		If there is any live loan overlapping the write target, the write is
+		rejected. This prevents both:
+		- aliasing violations (`&x` then `x = ...`), and
+		- storage-invalidating mutations when borrows exist (e.g. later for arrays).
+
+		Returns True when the write is permitted, False when rejected.
+		"""
+		for loan in state.loans:
+			if self._places_overlap(place, loan.place):
+				self._diagnostic(f"cannot write to '{place.base.name}' while it is borrowed")
+				return False
+		return True
 
 	def _loan_live_here(self, loan: Loan, block_id: Optional[int]) -> bool:
 		"""
@@ -553,8 +596,11 @@ class BorrowChecker:
 				self._visit_expr(state, stmt.value, as_value=True)
 				tgt = place_from_expr(stmt.target, base_lookup=self.base_lookup)
 				if tgt is not None:
-					self._set_state(state, tgt, PlaceState.VALID)
-					self._drop_overlapping_loans(state, tgt)
+					# MVP rule: do not silently "drop" active borrows on assignment.
+					# Instead, reject the write. This keeps borrow lifetimes lexical
+					# (until end-of-scope) and prevents hard-to-debug unsoundness.
+					if self._reject_write_while_borrowed(state, tgt):
+						self._set_state(state, tgt, PlaceState.VALID)
 				else:
 					self._diagnostic("assignment target is not an lvalue")
 			elif isinstance(stmt, H.HReturn):

@@ -121,6 +121,54 @@ class Place:
 		return Place(self.base, self.projections + (proj,))
 
 
+def places_overlap(a: Place, b: Place) -> bool:
+	"""
+	Return True when two places may refer to overlapping storage.
+
+	This function is the single source of truth for "place overlap" used by
+	borrow checking and write-frozen rules.
+
+	MVP rules (pinned in `work/borrow-support/work-progress.md`):
+	- Different bases never overlap.
+	- Prefix overlap counts: `x` overlaps `x.field` and `x[0]`.
+	- Field projections are disjoint when the field names differ.
+	- Index projections:
+	  - CONST vs CONST are disjoint when indices differ (`arr[0]` vs `arr[1]`).
+	  - ANY overlaps everything (`arr[i]` overlaps `arr[0]` and `arr[j]`).
+	- Any projection-kind mismatch at the same depth is treated as overlapping
+	  (conservative until we have more precise type/layout information).
+	"""
+	if a.base != b.base:
+		return False
+
+	ap = a.projections
+	bp = b.projections
+	n = min(len(ap), len(bp))
+	for idx in range(n):
+		pa = ap[idx]
+		pb = bp[idx]
+		if pa == pb:
+			continue
+
+		# Field-vs-field: disjoint when names differ.
+		if isinstance(pa, FieldProj) and isinstance(pb, FieldProj):
+			return False
+
+		# Index-vs-index: disjoint only when both are CONST and values differ.
+		if isinstance(pa, IndexProj) and isinstance(pb, IndexProj):
+			if pa.kind is IndexKind.CONST and pb.kind is IndexKind.CONST:
+				if pa.value is not None and pb.value is not None and pa.value != pb.value:
+					return False
+			# Otherwise: ANY overlaps, or equal const handled by pa==pb above.
+			return True
+
+		# Deref-vs-deref: pa==pb above; any other deref mismatch is conservative overlap.
+		return True
+
+	# One place is a prefix of the other (or identical): overlaps by definition.
+	return True
+
+
 def is_lvalue(expr: H.HExpr, *, base_lookup: Callable[[object], Optional[PlaceBase]]) -> bool:
 	"""
 	Decide if a HIR expression denotes a storage location (`Place`) per spec:
