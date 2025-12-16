@@ -5,6 +5,7 @@ Stage 2 tests: HIR→MIR lowering for throw/try (throw only for now).
 """
 
 from lang2.driftc import stage1 as H
+from lang2.driftc.stage1.normalize import normalize_hir
 from lang2.driftc.stage2 import (
 	MirBuilder,
 	HIRToMIR,
@@ -39,7 +40,7 @@ def test_throw_lowers_to_error_and_result_err_return():
 		kw_args=[H.HKwArg(name="msg", value=H.HDVInit(dv_type_name="Boom", args=[H.HLiteralString("boom")]))],
 	)
 	hir_block = H.HBlock(statements=[H.HThrow(value=exc)])
-	lower.lower_block(hir_block)
+	lower.lower_block(normalize_hir(hir_block))
 
 	entry = builder.func.blocks["entry"]
 	instrs = entry.instructions
@@ -86,7 +87,7 @@ def test_exception_init_throw_attaches_all_fields():
 		],
 	)
 	hir_block = H.HBlock(statements=[H.HThrow(value=exc)])
-	lower.lower_block(hir_block)
+	lower.lower_block(normalize_hir(hir_block))
 
 	entry = builder.func.blocks["entry"]
 	add_attr_instrs = [i for i in entry.instructions if isinstance(i, ErrorAddAttrDV)]

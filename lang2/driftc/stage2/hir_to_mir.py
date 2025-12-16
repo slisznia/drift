@@ -335,6 +335,8 @@ class HIRToMIR:
 		This lowering is intentionally place-driven: it computes the address of the
 		referenced storage and returns it as the borrow result.
 		"""
+		if not (hasattr(H, "HPlaceExpr") and isinstance(expr.subject, getattr(H, "HPlaceExpr"))):
+			raise AssertionError("non-canonical borrow operand reached MIR lowering (normalize/typechecker bug)")
 		ptr, _inner = self._lower_addr_of_place(expr.subject, is_mut=expr.is_mut)
 		return ptr
 
@@ -354,24 +356,21 @@ class HIRToMIR:
 		  Moving out of projections (fields/indexes) would require partial-move
 		  semantics and more precise liveness tracking.
 		"""
-		subj = expr.subject
-		if hasattr(H, "HPlaceExpr") and isinstance(subj, getattr(H, "HPlaceExpr")):
-			if subj.projections:
-				raise AssertionError("move of projected place reached MIR lowering (checker bug)")
-			subj = subj.base
-		if not isinstance(subj, H.HVar):
-			raise AssertionError("move operand is not a local/param (checker bug)")
-
-		self.b.ensure_local(subj.name)
+		if not (hasattr(H, "HPlaceExpr") and isinstance(expr.subject, getattr(H, "HPlaceExpr"))):
+			raise AssertionError("non-canonical move operand reached MIR lowering (normalize/typechecker bug)")
+		if expr.subject.projections:
+			raise AssertionError("move of projected place reached MIR lowering (checker bug)")
+		subj_name = expr.subject.base.name
+		self.b.ensure_local(subj_name)
 		moved_val = self.b.new_temp()
-		self.b.emit(M.LoadLocal(dest=moved_val, local=subj.name))
+		self.b.emit(M.LoadLocal(dest=moved_val, local=subj_name))
 
-		inner_ty = self._infer_expr_type(subj)
+		inner_ty = self._infer_expr_type(expr.subject.base)
 		if inner_ty is None:
 			raise AssertionError("move operand type unknown in MIR lowering (checker bug)")
 		zero = self.b.new_temp()
 		self.b.emit(M.ZeroValue(dest=zero, ty=inner_ty))
-		self.b.emit(M.StoreLocal(local=subj.name, value=zero))
+		self.b.emit(M.StoreLocal(local=subj_name, value=zero))
 		return moved_val
 
 	def _visit_expr_HUnary(self, expr: H.HUnary) -> M.ValueId:
@@ -877,49 +876,25 @@ class HIRToMIR:
 
 	def _visit_stmt_HAssign(self, stmt: H.HAssign) -> None:
 		val = self.lower_expr(stmt.value)
+		# Stage1 normalization must canonicalize assignment targets to `HPlaceExpr`.
+		# This keeps stage2 lowering lvalue handling single-path and prevents
+		# re-deriving place structure from arbitrary expression trees.
+		if not (hasattr(H, "HPlaceExpr") and isinstance(stmt.target, getattr(H, "HPlaceExpr"))):
+			raise AssertionError("non-canonical assignment target reached MIR lowering (normalize/typechecker bug)")
+
 		# Canonical place expression: assignments lower through address-of + StoreRef,
 		# except for the trivial "local = value" case which keeps the `StoreLocal`
 		# primitive (important for SSA/local-type tracking).
-		if hasattr(H, "HPlaceExpr") and isinstance(stmt.target, getattr(H, "HPlaceExpr")):
-			if not stmt.target.projections:
-				self.b.ensure_local(stmt.target.base.name)
-				val_ty = self._infer_expr_type(stmt.value)
-				if val_ty is not None:
-					self._local_types[stmt.target.base.name] = val_ty
-				self.b.emit(M.StoreLocal(local=stmt.target.base.name, value=val))
-				return
-			ptr, inner_ty = self._lower_addr_of_place(stmt.target, is_mut=True)
-			self.b.emit(M.StoreRef(ptr=ptr, value=val, inner_ty=inner_ty))
-			return
-		if isinstance(stmt.target, H.HVar):
-			self.b.ensure_local(stmt.target.name)
+		if not stmt.target.projections:
+			self.b.ensure_local(stmt.target.base.name)
 			val_ty = self._infer_expr_type(stmt.value)
 			if val_ty is not None:
-				self._local_types[stmt.target.name] = val_ty
-			self.b.emit(M.StoreLocal(local=stmt.target.name, value=val))
-		elif isinstance(stmt.target, H.HField):
-			# Lower field assignment via an address computation + StoreRef so the
-			# write updates the original storage (not a temporary copy).
-			ptr, inner_ty = self._lower_addr_of_place(stmt.target, is_mut=True)
-			self.b.emit(M.StoreRef(ptr=ptr, value=val, inner_ty=inner_ty))
-		elif isinstance(stmt.target, H.HIndex):
-			subject = self.lower_expr(stmt.target.subject)
-			index = self.lower_expr(stmt.target.index)
-			elem_ty = self._infer_array_elem_type(stmt.target.subject)
-			self.b.emit(M.ArrayIndexStore(elem_ty=elem_ty, array=subject, index=index, value=val))
-		elif isinstance(stmt.target, H.HUnary) and stmt.target.op is H.UnaryOp.DEREF:
-			# `*p = v` assignment through a mutable reference.
-			ptr_val = self.lower_expr(stmt.target.expr)
-			ptr_ty = self._infer_expr_type(stmt.target.expr)
-			if ptr_ty is None:
-				raise AssertionError("deref assignment type unknown in MIR lowering (checker bug)")
-			td = self._type_table.get(ptr_ty)
-			if td.kind is not TypeKind.REF or not td.param_types:
-				raise AssertionError("deref assignment of non-ref reached MIR lowering (checker bug)")
-			inner_ty = td.param_types[0]
-			self.b.emit(M.StoreRef(ptr=ptr_val, value=val, inner_ty=inner_ty))
-		else:
-			raise NotImplementedError(f"Unsupported assignment target: {type(stmt.target).__name__}")
+				self._local_types[stmt.target.base.name] = val_ty
+			self.b.emit(M.StoreLocal(local=stmt.target.base.name, value=val))
+			return
+		ptr, inner_ty = self._lower_addr_of_place(stmt.target, is_mut=True)
+		self.b.emit(M.StoreRef(ptr=ptr, value=val, inner_ty=inner_ty))
+		return
 
 	def _visit_stmt_HReturn(self, stmt: H.HReturn) -> None:
 		if self.b.block.terminator is not None:
@@ -1616,6 +1591,41 @@ class HIRToMIR:
 			return self._type_table.new_array(elem_ty)
 		if isinstance(expr, H.HVar):
 			return self._local_types.get(expr.name)
+		if isinstance(expr, H.HUnary):
+			# Unary ops preserve the numeric type when it can be inferred locally.
+			inner = self._infer_expr_type(expr.expr)
+			if inner is None:
+				return None
+			if expr.op is H.UnaryOp.NEG:
+				return inner if inner in (self._int_type, self._float_type) else None
+		if isinstance(expr, H.HBinary):
+			# Minimal numeric/boolean inference to support:
+			#   - materialized temporaries (`val tmp = 1 + 2; &tmp`)
+			#   - basic arithmetic and comparisons in MIR typing.
+			left = self._infer_expr_type(expr.left)
+			right = self._infer_expr_type(expr.right)
+			if left is None or right is None:
+				return None
+			# Arithmetic operators return the operand type when both sides match.
+			if expr.op in (H.BinaryOp.ADD, H.BinaryOp.SUB, H.BinaryOp.MUL, H.BinaryOp.DIV, H.BinaryOp.MOD):
+				if left == right and left in (self._int_type, self._float_type):
+					return left
+				return None
+			# Comparisons return Bool when both sides are comparable scalars.
+			if expr.op in (
+				H.BinaryOp.EQ,
+				H.BinaryOp.NE,
+				H.BinaryOp.LT,
+				H.BinaryOp.LE,
+				H.BinaryOp.GT,
+				H.BinaryOp.GE,
+			):
+				if left == right and left in (self._int_type, self._float_type, self._bool_type, self._string_type):
+					return self._bool_type
+				return None
+			# Boolean logic returns Bool.
+			if expr.op in (H.BinaryOp.AND, H.BinaryOp.OR):
+				return self._bool_type if left == right == self._bool_type else None
 		if hasattr(H, "HPlaceExpr") and isinstance(expr, getattr(H, "HPlaceExpr")):
 			# Canonical place expression: its type is the type of the referenced
 			# storage location (same as reading the lvalue).
@@ -1682,7 +1692,7 @@ class HIRToMIR:
 			return self._infer_expr_type(expr.attempt)
 		return None
 
-	def _lower_addr_of_place(self, expr: H.HExpr, *, is_mut: bool) -> tuple[M.ValueId, TypeId]:
+	def _lower_addr_of_place(self, expr: H.HPlaceExpr, *, is_mut: bool) -> tuple[M.ValueId, TypeId]:
 		"""
 		Lower an addressable HIR "place" to a pointer and its pointee TypeId.
 
@@ -1697,149 +1707,82 @@ class HIRToMIR:
 		  - The checker (plus stage1 temporary materialization) ensures `expr` is a
 		    real place. If we see an rvalue here, it's a pipeline bug.
 		"""
-		# Locals/params: address-of storage.
-		if isinstance(expr, H.HVar):
-			self.b.ensure_local(expr.name)
-			ty = self._infer_expr_type(expr)
-			if ty is None:
-				raise AssertionError("address-of local type unknown in MIR lowering (checker bug)")
-			dest = self.b.new_temp()
-			self.b.emit(M.AddrOfLocal(dest=dest, local=expr.name, is_mut=is_mut))
-			return dest, ty
-
 		# Canonical place expression (stage1→stage2 boundary).
-		if hasattr(H, "HPlaceExpr") and isinstance(expr, getattr(H, "HPlaceExpr")):
-			base_name = expr.base.name
-			self.b.ensure_local(base_name)
-			cur_ty = self._infer_expr_type(expr.base)
-			if cur_ty is None:
-				raise AssertionError("address-of place base type unknown in MIR lowering (checker bug)")
-			addr = self.b.new_temp()
-			self.b.emit(M.AddrOfLocal(dest=addr, local=base_name, is_mut=is_mut))
+		base_name = expr.base.name
+		self.b.ensure_local(base_name)
+		cur_ty = self._infer_expr_type(expr.base)
+		if cur_ty is None:
+			raise AssertionError("address-of place base type unknown in MIR lowering (checker bug)")
+		addr = self.b.new_temp()
+		self.b.emit(M.AddrOfLocal(dest=addr, local=base_name, is_mut=is_mut))
 
-			# Apply projections left-to-right, maintaining the invariant:
-			#   `addr` is a pointer to a value of type `cur_ty`.
-			for proj in expr.projections:
-				# Deref projection: load a reference value (pointer) from storage and
-				# treat it as the new address.
-				if isinstance(proj, H.HPlaceDeref):
-					td = self._type_table.get(cur_ty)
-					if td.kind is not TypeKind.REF or not td.param_types:
-						raise AssertionError("deref place of non-ref reached MIR lowering (checker bug)")
-					if is_mut and not td.ref_mut:
-						raise AssertionError("mutable deref place without &mut reached MIR lowering (checker bug)")
-					loaded_ptr = self.b.new_temp()
-					self.b.emit(M.LoadRef(dest=loaded_ptr, ptr=addr, inner_ty=cur_ty))
-					addr = loaded_ptr
-					cur_ty = td.param_types[0]
-					continue
+		# Apply projections left-to-right, maintaining the invariant:
+		#   `addr` is a pointer to a value of type `cur_ty`.
+		for proj in expr.projections:
+			# Deref projection: load a reference value (pointer) from storage and
+			# treat it as the new address.
+			if isinstance(proj, H.HPlaceDeref):
+				td = self._type_table.get(cur_ty)
+				if td.kind is not TypeKind.REF or not td.param_types:
+					raise AssertionError("deref place of non-ref reached MIR lowering (checker bug)")
+				if is_mut and not td.ref_mut:
+					raise AssertionError("mutable deref place without &mut reached MIR lowering (checker bug)")
+				loaded_ptr = self.b.new_temp()
+				self.b.emit(M.LoadRef(dest=loaded_ptr, ptr=addr, inner_ty=cur_ty))
+				addr = loaded_ptr
+				cur_ty = td.param_types[0]
+				continue
 
-				# Field projection: compute field address from a struct address.
-				if isinstance(proj, H.HPlaceField):
-					base_def = self._type_table.get(cur_ty)
-					if base_def.kind is not TypeKind.STRUCT:
-						raise AssertionError("field place base is not a struct (checker bug)")
-					info = self._type_table.struct_field(cur_ty, proj.name)
-					if info is None:
-						raise AssertionError("unknown struct field reached MIR lowering (checker bug)")
-					field_idx, field_ty = info
-					dest = self.b.new_temp()
-					self.b.emit(
-						M.AddrOfField(
-							dest=dest,
-							base_ptr=addr,
-							struct_ty=cur_ty,
-							field_index=field_idx,
-							field_ty=field_ty,
-							is_mut=is_mut,
-						)
+			# Field projection: compute field address from a struct address.
+			if isinstance(proj, H.HPlaceField):
+				base_def = self._type_table.get(cur_ty)
+				if base_def.kind is not TypeKind.STRUCT:
+					raise AssertionError("field place base is not a struct (checker bug)")
+				info = self._type_table.struct_field(cur_ty, proj.name)
+				if info is None:
+					raise AssertionError("unknown struct field reached MIR lowering (checker bug)")
+				field_idx, field_ty = info
+				dest = self.b.new_temp()
+				self.b.emit(
+					M.AddrOfField(
+						dest=dest,
+						base_ptr=addr,
+						struct_ty=cur_ty,
+						field_index=field_idx,
+						field_ty=field_ty,
+						is_mut=is_mut,
 					)
-					addr = dest
-					cur_ty = field_ty
-					continue
+				)
+				addr = dest
+				cur_ty = field_ty
+				continue
 
-				# Index projection: load the array value then compute element address.
-				if isinstance(proj, H.HPlaceIndex):
-					array_def = self._type_table.get(cur_ty)
-					if array_def.kind is not TypeKind.ARRAY or not array_def.param_types:
-						raise AssertionError("index place of non-array reached MIR lowering (checker bug)")
-					elem_ty = array_def.param_types[0]
-					array_val = self.b.new_temp()
-					self.b.emit(M.LoadRef(dest=array_val, ptr=addr, inner_ty=cur_ty))
-					index_val = self.lower_expr(proj.index)
-					dest = self.b.new_temp()
-					self.b.emit(
-						M.AddrOfArrayElem(
-							dest=dest,
-							array=array_val,
-							index=index_val,
-							inner_ty=elem_ty,
-							is_mut=is_mut,
-						)
+			# Index projection: load the array value then compute element address.
+			if isinstance(proj, H.HPlaceIndex):
+				array_def = self._type_table.get(cur_ty)
+				if array_def.kind is not TypeKind.ARRAY or not array_def.param_types:
+					raise AssertionError("index place of non-array reached MIR lowering (checker bug)")
+				elem_ty = array_def.param_types[0]
+				array_val = self.b.new_temp()
+				self.b.emit(M.LoadRef(dest=array_val, ptr=addr, inner_ty=cur_ty))
+				index_val = self.lower_expr(proj.index)
+				dest = self.b.new_temp()
+				self.b.emit(
+					M.AddrOfArrayElem(
+						dest=dest,
+						array=array_val,
+						index=index_val,
+						inner_ty=elem_ty,
+						is_mut=is_mut,
 					)
-					addr = dest
-					cur_ty = elem_ty
-					continue
-
-				raise AssertionError("unsupported place projection reached MIR lowering (checker bug)")
-
-			return addr, cur_ty
-
-		# Deref place: `*p` as an lvalue yields the underlying pointer value.
-		if isinstance(expr, H.HUnary) and expr.op is H.UnaryOp.DEREF:
-			ptr_ty = self._infer_expr_type(expr.expr)
-			if ptr_ty is None:
-				raise AssertionError("deref place type unknown in MIR lowering (checker bug)")
-			td = self._type_table.get(ptr_ty)
-			if td.kind is not TypeKind.REF or not td.param_types:
-				raise AssertionError("deref place of non-ref reached MIR lowering (checker bug)")
-			if is_mut and not td.ref_mut:
-				raise AssertionError("mutable deref place without &mut reached MIR lowering (checker bug)")
-			inner_ty = td.param_types[0]
-			ptr_val = self.lower_expr(expr.expr)
-			return ptr_val, inner_ty
-
-		# Array index place: `arr[i]` yields the element address.
-		if isinstance(expr, H.HIndex):
-			array_val = self.lower_expr(expr.subject)
-			index_val = self.lower_expr(expr.index)
-			elem_ty = self._infer_array_elem_type(expr.subject)
-			dest = self.b.new_temp()
-			self.b.emit(
-				M.AddrOfArrayElem(
-					dest=dest,
-					array=array_val,
-					index=index_val,
-					inner_ty=elem_ty,
-					is_mut=is_mut,
 				)
-			)
-			return dest, elem_ty
+				addr = dest
+				cur_ty = elem_ty
+				continue
 
-		# Struct field place: `base.field`.
-		if isinstance(expr, H.HField):
-			base_ptr, base_ty = self._lower_addr_of_place(expr.subject, is_mut=is_mut)
-			base_def = self._type_table.get(base_ty)
-			if base_def.kind is not TypeKind.STRUCT:
-				raise AssertionError("field place base is not a struct (checker bug)")
-			info = self._type_table.struct_field(base_ty, expr.name)
-			if info is None:
-				raise AssertionError("unknown struct field reached MIR lowering (checker bug)")
-			field_idx, field_ty = info
-			dest = self.b.new_temp()
-			self.b.emit(
-				M.AddrOfField(
-					dest=dest,
-					base_ptr=base_ptr,
-					struct_ty=base_ty,
-					field_index=field_idx,
-					field_ty=field_ty,
-					is_mut=is_mut,
-				)
-			)
-			return dest, field_ty
+			raise AssertionError("unsupported place projection reached MIR lowering (checker bug)")
 
-		raise AssertionError("address-of unsupported place reached MIR lowering (checker bug)")
+		return addr, cur_ty
 
 	def _lookup_error_code(self, payload_expr: H.HExpr | None = None, *, event_fqn: str | None = None) -> int:
 		"""

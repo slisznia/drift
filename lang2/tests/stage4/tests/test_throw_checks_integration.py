@@ -27,7 +27,7 @@ def _lower_fn(name: str, hir_block: H.HBlock, *, can_throw: bool) -> tuple[str, 
 		"m:EvtX": ("m:EvtX", []),
 		"m:Evt": ("m:Evt", []),
 	}
-	HIRToMIR(builder, type_table=type_table, can_throw_by_name=can_throw_map).lower_block(hir_block)
+	HIRToMIR(builder, type_table=type_table, can_throw_by_name=can_throw_map).lower_block(normalize_hir(hir_block))
 	return name, builder.func
 
 

@@ -1,0 +1,5 @@
+fn main() returns Int {
+	val p = &(1 + 2);
+	return *p;
+}
+

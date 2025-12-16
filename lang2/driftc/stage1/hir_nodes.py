@@ -372,10 +372,12 @@ class HIndex(HExpr):
 class HBorrow(HExpr):
 	"""Borrow an lvalue: &subject or &mut subject."""
 
-	# Normalized HIR should always use a canonical `HPlaceExpr` here. We keep the
-	# type broad because early/lowered HIR may still contain raw place-like
-	# expressions; `normalize_hir` is responsible for canonicalizing them.
-	subject: HExpr
+	# Canonical place operand (stage1→stage2 boundary).
+	#
+	# Note: the compiler still permits ill-formed programs to be represented in
+	# early HIR for diagnostics, but well-formed pipelines must run
+	# `normalize_hir` which canonicalizes place contexts to `HPlaceExpr`.
+	subject: "HPlaceExpr"
 	is_mut: bool
 
 
@@ -386,9 +388,10 @@ class HMove(HExpr):
 
 	The operand is required to be an addressable place. Stage1 normalization
 	canonicalizes it to `HPlaceExpr` so later phases can operate on a single
-representation of places.
+	representation of places.
 	"""
-	subject: HExpr
+	# Canonical place operand (stage1→stage2 boundary).
+	subject: "HPlaceExpr"
 	loc: Span = field(default_factory=Span)
 
 
@@ -485,9 +488,15 @@ class HLet(HStmt):
 
 @dataclass
 class HAssign(HStmt):
-	# Normalized HIR should always use a canonical `HPlaceExpr` here. We keep the
-	# type broad because stage0/stage1 tests may still construct raw targets.
-	target: HExpr
+	"""
+	Assignment to an addressable place.
+
+	Stage1 normalization canonicalizes assignment targets to `HPlaceExpr` so
+	stage2 lowering does not need to re-derive lvalue structure from arbitrary
+	expression trees.
+	"""
+	# Canonical assignment target (stage1→stage2 boundary).
+	target: "HPlaceExpr"
 	value: HExpr
 
 

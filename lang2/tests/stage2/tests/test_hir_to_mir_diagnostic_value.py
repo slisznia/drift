@@ -11,6 +11,7 @@ from lang2.driftc.stage1 import (
 	HMethodCall,
 	HDVInit,
 )
+from lang2.driftc.stage1.normalize import normalize_hir
 from lang2.driftc.stage2 import (
 	MirBuilder,
 	HIRToMIR,
@@ -46,7 +47,7 @@ def test_error_attrs_index_lowers_to_error_attrs_get_dv():
 		signatures={"f": sig},
 		return_type=sig.return_type_id,
 	)
-	lowerer.lower_block(block)
+	lowerer.lower_block(normalize_hir(block))
 
 	entry = builder.func.blocks[builder.func.entry]
 	assert any(isinstance(instr, ErrorAttrsGetDV) for instr in entry.instructions)
@@ -64,7 +65,7 @@ def test_dv_as_int_lowers_to_dvasint():
 	)
 	builder = MirBuilder("f_dv")
 	lowerer = HIRToMIR(builder, type_table=table)
-	lowerer.lower_block(block)
+	lowerer.lower_block(normalize_hir(block))
 
 	entry = builder.func.blocks[builder.func.entry]
 	assert any(isinstance(instr, ConstructDV) for instr in entry.instructions)

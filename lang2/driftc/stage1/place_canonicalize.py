@@ -13,6 +13,7 @@ into places. It only canonicalizes places in contexts that *must* be addressable
 
   - `HBorrow.subject`
   - `HAssign.target`
+  - `HMove.subject`
 
 Why stage1?
 -----------

@@ -31,6 +31,7 @@ from lang2.driftc.borrow_checker import (
 	places_overlap,
 )
 from lang2.driftc.core.diagnostics import Diagnostic
+from lang2.driftc.core.span import Span
 from lang2.driftc.core.types_core import TypeKind, TypeTable, TypeId
 from lang2.driftc.checker import FnSignature
 from lang2.driftc.method_registry import CallableDecl
@@ -183,26 +184,33 @@ class BorrowChecker:
 		"""Mutate the local state map for a given place."""
 		state.place_states[place] = value
 
-	def _diagnostic(self, message: str) -> None:
-		"""Append an error-level diagnostic with no span."""
-		self.diagnostics.append(Diagnostic(message=message, severity="error", span=None))
+	def _diagnostic(self, message: str, span: Span | None = None) -> None:
+		"""
+		Append an error-level diagnostic anchored at `span`.
 
-	def _consume_place_use(self, state: _FlowState, place: Place) -> None:
+		Borrow checking frequently reports *uses* that occur after the original
+		borrow/move site. Anchoring errors at a best-effort span (even when it is
+		just the explicit sentinel `Span()`) makes diagnostics significantly more
+		actionable than emitting spanless errors.
+		"""
+		self.diagnostics.append(Diagnostic(message=message, severity="error", span=span or Span()))
+
+	def _consume_place_use(self, state: _FlowState, place: Place, span: Span | None = None) -> None:
 		"""Consume a place in value position, marking moves and flagging use-after-move."""
 		curr = self._state_for(state, place)
 		if curr is PlaceState.MOVED:
-			self._diagnostic(f"use after move of '{place.base.name}'")
+			self._diagnostic(f"use after move of '{place.base.name}'", span)
 			return
 		ty = self.fn_types.get(place.base)
 		if self._is_copy(ty):
 			return
 		for loan in state.loans:
 			if self._places_overlap(place, loan.place):
-				self._diagnostic(f"cannot move '{place.base.name}' while borrowed")
+				self._diagnostic(f"cannot move '{place.base.name}' while borrowed", span)
 				return
 		self._set_state(state, place, PlaceState.MOVED)
 
-	def _force_move_place_use(self, state: _FlowState, place: Place) -> None:
+	def _force_move_place_use(self, state: _FlowState, place: Place, span: Span | None = None) -> None:
 		"""
 		Consume a place via an explicit `move` expression.
 
@@ -216,22 +224,22 @@ class BorrowChecker:
 		"""
 		curr = self._state_for(state, place)
 		if curr is PlaceState.MOVED:
-			self._diagnostic(f"use after move of '{place.base.name}'")
+			self._diagnostic(f"use after move of '{place.base.name}'", span)
 			return
 		for loan in state.loans:
 			if self._places_overlap(place, loan.place):
-				self._diagnostic(f"cannot move '{place.base.name}' while borrowed")
+				self._diagnostic(f"cannot move '{place.base.name}' while borrowed", span)
 				return
 		# Backstop: `move` is only allowed from owned mutable bindings. Parameters
 		# are treated as immutable, and reference-typed bindings are non-owning.
 		if self.binding_mutable is not None:
 			mut = self.binding_mutable.get(place.base.local_id, False)
 			if not mut:
-				self._diagnostic(f"cannot move from immutable binding '{place.base.name}'")
+				self._diagnostic(f"cannot move from immutable binding '{place.base.name}'", span)
 				return
 		ty = self.fn_types.get(place.base)
 		if ty is not None and self.type_table.get(ty).kind is TypeKind.REF:
-			self._diagnostic(f"cannot move from reference '{place.base.name}'")
+			self._diagnostic(f"cannot move from reference '{place.base.name}'", span)
 			return
 		self._set_state(state, place, PlaceState.MOVED)
 
@@ -257,23 +265,34 @@ class BorrowChecker:
 		new_loans = state.loans - before
 		state.loans -= new_loans
 
-	def _borrow_place(self, state: _FlowState, place: Place, kind: LoanKind, *, temporary: bool = False) -> None:
+	def _borrow_place(
+		self,
+		state: _FlowState,
+		place: Place,
+		kind: LoanKind,
+		*,
+		temporary: bool = False,
+		span: Span | None = None,
+	) -> None:
 		"""
 		Process a borrow of `place` with the given kind, enforcing lvalue validity
 		and active-loan conflict rules.
 		"""
 		curr = self._state_for(state, place)
 		if curr is PlaceState.MOVED or curr is PlaceState.UNINIT:
-			self._diagnostic(f"cannot borrow from moved or uninitialized '{place.base.name}'")
+			self._diagnostic(f"cannot borrow from moved or uninitialized '{place.base.name}'", span)
 			return
 		for loan in state.loans:
 			if not self._places_overlap(place, loan.place):
 				continue
 			if kind is LoanKind.SHARED and loan.kind is LoanKind.MUT:
-				self._diagnostic(f"cannot take shared borrow while mutable borrow active on '{place.base.name}'")
+				self._diagnostic(
+					f"cannot take shared borrow while mutable borrow active on '{place.base.name}'",
+					span,
+				)
 				return
 			if kind is LoanKind.MUT:
-				self._diagnostic(f"cannot take mutable borrow while borrow active on '{place.base.name}'")
+				self._diagnostic(f"cannot take mutable borrow while borrow active on '{place.base.name}'", span)
 				return
 		live_blocks = None
 		if not temporary and hasattr(self, "_target_live_blocks") and self._target_live_blocks is not None:
@@ -289,7 +308,7 @@ class BorrowChecker:
 			)
 		)
 
-	def _reject_write_while_borrowed(self, state: _FlowState, place: Place) -> bool:
+	def _reject_write_while_borrowed(self, state: _FlowState, place: Place, span: Span | None = None) -> bool:
 		"""
 		Enforce the MVP "freeze while borrowed" rule.
 
@@ -302,7 +321,7 @@ class BorrowChecker:
 		"""
 		for loan in state.loans:
 			if self._places_overlap(place, loan.place):
-				self._diagnostic(f"cannot write to '{place.base.name}' while it is borrowed")
+				self._diagnostic(f"cannot write to '{place.base.name}' while it is borrowed", span)
 				return False
 		return True
 
@@ -483,14 +502,19 @@ class BorrowChecker:
 			if as_value:
 				place = place_from_expr(expr, base_lookup=self.base_lookup)
 				if place is not None:
-					self._consume_place_use(state, place)
+					self._consume_place_use(state, place, getattr(expr, "loc", Span()))
 			return
 		if isinstance(expr, H.HBorrow):
 			place = place_from_expr(expr.subject, base_lookup=self.base_lookup)
 			if place is None:
-				self._diagnostic("cannot borrow from a non-lvalue expression")
+				self._diagnostic("cannot borrow from a non-lvalue expression", getattr(expr, "loc", Span()))
 				return
-			self._borrow_place(state, place, LoanKind.MUT if expr.is_mut else LoanKind.SHARED)
+			self._borrow_place(
+				state,
+				place,
+				LoanKind.MUT if expr.is_mut else LoanKind.SHARED,
+				span=getattr(expr, "loc", Span()),
+			)
 			return
 		if hasattr(H, "HMove") and isinstance(expr, getattr(H, "HMove")):
 			if not as_value:
@@ -499,9 +523,9 @@ class BorrowChecker:
 				return
 			place = place_from_expr(expr.subject, base_lookup=self.base_lookup)
 			if place is None:
-				self._diagnostic("move operand must be an addressable place")
+				self._diagnostic("move operand must be an addressable place", getattr(expr, "loc", Span()))
 				return
-			self._force_move_place_use(state, place)
+			self._force_move_place_use(state, place, getattr(expr, "loc", Span()))
 			return
 		if isinstance(expr, H.HCall):
 			pre_loans = set(state.loans)
@@ -526,7 +550,13 @@ class BorrowChecker:
 				if kind_for_arg is not None:
 					place = place_from_expr(arg, base_lookup=self.base_lookup)
 					if place is not None:
-						self._borrow_place(state, place, kind_for_arg, temporary=True)
+						self._borrow_place(
+							state,
+							place,
+							kind_for_arg,
+							temporary=True,
+							span=getattr(arg, "loc", Span()),
+						)
 						continue
 				self._visit_expr(state, arg, as_value=True)
 			if param_types is not None:
@@ -560,7 +590,13 @@ class BorrowChecker:
 						if kind_to_use is None and receiver_autoborrow is not None:
 							kind_to_use = LoanKind.MUT if receiver_autoborrow is SelfMode.SELF_BY_REF_MUT else LoanKind.SHARED
 						if kind_to_use is not None:
-							self._borrow_place(state, recv_place, kind_to_use, temporary=True)
+							self._borrow_place(
+								state,
+								recv_place,
+								kind_to_use,
+								temporary=True,
+								span=getattr(expr.receiver, "loc", Span()),
+							)
 					else:
 						self._visit_expr(state, expr.receiver, as_value=True)
 				else:
@@ -581,7 +617,13 @@ class BorrowChecker:
 					if kind_for_arg is not None:
 						place = place_from_expr(arg, base_lookup=self.base_lookup)
 						if place is not None:
-							self._borrow_place(state, place, kind_for_arg, temporary=True)
+							self._borrow_place(
+								state,
+								place,
+								kind_for_arg,
+								temporary=True,
+								span=getattr(arg, "loc", Span()),
+							)
 							continue
 					self._visit_expr(state, arg, as_value=True)
 				new_loans = state.loans - pre_loans
@@ -645,10 +687,11 @@ class BorrowChecker:
 					# MVP rule: do not silently "drop" active borrows on assignment.
 					# Instead, reject the write. This keeps borrow lifetimes lexical
 					# (until end-of-scope) and prevents hard-to-debug unsoundness.
-					if self._reject_write_while_borrowed(state, tgt):
+					tgt_span = getattr(stmt.target, "loc", Span())
+					if self._reject_write_while_borrowed(state, tgt, tgt_span):
 						self._set_state(state, tgt, PlaceState.VALID)
 				else:
-					self._diagnostic("assignment target is not an lvalue")
+					self._diagnostic("assignment target is not an lvalue", getattr(stmt.target, "loc", Span()))
 			elif isinstance(stmt, H.HReturn):
 				if stmt.value is not None:
 					self._eval_temporary(state, stmt.value)

@@ -38,6 +38,7 @@ from lang2.driftc.stage1 import (
 	HExprStmt,
 	BinaryOp,
 )
+from lang2.driftc.stage1.normalize import normalize_hir
 from lang2.driftc.stage2 import (
 	MirBuilder,
 	HIRToMIR,
@@ -59,7 +60,7 @@ from lang2.driftc.stage2 import (
 def _build_and_lower(block: HBlock):
 	builder = MirBuilder("test_func")
 	lowerer = HIRToMIR(builder)
-	lowerer.lower_block(block)
+	lowerer.lower_block(normalize_hir(block))
 	return builder.func
 
 

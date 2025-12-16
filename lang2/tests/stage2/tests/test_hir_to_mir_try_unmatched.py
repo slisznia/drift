@@ -10,6 +10,7 @@ from __future__ import annotations
 from lang2.driftc.stage2 import HIRToMIR, MirBuilder, mir_nodes as M
 from lang2.driftc import stage1 as H
 from lang2.driftc.core.types_core import TypeTable
+from lang2.driftc.stage1.normalize import normalize_hir
 
 
 def test_try_unmatched_event_rethrows_as_err():
@@ -45,7 +46,7 @@ def test_try_unmatched_event_rethrows_as_err():
 			)
 		]
 	)
-	lower.lower_block(hir)
+	lower.lower_block(normalize_hir(hir))
 
 	func = builder.func
 	dispatch = func.blocks["try_dispatch"]

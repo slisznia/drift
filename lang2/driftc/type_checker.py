@@ -892,6 +892,23 @@ class TypeChecker:
 			elif isinstance(stmt, H.HAssign):
 				type_expr(stmt.value)
 				type_expr(stmt.target)
+				# Assignment target must be an addressable place.
+				def _base_lookup(hv: object) -> Optional[PlaceBase]:
+					bid = getattr(hv, "binding_id", None)
+					if bid is None:
+						return None
+					kind = binding_place_kind.get(bid, PlaceKind.LOCAL)
+					name = hv.name if hasattr(hv, "name") else str(hv)
+					return PlaceBase(kind=kind, local_id=bid, name=name)
+
+				if place_from_expr(stmt.target, base_lookup=_base_lookup) is None:
+					diagnostics.append(
+						Diagnostic(
+							message="assignment target must be an addressable place",
+							severity="error",
+							span=getattr(stmt, "loc", Span()),
+						)
+					)
 			elif isinstance(stmt, H.HExprStmt):
 				type_expr(stmt.expr)
 			elif isinstance(stmt, H.HReturn):

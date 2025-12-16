@@ -10,6 +10,7 @@ from __future__ import annotations
 from lang2.driftc.stage2 import HIRToMIR, MirBuilder, mir_nodes as M
 from lang2.driftc import stage1 as H
 from lang2.driftc.core.types_core import TypeTable
+from lang2.driftc.stage1.normalize import normalize_hir
 
 
 def _walk_dispatch_else(func: M.MirFunc, start: M.BasicBlock) -> M.BasicBlock:
@@ -50,7 +51,7 @@ def test_inner_unmatched_unwinds_to_outer_try():
 		body=H.HBlock(statements=[inner_try]),
 		catches=[H.HCatchArm(event_fqn="m:Outer", binder="e", block=H.HBlock(statements=[]))],
 	)
-	lower.lower_block(H.HBlock(statements=[outer_try]))
+	lower.lower_block(normalize_hir(H.HBlock(statements=[outer_try])))
 
 	func = builder.func
 	# Identify dispatch blocks (main dispatch blocks, not the chained _next blocks).
@@ -94,7 +95,7 @@ def test_inner_and_outer_unmatched_rethrow_err():
 		body=H.HBlock(statements=[inner_try]),
 		catches=[H.HCatchArm(event_fqn="m:EvtB", binder=None, block=H.HBlock(statements=[]))],
 	)
-	lower.lower_block(H.HBlock(statements=[outer_try]))
+	lower.lower_block(normalize_hir(H.HBlock(statements=[outer_try])))
 
 	func = builder.func
 	dispatch_blocks = {

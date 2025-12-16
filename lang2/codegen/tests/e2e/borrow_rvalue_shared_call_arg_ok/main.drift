@@ -1,0 +1,8 @@
+fn id(p: &Int) returns Int {
+	return *p;
+}
+
+fn main() returns Int {
+	return id(&(1 + 2));
+}
+

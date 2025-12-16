@@ -5,6 +5,7 @@ HIR→MIR ternary lowering tests.
 """
 
 from lang2.driftc import stage1 as H
+from lang2.driftc.stage1.normalize import normalize_hir
 from lang2.driftc.stage2 import MirBuilder, HIRToMIR
 
 
@@ -17,7 +18,7 @@ def test_ternary_lowering_builds_diamond_cfg():
 	)
 	b = MirBuilder(name="f_tern")
 	h2m = HIRToMIR(b)
-	h2m.lower_block(hir)
+	h2m.lower_block(normalize_hir(hir))
 	func = b.func
 	# Expect ternary blocks present.
 	block_names = set(func.blocks.keys())

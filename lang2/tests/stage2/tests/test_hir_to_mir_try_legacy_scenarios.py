@@ -12,6 +12,7 @@ from __future__ import annotations
 from lang2.driftc.stage2 import HIRToMIR, MirBuilder, mir_nodes as M
 from lang2.driftc import stage1 as H
 from lang2.driftc.core.types_core import TypeTable
+from lang2.driftc.stage1.normalize import normalize_hir
 
 
 def _walk_else(func: M.MirFunc, block: M.BasicBlock) -> M.BasicBlock:
@@ -48,7 +49,7 @@ def test_throw_b_skips_inner_catch_a_hits_outer_catch_b():
 		body=H.HBlock(statements=[inner_try]),
 		catches=[H.HCatchArm(event_fqn="m:EvtB", binder="b", block=H.HBlock(statements=[]))],
 	)
-	lower.lower_block(H.HBlock(statements=[outer_try]))
+	lower.lower_block(normalize_hir(H.HBlock(statements=[outer_try])))
 	func = builder.func
 
 	# Identify the two main dispatch blocks (not the chained "next" blocks).
@@ -101,7 +102,7 @@ def test_multi_event_with_catch_all_matches_specific_arm():
 			)
 		]
 	)
-	lower.lower_block(hir)
+	lower.lower_block(normalize_hir(hir))
 	func = builder.func
 
 	dispatch = func.blocks["try_dispatch"]
@@ -151,7 +152,7 @@ def test_throw_inside_catch_rethrows_to_outer_try():
 		body=H.HBlock(statements=[inner_try]),
 		catches=[H.HCatchArm(event_fqn="m:EvtB", binder="b", block=H.HBlock(statements=[]))],
 	)
-	lower.lower_block(H.HBlock(statements=[outer_try]))
+	lower.lower_block(normalize_hir(H.HBlock(statements=[outer_try])))
 	func = builder.func
 
 	# Identify dispatch blocks (main ones).
@@ -202,7 +203,7 @@ def test_inner_catch_all_handles_error_before_outer_specific_arm():
 		body=H.HBlock(statements=[inner_try]),
 		catches=[H.HCatchArm(event_fqn="m:EvtX", binder="x", block=H.HBlock(statements=[]))],
 	)
-	lower.lower_block(H.HBlock(statements=[outer_try]))
+	lower.lower_block(normalize_hir(H.HBlock(statements=[outer_try])))
 	func = builder.func
 
 	# The inner dispatch should immediately goto its catch-all (no IfTerminator chain).
@@ -261,7 +262,7 @@ def test_inner_matching_catch_handles_and_stops_propagation():
 			)
 		]
 	)
-	lower.lower_block(hir)
+	lower.lower_block(normalize_hir(hir))
 	func = builder.func
 
 	# Find the inner dispatch by looking for the binder 'inner' in a catch block reached via then-branch.

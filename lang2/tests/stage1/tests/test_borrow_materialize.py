@@ -5,6 +5,7 @@
 
 from lang2.driftc import stage1 as H
 from lang2.driftc.stage1.normalize import normalize_hir
+from lang2.driftc.core.span import Span
 
 
 def test_shared_borrow_of_rvalue_is_materialized():
@@ -44,3 +45,19 @@ def test_mut_borrow_of_rvalue_is_not_materialized():
 	assert isinstance(stmt, H.HExprStmt)
 	assert isinstance(stmt.expr, H.HBorrow)
 	assert isinstance(stmt.expr.subject, H.HLiteralInt)
+
+
+def test_move_operand_is_canonicalized_to_place_expr():
+	"""normalize_hir must canonicalize `move` operands to HPlaceExpr for stage2."""
+	block = H.HBlock(
+		statements=[
+			H.HLet(name="x", value=H.HLiteralInt(1)),
+			H.HExprStmt(expr=H.HMove(subject=H.HVar("x"), loc=Span())),
+		]
+	)
+	norm = normalize_hir(block)
+	assert len(norm.statements) == 2
+	stmt = norm.statements[1]
+	assert isinstance(stmt, H.HExprStmt)
+	assert isinstance(stmt.expr, H.HMove)
+	assert isinstance(stmt.expr.subject, H.HPlaceExpr)

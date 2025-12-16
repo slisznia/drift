@@ -103,6 +103,7 @@ Restrictions we keep explicit (reject with diagnostics):
     - `move` always consumes the source place (even for Copy types).
     - Reject moving while borrowed.
     - Reject use/borrow after move until reinitialized by assignment.
+  - Diagnostics are always emitted with a structured `Span` object (sentinel `Span()` when unknown), not `None`.
   - Consume canonical `HPlaceExpr` lvalues via `borrow_checker.place_from_expr` so
     assign/borrow/deref flows share one place model.
 - MIR:
@@ -153,10 +154,16 @@ Restrictions we keep explicit (reject with diagnostics):
 #### 2) Temporary materialization
 - Shared borrow of rvalues is supported via materialization (`&(expr)` becomes `val tmp = expr; &tmp`).
 - `&mut (rvalue)` remains rejected in MVP (no implicit temp materialization for mutable borrows).
+ - E2E coverage: shared borrow of rvalue works when dereferenced and when passed as a call argument (`&(1+2)`).
+ - Stage2 MIR lowering performs minimal numeric inference (`1+2` → Int, etc.) so materialized temporaries get stable local types.
 
 #### 3) Stronger tests (non-blocking)
 - Add targeted tests for:
   - more projection overlap scenarios (`x.a[0]` vs `x.a[i]`) once we add richer syntax.
+  - struct + array nested projections (`w.arr[0]` vs `w.arr[i]`) (now covered by e2e).
+  - unknown-index overlap across two indices (`&arr[i]` then `arr[j] = ...`) (now covered by e2e).
+  - prefix overlap on struct borrows (`&p` then `p.x = ...`) (now covered by e2e).
+  - deeper projection chains (`w.inner.arr[i]`) disjoint vs overlapping (now covered by e2e).
 
 ---
 

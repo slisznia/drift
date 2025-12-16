@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from lang2.driftc.stage0 import ast
 from lang2.driftc.stage1 import AstToHIR, HBlock
+from lang2.driftc.stage1.normalize import normalize_hir
 from lang2.driftc.stage2 import MirBuilder, HIRToMIR, MirFunc
 
 
@@ -28,7 +29,7 @@ def test_for_ast_lowered_to_mir_cfg():
 
 	# HIR → MIR
 	builder = MirBuilder(name="f_for")
-	HIRToMIR(builder).lower_block(hir_stmt)
+	HIRToMIR(builder).lower_block(normalize_hir(hir_stmt))
 	func: MirFunc = builder.func
 
 	# Basic CFG sanity: multiple blocks and all have terminators.

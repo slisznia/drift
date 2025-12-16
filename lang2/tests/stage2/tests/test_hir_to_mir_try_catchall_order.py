@@ -9,6 +9,7 @@ import pytest
 from lang2.driftc.stage2 import HIRToMIR, MirBuilder, mir_nodes as M
 from lang2.driftc import stage1 as H
 from lang2.driftc.core.types_core import TypeTable
+from lang2.driftc.stage1.normalize import normalize_hir
 
 
 def test_multiple_catch_all_rejected():
@@ -28,7 +29,7 @@ def test_multiple_catch_all_rejected():
 		]
 	)
 	with pytest.raises(RuntimeError):
-		lower.lower_block(hir)
+		lower.lower_block(normalize_hir(hir))
 
 
 def test_catch_all_not_last_is_rejected():
@@ -50,4 +51,4 @@ def test_catch_all_not_last_is_rejected():
 		]
 	)
 	with pytest.raises(RuntimeError):
-		lower.lower_block(hir)
+		lower.lower_block(normalize_hir(hir))

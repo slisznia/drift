@@ -5,6 +5,7 @@ Stage 2 test: HIR→MIR lowering for try/catch routing throws intra-function.
 """
 
 from lang2.driftc import stage1 as H
+from lang2.driftc.stage1.normalize import normalize_hir
 from lang2.driftc.stage2 import (
 	MirBuilder,
 	HIRToMIR,
@@ -60,7 +61,7 @@ def test_try_routes_throw_to_catch_block():
 			)
 		]
 	)
-	lower.lower_block(hir)
+	lower.lower_block(normalize_hir(hir))
 
 	blocks = builder.func.blocks
 
@@ -130,7 +131,7 @@ def test_try_dispatches_on_event_codes():
 			)
 		]
 	)
-	lower.lower_block(hir)
+	lower.lower_block(normalize_hir(hir))
 
 	blocks = builder.func.blocks
 	body = blocks[blocks["entry"].terminator.target]

@@ -13,6 +13,7 @@ from __future__ import annotations
 from lang2.driftc.stage2 import HIRToMIR, MirBuilder, mir_nodes as M
 from lang2.driftc import stage1 as H
 from lang2.driftc.core.types_core import TypeTable
+from lang2.driftc.stage1.normalize import normalize_hir
 
 
 def test_catch_binder_and_no_binder():
@@ -40,7 +41,7 @@ def test_catch_binder_and_no_binder():
 			)
 		]
 	)
-	lower.lower_block(hir)
+	lower.lower_block(normalize_hir(hir))
 	func = builder.func
 
 	# First catch arm (binder) should store the error into 'e'.
@@ -70,7 +71,7 @@ def test_unknown_event_name_matches_via_code_zero():
 			)
 		]
 	)
-	lower.lower_block(hir)
+	lower.lower_block(normalize_hir(hir))
 	func = builder.func
 	dispatch = func.blocks["try_dispatch"]
 
@@ -98,7 +99,7 @@ def test_outer_catch_all_catches_unmatched_inner():
 		body=H.HBlock(statements=[inner_try]),
 		catches=[H.HCatchArm(event_fqn=None, binder=None, block=H.HBlock(statements=[]))],
 	)
-	lower.lower_block(H.HBlock(statements=[outer_try]))
+	lower.lower_block(normalize_hir(H.HBlock(statements=[outer_try])))
 
 	func = builder.func
 	# Find dispatch blocks (main ones, not the chained _next).
