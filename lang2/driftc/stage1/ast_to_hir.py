@@ -251,6 +251,18 @@ class AstToHIR:
 			raise NotImplementedError(f"Unsupported unary op: {expr.op}")
 		return H.HUnary(op=op, expr=self.lower_expr(expr.operand))
 
+	def _visit_expr_Move(self, expr: ast.Move) -> H.HExpr:
+		"""
+		Lower the `move` expression.
+
+		This introduces an explicit ownership-transfer marker in HIR.
+		Addressability and move legality are validated later by:
+		  - `normalize_hir` (canonical place conversion),
+		  - the typed checker (operand must be a place),
+		  - the borrow checker (no move while borrowed; no use-after-move).
+		"""
+		return H.HMove(subject=self.lower_expr(expr.value), loc=getattr(expr, "loc", None) or Span())
+
 	def _visit_expr_Binary(self, expr: ast.Binary) -> H.HExpr:
 		"""
 		Binary op lowering. Short-circuit behavior for &&/|| is NOT lowered

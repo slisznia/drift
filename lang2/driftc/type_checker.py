@@ -53,6 +53,7 @@ class TypedFn:
 	binding_for_var: Dict[int, int]  # keyed by id(HVar)
 	binding_types: Dict[int, TypeId]  # binding_id -> TypeId
 	binding_names: Dict[int, str]  # binding_id -> name
+	binding_mutable: Dict[int, bool]  # binding_id -> declared var?
 	call_resolutions: Dict[int, CallableDecl | MethodResolution] = field(default_factory=dict)
 
 
@@ -275,9 +276,38 @@ class TypeChecker:
 					# Detect a deref projection anywhere in the place and validate the corresponding
 					# reference expression is `&mut`.
 					#
-					# We do a conservative check by inspecting the surface operand tree: if the borrow
-					# operand contains any unary deref, the pointer being dereferenced must type as `&mut _`.
+					# We do a conservative check:
+					#  - For canonical `HPlaceExpr` operands, walk projections and ensure each deref
+					#    happens through `&mut`.
+					#  - For legacy tree-shaped operands (`HUnary(DEREF, ...)`), walk the tree.
 					def _validate_mutable_derefs(node: H.HExpr) -> None:
+						if hasattr(H, "HPlaceExpr") and isinstance(node, getattr(H, "HPlaceExpr")):
+							cur = type_expr(node.base)
+							for pr in node.projections:
+								if isinstance(pr, H.HPlaceDeref):
+									ptr_def = self.type_table.get(cur)
+									if ptr_def.kind is not TypeKind.REF or not ptr_def.ref_mut:
+										diagnostics.append(
+											Diagnostic(
+												message="cannot take &mut through *p unless p is a mutable reference (&mut T)",
+												severity="error",
+												span=getattr(expr, "loc", Span()),
+											)
+										)
+										return
+									if ptr_def.param_types:
+										cur = ptr_def.param_types[0]
+								elif isinstance(pr, H.HPlaceField):
+									td = self.type_table.get(cur)
+									if td.kind is TypeKind.STRUCT:
+										info = self.type_table.struct_field(cur, pr.name)
+										if info is not None:
+											_, cur = info
+								elif isinstance(pr, H.HPlaceIndex):
+									td = self.type_table.get(cur)
+									if td.kind is TypeKind.ARRAY and td.param_types:
+										cur = td.param_types[0]
+							return
 						if isinstance(node, H.HUnary) and node.op is H.UnaryOp.DEREF:
 							ptr_ty = type_expr(node.expr)
 							ptr_def = self.type_table.get(ptr_ty)
@@ -319,6 +349,68 @@ class TypeChecker:
 
 				ref_ty = self.type_table.ensure_ref_mut(inner_ty) if expr.is_mut else self.type_table.ensure_ref(inner_ty)
 				return record_expr(expr, ref_ty)
+
+			# Explicit move.
+			#
+			# `move <place>` is a surface marker for ownership transfer. For MVP we
+			# keep it deliberately strict:
+			# - the operand must be an addressable place (same as borrow),
+			# - the operand must be a *plain* binding (no projections) to avoid
+			#   partial-move semantics before we have a real lifetime/ownership model.
+			#
+			# The borrow checker enforces:
+			# - no moving while borrowed, and
+			# - use-after-move until reinitialization.
+			if hasattr(H, "HMove") and isinstance(expr, getattr(H, "HMove")):
+				def _base_lookup(hv: object) -> Optional[PlaceBase]:
+					bid = getattr(hv, "binding_id", None)
+					if bid is None:
+						return None
+					kind = binding_place_kind.get(bid, PlaceKind.LOCAL)
+					name = hv.name if hasattr(hv, "name") else str(hv)
+					return PlaceBase(kind=kind, local_id=bid, name=name)
+
+				place = place_from_expr(expr.subject, base_lookup=_base_lookup)
+				if place is None:
+					diagnostics.append(
+						Diagnostic(
+							message="move operand must be an addressable place in MVP (local/param)",
+							severity="error",
+							span=getattr(expr, "loc", Span()),
+						)
+					)
+					return record_expr(expr, self._unknown)
+				if place.projections:
+					diagnostics.append(
+						Diagnostic(
+							message="move of a projected place is not supported in MVP; move a local/param or use swap/replace",
+							severity="error",
+							span=getattr(expr, "loc", Span()),
+						)
+					)
+					return record_expr(expr, self._unknown)
+				if place.base.local_id is not None and not binding_mutable.get(place.base.local_id, False):
+					diagnostics.append(
+						Diagnostic(
+							message="move requires an owned mutable binding declared with var",
+							severity="error",
+							span=getattr(expr, "loc", Span()),
+						)
+					)
+					return record_expr(expr, self._unknown)
+				inner_ty = type_expr(expr.subject)
+				if inner_ty is not None:
+					td = self.type_table.get(inner_ty)
+					if td.kind is TypeKind.REF:
+						diagnostics.append(
+							Diagnostic(
+								message="cannot move from a reference type; move requires owned storage",
+								severity="error",
+								span=getattr(expr, "loc", Span()),
+							)
+						)
+						return record_expr(expr, self._unknown)
+				return record_expr(expr, inner_ty)
 
 			# Calls.
 			if isinstance(expr, H.HCall):
@@ -470,6 +562,83 @@ class TypeChecker:
 				return record_expr(expr, self._unknown)
 
 			# Field access and indexing.
+			#
+			# Canonical place expressions (`HPlaceExpr`) denote addressable storage
+			# locations. In expression position they behave like lvalues: their type is
+			# the type of the referenced storage location.
+			if hasattr(H, "HPlaceExpr") and isinstance(expr, getattr(H, "HPlaceExpr")):
+				current_ty = type_expr(expr.base)
+				for proj in expr.projections:
+					if isinstance(proj, H.HPlaceDeref):
+						td = self.type_table.get(current_ty)
+						if td.kind is not TypeKind.REF or not td.param_types:
+							diagnostics.append(
+								Diagnostic(
+									message="deref requires a reference value",
+									severity="error",
+									span=getattr(expr, "loc", Span()),
+								)
+							)
+							return record_expr(expr, self._unknown)
+						current_ty = td.param_types[0]
+						continue
+					if isinstance(proj, H.HPlaceField):
+						td = self.type_table.get(current_ty)
+						if td.kind is not TypeKind.STRUCT:
+							diagnostics.append(
+								Diagnostic(
+									message="field access requires a struct value",
+									severity="error",
+									span=getattr(expr, "loc", Span()),
+								)
+							)
+							return record_expr(expr, self._unknown)
+						info = self.type_table.struct_field(current_ty, proj.name)
+						if info is None:
+							diagnostics.append(
+								Diagnostic(
+									message=f"unknown field '{proj.name}' on struct '{td.name}'",
+									severity="error",
+									span=getattr(expr, "loc", Span()),
+								)
+							)
+							return record_expr(expr, self._unknown)
+						_, field_ty = info
+						current_ty = field_ty
+						continue
+					if isinstance(proj, H.HPlaceIndex):
+						idx_ty = type_expr(proj.index)
+						if idx_ty is not None and idx_ty not in (self._int, self._uint):
+							diagnostics.append(
+								Diagnostic(
+									message="array index must be an integer type",
+									severity="error",
+									span=getattr(proj.index, "loc", getattr(expr, "loc", Span())),
+								)
+							)
+							return record_expr(expr, self._unknown)
+						td = self.type_table.get(current_ty)
+						if td.kind is not TypeKind.ARRAY or not td.param_types:
+							diagnostics.append(
+								Diagnostic(
+									message="indexing requires an Array value",
+									severity="error",
+									span=getattr(expr, "loc", Span()),
+								)
+							)
+							return record_expr(expr, self._unknown)
+						current_ty = td.param_types[0]
+						continue
+					diagnostics.append(
+						Diagnostic(
+							message="unsupported place projection",
+							severity="error",
+							span=getattr(expr, "loc", Span()),
+						)
+					)
+					return record_expr(expr, self._unknown)
+				return record_expr(expr, current_ty)
+
 			if isinstance(expr, H.HField):
 				sub_ty = type_expr(expr.subject)
 				if expr.name == "attrs":
@@ -789,6 +958,7 @@ class TypeChecker:
 			binding_for_var=binding_for_var,
 			binding_types=binding_types,
 			binding_names=binding_names,
+			binding_mutable=binding_mutable,
 			call_resolutions=call_resolutions,
 		)
 		return TypeCheckResult(typed_fn=typed, diagnostics=diagnostics)

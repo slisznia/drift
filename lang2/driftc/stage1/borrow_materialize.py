@@ -25,7 +25,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import List, Tuple
 
+from lang2.driftc.core.span import Span
 from . import hir_nodes as H
+from .place_expr import place_expr_from_lvalue_expr
 
 
 @dataclass
@@ -96,25 +98,20 @@ class BorrowMaterializeRewriter:
 			return [stmt]
 		raise NotImplementedError(f"BorrowMaterializeRewriter does not handle stmt {type(stmt).__name__}")
 
-	def _is_place_expr(self, expr: H.HExpr) -> bool:
+	def _to_place(self, expr: H.HExpr) -> H.HPlaceExpr | None:
 		"""
-		Best-effort place check without type info.
+		Best-effort conversion from legacy place-like expressions to `HPlaceExpr`.
 
-		This is intentionally syntactic: we treat these shapes as "place-like":
-		- `HVar`
-		- `HField(place, name)`
-		- `HIndex(place, idx)`
-		- `HUnary(DEREF, expr)` (deref place)
+		This pass is purely structural (no type info), so we only recognize the
+		shapes that are syntactically addressable:
+		  - `HVar`
+		  - `HField(place, name)`
+		  - `HIndex(place, idx)`
+		  - `HUnary(DEREF, place)`
+
+		All other expressions are treated as rvalues.
 		"""
-		if isinstance(expr, H.HVar):
-			return True
-		if isinstance(expr, H.HField):
-			return self._is_place_expr(expr.subject)
-		if isinstance(expr, H.HIndex):
-			return self._is_place_expr(expr.subject)
-		if isinstance(expr, H.HUnary) and expr.op is H.UnaryOp.DEREF:
-			return True
-		return False
+		return place_expr_from_lvalue_expr(expr)
 
 	def _rewrite_expr(self, expr: H.HExpr) -> Tuple[List[H.HStmt], H.HExpr]:
 		if isinstance(expr, H.HVar):
@@ -160,15 +157,21 @@ class BorrowMaterializeRewriter:
 			return pfx_c + pfx_t + pfx_e, H.HTernary(cond=cond, then_expr=then, else_expr=els)
 		if isinstance(expr, H.HBorrow):
 			pfx, subj = self._rewrite_expr(expr.subject)
+			place = self._to_place(subj)
 			# Only materialize shared borrows. `&mut` rvalue remains a checker error.
-			if not expr.is_mut and not self._is_place_expr(subj):
+			if not expr.is_mut and place is None:
 				tmp = self._fresh()
 				return (
 					pfx
 					+ [H.HLet(name=tmp, value=subj, declared_type_expr=None, binding_id=None, is_mutable=False)],
-					H.HBorrow(subject=H.HVar(tmp), is_mut=False),
+					H.HBorrow(subject=H.HPlaceExpr(base=H.HVar(tmp), projections=[]), is_mut=False),
 				)
-			return pfx, H.HBorrow(subject=subj, is_mut=expr.is_mut)
+			# Canonicalize to a place expression when possible; this makes later
+			# phases less dependent on re-deriving place structure from trees.
+			return pfx, H.HBorrow(subject=place if place is not None else subj, is_mut=expr.is_mut)
+		if isinstance(expr, getattr(H, "HMove", ())):
+			pfx, subj = self._rewrite_expr(expr.subject)
+			return pfx, H.HMove(subject=subj, loc=getattr(expr, "loc", Span()))
 		if isinstance(expr, H.HArrayLiteral):
 			pfx: List[H.HStmt] = []
 			new_elems: List[H.HExpr] = []
@@ -192,7 +195,7 @@ class BorrowMaterializeRewriter:
 				apfx, av = self._rewrite_expr(a)
 				pfx.extend(apfx)
 				new_args.append(av)
-			return pfx, H.HDVInit(dv_type_name=expr.dv_type_name, args=new_args, attr_names=expr.attr_names)
+			return pfx, H.HDVInit(dv_type_name=expr.dv_type_name, args=new_args)
 		if isinstance(expr, H.HExceptionInit):
 			pfx: List[H.HStmt] = []
 			new_pos: List[H.HExpr] = []

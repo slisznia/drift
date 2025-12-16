@@ -87,7 +87,17 @@ class TryResultRewriter:
 			return prefix + [H.HThrow(value=expr)]
 		if isinstance(stmt, H.HLet):
 			prefix, expr = self._rewrite_expr(stmt.value)
-			return prefix + [H.HLet(name=stmt.name, value=expr)]
+			# Preserve HLet metadata. Normalization passes must not silently change
+			# `val` ↔ `var` semantics, drop binding identity, or erase type annotations.
+			return prefix + [
+				H.HLet(
+					name=stmt.name,
+					value=expr,
+					declared_type_expr=getattr(stmt, "declared_type_expr", None),
+					binding_id=getattr(stmt, "binding_id", None),
+					is_mutable=bool(getattr(stmt, "is_mutable", False)),
+				)
+			]
 		if isinstance(stmt, H.HAssign):
 			prefix_target, target = self._rewrite_expr(stmt.target)
 			prefix_value, value = self._rewrite_expr(stmt.value)
@@ -159,12 +169,29 @@ class TryResultRewriter:
 			pfx_subj, subj = self._rewrite_expr(expr.subject)
 			pfx_idx, idx = self._rewrite_expr(expr.index)
 			return pfx_subj + pfx_idx, H.HIndex(subject=subj, index=idx)
+		if hasattr(H, "HPlaceExpr") and isinstance(expr, getattr(H, "HPlaceExpr")):
+			# Canonical place expressions can still contain index sub-expressions.
+			# We allow try-result sugar inside those index expressions by returning
+			# any prefixes that must execute before evaluating the place.
+			pfx: List[H.HStmt] = []
+			new_projs: list[H.HPlaceProj] = []
+			for proj in expr.projections:
+				if isinstance(proj, H.HPlaceIndex):
+					ipfx, idx = self._rewrite_expr(proj.index)
+					pfx.extend(ipfx)
+					new_projs.append(H.HPlaceIndex(index=idx))
+				else:
+					new_projs.append(proj)
+			return pfx, H.HPlaceExpr(base=expr.base, projections=new_projs, loc=getattr(expr, "loc", Span()))
 		if isinstance(expr, H.HBorrow):
 			# Borrow expressions are pure (they only observe a place). We still
 			# rewrite nested try-result sugar inside the subject expression so
 			# `&try foo()?` behaves consistently once temp materialization exists.
 			pfx, subj = self._rewrite_expr(expr.subject)
 			return pfx, H.HBorrow(subject=subj, is_mut=expr.is_mut)
+		if isinstance(expr, getattr(H, "HMove", ())):
+			pfx, subj = self._rewrite_expr(expr.subject)
+			return pfx, H.HMove(subject=subj, loc=getattr(expr, "loc", Span()))
 		if isinstance(expr, H.HUnary):
 			pfx, inner = self._rewrite_expr(expr.expr)
 			return pfx, H.HUnary(op=expr.op, expr=inner)

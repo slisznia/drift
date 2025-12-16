@@ -91,6 +91,78 @@ class HVar(HExpr):
 	binding_id: Optional[BindingId] = None
 
 
+@dataclass(frozen=True)
+class HPlaceProj(HNode):
+	"""
+	Projection inside an addressable place.
+
+	HIR distinguishes between:
+	  - value expressions (rvalues), and
+	  - *places* (lvalues): an addressable storage location plus projections.
+
+	A place is represented as `HPlaceExpr(base, projections)`, where `base` is a
+	binding (`HVar`) and projections describe how to reach a sub-location.
+
+	This structure is intentionally minimal and purely syntactic. Semantic rules
+	(like "index must be Int") are enforced by the typed checker and borrow
+	checker, not here.
+	"""
+
+
+@dataclass(frozen=True)
+class HPlaceField(HPlaceProj):
+	"""Field projection: `.name`."""
+
+	name: str
+
+
+@dataclass(frozen=True)
+class HPlaceIndex(HPlaceProj):
+	"""Index projection: `[index]` (index is a value expression)."""
+
+	index: "HExpr"
+
+
+@dataclass(frozen=True)
+class HPlaceDeref(HPlaceProj):
+	"""
+	Deref projection: `*p`.
+
+	We model deref as a projection so nested places like `(*p).x` are represented
+	as a single place with projections: `Deref`, `Field("x")`.
+	"""
+
+
+@dataclass
+class HPlaceExpr(HExpr):
+	"""
+	Addressable place expression (lvalue).
+
+	This is the stage1→stage2 *boundary* representation for lvalues: later phases
+	should not "re-derive" place-ness from arbitrary expression trees. Instead,
+	normalization converts assign targets and borrow operands into this canonical
+	shape.
+
+	Example source shapes and their canonical places:
+
+	  x                -> base=x, projections=[]
+	  x.field          -> base=x, projections=[Field("field")]
+	  x[i]             -> base=x, projections=[Index(i)]
+	  (*p).field[i]    -> base=p, projections=[Deref, Field("field"), Index(i)]
+
+	Notes:
+	  - `base` is always a binding (`HVar`), not an arbitrary expression. This is
+	    deliberate: borrowing an rvalue is handled by temporary materialization.
+	  - `loc` is a best-effort span for diagnostics; many HIR nodes do not yet
+	    carry precise spans, so `Span()` acts as an explicit "unknown location"
+	    sentinel.
+	"""
+
+	base: HVar
+	projections: list[HPlaceProj] = field(default_factory=list)
+	loc: Span = field(default_factory=Span)
+
+
 @dataclass
 class HLiteralInt(HExpr):
 	"""Integer literal (as parsed)."""
@@ -300,8 +372,24 @@ class HIndex(HExpr):
 class HBorrow(HExpr):
 	"""Borrow an lvalue: &subject or &mut subject."""
 
+	# Normalized HIR should always use a canonical `HPlaceExpr` here. We keep the
+	# type broad because early/lowered HIR may still contain raw place-like
+	# expressions; `normalize_hir` is responsible for canonicalizing them.
 	subject: HExpr
 	is_mut: bool
+
+
+@dataclass
+class HMove(HExpr):
+	"""
+	Explicit move of a value out of an addressable place: `move <place>`.
+
+	The operand is required to be an addressable place. Stage1 normalization
+	canonicalizes it to `HPlaceExpr` so later phases can operate on a single
+representation of places.
+	"""
+	subject: HExpr
+	loc: Span = field(default_factory=Span)
 
 
 @dataclass
@@ -397,7 +485,9 @@ class HLet(HStmt):
 
 @dataclass
 class HAssign(HStmt):
-	target: HExpr  # usually HVar, HField, HIndex
+	# Normalized HIR should always use a canonical `HPlaceExpr` here. We keep the
+	# type broad because stage0/stage1 tests may still construct raw targets.
+	target: HExpr
 	value: HExpr
 
 
@@ -436,7 +526,9 @@ __all__ = [
 	"HVar", "HLiteralInt", "HLiteralString", "HLiteralBool", "HLiteralFloat",
 	"HFString", "HFStringHole",
 	"HCall", "HMethodCall", "HTernary", "HTryResult", "HResultOk",
+	"HPlaceExpr", "HPlaceProj", "HPlaceField", "HPlaceIndex", "HPlaceDeref",
 	"HField", "HIndex", "HBorrow", "HDVInit",
+	"HMove",
 	"HKwArg",
 	"HExceptionInit",
 	"HUnary", "HBinary", "HArrayLiteral",

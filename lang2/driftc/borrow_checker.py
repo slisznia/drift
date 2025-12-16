@@ -185,6 +185,34 @@ def place_from_expr(expr: H.HExpr, *, base_lookup: Callable[[object], Optional[P
 
 	Returns None for rvalues.
 	"""
+	# Canonical place expression (stage1→stage2 boundary).
+	if hasattr(H, "HPlaceExpr") and isinstance(expr, getattr(H, "HPlaceExpr")):
+		base = base_lookup(expr.base)
+		if base is None:
+			return None
+		place = Place(base)
+		for proj in expr.projections:
+			if isinstance(proj, H.HPlaceField):
+				place = place.with_projection(FieldProj(proj.name))
+				continue
+			if isinstance(proj, H.HPlaceDeref):
+				place = place.with_projection(DerefProj())
+				continue
+			if isinstance(proj, H.HPlaceIndex):
+				const_val: Optional[int] = None
+				if isinstance(proj.index, H.HLiteralInt):
+					try:
+						const_val = int(proj.index.value)
+					except Exception:
+						const_val = None
+				kind = IndexKind.CONST if const_val is not None else IndexKind.ANY
+				place = place.with_projection(IndexProj(kind=kind, value=const_val))
+				continue
+			# Unknown projections conservatively make this non-addressable until
+			# the place model is extended.
+			return None
+		return place
+
 	if isinstance(expr, H.HVar):
 		base = base_lookup(expr)
 		if base is None:

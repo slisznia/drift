@@ -676,6 +676,9 @@ class Checker:
 					return checker._string_type
 				if expr.name in self.locals:
 					return self.locals[expr.name]
+			if hasattr(H, "HMove") and isinstance(expr, getattr(H, "HMove")):
+				# `move <place>` yields the underlying value type (best-effort).
+				return self._infer_expr_type(expr.subject)
 
 			if isinstance(expr, H.HCall) and isinstance(expr.fn, H.HVar):
 				callee = self.fn_infos.get(expr.fn.name)

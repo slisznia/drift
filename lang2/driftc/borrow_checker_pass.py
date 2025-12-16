@@ -95,6 +95,7 @@ class BorrowChecker:
 	type_table: TypeTable
 	fn_types: Mapping[PlaceBase, TypeId]
 	binding_types: Optional[Dict[int, TypeId]] = None
+	binding_mutable: Optional[Dict[int, bool]] = None
 	signatures: Optional[Mapping[str, FnSignature]] = None
 	call_resolutions: Optional[Mapping[int, object]] = None
 	base_lookup: Callable[[object], Optional[PlaceBase]] = lambda hv: PlaceBase(
@@ -144,6 +145,7 @@ class BorrowChecker:
 			type_table=type_table,
 			fn_types=fn_types,
 			binding_types=dict(typed_fn.binding_types),
+			binding_mutable=dict(getattr(typed_fn, "binding_mutable", {}) or {}),
 			signatures=signatures,
 			call_resolutions=getattr(typed_fn, "call_resolutions", None),
 			base_lookup=base_lookup,
@@ -198,6 +200,39 @@ class BorrowChecker:
 			if self._places_overlap(place, loan.place):
 				self._diagnostic(f"cannot move '{place.base.name}' while borrowed")
 				return
+		self._set_state(state, place, PlaceState.MOVED)
+
+	def _force_move_place_use(self, state: _FlowState, place: Place) -> None:
+		"""
+		Consume a place via an explicit `move` expression.
+
+		Unlike implicit move semantics (which only apply to non-Copy types),
+		`move <place>` is an explicit ownership-transfer marker and always
+		invalidates the source place, even for Copy types.
+
+		The borrow checker still enforces:
+		- no moving while borrowed (overlap with any live loan), and
+		- use-after-move diagnostics until the place is reinitialized.
+		"""
+		curr = self._state_for(state, place)
+		if curr is PlaceState.MOVED:
+			self._diagnostic(f"use after move of '{place.base.name}'")
+			return
+		for loan in state.loans:
+			if self._places_overlap(place, loan.place):
+				self._diagnostic(f"cannot move '{place.base.name}' while borrowed")
+				return
+		# Backstop: `move` is only allowed from owned mutable bindings. Parameters
+		# are treated as immutable, and reference-typed bindings are non-owning.
+		if self.binding_mutable is not None:
+			mut = self.binding_mutable.get(place.base.local_id, False)
+			if not mut:
+				self._diagnostic(f"cannot move from immutable binding '{place.base.name}'")
+				return
+		ty = self.fn_types.get(place.base)
+		if ty is not None and self.type_table.get(ty).kind is TypeKind.REF:
+			self._diagnostic(f"cannot move from reference '{place.base.name}'")
+			return
 		self._set_state(state, place, PlaceState.MOVED)
 
 	def _places_overlap(self, a: Place, b: Place) -> bool:
@@ -456,6 +491,17 @@ class BorrowChecker:
 				self._diagnostic("cannot borrow from a non-lvalue expression")
 				return
 			self._borrow_place(state, place, LoanKind.MUT if expr.is_mut else LoanKind.SHARED)
+			return
+		if hasattr(H, "HMove") and isinstance(expr, getattr(H, "HMove")):
+			if not as_value:
+				# `move <place>` is always a value-producing expression.
+				self._visit_expr(state, expr.subject, as_value=True)
+				return
+			place = place_from_expr(expr.subject, base_lookup=self.base_lookup)
+			if place is None:
+				self._diagnostic("move operand must be an addressable place")
+				return
+			self._force_move_place_use(state, place)
 			return
 		if isinstance(expr, H.HCall):
 			pre_loans = set(state.loans)

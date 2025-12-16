@@ -338,6 +338,42 @@ class HIRToMIR:
 		ptr, _inner = self._lower_addr_of_place(expr.subject, is_mut=expr.is_mut)
 		return ptr
 
+	def _visit_expr_HMove(self, expr: H.HMove) -> M.ValueId:
+		"""
+		Lower explicit `move <place>` as:
+		  - read the current value, and
+		  - reset the source storage to a well-defined zero value.
+
+		Why reset the source?
+		- It makes "moved-from" storage safe for future destructor/RAII work.
+		- It avoids allocations when moving `String` (zero-initialized `%DriftString`
+		  is a valid empty string representation in the runtime ABI).
+
+		MVP restriction:
+		- Only plain bindings (locals/params) are movable via `move` in this phase.
+		  Moving out of projections (fields/indexes) would require partial-move
+		  semantics and more precise liveness tracking.
+		"""
+		subj = expr.subject
+		if hasattr(H, "HPlaceExpr") and isinstance(subj, getattr(H, "HPlaceExpr")):
+			if subj.projections:
+				raise AssertionError("move of projected place reached MIR lowering (checker bug)")
+			subj = subj.base
+		if not isinstance(subj, H.HVar):
+			raise AssertionError("move operand is not a local/param (checker bug)")
+
+		self.b.ensure_local(subj.name)
+		moved_val = self.b.new_temp()
+		self.b.emit(M.LoadLocal(dest=moved_val, local=subj.name))
+
+		inner_ty = self._infer_expr_type(subj)
+		if inner_ty is None:
+			raise AssertionError("move operand type unknown in MIR lowering (checker bug)")
+		zero = self.b.new_temp()
+		self.b.emit(M.ZeroValue(dest=zero, ty=inner_ty))
+		self.b.emit(M.StoreLocal(local=subj.name, value=zero))
+		return moved_val
+
 	def _visit_expr_HUnary(self, expr: H.HUnary) -> M.ValueId:
 		# Dereference is modeled as an explicit MIR load.
 		if expr.op is H.UnaryOp.DEREF:
@@ -841,6 +877,20 @@ class HIRToMIR:
 
 	def _visit_stmt_HAssign(self, stmt: H.HAssign) -> None:
 		val = self.lower_expr(stmt.value)
+		# Canonical place expression: assignments lower through address-of + StoreRef,
+		# except for the trivial "local = value" case which keeps the `StoreLocal`
+		# primitive (important for SSA/local-type tracking).
+		if hasattr(H, "HPlaceExpr") and isinstance(stmt.target, getattr(H, "HPlaceExpr")):
+			if not stmt.target.projections:
+				self.b.ensure_local(stmt.target.base.name)
+				val_ty = self._infer_expr_type(stmt.value)
+				if val_ty is not None:
+					self._local_types[stmt.target.base.name] = val_ty
+				self.b.emit(M.StoreLocal(local=stmt.target.base.name, value=val))
+				return
+			ptr, inner_ty = self._lower_addr_of_place(stmt.target, is_mut=True)
+			self.b.emit(M.StoreRef(ptr=ptr, value=val, inner_ty=inner_ty))
+			return
 		if isinstance(stmt.target, H.HVar):
 			self.b.ensure_local(stmt.target.name)
 			val_ty = self._infer_expr_type(stmt.value)
@@ -1566,10 +1616,40 @@ class HIRToMIR:
 			return self._type_table.new_array(elem_ty)
 		if isinstance(expr, H.HVar):
 			return self._local_types.get(expr.name)
+		if hasattr(H, "HPlaceExpr") and isinstance(expr, getattr(H, "HPlaceExpr")):
+			# Canonical place expression: its type is the type of the referenced
+			# storage location (same as reading the lvalue).
+			cur = self._infer_expr_type(expr.base)
+			if cur is None:
+				return None
+			for proj in expr.projections:
+				if isinstance(proj, H.HPlaceDeref):
+					td = self._type_table.get(cur)
+					if td.kind is not TypeKind.REF or not td.param_types:
+						return None
+					cur = td.param_types[0]
+					continue
+				if isinstance(proj, H.HPlaceField):
+					info = self._type_table.struct_field(cur, proj.name)
+					if info is None:
+						return None
+					_, cur = info
+					continue
+				if isinstance(proj, H.HPlaceIndex):
+					td = self._type_table.get(cur)
+					if td.kind is not TypeKind.ARRAY or not td.param_types:
+						return None
+					cur = td.param_types[0]
+					continue
+				return None
+			return cur
 		if isinstance(expr, H.HBorrow):
 			inner = self._infer_expr_type(expr.subject)
 			inner = inner if inner is not None else self._unknown_type
 			return self._type_table.ensure_ref_mut(inner) if expr.is_mut else self._type_table.ensure_ref(inner)
+		if hasattr(H, "HMove") and isinstance(expr, getattr(H, "HMove")):
+			# `move <place>` yields the underlying value type.
+			return self._infer_expr_type(expr.subject)
 		if isinstance(expr, H.HUnary) and expr.op is H.UnaryOp.DEREF:
 			operand_ty = self._infer_expr_type(expr.expr)
 			if operand_ty is None:
@@ -1626,6 +1706,84 @@ class HIRToMIR:
 			dest = self.b.new_temp()
 			self.b.emit(M.AddrOfLocal(dest=dest, local=expr.name, is_mut=is_mut))
 			return dest, ty
+
+		# Canonical place expression (stage1→stage2 boundary).
+		if hasattr(H, "HPlaceExpr") and isinstance(expr, getattr(H, "HPlaceExpr")):
+			base_name = expr.base.name
+			self.b.ensure_local(base_name)
+			cur_ty = self._infer_expr_type(expr.base)
+			if cur_ty is None:
+				raise AssertionError("address-of place base type unknown in MIR lowering (checker bug)")
+			addr = self.b.new_temp()
+			self.b.emit(M.AddrOfLocal(dest=addr, local=base_name, is_mut=is_mut))
+
+			# Apply projections left-to-right, maintaining the invariant:
+			#   `addr` is a pointer to a value of type `cur_ty`.
+			for proj in expr.projections:
+				# Deref projection: load a reference value (pointer) from storage and
+				# treat it as the new address.
+				if isinstance(proj, H.HPlaceDeref):
+					td = self._type_table.get(cur_ty)
+					if td.kind is not TypeKind.REF or not td.param_types:
+						raise AssertionError("deref place of non-ref reached MIR lowering (checker bug)")
+					if is_mut and not td.ref_mut:
+						raise AssertionError("mutable deref place without &mut reached MIR lowering (checker bug)")
+					loaded_ptr = self.b.new_temp()
+					self.b.emit(M.LoadRef(dest=loaded_ptr, ptr=addr, inner_ty=cur_ty))
+					addr = loaded_ptr
+					cur_ty = td.param_types[0]
+					continue
+
+				# Field projection: compute field address from a struct address.
+				if isinstance(proj, H.HPlaceField):
+					base_def = self._type_table.get(cur_ty)
+					if base_def.kind is not TypeKind.STRUCT:
+						raise AssertionError("field place base is not a struct (checker bug)")
+					info = self._type_table.struct_field(cur_ty, proj.name)
+					if info is None:
+						raise AssertionError("unknown struct field reached MIR lowering (checker bug)")
+					field_idx, field_ty = info
+					dest = self.b.new_temp()
+					self.b.emit(
+						M.AddrOfField(
+							dest=dest,
+							base_ptr=addr,
+							struct_ty=cur_ty,
+							field_index=field_idx,
+							field_ty=field_ty,
+							is_mut=is_mut,
+						)
+					)
+					addr = dest
+					cur_ty = field_ty
+					continue
+
+				# Index projection: load the array value then compute element address.
+				if isinstance(proj, H.HPlaceIndex):
+					array_def = self._type_table.get(cur_ty)
+					if array_def.kind is not TypeKind.ARRAY or not array_def.param_types:
+						raise AssertionError("index place of non-array reached MIR lowering (checker bug)")
+					elem_ty = array_def.param_types[0]
+					array_val = self.b.new_temp()
+					self.b.emit(M.LoadRef(dest=array_val, ptr=addr, inner_ty=cur_ty))
+					index_val = self.lower_expr(proj.index)
+					dest = self.b.new_temp()
+					self.b.emit(
+						M.AddrOfArrayElem(
+							dest=dest,
+							array=array_val,
+							index=index_val,
+							inner_ty=elem_ty,
+							is_mut=is_mut,
+						)
+					)
+					addr = dest
+					cur_ty = elem_ty
+					continue
+
+				raise AssertionError("unsupported place projection reached MIR lowering (checker bug)")
+
+			return addr, cur_ty
 
 		# Deref place: `*p` as an lvalue yields the underlying pointer value.
 		if isinstance(expr, H.HUnary) and expr.op is H.UnaryOp.DEREF:

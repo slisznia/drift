@@ -83,6 +83,24 @@ class ConstFloat(MInstr):
 
 
 @dataclass
+class ZeroValue(MInstr):
+	"""
+	dest = 0-value of a type (zero / null / zero-initialized aggregate).
+
+	This instruction exists primarily to support `move <place>` semantics in a
+	way that is:
+	- ABI-safe (moved-from storage is reset to a known safe value), and
+	- allocation-free (unlike constructing an empty `String` via runtime helpers).
+
+	Codegen contract:
+	- For scalars, this should be a cheap constant.
+	- For aggregates, this should be constructed without calling into the runtime.
+	"""
+	dest: ValueId
+	ty: TypeId
+
+
+@dataclass
 class StringFromInt(MInstr):
 	"""
 	dest = String(value)
@@ -661,6 +679,7 @@ __all__ = [
 	"ConstBool",
 	"ConstString",
 	"ConstFloat",
+	"ZeroValue",
 	"StringFromInt",
 	"StringFromBool",
 	"StringFromUint",

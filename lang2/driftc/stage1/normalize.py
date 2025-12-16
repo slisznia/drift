@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from . import hir_nodes as H
 from .borrow_materialize import BorrowMaterializeRewriter
+from .place_canonicalize import PlaceCanonicalizeRewriter
 from .try_result_rewrite import TryResultRewriter
 
 
@@ -34,6 +35,9 @@ def normalize_hir(block: H.HBlock) -> H.HBlock:
 	# 1) Expand try-result sugar first so later passes only see core nodes.
 	# 2) Materialize shared borrows of rvalues into temps so borrow checking and
 	#    MIR lowering can treat borrow operands as places.
+	# 3) Canonicalize lvalue contexts so stage2 sees `HPlaceExpr` instead of
+	#    re-deriving place-ness from arbitrary expression trees.
 	block = TryResultRewriter().rewrite_block(block)
 	block = BorrowMaterializeRewriter().rewrite_block(block)
+	block = PlaceCanonicalizeRewriter().rewrite_block(block)
 	return block

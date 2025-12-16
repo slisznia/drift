@@ -17,8 +17,8 @@ This file defines the lexical rules, precedence, and productions for Drift. It i
 
 ## 2. Precedence and associativity (high → low)
 
-1. Postfix: call `()`, index `[]`, member `.`, move `->`
-2. Unary: `-`, `!`, `not`, `&`
+1. Postfix: call `()`, index `[]`, member `.`, member-through-ref `->`
+2. Unary: `move`, `copy`, `-`, `!`, `not`, `&`, `*` (deref)
 3. Multiplicative: `*`, `/`, `%`
 4. Additive: `+`, `-`
 5. Comparisons: `<`, `<=`, `>`, `>=`, `==`, `!=`

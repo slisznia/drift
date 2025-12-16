@@ -1,0 +1,8 @@
+fn main() returns Int {
+	var arr = [0, 0];
+	val i: Int = 0;
+	val p = &arr[i];
+	arr[0] = 1;
+	return 0;
+}
+

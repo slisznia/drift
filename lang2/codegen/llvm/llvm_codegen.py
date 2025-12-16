@@ -53,6 +53,7 @@ from lang2.driftc.stage2 import (
 	ConstBool,
 	ConstInt,
 	ConstString,
+	ZeroValue,
 	ConstructError,
 	ErrorAddAttrDV,
 	ErrorEvent,
@@ -704,6 +705,11 @@ class _FuncBuilder:
 			lit = repr(instr.value)
 			self.value_types[dest] = "double"
 			self.lines.append(f"  {dest} = fadd double 0.0, {lit}")
+		elif isinstance(instr, ZeroValue):
+			if self.type_table is None:
+				raise NotImplementedError("LLVM codegen v1: ZeroValue requires a TypeTable")
+			dest = self._map_value(instr.dest)
+			self._emit_zero_value(dest, instr.ty)
 		elif isinstance(instr, UnaryOpInstr):
 			self._lower_unary(instr)
 		elif isinstance(instr, ConstString):
@@ -1572,6 +1578,99 @@ class _FuncBuilder:
 			return f"{ok_llty} null"
 		# Structs/arrays and placeholder i8 can use zeroinitializer.
 		return f"{ok_llty} zeroinitializer"
+
+	def _zero_operand_for_typeid(self, ty: TypeId) -> str:
+		"""
+		Return a typed zero constant operand for `ty`.
+
+		This is used when constructing aggregate zeros via `insertvalue`. For
+		aggregate fields we prefer `zeroinitializer` because it is a constant and
+		does not require emitting additional instructions.
+		"""
+		llty = self._llvm_type_for_typeid(ty)
+		td = self.type_table.get(ty) if self.type_table is not None else None
+		if llty == "i64":
+			return "i64 0"
+		if llty == "i1":
+			return "i1 0"
+		if llty == "double":
+			return "double 0.0"
+		if llty.endswith("*"):
+			return f"{llty} null"
+		# Arrays/structs (including String-as-aggregate) can be used as constants.
+		if td is not None and td.kind in (TypeKind.ARRAY, TypeKind.STRUCT, TypeKind.SCALAR, TypeKind.ERROR, TypeKind.DIAGNOSTICVALUE):
+			return f"{llty} zeroinitializer"
+		return f"{llty} zeroinitializer"
+
+	def _emit_zero_value(self, dest: str, ty: TypeId) -> None:
+		"""
+		Emit IR that materializes the 0-value of `ty` into `dest`.
+
+		Unlike using a raw `zeroinitializer` constant, we need a real SSA value
+		because non-address-taken locals in v1 are tracked via SSA aliases rather
+		than via `store` instructions. This helper constructs aggregates via
+		`insertvalue` chains.
+		"""
+		if self.type_table is None:
+			raise NotImplementedError("LLVM codegen v1: zero-value emission requires a TypeTable")
+		llty = self._llvm_type_for_typeid(ty)
+		td = self.type_table.get(ty)
+
+		# Scalars: cheap constants.
+		if llty == "i64":
+			self.lines.append(f"  {dest} = add i64 0, 0")
+			self.value_types[dest] = "i64"
+			return
+		if llty == "i1":
+			self.lines.append(f"  {dest} = add i1 0, 0")
+			self.value_types[dest] = "i1"
+			return
+		if llty == "double":
+			self.lines.append(f"  {dest} = fadd double 0.0, 0.0")
+			self.value_types[dest] = "double"
+			return
+		if llty.endswith("*"):
+			# Typed pointer null. We use a bitcast to keep the pattern uniform.
+			self.lines.append(f"  {dest} = bitcast {llty} null to {llty}")
+			self.value_types[dest] = llty
+			return
+
+		# Array runtime representation is a fixed 3-field aggregate in v1:
+		#   { len: %drift.size, cap: %drift.size, data: <elem>* }
+		if td.kind is TypeKind.ARRAY and td.param_types:
+			elem_llty = self._llvm_type_for_typeid(td.param_types[0])
+			arr_llty = self._llvm_array_type(elem_llty)
+			tmp0 = self._fresh("zero_arr")
+			self.lines.append(f"  {tmp0} = insertvalue {arr_llty} undef, {DRIFT_SIZE_TYPE} 0, 0")
+			tmp1 = self._fresh("zero_arr")
+			self.lines.append(f"  {tmp1} = insertvalue {arr_llty} {tmp0}, {DRIFT_SIZE_TYPE} 0, 1")
+			self.lines.append(f"  {dest} = insertvalue {arr_llty} {tmp1}, {elem_llty}* null, 2")
+			self.value_types[dest] = arr_llty
+			return
+
+		# Structs (including String, which is represented as a scalar TypeId but
+		# lowered to `%DriftString` aggregate): materialize field-by-field using
+		# constant operands.
+		if llty == DRIFT_STRING_TYPE:
+			tmp0 = self._fresh("zero_str")
+			self.lines.append(f"  {tmp0} = insertvalue {DRIFT_STRING_TYPE} undef, {DRIFT_SIZE_TYPE} 0, 0")
+			self.lines.append(f"  {dest} = insertvalue {DRIFT_STRING_TYPE} {tmp0}, i8* null, 1")
+			self.value_types[dest] = DRIFT_STRING_TYPE
+			return
+
+		if td.kind is TypeKind.STRUCT and td.param_types:
+			cur = "undef"
+			last_idx = len(td.param_types) - 1
+			for idx, fty in enumerate(td.param_types):
+				operand = self._zero_operand_for_typeid(fty)
+				out = dest if idx == last_idx else self._fresh("zero_struct")
+				self.lines.append(f"  {out} = insertvalue {llty} {cur}, {operand}, {idx}")
+				cur = out
+			self.value_types[dest] = llty
+			return
+
+		# Fallback: keep this strict so we don't silently invent ABI behavior.
+		raise NotImplementedError(f"LLVM codegen v1: cannot materialize zero value for type {td.kind} ({llty})")
 
 	def _fresh(self, hint: str = "tmp") -> str:
 		self.tmp_counter += 1

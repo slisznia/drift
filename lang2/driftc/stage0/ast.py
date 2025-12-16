@@ -105,6 +105,23 @@ class Unary(Expr):
 
 
 @dataclass
+class Move(Expr):
+	"""
+	Ownership transfer: `move <expr>`.
+
+	This is a *surface* marker that explicitly requests moving a value out of an
+	addressable place.
+
+	Semantic intent (enforced later):
+	- The operand must be an addressable place (not an rvalue).
+	- The operand is consumed and becomes unusable until reinitialized.
+	- Moving out of borrowed storage is rejected by the borrow checker.
+	"""
+	value: Expr
+	loc: Optional[object] = None
+
+
+@dataclass
 class Index(Expr):
 	"""Indexing expression: value[index]."""
 	value: Expr
@@ -314,7 +331,7 @@ class RethrowStmt(Stmt):
 
 __all__ = [
 	"Node", "Expr", "Stmt",
-	"Literal", "Name", "Placeholder", "Attr", "Call", "Binary", "Unary",
+	"Literal", "Name", "Placeholder", "Attr", "Call", "Binary", "Unary", "Move",
 	"Index", "ArrayLiteral", "ExceptionCtor", "CatchExprArm", "TryCatchExpr", "Ternary", "TryExpr",
 	"LetStmt", "AssignStmt", "IfStmt", "ReturnStmt", "RaiseStmt", "ExprStmt", "ImportStmt",
 	"TryStmt", "WhileStmt", "ForStmt", "BreakStmt", "ContinueStmt", "ThrowStmt", "RethrowStmt",

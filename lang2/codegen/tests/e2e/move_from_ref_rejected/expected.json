@@ -1,0 +1,7 @@
+{
+  "exit_code": 1,
+  "diagnostics": [
+    { "phase": "typecheck", "message_contains": "cannot move from a reference type" }
+  ]
+}
+

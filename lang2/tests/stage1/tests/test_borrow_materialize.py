@@ -22,7 +22,11 @@ def test_shared_borrow_of_rvalue_is_materialized():
 	assert isinstance(norm.statements[0].value, H.HLiteralString)
 	assert isinstance(norm.statements[1], H.HLet)
 	assert isinstance(norm.statements[1].value, H.HBorrow)
-	assert isinstance(norm.statements[1].value.subject, H.HVar)
+	# Normalization canonicalizes lvalue contexts to `HPlaceExpr`.
+	assert isinstance(norm.statements[1].value.subject, H.HPlaceExpr)
+	assert isinstance(norm.statements[1].value.subject.base, H.HVar)
+	assert norm.statements[1].value.subject.base.name.startswith("__tmp")
+	assert norm.statements[1].value.subject.projections == []
 
 
 def test_mut_borrow_of_rvalue_is_not_materialized():
@@ -40,4 +44,3 @@ def test_mut_borrow_of_rvalue_is_not_materialized():
 	assert isinstance(stmt, H.HExprStmt)
 	assert isinstance(stmt.expr, H.HBorrow)
 	assert isinstance(stmt.expr.subject, H.HLiteralInt)
-

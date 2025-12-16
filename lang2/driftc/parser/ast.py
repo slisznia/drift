@@ -147,6 +147,14 @@ class Attr(Expr):
     loc: Located
     value: Expr
     attr: str
+    # Attribute operator used in source:
+    # - "." for normal member access (`x.field`)
+    # - "->" for member-through-reference access (`p->field`)
+    #
+    # The parser adapter lowers `->` into an explicit deref + normal member access
+    # so later stages do not need to care about this flag (until we formalize
+    # richer method receiver semantics).
+    op: str = "."
 
 
 @dataclass

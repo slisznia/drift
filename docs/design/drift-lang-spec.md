@@ -43,14 +43,14 @@ The language ships meaningful tools (structured errors, virtual threads, collect
 Drift expressions largely follow a C-style surface with explicit ownership rules:
 
 - Function calls: `f(x, y)`
-- Attribute access: `point.x`
+- Attribute access: `point.x` (owned value), `ptr->x` (through `&T` / `&mut T`)
 - Indexing: `arr[0]`
 - Unary operators: `-x`, `not x`, `!x`
 - Binary operators: `+`, `-`, `*`, `/`, comparisons (`<`, `<=`, `>`, `>=`, `==`, `!=`), boolean (`and`, `or`)
 - Bitwise operators: `&`, `|`, `^`, `~`, `<<`, `>>` — **require `Uint` operands**; using any other type (including `Int`, `Bool`, `String`, or arrays) is a type error.
 - Ternary conditional: `cond ? then_expr : else_expr` (lower precedence than `or`; `cond` must be `Bool`, and both arms must have the same type)
 - Pipeline: `lhs >> stage` (left-associative; lower precedence than ternary/`or`; stages are calls/idents)
-- Move operator: `x->` moves ownership
+- Move expression: `move x` transfers ownership
 - Array literals: `[1, 2, 3]`
 - String concatenation uses `+`
 - String byte length is exposed via `byte_length(s: String) -> Uint` (UTF‑8 code units, not characters); a future `char_length` may count user-visible characters.
@@ -137,7 +137,7 @@ All modules compile down to a canonical Drift Module IR (DMIR) that can be crypt
 | Mutable binding | `var` | Can mutate or transfer ownership |
 | Const reference | `&T` | Shared, read-only access (C++: `T const&`) |
 | Mutable reference | `&mut T` | Exclusive, mutable access (C++: `T&`) |
-| Ownership transfer | `x->` | Moves value, invalidating source |
+| Ownership transfer | `move x` | Moves value, invalidating source |
 | Interior mutability | `Mutable<T>` | Mutate specific fields inside const objects |
 | Volatile access | `Volatile<T>` | Explicit MMIO load/store operations |
 | **Blocks & scopes** | `{ ... }` | Define scope boundaries for RAII and deterministic lifetimes |
@@ -273,7 +273,7 @@ struct Point {
 struct Point(x: Int64, y: Int64)  // header form; identical type
 ```
 
-The tuple-style header desugars to the block form. Field names remain available for dot access while the constructor supports positional and named invocation. The resulting type follows standard Drift value semantics: fields determine copy- vs move-behavior, and ownership transfer still uses `foo->` as usual.
+The tuple-style header desugars to the block form. Field names remain available for dot access while the constructor supports positional and named invocation. The resulting type follows standard Drift value semantics: fields determine copy- vs move-behavior, and ownership transfer still uses `move foo` as usual.
 
 ---
 
@@ -351,24 +351,24 @@ Borrowing from rvalues (temporaries, moved values) is an error. The explicit for
 
 Receivers inside an `implement` block are written with an explicit mode: `T` (by value), `&T` (shared borrow), or `&mut T` (exclusive borrow):
 
-- A call on an lvalue prefers `self: &T`, then `self: &mut T`, then `self: T` (which copies if `Copy`, otherwise requires `obj->`).
-- A call on an rvalue (`obj->`, `make()`) can bind only to a `self` receiver; borrowed receivers are not allowed on rvalues.
+- A call on an lvalue prefers `self: &T`, then `self: &mut T`, then `self: T` (which copies if `Copy`, otherwise requires `move obj`).
+- A call on an rvalue (`move obj`, `make()`) can bind only to a `self` receiver; borrowed receivers are not allowed on rvalues.
 
 These rules keep borrowing consistent across free functions, methods, and control-flow desugarings.
 
 ---
 
 
-## 4. Ownership and move semantics (`x->`)
+## 4. Ownership and move semantics (`move x`)
 
-`x->` transfers ownership of `x` without copying. After a move, `x` becomes invalid. Equivalent intent to `std::move(x)` in C++ but lighter and explicit.
+`move x` transfers ownership of `x` without copying. After a move, `x` becomes invalid. Equivalent intent to `std::move(x)` in C++ but lighter and explicit.
 
 ### 4.1. Core rules
 | Aspect | Description |
 |---------|-------------|
 | **Move target** | Must be an owned (`var`) value. |
-| **Copyable types** | `x` copies; `x->` moves. |
-| **Non-copyable types** | Must use `x->`; plain `x` is a compile error. |
+| **Copyable types** | `x` copies; `move x` moves. |
+| **Non-copyable types** | Must use `move x`; plain `x` is a compile error. |
 | **Immutable (`val`)** | Cannot move from immutable bindings. |
 | **Borrowed (`&`, `&mut`)** | Cannot move from non-owning references. |
 
@@ -376,7 +376,7 @@ These rules keep borrowing consistent across free functions, methods, and contro
 
 ### 4.2. Default: move-only types
 
-Every type is **move-only by default**. If you define a struct and do nothing else, the compiler will refuse to copy it; the only way to pass or assign it by value is to move with `x->`.
+Every type is **move-only by default**. If you define a struct and do nothing else, the compiler will refuse to copy it; the only way to pass or assign it by value is to move with `move x`.
 
 ```drift
 // Move-only by default
@@ -387,12 +387,12 @@ struct File {
 var f = open("log.txt")
 
 var g = f        // ❌ cannot copy move-only type; use a move
-var h = f->      // ✅ move ownership
+var h = move f      // ✅ move ownership
 
 fn use_file(x: File) returns Void { ... }
 
 use_file(f)      // ❌ copy required
-use_file(f->)    // ✅ move into the call
+use_file(move f)    // ✅ move into the call
 ```
 
 This design keeps ownership explicit: you opt *out* of move-only semantics only when cheap copies are well-defined.
@@ -452,7 +452,7 @@ fn process(job: Job) returns Void {
 var j = Job(id = 1)
 
 process(j)    // ✅ copy (Job is copyable)
-process(j->)  // ✅ move; j now invalid
+process(move j)  // ✅ move; j now invalid
 process(j)    // ❌ error: j was moved
 ```
 
@@ -468,7 +468,7 @@ fn upload(f: File) returns Void {
 }
 
 var f = File()
-upload(f->)   // ✅ move ownership
+upload(move f)   // ✅ move ownership
 upload(f)     // ❌ cannot copy non-copyable type
 ```
 
@@ -483,7 +483,7 @@ fn inspect(f: &File) returns Void {
 
 var f = File()
 inspect(f)     // auto-borrows &f
-upload(f->)       // later move ownership away
+upload(move f)       // later move ownership away
 ```
 
 ---
@@ -495,7 +495,7 @@ fn fill(f: &mut File) returns Void { /* writes data */ }
 
 var f = File()
 fill(f)        // auto-borrows &mut f
-upload(f->)       // move after borrow ends
+upload(move f)       // move after borrow ends
 ```
 
 Borrow lifetimes are scoped to braces; once the borrow ends, moving is allowed again.
@@ -507,7 +507,7 @@ Borrow lifetimes are scoped to braces; once the borrow ends, moving is allowed a
 ```drift
 fn open(name: String) returns File {
     val f = File()
-    return f->        // move to caller
+    return move f        // move to caller
 }
 
 fn main() returns Void {
@@ -528,7 +528,7 @@ var jobs = Array<Job>()
 jobs.push(Job(id = 1))
 jobs.push(Job(id = 2))
 
-take(jobs->)    // move entire container
+take(move jobs)    // move entire container
 take(jobs)      // ❌ jobs invalid after move
 ```
 
@@ -536,7 +536,7 @@ take(jobs)      // ❌ jobs invalid after move
 
 ### 4.12. Lifetime and destruction rules
 - Locals are destroyed **in reverse declaration order** when a block closes.  
-- Moving (`x->`) transfers destruction responsibility to the receiver.  
+- Moving (`move x`) transfers destruction responsibility to the receiver.  
 - Borrowed references are automatically invalidated at scope exit.  
 - No garbage collection — **destruction is deterministic** (RAII).
 
@@ -1770,7 +1770,7 @@ val explicit: Array<Int64> = [1, 2, 3]  // annotation still allowed when desired
  - Mixed-type literals (`[1, "two"]`) are rejected during type checking (compile-time error).
 - Empty literals are reserved for a future constructor; for now, call the stdlib helper once it lands.
 
-`Array<T>` integrates with the broader language design — it moves with `->`, can be captured with `^`, and will participate in trait implementations like `Display` once the stdlib grows. The literal syntax keeps sample programs succinct while we flesh out higher-level APIs.
+`Array<T>` integrates with the broader language design — it moves with `move x`, can be captured with `^`, and will participate in trait implementations like `Display` once the stdlib grows. The literal syntax keeps sample programs succinct while we flesh out higher-level APIs.
 
 **Indexing and lengths.** In v1, container lengths/capacities use `Uint`; indices are `Int`:
 
@@ -2050,7 +2050,7 @@ Drift’s exception system is designed to:
 - Capture **call-site context** (locals per frame + backtrace) automatically.
 - Preserve a **precise, frozen ABI layout** so exceptions can propagate across Drift modules and plugins.
 - Fit cleanly over a conceptual `Result<T, Error>` model for internal lowering and ABI design.
-- Respect **move semantics**: `Error` is move-only and is always transferred with `e->`.
+- Respect **move semantics**: `Error` is move-only and is always transferred with `move e`.
 
 ---
 
@@ -3197,7 +3197,7 @@ fn process(job: Job) returns Void {
 var j = Job(id = 1)
 
 process(j)    // copy
-process(j->)  // move
+process(move j)  // move
 process(j)    // error: use of moved value
 ```
 

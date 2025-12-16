@@ -1,0 +1,13 @@
+struct Point(x: Int, y: Int)
+
+fn bad(p: &Point) returns Void {
+	val rx = &mut (*p).x;
+	*rx = *rx + 1;
+}
+
+fn main() returns Int {
+	var p = Point(0, 0);
+	bad(&p);
+	return 0;
+}
+

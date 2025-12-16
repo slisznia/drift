@@ -1,0 +1,9 @@
+struct Wrap(arr: Array<Int>)
+
+fn main() returns Int {
+	var w = Wrap([41, 0]);
+	val p = &mut w.arr[0];
+	*p = *p + 1;
+	return w.arr[0];
+}
+

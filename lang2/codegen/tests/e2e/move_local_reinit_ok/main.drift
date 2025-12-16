@@ -1,0 +1,9 @@
+module m
+
+fn main() returns Int {
+	var x = 41;
+	val y = move x;
+	x = 1;
+	return y + x;
+}
+

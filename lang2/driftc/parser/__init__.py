@@ -53,11 +53,15 @@ def _convert_expr(expr: parser_ast.Expr) -> s0.Expr:
 			loc=Span.from_loc(getattr(expr, "loc", None)),
 		)
 	if isinstance(expr, parser_ast.Attr):
-		return s0.Attr(
-			value=_convert_expr(expr.value),
-			attr=expr.attr,
-			loc=Span.from_loc(getattr(expr, "loc", None)),
-		)
+		# Member-through-reference access (`p->field`) is normalized at the
+		# parser→stage0 boundary by inserting an explicit deref.
+		#
+		# This keeps stage0/stage1 ASTs simple: later phases only need normal
+		# member access plus unary deref (`*p`).
+		base = _convert_expr(expr.value)
+		if getattr(expr, "op", ".") == "->":
+			base = s0.Unary(op="*", operand=base, loc=Span.from_loc(getattr(expr.value, "loc", None)))
+		return s0.Attr(value=base, attr=expr.attr, loc=Span.from_loc(getattr(expr, "loc", None)))
 	if isinstance(expr, parser_ast.Index):
 		return s0.Index(
 			value=_convert_expr(expr.value),
@@ -76,7 +80,7 @@ def _convert_expr(expr: parser_ast.Expr) -> s0.Expr:
 	if isinstance(expr, parser_ast.ArrayLiteral):
 		return s0.ArrayLiteral(elements=[_convert_expr(e) for e in expr.elements], loc=Span.from_loc(getattr(expr, "loc", None)))
 	if isinstance(expr, parser_ast.Move):
-		return _convert_expr(expr.value)
+		return s0.Move(value=_convert_expr(expr.value), loc=Span.from_loc(getattr(expr, "loc", None)))
 	if isinstance(expr, parser_ast.Placeholder):
 		return s0.Placeholder(loc=Span.from_loc(getattr(expr, "loc", None)))
 	if isinstance(expr, parser_ast.Ternary):

@@ -83,6 +83,28 @@ def _decode_string_fragment(raw: str) -> str:
 	return raw_bytes.decode("utf-8")
 
 
+def _unwrap_ident(node: object) -> Token:
+	"""
+	Extract an identifier token from a grammar `ident` node.
+
+	The grammar defines `ident: NAME | MOVE` so callers may receive:
+	- a `Token` (`NAME` or `MOVE`) directly, or
+	- a `Tree('ident', [Token(...)])` wrapper.
+	"""
+	if isinstance(node, Token):
+		if node.type in {"NAME", "MOVE"}:
+			return node
+		raise TypeError(f"Expected identifier token, got {node.type}")
+	if isinstance(node, Tree) and _name(node) == "ident":
+		tok = next((c for c in node.children if isinstance(c, Token)), None)
+		if tok is None:
+			raise TypeError("ident node missing token child")
+		if tok.type not in {"NAME", "MOVE"}:
+			raise TypeError(f"Expected NAME/MOVE token in ident, got {tok.type}")
+		return tok
+	raise TypeError(f"Expected ident node, got {type(node)}")
+
+
 _EXPR_PARSER = Lark(
 	_GRAMMAR_SRC,
 	parser="lalr",
@@ -302,11 +324,11 @@ class TerminatorInserter:
         "RETHROW",
         "BREAK",
         "CONTINUE",
-        "MOVE",
     }
 
     SUPPRESS = {
         "DOT",
+        "ARROW",
         "PLUS",
         "MINUS",
         "STAR",
@@ -512,7 +534,7 @@ def _build_function(tree: Tree) -> FunctionDef:
 	loc = _loc(tree)
 	children = list(tree.children)
 	idx = 0
-	name_token = children[idx]
+	name_token = _unwrap_ident(children[idx])
 	idx += 1
 	orig_name = name_token.value
 	params: List[Param] = []
@@ -601,7 +623,13 @@ def _build_value_block(tree: Tree) -> Block:
 
 
 def _build_param(tree: Tree) -> Param:
-    name_token = next(child for child in tree.children if isinstance(child, Token) and child.type == "NAME")
+    ident_node = next(
+        child
+        for child in tree.children
+        if (isinstance(child, Token) and child.type in {"NAME", "MOVE"})
+        or (isinstance(child, Tree) and _name(child) == "ident")
+    )
+    name_token = _unwrap_ident(ident_node)
     type_node = next(child for child in tree.children if isinstance(child, Tree) and _name(child) == "type_expr")
     type_expr = _build_type_expr(type_node)
     return Param(name=name_token.value, type_expr=type_expr)
@@ -745,7 +773,13 @@ def _build_assign_stmt(tree: Tree) -> AssignStmt:
 
 def _build_for_stmt(tree: Tree) -> ForStmt:
     loc = _loc(tree)
-    name_token = next(child for child in tree.children if isinstance(child, Token) and child.type == "NAME")
+    ident_node = next(
+        child
+        for child in tree.children
+        if (isinstance(child, Token) and child.type in {"NAME", "MOVE"})
+        or (isinstance(child, Tree) and _name(child) == "ident")
+    )
+    name_token = _unwrap_ident(ident_node)
     expr_node = next(
         child
         for child in tree.children
@@ -764,12 +798,13 @@ def _parse_binding_name(tree: Tree) -> tuple[Token, bool]:
     capture = False
     name_token: Optional[Token] = None
     for child in tree.children:
-        if isinstance(child, Token):
-            if child.type == "NAME":
-                name_token = child
+        if isinstance(child, Token) and child.type in {"NAME", "MOVE"}:
+            name_token = child
         elif isinstance(child, Tree):
             if _name(child) == "capture_marker":
                 capture = True
+            elif _name(child) == "ident":
+                name_token = _unwrap_ident(child)
             else:
                 # capture_marker child holds the caret token; ignore
                 for grand in child.children:
@@ -999,9 +1034,17 @@ def _build_catch_clause(tree: Tree) -> CatchClause:
 				event_node = next((c for c in child.children if isinstance(c, Tree) and _name(c) == "event_fqn"), None)
 				if event_node is not None:
 					event = _fqn_from_tree(event_node)
-				binder_tok = next((tok for tok in child.children if isinstance(tok, Token) and tok.type == "NAME"), None)
-				if binder_tok is not None:
-					binder = binder_tok.value
+				ident_node = next(
+					(
+						c
+						for c in child.children
+						if (isinstance(c, Token) and c.type in {"NAME", "MOVE"})
+						or (isinstance(c, Tree) and _name(c) == "ident")
+					),
+					None,
+				)
+				if ident_node is not None:
+					binder = _unwrap_ident(ident_node).value
 			elif name == "block":
 				block_node = child
 	if block_node is None:
@@ -1061,6 +1104,17 @@ def _build_expr(node) -> Expr:
             raise TypeError(f"deref expects an operand, got {node.children!r}")
         expr = _build_expr(target)
         return Unary(loc=_loc(node), op="*", operand=expr)
+    if name == "move_op":
+        # Ownership transfer marker: `move <expr>`.
+        #
+        # Note: this is syntax-only today; semantic enforcement (no move from
+        # borrows/vals, moved-from state) is handled by later phases once
+        # move-only types are fully implemented.
+        target = next((c for c in node.children if isinstance(c, Tree)), None)
+        if target is None:
+            raise TypeError(f"move_op expects an operand, got {node.children!r}")
+        expr = _build_expr(target)
+        return Move(loc=_loc(node), value=expr)
     if name == "postfix":
         return _build_postfix(node)
     if name == "leading_dot":
@@ -1082,8 +1136,8 @@ def _build_expr(node) -> Expr:
         expr = _build_expr(target)
         return Unary(loc=_loc(node), op="not", operand=expr)
     if name == "var":
-        token = node.children[0]
-        return Name(loc=_loc(node), ident=token.value)
+        ident_token = _unwrap_ident(node.children[0])
+        return Name(loc=_loc(node), ident=ident_token.value)
     if name == "placeholder":
         return Placeholder(loc=_loc(node))
     if name == "int_lit":
@@ -1188,9 +1242,18 @@ def _build_try_catch_expr(tree: Tree) -> TryCatchExpr:
             event_node = next((c for c in arm_node.children if isinstance(c, Tree) and _name(c) == "event_fqn"), None)
             if event_node is None:
                 raise ValueError("event catch arm requires event")
-            binder_token = next((t for t in arm_node.children if isinstance(t, Token) and t.type == "NAME"), None)
-            if binder_token is None:
+            binder_node = next(
+                (
+                    c
+                    for c in arm_node.children
+                    if (isinstance(c, Token) and c.type in {"NAME", "MOVE"})
+                    or (isinstance(c, Tree) and _name(c) == "ident")
+                ),
+                None,
+            )
+            if binder_node is None:
                 raise ValueError("event catch arm requires binder")
+            binder_token = _unwrap_ident(binder_node)
             block_node = next(
                 child for child in arm_node.children if isinstance(child, Tree) and _name(child) == "value_block"
             )
@@ -1202,7 +1265,13 @@ def _build_try_catch_expr(tree: Tree) -> TryCatchExpr:
                 )
             )
         elif arm_name == "catch_expr_binder":
-            binder_token = next(t for t in arm_node.children if isinstance(t, Token) and t.type == "NAME")
+            binder_node = next(
+                c
+                for c in arm_node.children
+                if (isinstance(c, Token) and c.type in {"NAME", "MOVE"})
+                or (isinstance(c, Tree) and _name(c) == "ident")
+            )
+            binder_token = _unwrap_ident(binder_node)
             block_node = next(
                 child for child in arm_node.children if isinstance(child, Tree) and _name(child) == "value_block"
             )
@@ -1282,8 +1351,11 @@ def _apply_postfix_suffixes(expr: Expr, suffix_nodes: List[Tree]) -> Expr:
                 token for token in child.children if isinstance(token, Token) and token.type == "NAME"
             )
             expr = Attr(loc=_loc(child), value=expr, attr=attr_token.value)
-        elif child_name == "move_suffix":
-            expr = Move(loc=_loc(child), value=expr)
+        elif child_name == "arrow_suffix":
+            attr_token = next(
+                token for token in child.children if isinstance(token, Token) and token.type == "NAME"
+            )
+            expr = Attr(loc=_loc(child), value=expr, attr=attr_token.value, op="->")
         elif child_name == "index_suffix":
             expr = _apply_index_suffix(expr, child)
         else:

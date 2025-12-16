@@ -1,0 +1,8 @@
+module m
+
+fn main() returns Int {
+	val x = 1;
+	val y = move x;
+	return y;
+}
+
