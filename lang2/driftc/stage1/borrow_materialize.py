@@ -76,6 +76,12 @@ class BorrowMaterializeRewriter:
 			pfx_t, tgt = self._rewrite_expr(stmt.target)
 			pfx_v, val = self._rewrite_expr(stmt.value)
 			return pfx_t + pfx_v + [H.HAssign(target=tgt, value=val)]
+		if hasattr(H, "HAugAssign") and isinstance(stmt, getattr(H, "HAugAssign")):
+			pfx_t, tgt = self._rewrite_expr(stmt.target)
+			pfx_v, val = self._rewrite_expr(stmt.value)
+			return pfx_t + pfx_v + [
+				H.HAugAssign(target=tgt, op=getattr(stmt, "op", "+="), value=val, loc=getattr(stmt, "loc", Span()))
+			]
 		if isinstance(stmt, H.HReturn):
 			if stmt.value is None:
 				return [stmt]

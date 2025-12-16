@@ -737,6 +737,22 @@ class BorrowChecker:
 						self._set_state(state, tgt, PlaceState.VALID)
 				else:
 					self._diagnostic("assignment target is not an lvalue", getattr(stmt.target, "loc", Span()))
+			elif hasattr(H, "HAugAssign") and isinstance(stmt, getattr(H, "HAugAssign")):
+				# Augmented assignment reads and writes the target place.
+				#
+				# Read: use-after-move checks apply because `x += y` must read the old `x`.
+				# Write: freeze-while-borrowed applies because it mutates the place.
+				self._visit_expr(state, stmt.value, as_value=True)
+				tgt = place_from_expr(stmt.target, base_lookup=self.base_lookup)
+				tgt_span = getattr(stmt, "loc", getattr(stmt.target, "loc", Span()))
+				if tgt is None:
+					self._diagnostic("assignment target is not an lvalue", tgt_span)
+					continue
+				# Read the old value (may mark moved for move-only types if used as a value).
+				self._consume_place_use(state, tgt, tgt_span)
+				# Write the new value.
+				if self._reject_write_while_borrowed(state, tgt, tgt_span):
+					self._set_state(state, tgt, PlaceState.VALID)
 			elif isinstance(stmt, H.HReturn):
 				if stmt.value is not None:
 					self._eval_temporary(state, stmt.value)

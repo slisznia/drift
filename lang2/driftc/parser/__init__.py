@@ -158,6 +158,23 @@ def _convert_assign(stmt: parser_ast.AssignStmt) -> s0.Stmt:
 	return s0.AssignStmt(target=_convert_expr(stmt.target), value=_convert_expr(stmt.value), loc=Span.from_loc(stmt.loc))
 
 
+def _convert_aug_assign(stmt: "parser_ast.AugAssignStmt") -> s0.Stmt:
+	"""
+	Convert an augmented assignment statement.
+
+	MVP supports:
+	`+=`, `-=`, `*=`, `/=`, `%=`, `&=`, `|=`, `^=`, `<<=`, `>>=`.
+
+	We preserve this as a distinct stage0 statement so later lowering can
+	implement correct read-modify-write semantics for complex lvalues.
+	"""
+	return s0.AugAssignStmt(
+		target=_convert_expr(stmt.target),
+		op=str(getattr(stmt, "op", "+=")),
+		value=_convert_expr(stmt.value),
+		loc=Span.from_loc(stmt.loc),
+	)
+
 def _convert_if(stmt: parser_ast.IfStmt) -> s0.Stmt:
 	return s0.IfStmt(
 		cond=_convert_expr(stmt.condition),
@@ -221,6 +238,7 @@ _STMT_DISPATCH: dict[type[parser_ast.Stmt], Callable[[parser_ast.Stmt], s0.Stmt]
 	parser_ast.ExprStmt: _convert_expr_stmt,
 	parser_ast.LetStmt: _convert_let,
 	parser_ast.AssignStmt: _convert_assign,
+	parser_ast.AugAssignStmt: _convert_aug_assign,
 	parser_ast.IfStmt: _convert_if,
 	parser_ast.BreakStmt: _convert_break,
 	parser_ast.ContinueStmt: _convert_continue,
@@ -403,6 +421,7 @@ def parse_drift_to_hir(path: Path) -> Tuple[Dict[str, H.HBlock], Dict[str, FnSig
 	seen: set[str] = set()
 	method_keys: set[tuple[str, str]] = set()  # (impl_target_repr, method_name)
 	diagnostics: list[Diagnostic] = []
+	module_function_names: set[str] = {fn.name for fn in getattr(prog, "functions", []) or []}
 	exception_schemas: dict[str, tuple[str, list[str]]] = {}
 	struct_defs = list(getattr(prog, "structs", []) or [])
 	exception_catalog: dict[str, int] = _build_exception_catalog(prog.exceptions, module_name, diagnostics)
@@ -477,7 +496,8 @@ def parse_drift_to_hir(path: Path) -> Tuple[Dict[str, H.HBlock], Dict[str, FnSig
 				)
 		decls.append(decl_decl)
 		stmt_block = _convert_block(fn.body)
-		hir_block = lowerer.lower_block(stmt_block)
+		param_names = [p.name for p in getattr(fn, "params", []) or []]
+		hir_block = lowerer.lower_function_block(stmt_block, param_names=param_names)
 		func_hirs[fn.name] = hir_block
 	# Methods inside implement blocks.
 	for impl in getattr(prog, "implements", []):
@@ -492,31 +512,17 @@ def parse_drift_to_hir(path: Path) -> Tuple[Dict[str, H.HBlock], Dict[str, FnSig
 			)
 			continue
 		for fn in impl.methods:
-			if not fn.params:
-				diagnostics.append(
-					Diagnostic(
-						message=f"method '{fn.name}' must have a receiver parameter",
-						severity="error",
-						span=Span.from_loc(getattr(fn, "loc", None)),
-					)
-				)
-				continue
-			receiver_ty = fn.params[0].type_expr
-			self_mode = "value"
-			if receiver_ty.name == "&":
-				self_mode = "ref"
-			elif receiver_ty.name == "&mut":
-				self_mode = "ref_mut"
-			# Reject nested refs for v1 (e.g., &&T).
-			if receiver_ty.name in {"&", "&mut"} and receiver_ty.args and receiver_ty.args[0].name in {"&", "&mut"}:
-				diagnostics.append(
-					Diagnostic(
-						message=f"unsupported receiver type for method '{fn.name}'",
-						severity="error",
-						span=Span.from_loc(getattr(fn, "loc", None)),
-					)
-				)
-				continue
+			# Note: receiver shape/name/type are semantic rules enforced by the
+			# typecheck phase. The parser adapter stays structural-only here so
+			# related errors consistently report as typecheck diagnostics.
+			receiver_ty = fn.params[0].type_expr if fn.params else None
+			self_mode: str | None = None
+			if receiver_ty is not None:
+				self_mode = "value"
+				if receiver_ty.name == "&":
+					self_mode = "ref"
+				elif receiver_ty.name == "&mut":
+					self_mode = "ref_mut"
 
 			# Compute the canonical symbol for this method early so any diagnostics
 			# (including type-annotation validation) can reference it.
@@ -574,7 +580,35 @@ def parse_drift_to_hir(path: Path) -> Tuple[Dict[str, H.HBlock], Dict[str, FnSig
 				)
 			)
 			stmt_block = _convert_block(fn.body)
-			hir_block = lowerer.lower_block(stmt_block)
+			# Enable implicit `self` member lookup for method bodies (spec §3.9).
+			# Unknown identifiers may resolve to fields/methods on `self` after
+			# locals and module-scope items are considered.
+			#
+			# We only need names here; semantic validation happens in the typed checker.
+			target_str = _type_expr_to_str(impl.target)
+			field_names: set[str] = set()
+			try:
+				schema = getattr(type_table, "struct_schemas", {}).get(target_str)
+				if schema is not None and isinstance(schema, tuple) and len(schema) == 2:
+					field_names = set(schema[1])
+			except Exception:
+				field_names = set()
+			method_names: set[str] = {m.name for m in getattr(impl, "methods", []) or []}
+			param_names = [p.name for p in getattr(fn, "params", []) or []]
+			if fn.params and self_mode is not None:
+				lowerer._push_implicit_self(
+					self_name=str(getattr(fn.params[0], "name", "self")),
+					self_mode=self_mode,
+					field_names=field_names,
+					method_names=method_names,
+					module_function_names=module_function_names,
+				)
+				try:
+					hir_block = lowerer.lower_function_block(stmt_block, param_names=param_names)
+				finally:
+					lowerer._pop_implicit_self()
+			else:
+				hir_block = lowerer.lower_function_block(stmt_block, param_names=param_names)
 			func_hirs[symbol_name] = hir_block
 	# Build signatures with resolved TypeIds from parser decls.
 	from lang2.driftc.type_resolver import resolve_program_signatures

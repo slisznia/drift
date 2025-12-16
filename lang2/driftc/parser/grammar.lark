@@ -26,9 +26,18 @@ VAL: "val"
 VAR: "var"
 MUT: "mut"
 THROW: "throw"
-PIPE: ">>"
-AND.2: "&&" | "and"
-OR.2: "||" | "or"
+# Note: `>>=` must be recognized before `>>` (longest match).
+SHR_EQ: ">>="
+SHR: ">>"
+# Pipeline operator (functional-style staging).
+PIPE_FWD: "|>"
+# Reserved for future reverse pipeline; no semantics in v1.
+PIPE_REV: "<|"
+# Note: `<<=` / `<<` must be recognized before `<` / `<=`.
+LSHIFT_EQ: "<<="
+LSHIFT: "<<"
+AND.2: "and"
+OR.2: "or"
 EQEQ: "=="
 NOTEQ: "!="
 LTE: "<="
@@ -36,15 +45,26 @@ GTE: ">="
 LT: "<"
 GT: ">"
 PLUS: "+"
+PLUS_EQ: "+="
 MINUS: "-"
+MINUS_EQ: "-="
+STAR_EQ: "*="
+SLASH_EQ: "/="
+PERCENT_EQ: "%="
+AMP_EQ: "&="
+BAR_EQ: "|="
+CARET_EQ: "^="
 STAR: "*"
 SLASH: "/"
+PERCENT: "%"
 DOT: "."
 COLON: ":"
 COMMA: ","
 AMP: "&"
+BAR: "|"
 EQUAL: "="
 CARET: "^"
+TILDE: "~"
 RETURNS: "returns"
 BANG: "!"
 IF: "if"
@@ -124,6 +144,7 @@ simple_stmt: let_stmt
            | continue_stmt
            | while_stmt
            | for_stmt
+           | aug_assign_stmt
            | assign_stmt
            | expr_stmt
 
@@ -144,6 +165,7 @@ catch_pattern: event_fqn "(" ident ")"   -> catch_event
 // Borrow MVP needs `*p = ...` to support `&mut` writes, so we also allow a
 // dereference assignment target.
 assign_stmt: assign_target EQUAL expr
+aug_assign_stmt: assign_target (PLUS_EQ | MINUS_EQ | STAR_EQ | SLASH_EQ | PERCENT_EQ | AMP_EQ | BAR_EQ | CARET_EQ | LSHIFT_EQ | SHR_EQ) expr
 assign_target: postfix
              | STAR assign_target -> deref
 
@@ -211,31 +233,45 @@ catch_expr_arm: event_fqn "(" ident ")" value_block   -> catch_expr_event
               | value_block                          -> catch_expr_block
 ternary: pipeline QMARK expr TERNARY_COLON expr
 
-?pipeline: logic_or (PIPE logic_or)*
+?pipeline: logic_or pipeline_tail*
+pipeline_tail: PIPE_FWD logic_or
 
 ?logic_or: logic_and logic_or_tail*
 logic_or_tail: OR logic_and
 
-?logic_and: equality logic_and_tail*
-logic_and_tail: AND equality
+?logic_and: bit_or logic_and_tail*
+logic_and_tail: AND bit_or
 
 ?equality: comparison equality_tail*
 equality_tail: (EQEQ | NOTEQ) comparison
 
-?comparison: sum comparison_tail*
-comparison_tail: (LT | LTE | GT | GTE) sum
+?bit_or: bit_xor bit_or_tail*
+bit_or_tail: BAR bit_xor
+
+?bit_xor: bit_and bit_xor_tail*
+bit_xor_tail: CARET bit_and
+
+?bit_and: equality bit_and_tail*
+bit_and_tail: AMP equality
+
+?comparison: shift comparison_tail*
+comparison_tail: (LT | LTE | GT | GTE) shift
+
+?shift: sum shift_tail*
+shift_tail: (LSHIFT | SHR) sum
 
 ?sum: term sum_tail*
 sum_tail: (PLUS | MINUS) term
 
 ?term: factor term_tail*
-term_tail: (STAR | SLASH) factor
+term_tail: (STAR | SLASH | PERCENT) factor
 ?factor: postfix
        | STAR factor -> deref
        | MOVE factor -> move_op
        | "-" factor -> neg
        | "not" factor -> not_op
        | BANG factor -> not_op
+       | TILDE factor -> bit_not
        | AMP MUT? factor -> borrow
 
 postfix: primary postfix_suffix*

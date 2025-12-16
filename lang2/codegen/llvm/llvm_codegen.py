@@ -33,6 +33,7 @@ directly. Unsupported features raise clear errors rather than emitting bad IR.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Dict, List, Mapping, Optional
 
@@ -102,6 +103,27 @@ DRIFT_ERROR_PTR = f"{DRIFT_ERROR_TYPE}*"
 FNRESULT_INT_ERROR = "%FnResult_Int_Error"
 DRIFT_SIZE_TYPE = "%drift.size"
 DRIFT_STRING_TYPE = "%DriftString"
+
+# --- LLVM identifier helpers ---
+#
+# Drift method symbols are scoped (e.g., `Point::move_by`). In textual LLVM IR,
+# such names must be quoted: `@"Point::move_by"`. Keep this logic centralized so
+# declarations and call sites stay consistent.
+_LLVM_BARE_IDENT_RE = re.compile(r"^[A-Za-z$._][A-Za-z$._0-9]*$")
+
+
+def _llvm_fn_sym(name: str) -> str:
+	"""
+	Render a function symbol name for LLVM IR.
+
+	- For simple identifiers (`main`, `drift_console_writeln`), emit `@name`.
+	- For names containing punctuation (`Point::move_by`), emit a quoted name:
+	  `@"Point::move_by"`.
+	"""
+	if _LLVM_BARE_IDENT_RE.match(name):
+		return f"@{name}"
+	escaped = name.replace("\\", "\\5c").replace("\"", "\\22")
+	return f"@\"{escaped}\""
 DRIFT_DV_TYPE = "%DriftDiagnosticValue"
 DRIFT_OPT_INT_TYPE = "%DriftOptionalInt"
 DRIFT_OPT_BOOL_TYPE = "%DriftOptionalBool"
@@ -325,7 +347,7 @@ class LlvmModuleBuilder:
 				[
 					"define i32 @main() {",
 					"entry:",
-					f"  %ret = call i64 @{drift_main}()",
+					f"  %ret = call i64 {_llvm_fn_sym(drift_main)}()",
 					"  %trunc = trunc i64 %ret to i32",
 					"  ret i32 %trunc",
 					"}",
@@ -355,7 +377,7 @@ class LlvmModuleBuilder:
 			f"  %tmp0 = insertvalue {array_type} undef, {DRIFT_SIZE_TYPE} %len, 0",
 			f"  %tmp1 = insertvalue {array_type} %tmp0, {DRIFT_SIZE_TYPE} %cap, 1",
 			f"  %argv_typed = insertvalue {array_type} %tmp1, %DriftString* %data, 2",
-			f"  %ret = call i64 @{user_main}({array_type} %argv_typed)",
+			f"  %ret = call i64 {_llvm_fn_sym(user_main)}({array_type} %argv_typed)",
 			"  %trunc = trunc i64 %ret to i32",
 			"  ret i32 %trunc",
 			"}",
@@ -544,7 +566,7 @@ class _FuncBuilder:
 				param_parts.append(f"{llty} {llvm_name}")
 		params_str = ", ".join(param_parts)
 		func_name = self.sym_name or self.func.name
-		self.lines.append(f"define {ret_ty} @{func_name}({params_str}) {{")
+		self.lines.append(f"define {ret_ty} {_llvm_fn_sym(func_name)}({params_str}) {{")
 
 	def _declare_array_helpers_if_needed(self) -> None:
 		"""Mark the module to emit array helper decls if any array ops are present."""
@@ -1301,7 +1323,7 @@ class _FuncBuilder:
 			_, fnres_llty = self._fnresult_types_for_fn(callee_info)
 			if dest is None:
 				raise AssertionError("can-throw calls must preserve their FnResult value (MIR bug)")
-			self.lines.append(f"  {dest} = call {fnres_llty} @{instr.fn}({args})")
+			self.lines.append(f"  {dest} = call {fnres_llty} {_llvm_fn_sym(instr.fn)}({args})")
 			self.value_types[dest] = fnres_llty
 		else:
 			ret_tid = None
@@ -1312,11 +1334,11 @@ class _FuncBuilder:
 			if ret_tid is not None and self.type_table is not None and not is_void_ret:
 				ret_ty = self._llvm_type_for_typeid(ret_tid)
 			if dest is None:
-				self.lines.append(f"  call {ret_ty} @{instr.fn}({args})")
+				self.lines.append(f"  call {ret_ty} {_llvm_fn_sym(instr.fn)}({args})")
 			else:
 				if ret_ty == "void":
 					raise NotImplementedError("LLVM codegen v1: cannot capture result of a void call")
-				self.lines.append(f"  {dest} = call {ret_ty} @{instr.fn}({args})")
+				self.lines.append(f"  {dest} = call {ret_ty} {_llvm_fn_sym(instr.fn)}({args})")
 				self.value_types[dest] = ret_ty
 
 	def _lower_term(self, term: object) -> None:
@@ -1705,6 +1727,18 @@ class _FuncBuilder:
 			return "mul"
 		if op == BinaryOp.DIV:
 			return "sdiv"
+		if op == BinaryOp.MOD:
+			return "srem"
+		if op == BinaryOp.BIT_AND:
+			return "and"
+		if op == BinaryOp.BIT_OR:
+			return "or"
+		if op == BinaryOp.BIT_XOR:
+			return "xor"
+		if op == BinaryOp.SHL:
+			return "shl"
+		if op == BinaryOp.SHR:
+			return "lshr"
 		if op == BinaryOp.EQ:
 			return "icmp eq"
 		if op == BinaryOp.NE:

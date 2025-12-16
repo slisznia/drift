@@ -50,6 +50,52 @@ class AstToHIR:
 		self._scope_stack: list[dict[str, H.BindingId]] = [dict()]
 		# Current module name for building canonical FQNs; set by parser adapter.
 		self._module_name: str | None = None
+		# Optional method-body context used for implicit `self` member lookup.
+		#
+		# The parser adapter sets this when lowering methods declared inside an
+		# `implement Type { ... }` block. Free functions leave it disabled.
+		#
+		# This is a *pure front-end name resolution convenience* (specified in the
+		# language spec): unknown identifiers inside a method body may resolve to
+		# fields/methods on `self`.
+		self._implicit_self_stack: list[dict[str, object]] = []
+
+	def _push_implicit_self(
+		self,
+		*,
+		self_name: str,
+		self_mode: str,
+		field_names: set[str],
+		method_names: set[str],
+		module_function_names: set[str],
+	) -> None:
+		"""
+		Enable implicit `self` member lookup while lowering a method body.
+
+		`self_mode` is the receiver mode spelled in the method signature:
+		  - "value"   for `self: T`
+		  - "ref"     for `self: &T`
+		  - "ref_mut" for `self: &mut T`
+
+		We keep this context in a stack so nested lowering helpers (blocks/arms)
+		can consult it without threading parameters everywhere.
+		"""
+		self._implicit_self_stack.append(
+			{
+				"self_name": str(self_name),
+				"self_mode": self_mode,
+				"fields": set(field_names),
+				"methods": set(method_names),
+				"module_funcs": set(module_function_names),
+			}
+		)
+
+	def _pop_implicit_self(self) -> None:
+		"""Disable implicit `self` member lookup (end of method body lowering)."""
+		self._implicit_self_stack.pop()
+
+	def _implicit_self_ctx(self) -> dict[str, object] | None:
+		return self._implicit_self_stack[-1] if self._implicit_self_stack else None
 
 	def _fresh_temp(self, prefix: str = "__tmp") -> str:
 		"""Allocate a unique temporary name with a given prefix."""
@@ -112,11 +158,67 @@ class AstToHIR:
 		finally:
 			self._pop_scope()
 
+	def lower_function_block(self, stmts: List[ast.Stmt], *, param_names: List[str]) -> H.HBlock:
+		"""
+		Lower a function body block, seeding parameter bindings into scope.
+
+		The HIR `HVar(binding_id=...)` mechanism is used for locals *and* params so
+		that later phases (place canonicalization, borrow checking, MIR lowering)
+		can reason about addressable storage uniformly.
+
+		This is intentionally a separate entry point from `lower_block`: stage1
+		unit tests can keep calling `lower_block` for statement-only snippets,
+		while the real compiler pipeline calls `lower_function_block` so parameter
+		names are resolvable as bindings (including `self` in methods).
+		"""
+		self._push_scope()
+		try:
+			for pname in param_names:
+				# Allocate a stable binding id for each parameter name in scope.
+				# If a parameter name repeats, keep the first (later stages will
+				# diagnose duplicate parameters once signatures are validated).
+				if pname and self._lookup_binding(pname) is None:
+					self._alloc_binding(pname)
+			return H.HBlock(statements=[self.lower_stmt(s) for s in stmts])
+		finally:
+			self._pop_scope()
+
 	# --- minimal implemented handlers (trivial cases only) ---
 
 	def _visit_expr_Name(self, expr: ast.Name) -> H.HExpr:
-		"""Names become HVar; binding resolution happens later."""
-		return H.HVar(name=expr.ident, binding_id=self._lookup_binding(expr.ident))
+		"""
+		Lower an identifier reference.
+
+		Resolution policy (spec §3.9, implicit `self` lookup):
+		  1) local bindings (let/var, loop bindings, etc.),
+		  2) otherwise, inside a method body: treat unknown names as members of `self`
+		     when they match a declared field name.
+
+		We lower implicit field reads to a canonical `HPlaceExpr` so later phases
+		can treat them uniformly in both value and place contexts (loads/stores,
+		borrows, moves). Mutability rules are enforced by the typed checker.
+		"""
+		bid = self._lookup_binding(expr.ident)
+		if bid is not None:
+			return H.HVar(name=expr.ident, binding_id=bid)
+		ctx = self._implicit_self_ctx()
+		if ctx is not None:
+			fields: set[str] = ctx["fields"]  # type: ignore[assignment]
+			if expr.ident in fields:
+				self_mode = str(ctx["self_mode"])
+				self_name = str(ctx.get("self_name", "self"))
+				projs: list[H.HPlaceProj] = []
+				if self_mode in ("ref", "ref_mut"):
+					projs.append(H.HPlaceDeref())
+				projs.append(H.HPlaceField(name=expr.ident))
+				return H.HPlaceExpr(
+					base=H.HVar(name=self_name, binding_id=self._lookup_binding(self_name)),
+					projections=projs,
+					loc=self._as_span(getattr(expr, "loc", None)),
+				)
+		# Fallback: unresolved name remains an HVar. The typed checker is the
+		# authority for rejecting unknown variables with a source span.
+		return H.HVar(name=expr.ident, binding_id=None)
 
 	def _visit_expr_Literal(self, expr: ast.Literal) -> H.HExpr:
 		"""
@@ -215,7 +317,27 @@ class AstToHIR:
 			args = [self.lower_expr(a) for a in expr.args]
 			return H.HMethodCall(receiver=receiver, method_name=expr.func.attr, args=args)
 
-		# Plain function call.
+		# Implicit `self` method call: inside a method body, an unqualified call
+		# `foo(...)` may resolve to `self.foo(...)` when:
+		#  - there is no local binding named `foo`, and
+		#  - there is no visible free function named `foo`, and
+		#  - the receiver type declares a method named `foo`.
+		#
+		# This keeps method bodies concise without requiring `self.` everywhere.
+		if isinstance(expr.func, ast.Name):
+			ctx = self._implicit_self_ctx()
+			if ctx is not None:
+				name = expr.func.ident
+				self_name = str(ctx.get("self_name", "self"))
+				if self._lookup_binding(name) is None:
+					module_funcs: set[str] = ctx["module_funcs"]  # type: ignore[assignment]
+					methods: set[str] = ctx["methods"]  # type: ignore[assignment]
+					if name not in module_funcs and name in methods:
+						recv = H.HVar(name=self_name, binding_id=self._lookup_binding(self_name))
+						args = [self.lower_expr(a) for a in expr.args]
+						return H.HMethodCall(receiver=recv, method_name=name, args=args)
+
+		# Plain function call (or call through an expression value).
 		fn_expr = self.lower_expr(expr.func)
 		args = [self.lower_expr(a) for a in expr.args]
 		return H.HCall(fn=fn_expr, args=args)
@@ -268,6 +390,27 @@ class AstToHIR:
 		Binary op lowering. Short-circuit behavior for &&/|| is NOT lowered
 		here; that can be desugared later if needed.
 		"""
+		# Pipeline operator: `lhs |> stage`.
+		#
+		# Semantics (MVP):
+		# - If `stage` is a call `f(a, b)`, desugar to `f(lhs, a, b)`.
+		# - Otherwise desugar to `stage(lhs)` (where `stage` is any callable value).
+		#
+		# This keeps `|>` out of the core HIR operator set and makes pipelines work
+		# without requiring dedicated MIR/LLVM support.
+		if expr.op == "|>":
+			left = self.lower_expr(expr.left)
+			# `lhs |> f(...)` becomes `f(lhs, ...)`.
+			if isinstance(expr.right, ast.Call):
+				fn = self.lower_expr(expr.right.func)
+				args = [left] + [self.lower_expr(a) for a in expr.right.args]
+				if getattr(expr.right, "kwargs", None):
+					raise NotImplementedError("pipeline stages do not support keyword arguments yet")
+				return H.HCall(fn=fn, args=args)
+			# `lhs |> f` becomes `f(lhs)`.
+			fn = self.lower_expr(expr.right)
+			return H.HCall(fn=fn, args=[left])
+
 		op_map = {
 			"+": H.BinaryOp.ADD,
 			"-": H.BinaryOp.SUB,
@@ -390,6 +533,19 @@ class AstToHIR:
 		target = self.lower_expr(stmt.target)
 		value = self.lower_expr(stmt.value)
 		return H.HAssign(target=target, value=value)
+
+	def _visit_stmt_AugAssignStmt(self, stmt: ast.AugAssignStmt) -> H.HStmt:
+		"""
+		Lower augmented assignment (`+=`) into a dedicated HIR statement.
+
+		We intentionally *do not* desugar to `x = x + y` here because that would
+		duplicate evaluation of the target expression (incorrect for `arr[i]`).
+		Stage2 lowering emits a correct read-modify-write sequence for the
+		canonicalized place target.
+		"""
+		target = self.lower_expr(stmt.target)
+		value = self.lower_expr(stmt.value)
+		return H.HAugAssign(target=target, op=str(getattr(stmt, "op", "+=")), value=value, loc=Span.from_loc(getattr(stmt, "loc", None)))
 
 	def _visit_stmt_IfStmt(self, stmt: ast.IfStmt) -> H.HStmt:
 		cond = self.lower_expr(stmt.cond)

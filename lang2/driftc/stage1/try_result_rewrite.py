@@ -102,6 +102,12 @@ class TryResultRewriter:
 			prefix_target, target = self._rewrite_expr(stmt.target)
 			prefix_value, value = self._rewrite_expr(stmt.value)
 			return prefix_target + prefix_value + [H.HAssign(target=target, value=value)]
+		if hasattr(H, "HAugAssign") and isinstance(stmt, getattr(H, "HAugAssign")):
+			prefix_target, target = self._rewrite_expr(stmt.target)
+			prefix_value, value = self._rewrite_expr(stmt.value)
+			return prefix_target + prefix_value + [
+				H.HAugAssign(target=target, op=getattr(stmt, "op", "+="), value=value, loc=getattr(stmt, "loc", Span()))
+			]
 		if isinstance(stmt, H.HReturn):
 			if stmt.value is None:
 				return [stmt]

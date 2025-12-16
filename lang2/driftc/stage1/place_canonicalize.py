@@ -13,6 +13,7 @@ into places. It only canonicalizes places in contexts that *must* be addressable
 
   - `HBorrow.subject`
   - `HAssign.target`
+  - `HAugAssign.target`
   - `HMove.subject`
   - `swap(a, b)` / `replace(place, new)` builtin place operands
 
@@ -78,6 +79,15 @@ class PlaceCanonicalizeRewriter:
 				tgt = place
 			pfx_v, val = self._rewrite_expr(stmt.value)
 			return pfx_t + pfx_v + [H.HAssign(target=tgt, value=val)]
+		if hasattr(H, "HAugAssign") and isinstance(stmt, getattr(H, "HAugAssign")):
+			pfx_t, tgt = self._rewrite_expr(stmt.target)
+			place = place_expr_from_lvalue_expr(tgt)
+			if place is not None:
+				tgt = place
+			pfx_v, val = self._rewrite_expr(stmt.value)
+			return pfx_t + pfx_v + [
+				H.HAugAssign(target=tgt, op=getattr(stmt, "op", "+="), value=val, loc=getattr(stmt, "loc", Span()))
+			]
 		if isinstance(stmt, H.HReturn):
 			if stmt.value is None:
 				return [stmt]

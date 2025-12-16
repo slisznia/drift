@@ -49,7 +49,7 @@ Drift expressions largely follow a C-style surface with explicit ownership rules
 - Binary operators: `+`, `-`, `*`, `/`, comparisons (`<`, `<=`, `>`, `>=`, `==`, `!=`), boolean (`and`, `or`)
 - Bitwise operators: `&`, `|`, `^`, `~`, `<<`, `>>` — **require `Uint` operands**; using any other type (including `Int`, `Bool`, `String`, or arrays) is a type error.
 - Ternary conditional: `cond ? then_expr : else_expr` (lower precedence than `or`; `cond` must be `Bool`, and both arms must have the same type)
-- Pipeline: `lhs >> stage` (left-associative; lower precedence than ternary/`or`; stages are calls/idents)
+- Pipeline: `lhs |> stage` (left-associative; lower precedence than ternary/`or`; stages are calls/idents)
 - Move expression: `move x` transfers ownership
 - Array literals: `[1, 2, 3]`
 - String concatenation uses `+`
@@ -351,10 +351,66 @@ Borrowing from rvalues (temporaries, moved values) is an error. The explicit for
 
 Receivers inside an `implement` block are written with an explicit mode: `T` (by value), `&T` (shared borrow), or `&mut T` (exclusive borrow):
 
+- A method receiver must be spelled as the **first parameter** and must be named `self` for consistency. Valid forms are `self: T`, `self: &T`, and `self: &mut T`. Any other first-parameter name in an `implement` method is a compile-time error.
 - A call on an lvalue prefers `self: &T`, then `self: &mut T`, then `self: T` (which copies if `Copy`, otherwise requires `move obj`).
 - A call on an rvalue (`move obj`, `make()`) can bind only to a `self` receiver; borrowed receivers are not allowed on rvalues.
 
 These rules keep borrowing consistent across free functions, methods, and control-flow desugarings.
+
+#### 3.8.1. When `self` is by value (consuming receiver)
+
+Using `self: T` makes the method **consume** the receiver: the caller transfers ownership into the method and the original value becomes invalid after the call (unless it was explicitly moved from a temporary).
+
+This is the right design when the API intent is ownership-taking, for example:
+
+- **Conversions**: returning a new owned representation without cloning.
+  - `fn into_bytes(self: String) returns Array<Uint>`
+- **Resource finalization**: preventing accidental use-after-close.
+  - `fn close(self: File) returns Void`
+- **Builders that "finish"**: ensuring the partially-built value is not reused.
+  - `fn build(self: Builder) returns Product`
+- **Draining/extracting owned internals** from move-only types.
+  - `fn into_iter(self: Vec<T>) returns VecIter<T>`
+
+If a method does not need ownership, prefer borrowed receivers (`&T` / `&mut T`) so callers can keep using the original value.
+
+---
+
+### 3.9. Implicit `self` member lookup (method bodies)
+
+Inside a method body (a function declared within an `implement` block that has a `self` receiver), unqualified names may resolve to members of `self` to keep method bodies concise.
+
+#### 3.9.1. Name resolution order
+
+When an identifier `name` appears unqualified inside a method body, it is resolved in this order:
+
+1. **Local scope**: locals, parameters (including `self`), and any bindings introduced by control flow.
+2. **Module scope**: functions, structs, traits, exceptions, and other items visible in the current module scope.
+3. **`self` members**: fields and methods of the receiver type.
+
+This rule is a convenience only. It does not change the language’s ownership or borrow semantics.
+
+#### 3.9.2. How implicit members desugar
+
+If `name` resolves to a member of `self`, the compiler desugars it based on context:
+
+- **Value (read) context**: `name` behaves as if you wrote:
+  - `self.name` when `self` is an owned value receiver (`self: T`), or
+  - `self->name` when `self` is a borrowed receiver (`self: &T` / `self: &mut T`).
+
+- **Place (lvalue) context**: `name` behaves as the *addressable place* corresponding to the same member access, and is valid in:
+  - assignment targets (`name = ...`, `name += ...`),
+  - borrow subjects (`&name`, `&mut name`),
+  - move subjects (`move name`),
+  subject to the normal rules for addressability and writability.
+
+- **Call context**: `name(args...)` resolves as a method call on `self` (equivalent to `self.name(args...)`), after applying the normal receiver selection rules in §3.8.
+
+#### 3.9.3. Shadowing and disambiguation
+
+If a local/parameter/module item shares the same name as a member of `self`, the non-member name wins.
+
+To access the member in that case, write it explicitly using `self.name(...)`, `self.name`, or `self->name` as appropriate.
 
 ---
 
@@ -1505,7 +1561,7 @@ try {
 Keywords and literals are reserved and cannot be used as identifiers (functions, variables, modules, structs, exceptions, etc.):  
 `fn`, `val`, `var`, `returns`, `if`, `else`, `while`, `break`, `continue`, `try`, `catch`, `throw`, `raise`, `return`, `exception`, `import`, `module`, `implement`, `true`, `false`, `not`, `and`, `or`, plus language/FFI/legacy keywords (`auto`, `pragma`, `bool`, `int`, `float`, `string`, `void`, `abstract`, `assert`, `boolean`, `byte`, `case`, `char`, `class`, `const`, `default`, `do`, `double`, `enum`, `extends`, `final`, `finally`, `for`, `goto`, `instanceof`, `interface`, `long`, `native`, `new`, `package`, `private`, `protected`, `public`, `short`, `static`, `strictfp`, `super`, `switch`, `synchronized`, `this`, `throws`, `transient`, `volatile`).
 
-**Operator tokens (reserved):** `+`, `-`, `*`, `/`, `%`, `==`, `!=`, `<`, `<=`, `>`, `>=`, `and`, `or`, `not`, `? :`, `>>` (pipeline), `<<`, `|>`, `<|`, indexing brackets `[]`, and member access `.`. These participate in precedence/associativity rules; identifiers cannot reuse them.
+**Operator tokens (reserved):** `+`, `-`, `*`, `/`, `%`, `==`, `!=`, `<`, `<=`, `>`, `>=`, `and`, `or`, `not`, `? :`, `|>` (pipeline), `<<`, `>>`, indexing brackets `[]`, and member access `.`. These participate in precedence/associativity rules; identifiers cannot reuse them.
 
 ## 10. Variant types (`variant`)
 
@@ -2321,7 +2377,7 @@ Serialization/logging is implementation-defined. A possible JSON shape:
 ## 15. Mutators, transformers, and finalizers
 
 In Drift, a function’s **parameter ownership mode** communicates its **lifecycle role** in a data flow.  
-This distinction becomes especially clear in pipelines (`>>`), where each stage expresses how it interacts with its input.
+This distinction becomes especially clear in pipelines (`|>`), where each stage expresses how it interacts with its input.
 
 ### 15.1. Function roles
 
@@ -2333,7 +2389,7 @@ This distinction becomes especially clear in pipelines (`>>`), where each stage 
 
 ### 15.2. Pipeline behavior
 
-The pipeline operator `>>` is **ownership-aware**.  
+The pipeline operator `|>` is **ownership-aware**.  
 It is left-associative and automatically determines how each stage interacts based on the callee’s parameter type:
 
 ```drift
@@ -2342,15 +2398,15 @@ fn tune(f: &mut File) returns Void { /* mutate */ }
 fn finalize(f: File) returns Void { /* consume */ }
 
 open("x")
-  >> fill      // borrows mutably; File stays alive
-  >> tune      // borrows mutably again
-  >> finalize; // consumes; File is now invalid
+  |> fill      // borrows mutably; File stays alive
+  |> tune      // borrows mutably again
+  |> finalize; // consumes; File is now invalid
 ```
 
 - **Mutator stages** borrow temporarily and return the same owner.
 - **Transformer stages** consume and return new ownership.
 - **Finalizer stages** consume and end the pipeline.
-- **Desugaring intuition:** `x >> f` behaves like `f(x)`, and `x >> g(a, b)` behaves like `g(x, a, b)`. Pipelines are left-associative, so `a >> f >> g` becomes `g(f(a))`. Ownership follows the parameter types of each stage (borrow vs move).
+- **Desugaring intuition:** `x |> f` behaves like `f(x)`, and `x |> g(a, b)` behaves like `g(x, a, b)`. Pipelines are left-associative, so `a |> f |> g` becomes `g(f(a))`. Ownership follows the parameter types of each stage (borrow vs move).
 
 At the end of scope, if the value is still owned (not consumed by a finalizer), RAII automatically calls its destructor.
 
@@ -2372,8 +2428,8 @@ Finalizers are **optional** unless early release, explicit error handling, or sh
 ```drift
 {
     open("x")
-      >> fill
-      >> tune;      // RAII closes automatically here
+      |> fill
+      |> tune;      // RAII closes automatically here
 }
 
 {

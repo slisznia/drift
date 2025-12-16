@@ -1,0 +1,7 @@
+module m
+
+fn main() returns Int {
+	var x: Int = 84
+	x /= 2
+	return x
+}

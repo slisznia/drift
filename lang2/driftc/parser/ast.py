@@ -77,6 +77,27 @@ class AssignStmt(Stmt):
 
 
 @dataclass
+class AugAssignStmt(Stmt):
+	"""
+	Augmented assignment statement.
+
+	MVP supports:
+	`+=`, `-=`, `*=`, `/=`, `%=`, `&=`, `|=`, `^=`, `<<=`, `>>=`.
+
+	We keep augmented assignment distinct from plain assignment in the AST so
+	lowering can preserve correct evaluation semantics for complex lvalues.
+	In particular, `a[i] += 1` must evaluate `a` and `i` once (compute address,
+	load, add, store), not duplicate the index expression by desugaring to
+	`a[i] = a[i] + 1` too early.
+	"""
+
+	loc: Located
+	target: "Expr"
+	op: str
+	value: "Expr"
+
+
+@dataclass
 class IfStmt(Stmt):
     loc: Located
     condition: "Expr"

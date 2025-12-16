@@ -243,6 +243,25 @@ class AssignStmt(Stmt):
 
 
 @dataclass
+class AugAssignStmt(Stmt):
+	"""
+	Augmented assignment statement.
+
+	MVP supports:
+	`+=`, `-=`, `*=`, `/=`, `%=`, `&=`, `|=`, `^=`, `<<=`, `>>=`.
+
+	This node exists to preserve correct evaluation semantics for complex
+	lvalues. Lowering should evaluate the target address once and perform a
+	read-modify-write sequence rather than desugaring to `x = x + y` too early.
+	"""
+
+	target: Expr
+	op: str
+	value: Expr
+	loc: Optional[object] = None
+
+
+@dataclass
 class IfStmt(Stmt):
 	"""If/else statement with explicit blocks."""
 	cond: Expr
@@ -333,6 +352,6 @@ __all__ = [
 	"Node", "Expr", "Stmt",
 	"Literal", "Name", "Placeholder", "Attr", "Call", "Binary", "Unary", "Move",
 	"Index", "ArrayLiteral", "ExceptionCtor", "CatchExprArm", "TryCatchExpr", "Ternary", "TryExpr",
-	"LetStmt", "AssignStmt", "IfStmt", "ReturnStmt", "RaiseStmt", "ExprStmt", "ImportStmt",
+	"LetStmt", "AssignStmt", "AugAssignStmt", "IfStmt", "ReturnStmt", "RaiseStmt", "ExprStmt", "ImportStmt",
 	"TryStmt", "WhileStmt", "ForStmt", "BreakStmt", "ContinueStmt", "ThrowStmt", "RethrowStmt",
 ]

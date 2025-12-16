@@ -246,6 +246,49 @@ class Checker:
 				# imply can-throw.
 				declared_can_throw = False
 
+			# Method receiver validation (spec §3.8).
+			#
+			# For production correctness, method receiver conventions are validated
+			# in the checker (typecheck phase), not during parsing.
+			if sig is not None and sig.is_method:
+				# Receiver name: methods must declare a receiver parameter named `self`
+				# as their first parameter.
+				if not sig.param_names:
+					diagnostics.append(
+						Diagnostic(
+							message=f"method '{sig.method_name or sig.name}' must declare a receiver parameter 'self'",
+							severity="error",
+							span=Span.from_loc(getattr(sig, "loc", None)),
+						)
+					)
+				elif sig.param_names[0] != "self":
+					diagnostics.append(
+						Diagnostic(
+							message=f"first parameter of method '{sig.method_name or sig.name}' must be named 'self'",
+							severity="error",
+							span=Span.from_loc(getattr(sig, "loc", None)),
+						)
+					)
+				# Receiver type must match the impl target type according to self_mode.
+				if sig.param_type_ids and sig.impl_target_type_id is not None and sig.self_mode is not None:
+					recv_ty = sig.param_type_ids[0]
+					expected: TypeId | None = None
+					if sig.self_mode == "value":
+						expected = sig.impl_target_type_id
+					elif sig.self_mode == "ref":
+						expected = self._type_table.ensure_ref(sig.impl_target_type_id)
+					elif sig.self_mode == "ref_mut":
+						expected = self._type_table.ensure_ref_mut(sig.impl_target_type_id)
+					if expected is not None and recv_ty != expected:
+						target_name = self._type_table.get(sig.impl_target_type_id).name
+						diagnostics.append(
+							Diagnostic(
+								message=f"receiver type for method '{sig.method_name or sig.name}' must be '{target_name}' (or '&{target_name}' / '&mut {target_name}')",
+								severity="error",
+								span=Span.from_loc(getattr(sig, "loc", None)),
+							)
+						)
+
 			catch_arms_groups = self._catch_arms.get(name)
 			if catch_arms_groups is not None:
 				for arms in catch_arms_groups:
@@ -359,6 +402,7 @@ class Checker:
 
 			def combined_on_expr(expr: "H.HExpr", typing_ctx: Checker._TypingContext = ctx) -> None:
 				self._array_validator_on_expr(expr, typing_ctx)
+				self._bitwise_validator_on_expr(expr, typing_ctx)
 				self._void_usage_on_expr(expr, typing_ctx)
 
 			def combined_on_stmt(stmt: "H.HStmt", typing_ctx: Checker._TypingContext = ctx) -> None:
@@ -718,16 +762,16 @@ class Checker:
 							)
 						)
 					return None
-				if expr.op in bitwise_ops:
-					if left_ty == checker._uint_type and right_ty == checker._uint_type:
-						return checker._uint_type
-					self._append_diag(
-						Diagnostic(
-							message="bitwise ops require Uint operands",
-							severity="error",
-							span=getattr(expr, "loc", Span()),
+					if expr.op in bitwise_ops:
+						if left_ty == checker._uint_type and right_ty == checker._uint_type:
+							return checker._uint_type
+						self._append_diag(
+							Diagnostic(
+								message="bitwise operators require Uint operands",
+								severity="error",
+								span=getattr(expr, "loc", Span()),
+							)
 						)
-					)
 					return None
 				if left_ty == checker._bool_type and right_ty == checker._bool_type:
 					if expr.op in bool_ops:
@@ -1285,12 +1329,12 @@ class Checker:
 		from lang2.driftc import stage1 as H
 
 		def walk_expr(expr: H.HExpr) -> None:
-			# Run inference for all expressions up front so shared diagnostics
-			# (string/binop, bitwise, indexing, etc.) fire even when no specific
-			# validator hook is registered for that node.
+			# Run inference for all expressions up front so shared diagnostics fire
+			# even when no specific validator hook is registered for that node.
 			ctx.infer(expr)
 			if on_expr:
 				on_expr(expr, ctx)
+
 			if isinstance(expr, H.HCall):
 				walk_expr(expr.fn)
 				for arg in expr.args:
@@ -1336,8 +1380,13 @@ class Checker:
 				if getattr(stmt, "declared_type_expr", None) is not None:
 					decl_ty = self._resolve_typeexpr(stmt.declared_type_expr)
 				value_ty = ctx.infer(stmt.value)
-				# Let-binding type consistency lives here so every validator shares
-				# the same rule and locals update.
+				# MVP: allow `Uint` locals to be initialized from an integer literal.
+				if (
+					decl_ty is not None
+					and decl_ty == self._type_table.ensure_uint()
+					and isinstance(stmt.value, H.HLiteralInt)
+				):
+					value_ty = decl_ty
 				if decl_ty is not None and value_ty is not None and decl_ty != value_ty:
 					ctx._append_diag(
 						Diagnostic(
@@ -1362,8 +1411,6 @@ class Checker:
 							)
 						)
 				elif isinstance(stmt.target, H.HVar) and value_ty is not None:
-					# Simple var assignment updates locals so downstream expressions
-					# see the new type.
 					ctx.locals[stmt.target.name] = value_ty
 			elif isinstance(stmt, H.HIf):
 				walk_expr(stmt.cond)
@@ -1397,6 +1444,52 @@ class Checker:
 			# Reuse shared infer to emit array-specific diagnostics without extra
 			# traversal logic here.
 			ctx.infer(expr)
+
+	def _bitwise_validator_on_expr(self, expr: "H.HExpr", ctx: "_TypingContext") -> None:
+		"""
+		Validate bitwise operators and shifts.
+
+		The stub checker keeps expression typing intentionally shallow; this helper
+		enforces a narrow, explicit rule so user code gets clear diagnostics:
+
+		- `~`, `&`, `|`, `^`, `<<`, `>>` require `Uint` operands and produce `Uint`.
+
+		This mirrors the typed checker’s MVP contract and keeps the e2e behavior
+		stable even before we have a full type environment.
+		"""
+		from lang2.driftc import stage1 as H
+
+		uint_ty = self._uint_type
+
+		if isinstance(expr, H.HUnary) and expr.op is H.UnaryOp.BIT_NOT:
+			inner_ty = ctx.infer(expr.expr)
+			if inner_ty is not None and inner_ty != uint_ty:
+				ctx._append_diag(
+					Diagnostic(
+						message="bitwise operators require Uint operands",
+						severity="error",
+						span=getattr(expr, "loc", Span()),
+					)
+				)
+			return
+
+		if isinstance(expr, H.HBinary) and expr.op in (
+			H.BinaryOp.BIT_AND,
+			H.BinaryOp.BIT_OR,
+			H.BinaryOp.BIT_XOR,
+			H.BinaryOp.SHL,
+			H.BinaryOp.SHR,
+		):
+			left_ty = ctx.infer(expr.left)
+			right_ty = ctx.infer(expr.right)
+			if left_ty is not None and right_ty is not None and (left_ty != uint_ty or right_ty != uint_ty):
+				ctx._append_diag(
+					Diagnostic(
+						message="bitwise operators require Uint operands",
+						severity="error",
+						span=getattr(expr, "loc", Span()),
+					)
+				)
 
 	def _void_usage_on_expr(self, expr: "H.HExpr", ctx: "_TypingContext") -> None:
 		"""

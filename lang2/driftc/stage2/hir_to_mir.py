@@ -593,6 +593,29 @@ class HIRToMIR:
 		return result
 
 	def _visit_expr_HMethodCall(self, expr: H.HMethodCall) -> M.ValueId:
+		# FnResult / try-sugar intrinsic methods.
+		#
+		# `HTryResult` desugaring produces method calls like:
+		#   res.is_err(), res.unwrap(), res.unwrap_err()
+		#
+		# These are not user-defined methods and do not require signature-based
+		# resolution. We lower them directly to dedicated MIR ops so later stages
+		# (SSA/codegen) can handle them without an ad-hoc method-call convention.
+		if expr.method_name in ("is_err", "unwrap", "unwrap_err") and not expr.args:
+			res_val = self.lower_expr(expr.receiver)
+			dest = self.b.new_temp()
+			if expr.method_name == "is_err":
+				self.b.emit(M.ResultIsErr(dest=dest, result=res_val))
+				self._local_types[dest] = self._bool_type
+				return dest
+			if expr.method_name == "unwrap":
+				self.b.emit(M.ResultOk(dest=dest, result=res_val))
+				# Ok payload type is derived later by SSA/type env; leave unknown here.
+				return dest
+			if expr.method_name == "unwrap_err":
+				self.b.emit(M.ResultErr(dest=dest, result=res_val))
+				self._local_types[dest] = self._type_table.ensure_error()
+				return dest
 		if expr.method_name in ("as_int", "as_bool", "as_string"):
 			if expr.args:
 				raise NotImplementedError(f"{expr.method_name} takes no arguments")
@@ -610,11 +633,11 @@ class HIRToMIR:
 				self.b.emit(M.DVAsString(dest=dest, dv=dv_val))
 				self._local_types[dest] = self._opt_string
 				return dest
-		result = self._lower_method_call(expr)
+		result, callee = self._lower_method_call(expr)
 		if result is None:
 			raise AssertionError("Void-returning method call used in expression context (checker bug)")
-		if self._callee_is_can_throw(expr.method_name):
-			ok_tid = self._return_typeid_for_callee(expr.method_name)
+		if self._callee_is_can_throw(callee):
+			ok_tid = self._return_typeid_for_callee(callee)
 			if ok_tid is None:
 				raise AssertionError("can-throw callee must have a declared return type")
 			def emit_call() -> M.ValueId:
@@ -892,18 +915,27 @@ class HIRToMIR:
 				self._lower_call(expr=stmt.expr)
 				return
 		if isinstance(stmt.expr, H.HMethodCall):
-			if self._callee_is_can_throw(stmt.expr.method_name):
-				fnres_val = self._lower_method_call(expr=stmt.expr)
-				assert fnres_val is not None
+			# Only special-case method calls when statement semantics differ from
+			# expression semantics:
+			# - can-throw calls in statement position must be "checked" and propagate,
+			# - Void-returning calls in statement position should not produce a value.
+			recv_ty = self._infer_expr_type(stmt.expr.receiver)
+			resolved = self._resolve_method_symbol(recv_ty, stmt.expr.method_name) if recv_ty is not None else None
+			if resolved is not None:
+				symbol_name, _mode = resolved
+				if self._callee_is_can_throw(symbol_name):
+					fnres_val, _ = self._lower_method_call(expr=stmt.expr)
+					assert fnres_val is not None
 
-				def emit_call() -> M.ValueId:
-					return fnres_val
+					def emit_call() -> M.ValueId:
+						return fnres_val
 
-				self._lower_can_throw_call_stmt(emit_call=emit_call)
-				return
-			if self._call_returns_void(stmt.expr):
-				self._lower_method_call(expr=stmt.expr)
-				return
+					self._lower_can_throw_call_stmt(emit_call=emit_call)
+					return
+				ret_tid = self._return_type_for_name(symbol_name)
+				if ret_tid is not None and self._type_table.is_void(ret_tid):
+					self._lower_method_call(expr=stmt.expr)
+					return
 		self.lower_expr(stmt.expr)
 
 	def _visit_stmt_HLet(self, stmt: H.HLet) -> None:
@@ -934,6 +966,62 @@ class HIRToMIR:
 			return
 		ptr, inner_ty = self._lower_addr_of_place(stmt.target, is_mut=True)
 		self.b.emit(M.StoreRef(ptr=ptr, value=val, inner_ty=inner_ty))
+		return
+
+	def _visit_stmt_HAugAssign(self, stmt: "H.HAugAssign") -> None:
+		"""
+		Lower augmented assignment (`+=`) as a read-modify-write.
+
+		This preserves correct semantics for complex places:
+		- evaluate the target address once,
+		- load the current value,
+		- compute the new value,
+		- store it back.
+
+		We intentionally avoid early desugaring to `x = x + y` which would
+		duplicate evaluation of the lvalue (e.g., `arr[i] += 1` would evaluate `i`
+		twice).
+		"""
+		op_map = {
+			"+=": H.BinaryOp.ADD,
+			"-=": H.BinaryOp.SUB,
+			"*=": H.BinaryOp.MUL,
+			"/=": H.BinaryOp.DIV,
+			"%=": H.BinaryOp.MOD,
+			"&=": H.BinaryOp.BIT_AND,
+			"|=": H.BinaryOp.BIT_OR,
+			"^=": H.BinaryOp.BIT_XOR,
+			"<<=": H.BinaryOp.SHL,
+			">>=": H.BinaryOp.SHR,
+		}
+		if stmt.op not in op_map:
+			raise AssertionError(f"unsupported augmented assignment operator '{stmt.op}' reached MIR lowering")
+		bin_op = op_map[stmt.op]
+
+		# Stage1 normalization must canonicalize augmented assignment targets to `HPlaceExpr`.
+		if not (hasattr(H, "HPlaceExpr") and isinstance(stmt.target, getattr(H, "HPlaceExpr"))):
+			raise AssertionError("non-canonical augmented assignment target reached MIR lowering (normalize/typechecker bug)")
+
+		rhs = self.lower_expr(stmt.value)
+		inner_ty = self._infer_expr_type(stmt.target) or self._unknown_type
+
+		# Trivial local case: keep locals in SSA-friendly `LoadLocal`/`StoreLocal` form.
+		if not stmt.target.projections:
+			self.b.ensure_local(stmt.target.base.name)
+			old = self.b.new_temp()
+			self.b.emit(M.LoadLocal(dest=old, local=stmt.target.base.name))
+			new = self.b.new_temp()
+			self.b.emit(M.BinaryOpInstr(dest=new, op=bin_op, left=old, right=rhs))
+			self._local_types[stmt.target.base.name] = inner_ty
+			self.b.emit(M.StoreLocal(local=stmt.target.base.name, value=new))
+			return
+
+		ptr, elem_ty = self._lower_addr_of_place(stmt.target, is_mut=True)
+		old = self.b.new_temp()
+		self.b.emit(M.LoadRef(dest=old, ptr=ptr, inner_ty=elem_ty))
+		new = self.b.new_temp()
+		self.b.emit(M.BinaryOpInstr(dest=new, op=bin_op, left=old, right=rhs))
+		self.b.emit(M.StoreRef(ptr=ptr, value=new, inner_ty=elem_ty))
 		return
 
 	def _visit_stmt_HReturn(self, stmt: H.HReturn) -> None:
@@ -1404,6 +1492,56 @@ class HIRToMIR:
 			return ret is not None and self._type_table.is_void(ret)
 		return False
 
+	def _resolve_method_symbol(self, receiver_ty: TypeId, method_name: str) -> tuple[str, str] | None:
+		"""
+		Resolve an inherent method call to a concrete function symbol.
+
+		Stage2 lowering does not have access to the full callable registry used by
+		the typed checker, but for codegen we still need a deterministic lowering
+		of `obj.method(...)` into a plain function call.
+
+		We resolve by:
+		- the receiver's nominal (struct) TypeId, and
+		- `FnSignature.is_method`, `FnSignature.method_name`, and `FnSignature.impl_target_type_id`.
+
+		Returns `(symbol_name, self_mode)` where `symbol_name` is the canonical
+		function key in `self._signatures` (e.g. `Point::move_by`) and `self_mode`
+		is one of {"value","ref","ref_mut"}.
+		"""
+		td = self._type_table.get(receiver_ty)
+		recv_base = receiver_ty
+		if td.kind is TypeKind.REF and td.param_types:
+			recv_base = td.param_types[0]
+		candidates: list[tuple[str, str]] = []
+		recv_name = self._type_table.get(recv_base).name
+		for sym, sig in self._signatures.items():
+			if not getattr(sig, "is_method", False):
+				continue
+			decl_name = getattr(sig, "method_name", None)
+			if decl_name is None:
+				# Some legacy signatures don't set `method_name`; fall back to the
+				# canonical symbol suffix (`Type::name`).
+				if not sym.endswith(f"::{method_name}"):
+					continue
+			elif decl_name != method_name:
+				continue
+			impl_tid = getattr(sig, "impl_target_type_id", None)
+			if impl_tid is not None and impl_tid != recv_base:
+				continue
+			# Backstop for signatures missing impl_target_type_id: match by the
+			# symbol prefix (`RecvType::method`).
+			if impl_tid is None and not sym.startswith(f"{recv_name}::"):
+				continue
+			mode = getattr(sig, "self_mode", None)
+			if mode is None:
+				continue
+			candidates.append((sym, mode))
+		if not candidates:
+			return None
+		if len(candidates) > 1:
+			raise NotImplementedError(f"ambiguous method call '{method_name}' on receiver type '{self._type_table.get(recv_base).name}'")
+		return candidates[0]
+
 	def _lower_call(self, expr: H.HCall) -> M.ValueId | None:
 		if not isinstance(expr.fn, H.HVar):
 			raise NotImplementedError("Only direct function-name calls are supported in MIR lowering")
@@ -1422,20 +1560,77 @@ class HIRToMIR:
 		self.b.emit(M.Call(dest=dest, fn=expr.fn.name, args=arg_vals))
 		return dest
 
-	def _lower_method_call(self, expr: H.HMethodCall) -> M.ValueId | None:
-		receiver = self.lower_expr(expr.receiver)
-		arg_vals = [self.lower_expr(a) for a in expr.args]
-		if self._callee_is_can_throw(expr.method_name):
+	def _lower_method_call(self, expr: H.HMethodCall) -> tuple[M.ValueId | None, str]:
+		"""
+		Lower a method call to a plain function call.
+
+		We do not keep a distinct MIR `MethodCall` instruction in the v1 backend;
+		it complicates codegen and duplicates resolution logic. Instead we resolve
+		the method to a concrete symbol (e.g. `Point::move_by`) and call it with
+		the receiver as the first argument.
+		"""
+		recv_ty = self._infer_expr_type(expr.receiver)
+		if recv_ty is None:
+			# Legacy/stub path: if we cannot infer the receiver type, keep the call
+			# as a generic MIR MethodCall so stage2 unit tests can still lower HIR.
+			#
+			# Production codegen requires signature-based resolution; the LLVM backend
+			# does not support generic MethodCall instructions.
+			receiver = self.lower_expr(expr.receiver)
+			arg_vals = [self.lower_expr(a) for a in expr.args]
 			dest = self.b.new_temp()
 			self.b.emit(M.MethodCall(dest=dest, receiver=receiver, method_name=expr.method_name, args=arg_vals))
-			return dest
-		ret_tid = self._return_type_for_name(expr.method_name)
+			return dest, expr.method_name
+		resolved = self._resolve_method_symbol(recv_ty, expr.method_name)
+		if resolved is None:
+			# Same as above: keep unresolved method calls as generic MethodCall in MIR.
+			receiver = self.lower_expr(expr.receiver)
+			arg_vals = [self.lower_expr(a) for a in expr.args]
+			dest = self.b.new_temp()
+			self.b.emit(M.MethodCall(dest=dest, receiver=receiver, method_name=expr.method_name, args=arg_vals))
+			return dest, expr.method_name
+		symbol_name, self_mode = resolved
+
+		# Compute the receiver argument according to the method's receiver mode.
+		#
+		# - value: pass the receiver value as-is.
+		# - ref/ref_mut: pass a pointer (`&T` / `&mut T`). If the receiver is a
+		#   reference already, pass it directly; otherwise take the address of the
+		#   receiver place (auto-borrow from lvalues only).
+		receiver_arg: M.ValueId
+		if self_mode == "value":
+			receiver_arg = self.lower_expr(expr.receiver)
+		else:
+			recv_def = self._type_table.get(recv_ty)
+			if recv_def.kind is TypeKind.REF:
+				receiver_arg = self.lower_expr(expr.receiver)
+			else:
+				# Auto-borrow from an lvalue receiver. We support `HVar` and canonical
+				# `HPlaceExpr` receivers; other receiver expressions are not addressable
+				# in MVP.
+				place_expr = None
+				if hasattr(H, "HPlaceExpr") and isinstance(expr.receiver, getattr(H, "HPlaceExpr")):
+					place_expr = expr.receiver
+				elif isinstance(expr.receiver, H.HVar):
+					place_expr = H.HPlaceExpr(base=expr.receiver, projections=[], loc=Span())
+				if place_expr is None:
+					raise NotImplementedError("method auto-borrow requires an lvalue receiver in MVP")
+				receiver_arg, _inner = self._lower_addr_of_place(place_expr, is_mut=(self_mode == "ref_mut"))
+
+		arg_vals = [receiver_arg] + [self.lower_expr(a) for a in expr.args]
+
+		# Can-throw calls always return an internal FnResult carrier value.
+		if self._callee_is_can_throw(symbol_name):
+			dest = self.b.new_temp()
+			self.b.emit(M.Call(dest=dest, fn=symbol_name, args=arg_vals))
+			return dest, symbol_name
+		ret_tid = self._return_type_for_name(symbol_name)
 		if ret_tid is not None and self._type_table.is_void(ret_tid):
-			self.b.emit(M.MethodCall(dest=None, receiver=receiver, method_name=expr.method_name, args=arg_vals))
-			return None
+			self.b.emit(M.Call(dest=None, fn=symbol_name, args=arg_vals))
+			return None, symbol_name
 		dest = self.b.new_temp()
-		self.b.emit(M.MethodCall(dest=dest, receiver=receiver, method_name=expr.method_name, args=arg_vals))
-		return dest
+		self.b.emit(M.Call(dest=dest, fn=symbol_name, args=arg_vals))
+		return dest, symbol_name
 
 	def _return_typeid_for_callee(self, name: str) -> TypeId | None:
 		"""
@@ -1638,6 +1833,8 @@ class HIRToMIR:
 				return None
 			if expr.op is H.UnaryOp.NEG:
 				return inner if inner in (self._int_type, self._float_type) else None
+			if expr.op is H.UnaryOp.BIT_NOT:
+				return inner if inner == self._uint_type else None
 		if isinstance(expr, H.HBinary):
 			# Minimal numeric/boolean inference to support:
 			#   - materialized temporaries (`val tmp = 1 + 2; &tmp`)
@@ -1646,9 +1843,20 @@ class HIRToMIR:
 			right = self._infer_expr_type(expr.right)
 			if left is None or right is None:
 				return None
-			# Arithmetic operators return the operand type when both sides match.
-			if expr.op in (H.BinaryOp.ADD, H.BinaryOp.SUB, H.BinaryOp.MUL, H.BinaryOp.DIV, H.BinaryOp.MOD):
-				if left == right and left in (self._int_type, self._float_type):
+			# Arithmetic/bitwise operators return the operand type when both sides match.
+			if expr.op in (
+				H.BinaryOp.ADD,
+				H.BinaryOp.SUB,
+				H.BinaryOp.MUL,
+				H.BinaryOp.DIV,
+				H.BinaryOp.MOD,
+				H.BinaryOp.BIT_AND,
+				H.BinaryOp.BIT_OR,
+				H.BinaryOp.BIT_XOR,
+				H.BinaryOp.SHL,
+				H.BinaryOp.SHR,
+			):
+				if left == right and left in (self._int_type, self._float_type, self._uint_type):
 					return left
 				return None
 			# Comparisons return Bool when both sides are comparable scalars.

@@ -501,6 +501,32 @@ class HAssign(HStmt):
 
 
 @dataclass
+class HAugAssign(HStmt):
+	"""
+	Augmented assignment to an addressable place.
+
+	Surface syntax (MVP):
+	  <place> += <expr>
+
+	Why this exists:
+	- Desugaring `x += y` to `x = x + y` too early duplicates evaluation of `x`,
+	  which is incorrect for complex places like `arr[i]` (index expression
+	  evaluated twice).
+	- Instead, later lowering evaluates the address once and performs a
+	  read-modify-write sequence: `addr = &place; old = load addr; new = old + y;
+	  store addr, new`.
+
+	Stage1 normalization canonicalizes `target` to `HPlaceExpr` so stage2 does not
+	re-derive lvalue structure from arbitrary expression trees.
+	"""
+
+	target: "HPlaceExpr"
+	op: str  # currently "+="
+	value: HExpr
+	loc: Span = field(default_factory=Span)
+
+
+@dataclass
 class HIf(HStmt):
 	"""Conditional with explicit then/else blocks (else may be None)."""
 	cond: HExpr
@@ -541,7 +567,7 @@ __all__ = [
 	"HKwArg",
 	"HExceptionInit",
 	"HUnary", "HBinary", "HArrayLiteral",
-	"HBlock", "HExprStmt", "HLet", "HAssign", "HIf", "HLoop",
+	"HBlock", "HExprStmt", "HLet", "HAssign", "HAugAssign", "HIf", "HLoop",
 	"HBreak", "HContinue", "HReturn",
 	"HThrow", "HRethrow",
 	"HTry", "HCatchArm",

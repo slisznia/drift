@@ -23,6 +23,7 @@ from lang2.driftc.checker import FnSignature
 from lang2.driftc.core.diagnostics import Diagnostic
 from lang2.driftc.core.span import Span
 from lang2.driftc.core.types_core import TypeId, TypeTable, TypeKind
+from lang2.driftc.core.type_resolve_common import resolve_opaque_type
 from lang2.driftc.borrow_checker import (
 	DerefProj,
 	FieldProj,
@@ -959,7 +960,7 @@ class TypeChecker:
 				if expr.op in (H.UnaryOp.NOT,):
 					return record_expr(expr, self._bool)
 				if expr.op is H.UnaryOp.BIT_NOT:
-					return record_expr(expr, sub_ty if sub_ty == self._int else self._unknown)
+					return record_expr(expr, sub_ty if sub_ty in (self._uint,) else self._unknown)
 				return record_expr(expr, self._unknown)
 
 			if isinstance(expr, H.HBinary):
@@ -969,16 +970,38 @@ class TypeChecker:
 					H.BinaryOp.ADD,
 					H.BinaryOp.SUB,
 					H.BinaryOp.MUL,
-					H.BinaryOp.DIV,
 					H.BinaryOp.MOD,
+				):
+					# Arithmetic on Int/Float; MOD also on Uint.
+					if left_ty == self._int and right_ty == self._int:
+						return record_expr(expr, self._int)
+					if left_ty == self._float and right_ty == self._float:
+						return record_expr(expr, self._float)
+					if expr.op is H.BinaryOp.MOD and left_ty == self._uint and right_ty == self._uint:
+						return record_expr(expr, self._uint)
+					return record_expr(expr, self._unknown)
+				if expr.op in (H.BinaryOp.DIV,):
+					if left_ty == self._int and right_ty == self._int:
+						return record_expr(expr, self._int)
+					if left_ty == self._float and right_ty == self._float:
+						return record_expr(expr, self._float)
+					return record_expr(expr, self._unknown)
+				if expr.op in (
 					H.BinaryOp.BIT_AND,
 					H.BinaryOp.BIT_OR,
 					H.BinaryOp.BIT_XOR,
 					H.BinaryOp.SHL,
 					H.BinaryOp.SHR,
 				):
-					if left_ty == self._int and right_ty == self._int:
-						return record_expr(expr, self._int)
+					if left_ty == self._uint and right_ty == self._uint:
+						return record_expr(expr, self._uint)
+					diagnostics.append(
+						Diagnostic(
+							message="bitwise operators require Uint operands",
+							severity="error",
+							span=getattr(expr, "loc", Span()),
+						)
+					)
 					return record_expr(expr, self._unknown)
 				if expr.op in (
 					H.BinaryOp.EQ,
@@ -1108,7 +1131,32 @@ class TypeChecker:
 				if stmt.binding_id is None:
 					stmt.binding_id = self._alloc_local_id()
 				locals.append(stmt.binding_id)
-				val_ty = type_expr(stmt.value)
+				inferred_ty = type_expr(stmt.value)
+				declared_ty: TypeId | None = None
+				if getattr(stmt, "declared_type_expr", None) is not None:
+					try:
+						declared_ty = resolve_opaque_type(stmt.declared_type_expr, self.type_table)
+					except Exception:
+						declared_ty = None
+				val_ty = inferred_ty
+				if declared_ty is not None:
+					# MVP: treat the declared type as authoritative for the binding.
+					# If the initializer is obviously incompatible, emit a diagnostic.
+					# Numeric literals are allowed to flow into Int/Uint without requiring
+					# an explicit cast.
+					if inferred_ty is not None and inferred_ty != declared_ty:
+						is_int_lit = isinstance(stmt.value, H.HLiteralInt)
+						decl_name = self.type_table.get(declared_ty).name
+						inf_name = self.type_table.get(inferred_ty).name
+						if not (is_int_lit and decl_name in ("Int", "Uint") and inf_name == "Int"):
+							diagnostics.append(
+								Diagnostic(
+									message=f"initializer type '{inf_name}' does not match declared type '{decl_name}'",
+									severity="error",
+									span=getattr(stmt, "loc", Span()),
+								)
+							)
+					val_ty = declared_ty
 				scope_env[-1][stmt.name] = val_ty
 				scope_bindings[-1][stmt.name] = stmt.binding_id
 				binding_types[stmt.binding_id] = val_ty
@@ -1165,6 +1213,127 @@ class TypeChecker:
 						if isinstance(stmt.value, H.HVar) and getattr(stmt.value, "binding_id", None) is not None:
 							origin = ref_origin_param.get(stmt.value.binding_id)
 						ref_origin_param[tgt_bid] = origin
+			elif hasattr(H, "HAugAssign") and isinstance(stmt, getattr(H, "HAugAssign")):
+				"""
+				Augmented assignment (`+=`) type rules (MVP).
+
+				- Target must be an addressable place (same as `=`).
+				- Operand types must match.
+				- Currently supported for numeric scalars only (Int/Float).
+
+				We enforce *writability* here as well:
+				- Writes to owned storage require a `var` base binding.
+				- Writes through deref require a mutable reference (`&mut`) at each deref.
+				"""
+				tgt_ty = type_expr(stmt.target)
+				val_ty = type_expr(stmt.value)
+
+				def _base_lookup(hv: object) -> Optional[PlaceBase]:
+					bid = getattr(hv, "binding_id", None)
+					if bid is None:
+						return None
+					kind = binding_place_kind.get(bid, PlaceKind.LOCAL)
+					name = hv.name if hasattr(hv, "name") else str(hv)
+					return PlaceBase(kind=kind, local_id=bid, name=name)
+
+				tgt_place = place_from_expr(stmt.target, base_lookup=_base_lookup)
+				if tgt_place is None:
+					diagnostics.append(
+						Diagnostic(
+							message="assignment target must be an addressable place",
+							severity="error",
+							span=getattr(stmt, "loc", Span()),
+						)
+					)
+					return
+
+				# Writability: owned storage requires `var`; reborrow writes require `&mut`.
+				has_deref = any(isinstance(p, DerefProj) for p in tgt_place.projections)
+				if not has_deref and tgt_place.base.local_id is not None and not binding_mutable.get(tgt_place.base.local_id, False):
+					diagnostics.append(
+						Diagnostic(
+							message="cannot assign through an immutable binding; declare it with `var`",
+							severity="error",
+							span=getattr(stmt, "loc", Span()),
+						)
+					)
+				if has_deref and hasattr(H, "HPlaceExpr") and isinstance(stmt.target, getattr(H, "HPlaceExpr")):
+					cur = type_expr(stmt.target.base)
+					for pr in stmt.target.projections:
+						if isinstance(pr, H.HPlaceDeref):
+							ptr_def = self.type_table.get(cur)
+							if ptr_def.kind is not TypeKind.REF or not ptr_def.ref_mut:
+								diagnostics.append(
+									Diagnostic(
+										message="cannot assign through *p unless p is a mutable reference (&mut T)",
+										severity="error",
+										span=getattr(stmt, "loc", Span()),
+									)
+								)
+								break
+							if ptr_def.param_types:
+								cur = ptr_def.param_types[0]
+						elif isinstance(pr, H.HPlaceField):
+							td = self.type_table.get(cur)
+							if td.kind is TypeKind.STRUCT:
+								info = self.type_table.struct_field(cur, pr.name)
+								if info is not None:
+									_, cur = info
+						elif isinstance(pr, H.HPlaceIndex):
+							td = self.type_table.get(cur)
+							if td.kind is TypeKind.ARRAY and td.param_types:
+								cur = td.param_types[0]
+
+				arith_ops = {"+=", "-=", "*=", "/="}
+				bit_ops = {"&=", "|=", "^=", "<<=", ">>="}
+				mod_ops = {"%="}
+				# Type check: supported augmented assignment operators.
+				if stmt.op not in (arith_ops | bit_ops | mod_ops):
+					diagnostics.append(
+						Diagnostic(
+							message=f"unsupported augmented assignment operator '{stmt.op}'",
+							severity="error",
+							span=getattr(stmt, "loc", Span()),
+						)
+					)
+				if tgt_ty != val_ty:
+					diagnostics.append(
+						Diagnostic(
+							message="augmented assignment requires matching operand types",
+							severity="error",
+							span=getattr(stmt, "loc", Span()),
+						)
+					)
+				if stmt.op in arith_ops:
+					if tgt_ty not in (self._int, self._float):
+						pretty = self.type_table.get(tgt_ty).name if tgt_ty is not None else "Unknown"
+						diagnostics.append(
+							Diagnostic(
+								message=f"augmented assignment '{stmt.op}' is not supported for type '{pretty}' in MVP",
+								severity="error",
+								span=getattr(stmt, "loc", Span()),
+							)
+						)
+				elif stmt.op in mod_ops:
+					if tgt_ty not in (self._int, self._uint):
+						pretty = self.type_table.get(tgt_ty).name if tgt_ty is not None else "Unknown"
+						diagnostics.append(
+							Diagnostic(
+								message=f"augmented assignment '{stmt.op}' is not supported for type '{pretty}' in MVP",
+								severity="error",
+								span=getattr(stmt, "loc", Span()),
+							)
+						)
+				elif stmt.op in bit_ops:
+					if tgt_ty != self._uint:
+						pretty = self.type_table.get(tgt_ty).name if tgt_ty is not None else "Unknown"
+						diagnostics.append(
+							Diagnostic(
+								message=f"bitwise augmented assignment requires Uint operands (have '{pretty}')",
+								severity="error",
+								span=getattr(stmt, "loc", Span()),
+							)
+						)
 			elif isinstance(stmt, H.HExprStmt):
 				type_expr(stmt.expr)
 			elif isinstance(stmt, H.HReturn):

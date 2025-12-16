@@ -1,0 +1,7 @@
+module m
+
+fn main() returns Int {
+	var x: Int = 10
+	x -= 3
+	return x
+}

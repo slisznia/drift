@@ -1,0 +1,7 @@
+{
+  "exit_code": 1,
+  "phase": "typecheck",
+  "diagnostics": [
+    { "message_contains": "bitwise operators require Uint operands" }
+  ]
+}

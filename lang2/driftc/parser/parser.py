@@ -10,6 +10,7 @@ from lark import Lark, Token, Tree
 from .ast import (
     ArrayLiteral,
     AssignStmt,
+    AugAssignStmt,
     Attr,
     Binary,
     Block,
@@ -330,10 +331,27 @@ class TerminatorInserter:
         "DOT",
         "ARROW",
         "PLUS",
+        "PLUS_EQ",
         "MINUS",
+        "MINUS_EQ",
+        "STAR_EQ",
+        "SLASH_EQ",
+        "PERCENT_EQ",
+        "AMP_EQ",
+        "BAR_EQ",
+        "CARET_EQ",
+        "LSHIFT_EQ",
+        "SHR_EQ",
         "STAR",
         "SLASH",
-        "PIPE",
+        "PERCENT",
+        "BAR",
+        "CARET",
+        "TILDE",
+        "LSHIFT",
+        "SHR",
+        "PIPE_FWD",
+        "PIPE_REV",
         "AND",
         "OR",
         "EQEQ",
@@ -563,13 +581,27 @@ def _build_implement_def(tree: Tree) -> ImplementDef:
 	methods: List[FunctionDef] = []
 	body_node = next(child for child in tree.children if isinstance(child, Tree) and _name(child) == "implement_body")
 	for item in body_node.children:
-		if isinstance(item, Tree) and _name(item) == "implement_item":
+		# Grammar: implement_item: func_def -> implement_func
+		#
+		# So we accept either:
+		# - `implement_func(func_def)` (preferred), or
+		# - legacy/alternate shapes that may appear during grammar evolution.
+		if not isinstance(item, Tree):
+			continue
+		item_kind = _name(item)
+		if item_kind not in {"implement_func", "implement_item", "func_def"}:
+			continue
+		fn_node: Tree | None = None
+		if item_kind == "func_def":
+			fn_node = item
+		else:
 			fn_node = next((c for c in item.children if isinstance(c, Tree) and _name(c) == "func_def"), None)
-			if fn_node is not None:
-				fn = _build_function(fn_node)
-				fn.is_method = True
-				fn.impl_target = target
-				methods.append(fn)
+		if fn_node is None:
+			continue
+		fn = _build_function(fn_node)
+		fn.is_method = True
+		fn.impl_target = target
+		methods.append(fn)
 	return ImplementDef(target=target, methods=methods, loc=loc)
 
 
@@ -680,6 +712,8 @@ def _build_stmt(tree: Tree):
 			return _build_let_stmt(target)
 		if stmt_kind == "for_stmt":
 			return _build_for_stmt(target)
+		if stmt_kind == "aug_assign_stmt":
+			return _build_aug_assign_stmt(target)
 		if stmt_kind == "assign_stmt":
 			return _build_assign_stmt(target)
 		if stmt_kind == "return_stmt":
@@ -709,6 +743,8 @@ def _build_stmt(tree: Tree):
 		return _build_let_stmt(tree)
 	if kind == "assign_stmt":
 		return _build_assign_stmt(tree)
+	if kind == "aug_assign_stmt":
+		return _build_aug_assign_stmt(tree)
 	if kind == "return_stmt":
 		return _build_return_stmt(tree)
 	if kind == "rethrow_stmt":
@@ -769,6 +805,53 @@ def _build_assign_stmt(tree: Tree) -> AssignStmt:
     target = _build_expr(target_node)
     value = _build_expr(value_node)
     return AssignStmt(loc=loc, target=target, value=value)
+
+
+def _build_aug_assign_stmt(tree: Tree) -> "AugAssignStmt":
+    """
+    Build an augmented-assignment statement.
+
+    Surface syntax (MVP):
+      <lvalue> += <expr>   <lvalue> -= <expr>
+      <lvalue> *= <expr>   <lvalue> /= <expr>
+      <lvalue> %= <expr>
+      <lvalue> &= <expr>   <lvalue> |= <expr>   <lvalue> ^= <expr>
+      <lvalue> <<= <expr>  <lvalue> >>= <expr>
+
+    We parse `+=` as its own statement form rather than desugaring to
+    `x = x + y` / `x = x - y` in the parser. This keeps later lowering correct for complex
+    lvalues (e.g., `arr[i] += 1`) because the target is evaluated once at the
+    MIR level (address-of + load + add + store) instead of being duplicated.
+    """
+    loc = _loc(tree)
+    # Children include: <assign_target> <op token> <expr>
+    target_node = next(child for child in tree.children if isinstance(child, Tree))
+    op_tok = next(
+        child
+        for child in tree.children
+        if isinstance(child, Token)
+        and child.type
+        in {
+            "PLUS_EQ",
+            "MINUS_EQ",
+            "STAR_EQ",
+            "SLASH_EQ",
+            "PERCENT_EQ",
+            "AMP_EQ",
+            "BAR_EQ",
+            "CARET_EQ",
+            "LSHIFT_EQ",
+            "SHR_EQ",
+        }
+    )
+    value_node = next(
+        child
+        for child in tree.children
+        if isinstance(child, Tree) and child is not target_node
+    )
+    target = _build_expr(target_node)
+    value = _build_expr(value_node)
+    return AugAssignStmt(loc=loc, target=target, op=op_tok.value, value=value)
 
 
 def _build_for_stmt(tree: Tree) -> ForStmt:
@@ -1064,7 +1147,19 @@ def _build_expr(node) -> Expr:
     else:
         raise TypeError(f"Unexpected node type: {type(node)}")
 
-    if name in {"logic_and_tail", "logic_or_tail"}:
+    if name in {
+        "logic_and_tail",
+        "logic_or_tail",
+        # These tail nodes are part of left-associative binary chains. They
+        # should never be built as standalone expressions, but the parser may
+        # surface them as intermediate nodes during error recovery. Treat them
+        # as “yield the RHS expression” so callers don’t silently drop terms.
+        "pipeline_tail",
+        "shift_tail",
+        "bit_or_tail",
+        "bit_xor_tail",
+        "bit_and_tail",
+    }:
         rhs = next((c for c in node.children if isinstance(c, Tree)), None)
         if rhs is None:
             raise TypeError(f"Unexpected tail shape: {node.children!r}")
@@ -1077,15 +1172,25 @@ def _build_expr(node) -> Expr:
     if name == "ternary":
         return _build_ternary(node)
     if name == "pipeline":
-        return _build_pipeline(node)
+        # Pipeline operators are a left-associative chain of `pipeline_tail`
+        # nodes (token + rhs).
+        return _fold_chain(node, "pipeline_tail")
     if name == "exception_ctor":
         return _build_exception_ctor(node)
     if name == "logic_and":
         return _fold_chain(node, "logic_and_tail")
+    if name == "bit_or":
+        return _fold_chain(node, "bit_or_tail")
+    if name == "bit_xor":
+        return _fold_chain(node, "bit_xor_tail")
+    if name == "bit_and":
+        return _fold_chain(node, "bit_and_tail")
     if name == "equality":
         return _fold_chain(node, "equality_tail")
     if name == "comparison":
         return _fold_chain(node, "comparison_tail")
+    if name == "shift":
+        return _fold_chain(node, "shift_tail")
     if name == "sum":
         return _fold_chain(node, "sum_tail")
     if name == "term":
@@ -1096,6 +1201,12 @@ def _build_expr(node) -> Expr:
         mut = any(isinstance(child, Token) and child.type == "MUT" for child in node.children)
         target = _build_expr(next(child for child in node.children if isinstance(child, Tree)))
         return Unary(loc=_loc(node), op="&mut" if mut else "&", operand=target)
+    if name == "bit_not":
+        target = next((c for c in node.children if isinstance(c, Tree)), None)
+        if target is None:
+            raise TypeError(f"bit_not expects an operand, got {node.children!r}")
+        expr = _build_expr(target)
+        return Unary(loc=_loc(node), op="~", operand=expr)
     if name == "deref":
         # Pointer dereference: `*expr`. The type checker restricts this to
         # references, and assignment restricts it to `*place = ...` for `&mut`.

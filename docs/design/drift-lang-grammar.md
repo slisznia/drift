@@ -7,7 +7,7 @@ This file defines the lexical rules, precedence, and productions for Drift. It i
 - **Identifiers:** `Ident ::= [A-Za-z_][A-Za-z0-9_]*`  
   Keywords (see reserved list in the main spec) are not identifiers.
 - **Literals:** `IntLiteral`, `FloatLiteral`, `StringLiteral` (UTF-8), `BoolLiteral` (`true` / `false`).
-- **Operators/punctuation:** `+ - * / % == != < <= > >= and or not ! ? : >> << |> <| . , : ; = -> => [ ] { } ( ) &`.
+- **Operators/punctuation:** `+ - * / % == != < <= > >= & | ^ ~ << >> and or not ! ? : += -= *= /= %= &= |= ^= <<= >>= . , : ; = -> => [ ] { } ( )`.
 - **`mut` token:** `mut` is not reserved; it is treated as an identifier token and is meaningful after `&` in types/expressions.
 - **Newlines / terminators:** The lexer may emit a `TERMINATOR` token on newline (`\n`) when **all** hold:
   1. Parenthesis/brace/bracket depth is zero.
@@ -18,14 +18,17 @@ This file defines the lexical rules, precedence, and productions for Drift. It i
 ## 2. Precedence and associativity (high → low)
 
 1. Postfix: call `()`, index `[]`, member `.`, member-through-ref `->`
-2. Unary: `move`, `copy`, `-`, `!`, `not`, `&`, `*` (deref)
+2. Unary: `move`, `copy`, `-`, `~`, `!`, `not`, `&`, `*` (deref)
 3. Multiplicative: `*`, `/`, `%`
 4. Additive: `+`, `-`
 5. Comparisons: `<`, `<=`, `>`, `>=`, `==`, `!=`
-6. Boolean `and`
-7. Boolean `or`
-8. Pipeline `>>` (left-associative)
-9. Ternary `?:` (right-associative)
+6. Bitwise: `&`
+7. Bitwise: `^`
+8. Bitwise: `|`
+9. Boolean `and`
+10. Boolean `or`
+11. Pipeline `|>` (left-associative)
+12. Ternary `?:` (right-associative)
 
 ## 3. Grammar (EBNF-style)
 
@@ -117,10 +120,7 @@ Expressions:
 ```
 Expr         ::= TernaryExpr
 TernaryExpr  ::= PipelineExpr ("?" Expr ":" Expr)?
-PipelineExpr ::= OrExpr ("<<" OrExpr)*   // reserved; no current semantics
-               | OrExpr ("|>" OrExpr)*   // reserved; no current semantics
-               | OrExpr (" >> " PipeStage)*
-PipeStage    ::= PostfixExpr | CallExpr
+PipelineExpr ::= OrExpr ("|>" OrExpr)*
 
 OrExpr       ::= AndExpr ("or" AndExpr)*
 AndExpr      ::= CmpExpr ("and" CmpExpr)*
@@ -139,7 +139,7 @@ PostfixExpr  ::= PrimaryExpr PostfixTail*
 PostfixTail  ::= "." Ident
               | "[" ExprOrLeadingDot "]"
               | "(" ArgsOrLeadingDot? ")"
-              | "->"
+              | "->" Ident
 
 CallExpr     ::= PostfixExpr  // for pipeline staging clarity
 
@@ -184,7 +184,7 @@ Literal      ::= IntLiteral | FloatLiteral | StringLiteral | BoolLiteral
 ### Notes
 
 - Tuple types require at least two elements; `(T)` is just `T`.
-- Pipelines use `>>` and are left-associative; `<<`, `|>`, `<|` are reserved tokens without current semantics.
+- Pipelines use `|>` and are left-associative; `<|` is reserved for a future reverse-pipeline form.
 - Zero-argument callables use `Void` as their argument type and are called with `f.call()`.
 - This grammar is a reference for parsers; semantic rules (ownership, moves, errors) are defined in `drift-lang-spec.md`.
 - In blocks, a bare expression must appear as a statement (`ExprStmt`) with a terminator (`;` or newline), e.g., `catch { 0; }` or `catch { return 0; }`. A future ergonomics pass may allow `{ 0 }` in expression contexts, but it is not supported today.

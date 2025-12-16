@@ -1,0 +1,8 @@
+module m
+
+fn main() returns Int {
+	var x: Int = 1
+	var y: Int = 2
+	// Bitwise ops require Uint operands.
+	return x & y
+}

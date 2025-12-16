@@ -1,0 +1,7 @@
+module m
+
+fn main() returns Int {
+	var x: Int = 6
+	x *= 7
+	return x
+}
