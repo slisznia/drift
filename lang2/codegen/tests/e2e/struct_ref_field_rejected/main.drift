@@ -1,0 +1,5 @@
+struct Holder(r: &Int)
+
+fn main() returns Int {
+	return 0;
+}

@@ -19,6 +19,7 @@ from lang2.driftc import stage1 as H
 from lang2.driftc.checker import FnSignature
 from lang2.driftc.core.diagnostics import Diagnostic
 from lang2.driftc.core.span import Span
+from lang2.driftc.core.types_core import TypeKind
 from lang2.driftc.core.event_codes import event_code, PAYLOAD_MASK
 from lang2.driftc.core.types_core import TypeTable
 from lang2.driftc.core.type_resolve_common import resolve_opaque_type
@@ -420,7 +421,26 @@ def parse_drift_to_hir(path: Path) -> Tuple[Dict[str, H.HBlock], Dict[str, FnSig
 	# Fill field TypeIds in a second pass now that all names exist.
 	for s in struct_defs:
 		struct_id = type_table.ensure_named(s.name)
-		field_types = [resolve_opaque_type(f.type_expr, type_table) for f in getattr(s, "fields", [])]
+		field_types = []
+		for f in getattr(s, "fields", []):
+			ft = resolve_opaque_type(f.type_expr, type_table)
+			# MVP escape policy: references cannot be stored in long-lived memory.
+			# Struct fields are long-lived by construction, so `struct S(r: &T)` is
+			# rejected early (before lowering/typecheck) with a source-anchored
+			# diagnostic.
+			try:
+				td = type_table.get(ft)
+			except Exception:
+				td = None
+			if td is not None and td.kind is TypeKind.REF:
+				diagnostics.append(
+					Diagnostic(
+						message=f"struct '{s.name}' field '{f.name}' cannot have a reference type in MVP",
+						severity="error",
+						span=Span.from_loc(getattr(f.type_expr, "loc", getattr(f, "loc", None))),
+					)
+				)
+			field_types.append(ft)
 		type_table.define_struct_fields(struct_id, field_types)
 	# Thread struct schemas for downstream helpers (optional; TypeDefs are authoritative).
 	type_table.struct_schemas = {s.name: (s.name, [f.name for f in getattr(s, "fields", [])]) for s in struct_defs}
