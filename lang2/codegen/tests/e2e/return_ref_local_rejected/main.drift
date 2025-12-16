@@ -1,0 +1,8 @@
+fn bad() returns &Int {
+	var x = 1;
+	return &x;
+}
+
+fn main() returns Int {
+	return 0;
+}

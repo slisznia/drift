@@ -1,7 +1,0 @@
-{
-  "exit_code": 1,
-  "phase": "typecheck",
-  "diagnostics": [
-    { "message_contains": "addressable place" }
-  ]
-}

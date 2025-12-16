@@ -17,7 +17,7 @@ Drift is a systems programming language focused on deterministic resource manage
 ## Release-1 objectives
 - Modules/imports
 - Structs + enums + match
-- Generics (Vec, Map, Option, Result)
+- Generics (Vec, Map, Optional, Result)
 - Error propagation (Result + exceptions)
 - Deterministic destruction (implicit nothrow destructors)
 - Green threads + reactor (epoll-based scheduler)

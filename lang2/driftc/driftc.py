@@ -545,6 +545,7 @@ def main(argv: list[str] | None = None) -> int:
 			fn_name,
 			hir_block,
 			param_types=param_types,
+			return_type=sig.return_type_id if sig is not None else None,
 			call_signatures=call_sigs_by_name,
 			callable_registry=callable_registry,
 			visible_modules=tuple(module_ids.values()),

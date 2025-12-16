@@ -30,9 +30,9 @@ def test_shared_borrow_of_rvalue_is_materialized():
 	assert norm.statements[1].value.subject.projections == []
 
 
-def test_mut_borrow_of_rvalue_is_not_materialized():
+def test_mut_borrow_of_rvalue_is_materialized():
 	"""
-	`&mut (<rvalue>)` remains as-is so the typed checker can reject it.
+	`&mut (<rvalue>)` should be rewritten to `var tmp = <rvalue>; &mut tmp`.
 	"""
 	block = H.HBlock(
 		statements=[
@@ -40,11 +40,16 @@ def test_mut_borrow_of_rvalue_is_not_materialized():
 		]
 	)
 	norm = normalize_hir(block)
-	assert len(norm.statements) == 1
-	stmt = norm.statements[0]
+	assert len(norm.statements) == 2
+	tmp_stmt = norm.statements[0]
+	assert isinstance(tmp_stmt, H.HLet)
+	assert tmp_stmt.is_mutable is True
+	assert isinstance(tmp_stmt.value, H.HLiteralInt)
+	stmt = norm.statements[1]
 	assert isinstance(stmt, H.HExprStmt)
 	assert isinstance(stmt.expr, H.HBorrow)
-	assert isinstance(stmt.expr.subject, H.HLiteralInt)
+	assert stmt.expr.is_mut is True
+	assert isinstance(stmt.expr.subject, H.HPlaceExpr)
 
 
 def test_move_operand_is_canonicalized_to_place_expr():

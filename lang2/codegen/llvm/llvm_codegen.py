@@ -1362,9 +1362,13 @@ class _FuncBuilder:
 				self.lines.append(f"  ret i64 {val}")
 			elif ty == "double":
 				self.lines.append(f"  ret double {val}")
+			elif ty is not None and (ty == "ptr" or ty.endswith("*")):
+				# Non-throwing functions may return references (`&T`), lowered as
+				# typed pointers (`T*`) in v1.
+				self.lines.append(f"  ret {ty} {val}")
 			else:
 				raise NotImplementedError(
-					f"LLVM codegen v1: non-can-throw return must be Int, Float, or String, got {ty}"
+					f"LLVM codegen v1: non-can-throw return must be Int, Float, String, or &T, got {ty}"
 				)
 			return
 
@@ -1384,12 +1388,15 @@ class _FuncBuilder:
 		rt_id = None
 		if self.fn_info.signature and self.fn_info.signature.return_type_id is not None:
 			rt_id = self.fn_info.signature.return_type_id
-		if self.string_type_id is not None and rt_id == self.string_type_id:
-			return DRIFT_STRING_TYPE
-		if self.float_type_id is not None and rt_id == self.float_type_id:
-			return "double"
-		# Default to Int
-		return "i64"
+		if rt_id is None:
+			return "i64"
+		# Use the same TypeTable-based mapping as parameters so ref returns are
+		# handled consistently (`&T` -> `T*`).
+		try:
+			return self._llvm_type_for_typeid(rt_id, allow_void_ok=False)
+		except NotImplementedError:
+			# Legacy fallback: treat unknown surface types as Int.
+			return "i64"
 
 	def _is_void_return(self) -> bool:
 		if self.fn_info.signature and self.fn_info.signature.return_type_id is not None:

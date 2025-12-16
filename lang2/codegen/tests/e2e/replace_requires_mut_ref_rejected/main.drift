@@ -1,0 +1,6 @@
+fn main() returns Int {
+	var x = 1;
+	val p = &x;
+	replace(*p, 2);
+	return x;
+}

@@ -1,0 +1,6 @@
+fn main() returns Int {
+	var x = 1;
+	val y = move x;
+	val r = &x;
+	return 0;
+}

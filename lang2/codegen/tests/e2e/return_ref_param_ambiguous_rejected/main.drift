@@ -1,0 +1,12 @@
+fn pick(a: &Int, b: &Int, c: Bool) returns &Int {
+	if c {
+		return a;
+	}
+	return b;
+}
+
+fn main() returns Int {
+	var x = 1;
+	var y = 2;
+	return *pick(&x, &y, true);
+}

@@ -100,7 +100,7 @@ Restrictions we keep explicit (reject with diagnostics):
   - Freeze while borrowed:
     - Reject writes to any place overlapping a live loan (no “dropping loans on assignment”).
   - Explicit `move <place>`:
-    - `move` always consumes the source place (even for Copy types).
+  - `move` always consumes the source place (even for Copy types).
     - Reject moving while borrowed.
     - Reject use/borrow after move until reinitialized by assignment.
   - Diagnostics are always emitted with a structured `Span` object (sentinel `Span()` when unknown), not `None`.
@@ -112,6 +112,9 @@ Restrictions we keep explicit (reject with diagnostics):
   - Lower `*p = v` → `StoreRef(inner_ty=...)`.
   - Allow builtin `len/byte_length` to accept `&String` / `&Array<T>` by implicit deref at the builtin boundary (no global autoderef).
   - Lower `move <place>` as (read current value) + (clear source to a `ZeroValue`).
+  - Lower place-manipulation builtins:
+    - `swap(a, b)` reads and then stores both places (exchange values).
+    - `replace(place, new_value)` reads the old value, stores the new value, and returns the old value.
 - SSA:
   - Detect address-taken locals (`AddrOfLocal`) and keep them as real storage (do not SSA-rename `LoadLocal`/`StoreLocal`).
 - LLVM/codegen:
@@ -138,6 +141,8 @@ Restrictions we keep explicit (reject with diagnostics):
     - `lang2/codegen/tests/e2e/move_local_reinit_ok` (`move` + reinit via assignment).
     - `lang2/codegen/tests/e2e/move_use_after_move_rejected` (use-after-move rejected).
     - `lang2/codegen/tests/e2e/move_while_borrowed_rejected` (move while borrowed rejected).
+    - `lang2/codegen/tests/e2e/swap_basic` (swaps two `var` locals).
+    - `lang2/codegen/tests/e2e/replace_basic` (replaces a `var` local and returns the old value).
   - Added unit coverage:
     - Write-while-borrowed is rejected.
     - Const-vs-unknown index overlap rules.
@@ -145,16 +150,15 @@ Restrictions we keep explicit (reject with diagnostics):
 
 ### Remaining Work
 #### 1) Place model hardening (future)
-- Make `HBorrow.subject` and `HAssign.target` explicitly typed as `HPlaceExpr`
-  once all callers/tests construct normalized HIR (today we keep these as broad
-  `HExpr` for compatibility with unit tests and early construction).
-- Extend the `HPlaceExpr` base beyond bindings if/when we add globals/captures
-  (MVP base is a binding: local/param).
+- `HBorrow.subject`, `HAssign.target`, and `HMove.subject` are now canonical `HPlaceExpr` at the stage1→stage2 boundary.
+- Future: extend `HPlaceExpr.base` beyond bindings (locals/params) if/when we add globals/captures.
 
 #### 2) Temporary materialization
 - Shared borrow of rvalues is supported via materialization (`&(expr)` becomes `val tmp = expr; &tmp`).
-- `&mut (rvalue)` remains rejected in MVP (no implicit temp materialization for mutable borrows).
+- Mutable borrow of rvalues is supported via materialization (`&mut (expr)` becomes `var tmp = expr; &mut tmp`).
+  - Guardrail: `&mut` of an expression containing an explicit `move` is rejected with a targeted diagnostic.
  - E2E coverage: shared borrow of rvalue works when dereferenced and when passed as a call argument (`&(1+2)`).
+ - E2E coverage: `&mut (rvalue)` round-trips with deref load/store.
  - Stage2 MIR lowering performs minimal numeric inference (`1+2` → Int, etc.) so materialized temporaries get stable local types.
 
 #### 3) Stronger tests (non-blocking)

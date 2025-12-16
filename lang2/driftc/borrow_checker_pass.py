@@ -349,22 +349,19 @@ class BorrowChecker:
 				return sig.param_type_ids
 		return None
 
-	def _build_regions(self, blocks: List[BasicBlock]) -> Optional[Dict[int, Set[int]]]:
+	def _build_regions(self, blocks: List[BasicBlock], scopes: List[Set[int]]) -> Optional[Dict[int, Set[int]]]:
 		"""
-		Compute per-target live block sets based on ref def/use reachability.
+		Compute per-target live block sets for explicit borrows.
+
+		MVP policy: lexical lifetime (to end of scope), not NLL.
+
+		We approximate a binding's lexical scope by selecting the *smallest* scope
+		set produced by `_build_cfg` that contains the borrow-binding's definition
+		block.
 
 		Returns mapping target_binding_id -> set(block_ids) or None if no ref info.
 		"""
-		succs: Dict[int, List[int]] = {}
-		preds: Dict[int, List[int]] = {}
-		for blk in blocks:
-			targets = blk.terminator.targets if blk.terminator else []
-			succs[blk.id] = list(targets)
-			for t in targets:
-				preds.setdefault(t, []).append(blk.id)
-
 		ref_defs: Dict[int, int] = {}  # ref_binding_id -> def block
-		ref_uses: Dict[int, Set[int]] = {}  # ref_binding_id -> use blocks
 		ref_to_target: Dict[int, int] = {}  # ref_binding_id -> target binding id
 
 		for blk in blocks:
@@ -376,27 +373,27 @@ class BorrowChecker:
 						if ref_bid is not None and sub_place is not None:
 							ref_defs[ref_bid] = blk.id
 							ref_to_target[ref_bid] = sub_place.base.local_id
-					self._collect_ref_uses_in_expr(stmt.value, blk.id, ref_uses)
-				elif isinstance(stmt, H.HAssign):
-					self._collect_ref_uses_in_expr(stmt.value, blk.id, ref_uses)
-					self._collect_ref_uses_in_expr(stmt.target, blk.id, ref_uses)
-				elif isinstance(stmt, H.HExprStmt):
-					self._collect_ref_uses_in_expr(stmt.expr, blk.id, ref_uses)
-			term = blk.terminator
-			if term and term.kind == "branch" and term.cond is not None:
-				self._collect_ref_uses_in_expr(term.cond, blk.id, ref_uses)
-			if term and term.kind in ("return", "throw") and term.value is not None:
-				self._collect_ref_uses_in_expr(term.value, blk.id, ref_uses)
 
 		if not ref_defs:
 			return None
 
+		def _smallest_scope_containing(block_id: int) -> Optional[Set[int]]:
+			best: Optional[Set[int]] = None
+			best_size = 0
+			for s in scopes:
+				if block_id not in s:
+					continue
+				if best is None or len(s) < best_size:
+					best = s
+					best_size = len(s)
+			return best
+
 		ref_regions: Dict[int, Set[int]] = {}
 		for rid, def_block in ref_defs.items():
-			uses = ref_uses.get(rid, set()) or {def_block}
-			forward = self._reachable_forward(def_block, succs)
-			backward = self._reachable_backward(uses, preds)
-			ref_regions[rid] = forward & backward
+			scope = _smallest_scope_containing(def_block)
+			if scope is None:
+				continue
+			ref_regions[rid] = set(scope)
 
 		target_live: Dict[int, Set[int]] = {}
 		for rid, target_bid in ref_to_target.items():
@@ -528,6 +525,54 @@ class BorrowChecker:
 			self._force_move_place_use(state, place, getattr(expr, "loc", Span()))
 			return
 		if isinstance(expr, H.HCall):
+			# swap/replace are builtin place-manipulation operations.
+			#
+			# They mutate their first argument (and `swap` mutates both). For borrow
+			# checking we must treat them as writes to their place operands, not as a
+			# regular call that only evaluates values.
+			if isinstance(expr.fn, H.HVar) and expr.fn.name in ("swap", "replace"):
+				name = expr.fn.name
+				if name == "swap":
+					if len(expr.args) != 2:
+						self._diagnostic("swap expects exactly 2 arguments", getattr(expr, "loc", Span()))
+						return
+					a_expr, b_expr = expr.args
+					a_place = place_from_expr(a_expr, base_lookup=self.base_lookup)
+					b_place = place_from_expr(b_expr, base_lookup=self.base_lookup)
+					if a_place is None:
+						self._diagnostic("swap argument 0 must be an addressable place", getattr(a_expr, "loc", Span()))
+						return
+					if b_place is None:
+						self._diagnostic("swap argument 1 must be an addressable place", getattr(b_expr, "loc", Span()))
+						return
+					# swap reads both places (use-after-move checks) and then writes both.
+					self._consume_place_use(state, a_place, getattr(a_expr, "loc", Span()))
+					self._consume_place_use(state, b_place, getattr(b_expr, "loc", Span()))
+					if not self._reject_write_while_borrowed(state, a_place, getattr(a_expr, "loc", Span())):
+						return
+					if not self._reject_write_while_borrowed(state, b_place, getattr(b_expr, "loc", Span())):
+						return
+					# swap preserves initialized state when it succeeds.
+					self._set_state(state, a_place, PlaceState.VALID)
+					self._set_state(state, b_place, PlaceState.VALID)
+					return
+				if name == "replace":
+					if len(expr.args) != 2:
+						self._diagnostic("replace expects exactly 2 arguments", getattr(expr, "loc", Span()))
+						return
+					place_expr, new_expr = expr.args
+					place = place_from_expr(place_expr, base_lookup=self.base_lookup)
+					if place is None:
+						self._diagnostic("replace argument 0 must be an addressable place", getattr(place_expr, "loc", Span()))
+						return
+					# replace reads the old value (use-after-move) and writes the new.
+					self._consume_place_use(state, place, getattr(place_expr, "loc", Span()))
+					self._visit_expr(state, new_expr, as_value=True)
+					if not self._reject_write_while_borrowed(state, place, getattr(place_expr, "loc", Span())):
+						return
+					self._set_state(state, place, PlaceState.VALID)
+					return
+
 			pre_loans = set(state.loans)
 			self._visit_expr(state, expr.fn, as_value=True)
 			resolution = self.call_resolutions.get(id(expr)) if self.call_resolutions is not None else None
@@ -712,9 +757,14 @@ class BorrowChecker:
 	def check_block(self, block: H.HBlock) -> List[Diagnostic]:
 		"""Run move tracking on a HIR block by building a CFG and flowing states."""
 		self.diagnostics.clear()
-		blocks, entry_id = self._build_cfg(block)
-		# Build region info (def/use) for explicit borrows.
-		self._target_live_blocks = self._build_regions(blocks)
+		blocks, entry_id, scopes = self._build_cfg(block)
+		# Build region info for explicit borrows.
+		#
+		# MVP policy: borrows are *lexical* (to end of scope), not NLL. We
+		# approximate scope boundaries using the structured-CFG construction: each
+		# nested HIR block corresponds to a set of CFG blocks. A borrow-binding
+		# lives for the smallest scope-set that contains its definition site.
+		self._target_live_blocks = self._build_regions(blocks, scopes)
 		in_states: Dict[int, _FlowState] = {b.id: _FlowState() for b in blocks}
 		worklist = [entry_id]
 		while worklist:
@@ -743,7 +793,7 @@ class BorrowChecker:
 		result.loans |= self._filter_live_loans(b.loans, block_id)
 		return result
 
-	def _build_cfg(self, block: H.HBlock) -> Tuple[List[BasicBlock], int]:
+	def _build_cfg(self, block: H.HBlock) -> Tuple[List[BasicBlock], int, List[Set[int]]]:
 		"""
 		Lower a structured HIR block into a rudimentary CFG.
 
@@ -753,6 +803,10 @@ class BorrowChecker:
 		no successors.
 		"""
 		blocks: List[BasicBlock] = []
+		# Each `build(...)` invocation corresponds to one lexical scope (HIR block)
+		# and returns the set of CFG blocks created for that scope. We keep those
+		# sets so borrow regions can approximate lexical lifetimes without NLL.
+		scope_sets: List[Set[int]] = []
 
 		def new_block() -> BasicBlock:
 			bb = BasicBlock(id=len(blocks))
@@ -785,6 +839,7 @@ class BorrowChecker:
 					else_entry, else_ids = build(stmt.else_block.statements if stmt.else_block else [], cont_entry)
 					bb.terminator = Terminator(kind="branch", targets=[then_entry, else_entry], cond=stmt.cond)
 					ids.extend(then_ids + else_ids + cont_ids)
+					scope_sets.append(set(ids))
 					return bb.id, ids
 				if isinstance(stmt, H.HLoop):
 					tail = stmts[idx + 1 :]
@@ -795,6 +850,7 @@ class BorrowChecker:
 					bb.terminator = Terminator(kind="branch", targets=[body_entry, cont_entry], cond=None)
 					add_backedge(body_ids, body_entry, cont_entry)
 					ids.extend(body_ids + cont_ids)
+					scope_sets.append(set(ids))
 					return bb.id, ids
 				if isinstance(stmt, H.HTry):
 					tail = stmts[idx + 1 :]
@@ -811,16 +867,21 @@ class BorrowChecker:
 					targets = [body_entry] + catch_entries
 					bb.terminator = Terminator(kind="branch", targets=targets, cond=None)
 					ids.extend(body_ids + catch_ids + cont_ids)
+					scope_sets.append(set(ids))
 					return bb.id, ids
 				if isinstance(stmt, (H.HReturn, H.HThrow)):
 					bb.statements.append(stmt)
 					bb.terminator = Terminator(kind="return" if isinstance(stmt, H.HReturn) else "throw", targets=[], value=stmt.value)
+					scope_sets.append(set(ids))
 					return bb.id, ids
 				bb.statements.append(stmt)
 				idx += 1
 			if bb.terminator is None:
 				bb.terminator = Terminator(kind="jump", targets=[cont])
+			scope_sets.append(set(ids))
 			return bb.id, ids
 
-		entry, _ = build(block.statements, exit_id)
-		return blocks, entry
+		entry, ids = build(block.statements, exit_id)
+		# Ensure the top-level scope is recorded.
+		scope_sets.append(set(ids))
+		return blocks, entry, scope_sets

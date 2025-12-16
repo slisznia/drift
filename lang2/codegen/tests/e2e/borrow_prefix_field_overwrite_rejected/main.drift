@@ -1,0 +1,9 @@
+struct Inner(x: Int)
+struct Wrap(inner: Inner)
+
+fn main() returns Int {
+	var w = Wrap(Inner(1));
+	val r = &w.inner;
+	w.inner = Inner(2);
+	return 0;
+}

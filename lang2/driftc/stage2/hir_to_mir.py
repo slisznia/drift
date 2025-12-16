@@ -508,6 +508,25 @@ class HIRToMIR:
 		"""
 		if isinstance(expr.fn, H.HVar):
 			name = expr.fn.name
+			# swap/replace are place-manipulation builtins, not normal calls.
+			#
+			# They exist to support safe extraction/exchange without creating
+			# moved-from "holes" in containers. Stage1 canonicalizes their place
+			# operands to `HPlaceExpr`.
+			if name == "swap" and len(expr.args) == 2:
+				raise AssertionError("swap(...) used in expression context (checker bug)")
+			if name == "replace" and len(expr.args) == 2:
+				place_expr = expr.args[0]
+				new_expr = expr.args[1]
+				if not (hasattr(H, "HPlaceExpr") and isinstance(place_expr, getattr(H, "HPlaceExpr"))):
+					raise AssertionError("replace(place, v): non-canonical place reached MIR lowering (normalize/typechecker bug)")
+				ptr, inner_ty = self._lower_addr_of_place(place_expr, is_mut=True)
+				old_val = self.b.new_temp()
+				self.b.emit(M.LoadRef(dest=old_val, ptr=ptr, inner_ty=inner_ty))
+				new_val = self.lower_expr(new_expr)
+				self.b.emit(M.StoreRef(ptr=ptr, value=new_val, inner_ty=inner_ty))
+				self._local_types[old_val] = inner_ty
+				return old_val
 			# Struct constructor: `Point(1, 2)` constructs a struct value.
 			#
 			# This only triggers when there is no function signature for the same
@@ -838,6 +857,27 @@ class HIRToMIR:
 		# - Can-throw calls must still be checked so Err paths route into the try
 		#   dispatch (or propagate out of the function) even when the Ok value is
 		#   ignored.
+		if isinstance(stmt.expr, H.HCall) and isinstance(stmt.expr.fn, H.HVar):
+			if stmt.expr.fn.name == "swap" and len(stmt.expr.args) == 2:
+				a_expr = stmt.expr.args[0]
+				b_expr = stmt.expr.args[1]
+				if not (
+					hasattr(H, "HPlaceExpr")
+					and isinstance(a_expr, getattr(H, "HPlaceExpr"))
+					and isinstance(b_expr, getattr(H, "HPlaceExpr"))
+				):
+					raise AssertionError("swap(a, b): non-canonical place reached MIR lowering (normalize/typechecker bug)")
+				a_ptr, a_ty = self._lower_addr_of_place(a_expr, is_mut=True)
+				b_ptr, b_ty = self._lower_addr_of_place(b_expr, is_mut=True)
+				if a_ty != b_ty:
+					raise AssertionError("swap(a, b) reached MIR lowering with mismatched types (checker bug)")
+				a_val = self.b.new_temp()
+				b_val = self.b.new_temp()
+				self.b.emit(M.LoadRef(dest=a_val, ptr=a_ptr, inner_ty=a_ty))
+				self.b.emit(M.LoadRef(dest=b_val, ptr=b_ptr, inner_ty=b_ty))
+				self.b.emit(M.StoreRef(ptr=a_ptr, value=b_val, inner_ty=a_ty))
+				self.b.emit(M.StoreRef(ptr=b_ptr, value=a_val, inner_ty=b_ty))
+				return
 		if isinstance(stmt.expr, H.HCall) and isinstance(stmt.expr.fn, H.HVar):
 			if self._callee_is_can_throw(stmt.expr.fn.name):
 				fnres_val = self._lower_call(expr=stmt.expr)

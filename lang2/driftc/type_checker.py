@@ -31,6 +31,7 @@ from lang2.driftc.borrow_checker import (
 	PlaceBase,
 	PlaceKind,
 	place_from_expr,
+	places_overlap,
 )
 from lang2.driftc.method_registry import CallableDecl, CallableRegistry, ModuleId
 from lang2.driftc.method_resolver import MethodResolution, ResolutionError, resolve_function_call, resolve_method_call
@@ -81,6 +82,7 @@ class TypeChecker:
 		self._float = self.type_table.ensure_float()
 		self._bool = self.type_table.ensure_bool()
 		self._string = self.type_table.ensure_string()
+		self._void = self.type_table.ensure_void()
 		self._dv = self.type_table.ensure_diagnostic_value()
 		self._opt_int = self.type_table.new_optional(self._int)
 		self._opt_bool = self.type_table.new_optional(self._bool)
@@ -100,6 +102,7 @@ class TypeChecker:
 		name: str,
 		body: H.HBlock,
 		param_types: Mapping[str, TypeId] | None = None,
+		return_type: TypeId | None = None,
 		call_signatures: Mapping[str, FnSignature] | None = None,
 		callable_registry: CallableRegistry | None = None,
 		visible_modules: Optional[Tuple[ModuleId, ...]] = None,
@@ -131,6 +134,15 @@ class TypeChecker:
 		#   - `&mut x` conflicts with any other borrow of `x` in the same statement
 		#   - `&x` conflicts with a prior `&mut x` in the same statement
 		borrows_in_stmt: Dict[Place, str] = {}
+		# Ref origin tracking (MVP escape policy):
+		#
+		# When a binding has a reference type, record whether it is ultimately
+		# derived from a single reference *parameter* binding. This lets us enforce
+		# "return refs only derived from a ref param" without a full lifetime model.
+		#
+		# Value is the binding_id of the originating ref param, or None when the
+		# reference points at local/temporary storage.
+		ref_origin_param: Dict[int, Optional[int]] = {}
 		diagnostics: List[Diagnostic] = []
 		call_resolutions: Dict[int, CallableDecl | MethodResolution] = {}
 
@@ -216,6 +228,58 @@ class TypeChecker:
 
 			# Borrow.
 			if isinstance(expr, H.HBorrow):
+				# Guardrail: do not materialize `&mut (move x)` into a temp. This would
+				# turn an explicit ownership transfer into an implicit "store then
+				# borrow" pattern, which is a semantic expansion we want to avoid.
+				#
+				# Instead, reject at type-check time with a targeted diagnostic.
+				def _contains_move(node: H.HExpr) -> bool:
+					if hasattr(H, "HMove") and isinstance(node, getattr(H, "HMove")):
+						return True
+					if isinstance(node, H.HUnary):
+						return _contains_move(node.expr)
+					if isinstance(node, H.HBinary):
+						return _contains_move(node.left) or _contains_move(node.right)
+					if isinstance(node, H.HTernary):
+						return _contains_move(node.cond) or _contains_move(node.then_expr) or _contains_move(node.else_expr)
+					if isinstance(node, H.HCall):
+						return _contains_move(node.fn) or any(_contains_move(a) for a in node.args)
+					if isinstance(node, H.HMethodCall):
+						return _contains_move(node.receiver) or any(_contains_move(a) for a in node.args)
+					if isinstance(node, H.HField):
+						return _contains_move(node.subject)
+					if isinstance(node, H.HIndex):
+						return _contains_move(node.subject) or _contains_move(node.index)
+					if isinstance(node, getattr(H, "HPlaceExpr", ())):
+						# Canonical places cannot contain moves in their base/projections.
+						return False
+					if isinstance(node, H.HArrayLiteral):
+						return any(_contains_move(e) for e in node.elements)
+					if isinstance(node, H.HDVInit):
+						return any(_contains_move(a) for a in node.args)
+					if isinstance(node, H.HExceptionInit):
+						return any(_contains_move(a) for a in node.pos_args) or any(_contains_move(k.value) for k in node.kw_args)
+					if isinstance(node, getattr(H, "HTryExpr", ())):
+						if _contains_move(node.attempt):
+							return True
+						for arm in node.arms:
+							if any(_contains_move(s.expr) for s in arm.block.statements if isinstance(s, H.HExprStmt)):
+								return True
+							if arm.result is not None and _contains_move(arm.result):
+								return True
+						return False
+					return False
+
+				if expr.is_mut and _contains_move(expr.subject):
+					diagnostics.append(
+						Diagnostic(
+							message="cannot take &mut of an expression containing move; assign to a var first",
+							severity="error",
+							span=getattr(expr, "loc", Span()),
+						)
+					)
+					return record_expr(expr, self._unknown)
+
 				inner_ty = type_expr(expr.subject)
 				# MVP: borrowing is only supported from addressable places.
 				#
@@ -423,9 +487,14 @@ class TypeChecker:
 				# diagnostic before the constructor path has a chance to fire.
 				should_type_fn = True
 				if isinstance(expr.fn, H.HVar):
+					# Builtins that look like calls but are not normal function values.
+					# We must not type-check `expr.fn` as a variable, otherwise we'd emit
+					# misleading "unknown variable" diagnostics before the builtin path
+					# fires.
+					if expr.fn.name in ("swap", "replace"):
+						should_type_fn = False
 					is_struct_ctor = (
 						expr.fn.name in self.type_table.struct_schemas
-						and callable_registry is None
 						and (call_signatures is None or expr.fn.name not in call_signatures)
 					)
 					if is_struct_ctor:
@@ -437,6 +506,163 @@ class TypeChecker:
 				if should_type_fn:
 					type_expr(expr.fn)
 				arg_types = [type_expr(a) for a in expr.args]
+
+				# Builtins: swap/replace operate on *places*.
+				#
+				# These are part of the borrow/move MVP story: they let users extract or
+				# exchange values in-place without creating "moved-from holes" in
+				# containers/structs. They are validated here (with spans) and lowered as
+				# dedicated MIR patterns later; they are not normal function calls.
+				if isinstance(expr.fn, H.HVar) and expr.fn.name in ("swap", "replace"):
+					def _base_lookup(hv: object) -> Optional[PlaceBase]:
+						bid = getattr(hv, "binding_id", None)
+						if bid is None:
+							return None
+						kind = binding_place_kind.get(bid, PlaceKind.LOCAL)
+						name = hv.name if hasattr(hv, "name") else str(hv)
+						return PlaceBase(kind=kind, local_id=bid, name=name)
+
+					def _require_writable_place(place_expr: H.HExpr, span: Span) -> None:
+						place = place_from_expr(place_expr, base_lookup=_base_lookup)
+						if place is None:
+							return
+						# If the place includes a deref projection, mutability is provided by
+						# the reference type (`&mut`) rather than the base binding being `var`.
+						has_deref = any(isinstance(p, DerefProj) for p in place.projections)
+						if not has_deref and place.base.local_id is not None and not binding_mutable.get(
+							place.base.local_id, False
+						):
+							diagnostics.append(
+								Diagnostic(
+									message="write requires an owned mutable binding declared with var",
+									severity="error",
+									span=span,
+								)
+							)
+						# Validate deref projections are through `&mut` refs.
+						if has_deref and hasattr(H, "HPlaceExpr") and isinstance(place_expr, getattr(H, "HPlaceExpr")):
+							cur = type_expr(place_expr.base)
+							for pr in place_expr.projections:
+								if isinstance(pr, H.HPlaceDeref):
+									if cur is None:
+										break
+									ptr_def = self.type_table.get(cur)
+									if ptr_def.kind is not TypeKind.REF or not ptr_def.ref_mut:
+										diagnostics.append(
+											Diagnostic(
+												message=(
+													"cannot write through *p unless p is a mutable reference (&mut T)"
+												),
+												severity="error",
+												span=span,
+											)
+										)
+										return
+									if ptr_def.param_types:
+										cur = ptr_def.param_types[0]
+									continue
+								if isinstance(pr, H.HPlaceField):
+									if cur is None:
+										break
+									td = self.type_table.get(cur)
+									if td.kind is TypeKind.STRUCT:
+										info = self.type_table.struct_field(cur, pr.name)
+										if info is not None:
+											_, cur = info
+									continue
+								if isinstance(pr, H.HPlaceIndex):
+									if cur is None:
+										break
+									td = self.type_table.get(cur)
+									if td.kind is TypeKind.ARRAY and td.param_types:
+										cur = td.param_types[0]
+									continue
+
+					name = expr.fn.name
+					if name == "swap":
+						if len(expr.args) != 2:
+							diagnostics.append(
+								Diagnostic(
+									message="swap expects exactly 2 arguments",
+									severity="error",
+									span=getattr(expr, "loc", Span()),
+								)
+							)
+							return record_expr(expr, self._void)
+						a, b = expr.args
+						pa = place_from_expr(a, base_lookup=_base_lookup)
+						pb = place_from_expr(b, base_lookup=_base_lookup)
+						if pa is None:
+							diagnostics.append(
+								Diagnostic(
+									message="swap argument 0 must be an addressable place",
+									severity="error",
+									span=getattr(a, "loc", getattr(expr, "loc", Span())),
+								)
+							)
+						if pb is None:
+							diagnostics.append(
+								Diagnostic(
+									message="swap argument 1 must be an addressable place",
+									severity="error",
+									span=getattr(b, "loc", getattr(expr, "loc", Span())),
+								)
+							)
+						if pa is not None:
+							_require_writable_place(a, getattr(a, "loc", getattr(expr, "loc", Span())))
+						if pb is not None:
+							_require_writable_place(b, getattr(b, "loc", getattr(expr, "loc", Span())))
+						if arg_types[0] is not None and arg_types[1] is not None and arg_types[0] != arg_types[1]:
+							diagnostics.append(
+								Diagnostic(
+									message="swap requires both places to have the same type",
+									severity="error",
+									span=getattr(expr, "loc", Span()),
+								)
+							)
+						if pa is not None and pb is not None and places_overlap(pa, pb):
+							diagnostics.append(
+								Diagnostic(
+									message="swap operands must be distinct non-overlapping places",
+									severity="error",
+									span=getattr(expr, "loc", Span()),
+								)
+							)
+						return record_expr(expr, self._void)
+					# replace(place, new_value) -> old_value
+					if name == "replace":
+						if len(expr.args) != 2:
+							diagnostics.append(
+								Diagnostic(
+									message="replace expects exactly 2 arguments",
+									severity="error",
+									span=getattr(expr, "loc", Span()),
+								)
+							)
+							return record_expr(expr, self._unknown)
+						place_expr, new_val_expr = expr.args
+						place = place_from_expr(place_expr, base_lookup=_base_lookup)
+						if place is None:
+							diagnostics.append(
+								Diagnostic(
+									message="replace argument 0 must be an addressable place",
+									severity="error",
+									span=getattr(place_expr, "loc", getattr(expr, "loc", Span())),
+								)
+							)
+							return record_expr(expr, self._unknown)
+						_require_writable_place(place_expr, getattr(place_expr, "loc", getattr(expr, "loc", Span())))
+						place_ty = arg_types[0]
+						new_ty = arg_types[1]
+						if place_ty is not None and new_ty is not None and place_ty != new_ty:
+							diagnostics.append(
+								Diagnostic(
+									message="replace requires the new value to have the same type as the place",
+									severity="error",
+									span=getattr(new_val_expr, "loc", getattr(expr, "loc", Span())),
+								)
+							)
+						return record_expr(expr, place_ty if place_ty is not None else self._unknown)
 
 				# Struct constructor: `Point(1, 2)` constructs a `struct Point`.
 				#
@@ -889,6 +1115,27 @@ class TypeChecker:
 				binding_names[stmt.binding_id] = stmt.name
 				binding_mutable[stmt.binding_id] = bool(getattr(stmt, "is_mutable", False))
 				binding_place_kind[stmt.binding_id] = PlaceKind.LOCAL
+				# Track origin for ref-typed locals: allow propagation from an existing
+				# ref binding, otherwise treat as local/temporary.
+				if val_ty is not None and self.type_table.get(val_ty).kind is TypeKind.REF:
+					origin: Optional[int] = None
+					# val r = p;  (p is a ref param or a local ref derived from param)
+					if isinstance(stmt.value, H.HVar) and getattr(stmt.value, "binding_id", None) is not None:
+						origin = ref_origin_param.get(stmt.value.binding_id)
+					# val r = &(*p).x;  (reborrow through a ref that derives from param)
+					if isinstance(stmt.value, H.HBorrow):
+						def _base_lookup(hv: object) -> Optional[PlaceBase]:
+							bid = getattr(hv, "binding_id", None)
+							if bid is None:
+								return None
+							kind = binding_place_kind.get(bid, PlaceKind.LOCAL)
+							name = hv.name if hasattr(hv, "name") else str(hv)
+							return PlaceBase(kind=kind, local_id=bid, name=name)
+
+						sub_place = place_from_expr(stmt.value.subject, base_lookup=_base_lookup)
+						if sub_place is not None and any(isinstance(p, DerefProj) for p in sub_place.projections):
+							origin = ref_origin_param.get(sub_place.base.local_id)
+					ref_origin_param[stmt.binding_id] = origin
 			elif isinstance(stmt, H.HAssign):
 				type_expr(stmt.value)
 				type_expr(stmt.target)
@@ -907,8 +1154,17 @@ class TypeChecker:
 							message="assignment target must be an addressable place",
 							severity="error",
 							span=getattr(stmt, "loc", Span()),
+							)
 						)
-					)
+				# If assigning to a ref-typed binding, track origin (simple propagation).
+				if isinstance(stmt.target, H.HVar) and getattr(stmt.target, "binding_id", None) is not None:
+					tgt_bid = stmt.target.binding_id
+					tgt_ty = binding_types.get(tgt_bid)
+					if tgt_ty is not None and self.type_table.get(tgt_ty).kind is TypeKind.REF:
+						origin: Optional[int] = None
+						if isinstance(stmt.value, H.HVar) and getattr(stmt.value, "binding_id", None) is not None:
+							origin = ref_origin_param.get(stmt.value.binding_id)
+						ref_origin_param[tgt_bid] = origin
 			elif isinstance(stmt, H.HExprStmt):
 				type_expr(stmt.expr)
 			elif isinstance(stmt, H.HReturn):
@@ -978,6 +1234,83 @@ class TypeChecker:
 			binding_mutable=binding_mutable,
 			call_resolutions=call_resolutions,
 		)
+
+		# MVP escape policy: reference returns must be derived from a single
+		# reference parameter.
+		if return_type is not None and self.type_table.get(return_type).kind is TypeKind.REF:
+			# Seed origin for reference parameters.
+			for bid in param_bindings:
+				pty = binding_types.get(bid)
+				if pty is not None and self.type_table.get(pty).kind is TypeKind.REF:
+					ref_origin_param[bid] = bid
+
+			def _return_origin(expr: H.HExpr) -> Optional[int]:
+				# Returning an existing reference value (param or local ref).
+				if isinstance(expr, H.HVar) and getattr(expr, "binding_id", None) is not None:
+					return ref_origin_param.get(expr.binding_id)
+				if hasattr(H, "HPlaceExpr") and isinstance(expr, getattr(H, "HPlaceExpr")):
+					if isinstance(expr.base, H.HVar) and getattr(expr.base, "binding_id", None) is not None:
+						return ref_origin_param.get(expr.base.binding_id)
+				# Returning a borrow is only allowed when it reborrows through a ref
+				# that originates from a reference parameter (e.g. &(*p).x).
+				if isinstance(expr, H.HBorrow):
+					def _base_lookup(hv: object) -> Optional[PlaceBase]:
+						bid = getattr(hv, "binding_id", None)
+						if bid is None:
+							return None
+						kind = binding_place_kind.get(bid, PlaceKind.LOCAL)
+						name = hv.name if hasattr(hv, "name") else str(hv)
+						return PlaceBase(kind=kind, local_id=bid, name=name)
+
+					sub_place = place_from_expr(expr.subject, base_lookup=_base_lookup)
+					if sub_place is None:
+						return None
+					if not any(isinstance(p, DerefProj) for p in sub_place.projections):
+						return None
+					return ref_origin_param.get(sub_place.base.local_id)
+				return None
+
+			def _walk_returns(block: H.HBlock, out: List[tuple[Optional[int], Span]]) -> None:
+				for s in block.statements:
+					if isinstance(s, H.HReturn) and s.value is not None:
+						out.append((_return_origin(s.value), getattr(s, "loc", getattr(s.value, "loc", Span()))))
+					elif isinstance(s, H.HIf):
+						_walk_returns(s.then_block, out)
+						if s.else_block:
+							_walk_returns(s.else_block, out)
+					elif isinstance(s, H.HLoop):
+						_walk_returns(s.body, out)
+					elif isinstance(s, H.HTry):
+						_walk_returns(s.body, out)
+						for arm in s.catches:
+							_walk_returns(arm.block, out)
+
+			returns: List[tuple[Optional[int], Span]] = []
+			_walk_returns(body, returns)
+
+			# Determine the single allowed origin param (if any).
+			origin_param: Optional[int] = None
+			for origin, span in returns:
+				if origin is None:
+					diagnostics.append(
+						Diagnostic(
+							message="reference return must be derived from a reference parameter (MVP escape rule)",
+							severity="error",
+							span=span,
+						)
+					)
+					continue
+				if origin_param is None:
+					origin_param = origin
+				elif origin != origin_param:
+					diagnostics.append(
+						Diagnostic(
+							message="reference return must derive from a single reference parameter (cannot return from different params)",
+							severity="error",
+							span=span,
+						)
+					)
+
 		return TypeCheckResult(typed_fn=typed, diagnostics=diagnostics)
 
 	def _alloc_param_id(self) -> ParamId:

@@ -1,0 +1,6 @@
+{
+  "exit_code": 1,
+  "diagnostics": [
+    { "phase": "typecheck", "message_contains": "cannot write through *p unless p is a mutable reference" }
+  ]
+}

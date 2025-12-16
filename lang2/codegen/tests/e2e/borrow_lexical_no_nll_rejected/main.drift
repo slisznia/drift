@@ -1,0 +1,9 @@
+fn main() returns Int {
+	var x = 1;
+	val r = &x;
+	if true {
+		val y = *r;
+	}
+	x = 2;
+	return 0;
+}

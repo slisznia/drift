@@ -1,0 +1,6 @@
+fn main() returns Int {
+	var a = 1;
+	var b = true;
+	swap(a, b);
+	return 0;
+}

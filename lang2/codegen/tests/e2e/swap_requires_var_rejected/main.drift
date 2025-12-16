@@ -1,0 +1,6 @@
+fn main() returns Int {
+	val a = 1;
+	val b = 2;
+	swap(a, b);
+	return 0;
+}

@@ -1,0 +1,9 @@
+module m
+
+fn main() returns Int {
+	val p = &mut (1 + 2);
+	*p = *p + 1;
+	val v = *p;
+	return v;
+}
+

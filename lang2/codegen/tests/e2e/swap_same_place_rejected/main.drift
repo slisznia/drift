@@ -1,0 +1,7 @@
+struct Point(x: Int, y: Int)
+
+fn main() returns Int {
+	var p = Point(1, 2);
+	swap(p.x, p.x);
+	return 0;
+}

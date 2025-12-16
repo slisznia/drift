@@ -12,11 +12,17 @@ Why stage1?
   - MIR lowering for borrows expects the operand to be a place-like expression.
 
 MVP rules:
-  - Only shared borrows of rvalues are materialized:
+  - Shared borrows of rvalues are materialized:
       `&(<expr>)`  ->  `val __tmpN = <expr>; &__tmpN`
-  - Mutable borrows of rvalues remain illegal:
-      `&mut (<expr>)` is still rejected by the typed checker (no implicit var
-      temp is introduced).
+  - Mutable borrows of rvalues are also materialized:
+      `&mut (<expr>)`  ->  `var __tmp_mutN = <expr>; &mut __tmp_mutN`
+    This gives `&mut` a real storage slot to point at. The temp is a normal
+    local from the borrow checker's point of view: it is frozen while borrowed
+    and lives for the surrounding scope.
+  - Materialization is purely structural and does not perform typing. The
+    typed checker remains the authority for rejecting illegal borrow operands
+    (e.g. non-place borrows when materialization is disabled, or `&mut` of an
+    expression containing an explicit `move`).
   - This pass is structural and does not perform type checking.
 """
 
@@ -113,6 +119,57 @@ class BorrowMaterializeRewriter:
 		"""
 		return place_expr_from_lvalue_expr(expr)
 
+	def _contains_move(self, expr: H.HExpr) -> bool:
+		"""
+		Conservatively detect explicit `move` inside an expression.
+
+		We use this to avoid materializing `&(move x)` / `&mut (move x)` into a
+		temp. Doing so would implicitly change "consume + invalidate" into "store
+		then borrow", which is a semantic expansion we want to keep explicit.
+		"""
+		if hasattr(H, "HMove") and isinstance(expr, getattr(H, "HMove")):
+			return True
+		if isinstance(expr, H.HUnary):
+			return self._contains_move(expr.expr)
+		if isinstance(expr, H.HBinary):
+			return self._contains_move(expr.left) or self._contains_move(expr.right)
+		if isinstance(expr, H.HTernary):
+			return (
+				self._contains_move(expr.cond)
+				or self._contains_move(expr.then_expr)
+				or self._contains_move(expr.else_expr)
+			)
+		if isinstance(expr, H.HCall):
+			return self._contains_move(expr.fn) or any(self._contains_move(a) for a in expr.args)
+		if isinstance(expr, H.HMethodCall):
+			return self._contains_move(expr.receiver) or any(self._contains_move(a) for a in expr.args)
+		if isinstance(expr, H.HField):
+			return self._contains_move(expr.subject)
+		if isinstance(expr, H.HIndex):
+			return self._contains_move(expr.subject) or self._contains_move(expr.index)
+		if isinstance(expr, getattr(H, "HPlaceExpr", ())):
+			return False
+		if isinstance(expr, H.HArrayLiteral):
+			return any(self._contains_move(e) for e in expr.elements)
+		if isinstance(expr, H.HDVInit):
+			return any(self._contains_move(a) for a in expr.args)
+		if isinstance(expr, H.HExceptionInit):
+			return any(self._contains_move(a) for a in expr.pos_args) or any(
+				self._contains_move(k.value) for k in expr.kw_args
+			)
+		if isinstance(expr, getattr(H, "HTryExpr", ())):
+			if self._contains_move(expr.attempt):
+				return True
+			for arm in expr.arms:
+				if any(
+					self._contains_move(s.expr) for s in arm.block.statements if isinstance(s, H.HExprStmt)
+				):
+					return True
+				if arm.result is not None and self._contains_move(arm.result):
+					return True
+			return False
+		return False
+
 	def _rewrite_expr(self, expr: H.HExpr) -> Tuple[List[H.HStmt], H.HExpr]:
 		if isinstance(expr, H.HVar):
 			return [], expr
@@ -158,13 +215,27 @@ class BorrowMaterializeRewriter:
 		if isinstance(expr, H.HBorrow):
 			pfx, subj = self._rewrite_expr(expr.subject)
 			place = self._to_place(subj)
-			# Only materialize shared borrows. `&mut` rvalue remains a checker error.
-			if not expr.is_mut and place is None:
-				tmp = self._fresh()
+			# Materialize rvalue borrows into a hidden temp so borrow checking and
+			# MIR lowering can treat borrow operands as places.
+			if place is None:
+				# Guardrail: do not materialize borrows of expressions that contain an
+				# explicit `move`. The typed checker is responsible for rejecting these
+				# with a targeted diagnostic.
+				if self._contains_move(subj):
+					return pfx, H.HBorrow(subject=subj, is_mut=expr.is_mut)
+				tmp = self._fresh("__tmp_borrow_mut" if expr.is_mut else "__tmp_borrow")
 				return (
 					pfx
-					+ [H.HLet(name=tmp, value=subj, declared_type_expr=None, binding_id=None, is_mutable=False)],
-					H.HBorrow(subject=H.HPlaceExpr(base=H.HVar(tmp), projections=[]), is_mut=False),
+					+ [
+						H.HLet(
+							name=tmp,
+							value=subj,
+							declared_type_expr=None,
+							binding_id=None,
+							is_mutable=bool(expr.is_mut),
+						)
+					],
+					H.HBorrow(subject=H.HPlaceExpr(base=H.HVar(tmp), projections=[]), is_mut=expr.is_mut),
 				)
 			# Canonicalize to a place expression when possible; this makes later
 			# phases less dependent on re-deriving place structure from trees.

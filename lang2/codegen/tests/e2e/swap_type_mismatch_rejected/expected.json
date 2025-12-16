@@ -1,0 +1,6 @@
+{
+  "exit_code": 1,
+  "diagnostics": [
+    { "phase": "typecheck", "message_contains": "swap requires both places to have the same type" }
+  ]
+}
