@@ -146,9 +146,17 @@ class BorrowMaterializeRewriter:
 				or self._contains_move(expr.else_expr)
 			)
 		if isinstance(expr, H.HCall):
-			return self._contains_move(expr.fn) or any(self._contains_move(a) for a in expr.args)
+			return (
+				self._contains_move(expr.fn)
+				or any(self._contains_move(a) for a in expr.args)
+				or any(self._contains_move(k.value) for k in getattr(expr, "kwargs", []) or [])
+			)
 		if isinstance(expr, H.HMethodCall):
-			return self._contains_move(expr.receiver) or any(self._contains_move(a) for a in expr.args)
+			return (
+				self._contains_move(expr.receiver)
+				or any(self._contains_move(a) for a in expr.args)
+				or any(self._contains_move(k.value) for k in getattr(expr, "kwargs", []) or [])
+			)
 		if isinstance(expr, H.HField):
 			return self._contains_move(expr.subject)
 		if isinstance(expr, H.HIndex):
@@ -189,7 +197,13 @@ class BorrowMaterializeRewriter:
 				apfx, av = self._rewrite_expr(a)
 				pfx_args.extend(apfx)
 				new_args.append(av)
-			return pfx_fn + pfx_args, H.HCall(fn=fn, args=new_args)
+			pfx_kwargs: List[H.HStmt] = []
+			new_kwargs: list[H.HKwArg] = []
+			for kw in getattr(expr, "kwargs", []) or []:
+				kpfx, kv = self._rewrite_expr(kw.value)
+				pfx_kwargs.extend(kpfx)
+				new_kwargs.append(H.HKwArg(name=kw.name, value=kv, loc=kw.loc))
+			return pfx_fn + pfx_args + pfx_kwargs, H.HCall(fn=fn, args=new_args, kwargs=new_kwargs)
 		if isinstance(expr, H.HMethodCall):
 			pfx_recv, recv = self._rewrite_expr(expr.receiver)
 			pfx_args: List[H.HStmt] = []
@@ -198,7 +212,15 @@ class BorrowMaterializeRewriter:
 				apfx, av = self._rewrite_expr(a)
 				pfx_args.extend(apfx)
 				new_args.append(av)
-			return pfx_recv + pfx_args, H.HMethodCall(receiver=recv, method_name=expr.method_name, args=new_args)
+			pfx_kwargs: List[H.HStmt] = []
+			new_kwargs: list[H.HKwArg] = []
+			for kw in getattr(expr, "kwargs", []) or []:
+				kpfx, kv = self._rewrite_expr(kw.value)
+				pfx_kwargs.extend(kpfx)
+				new_kwargs.append(H.HKwArg(name=kw.name, value=kv, loc=kw.loc))
+			return pfx_recv + pfx_args + pfx_kwargs, H.HMethodCall(
+				receiver=recv, method_name=expr.method_name, args=new_args, kwargs=new_kwargs
+			)
 		if isinstance(expr, H.HField):
 			pfx, subj = self._rewrite_expr(expr.subject)
 			return pfx, H.HField(subject=subj, name=expr.name)

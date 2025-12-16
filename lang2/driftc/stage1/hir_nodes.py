@@ -231,6 +231,7 @@ class HCall(HExpr):
 	"""Plain function call: fn(args...)."""
 	fn: HExpr
 	args: List[HExpr]
+	kwargs: List["HKwArg"] = field(default_factory=list)
 
 
 @dataclass
@@ -244,6 +245,7 @@ class HMethodCall(HExpr):
 	receiver: HExpr
 	method_name: str
 	args: List[HExpr]
+	kwargs: List["HKwArg"] = field(default_factory=list)
 
 
 @dataclass

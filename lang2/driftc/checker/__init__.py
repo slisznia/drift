@@ -456,6 +456,8 @@ class Checker:
 							first_span = Span.from_loc(getattr(expr, "loc", None))
 				for arg in expr.args:
 					walk_expr(arg, caught_events, catch_all)
+				for kw in getattr(expr, "kwargs", []) or []:
+					walk_expr(kw.value, caught_events, catch_all)
 			elif isinstance(expr, H.HMethodCall):
 				# Best-effort method call classification: treat `method_name` as the
 				# callee identity for throw inference. This is conservative but keeps
@@ -470,6 +472,8 @@ class Checker:
 				walk_expr(expr.receiver, caught_events, catch_all)
 				for arg in expr.args:
 					walk_expr(arg, caught_events, catch_all)
+				for kw in getattr(expr, "kwargs", []) or []:
+					walk_expr(kw.value, caught_events, catch_all)
 			elif hasattr(H, "HTryExpr") and isinstance(expr, getattr(H, "HTryExpr")):
 				# Expression-form try/catch creates a local handler scope for the
 				# attempt expression. A catch-all arm handles any propagated throw.
@@ -999,10 +1003,14 @@ class Checker:
 				self.check_call_signature(callee_info, arg_type_ids, diagnostics, loc=None)
 				for arg in expr.args:
 					walk_expr(arg)
+				for kw in getattr(expr, "kwargs", []) or []:
+					walk_expr(kw.value)
 			elif isinstance(expr, H.HMethodCall):
 				walk_expr(expr.receiver)
 				for arg in expr.args:
 					walk_expr(arg)
+				for kw in getattr(expr, "kwargs", []) or []:
+					walk_expr(kw.value)
 			elif isinstance(expr, H.HTryResult):
 				walk_expr(expr.expr)
 			elif isinstance(expr, H.HResultOk):
@@ -1268,10 +1276,14 @@ class Checker:
 				walk_expr(expr.fn)
 				for arg in expr.args:
 					walk_expr(arg)
+				for kw in getattr(expr, "kwargs", []) or []:
+					walk_expr(kw.value)
 			elif isinstance(expr, H.HMethodCall):
 				walk_expr(expr.receiver)
 				for arg in expr.args:
 					walk_expr(arg)
+				for kw in getattr(expr, "kwargs", []) or []:
+					walk_expr(kw.value)
 			elif isinstance(expr, H.HTernary):
 				walk_expr(expr.cond)
 				walk_expr(expr.then_expr)
@@ -1339,10 +1351,14 @@ class Checker:
 				walk_expr(expr.fn)
 				for arg in expr.args:
 					walk_expr(arg)
+				for kw in getattr(expr, "kwargs", []) or []:
+					walk_expr(kw.value)
 			elif isinstance(expr, H.HMethodCall):
 				walk_expr(expr.receiver)
 				for arg in expr.args:
 					walk_expr(arg)
+				for kw in getattr(expr, "kwargs", []) or []:
+					walk_expr(kw.value)
 			elif isinstance(expr, H.HTernary):
 				walk_expr(expr.cond)
 				walk_expr(expr.then_expr)
@@ -1530,9 +1546,21 @@ class Checker:
 					ctx._append_diag(
 						Diagnostic(message="Void value is not allowed as a function argument", severity="error", span=None)
 					)
+			for kw in getattr(expr, "kwargs", []) or []:
+				arg_ty = ctx.infer(kw.value)
+				if is_void(arg_ty):
+					ctx._append_diag(
+						Diagnostic(message="Void value is not allowed as a function argument", severity="error", span=None)
+					)
 		elif isinstance(expr, H.HMethodCall):
 			for arg in expr.args:
 				arg_ty = ctx.infer(arg)
+				if is_void(arg_ty):
+					ctx._append_diag(
+						Diagnostic(message="Void value is not allowed as a method argument", severity="error", span=None)
+					)
+			for kw in getattr(expr, "kwargs", []) or []:
+				arg_ty = ctx.infer(kw.value)
 				if is_void(arg_ty):
 					ctx._append_diag(
 						Diagnostic(message="Void value is not allowed as a method argument", severity="error", span=None)

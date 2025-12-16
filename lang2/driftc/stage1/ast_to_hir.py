@@ -307,15 +307,26 @@ class AstToHIR:
 		  - otherwise: plain HCall(fn_expr, args)
 		DV-specific constructors are handled in _visit_expr_ExceptionCtor.
 		"""
+		kw_pairs = getattr(expr, "kwargs", []) or []
+		h_kwargs = [
+			H.HKwArg(
+				name=kw.name,
+				value=self.lower_expr(kw.value),
+				loc=Span.from_loc(getattr(kw, "loc", None)),
+			)
+			for kw in kw_pairs
+		]
 		# Recognize Result.Ok constructor in source -> HResultOk for FnResult.
 		if isinstance(expr.func, ast.Name) and expr.func.ident == "Ok" and len(expr.args) == 1:
+			if h_kwargs:
+				raise NotImplementedError("Ok(...) does not support keyword arguments")
 			return H.HResultOk(value=self.lower_expr(expr.args[0]))
 
 		# Method call sugar: receiver.method(args)
 		if isinstance(expr.func, ast.Attr):
 			receiver = self.lower_expr(expr.func.value)
 			args = [self.lower_expr(a) for a in expr.args]
-			return H.HMethodCall(receiver=receiver, method_name=expr.func.attr, args=args)
+			return H.HMethodCall(receiver=receiver, method_name=expr.func.attr, args=args, kwargs=h_kwargs)
 
 		# Implicit `self` method call: inside a method body, an unqualified call
 		# `foo(...)` may resolve to `self.foo(...)` when:
@@ -335,12 +346,12 @@ class AstToHIR:
 					if name not in module_funcs and name in methods:
 						recv = H.HVar(name=self_name, binding_id=self._lookup_binding(self_name))
 						args = [self.lower_expr(a) for a in expr.args]
-						return H.HMethodCall(receiver=recv, method_name=name, args=args)
+						return H.HMethodCall(receiver=recv, method_name=name, args=args, kwargs=h_kwargs)
 
 		# Plain function call (or call through an expression value).
 		fn_expr = self.lower_expr(expr.func)
 		args = [self.lower_expr(a) for a in expr.args]
-		return H.HCall(fn=fn_expr, args=args)
+		return H.HCall(fn=fn_expr, args=args, kwargs=h_kwargs)
 
 	def _visit_expr_Attr(self, expr: ast.Attr) -> H.HExpr:
 		"""Field access: subject.name (no method/placeholder sugar here)."""
@@ -404,12 +415,19 @@ class AstToHIR:
 			if isinstance(expr.right, ast.Call):
 				fn = self.lower_expr(expr.right.func)
 				args = [left] + [self.lower_expr(a) for a in expr.right.args]
-				if getattr(expr.right, "kwargs", None):
-					raise NotImplementedError("pipeline stages do not support keyword arguments yet")
-				return H.HCall(fn=fn, args=args)
+				kw_pairs = getattr(expr.right, "kwargs", []) or []
+				kwargs = [
+					H.HKwArg(
+						name=kw.name,
+						value=self.lower_expr(kw.value),
+						loc=Span.from_loc(getattr(kw, "loc", None)),
+					)
+					for kw in kw_pairs
+				]
+				return H.HCall(fn=fn, args=args, kwargs=kwargs)
 			# `lhs |> f` becomes `f(lhs)`.
 			fn = self.lower_expr(expr.right)
-			return H.HCall(fn=fn, args=[left])
+			return H.HCall(fn=fn, args=[left], kwargs=[])
 
 		op_map = {
 			"+": H.BinaryOp.ADD,

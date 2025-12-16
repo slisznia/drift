@@ -244,9 +244,17 @@ class TypeChecker:
 					if isinstance(node, H.HTernary):
 						return _contains_move(node.cond) or _contains_move(node.then_expr) or _contains_move(node.else_expr)
 					if isinstance(node, H.HCall):
-						return _contains_move(node.fn) or any(_contains_move(a) for a in node.args)
+						return (
+							_contains_move(node.fn)
+							or any(_contains_move(a) for a in node.args)
+							or any(_contains_move(k.value) for k in getattr(node, "kwargs", []) or [])
+						)
 					if isinstance(node, H.HMethodCall):
-						return _contains_move(node.receiver) or any(_contains_move(a) for a in node.args)
+						return (
+							_contains_move(node.receiver)
+							or any(_contains_move(a) for a in node.args)
+							or any(_contains_move(k.value) for k in getattr(node, "kwargs", []) or [])
+						)
 					if isinstance(node, H.HField):
 						return _contains_move(node.subject)
 					if isinstance(node, H.HIndex):
@@ -507,6 +515,8 @@ class TypeChecker:
 				if should_type_fn:
 					type_expr(expr.fn)
 				arg_types = [type_expr(a) for a in expr.args]
+				kw_pairs = getattr(expr, "kwargs", []) or []
+				kw_types = [type_expr(k.value) for k in kw_pairs]
 
 				# Builtins: swap/replace operate on *places*.
 				#
@@ -515,6 +525,14 @@ class TypeChecker:
 				# containers/structs. They are validated here (with spans) and lowered as
 				# dedicated MIR patterns later; they are not normal function calls.
 				if isinstance(expr.fn, H.HVar) and expr.fn.name in ("swap", "replace"):
+					if kw_pairs:
+						diagnostics.append(
+							Diagnostic(
+								message=f"{expr.fn.name} does not support keyword arguments",
+								severity="error",
+								span=kw_pairs[0].loc if hasattr(kw_pairs[0], "loc") else getattr(expr, "loc", Span()),
+							)
+						)
 					def _base_lookup(hv: object) -> Optional[PlaceBase]:
 						bid = getattr(hv, "binding_id", None)
 						if bid is None:
@@ -691,8 +709,18 @@ class TypeChecker:
 							)
 						)
 						return record_expr(expr, self._unknown)
+					field_names = self.type_table.struct_schemas[struct_name][1]
 					field_types = list(struct_def.param_types)
-					if len(arg_types) != len(field_types):
+					if len(field_names) != len(field_types):
+						diagnostics.append(
+							Diagnostic(
+								message=f"internal: struct '{struct_name}' schema/type mismatch",
+								severity="error",
+								span=getattr(expr, "loc", Span()),
+							)
+						)
+						return record_expr(expr, struct_id)
+					if len(arg_types) > len(field_types):
 						diagnostics.append(
 							Diagnostic(
 								message=f"struct '{struct_name}' constructor expects {len(field_types)} args, got {len(arg_types)}",
@@ -701,16 +729,80 @@ class TypeChecker:
 							)
 						)
 						return record_expr(expr, struct_id)
-					for idx, (have, want) in enumerate(zip(arg_types, field_types)):
+
+					# Map positional + keyword args to fields in declaration order.
+					mapped_types: list[Optional[TypeId]] = [None] * len(field_types)
+					mapped_spans: list[Span] = [getattr(expr, "loc", Span())] * len(field_types)
+
+					for idx, (ty, arg_expr) in enumerate(zip(arg_types, expr.args)):
+						mapped_types[idx] = ty
+						mapped_spans[idx] = getattr(arg_expr, "loc", getattr(expr, "loc", Span()))
+
+					for kw, kw_ty in zip(kw_pairs, kw_types):
+						try:
+							field_idx = field_names.index(kw.name)
+						except ValueError:
+							diagnostics.append(
+								Diagnostic(
+									message=f"unknown field '{kw.name}' for struct '{struct_name}'",
+									severity="error",
+									span=getattr(kw, "loc", getattr(expr, "loc", Span())),
+								)
+							)
+							continue
+						if field_idx < len(arg_types):
+							diagnostics.append(
+								Diagnostic(
+									message=f"duplicate field '{kw.name}' for struct '{struct_name}' (already provided positionally)",
+									severity="error",
+									span=getattr(kw, "loc", getattr(expr, "loc", Span())),
+								)
+							)
+							continue
+						if mapped_types[field_idx] is not None:
+							diagnostics.append(
+								Diagnostic(
+									message=f"duplicate field '{kw.name}' for struct '{struct_name}'",
+									severity="error",
+									span=getattr(kw, "loc", getattr(expr, "loc", Span())),
+								)
+							)
+							continue
+						mapped_types[field_idx] = kw_ty
+						mapped_spans[field_idx] = getattr(kw.value, "loc", getattr(expr, "loc", Span()))
+
+					for idx, (have, want) in enumerate(zip(mapped_types, field_types)):
+						if have is None:
+							diagnostics.append(
+								Diagnostic(
+									message=f"missing field '{field_names[idx]}' for struct '{struct_name}' constructor",
+									severity="error",
+									span=getattr(expr, "loc", Span()),
+								)
+							)
+							continue
 						if have != want:
 							diagnostics.append(
 								Diagnostic(
-									message=f"struct '{struct_name}' constructor arg {idx} type mismatch (have {self.type_table.get(have).name}, expected {self.type_table.get(want).name})",
+									message=(
+										f"struct '{struct_name}' field '{field_names[idx]}' type mismatch "
+										f"(have {self.type_table.get(have).name}, expected {self.type_table.get(want).name})"
+									),
 									severity="error",
-									span=getattr(expr.args[idx], "loc", Span()),
+									span=mapped_spans[idx],
 								)
 							)
 					return record_expr(expr, struct_id)
+
+				if kw_pairs:
+					diagnostics.append(
+						Diagnostic(
+							message="keyword arguments are only supported for struct constructors in MVP",
+							severity="error",
+							span=getattr(kw_pairs[0], "loc", getattr(expr, "loc", Span())),
+						)
+					)
+					return record_expr(expr, self._unknown)
 
 				# Try registry-based resolution when available.
 				if callable_registry and isinstance(expr.fn, H.HVar):
@@ -758,6 +850,17 @@ class TypeChecker:
 						return record_expr(expr, self._opt_bool)
 					if expr.method_name == "as_string":
 						return record_expr(expr, self._opt_string)
+					return record_expr(expr, self._unknown)
+
+				if getattr(expr, "kwargs", None):
+					first = (getattr(expr, "kwargs", []) or [None])[0]
+					diagnostics.append(
+						Diagnostic(
+							message="keyword arguments are not supported for method calls in MVP",
+							severity="error",
+							span=getattr(first, "loc", getattr(expr, "loc", Span())),
+						)
+					)
 					return record_expr(expr, self._unknown)
 
 				recv_ty = type_expr(expr.receiver)

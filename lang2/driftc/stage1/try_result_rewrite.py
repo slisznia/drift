@@ -156,7 +156,13 @@ class TryResultRewriter:
 				pfx, arg = self._rewrite_expr(a)
 				arg_prefixes.extend(pfx)
 				new_args.append(arg)
-			return prefix_fn + arg_prefixes, H.HCall(fn=fn, args=new_args)
+			kw_prefixes: List[H.HStmt] = []
+			new_kwargs: list[H.HKwArg] = []
+			for kw in getattr(expr, "kwargs", []) or []:
+				kpfx, kval = self._rewrite_expr(kw.value)
+				kw_prefixes.extend(kpfx)
+				new_kwargs.append(H.HKwArg(name=kw.name, value=kval, loc=kw.loc))
+			return prefix_fn + arg_prefixes + kw_prefixes, H.HCall(fn=fn, args=new_args, kwargs=new_kwargs)
 		if isinstance(expr, H.HMethodCall):
 			prefix_recv, recv = self._rewrite_expr(expr.receiver)
 			arg_prefixes: List[H.HStmt] = []
@@ -165,8 +171,14 @@ class TryResultRewriter:
 				pfx, arg = self._rewrite_expr(a)
 				arg_prefixes.extend(pfx)
 				new_args.append(arg)
-			return prefix_recv + arg_prefixes, H.HMethodCall(
-				receiver=recv, method_name=expr.method_name, args=new_args
+			kw_prefixes: List[H.HStmt] = []
+			new_kwargs: list[H.HKwArg] = []
+			for kw in getattr(expr, "kwargs", []) or []:
+				kpfx, kval = self._rewrite_expr(kw.value)
+				kw_prefixes.extend(kpfx)
+				new_kwargs.append(H.HKwArg(name=kw.name, value=kval, loc=kw.loc))
+			return prefix_recv + arg_prefixes + kw_prefixes, H.HMethodCall(
+				receiver=recv, method_name=expr.method_name, args=new_args, kwargs=new_kwargs
 			)
 		if isinstance(expr, H.HField):
 			prefix_subj, subj = self._rewrite_expr(expr.subject)

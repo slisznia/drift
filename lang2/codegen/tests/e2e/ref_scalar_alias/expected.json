@@ -1,0 +1,4 @@
+{
+  "skip": true,
+  "skip_reason": "requires SSA support for loops/backedges (while loop)"
+}

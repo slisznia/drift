@@ -516,6 +516,8 @@ class HIRToMIR:
 			if name == "swap" and len(expr.args) == 2:
 				raise AssertionError("swap(...) used in expression context (checker bug)")
 			if name == "replace" and len(expr.args) == 2:
+				if getattr(expr, "kwargs", None):
+					raise AssertionError("replace(...) does not accept keyword arguments (checker bug)")
 				place_expr = expr.args[0]
 				new_expr = expr.args[1]
 				if not (hasattr(H, "HPlaceExpr") and isinstance(place_expr, getattr(H, "HPlaceExpr"))):
@@ -536,14 +538,38 @@ class HIRToMIR:
 				struct_def = self._type_table.get(struct_ty)
 				if struct_def.kind is not TypeKind.STRUCT:
 					raise AssertionError("struct schema name resolved to non-STRUCT TypeId (checker bug)")
-				arg_vals = [self.lower_expr(a) for a in expr.args]
-				if len(arg_vals) != len(struct_def.param_types):
+				field_names = self._type_table.struct_schemas[name][1]
+				field_types = list(struct_def.param_types)
+				if len(field_names) != len(field_types):
+					raise AssertionError("struct schema/type mismatch reached MIR lowering (checker bug)")
+
+				pos_args = list(expr.args)
+				kw_pairs = list(getattr(expr, "kwargs", []) or [])
+				if len(pos_args) > len(field_types):
 					raise AssertionError("struct ctor arg count mismatch reached MIR lowering (checker bug)")
+
+				# Evaluate arguments left-to-right as written, but pass them in field order.
+				ordered: list[M.ValueId | None] = [None] * len(field_types)
+				for idx, arg_expr in enumerate(pos_args):
+					ordered[idx] = self.lower_expr(arg_expr)
+				for kw in kw_pairs:
+					try:
+						field_idx = field_names.index(kw.name)
+					except ValueError as err:
+						raise AssertionError("unknown struct ctor field reached MIR lowering (checker bug)") from err
+					if field_idx < len(pos_args) or ordered[field_idx] is not None:
+						raise AssertionError("duplicate struct ctor field reached MIR lowering (checker bug)")
+					ordered[field_idx] = self.lower_expr(kw.value)
+				if any(v is None for v in ordered):
+					raise AssertionError("missing struct ctor field reached MIR lowering (checker bug)")
+				arg_vals = [v for v in ordered if v is not None]
 				dest = self.b.new_temp()
 				self.b.emit(M.ConstructStruct(dest=dest, struct_ty=struct_ty, args=arg_vals))
 				return dest
 			# Builtin byte_length/len(x) for String/Array.
 			if name in ("len", "byte_length") and len(expr.args) == 1:
+				if getattr(expr, "kwargs", None):
+					raise AssertionError(f"{name}(...) does not accept keyword arguments (checker bug)")
 				arg_expr = expr.args[0]
 				arg_val = self.lower_expr(arg_expr)
 				arg_ty = self._infer_expr_type(arg_expr)
@@ -555,6 +581,8 @@ class HIRToMIR:
 				return dest
 			# string_eq(a,b)
 			if name == "string_eq" and len(expr.args) == 2:
+				if getattr(expr, "kwargs", None):
+					raise AssertionError("string_eq(...) does not accept keyword arguments (checker bug)")
 				l_expr, r_expr = expr.args
 				l_val = self.lower_expr(l_expr)
 				r_val = self.lower_expr(r_expr)
@@ -566,6 +594,8 @@ class HIRToMIR:
 				return dest
 			# string_concat(a,b)
 			if name == "string_concat" and len(expr.args) == 2:
+				if getattr(expr, "kwargs", None):
+					raise AssertionError("string_concat(...) does not accept keyword arguments (checker bug)")
 				l_expr, r_expr = expr.args
 				l_val = self.lower_expr(l_expr)
 				r_val = self.lower_expr(r_expr)
@@ -577,6 +607,8 @@ class HIRToMIR:
 				return dest
 		if not isinstance(expr.fn, H.HVar):
 			raise NotImplementedError("Only direct function-name calls are supported in MIR lowering")
+		if getattr(expr, "kwargs", None):
+			raise AssertionError("keyword arguments reached MIR lowering for a normal call (checker bug)")
 		result = self._lower_call(expr)
 		if result is None:
 			raise AssertionError("Void-returning call used in expression context (checker bug)")
@@ -593,6 +625,8 @@ class HIRToMIR:
 		return result
 
 	def _visit_expr_HMethodCall(self, expr: H.HMethodCall) -> M.ValueId:
+		if getattr(expr, "kwargs", None):
+			raise AssertionError("keyword arguments for method calls are not supported in MIR lowering (checker bug)")
 		# FnResult / try-sugar intrinsic methods.
 		#
 		# `HTryResult` desugaring produces method calls like:
@@ -1569,6 +1603,8 @@ class HIRToMIR:
 		the method to a concrete symbol (e.g. `Point::move_by`) and call it with
 		the receiver as the first argument.
 		"""
+		if getattr(expr, "kwargs", None):
+			raise AssertionError("keyword arguments for method calls are not supported in MIR lowering (checker bug)")
 		recv_ty = self._infer_expr_type(expr.receiver)
 		if recv_ty is None:
 			# Legacy/stub path: if we cannot infer the receiver type, keep the call
