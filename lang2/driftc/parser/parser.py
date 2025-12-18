@@ -23,7 +23,9 @@ from .ast import (
     ForStmt,
     FunctionDef,
     IfStmt,
-    ImportStmt,
+	ImportStmt,
+	FromImportStmt,
+	ExportStmt,
     ImplementDef,
     Index,
     KwArg,
@@ -141,6 +143,20 @@ class FStringParseError(ValueError):
 continue to treat it as a parse-time failure, but it carries a best-effort
 location (`loc`) so callers can convert it into a structured diagnostic instead
 of crashing the compiler.
+	"""
+
+	def __init__(self, message: str, *, loc: "Located") -> None:
+		super().__init__(message)
+		self.loc = loc
+
+
+class ModuleDeclError(ValueError):
+	"""
+	User-facing module header error.
+
+Examples:
+- duplicate `module` declarations in one file,
+- `module` header not appearing first.
 	"""
 
 	def __init__(self, message: str, *, loc: "Located") -> None:
@@ -476,18 +492,29 @@ def parse_program(source: str) -> Program:
 def _build_program(tree: Tree) -> Program:
 	functions: List[FunctionDef] = []
 	implements: List[ImplementDef] = []
-	statements: List[ExprStmt | LetStmt | ReturnStmt | RaiseStmt | ImportStmt] = []
+	imports: List[ImportStmt] = []
+	from_imports: List[FromImportStmt] = []
+	exports: List[ExportStmt] = []
+	statements: List[ExprStmt | LetStmt | ReturnStmt | RaiseStmt] = []
 	structs: List[StructDef] = []
 	exceptions: List[ExceptionDef] = []
 	variants: List[VariantDef] = []
 	module_name: Optional[str] = None
+	module_loc: Optional[Located] = None
+	seen_non_module_item = False
 	for child in tree.children:
 		if not isinstance(child, Tree):
 			continue
 		kind = _name(child)
 		if kind == "module_decl":
+			if module_name is not None:
+				raise ModuleDeclError("duplicate module declaration", loc=_loc(child))
+			if seen_non_module_item:
+				raise ModuleDeclError("module declaration must be the first non-comment statement in the file", loc=_loc(child))
 			module_name = _build_module_decl(child)
+			module_loc = _loc(child)
 			continue
+		seen_non_module_item = True
 		if kind == "func_def":
 			functions.append(_build_function(child))
 		elif kind == "implement_def":
@@ -500,16 +527,28 @@ def _build_program(tree: Tree) -> Program:
 			variants.append(_build_variant_def(child))
 		else:
 			stmt = _build_stmt(child)
-			if stmt is not None:
+			if stmt is None:
+				continue
+			if isinstance(stmt, ImportStmt):
+				imports.append(stmt)
+			elif isinstance(stmt, FromImportStmt):
+				from_imports.append(stmt)
+			elif isinstance(stmt, ExportStmt):
+				exports.append(stmt)
+			else:
 				statements.append(stmt)
 	return Program(
 		functions=functions,
 		implements=implements,
+		imports=imports,
+		from_imports=from_imports,
+		exports=exports,
 		statements=statements,
 		structs=structs,
 		exceptions=exceptions,
 		variants=variants,
 		module=module_name,
+		module_loc=module_loc,
 	)
 
 
@@ -765,6 +804,10 @@ def _build_stmt(tree: Tree):
 			return _build_expr_stmt(target)
 		if stmt_kind == "import_stmt":
 			return _build_import_stmt(target)
+		if stmt_kind == "from_import_stmt":
+			return _build_from_import_stmt(target)
+		if stmt_kind == "export_stmt":
+			return _build_export_stmt(target)
 		if stmt_kind == "while_stmt":
 			return _build_while_stmt(target)
 		if stmt_kind == "break_stmt":
@@ -792,7 +835,39 @@ def _build_stmt(tree: Tree):
 		return _build_raise_stmt(tree)
 	if kind == "expr_stmt":
 		return _build_expr_stmt(tree)
+	if kind == "import_stmt":
+		return _build_import_stmt(tree)
+	if kind == "from_import_stmt":
+		return _build_from_import_stmt(tree)
+	if kind == "export_stmt":
+		return _build_export_stmt(tree)
 	return None
+
+
+def _build_from_import_stmt(tree: Tree) -> FromImportStmt:
+	loc = _loc(tree)
+	module_path_node = next((c for c in tree.children if isinstance(c, Tree) and _name(c) == "import_path"), None)
+	module_path = [tok.value for tok in module_path_node.children if isinstance(tok, Token) and tok.type == "NAME"] if module_path_node else []
+	symbol_tok = next((c for c in tree.children if isinstance(c, Token) and c.type == "NAME"), None)
+	symbol = symbol_tok.value if symbol_tok is not None else ""
+	alias = None
+	alias_node = next((c for c in tree.children if isinstance(c, Tree) and _name(c) == "import_alias"), None)
+	if alias_node is not None:
+		alias_tok = next((c for c in alias_node.children if isinstance(c, Token) and c.type == "NAME"), None)
+		if alias_tok is not None:
+			alias = alias_tok.value
+	return FromImportStmt(loc=loc, module_path=module_path, symbol=symbol, alias=alias)
+
+
+def _build_export_stmt(tree: Tree) -> ExportStmt:
+	loc = _loc(tree)
+	names: list[str] = []
+	name_list = next((c for c in tree.children if isinstance(c, Tree) and _name(c) == "export_name_list"), None)
+	if name_list is not None:
+		for tok in name_list.children:
+			if isinstance(tok, Token) and tok.type == "NAME":
+				names.append(tok.value)
+	return ExportStmt(loc=loc, names=names)
 
 
 def _build_let_stmt(tree: Tree) -> LetStmt:

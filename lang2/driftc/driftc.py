@@ -45,11 +45,14 @@ from lang2.driftc.core.diagnostics import Diagnostic
 from lang2.driftc.core.types_core import TypeTable
 from lang2.codegen.llvm import lower_module_to_llvm
 from lang2.drift_core.runtime import get_runtime_sources
-from lang2.driftc.parser import parse_drift_to_hir
+from lang2.driftc.parser import parse_drift_to_hir, parse_drift_files_to_hir, parse_drift_workspace_to_hir
 from lang2.driftc.type_resolver import resolve_program_signatures
 from lang2.driftc.core.type_resolve_common import resolve_opaque_type
 from lang2.driftc.type_checker import TypeChecker
 from lang2.driftc.method_registry import CallableRegistry, CallableSignature, Visibility, SelfMode
+from lang2.driftc.packages.dmir_pkg_v0 import canonical_json_bytes, sha256_hex, write_dmir_pkg_v0
+from lang2.driftc.packages.provisional_dmir_v0 import encode_module_payload_v0, decode_mir_funcs, type_table_fingerprint
+from lang2.driftc.packages.provider_v0 import discover_package_files, load_package_v0, collect_external_exports
 
 
 def _inject_prelude(signatures: dict[str, FnSignature], type_table: TypeTable) -> None:
@@ -392,11 +395,16 @@ def _diag_to_json(diag: Diagnostic, phase: str, source: Path) -> dict:
 	"""Render a Diagnostic to a structured JSON-friendly dict."""
 	line = getattr(diag.span, "line", None) if diag.span is not None else None
 	column = getattr(diag.span, "column", None) if diag.span is not None else None
+	file = None
+	if diag.span is not None:
+		file = getattr(diag.span, "file", None)
+	if file is None:
+		file = str(source)
 	return {
 		"phase": phase,
 		"message": diag.message,
 		"severity": diag.severity,
-		"file": str(source),
+		"file": file,
 		"line": line,
 		"column": column,
 	}
@@ -411,9 +419,25 @@ def main(argv: list[str] | None = None) -> int:
 	and an exit_code; otherwise prints human-readable messages to stderr.
 	"""
 	parser = argparse.ArgumentParser(description="lang2 driftc stub")
-	parser.add_argument("source", type=Path, help="Path to Drift source file")
+	parser.add_argument("source", type=Path, nargs="+", help="Path(s) to Drift source file(s)")
+	parser.add_argument(
+		"-M",
+		"--module-path",
+		dest="module_paths",
+		action="append",
+		type=Path,
+		help="Module root directory (repeatable); when provided, module ids are inferred from file paths under these roots",
+	)
+	parser.add_argument(
+		"--package-root",
+		dest="package_roots",
+		action="append",
+		type=Path,
+		help="Package root directory (repeatable); used to satisfy imports from local package artifacts",
+	)
 	parser.add_argument("-o", "--output", type=Path, help="Path to output executable")
 	parser.add_argument("--emit-ir", type=Path, help="Write LLVM IR to the given path")
+	parser.add_argument("--emit-package", type=Path, help="Write an unsigned package artifact (.dmp) to the given path")
 	parser.add_argument(
 		"--json",
 		action="store_true",
@@ -421,8 +445,40 @@ def main(argv: list[str] | None = None) -> int:
 	)
 	args = parser.parse_args(argv)
 
-	source_path: Path = args.source
-	func_hirs, signatures, type_table, exception_catalog, parse_diags = parse_drift_to_hir(source_path)
+	source_paths: list[Path] = list(args.source)
+	source_path = source_paths[0]
+	# Treat the input set as a workspace, even for a single file, so import
+	# resolution behavior is consistent across the CLI and the e2e harness:
+	# if user code imports a missing module, we fail early with a parser-phase
+	# diagnostic instead of silently compiling a single file in isolation.
+	module_paths = list(args.module_paths or []) or None
+	loaded_pkgs = []
+	external_exports = None
+	if args.package_roots:
+		package_files = discover_package_files(list(args.package_roots))
+		for pkg_path in package_files:
+			loaded_pkgs.append(load_package_v0(pkg_path))
+		# Reject duplicate module ids across package files early. Unioning exports
+		# is unsafe because it can mask collisions and make resolution nondeterministic.
+		mod_to_pkg: dict[str, Path] = {}
+		for pkg in loaded_pkgs:
+			for mid in pkg.modules_by_id.keys():
+				prev = mod_to_pkg.get(mid)
+				if prev is None:
+					mod_to_pkg[mid] = pkg.path
+				elif prev != pkg.path:
+					msg = f"module '{mid}' provided by multiple packages: '{prev}' and '{pkg.path}'"
+					if args.json:
+						print(json.dumps({"exit_code": 1, "diagnostics": [{"phase": "package", "message": msg, "severity": "error", "file": str(source_path), "line": None, "column": None}]}))
+					else:
+						print(f"{source_path}:?:?: error: {msg}", file=sys.stderr)
+					return 1
+		external_exports = collect_external_exports(loaded_pkgs)
+	func_hirs, signatures, type_table, exception_catalog, parse_diags = parse_drift_workspace_to_hir(
+		source_paths,
+		module_paths=module_paths,
+		external_module_exports=external_exports,
+	)
 	_inject_prelude(signatures, type_table)
 
 	if parse_diags:
@@ -437,6 +493,84 @@ def main(argv: list[str] | None = None) -> int:
 				loc = f"{getattr(d.span, 'line', '?')}:{getattr(d.span, 'column', '?')}" if d.span else "?:?"
 				print(f"{source_path}:{loc}: {d.severity}: {d.message}", file=sys.stderr)
 		return 1
+
+	# Prime builtins so TypeTable IDs are stable for package compatibility checks.
+	# This must be done before comparing against package payload fingerprints.
+	type_table.ensure_int()
+	type_table.ensure_uint()
+	type_table.ensure_bool()
+	type_table.ensure_float()
+	type_table.ensure_string()
+	type_table.ensure_void()
+	type_table.ensure_error()
+	type_table.ensure_diagnostic_value()
+	# Keep derived Optional<T> ids stable across builds (package embedding).
+	type_table.new_optional(type_table.ensure_int())
+	type_table.new_optional(type_table.ensure_bool())
+	type_table.new_optional(type_table.ensure_string())
+
+	# Verify package TypeTable compatibility before importing signatures/IR.
+	# MVP rule: fingerprints must match exactly; TypeId remapping/linking is deferred.
+	if loaded_pkgs:
+		host_tt_obj = {
+			"defs": {str(tid): {"kind": td.kind.name, "name": td.name, "param_types": list(td.param_types), "ref_mut": td.ref_mut, "field_names": list(td.field_names) if td.field_names is not None else None} for tid, td in sorted(type_table._defs.items())},  # type: ignore[attr-defined]
+			"struct_schemas": {k: v for k, v in sorted(type_table.struct_schemas.items())},
+			"exception_schemas": {k: v for k, v in sorted(type_table.exception_schemas.items())},
+		}
+		host_fp = type_table_fingerprint(host_tt_obj)
+		for pkg in loaded_pkgs:
+			for mid, mod in pkg.modules_by_id.items():
+				payload = mod.payload
+				if not isinstance(payload, dict):
+					continue
+				pfp = payload.get("type_table_fingerprint")
+				tt = payload.get("type_table")
+				if pfp is None and isinstance(tt, dict):
+					pfp = type_table_fingerprint(tt)
+				if not isinstance(pfp, str):
+					msg = f"package '{pkg.path}' module '{mid}' is missing type_table_fingerprint"
+					if args.json:
+						print(json.dumps({"exit_code": 1, "diagnostics": [{"phase": "package", "message": msg, "severity": "error", "file": str(source_path), "line": None, "column": None}]}))
+					else:
+						print(f"{source_path}:?:?: error: {msg}", file=sys.stderr)
+					return 1
+				if pfp != host_fp:
+					msg = f"incompatible package type table for module '{mid}' from '{pkg.path}' (fingerprint mismatch)"
+					if args.json:
+						print(json.dumps({"exit_code": 1, "diagnostics": [{"phase": "package", "message": msg, "severity": "error", "file": str(source_path), "line": None, "column": None}]}))
+					else:
+						print(f"{source_path}:?:?: error: {msg}", file=sys.stderr)
+					return 1
+
+	# If package roots were provided, merge package signatures into the signature
+	# environment so type checking can validate calls to imported functions.
+	if loaded_pkgs:
+		for pkg in loaded_pkgs:
+			for _mid, mod in pkg.modules_by_id.items():
+				payload = mod.payload
+				if not isinstance(payload, dict):
+					continue
+				sigs_obj = payload.get("signatures")
+				if not isinstance(sigs_obj, dict):
+					continue
+				for sym, sd in sigs_obj.items():
+					if not isinstance(sd, dict):
+						continue
+					name = str(sd.get("name") or sym)
+					if name in signatures:
+						continue
+					signatures[name] = FnSignature(
+						name=name,
+						module=sd.get("module"),
+						method_name=sd.get("method_name"),
+						param_names=sd.get("param_names"),
+						param_type_ids=sd.get("param_type_ids"),
+						return_type_id=sd.get("return_type_id"),
+						is_method=bool(sd.get("is_method", False)),
+						self_mode=sd.get("self_mode"),
+						impl_target_type_id=sd.get("impl_target_type_id"),
+						is_exported_entrypoint=bool(sd.get("is_exported_entrypoint", False)),
+					)
 
 	# Checker (stub) enforces language-level rules (e.g., Void returns) before the
 	# lower-level TypeChecker/BorrowChecker run.
@@ -519,7 +653,10 @@ def main(argv: list[str] | None = None) -> int:
 			else:
 				callable_registry.register_free_function(
 					callable_id=next_callable_id,
-					name=sig.method_name or sig_symbol,
+					# Workspace builds qualify call sites (`mod::fn`). Keep the callable
+					# registry aligned with that identity to avoid string-rewrite
+					# mismatches during resolution.
+					name=sig_symbol,
 					module_id=module_id,
 					visibility=Visibility.public(),
 					signature=CallableSignature(param_types=param_types_tuple, result_type=sig.return_type_id),
@@ -531,7 +668,7 @@ def main(argv: list[str] | None = None) -> int:
 	if signatures:
 		for sig in signatures.values():
 			if not sig.is_method:
-				call_sigs_by_name[sig.method_name or sig.name] = sig
+				call_sigs_by_name[sig.name] = sig
 
 	typed_fns: dict[str, object] = {}
 	for fn_name, hir_block in func_hirs.items():
@@ -586,6 +723,118 @@ def main(argv: list[str] | None = None) -> int:
 				print(f"{source_path}:{loc}: {d.severity}: {d.message}", file=sys.stderr)
 		return 1
 
+	# Package emission mode (Milestone 4): produce an unsigned package artifact
+	# containing provisional DMIR payloads for all modules in the workspace.
+	if args.emit_package is not None:
+		mir_funcs, checked_pkg = compile_stubbed_funcs(
+			func_hirs=func_hirs,
+			signatures=signatures,
+			exc_env=exception_catalog,
+			type_table=type_table,
+			return_checked=True,
+		)
+		if any(d.severity == "error" for d in checked_pkg.diagnostics):
+			if args.json:
+				payload = {
+					"exit_code": 1,
+					"diagnostics": [_diag_to_json(d, "stage4", source_path) for d in checked_pkg.diagnostics],
+				}
+				print(json.dumps(payload))
+			else:
+				for d in checked_pkg.diagnostics:
+					loc = f"{getattr(d.span, 'line', '?')}:{getattr(d.span, 'column', '?')}" if d.span else "?:?"
+					print(f"{source_path}:{loc}: {d.severity}: {d.message}", file=sys.stderr)
+			return 1
+
+		# Group functions/signatures by module id.
+		per_module_sigs: dict[str, dict[str, FnSignature]] = {}
+		for name, sig in signatures.items():
+			mid = getattr(sig, "module", None) or "main"
+			per_module_sigs.setdefault(mid, {})[name] = sig
+
+		per_module_mir: dict[str, dict[str, object]] = {}
+		for name, fn in mir_funcs.items():
+			sig = signatures.get(name)
+			mid = getattr(sig, "module", None) if sig is not None else None
+			mid = mid or "main"
+			per_module_mir.setdefault(mid, {})[name] = fn
+
+		blobs_by_sha: dict[str, bytes] = {}
+		blob_types: dict[str, int] = {}
+		blob_names: dict[str, str] = {}
+		manifest_modules: list[dict[str, object]] = []
+		manifest_blobs: dict[str, dict[str, object]] = {}
+		for mid in sorted(set(per_module_sigs.keys()) | set(per_module_mir.keys())):
+			# MVP packaging: do not bundle the built-in prelude module. It is
+			# supplied by the toolchain and will later be distributed as its own
+			# package under the `std.*` namespace.
+			if mid == "lang.core":
+				continue
+			# Export surface uses module-local names (unqualified). Global names
+			# inside the compiler are qualified (`mid::name`).
+			exported_values: list[str] = []
+			for sym_name, sig in per_module_sigs.get(mid, {}).items():
+				if not getattr(sig, "is_exported_entrypoint", False):
+					continue
+				if sig.is_method:
+					continue
+				prefix = f"{mid}::"
+				exported_values.append(sym_name[len(prefix) :] if sym_name.startswith(prefix) else sym_name)
+			exported_values.sort()
+			iface_obj = {"module_id": mid, "exports": {"values": exported_values, "types": []}}
+			iface_bytes = canonical_json_bytes(iface_obj)
+			iface_sha = sha256_hex(iface_bytes)
+			blobs_by_sha[iface_sha] = iface_bytes
+			blob_types[iface_sha] = 2
+			blob_names[iface_sha] = f"iface:{mid}"
+			manifest_blobs[f"sha256:{iface_sha}"] = {"type": "exports", "length": len(iface_bytes)}
+
+			payload_obj = encode_module_payload_v0(
+				module_id=mid,
+				type_table=checked_pkg.type_table or type_table,
+				signatures=per_module_sigs.get(mid, {}),
+				mir_funcs=per_module_mir.get(mid, {}),
+				exported_values=exported_values,
+			)
+			payload_bytes = canonical_json_bytes(payload_obj)
+			payload_sha = sha256_hex(payload_bytes)
+			blobs_by_sha[payload_sha] = payload_bytes
+			blob_types[payload_sha] = 1
+			blob_names[payload_sha] = f"dmir:{mid}"
+			manifest_blobs[f"sha256:{payload_sha}"] = {"type": "dmir", "length": len(payload_bytes)}
+
+			manifest_modules.append(
+				{
+					"module_id": mid,
+					"exports": {"values": exported_values, "types": []},
+					"interface_blob": f"sha256:{iface_sha}",
+					"payload_blob": f"sha256:{payload_sha}",
+				}
+			)
+
+		manifest_obj: dict[str, object] = {
+			"format": "dmir-pkg",
+			"format_version": 0,
+			"unsigned": True,
+			"unstable_format": True,
+			"payload_kind": "provisional-dmir",
+			"payload_version": 0,
+			"modules": manifest_modules,
+			"blobs": manifest_blobs,
+		}
+
+		write_dmir_pkg_v0(
+			args.emit_package,
+			manifest_obj=manifest_obj,
+			blobs=blobs_by_sha,
+			blob_types=blob_types,
+			blob_names=blob_names,
+		)
+
+		if args.json:
+			print(json.dumps({"exit_code": 0, "diagnostics": []}))
+		return 0
+
 	# If no codegen requested, acknowledge success.
 	if args.output is None and args.emit_ir is None:
 		if args.json:
@@ -601,13 +850,128 @@ def main(argv: list[str] | None = None) -> int:
 			print(f"{source_path}:?:?: error: {msg}", file=sys.stderr)
 		return 1
 
-	ir, _checked = compile_to_llvm_ir_for_tests(
-		func_hirs=func_hirs,
-		signatures=signatures,
-		exc_env=exception_catalog,
-		entry="main",
-		type_table=type_table,
-	)
+	if loaded_pkgs:
+		# Compile source functions through the normal pipeline to get MIR+SSA.
+		src_mir, checked_src, ssa_src = compile_stubbed_funcs(
+			func_hirs=func_hirs,
+			signatures=signatures,
+			exc_env=exception_catalog,
+			return_checked=True,
+			build_ssa=True,
+			return_ssa=True,
+			type_table=type_table,
+		)
+		ssa_src = ssa_src or {}
+
+		# Decode package MIR payloads. We intentionally do not blindly embed all
+		# loaded package modules; instead we include only the call-graph closure
+		# reachable from the source module(s). This keeps builds predictable and
+		# avoids unnecessary collisions/work.
+		pkg_mir_all: dict[str, M.MirFunc] = {}
+		pkg_sigs: dict[str, FnSignature] = {}
+		for pkg in loaded_pkgs:
+			for _mid, mod in pkg.modules_by_id.items():
+				payload = mod.payload
+				if not isinstance(payload, dict):
+					continue
+				if payload.get("payload_kind") != "provisional-dmir" or payload.get("payload_version") != 0:
+					msg = f"unsupported package payload kind/version in {pkg.path}"
+					if args.json:
+						print(json.dumps({"exit_code": 1, "diagnostics": [{"phase": "package", "message": msg, "severity": "error", "file": str(source_path), "line": None, "column": None}]}))
+					else:
+						print(f"{source_path}:?:?: error: {msg}", file=sys.stderr)
+					return 1
+				mir_obj = payload.get("mir_funcs")
+				if isinstance(mir_obj, dict):
+					for name, fn in decode_mir_funcs(mir_obj).items():
+						if isinstance(fn, M.MirFunc):
+							pkg_mir_all[name] = fn
+				sigs_obj = payload.get("signatures")
+				if isinstance(sigs_obj, dict):
+					for name, sd in sigs_obj.items():
+						if name in pkg_sigs:
+							continue
+						if not isinstance(sd, dict):
+							continue
+						pkg_sigs[name] = FnSignature(
+							name=str(sd.get("name") or name),
+							module=sd.get("module"),
+							method_name=sd.get("method_name"),
+							param_names=sd.get("param_names"),
+							param_type_ids=sd.get("param_type_ids"),
+							return_type_id=sd.get("return_type_id"),
+							is_method=bool(sd.get("is_method", False)),
+							self_mode=sd.get("self_mode"),
+							impl_target_type_id=sd.get("impl_target_type_id"),
+							is_exported_entrypoint=bool(sd.get("is_exported_entrypoint", False)),
+						)
+
+		# SSA for package functions (required for LLVM lowering v1).
+		def _called_funcs_in_mir(fn: M.MirFunc) -> set[str]:
+			calls: set[str] = set()
+			for block in fn.blocks.values():
+				for instr in block.instructions:
+					if isinstance(instr, M.Call):
+						calls.add(instr.fn)
+			return calls
+
+		# Roots: any call target from source MIR that is defined by a package.
+		needed: set[str] = set()
+		for fn in src_mir.values():
+			for callee in _called_funcs_in_mir(fn):
+				if callee in pkg_mir_all:
+					needed.add(callee)
+
+		# Expand to call-graph closure through package functions.
+		queue = list(sorted(needed))
+		while queue:
+			cur = queue.pop()
+			fn = pkg_mir_all.get(cur)
+			if fn is None:
+				continue
+			for callee in _called_funcs_in_mir(fn):
+				if callee in pkg_mir_all and callee not in needed:
+					needed.add(callee)
+					queue.append(callee)
+
+		pkg_mir: dict[str, M.MirFunc] = {name: pkg_mir_all[name] for name in sorted(needed)}
+
+		pkg_ssa: dict[str, MirToSSA.SsaFunc] = {}
+		for name, fn in pkg_mir.items():
+			pkg_ssa[name] = MirToSSA().run(fn)
+
+		# Merge (source wins on symbol conflicts).
+		mir_all = dict(pkg_mir)
+		mir_all.update(src_mir)
+		ssa_all = dict(pkg_ssa)
+		ssa_all.update(ssa_src)
+
+		# FnInfos: include source + package signatures so codegen can type calls.
+		fn_infos = dict(checked_src.fn_infos)
+		all_sig_env = dict(pkg_sigs)
+		all_sig_env.update(signatures)
+		for name, sig in all_sig_env.items():
+			if name in fn_infos:
+				continue
+			fn_infos[name] = FnInfo(name=name, declared_can_throw=bool(getattr(sig, "declared_can_throw", False)), signature=sig)
+
+		module = lower_module_to_llvm(
+			mir_all,
+			ssa_all,
+			fn_infos,
+			type_table=checked_src.type_table,
+			rename_map={},
+			argv_wrapper=None,
+		)
+		ir = module.render()
+	else:
+		ir, _checked = compile_to_llvm_ir_for_tests(
+			func_hirs=func_hirs,
+			signatures=signatures,
+			exc_env=exception_catalog,
+			entry="main",
+			type_table=type_table,
+		)
 
 	# Emit IR if requested.
 	if args.emit_ir is not None:

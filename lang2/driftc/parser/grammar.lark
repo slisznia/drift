@@ -103,6 +103,9 @@ ident: NAME | MOVE
      | exception_def
      | variant_def
      | implement_def
+     | import_stmt
+     | from_import_stmt
+     | export_stmt
      | stmt
 
 func_def: "fn" ident "(" [params] ")" return_sig block
@@ -144,7 +147,6 @@ simple_stmt: let_stmt
            | return_stmt
            | rethrow_stmt
            | raise_stmt
-           | import_stmt
            | break_stmt
            | continue_stmt
            | while_stmt
@@ -207,6 +209,11 @@ expr_stmt: postfix
 import_stmt: "import" import_path import_alias?
 import_path: NAME (DOT NAME)*
 import_alias: "as" NAME
+
+from_import_stmt: "from" import_path "import" NAME import_alias?
+
+export_stmt: "export" "{" export_name_list? "}"
+export_name_list: NAME (COMMA NAME)*
 
 struct_def: "struct" NAME struct_body
 struct_body: tuple_struct | block_struct

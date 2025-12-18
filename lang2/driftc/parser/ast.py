@@ -264,11 +264,18 @@ class FString(Expr):
 class Program:
 	functions: List[FunctionDef] = field(default_factory=list)
 	implements: List["ImplementDef"] = field(default_factory=list)
+	# Module directives are tracked separately from general statements so later
+	# compilation stages can ignore them without having to add stage0/HIR nodes
+	# for import/export syntax.
+	imports: List["ImportStmt"] = field(default_factory=list)
+	from_imports: List["FromImportStmt"] = field(default_factory=list)
+	exports: List["ExportStmt"] = field(default_factory=list)
 	statements: List[Stmt] = field(default_factory=list)
 	structs: List[StructDef] = field(default_factory=list)
 	exceptions: List[ExceptionDef] = field(default_factory=list)
 	variants: List["VariantDef"] = field(default_factory=list)
 	module: Optional[str] = None
+	module_loc: Optional[Located] = None
 
 
 @dataclass
@@ -323,6 +330,35 @@ class ImportStmt(Stmt):
     loc: Located
     path: List[str]
     alias: Optional[str] = None
+
+
+@dataclass
+class FromImportStmt(Stmt):
+	"""
+	Import a single exported symbol into the local file scope.
+
+	MVP shape (single symbol per statement):
+	  from foo.bar import baz
+	  from foo.bar import baz as qux
+	"""
+
+	loc: Located
+	module_path: List[str]
+	symbol: str
+	alias: Optional[str] = None
+
+
+@dataclass
+class ExportStmt(Stmt):
+	"""
+	Explicit export list for a module (MVP).
+
+	Syntax:
+	  export { foo, Bar, Baz }
+	"""
+
+	loc: Located
+	names: List[str]
 
 
 @dataclass

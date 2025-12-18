@@ -70,6 +70,10 @@ class FnSignature:
 	throws_events: Tuple[str, ...] = ()
 	param_types: Optional[list[Any]] = None  # raw param type shapes (strings/tuples)
 	module: Optional[str] = None
+	# Module interface marker (Milestone 3): exported functions form an ABI boundary.
+	# This flag is set by the workspace resolver when a function name appears in
+	# `export { ... }` and the symbol resolves to a value-level callable.
+	is_exported_entrypoint: bool = False
 
 
 @dataclass
