@@ -21,11 +21,17 @@ See also: `docs/design-first-afm-then-ssa.md` for the design path that led to th
 - Decls: functions, structs, exceptions (no macros/templates beyond what the typechecker already resolved).
 - Top-level bindings are lowered into an implicit module body with canonical `let` bindings; DMIR treats them as immutable globals unless explicitly modeled as mutable cells (mirroring surface `var` if/when allowed at top level).
 
+Provider note: imports are **provider-agnostic**. The same `import <ModuleId>`
+can be satisfied either by compiling Drift source in the current build or by
+loading a verified DMIR/DMP package for that module id. DMIR records module ids
+and dependencies by id; it does not prescribe how the toolchain locates modules.
+
 ## Types
-- Primitives: `Bool`, `Int64`, `Float64`, `String`, `Void`, `Error`, plus resolved user-defined structs/exceptions. (`ConsoleOut` is a temporary runtime-provided builtin for `cout`; it is not a language primitive.)
+- Primitives: `Bool`, `Int`, `Uint`, `Float`, `String`, `Void`, `Error`, plus resolved user-defined structs/exceptions. (`ConsoleOut` is a temporary runtime-provided builtin for `cout`; it is not a language primitive.)
 - Arrays: `Array[T]` (element type resolved, no empty-literal inference in DMIR).
 - References/mutability: explicit `ref T` / `ref mut T` per the typechecker output.
 - Generics: monomorphized per concrete instantiation (no shared reified bodies); DMIR only carries specialized instances produced by the typechecker.
+- Result values: failures are represented explicitly as values via `Result<T, Error>`. DMIR is **canonical value-based** for error semantics (see “Errors & exceptions”).
 
 ## Terms & statements (ANF-ish)
 - `let <name> = <value>`: DMIR uses immutable, single-assignment bindings for every intermediate. Surface `val` lowers directly to `let`; `var` lowers to a mutable cell representation plus `set`/`get` (or equivalent) in DMIR.
@@ -34,14 +40,13 @@ See also: `docs/design-first-afm-then-ssa.md` for the design path that led to th
 - Calls: direct function names or struct/exception constructors; kwargs made positional by canonicalization.
 - Attribute access: struct fields or runtime-provided values that behave “as if” they were structs (e.g., `out.writeln`), resolved through the typechecker’s known members.
 - Indexing: `array[index]`.
-- Move: `<value->` becomes `move <value>` in DMIR.
-- Raise: `raise <error>`; `error` is an `Error` value.
+- Move: surface `move <value>` remains `move <value>` in DMIR.
 - Return: `return <value>` or `return` for `Void`.
 - Expr statements: `expr` (for side effects only).
 
 ## Control flow (structured)
 - `if <cond> { ... } else { ... }` with explicit blocks.
-- `try { ... } catch <Event>(e) { ... } ...` (one or more catches). Catch-all uses `_` or a binder without event. Inline `try expr catch { fallback }` is desugared to the structured form.
+- `try { ... } catch <Event>(e) { ... } ...` (one or more catches). Catch-all uses `default` or a binder without event. Inline `try expr catch { fallback }` is desugared to the structured form.
 - `match`/loops not present yet; add when the surface language gains them.
 - No φ functions; DMIR stays structured.
 
@@ -64,8 +69,12 @@ See also: `docs/design-first-afm-then-ssa.md` for the design path that led to th
 
 ## Errors & exceptions
 - Single `Error` type; exceptions are event + attrs (typed `DiagnosticValue`) lowered to an `Error` value.
-- `throw Event { ... }` lowers to `raise <Error>`.
-- `try/catch` is retained structurally; lowering to SSA will turn it into explicit control-flow edges carrying the `Error`.
+- DMIR is **value-based** for error propagation:
+  - A can-throw function returns a `Result<T, Error>` value (conceptually).
+  - `throw Event(...)` lowers to constructing an `Error` value and returning `Err(error)`.
+  - `try/catch` lowers to explicit inspection of `Result` values (or remains structured until the next lowering stage), but it never relies on implicit call error edges in canonical DMIR.
+
+Backends are free to lower this value-based semantic model to error edges internally for optimization/codegen, but the signed DMIR semantics are expressed as explicit result values.
 
 ## Ownership & drops
 - Values move by default; `move` nodes mark ownership transfer. Using a moved-from value is a verifier error in MIR (same intent as Rust’s move semantics: once moved, the source is invalid).
@@ -76,22 +85,22 @@ See also: `docs/design-first-afm-then-ssa.md` for the design path that led to th
 - Monomorphized types only: all generics are specialized before MIR (like C++/Rust template/monomorphization; no shared generic bodies at MIR time).
 - Move-only by default; `move` consumes the value. MIR verifier enforces no use-after-move.
 - Drops are explicit MIR instructions; inserted post-liveness; verifier enforces at-most-once drop per owned value.
-- Calls/ops can raise; error edges carry the `Error` value. `raise` terminates the function with the error path.
+- Error propagation remains value-based: can-throw operations produce `Result<T, Error>` values. Implementations may lower this to dedicated error edges internally, but that is not part of canonical DMIR semantics.
 
 ## SSA MIR instruction set (typed, SSA)
 - `const <value>` — literals (ints/floats/bools/strings).
 - `move <v>` — consumes `v`; using `v` afterward is invalid.
 - `copy <v>` — only for copyable types (primitives/`Copy` structs).
-- `call <fn>(args) normal bbN(args) error bbE(err)` — direct call with explicit normal and error successors; builtins/constructors follow the same shape.
+- `call <fn>(args) -> v` — direct call. If `<fn>` is can-throw, `v` is a `Result<T, Error>` value.
 - `struct_init <Type>(args)` — positional args in field order.
 - `field_get <base>.<field>` — read-only access to struct field.
 - `error_event <err>` — project the thrown error’s event/code for dispatch (lowered to a runtime helper such as `drift_error_get_code`).
 - `array_init [v0, v1, ...]` — arrays are values; element type is concrete.
-- `array_get base, index` — includes bounds check that raises `Error` on OOB.
-- `array_set base, index, value` — bounds check then write; only on mutable arrays.
+- `array_get base, index` — includes bounds check; on OOB produces `Err(Error)` (or is lowered from a surface `throw`).
+- `array_set base, index, value` — bounds check then write; on OOB produces `Err(Error)` (or is lowered from a surface `throw`).
 - `unary <op> v` and `binary <op> lhs, rhs` — typed arithmetic/logic.
 - `drop <v>` — explicit destructor/drop; inserted after liveness.
-- Terminators (`br`, `condbr`, `return`, `raise`) and block params act as φ-nodes; no separate φ instruction.
+- Terminators (`br`, `condbr`, `return`) and block params act as φ-nodes; no separate φ instruction.
 
 ## Interface values, fat pointers, and vtables (owned vs borrowed)
 - Representation: an interface value lowers to a fat pointer `{ data: ptr, vtable: ptr }`. The vtable is per (concrete type, interface) pair.
@@ -111,11 +120,10 @@ See also: `docs/design-first-afm-then-ssa.md` for the design path that led to th
 - Capturing closures lower to a fat object `{ env_ptr, call_ptr }`. The env is a heap box holding captured values according to their capture modes (move by default; explicit `copy` for `Copy` values; borrow captures once borrow/lifetime checking is present).
 - Drop runs exactly once on the env; the closure object is move-only by default. Callable interfaces (e.g., `Fn`/`FnMut`/`FnOnce` equivalents) can be implemented by pointing their vtables at the closure’s call thunk and env drop.
 
-## Error ABI (calls and raise)
-- Error representation: `Error` lowers to an opaque heap-allocated object referenced as `Error*` at MIR/LLVM time. Constructors/raises allocate the `Error`; ownership is transferred to the caller/error edge. The ultimate handler frees it via a runtime `error_free(err)`.
-- Call convention with errors: functions that can raise return a pair `{ T, Error* }`, where `Error* == null` means success. For functions whose result type is `Error`, the return is just `Error*`.
-- Calls with error edges: MIR calls carry `normal`/`error` edges. Codegen splits the pair and branches on `err == null` to the normal successor (passing `T`) or the error successor (passing `Error*`). Callers propagate the `Error*` on the error edge without freeing; the handler frees it.
-- `raise` lowers to returning `{ undef<T>, err_ptr }` along the error path (or `err_ptr` if the function’s return type is `Error`). There is no unwinding; propagation is explicit via error edges.
+## Error ABI (Result calling convention)
+- Error representation: `Error` lowers to an opaque heap-allocated object referenced as `Error*` at MIR/LLVM time. Constructors allocate the `Error`; ownership is transferred to the `Result` value. The ultimate handler frees it via a runtime `error_free(err)`.
+- Call convention with errors: a can-throw function returns a pair `{ T, Error* }`, where `Error* == null` means success. This is the ABI encoding of `Result<T, Error>`.
+- Propagation is explicit and value-based: callers branch on `err == null` and either continue with the `T` value or propagate the `Error*` by returning a `Result` value. There is no implicit unwinding in the canonical model.
 - `error_event(err)` projects an error’s event/code (an `Int`) for dispatch; try/catch lowering uses it to branch to the matching catch clauses in source order, falling back to catch-all, else rethrow.
 - Top-level handlers (e.g., runtime entry) are responsible for displaying/freeing uncaught errors.
 
@@ -124,16 +132,16 @@ See also: `docs/design-first-afm-then-ssa.md` for the design path that led to th
 - Stable C structs (layout frozen once blessed):
   - `struct DriftDiagnosticValue { uint8_t tag; union { ... } };` — typed diagnostic value (Missing/Null/Bool/Int/Float/String/Array/Object) represented as a tag + union.
   - `struct DriftErrorAttr { const char* key; struct DriftDiagnosticValue value; };` — keys are UTF-8; values are typed diagnostics.
-  - `struct DriftFrame { const char* module; const char* file; uint32_t line; const char* func; };` — optional backtrace frames captured at raise sites (module IDs flow from the module declaration; file/line/func stay for debugging).
+  - `struct DriftFrame { const char* module; const char* file; uint32_t line; const char* func; };` — optional backtrace frames captured at error-construction / propagation sites (module IDs flow from the module declaration; file/line/func stay for debugging).
   - `struct DriftError { const char* event; const char* domain; struct DriftErrorAttr* attrs; size_t attr_count; struct DriftFrame* frames; size_t frame_count; void* ctx; void (*free_fn)(struct DriftError*); };`
 - `domain` is an optional namespace for the event (e.g., `net`, `net.ip6`, `io.fs`); if absent, it may be `NULL`. Exception definitions can supply a default domain; throw sites may override via a `domain` kwarg; builtin/runtime errors use a fixed domain (e.g., `runtime`).
-- Ownership: constructors/`raise` allocate `DriftError` on the heap; ownership passes to the caller/handler. Handlers either propagate the pointer along an error edge or free exactly once via `free_fn(err)` (or a standard `error_free(err)` entry point). Uncaught errors are freed at the top-level entry after reporting.
+- Ownership: constructors allocate `DriftError` on the heap; ownership passes via `Result` values. Handlers either propagate the pointer by returning `Err(err)` or free exactly once via `free_fn(err)` (or a standard `error_free(err)` entry point). Uncaught errors are freed at the top-level entry after reporting.
 - Canonicalization: attrs may be stored in deterministic order; strings are null-terminated; the struct alignment/layout is fixed for signing/backcompat. No external C libraries are required; the header is self-contained and C-ABI safe. Logging/serialization is implementation-defined and not part of the ABI.
 - `Missing` is a lookup sentinel in the language; attrs/locals stored in `DriftError` should be `Null` or concrete values, not `Missing`.
 - Helper APIs (C ABI): `error_new(event, domain, attrs, attr_count, frames, frame_count) -> Error*`, `error_to_cstr(Error*) -> const char*` (preformatted diagnostic stored in the error), `error_free(Error*)`. The `error_to_cstr` result is owned by the error object, valid until `error_free`, and must not be freed by callers (thread-safe to read; no static buffer).
 - Encoding: all strings in `DriftError` (event, domain, attr keys/values, frame modules/files/funcs) are UTF-8, null-terminated. Callers must not assume any other encoding.
 - ABI separation: internal Drift→Drift calls may carry an extra context/error handle for frame capture, but external `extern "C"` exports keep the stable C ABI (`{T, Error*}` or `T`). The hidden ctx must never alter the published C interface.
-- `throw Event { ... }` lowers to construction of this `Error*`; `try/catch` moves the pointer along error edges; calls/ops can raise; `raise` terminates the function with the error path. Error edges carry the `Error*` value; handlers decide whether to free or propagate.
+- `throw Event(...)` lowers to construction of this `Error*`; `try/catch` inspects `Result` values and routes the `Error*` through catch arms; handlers decide whether to free or propagate.
 - Module IDs in frames: modules are declared with `module <id>`; `<id>` must be lowercase alnum with underscores/dots, no leading/trailing/consecutive dots/underscores, UTF-8 length ≤ 254, and must not start with reserved prefixes (`lang.`, `abi.`, `std.`, `core.`, `lib.`). One `module` per file; multiple files may share the same ID (one module across files), but a “single-module” compile fails if any file is missing or mismatches the ID. The declared ID (not filenames) is recorded in backtrace frames so cross-module stacks are unambiguous and is treated as canonical at compile time (never rewritten later).
 
 ## Serialization
@@ -160,11 +168,14 @@ val fallback = try parse(input) catch { default_value }
 ```
 DMIR:
 ```
-let _t1 = parse(input)      // call with error edge to fallback
-let fallback = _t1          // normal edge
-// error edge branches to fallback block that evaluates default_value
+let _r1 = parse(input)                 // returns Result<T, Error>
+let fallback = if result_is_ok(_r1) {  // conceptually: inspect Result
+  result_unwrap_ok(_r1)
+} else {
+  default_value
+}
 ```
-(`try/catch` desugars to a call with explicit normal/error edges and a catch-all fallback block.)
+(`try/catch` desugars to explicit inspection of a `Result` value; backends may later lower this to error edges for optimization.)
 
 Surface struct/exception constructors:
 ```drift
@@ -172,60 +183,48 @@ struct Point { x: Int64, y: Int64 }
 exception Invalid { kind: String }
 
 val p = Point(x = 1, y = 2)
-throw Invalid { kind: "bad" }
+throw Invalid(kind = "bad")
 ```
 DMIR:
 ```
 let p = Point(1, 2)
-raise Invalid
+return Err(Invalid(...))
 ```
-(Args are reordered to positional order; `raise` wraps the event into `Error` as part of DMIR lowering.)
+(Args are reordered to positional order; `throw` constructs an `Error` and returns an `Err` result.)
 
 ## Lowering to SSA MIR
 - DMIR is the input to the SSA builder:
   - Structured control → CFG + φ.
   - `let` bindings → SSA value definitions.
   - Drops/destructors inserted based on SSA liveness/ownership analysis.
-  - Error edges become explicit basic blocks carrying the `Error`.
+  - Result-based error propagation may be lowered to explicit CFG (including error edges) as an optimization, but this is not part of signed DMIR semantics.
 
-## SSA MIR control-flow model
-- Functions are CFGs of basic blocks.
-- Block parameters represent φ-nodes (values incoming from predecessors).
-- Terminators:
-  - `br target(args)` — unconditional branch, passing block params.
-  - `condbr cond, then(args), else(args)` — conditional branch.
-  - `return value` — normal return.
-  - `raise error` — exceptional return carrying `Error`.
-- Calls:
-  - Direct calls; each call has two successors: a normal edge and an error edge (both receive block params). The error edge carries the `Error` value and aligns with the `raise` path.
-  - Builtins/constructors follow the same call shape for uniformity.
-- Rationale: explicit error edges mirror the implicit `Result<T, Error>` model while keeping the CFG explicit for optimizations and verification.
-- All control paths end in `return` or `raise`; no implicit fallthrough.
+## SSA MIR control-flow model (non-canonical)
+SSA MIR is an internal compiler representation and is not signed. Implementations may choose different internal models (value-only `Result` vs dedicated error edges) as long as they preserve the signed DMIR semantics and the exported interface contract.
 
 ## SSA MIR terminology / conventions
 - Block labels: use a simple `bb` prefix (e.g., `bb0`, `bb_then`, `bb_err`). Block parameters are listed in parentheses and act as φ-nodes.
 - Instructions are SSA: each defines exactly one value; uses must be dominated by defs.
 - Dominance: a definition dominates a use if every path from the entry to the use goes through the definition (i.e., all paths reaching the use have seen the def).
-- Calls list both successors: `normal bbX(args)` and `error bbE(err)`.
-- Types are concrete, monomorphized; `Error` is a concrete type on error edges.
+- Calls return values; if an implementation uses explicit error edges internally, those are an optimizer/codegen choice, not a DMIR requirement.
+- Types are concrete, monomorphized.
 - Ownership: `move` consumes, `copy` only for copyable types, `drop` explicit.
 - No implicit fallthrough; every block ends in a terminator.
 - Verifier expectations:
   - SSA form: each use dominated by its def; block params match predecessor arguments.
   - Type consistency: instruction and operand types align; call args match callee signature; block params typed.
   - Ownership: no use-after-move; `copy` only on copyable types; `drop` at most once per owned value.
-  - Control flow: every block ends in `br`/`condbr`/`return`/`raise`; functions have at least one `return` or `raise` path.
+  - Control flow: every block ends in a terminator; functions return a value (including `Result` for can-throw functions).
 
 ## MIR verifier (what it checks)
 - SSA/dominance: every use is dominated by its definition; block parameters align with incoming arguments.
 - Type correctness: instruction result types match operand types; call arg/return types match signatures; terminators target existing blocks with correct arg counts/types.
 - Ownership: track value states to catch use-after-move, copy of non-copyable types, and double-drop/move; `drop` at most once per owned value.
-- Control flow: each block has a terminator; all paths end in `return` or `raise`; no edges to missing blocks.
-- Error edges: calls’ normal/error successors are well-typed; error edges carry an `Error` value.
+  - Control flow: each block has a terminator; no edges to missing blocks.
 - Implementation sketch (prototype verifier):
   - Input: a `mir.Program` built from `lang/mir.py`.
-  - Per block: mark params as defined; check instructions for def/use, move/drop state, and edge targets/arity (calls validate normal/error edges; error edges’ first param must be `Error`).
-  - Terminators: validate branch targets/args, defined conditions for `condbr`, defined values for `return`/`raise`.
+  - Per block: mark params as defined; check instructions for def/use, move/drop state, and terminator target/arity.
+  - Terminators: validate branch targets/args and defined values for `return`.
   - Output: raises `VerificationError` on invariant violations; otherwise returns `None`. (Type checks are shallow today; dominance is approximated by def-before-use within blocks.)
 
 ## Signing
@@ -267,11 +266,8 @@ bb_else():
 
 bb_join(val: Int64):
   return val
-
-bb_err(err: Error):
-  raise err
 ```
-(Calls have normal/error edges; join block models the ternary merge; block params act as φ.)
+(Join block models the ternary merge; block params act as φ.)
 
 CFG (block notation):
 ```
@@ -281,10 +277,11 @@ bb1(c)  -true-> bb_then()
 bb_then() -> bb_join(a_res)
 bb_else() -> bb_join(b_res)
 bb_join(val) -> return val
-bb_err(err) -> raise err
+// (If `a`/`b` are can-throw, `pick` itself would return `Result<Int64, Error>`.
+// This example assumes `a`/`b` are nothrow to keep the focus on ternary control-flow.)
 ```
 
-### Example 2: try/catch with struct init and error edge
+### Example 2: try/catch with struct init (value-based)
 Surface:
 ```drift
 exception Invalid(kind: String)
@@ -297,11 +294,12 @@ fn make(cond: Bool) returns Point {
 ```
 DMIR:
 ```
-// call build with explicit normal/error edges
-// normal edge:
-let p = call build(cond)
-// error edge:
-let p = Point(0, 0)
+let r = build(cond)            // returns Result<Point, Error>
+let p = if result_is_ok(r) {
+  result_unwrap_ok(r)
+} else {
+  Point(0, 0)
+}
 return p
 ```
 SSA MIR:
@@ -310,23 +308,25 @@ bb0(cond: Bool):
   br bb1(cond)
 
 bb1(c: Bool):
-  v_build = call build(c) normal bb_ok(val) error bb_err(err)
+  r_build = call build(c)                // Result<Point, Error>
+  is_ok = result_is_ok(r_build)
+  condbr is_ok, bb_ok(), bb_err()
 
-bb_ok(val: Point):
-  return val
+bb_ok():
+  v = result_unwrap_ok(r_build)
+  return v
 
-bb_err(err: Error):
-  // try/catch fallback
+bb_err():
   v_fallback = Point(0, 0)
   return v_fallback
 ```
-(The inline try/catch becomes a call with an error edge into a catch block; struct init is positional; no drops shown here—those are inserted after liveness.)
+(Inline try/catch becomes explicit inspection of a `Result` value; struct init is positional; no drops shown here—those are inserted after liveness.)
 
 CFG (block notation):
 ```
 bb0(cond) -> bb1(cond)
-bb1(c) -> bb_ok(val) on success
-       -> bb_err(err) on error
-bb_ok(val) -> return val
-bb_err(err) -> return Point(0, 0)
+bb1(c)  -true-> bb_ok()
+        -false-> bb_err()
+bb_ok() -> return v
+bb_err() -> return Point(0, 0)
 ```

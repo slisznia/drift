@@ -1,0 +1,6 @@
+module lib
+
+export { a }
+
+fn a() returns Int { return 1; }
+

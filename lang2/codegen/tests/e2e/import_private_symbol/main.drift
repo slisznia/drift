@@ -1,0 +1,6 @@
+module main
+
+from lib import hidden
+
+fn main() returns Int { return hidden(); }
+

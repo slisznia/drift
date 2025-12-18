@@ -1,0 +1,7 @@
+module main
+
+fn add() returns Int { return 0; }
+
+from lib import add
+
+fn main() returns Int { return add(); }

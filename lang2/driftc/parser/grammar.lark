@@ -82,8 +82,9 @@ FATARROW: "=>"
 EXCEPTION: "exception"
 TRY: "try"
 CATCH: "catch"
+EXPORT: "export"
+FROM: "from"
 QMARK: "?"
-TERNARY_COLON: ":"
 MODULE: "module"
 LINE_COMMENT: /\/\/[^\n]*/
 BLOCK_COMMENT: /\/\*([^*]|\*(?!\/))*\*\//
@@ -92,7 +93,7 @@ BLOCK_COMMENT: /\/\*([^*]|\*(?!\/))*\*\//
 %ignore LINE_COMMENT
 %ignore BLOCK_COMMENT
 
-program: module_decl? (item | TERMINATOR)*
+program: (module_decl | item | TERMINATOR)*
 
 module_decl: MODULE module_path
 module_path: NAME (DOT NAME)*
@@ -140,15 +141,17 @@ stmt: if_stmt
     | try_stmt
     | simple_stmt TERMINATOR
 
-simple_stmt: let_stmt
-           | return_stmt
-           | rethrow_stmt
-           | raise_stmt
-           | import_stmt
-           | break_stmt
-           | continue_stmt
-           | while_stmt
-           | for_stmt
+	simple_stmt: let_stmt
+	           | return_stmt
+	           | rethrow_stmt
+	           | raise_stmt
+	           | import_stmt
+	           | from_import_stmt
+	           | export_stmt
+	           | break_stmt
+	           | continue_stmt
+	           | while_stmt
+	           | for_stmt
            | aug_assign_stmt
            | assign_stmt
            | expr_stmt
@@ -202,11 +205,16 @@ raise_stmt: ("raise" domain_clause? expr)
 // access, indexing, literals, names). This avoids ambiguity with statement-form
 // `try` and keeps expression-form `try ... catch ...` as a value-producing
 // expression (not a statement).
-expr_stmt: postfix
+	expr_stmt: postfix
 
-import_stmt: "import" import_path import_alias?
-import_path: NAME (DOT NAME)*
-import_alias: "as" NAME
+	import_stmt: "import" import_path import_alias?
+	import_path: NAME (DOT NAME)*
+	import_alias: "as" NAME
+
+	from_import_stmt: FROM module_path "import" NAME import_alias?
+
+	export_stmt: EXPORT "{" export_items? "}"
+	export_items: NAME (COMMA NAME)*
 
 struct_def: "struct" NAME struct_body
 struct_body: tuple_struct | block_struct
@@ -275,7 +283,7 @@ try_catch_expr.1: TRY expr (CATCH catch_expr_arm)+
 catch_expr_arm: event_fqn "(" ident ")" value_block   -> catch_expr_event
               | ident value_block                     -> catch_expr_binder
               | value_block                          -> catch_expr_block
-ternary: pipeline QMARK expr TERNARY_COLON expr
+ternary: pipeline QMARK expr COLON expr
 
 ?pipeline: logic_or pipeline_tail*
 pipeline_tail: PIPE_FWD logic_or

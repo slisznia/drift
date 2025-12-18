@@ -1,0 +1,7 @@
+module main
+
+from lib import add as f
+
+fn a() returns Int {
+	return f(1, 2);
+}

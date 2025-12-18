@@ -1898,10 +1898,24 @@ class HIRToMIR:
 			impl_tid = getattr(sig, "impl_target_type_id", None)
 			if impl_tid is not None and impl_tid != recv_base:
 				continue
-			# Backstop for signatures missing impl_target_type_id: match by the
-			# symbol prefix (`RecvType::method`).
-			if impl_tid is None and not sym.startswith(f"{recv_name}::"):
-				continue
+			# Backstop for signatures missing impl_target_type_id (legacy tests only).
+			#
+			# In production, method signatures should always carry `impl_target_type_id`
+			# so calls cannot become cross-module ambiguous after module-qualifying
+			# method symbols (`mod::Type::method`).
+			#
+			# If the TypeId is missing, accept only a strict textual match on the
+			# last two path segments, with an optional single module prefix:
+			#   - `Type::method`
+			#   - `mod::Type::method`
+			if impl_tid is None:
+				parts = sym.split("::")
+				if len(parts) == 2 and not (parts[0] == recv_name and parts[1] == method_name):
+					continue
+				if len(parts) == 3 and not (parts[1] == recv_name and parts[2] == method_name):
+					continue
+				if len(parts) not in (2, 3):
+					continue
 			mode = getattr(sig, "self_mode", None)
 			if mode is None:
 				continue
@@ -1909,7 +1923,9 @@ class HIRToMIR:
 		if not candidates:
 			return None
 		if len(candidates) > 1:
-			raise NotImplementedError(f"ambiguous method call '{method_name}' on receiver type '{self._type_table.get(recv_base).name}'")
+			raise AssertionError(
+				f"ambiguous method call '{method_name}' on receiver type '{self._type_table.get(recv_base).name}' (checker must disambiguate)"
+			)
 		return candidates[0]
 
 	def _lower_call(self, expr: H.HCall) -> M.ValueId | None:

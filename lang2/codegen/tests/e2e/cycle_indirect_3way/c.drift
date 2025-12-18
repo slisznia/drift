@@ -1,0 +1,5 @@
+module c
+from a import afn
+export { cfn }
+fn cfn() returns Int { return afn(); }
+

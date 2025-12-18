@@ -1,0 +1,4 @@
+module m
+
+fn main() returns Int { return dup(); }
+

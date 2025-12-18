@@ -70,6 +70,10 @@ class FnSignature:
 	throws_events: Tuple[str, ...] = ()
 	param_types: Optional[list[Any]] = None  # raw param type shapes (strings/tuples)
 	module: Optional[str] = None
+	# Module interface metadata (MVP exports):
+	# - private by default; exported names are listed via `export { ... }` in source
+	# - exported functions are module entry points (cross-module ABI boundary)
+	is_exported_entrypoint: bool = False
 
 
 @dataclass
@@ -210,6 +214,7 @@ class Checker:
 
 			if sig is not None:
 				declared_events = frozenset(sig.throws_events) if sig.throws_events else None
+
 				# Prefer pre-resolved TypeIds if supplied; fall back to legacy resolution.
 				return_type_id = sig.return_type_id
 				error_type_id = sig.error_type_id
@@ -1388,51 +1393,51 @@ class Checker:
 		def walk_stmt(stmt: H.HStmt) -> None:
 			if on_stmt:
 				on_stmt(stmt, ctx)
-			if isinstance(stmt, H.HExprStmt):
-				walk_expr(stmt.expr)
-			elif isinstance(stmt, H.HLet):
-				walk_expr(stmt.value)
-				decl_ty: Optional[TypeId] = None
-				if getattr(stmt, "declared_type_expr", None) is not None:
-					decl_ty = self._resolve_typeexpr(stmt.declared_type_expr)
-				value_ty = ctx.infer(stmt.value)
-				# MVP: allow `Uint` locals to be initialized from an integer literal.
-				if (
-					decl_ty is not None
-					and decl_ty == self._type_table.ensure_uint()
-					and isinstance(stmt.value, H.HLiteralInt)
-				):
-					value_ty = decl_ty
-				if decl_ty is not None and value_ty is not None and decl_ty != value_ty:
-					ctx._append_diag(
-						Diagnostic(
-							message="let-binding type does not match declared type",
-							severity="error",
-							span=None,
-						)
-					)
-				ctx.locals[stmt.name] = decl_ty or value_ty or self._unknown_type
-			elif isinstance(stmt, H.HAssign):
-				walk_expr(stmt.value)
-				value_ty = ctx.infer(stmt.value)
-				walk_expr(stmt.target)
-				if isinstance(stmt.target, H.HIndex):
-					target_ty = ctx.infer(stmt.target)
-					if target_ty is not None and value_ty is not None and target_ty != value_ty:
+				if isinstance(stmt, H.HExprStmt):
+					walk_expr(stmt.expr)
+				elif isinstance(stmt, H.HLet):
+					walk_expr(stmt.value)
+					decl_ty: Optional[TypeId] = None
+					if getattr(stmt, "declared_type_expr", None) is not None:
+						decl_ty = self._resolve_typeexpr(stmt.declared_type_expr)
+					value_ty = ctx.infer(stmt.value)
+					# MVP: allow `Uint` locals to be initialized from an integer literal.
+					if (
+						decl_ty is not None
+						and decl_ty == self._type_table.ensure_uint()
+						and isinstance(stmt.value, H.HLiteralInt)
+					):
+						value_ty = decl_ty
+					if decl_ty is not None and value_ty is not None and decl_ty != value_ty:
 						ctx._append_diag(
 							Diagnostic(
-								message="assignment type mismatch for indexed array element",
+								message="let-binding type does not match declared type",
 								severity="error",
-								span=None,
+								span=getattr(stmt, "loc", Span()),
 							)
 						)
-				elif isinstance(stmt.target, H.HVar) and value_ty is not None:
-					ctx.locals[stmt.target.name] = value_ty
-			elif isinstance(stmt, H.HIf):
-				walk_expr(stmt.cond)
-				walk_block(stmt.then_block)
-				if stmt.else_block:
-					walk_block(stmt.else_block)
+					ctx.locals[stmt.name] = decl_ty or value_ty or self._unknown_type
+				elif isinstance(stmt, H.HAssign):
+					walk_expr(stmt.value)
+					value_ty = ctx.infer(stmt.value)
+					walk_expr(stmt.target)
+					if isinstance(stmt.target, H.HIndex):
+						target_ty = ctx.infer(stmt.target)
+						if target_ty is not None and value_ty is not None and target_ty != value_ty:
+							ctx._append_diag(
+								Diagnostic(
+									message="assignment type mismatch for indexed array element",
+									severity="error",
+									span=getattr(stmt.target, "loc", getattr(stmt, "loc", Span())),
+								)
+							)
+					elif isinstance(stmt.target, H.HVar) and value_ty is not None:
+						ctx.locals[stmt.target.name] = value_ty
+				elif isinstance(stmt, H.HIf):
+					walk_expr(stmt.cond)
+					walk_block(stmt.then_block)
+					if stmt.else_block:
+						walk_block(stmt.else_block)
 			elif isinstance(stmt, H.HLoop):
 				walk_block(stmt.body)
 			elif isinstance(stmt, H.HReturn):
@@ -1457,21 +1462,13 @@ class Checker:
 		from lang2.driftc import stage1 as H
 
 		if isinstance(expr, (H.HArrayLiteral, H.HIndex)):
-			# Reuse shared infer to emit array-specific diagnostics without extra
-			# traversal logic here.
 			ctx.infer(expr)
 
 	def _bitwise_validator_on_expr(self, expr: "H.HExpr", ctx: "_TypingContext") -> None:
 		"""
 		Validate bitwise operators and shifts.
 
-		The stub checker keeps expression typing intentionally shallow; this helper
-		enforces a narrow, explicit rule so user code gets clear diagnostics:
-
-		- `~`, `&`, `|`, `^`, `<<`, `>>` require `Uint` operands and produce `Uint`.
-
-		This mirrors the typed checker’s MVP contract and keeps the e2e behavior
-		stable even before we have a full type environment.
+		MVP rule: `~`, `&`, `|`, `^`, `<<`, `>>` require `Uint` operands.
 		"""
 		from lang2.driftc import stage1 as H
 
@@ -1506,13 +1503,14 @@ class Checker:
 						span=getattr(expr, "loc", Span()),
 					)
 				)
+			return
 
 	def _void_usage_on_expr(self, expr: "H.HExpr", ctx: "_TypingContext") -> None:
 		"""
 		Forbid Void where a value is required (binary ops, call args, unary ops).
 
-		Expression statements are allowed to discard Void-returning calls, so the
-		expr-stmt case is handled in the stmt validator.
+		Expression statements are allowed to discard Void-returning calls; that
+		expr-stmt special-case is enforced in the statement validator.
 		"""
 		from lang2.driftc import stage1 as H
 
@@ -1524,55 +1522,98 @@ class Checker:
 			right_ty = ctx.infer(expr.right)
 			if is_void(left_ty) or is_void(right_ty):
 				ctx._append_diag(
-					Diagnostic(message="Void value is not allowed in a binary operation", severity="error", span=None)
+					Diagnostic(
+						message="Void value is not allowed in a binary operation",
+						severity="error",
+						span=getattr(expr, "loc", Span()),
+					)
 				)
-		elif isinstance(expr, H.HUnary):
+			return
+
+		if isinstance(expr, H.HUnary):
 			sub_ty = ctx.infer(expr.expr)
 			if is_void(sub_ty):
 				ctx._append_diag(
-					Diagnostic(message="Void value is not allowed in a unary operation", severity="error", span=None)
+					Diagnostic(
+						message="Void value is not allowed in a unary operation",
+						severity="error",
+						span=getattr(expr, "loc", Span()),
+					)
 				)
-		elif isinstance(expr, H.HTernary):
+			return
+
+		if isinstance(expr, H.HTernary):
 			then_ty = ctx.infer(expr.then_expr)
 			else_ty = ctx.infer(expr.else_expr)
 			if is_void(then_ty) or is_void(else_ty):
 				ctx._append_diag(
-					Diagnostic(message="Void value is not allowed in a ternary expression", severity="error", span=None)
+					Diagnostic(
+						message="Void value is not allowed in a ternary expression",
+						severity="error",
+						span=getattr(expr, "loc", Span()),
+					)
 				)
-		elif isinstance(expr, H.HCall):
+			return
+
+		if isinstance(expr, H.HCall):
 			for arg in expr.args:
 				arg_ty = ctx.infer(arg)
 				if is_void(arg_ty):
 					ctx._append_diag(
-						Diagnostic(message="Void value is not allowed as a function argument", severity="error", span=None)
+						Diagnostic(
+							message="Void value is not allowed as a function argument",
+							severity="error",
+							span=getattr(arg, "loc", getattr(expr, "loc", Span())),
+						)
 					)
 			for kw in getattr(expr, "kwargs", []) or []:
 				arg_ty = ctx.infer(kw.value)
 				if is_void(arg_ty):
 					ctx._append_diag(
-						Diagnostic(message="Void value is not allowed as a function argument", severity="error", span=None)
+						Diagnostic(
+							message="Void value is not allowed as a function argument",
+							severity="error",
+							span=getattr(kw.value, "loc", getattr(expr, "loc", Span())),
+						)
 					)
-		elif isinstance(expr, H.HMethodCall):
+			return
+
+		if isinstance(expr, H.HMethodCall):
 			for arg in expr.args:
 				arg_ty = ctx.infer(arg)
 				if is_void(arg_ty):
 					ctx._append_diag(
-						Diagnostic(message="Void value is not allowed as a method argument", severity="error", span=None)
+						Diagnostic(
+							message="Void value is not allowed as a method argument",
+							severity="error",
+							span=getattr(arg, "loc", getattr(expr, "loc", Span())),
+						)
 					)
 			for kw in getattr(expr, "kwargs", []) or []:
 				arg_ty = ctx.infer(kw.value)
 				if is_void(arg_ty):
 					ctx._append_diag(
-						Diagnostic(message="Void value is not allowed as a method argument", severity="error", span=None)
+						Diagnostic(
+							message="Void value is not allowed as a method argument",
+							severity="error",
+							span=getattr(kw.value, "loc", getattr(expr, "loc", Span())),
+						)
 					)
-		elif isinstance(expr, H.HArrayLiteral):
+			return
+
+		if isinstance(expr, H.HArrayLiteral):
 			for el in expr.elements:
 				el_ty = ctx.infer(el)
 				if is_void(el_ty):
 					ctx._append_diag(
-						Diagnostic(message="Void value is not allowed in an array literal", severity="error", span=None)
+						Diagnostic(
+							message="Void value is not allowed in an array literal",
+							severity="error",
+							span=getattr(el, "loc", getattr(expr, "loc", Span())),
+						)
 					)
 					break
+			return
 
 	def _bool_validator_on_stmt(self, stmt: "H.HStmt", ctx: "_TypingContext") -> None:
 		"""Require Boolean conditions when the type is known."""
@@ -1585,7 +1626,7 @@ class Checker:
 					Diagnostic(
 						message="if condition must be Bool",
 						severity="error",
-						span=None,
+						span=getattr(stmt.cond, "loc", getattr(stmt, "loc", Span())),
 					)
 				)
 
@@ -1608,13 +1649,20 @@ class Checker:
 			fn_is_void = is_void(ret_tid)
 			if stmt.value is None and ret_tid is not None and not fn_is_void:
 				ctx._append_diag(
-					Diagnostic(message="non-void function must return a value", severity="error", span=None)
-				)
-			if stmt.value is not None:
-				if fn_is_void:
-					ctx._append_diag(
-						Diagnostic(message="cannot return a value from a Void function", severity="error", span=None)
+					Diagnostic(
+						message="non-void function must return a value",
+						severity="error",
+						span=getattr(stmt, "loc", Span()),
 					)
+				)
+			if stmt.value is not None and fn_is_void:
+				ctx._append_diag(
+					Diagnostic(
+						message="cannot return a value from a Void function",
+						severity="error",
+						span=getattr(stmt.value, "loc", getattr(stmt, "loc", Span())),
+					)
+				)
 			return
 
 		if isinstance(stmt, H.HLet):
@@ -1623,12 +1671,20 @@ class Checker:
 				decl_ty = self._resolve_typeexpr(stmt.declared_type_expr)
 			if is_void(decl_ty):
 				ctx._append_diag(
-					Diagnostic(message="cannot declare a binding of type Void", severity="error", span=None)
+					Diagnostic(
+						message="cannot declare a binding of type Void",
+						severity="error",
+						span=getattr(stmt, "loc", Span()),
+					)
 				)
 			val_ty = ctx.infer(stmt.value)
 			if is_void(val_ty):
 				ctx._append_diag(
-					Diagnostic(message="cannot bind a Void value", severity="error", span=None)
+					Diagnostic(
+						message="cannot bind a Void value",
+						severity="error",
+						span=getattr(stmt.value, "loc", getattr(stmt, "loc", Span())),
+					)
 				)
 			return
 
@@ -1636,8 +1692,13 @@ class Checker:
 			val_ty = ctx.infer(stmt.value)
 			if is_void(val_ty):
 				ctx._append_diag(
-					Diagnostic(message="cannot assign a Void value", severity="error", span=None)
+					Diagnostic(
+						message="cannot assign a Void value",
+						severity="error",
+						span=getattr(stmt.value, "loc", getattr(stmt, "loc", Span())),
+					)
 				)
+			return
 
 	def _exception_init_rules_on_stmt(self, stmt: "H.HStmt", ctx: "_TypingContext") -> None:
 		"""
@@ -1670,8 +1731,6 @@ class Checker:
 			schema = _schema(stmt.value.event_fqn)
 			schema_fields: list[str] | None
 			if schema is None:
-				# Still validate argument value shapes (DV/primitive-only) even when
-				# we don't have a schema entry (e.g., undeclared exception).
 				schema_fields = None
 			else:
 				_decl_fqn, schema_fields = schema

@@ -1,0 +1,8 @@
+module lib
+
+export { Point, make }
+
+struct Point(x: Int, y: Int)
+
+fn make() returns Point { return Point(1, 2); }
+

@@ -1,0 +1,7 @@
+module lib
+
+export { exposed }
+
+fn hidden() returns Int { return 1; }
+fn exposed() returns Int { return 2; }
+

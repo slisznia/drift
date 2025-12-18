@@ -25,7 +25,7 @@ import sys
 from pathlib import Path
 from typing import Iterable, Optional
 
-from lang2.driftc.parser import parse_drift_to_hir
+from lang2.driftc.parser import parse_drift_to_hir, parse_drift_files_to_hir, parse_drift_workspace_to_hir
 from lang2.driftc.driftc import compile_to_llvm_ir_for_tests
 from lang2.drift_core.runtime import get_runtime_sources
 
@@ -82,15 +82,29 @@ def _run_ir_with_clang(ir: str, build_dir: Path, argv: list[str] | None = None) 
 def _run_case(case_dir: Path) -> str:
 	expected_path = case_dir / "expected.json"
 	source_path = case_dir / "main.drift"
+	drift_files = sorted(case_dir.rglob("*.drift"))
 	if not expected_path.exists() or not source_path.exists():
 		return "skipped (missing expected.json or main.drift)"
+	if not drift_files:
+		return "skipped (missing .drift sources)"
 
 	expected = json.loads(expected_path.read_text())
 	if expected.get("skip"):
 		return "skipped (marked)"
+	module_paths = expected.get("module_paths") or []
+	module_args: list[str] = []
+	for mp in module_paths:
+		module_args.extend(["-M", str(case_dir / mp)])
 	# Compile-error path: delegate to driftc --json for structured diags.
 	if expected.get("diagnostics"):
-		cmd = [str(Path(sys.executable)), "-m", "lang2.driftc.driftc", str(source_path), "--json"]
+		cmd = [
+			str(Path(sys.executable)),
+			"-m",
+			"lang2.driftc.driftc",
+			*module_args,
+			*[str(p) for p in drift_files],
+			"--json",
+		]
 		res = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True)
 		try:
 			payload = json.loads(res.stdout)
@@ -115,7 +129,14 @@ def _run_case(case_dir: Path) -> str:
 			if not match_found:
 				return "FAIL (missing expected diagnostic)"
 		return "ok"
-	func_hirs, signatures, type_table, exception_catalog, parse_diags = parse_drift_to_hir(source_path)
+	# Always parse using the workspace loader (even for single-file cases) so
+	# import resolution behavior is consistent:
+	# - missing module imports are diagnosed,
+	# - multi-file modules and multi-module cases share the same entry path.
+	func_hirs, signatures, type_table, exception_catalog, parse_diags = parse_drift_workspace_to_hir(
+		drift_files,
+		module_paths=[case_dir / mp for mp in module_paths] or None,
+	)
 	expected_phase = expected.get("phase")
 
 	if parse_diags:

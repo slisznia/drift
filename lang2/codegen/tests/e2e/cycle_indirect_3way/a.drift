@@ -1,0 +1,5 @@
+module a
+from b import bfn
+export { afn }
+fn afn() returns Int { return bfn(); }
+

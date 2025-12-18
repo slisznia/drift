@@ -1575,9 +1575,12 @@ class _FuncBuilder:
 				# valid surface return types (e.g. `Optional<Int>`). We return them by
 				# value using their named struct type.
 				self.lines.append(f"  ret {ty} {val}")
+			elif ty is not None and ty.startswith("%Struct_"):
+				# User-defined structs are returned by value in v1.
+				self.lines.append(f"  ret {ty} {val}")
 			else:
 				raise NotImplementedError(
-					f"LLVM codegen v1: non-can-throw return must be Int, Float, String, or &T, got {ty}"
+					f"LLVM codegen v1: non-can-throw return must be Int, Float, String, &T, Struct, or Variant, got {ty}"
 				)
 			return
 
@@ -1588,7 +1591,8 @@ class _FuncBuilder:
 		raise NotImplementedError(f"LLVM codegen v1: unsupported terminator {type(term).__name__}")
 
 	def _return_llvm_type(self) -> str:
-		# v1 supports Int, Float, String, or FnResult<ok, Error> return shapes
+		# v1 supports Int/Float/Bool/String/Void, user-defined Structs, compiler-private
+		# Variants (e.g. Optional<T>), and can-throw FnResult<ok, Error> return shapes
 		# (ok ∈ {Int, String, Void-like, Ref<T>}).
 		if self.fn_info.declared_can_throw:
 			return self._fnresult_type_for_current_fn()

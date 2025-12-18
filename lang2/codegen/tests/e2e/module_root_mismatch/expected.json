@@ -1,0 +1,7 @@
+{
+  "exit_code": 1,
+  "module_paths": ["."],
+  "diagnostics": [
+    { "phase": "parser", "message_contains": "module id mismatch" }
+  ]
+}

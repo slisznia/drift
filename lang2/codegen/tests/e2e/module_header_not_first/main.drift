@@ -1,0 +1,3 @@
+fn helper() returns Int { return 0; }
+module main
+fn main() returns Int { return helper(); }

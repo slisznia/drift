@@ -1,0 +1,6 @@
+module lib
+
+export { b }
+
+fn b() returns Int { return 2; }
+

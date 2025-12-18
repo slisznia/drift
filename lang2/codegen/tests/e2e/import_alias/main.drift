@@ -1,0 +1,8 @@
+module main
+
+from lib import add as plus
+
+fn main() returns Int {
+	return plus(40, 2);
+}
+

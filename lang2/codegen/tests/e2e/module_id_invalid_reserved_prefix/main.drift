@@ -1,0 +1,2 @@
+module std.foo
+fn main() returns Int { return 0; }

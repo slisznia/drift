@@ -1,0 +1,7 @@
+module main
+
+export { main }
+
+fn main() returns Int {
+	return a() + b();
+}

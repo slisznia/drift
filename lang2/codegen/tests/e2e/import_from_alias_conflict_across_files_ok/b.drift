@@ -1,0 +1,7 @@
+module main
+
+from lib import sub as f
+
+fn b() returns Int {
+	return f(10, 3);
+}

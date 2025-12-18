@@ -264,11 +264,27 @@ class FString(Expr):
 class Program:
 	functions: List[FunctionDef] = field(default_factory=list)
 	implements: List["ImplementDef"] = field(default_factory=list)
+	# Top-level module directives.
+	#
+	# Drift treats imports/exports as module-level declarations, not statements.
+	# They are collected here so later phases can build a module graph, enforce
+	# export visibility, and perform cross-module resolution.
+	imports: List["ImportStmt"] = field(default_factory=list)
+	from_imports: List["FromImportStmt"] = field(default_factory=list)
+	exports: List["ExportDecl"] = field(default_factory=list)
+	# Deprecated: top-level statements are not part of the language surface; kept
+	# only for error recovery and transitional parsing.
 	statements: List[Stmt] = field(default_factory=list)
 	structs: List[StructDef] = field(default_factory=list)
 	exceptions: List[ExceptionDef] = field(default_factory=list)
 	variants: List["VariantDef"] = field(default_factory=list)
 	module: Optional[str] = None
+	# Location of the `module ...` declaration (when present).
+	#
+	# This is used to produce pinned diagnostics for module-id mismatch and other
+	# module-directive validation rules. When absent, the file implicitly declares
+	# its inferred module id (driver-level rule when module roots are provided).
+	module_loc: Optional[Located] = None
 
 
 @dataclass
@@ -323,6 +339,33 @@ class ImportStmt(Stmt):
     loc: Located
     path: List[str]
     alias: Optional[str] = None
+
+
+@dataclass
+class FromImportStmt(Stmt):
+	"""
+	Module-level symbol import:
+
+	  from my.module import foo
+	  from my.module import foo as bar
+	"""
+
+	loc: Located
+	module_path: List[str]
+	symbol: str
+	alias: Optional[str] = None
+
+
+@dataclass
+class ExportDecl(Stmt):
+	"""
+	Module-level export declaration:
+
+	  export { foo, Bar, Baz }
+	"""
+
+	loc: Located
+	names: List[str]
 
 
 @dataclass

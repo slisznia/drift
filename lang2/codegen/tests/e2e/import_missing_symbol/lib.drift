@@ -1,0 +1,6 @@
+module lib
+
+export { ok }
+
+fn ok() returns Int { return 1; }
+

@@ -1,0 +1,10 @@
+module main
+
+from lib import Point
+from lib import make
+
+fn main() returns Int {
+	val p: Point = make();
+	return 0;
+}
+

@@ -24,6 +24,7 @@ from .ast import (
     FunctionDef,
     IfStmt,
     ImportStmt,
+    FromImportStmt,
     ImplementDef,
     Index,
     KwArg,
@@ -57,6 +58,7 @@ from .ast import (
     VariantField,
     MatchExpr,
     MatchArm,
+    ExportDecl,
 )
 
 _GRAMMAR_PATH = Path(__file__).with_name("grammar.lark")
@@ -473,44 +475,89 @@ def parse_program(source: str) -> Program:
     return _build_program(tree)
 
 
+class ModuleDeclError(ValueError):
+	"""
+	User-facing error for invalid `module ...` declarations.
+
+	The driver converts this into a pinned parser-phase diagnostic (it is not an
+	internal compiler bug).
+	"""
+
+	def __init__(self, message: str, *, loc: object | None) -> None:
+		super().__init__(message)
+		self.loc = loc
+
+
 def _build_program(tree: Tree) -> Program:
 	functions: List[FunctionDef] = []
 	implements: List[ImplementDef] = []
-	statements: List[ExprStmt | LetStmt | ReturnStmt | RaiseStmt | ImportStmt] = []
+	statements: List[ExprStmt | LetStmt | ReturnStmt | RaiseStmt | ImportStmt | FromImportStmt | ExportDecl] = []
+	imports: List[ImportStmt] = []
+	from_imports: List[FromImportStmt] = []
+	exports: List[ExportDecl] = []
 	structs: List[StructDef] = []
 	exceptions: List[ExceptionDef] = []
 	variants: List[VariantDef] = []
 	module_name: Optional[str] = None
+	module_loc: object | None = None
+	saw_non_module_directive = False
 	for child in tree.children:
 		if not isinstance(child, Tree):
 			continue
 		kind = _name(child)
 		if kind == "module_decl":
+			if saw_non_module_directive:
+				raise ModuleDeclError(
+					"`module ...` must be the first top-level declaration in the file",
+					loc=_loc(child),
+				)
+			if module_name is not None:
+				raise ModuleDeclError(
+					"duplicate `module ...` declaration in the same file",
+					loc=_loc(child),
+				)
 			module_name = _build_module_decl(child)
+			module_loc = _loc(child)
 			continue
 		if kind == "func_def":
+			saw_non_module_directive = True
 			functions.append(_build_function(child))
 		elif kind == "implement_def":
+			saw_non_module_directive = True
 			implements.append(_build_implement_def(child))
 		elif kind == "struct_def":
+			saw_non_module_directive = True
 			structs.append(_build_struct_def(child))
 		elif kind == "exception_def":
+			saw_non_module_directive = True
 			exceptions.append(_build_exception_def(child))
 		elif kind == "variant_def":
+			saw_non_module_directive = True
 			variants.append(_build_variant_def(child))
 		else:
+			saw_non_module_directive = True
 			stmt = _build_stmt(child)
 			if stmt is not None:
 				statements.append(stmt)
+				if isinstance(stmt, ImportStmt):
+					imports.append(stmt)
+				elif isinstance(stmt, FromImportStmt):
+					from_imports.append(stmt)
+				elif isinstance(stmt, ExportDecl):
+					exports.append(stmt)
 	return Program(
 		functions=functions,
 		implements=implements,
+		imports=imports,
+		from_imports=from_imports,
+		exports=exports,
 		statements=statements,
-		structs=structs,
-		exceptions=exceptions,
-		variants=variants,
-		module=module_name,
-	)
+			structs=structs,
+			exceptions=exceptions,
+			variants=variants,
+			module=module_name,
+			module_loc=module_loc,
+		)
 
 
 def _build_module_decl(tree: Tree) -> str:
@@ -733,8 +780,12 @@ def _build_type_expr(tree: Tree) -> TypeExpr:
 		return TypeExpr(name=name_token.value, args=args)
 	# fallback for other wrappers
 	if tree.children:
-		return _build_type_expr(tree.children[-1])
+		last = tree.children[-1]
+		if isinstance(last, Tree):
+			return _build_type_expr(last)
 	return TypeExpr(name="<unknown>")
+
+
 def _build_stmt(tree: Tree):
 	kind = _name(tree)
 	if kind == "stmt":
@@ -765,6 +816,10 @@ def _build_stmt(tree: Tree):
 			return _build_expr_stmt(target)
 		if stmt_kind == "import_stmt":
 			return _build_import_stmt(target)
+		if stmt_kind == "from_import_stmt":
+			return _build_from_import_stmt(target)
+		if stmt_kind == "export_stmt":
+			return _build_export_stmt(target)
 		if stmt_kind == "while_stmt":
 			return _build_while_stmt(target)
 		if stmt_kind == "break_stmt":
@@ -1045,11 +1100,39 @@ def _build_import_stmt(tree: Tree) -> ImportStmt:
     path_node = tree.children[0]
     parts = [child.value for child in path_node.children if isinstance(child, Token) and child.type == "NAME"]
     alias = None
-    if len(tree.children) > 1 and isinstance(tree.children[1], Tree) and _name(tree.children[1]) == "alias_clause":
+    if len(tree.children) > 1 and isinstance(tree.children[1], Tree) and _name(tree.children[1]) == "import_alias":
         alias_tok = next((c for c in tree.children[1].children if isinstance(c, Token) and c.type == "NAME"), None)
         if alias_tok:
             alias = alias_tok.value
     return ImportStmt(loc=loc, path=parts, alias=alias)
+
+
+def _build_from_import_stmt(tree: Tree) -> FromImportStmt:
+	loc = _loc(tree)
+	module_node = next((c for c in tree.children if isinstance(c, Tree) and _name(c) == "module_path"), None)
+	if module_node is None:
+		raise ValueError("from-import missing module path")
+	parts = [tok.value for tok in module_node.children if isinstance(tok, Token) and tok.type == "NAME"]
+	sym_tok = next((c for c in tree.children if isinstance(c, Token) and c.type == "NAME"), None)
+	if sym_tok is None:
+		raise ValueError("from-import missing symbol name")
+	alias = None
+	alias_node = next((c for c in tree.children if isinstance(c, Tree) and _name(c) == "import_alias"), None)
+	if alias_node is not None:
+		alias_tok = next((c for c in alias_node.children if isinstance(c, Token) and c.type == "NAME"), None)
+		if alias_tok:
+			alias = alias_tok.value
+	return FromImportStmt(loc=loc, module_path=parts, symbol=sym_tok.value, alias=alias)
+
+
+def _build_export_stmt(tree: Tree) -> ExportDecl:
+	loc = _loc(tree)
+	items_node = next((c for c in tree.children if isinstance(c, Tree) and _name(c) == "export_items"), None)
+	if items_node is None:
+		names: List[str] = []
+	else:
+		names = [tok.value for tok in items_node.children if isinstance(tok, Token) and tok.type == "NAME"]
+	return ExportDecl(loc=loc, names=names)
 
 
 def _build_if_stmt(tree: Tree) -> IfStmt:
@@ -1084,7 +1167,7 @@ def _build_if_stmt(tree: Tree) -> IfStmt:
     return IfStmt(loc=loc, condition=condition, then_block=then_block, else_block=else_block)
 
 
-def _build_while_stmt(tree: Tree) -> ast.WhileStmt:
+def _build_while_stmt(tree: Tree) -> WhileStmt:
     loc = _loc(tree)
     condition_node = None
     body_node = None
@@ -1104,11 +1187,11 @@ def _build_while_stmt(tree: Tree) -> ast.WhileStmt:
     return WhileStmt(loc=loc, condition=condition, body=body)
 
 
-def _build_break_stmt(tree: Tree) -> ast.BreakStmt:
+def _build_break_stmt(tree: Tree) -> BreakStmt:
     return BreakStmt(loc=_loc(tree))
 
 
-def _build_continue_stmt(tree: Tree) -> ast.ContinueStmt:
+def _build_continue_stmt(tree: Tree) -> ContinueStmt:
     return ContinueStmt(loc=_loc(tree))
 
 

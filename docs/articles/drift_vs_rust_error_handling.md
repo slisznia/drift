@@ -1,15 +1,32 @@
-# Error Handling in Drift vs Rust — A Guide for Rustaceans
+# Error handling in Drift vs Rust — a guide for Rustaceans
 
-Rust developers coming to Drift will immediately notice something fundamental: **Drift is an exception‑driven language**, but not in the Java/C++ sense and not in conflict with strong typing. Instead, Drift implements **structured exception events** with automatic context capture, a frozen ABI layout, and deterministic ownership. Rust, by contrast, builds nearly all recoverable error handling on the explicit `Result<T, E>` type and treats unwinding as exceptional.
+Rust developers coming to Drift will notice something fundamental right away: **Drift exposes exceptions at the surface**, but its *semantics* are value‑based and disciplined in a way that avoids most traditional exception pitfalls.
 
-This guide explains how the two philosophies diverge and what Rust programmers should expect when reading or writing Drift.
+This document explains how Drift’s error model works, how it compares to Rust’s `Result<T, E>`‑centric design, and why the differences are intentional.
 
 ---
 
-## 1. Structured Exception Events (Drift) vs Typed Results (Rust)
+## 1. One semantic model: value‑based errors
 
-### Drift
-Drift uses *exception events* for recoverable errors:
+At the semantic level, Drift has exactly **one** error model:
+
+> **Every can‑throw computation produces a `Result<T, Error>`.**
+
+This is *not* surface syntax, but it *is* the meaning of the language.
+
+- `throw`, `try`, and `catch` are **surface constructs**.
+- Internally and at module boundaries, failures are values.
+- The compiler/runtime may **implement propagation via unwinding** *inside the static Drift world*.
+
+Unwinding is an **implementation strategy**, not a second semantic model.
+
+This mirrors Rust’s core idea (errors are values), while allowing more ergonomic syntax.
+
+---
+
+## 2. Surface syntax: exceptions vs explicit `Result`
+
+### Drift (surface)
 
 ```drift
 exception InvalidOrder(order_id: Int64)
@@ -21,73 +38,84 @@ fn ship(order: Order) returns Void {
 }
 ```
 
-Programmers do **not** write functions returning `Result<T, E>`. The throwing behavior is implicit, and callers do not see an error type in the signature.
+- No `Result<T, E>` in the signature.
+- Failure is implicit in the control flow.
+- The function is *can‑throw* by effect, not by type.
 
-Under the hood, Drift models function outcomes as:
-
-```
-Result<T, Error>  // implicit, compiler‑generated
-```
-
-…but this representation is **never exposed in the surface language**.
-
-### Rust
-In Rust, recoverable errors use explicit types:
+### Rust (surface)
 
 ```rust
-fn ship(order: Order) -> Result<(), InvalidOrder> { ... }
+fn ship(order: Order) -> Result<(), InvalidOrder> {
+    if !verify(order) {
+        return Err(InvalidOrder { order_id: order.id });
+    }
+    Ok(())
+}
 ```
 
-The signature forces the caller to handle or propagate errors with `?`.
+Rust makes failure **type‑visible** everywhere.
 
-### Rationale
-- **Drift** optimizes for readability and reduces boilerplate in success‑path code.
-- **Rust** optimizes for explicitness and type‑driven error flow clarity.
+### Key difference
+
+- **Rust**: error flow is explicit and type‑checked at every call site.
+- **Drift**: error flow is implicit, but semantically equivalent to `Result<T, Error>`.
 
 ---
 
-## 2. Drift Errors Are Structured Diagnostics, Not Messages
+## 3. A single, canonical `Error` type (Drift)
 
-Rust errors usually implement `Display` and often include human‑oriented messages.
-
-Drift exceptions are not UI messages. They are structured diagnostics:
+Unlike Rust (where `E` is arbitrary), Drift has exactly **one runtime error representation**:
 
 ```drift
 struct Error {
-    event: String,
-    args: Map<String, String>,
-    ctx_frames: Array<CtxFrame>,
+    event_code: Uint64
+    event_fqn: String
+    attrs: Map<String, DiagnosticValue>
+    ctx_frames: Array<CtxFrame>
     stack: BacktraceHandle
 }
 ```
 
-- `event` is the exception name.
-- `args` are the exception parameters.
-- `ctx_frames` contain per‑frame captured locals.
-- `stack` is an opaque backtrace handle.
+Key properties:
 
-No English text is included unless explicitly provided as an argument.
+- **Single ABI‑stable layout**
+- **Move‑only ownership**
+- **Event identity decoupled from type layout**
+- **Structured, machine‑friendly diagnostics**
 
-### Rationale
-Drift draws a strict line between:
-- **diagnostics** (machine‑friendly)
-- **user‑visible messages** (handled elsewhere)
+Exception *events* define structure (fields), not runtime object hierarchies.
 
-Rust leaves this distinction to developers and libraries.
+This avoids the classloader / inheritance / ABI issues common in Java and C++.
 
 ---
 
-## 3. Automatic Context Capture (Drift) vs Manual Context (Rust)
+## 4. Structured diagnostics, not messages
 
-Rust requires manual context via `.context()` or crates like `anyhow`, `eyre`, or `tracing`.
+Drift exceptions are **not UI messages**.
 
-Drift captures `^`-annotated locals automatically:
+They carry:
+- an event identity
+- typed attributes
+- captured locals
+- a backtrace
+
+Human‑readable messages are produced *later* by logging, formatting, or UI layers.
+
+Rust often mixes diagnostics and presentation by convention (`Display`, `Error::source()`), but the language does not enforce a separation.
+
+Drift does.
+
+---
+
+## 5. Automatic context capture vs manual context
+
+### Drift
 
 ```drift
 val ^record_id: String as "record.id" = record["id"]
 ```
 
-If an exception crosses this frame, Drift records:
+If an exception crosses this frame, the runtime records:
 
 ```json
 {
@@ -96,57 +124,67 @@ If an exception crosses this frame, Drift records:
 }
 ```
 
-Combined with arguments and stack trace, every Drift exception is a rich diagnostic packet.
-
-### Rationale
-- Drift wants deterministic, complete, structured diagnostics with no developer forgetfulness.
-- Rust lets developers choose their own diagnostic strategy.
-
----
-
-## 4. Cross‑Module Propagation in Drift vs Avoidance in Rust
-
-Rust’s unwinding mechanism is intentionally *not* designed to cross FFI/plugin boundaries. Panics should not be used for recoverable errors.
-
-Drift explicitly supports unwinding across Drift‑compiled modules and dynamic plugins because the `Error` ABI is frozen:
-
-- All thrown errors share the same layout.
-- Errors are move‑only and never copied.
-- The unwinder transfers a stable error handle across modules.
-
-### Rationale
-Drift’s module/plugin system requires:
-- ABI‑stable error format
-- shared unwinder semantics
-- predictable cross‑boundary diagnostics
-
-Rust avoids this because explicit `Result<T, E>` already solves cross‑crate error flow safely.
-
----
-
-## 5. Error Philosophy: Unified Diagnostics (Drift) vs Explicit Types (Rust)
-
-### Drift
-- One canonical `Error` type for all exceptions.
-- Exception events define structure, not runtime types.
-- Context capture and backtrace built in.
-- Cross‑module behavior guaranteed.
+- Capture is **opt‑in but automatic**.
+- Captured values are typed diagnostics.
+- Forgetfulness is impossible once annotated.
 
 ### Rust
-- Many error types, each crate defines its own.
-- Developer chooses how much structure to include.
-- Backtrace optional, context optional.
-- No stable cross‑module error ABI.
 
-### Rationale
-Drift centers predictable diagnostics for large distributed/plugin environments.  
-Rust centers developer explicitness and strong typing.
+Context is added manually, typically via libraries:
+
+```rust
+parse(input).context("while parsing record")?
+```
+
+Both approaches are valid; Drift optimizes for **completeness and determinism**.
 
 ---
 
-## 6. Ergonomics: Success‑Path Clarity vs Type‑Path Clarity
+## 6. Propagation and unwinding boundaries
 
-Rust:
+### Drift
+
+- Unwinding **may** be used internally.
+- It is allowed **only across static Drift modules** that:
+  - share the same runtime
+  - share the same `Error` layout
+  - agree on the can‑throw ABI
+
+**Unwinding must never cross FFI or OS‑level shared library boundaries.**
+
+At those boundaries, errors are converted to values (`Result`, error codes, etc.).
+
+### Rust
+
+- `panic` is explicitly *not* for recoverable errors.
+- Unwinding across FFI is restricted or forbidden.
+- Recoverable errors always flow as values.
+
+Drift’s rules are stricter than C++ and closer to Rust—just with more surface sugar.
+
+---
+
+## 7. Module interfaces and ABI discipline (Drift)
+
+Drift pins a crucial rule:
+
+> **Every exported function is a can‑throw ABI boundary.**
+
+Consequences:
+
+- Exported functions always use `{T, Error*}` / `Error*` at the ABI.
+- Callers must assume failure is possible.
+- Internal helpers may optimize aggressively, but **never leak that choice**.
+
+This is what keeps cross‑module propagation sound.
+
+Rust does not need this rule because `Result<T, E>` is already explicit at every boundary.
+
+---
+
+## 8. Ergonomics trade‑off
+
+### Rust
 
 ```rust
 let data = load()?;
@@ -154,57 +192,53 @@ let conf = parse(data)?;
 Ok(conf)
 ```
 
-Drift:
+### Drift
 
 ```drift
-val data = load()    // may throw
+val data = load()
 val conf = parse(data)
 return conf
 ```
 
-Rust emphasizes type‑visible error flow.  
-Drift emphasizes readability of the success path.
+- Rust optimizes for **type‑path clarity**.
+- Drift optimizes for **success‑path readability**.
 
-Both approaches are valid—and optimized for different domains.
-
----
-
-## 7. Summary Table
-
-| Feature | Drift | Rust |
-|--------|-------|------|
-| Recoverable errors | **Exceptions** | **Result<T, E>** |
-| Error type | Single structured `Error` | Arbitrary `E` |
-| Context | Built‑in automatic | Manual / library-based |
-| Backtrace | Always captured | Optional |
-| Cross‑module behavior | Supported | Discouraged |
-| Diagnostic focus | Machine‑friendly | Human or mixed |
-| UI messages | Not part of exceptions | Often included |
-| Boilerplate | Minimal | Higher, but explicit |
-| Ownership | Move‑only exceptions | Move‑only error values |
-| Borrowing syntax | `&T` / `&mut T`, lvalue calls auto‑borrow, no borrowing from rvalues | `&T` / `&mut T`, explicit at call sites; borrows can be taken from temps |
+Both preserve correctness; they choose different defaults.
 
 ---
 
-## 8. Why Drift Chose This Path
+## 9. Comparison summary
 
-1. **Plugin and modular runtime architecture** require ABI‑stable diagnostics.
-2. **Readable code** without boilerplate is a priority.
-3. **Automatic context** ensures high‑fidelity error reports.
-4. **Structured diagnostics** enable superior log/telemetry tooling.
-5. **Clear separation** between exception diagnostics and UI messages.
+| Aspect | Drift | Rust |
+|------|------|------|
+| Semantic model | Value‑based `Result<T, Error>` | Value‑based `Result<T, E>` |
+| Surface syntax | Exceptions | Explicit results |
+| Error type | Single canonical `Error` | Arbitrary `E` |
+| Context capture | Automatic (opt‑in) | Manual |
+| Backtrace | Always | Optional |
+| Cross‑module propagation | Allowed (static world only) | Via values only |
+| FFI safety | No unwinding across FFI | Same rule |
+| Boilerplate | Minimal | Explicit |
 
 ---
 
-## 9. Closing Thoughts
+## 10. Mental model for Rust developers
 
-Rust and Drift reflect different priorities:
+The correct mental model is:
 
-- Rust: *explicitness, strong typing, and deliberate error flow*
-- Drift: *structured diagnostics, ergonomics, and cross‑module consistency*
+> **Drift exceptions are structured, automatically enriched `Result<T, Error>` values with ergonomic syntax — not unchecked control‑flow escapes.**
 
-For a Rust developer entering Drift, the best mental model is:
+If you keep that model in mind, Drift’s approach remains predictable, analyzable, and safe — even though it *looks* like a traditional exception system on the surface.
 
-> “Drift exceptions are structured, automatically enriched, fail‑fast `Result<T, Error>`—but without the syntactic noise and without UI text.”
+---
 
-Once you adopt this mindset, Drift’s approach becomes predictable and clean.
+## 11. Why Drift chose this design
+
+1. **Large modular systems** need ABI‑stable diagnostics.
+2. **Plugin and package distribution** require predictable error propagation.
+3. **Automatic context** produces better telemetry with less effort.
+4. **Ergonomics matter** for non‑toy systems.
+5. **Value‑based semantics** keep the model analyzable and optimizable.
+
+The result is a hybrid that keeps Rust’s semantic rigor while reclaiming some of the ergonomics that traditional exception systems aimed for—but rarely delivered cleanly.
+

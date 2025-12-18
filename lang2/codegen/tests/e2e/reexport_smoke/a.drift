@@ -1,0 +1,5 @@
+module a
+
+from b import add
+
+export { add }

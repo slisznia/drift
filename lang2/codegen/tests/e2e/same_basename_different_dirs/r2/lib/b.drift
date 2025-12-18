@@ -1,0 +1,1 @@
+fn b() returns Int { return 2; }

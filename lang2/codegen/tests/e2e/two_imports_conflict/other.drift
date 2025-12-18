@@ -1,0 +1,5 @@
+module other
+
+export { add }
+
+fn add() returns Int { return 2; }

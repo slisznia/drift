@@ -2,5 +2,5 @@
   "phase": "parser",
   "exit_code": 1,
   "stdout": "",
-  "stderr": "duplicate function definition for 'main'"
+  "stderr": "duplicate function definition for 'main'\nprevious definition of 'main' is here"
 }

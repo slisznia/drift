@@ -1,0 +1,6 @@
+module lib
+
+export { add }
+
+fn add(a: Int, b: Int) returns Int { return a + b; }
+

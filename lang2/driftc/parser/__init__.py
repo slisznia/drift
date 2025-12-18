@@ -7,6 +7,7 @@ lang2 pipeline.
 from __future__ import annotations
 
 from pathlib import Path
+from dataclasses import replace
 from typing import Callable, Dict, Tuple, Optional, List
 
 from lark.exceptions import UnexpectedInput
@@ -28,6 +29,113 @@ from lang2.driftc.core.types_core import (
 )
 from lang2.driftc.core.type_resolve_common import resolve_opaque_type
 from lang2.driftc.core.generic_type_expr import GenericTypeExpr
+
+
+def _validate_module_id(mid: str, *, span: Span) -> list[Diagnostic]:
+	"""
+	Validate a module id per the language spec (format + reserved prefixes).
+
+	This is shared by:
+	- single-module builds (`parse_drift_files_to_hir`), and
+	- workspace builds (`parse_drift_workspace_to_hir`), including inferred ids
+	  from `-M/--module-path`.
+	"""
+	if not isinstance(mid, str) or not mid:
+		return [
+			Diagnostic(
+				message="invalid module id (empty)",
+				severity="error",
+				span=span,
+			)
+		]
+	raw_len = len(mid.encode("utf-8"))
+	if raw_len > 254:
+		return [
+			Diagnostic(
+				message=f"invalid module id '{mid}': length {raw_len} exceeds 254 UTF-8 bytes",
+				severity="error",
+				span=span,
+			)
+		]
+	# Reserved module namespaces. Only the dotted namespace prefixes are reserved
+	# (e.g. `std.foo`), not the bare segment itself (e.g. `lib` is allowed).
+	forbidden_prefixes = ("lang", "abi", "std", "core", "lib")
+	for pfx in forbidden_prefixes:
+		if mid.startswith(pfx + "."):
+			return [
+				Diagnostic(
+					message=f"invalid module id '{mid}': reserved prefix '{pfx}' is not allowed",
+					severity="error",
+					span=span,
+				)
+			]
+	if mid.startswith(".") or mid.endswith(".") or ".." in mid:
+		return [
+			Diagnostic(
+				message=f"invalid module id '{mid}': dots must separate non-empty segments",
+				severity="error",
+				span=span,
+			)
+		]
+	if mid.startswith("_") or mid.endswith("_") or "__" in mid:
+		return [
+			Diagnostic(
+				message=f"invalid module id '{mid}': underscores must not be leading/trailing or consecutive",
+				severity="error",
+				span=span,
+			)
+		]
+	segments = mid.split(".")
+	for seg in segments:
+		if not seg:
+			return [
+				Diagnostic(
+					message=f"invalid module id '{mid}': empty segment",
+					severity="error",
+					span=span,
+				)
+			]
+		if seg.startswith("_") or seg.endswith("_") or "__" in seg:
+			return [
+				Diagnostic(
+					message=f"invalid module id '{mid}': segment '{seg}' has invalid underscore placement",
+					severity="error",
+					span=span,
+				)
+			]
+		# MVP: segments must start with a lowercase letter to avoid ambiguous module
+		# names and to keep directory→module inference predictable.
+		if not ("a" <= seg[0] <= "z"):
+			return [
+				Diagnostic(
+					message=f"invalid module id '{mid}': segment '{seg}' must start with a lowercase letter",
+					severity="error",
+					span=span,
+				)
+			]
+		for ch in seg:
+			if not (("a" <= ch <= "z") or ("0" <= ch <= "9") or ch == "_"):
+				return [
+					Diagnostic(
+						message=f"invalid module id '{mid}': segment '{seg}' contains invalid character '{ch}'",
+						severity="error",
+						span=span,
+					)
+				]
+	return []
+
+
+def _format_span_short(span: Span) -> str:
+	"""
+	Format a span as `file:line:column` for use in `Diagnostic.notes`.
+
+	Notes are currently plain strings (no secondary-span support), so we keep the
+	format stable and human-oriented.
+	"""
+	f = span.file or "<unknown>"
+	l = span.line if span.line is not None else "?"
+	c = span.column if span.column is not None else "?"
+	return f"{f}:{l}:{c}"
 
 
 def _type_expr_to_str(typ: parser_ast.TypeExpr) -> str:
@@ -421,36 +529,1266 @@ def _build_exception_catalog(exceptions: list[parser_ast.ExceptionDef], module_n
 	return catalog
 
 
-def parse_drift_to_hir(path: Path) -> Tuple[Dict[str, H.HBlock], Dict[str, FnSignature], "TypeTable", Dict[str, int], List[Diagnostic]]:
+def _span_in_file(path: Path, loc: object | None) -> Span:
 	"""
-	Parse a Drift source file into lang2 HIR blocks + FnSignatures + TypeTable.
+	Construct a Span that is anchored to a specific source file.
 
-	Collects parser/adapter diagnostics (e.g., duplicate functions) instead of
-	throwing, so callers can report them alongside later pipeline checks.
+	The parser AST location objects do not carry a filename; for multi-file module
+	builds we need the file to be explicit so diagnostics can point at the right
+	origin.
 	"""
-	source = path.read_text()
-	try:
-		prog = _parser.parse_program(source)
-	except _parser.FStringParseError as err:
-		# f-string syntax errors should be reported as normal parser diagnostics,
-		# not hard crashes (they are user errors, not internal bugs).
-		diagnostics: list[Diagnostic] = [
-			Diagnostic(message=str(err), severity="error", span=Span.from_loc(err.loc))
-		]
-		return {}, {}, TypeTable(), {}, diagnostics
-	except UnexpectedInput as err:
-		# Parse errors are user errors; do not crash the compiler pipeline.
-		#
-		# The Span best-effort extracts `line`/`column` from the lark exception, and
-		# we also thread the file name so diagnostics are source-anchored.
-		span = Span(
+	if loc is None:
+		return Span(file=str(path))
+	span = Span.from_loc(loc)
+	if span.file is None:
+		return Span(
 			file=str(path),
-			line=getattr(err, "line", None),
-			column=getattr(err, "column", None),
-			raw=err,
+			line=span.line,
+			column=span.column,
+			end_line=span.end_line,
+			end_column=span.end_column,
+			raw=span.raw,
 		)
-		diagnostics = [Diagnostic(message=str(err), severity="error", span=span)]
+	return span
+
+
+def _diag_duplicate(
+	*,
+	kind: str,
+	name: str,
+	first_path: Path,
+	first_loc: object | None,
+	second_path: Path,
+	second_loc: object | None,
+) -> list[Diagnostic]:
+	"""
+	Build a primary error + secondary note diagnostic for a cross-file duplicate.
+
+	The error is pinned to the second definition; the note is pinned to the first.
+	"""
+	first_span = _span_in_file(first_path, first_loc)
+	second_span = _span_in_file(second_path, second_loc)
+	return [
+		Diagnostic(
+			message=f"duplicate {kind} definition for '{name}'",
+			severity="error",
+			span=second_span,
+		),
+		Diagnostic(
+			message=f"previous definition of '{name}' is here",
+			severity="note",
+			span=first_span,
+		),
+	]
+
+
+def parse_drift_files_to_hir(
+	paths: list[Path],
+) -> Tuple[Dict[str, H.HBlock], Dict[str, FnSignature], "TypeTable", Dict[str, int], List[Diagnostic]]:
+	"""
+	Parse and lower a set of Drift source files into a single module unit.
+
+	MVP (Milestone 1): accepts multiple files that all declare the same `module`
+	id (or default to `main`). The module is lowered as if it were one merged file:
+	- top-level declarations are combined,
+	- cross-file collisions are diagnosed (with a pinned note pointing at the
+	  first definition),
+	- then the existing parser→stage0→HIR pipeline runs on the merged program.
+
+	This does not implement cross-module imports yet; it only handles multiple
+	files *within* the same module.
+	"""
+	diagnostics: list[Diagnostic] = []
+	if not paths:
+		return {}, {}, TypeTable(), {}, [Diagnostic(message="no input files", severity="error")]
+
+	programs: list[tuple[Path, parser_ast.Program]] = []
+	for path in paths:
+		source = path.read_text()
+		try:
+			prog = _parser.parse_program(source)
+		except _parser.ModuleDeclError as err:
+			diagnostics.append(Diagnostic(message=str(err), severity="error", span=_span_in_file(path, err.loc)))
+			continue
+		except _parser.FStringParseError as err:
+			diagnostics.append(Diagnostic(message=str(err), severity="error", span=_span_in_file(path, err.loc)))
+			continue
+		except UnexpectedInput as err:
+			span = Span(
+				file=str(path),
+				line=getattr(err, "line", None),
+				column=getattr(err, "column", None),
+				raw=err,
+			)
+			diagnostics.append(Diagnostic(message=str(err), severity="error", span=span))
+			continue
+		programs.append((path, prog))
+
+	if any(d.severity == "error" for d in diagnostics):
 		return {}, {}, TypeTable(), {}, diagnostics
+
+	# Enforce single-module membership across the file set.
+	def _effective_module_id(p: parser_ast.Program) -> str:
+		return getattr(p, "module", None) or "main"
+
+	module_id = _effective_module_id(programs[0][1])
+	for path, prog in programs:
+		mid = _effective_module_id(prog)
+		decl_span = _span_in_file(path, getattr(prog, "module_loc", None))
+		diagnostics.extend(_validate_module_id(mid, span=decl_span))
+	for path, prog in programs[1:]:
+		mid = _effective_module_id(prog)
+		if mid != module_id:
+			diagnostics.append(
+				Diagnostic(
+					message=f"module id mismatch: expected '{module_id}', found '{mid}'",
+					severity="error",
+					span=Span(file=str(path), line=1, column=1),
+				)
+			)
+	if any(d.severity == "error" for d in diagnostics):
+		return {}, {}, TypeTable(), {}, diagnostics
+
+	merged, _origins = _merge_module_files(module_id, programs, diagnostics)
+
+	# Lower the merged program using the existing single-file pipeline.
+	return _lower_parsed_program_to_hir(merged, diagnostics=diagnostics)
+
+
+def _merge_module_files(
+	module_id: str,
+	files: list[tuple[Path, parser_ast.Program]],
+	diagnostics: list[Diagnostic],
+) -> tuple[parser_ast.Program, dict[str, Path]]:
+	"""
+	Merge a module's file set into a single parser AST `Program` (Milestone 1 rule set).
+
+	This is the single source of truth for “multi-file module” merge behavior.
+	Both `parse_drift_files_to_hir` (single-module build) and the workspace loader
+	(Milestone 2) must call this helper to avoid drift.
+	"""
+	merged = parser_ast.Program(module=module_id)
+	# Provenance map for module-local callable symbols (free functions and methods).
+	#
+	# Used by the workspace loader to implement per-file import environments:
+	# we need to know which source file a given function body came from so we can
+	# apply that file's imports while rewriting call sites.
+	origin_by_symbol: dict[str, Path] = {}
+
+	first_fn: dict[str, tuple[Path, object | None]] = {}
+	for path, prog in files:
+		for fn in getattr(prog, "functions", []) or []:
+			if fn.name in first_fn:
+				first_path, first_loc = first_fn[fn.name]
+				diagnostics.extend(
+					_diag_duplicate(
+						kind="function",
+						name=fn.name,
+						first_path=first_path,
+						first_loc=first_loc,
+						second_path=path,
+						second_loc=getattr(fn, "loc", None),
+					)
+				)
+				continue
+			first_fn[fn.name] = (path, getattr(fn, "loc", None))
+			merged.functions.append(fn)
+			origin_by_symbol.setdefault(fn.name, path)
+
+	first_struct: dict[str, tuple[Path, object | None]] = {}
+	for path, prog in files:
+		for s in getattr(prog, "structs", []) or []:
+			if s.name in first_struct:
+				first_path, first_loc = first_struct[s.name]
+				diagnostics.extend(
+					_diag_duplicate(
+						kind="struct",
+						name=s.name,
+						first_path=first_path,
+						first_loc=first_loc,
+						second_path=path,
+						second_loc=getattr(s, "loc", None),
+					)
+				)
+				continue
+			first_struct[s.name] = (path, getattr(s, "loc", None))
+			merged.structs.append(s)
+
+	first_exc: dict[str, tuple[Path, object | None]] = {}
+	for path, prog in files:
+		for exc in getattr(prog, "exceptions", []) or []:
+			if exc.name in first_exc:
+				first_path, first_loc = first_exc[exc.name]
+				diagnostics.extend(
+					_diag_duplicate(
+						kind="exception",
+						name=exc.name,
+						first_path=first_path,
+						first_loc=first_loc,
+						second_path=path,
+						second_loc=getattr(exc, "loc", None),
+					)
+				)
+				continue
+			first_exc[exc.name] = (path, getattr(exc, "loc", None))
+			merged.exceptions.append(exc)
+
+	first_variant: dict[str, tuple[Path, object | None]] = {}
+	for path, prog in files:
+		for v in getattr(prog, "variants", []) or []:
+			if v.name in first_variant:
+				first_path, first_loc = first_variant[v.name]
+				diagnostics.extend(
+					_diag_duplicate(
+						kind="variant",
+						name=v.name,
+						first_path=first_path,
+						first_loc=first_loc,
+						second_path=path,
+						second_loc=getattr(v, "loc", None),
+					)
+				)
+				continue
+			first_variant[v.name] = (path, getattr(v, "loc", None))
+			merged.variants.append(v)
+
+	# Combine module directives (imports/exports).
+	for _, prog in files:
+		merged.imports.extend(getattr(prog, "imports", []) or [])
+		merged.from_imports.extend(getattr(prog, "from_imports", []) or [])
+		merged.exports.extend(getattr(prog, "exports", []) or [])
+
+	# Merge implement blocks by target repr and de-duplicate methods.
+	free_names = set(first_fn.keys())
+	impls_by_target: dict[str, parser_ast.ImplementDef] = {}
+	first_method: dict[tuple[str, str], tuple[Path, object | None]] = {}
+	for path, prog in files:
+		for impl in getattr(prog, "implements", []) or []:
+			target_str = _type_expr_to_str(impl.target)
+			dst = impls_by_target.get(target_str)
+			if dst is None:
+				dst = parser_ast.ImplementDef(target=impl.target, loc=getattr(impl, "loc", None), methods=[])
+				impls_by_target[target_str] = dst
+			for m in getattr(impl, "methods", []) or []:
+				if m.name in free_names:
+					first_path, _first_loc = first_fn[m.name]
+					diagnostics.append(
+						Diagnostic(
+							message=f"method '{m.name}' conflicts with existing free function of the same name",
+							severity="error",
+							span=_span_in_file(path, getattr(m, "loc", None)),
+							notes=[f"previous free function definition is in {first_path}"],
+						)
+					)
+					continue
+				key = (target_str, m.name)
+				if key in first_method:
+					first_path, first_loc = first_method[key]
+					diagnostics.extend(
+						_diag_duplicate(
+							kind=f"method for type '{target_str}'",
+							name=m.name,
+							first_path=first_path,
+							first_loc=first_loc,
+							second_path=path,
+							second_loc=getattr(m, "loc", None),
+						)
+					)
+					continue
+				first_method[key] = (path, getattr(m, "loc", None))
+				dst.methods.append(m)
+				origin_by_symbol.setdefault(f"{target_str}::{m.name}", path)
+	merged.implements = list(impls_by_target.values())
+	return merged, origin_by_symbol
+
+
+def parse_drift_workspace_to_hir(
+	paths: list[Path],
+	*,
+	module_paths: list[Path] | None = None,
+	external_module_exports: dict[str, dict[str, set[str]]] | None = None,
+) -> Tuple[Dict[str, H.HBlock], Dict[str, FnSignature], "TypeTable", Dict[str, int], List[Diagnostic]]:
+	"""
+	Parse and lower a set of Drift source files that may belong to multiple modules.
+
+	This is Milestone 2 (“module imports and cross-module resolution”) scaffolding:
+	- input is an unordered set of files (typically all `*.drift` files in a build),
+	- files are grouped by their declared `module <id>` (or default to `main`),
+	- each module is merged from its file set (Milestone 1 behavior),
+	- imports are resolved across modules (MVP: `from <module> import <symbol>`),
+	- resulting HIR/signatures are returned as a single program unit suitable for
+	  the existing HIR→MIR→SSA→LLVM pipeline.
+
+		Important MVP constraints (pinned for clarity):
+		- Imports are treated as **per-file** bindings:
+		  - Duplicate identical imports in one file are idempotent (“no-op after first”).
+		  - Conflicting aliases/bindings in one file are diagnosed as errors.
+		  - Different files may import the same module/symbol freely; the module is still
+		    parsed/merged/compiled once per build and referenced from all import sites.
+		- Module-qualified access (`import m` then `m.foo()`) is parsed but not relied
+		  upon yet; MVP import resolution focuses on `from m import foo`.
+	- Cross-module name resolution is implemented for free functions (not types)
+	  in MVP. Type-level imports are deferred (tests stay skipped).
+
+	Returns:
+	  (func_hirs, signatures, type_table, exception_catalog, diagnostics)
+	"""
+	diagnostics: list[Diagnostic] = []
+	if not paths:
+		return {}, {}, TypeTable(), {}, [Diagnostic(message="no input files", severity="error")]
+
+	def _effective_module_id(p: parser_ast.Program) -> str:
+		return getattr(p, "module", None) or "main"
+
+	# Parse all files first.
+	parsed: list[tuple[Path, parser_ast.Program]] = []
+	for path in paths:
+		source = path.read_text()
+		try:
+			prog = _parser.parse_program(source)
+		except _parser.ModuleDeclError as err:
+			diagnostics.append(Diagnostic(message=str(err), severity="error", span=_span_in_file(path, err.loc)))
+			continue
+		except _parser.FStringParseError as err:
+			diagnostics.append(Diagnostic(message=str(err), severity="error", span=_span_in_file(path, err.loc)))
+			continue
+		except UnexpectedInput as err:
+			span = Span(
+				file=str(path),
+				line=getattr(err, "line", None),
+				column=getattr(err, "column", None),
+				raw=err,
+			)
+			diagnostics.append(Diagnostic(message=str(err), severity="error", span=span))
+			continue
+		parsed.append((path, prog))
+
+	if any(d.severity == "error" for d in diagnostics):
+		return {}, {}, TypeTable(), {}, diagnostics
+
+	def _infer_module_id_from_paths(path: Path) -> tuple[str, Path] | tuple[None, None]:
+		"""
+		Infer the module id for a file from the configured module roots.
+
+		Rule (MVP, pinned in work-progress):
+		- find the first module root that is a prefix of the file's absolute path,
+		- module id is derived from the directory relative to the root:
+		  - empty relative path => "main"
+		  - otherwise path segments joined by '.' (platform-independent).
+		"""
+		if not module_paths:
+			return None, None
+		abs_path = path.resolve()
+		candidates: list[tuple[Path, Path]] = []
+		for root in module_paths:
+			abs_root = root.resolve()
+			try:
+				rel_dir = abs_path.parent.relative_to(abs_root)
+			except ValueError:
+				continue
+			candidates.append((abs_root, rel_dir))
+
+		if not candidates:
+			return None, None
+
+		# Deterministic root selection: pick the most-specific root (longest prefix).
+		# This prevents module identity from depending on CLI flag ordering when roots
+		# overlap (e.g. `-M src` and `-M src/vendor`).
+		candidates.sort(key=lambda r: len(r[0].parts), reverse=True)
+		best_len = len(candidates[0][0].parts)
+		best = [c for c in candidates if len(c[0].parts) == best_len]
+		if len(best) != 1:
+			# Ambiguous configuration: multiple roots at the same specificity match
+			# the same file.
+			return None, None
+
+		abs_root, rel_dir = best[0]
+		parts = list(rel_dir.parts)
+		if not parts or parts == ["."]:
+			return "main", abs_root
+		for seg in parts:
+			if seg in {".", ".."}:
+				return None, None
+			if not seg:
+				return None, None
+		return ".".join(parts), abs_root
+
+	# Group by module id (declared or inferred).
+	by_module: dict[str, list[tuple[Path, parser_ast.Program]]] = {}
+	roots_by_module: dict[str, set[Path]] = {}
+	# For pinned diagnostics, keep at least one representative file per (module, root).
+	root_file_by_module: dict[str, dict[Path, Path]] = {}
+	for path, prog in parsed:
+		if module_paths:
+			inferred, root = _infer_module_id_from_paths(path)
+			if inferred is None or root is None:
+				diagnostics.append(
+					Diagnostic(
+						message=f"file '{path}' is not under exactly one configured module root",
+						severity="error",
+						span=Span(file=str(path), line=1, column=1),
+					)
+				)
+				continue
+			# Validate inferred id before using it as a module-graph key.
+			diagnostics.extend(_validate_module_id(inferred, span=Span(file=str(path), line=1, column=1)))
+			declared = getattr(prog, "module", None)
+			if declared is not None:
+				decl_span = _span_in_file(path, getattr(prog, "module_loc", None))
+				diagnostics.extend(_validate_module_id(declared, span=decl_span))
+				if any(d.severity == "error" for d in diagnostics):
+					continue
+				if declared != inferred:
+					notes = [f"inferred module id is '{inferred}' from root '{root}'"]
+					diagnostics.append(
+						Diagnostic(
+							message=f"module id mismatch: expected '{inferred}', found '{declared}'",
+							severity="error",
+							span=decl_span,
+							notes=notes,
+						)
+					)
+					continue
+			# Treat missing module header as implicit declaration of the inferred id.
+			if declared is None:
+				prog = replace(prog, module=inferred)
+			by_module.setdefault(inferred, []).append((path, prog))
+			roots_by_module.setdefault(inferred, set()).add(root)
+			root_file_by_module.setdefault(inferred, {}).setdefault(root, path)
+		else:
+			mid = _effective_module_id(prog)
+			decl_span = _span_in_file(path, getattr(prog, "module_loc", None))
+			diagnostics.extend(_validate_module_id(mid, span=decl_span))
+			by_module.setdefault(mid, []).append((path, prog))
+
+	if any(d.severity == "error" for d in diagnostics):
+		return {}, {}, TypeTable(), {}, diagnostics
+
+	# When module roots are used, reject ambiguous module ids coming from
+	# multiple roots (prevents accidental shadowing/selection by search order).
+	if module_paths:
+		for mid, roots in roots_by_module.items():
+			if len(roots) > 1:
+				root_list = ", ".join(str(r) for r in sorted(roots))
+				span_file = None
+				# Anchor the diagnostic to a concrete file under one of the roots.
+				for r in sorted(roots):
+					span_file = root_file_by_module.get(mid, {}).get(r)
+					if span_file is not None:
+						break
+				span = Span(file=str(span_file), line=1, column=1) if span_file else Span()
+				diagnostics.append(
+					Diagnostic(
+						message=f"multiple module roots provide module '{mid}' ({root_list})",
+						severity="error",
+						span=span,
+					)
+				)
+	if any(d.severity == "error" for d in diagnostics):
+		return {}, {}, TypeTable(), {}, diagnostics
+	# Merge each module (Milestone 1 rules) and retain callable provenance per file.
+	merged_programs: dict[str, parser_ast.Program] = {}
+	origin_by_module: dict[str, dict[str, Path]] = {}
+	for mid, files in by_module.items():
+		merged, origins = _merge_module_files(mid, files, diagnostics)
+		merged_programs[mid] = merged
+		origin_by_module[mid] = origins
+
+	if any(d.severity == "error" for d in diagnostics):
+		return {}, {}, TypeTable(), {}, diagnostics
+
+	def _build_export_interface(
+		*,
+		module_id: str,
+		merged_prog: parser_ast.Program,
+		module_files: list[tuple[Path, parser_ast.Program]],
+	) -> tuple[dict[str, tuple[str, str]], set[str]]:
+		"""
+		Build the exported interface for a module.
+
+		MVP visibility model:
+		- items are private by default,
+		- `export { Name, ... }` lists the exported names,
+		- both values and types may be exported, but in separate namespaces:
+		  - values: free functions
+		  - types: structs, variants, exceptions
+
+		Because `export { ... }` syntax is unqualified, exporting a name that exists
+		in both namespaces is ambiguous. Until we add explicit qualifiers, that is
+		a compile-time error.
+
+		Spans are anchored to the source file that contained the `export { ... }`
+		statement so diagnostics remain useful in multi-file modules.
+		"""
+		module_fn_names: set[str] = {fn.name for fn in getattr(merged_prog, "functions", []) or []}
+		module_type_names: set[str] = {
+			*(s.name for s in getattr(merged_prog, "structs", []) or []),
+			*(v.name for v in getattr(merged_prog, "variants", []) or []),
+			*(e.name for e in getattr(merged_prog, "exceptions", []) or []),
+		}
+
+		raw_export_entries: list[tuple[str, Span]] = []
+		for path, parsed_prog in module_files:
+			for ex in getattr(parsed_prog, "exports", []) or []:
+				ex_span = _span_in_file(path, getattr(ex, "loc", None))
+				for n in getattr(ex, "names", []) or []:
+					raw_export_entries.append((n, ex_span))
+
+		# MVP rule: exporting the same name multiple times within a module is a
+		# deterministic user error (even if it would be a no-op). We treat it as a
+		# duplicate declaration so the module interface remains crisp and tooling
+		# never has to guess which export site is authoritative.
+		seen_export_names: dict[str, Span] = {}
+
+		# Exported values map exported local name -> underlying (module_id, symbol).
+		#
+		# This enables a minimal re-export mechanism without introducing a new
+		# surface syntax yet:
+		#
+		#   from other.module import foo
+		#   export { foo }
+		#
+		# Export entries always name symbols in the *current* module interface
+		# (e.g., `a::foo`). When `foo` is re-exported (implemented by another module),
+		# the workspace loader materializes a trampoline function `a::foo` that
+		# forwards to the underlying target `other.module::foo`.
+		exported_values: dict[str, tuple[str, str]] = {}
+		exported_types: set[str] = set()
+
+		# Collect re-export candidates from `from <module> import <symbol> [as alias]`
+		# statements across files in the module. Imports are per-file, but exports
+		# are module-level; to keep export resolution deterministic we require that
+		# any *exported* imported binding be unambiguous across the module.
+		reexport_candidates: dict[str, tuple[str, str]] = {}
+		reexport_first_span: dict[str, Span] = {}
+		reexport_conflicts: dict[str, tuple[tuple[str, str], tuple[str, str], Span, Span]] = {}
+		for path, parsed_prog in module_files:
+			for imp in getattr(parsed_prog, "from_imports", []) or []:
+				local_name = getattr(imp, "alias", None) or getattr(imp, "symbol", "")
+				mod = ".".join(getattr(imp, "module_path", []) or [])
+				sym = getattr(imp, "symbol", "")
+				if not local_name or not mod or not sym:
+					continue
+				target = (mod, sym)
+				imp_span = _span_in_file(path, getattr(imp, "loc", None))
+				prev = reexport_candidates.get(local_name)
+				if prev is None:
+					reexport_candidates[local_name] = target
+					reexport_first_span[local_name] = imp_span
+				elif prev != target:
+					if local_name not in reexport_conflicts:
+						reexport_conflicts[local_name] = (
+							prev,
+							target,
+							reexport_first_span.get(local_name, Span()),
+							imp_span,
+						)
+
+		for n, ex_span in raw_export_entries:
+			first_span = seen_export_names.get(n)
+			if first_span is None:
+				seen_export_names[n] = ex_span
+			else:
+				diagnostics.append(
+					Diagnostic(
+						message=f"duplicate export of symbol '{n}' in module '{module_id}'",
+						severity="error",
+						span=ex_span,
+						notes=[f"first export was here: {_format_span_short(first_span)}"],
+					)
+				)
+				continue
+			in_values = n in module_fn_names
+			in_types = n in module_type_names
+			if in_values and in_types:
+				diagnostics.append(
+					Diagnostic(
+						message=f"exported name '{n}' is ambiguous (defined as both a value and a type in module '{module_id}')",
+						severity="error",
+						span=ex_span,
+					)
+				)
+				continue
+			if not in_values and not in_types:
+				# Allow exporting an imported value (re-export) when it is present
+				# unambiguously in the module's `from import` declarations.
+				conflict = reexport_conflicts.get(n)
+				if conflict is not None:
+					prev, new, first_span, second_span = conflict
+					diagnostics.append(
+						Diagnostic(
+							message=(
+								f"exported name '{n}' is ambiguous due to conflicting imports "
+								f"({prev[0]}::{prev[1]} vs {new[0]}::{new[1]}); cannot export it"
+							),
+							severity="error",
+							span=ex_span,
+							notes=[
+								f"first import was here: {first_span}",
+								f"conflicting import was here: {second_span}",
+							],
+						)
+					)
+					continue
+				target = reexport_candidates.get(n)
+				if target is not None:
+					exported_values[n] = target
+					continue
+				diagnostics.append(
+					Diagnostic(
+						message=f"module '{module_id}' exports unknown symbol '{n}'",
+						severity="error",
+						span=ex_span,
+					)
+				)
+				continue
+			if in_values:
+				exported_values[n] = (module_id, n)
+			if in_types:
+				exported_types.add(n)
+		return exported_values, exported_types
+
+	# Reject cross-module type name collisions in MVP.
+	#
+	# The workspace build shares a single TypeTable across all modules, and the
+	# type system is not module-scoped yet (no `mod::Type` identity). Until we
+	# implement true module-qualified types, any user-defined type name that
+	# appears in more than one module would collide in:
+	# - TypeTable nominal name mapping,
+	# - LLVM named struct/type emission (`%Struct_Name`, `%Variant_Name`, etc.).
+	#
+	# To keep correctness predictable, we reject such programs early.
+	first_type_def: dict[str, tuple[str, Path, object | None, str]] = {}
+	for mid, files in by_module.items():
+		for path, prog in files:
+			for s in getattr(prog, "structs", []) or []:
+				key = s.name
+				kind = "struct"
+				prev = first_type_def.get(key)
+				if prev is None:
+					first_type_def[key] = (mid, path, getattr(s, "loc", None), kind)
+				else:
+					prev_mid, prev_path, prev_loc, prev_kind = prev
+					if prev_mid != mid:
+						diagnostics.append(
+							Diagnostic(
+								message=(
+									f"type name '{key}' is defined in multiple modules ('{prev_mid}' and '{mid}'); "
+									"module-qualified type identity is not implemented yet"
+								),
+								severity="error",
+								span=_span_in_file(path, getattr(s, "loc", None)),
+								notes=[f"first definition was a {prev_kind} in module '{prev_mid}' ({prev_path})"],
+							)
+						)
+			for v in getattr(prog, "variants", []) or []:
+				key = v.name
+				kind = "variant"
+				prev = first_type_def.get(key)
+				if prev is None:
+					first_type_def[key] = (mid, path, getattr(v, "loc", None), kind)
+				else:
+					prev_mid, prev_path, prev_loc, prev_kind = prev
+					if prev_mid != mid:
+						diagnostics.append(
+							Diagnostic(
+								message=(
+									f"type name '{key}' is defined in multiple modules ('{prev_mid}' and '{mid}'); "
+									"module-qualified type identity is not implemented yet"
+								),
+								severity="error",
+								span=_span_in_file(path, getattr(v, "loc", None)),
+								notes=[f"first definition was a {prev_kind} in module '{prev_mid}' ({prev_path})"],
+							)
+						)
+			for e in getattr(prog, "exceptions", []) or []:
+				key = e.name
+				kind = "exception"
+				prev = first_type_def.get(key)
+				if prev is None:
+					first_type_def[key] = (mid, path, getattr(e, "loc", None), kind)
+				else:
+					prev_mid, prev_path, prev_loc, prev_kind = prev
+					if prev_mid != mid:
+						diagnostics.append(
+							Diagnostic(
+								message=(
+									f"type name '{key}' is defined in multiple modules ('{prev_mid}' and '{mid}'); "
+									"module-qualified type identity is not implemented yet"
+								),
+								severity="error",
+								span=_span_in_file(path, getattr(e, "loc", None)),
+								notes=[f"first definition was a {prev_kind} in module '{prev_mid}' ({prev_path})"],
+							)
+						)
+
+	if any(d.severity == "error" for d in diagnostics):
+		return {}, {}, TypeTable(), {}, diagnostics
+
+	# Export sets (private by default, explicit exports required).
+	#
+	# MVP supports exporting/importing both value-level and type-level symbols,
+	# but keeps them in separate namespaces:
+	# - values: currently just free functions
+	# - types: structs, variants, exceptions
+	#
+	# Export lists are unqualified identifiers, so to avoid ambiguity we reject
+	# any module that defines the same name in both namespaces (until the language
+	# adds explicit `export type ...` / `export fn ...` syntax).
+	exports_values_by_module: dict[str, dict[str, tuple[str, str]]] = {}
+	exports_types_by_module: dict[str, set[str]] = {}
+	for mid, prog in merged_programs.items():
+		exported_values, exported_types = _build_export_interface(
+			module_id=mid,
+			merged_prog=prog,
+			module_files=by_module.get(mid, []),
+		)
+		exports_values_by_module[mid] = exported_values
+		exports_types_by_module[mid] = exported_types
+
+	if any(d.severity == "error" for d in diagnostics):
+		return {}, {}, TypeTable(), {}, diagnostics
+
+	# Resolve imports and build a dependency graph.
+	#
+	# MVP rule: import bindings are per-file. Module dependencies, however, are
+	# computed at module granularity (a module depends on another module if any
+	# of its files import it).
+	#
+	# Keep per-edge provenance so cycle diagnostics can be source-anchored.
+	# Each edge is (to_module, span).
+	dep_edges: dict[str, list[tuple[str, Span]]] = {mid: [] for mid in merged_programs}
+	from_value_bindings_by_file: dict[Path, dict[str, tuple[str, str]]] = {}
+	from_type_bindings_by_file: dict[Path, dict[str, tuple[str, str]]] = {}
+	for mid, files in by_module.items():
+		for path, prog in files:
+			file_seen_values: dict[str, tuple[str, str]] = {}
+			file_seen_types: dict[str, tuple[str, str]] = {}
+			file_value_bindings: dict[str, tuple[str, str]] = {}
+			file_type_bindings: dict[str, tuple[str, str]] = {}
+			# Track first import site per local binding name so conflict diagnostics
+			# can point at both the import and the local declaration.
+			file_value_binding_span: dict[str, Span] = {}
+			file_type_binding_span: dict[str, Span] = {}
+			file_module_aliases: dict[str, str] = {}
+			# MVP rule: `from m import name` introduces a file-scoped binding in the
+			# same namespace as top-level declarations in that file. Conflicts are
+			# errors regardless of order (imports are treated as a logical header).
+			top_level_fn_by_name: dict[str, object] = {fn.name: fn for fn in getattr(prog, "functions", []) or []}
+			top_level_type_by_name: dict[str, object] = {}
+			for s in getattr(prog, "structs", []) or []:
+				top_level_type_by_name[s.name] = s
+			for v in getattr(prog, "variants", []) or []:
+				top_level_type_by_name[v.name] = v
+			for e in getattr(prog, "exceptions", []) or []:
+				top_level_type_by_name[e.name] = e
+
+			for imp in getattr(prog, "imports", []) or []:
+				mod = ".".join(getattr(imp, "path", []) or [])
+				if not mod:
+					continue
+				span = _span_in_file(path, getattr(imp, "loc", None))
+				dep_edges[mid].append((mod, span))
+				if mod not in merged_programs and (external_module_exports is None or mod not in external_module_exports):
+					diagnostics.append(Diagnostic(message=f"imported module '{mod}' not found", severity="error", span=span))
+					continue
+				alias = getattr(imp, "alias", None) or (getattr(imp, "path", []) or [mod])[-1]
+				prev = file_module_aliases.get(alias)
+				if prev is None:
+					file_module_aliases[alias] = mod
+				elif prev != mod:
+					diagnostics.append(
+						Diagnostic(
+							message=f"import alias '{alias}' conflicts: cannot import both '{prev}' and '{mod}' as '{alias}'",
+							severity="error",
+							span=span,
+						)
+					)
+
+			for fi in getattr(prog, "from_imports", []) or []:
+				mod = ".".join(getattr(fi, "module_path", []) or [])
+				sym = getattr(fi, "symbol", "")
+				if not mod or not sym:
+					continue
+				span = _span_in_file(path, getattr(fi, "loc", None))
+				dep_edges[mid].append((mod, span))
+				if mod not in merged_programs and (external_module_exports is None or mod not in external_module_exports):
+					diagnostics.append(Diagnostic(message=f"imported module '{mod}' not found", severity="error", span=span))
+					continue
+
+				exported_values_map = exports_values_by_module.get(mod, {})
+				exported_types_set = exports_types_by_module.get(mod, set())
+				if mod not in merged_programs and external_module_exports is not None and mod in external_module_exports:
+					ext = external_module_exports.get(mod) or {}
+					exported_values_map = {n: (mod, n) for n in sorted(ext.get("values") or set())}
+					exported_types_set = set(ext.get("types") or set())
+				available_exports = sorted(set(exported_values_map.keys()) | exported_types_set)
+				is_value = sym in exported_values_map
+				is_type = sym in exported_types_set
+				if not is_value and not is_type:
+					available = ", ".join(available_exports)
+					notes = (
+						[f"available exports: {available}"]
+						if available
+						else [f"module '{mod}' exports nothing (private by default)"]
+					)
+					diagnostics.append(
+						Diagnostic(
+							message=f"module '{mod}' does not export symbol '{sym}'",
+							severity="error",
+							span=span,
+							notes=notes,
+						)
+					)
+					continue
+
+				local_name = getattr(fi, "alias", None) or sym
+				if is_value:
+					# Re-exported values are exported under the current module id but
+					# implemented by another module/symbol. For MVP we materialize
+					# re-exports as trampoline functions (`mod::sym`) so imports remain
+					# stable and module interfaces are self-contained.
+					raw_target = exported_values_map.get(sym, (mod, sym))
+					target = (mod, sym) if raw_target != (mod, sym) else raw_target
+					prev = file_seen_values.get(local_name)
+					if prev is None:
+						file_seen_values[local_name] = target
+						file_value_binding_span[local_name] = span
+					elif prev != target:
+						diagnostics.append(
+							Diagnostic(
+								message=f"import name '{local_name}' conflicts: cannot import both '{prev[0]}::{prev[1]}' and '{target[0]}::{target[1]}'",
+								severity="error",
+								span=span,
+							)
+						)
+						continue
+					file_value_bindings[local_name] = target
+
+				if is_type:
+					target = (mod, sym)
+					prev = file_seen_types.get(local_name)
+					if prev is None:
+						file_seen_types[local_name] = target
+						file_type_binding_span[local_name] = span
+					elif prev != target:
+						diagnostics.append(
+							Diagnostic(
+								message=f"type import name '{local_name}' conflicts: cannot import both '{prev[0]}::{prev[1]}' and '{target[0]}::{target[1]}'",
+								severity="error",
+								span=span,
+							)
+						)
+						continue
+					file_type_bindings[local_name] = target
+
+			from_value_bindings_by_file[path] = file_value_bindings
+			from_type_bindings_by_file[path] = file_type_bindings
+
+			# After collecting the effective import bindings, enforce the pinned
+			# conflict rule with local top-level declarations.
+			for local_name, (imp_mod, imp_sym) in file_value_bindings.items():
+				local_decl = top_level_fn_by_name.get(local_name)
+				if local_decl is None:
+					continue
+				decl_span = _span_in_file(path, getattr(local_decl, "loc", None))
+				imp_span = file_value_binding_span.get(local_name, Span())
+				diagnostics.append(
+					Diagnostic(
+						message=f"name '{local_name}' conflicts with imported binding from module '{imp_mod}'",
+						severity="error",
+						span=decl_span,
+						notes=[
+							f"imported as '{local_name}' from '{imp_mod}::{imp_sym}' at {getattr(imp_span, 'file', str(path))}:{getattr(imp_span, 'line', '?')}:{getattr(imp_span, 'column', '?')}",
+						],
+					)
+				)
+			for local_name, (imp_mod, imp_sym) in file_type_bindings.items():
+				local_decl = top_level_type_by_name.get(local_name)
+				if local_decl is None:
+					continue
+				decl_span = _span_in_file(path, getattr(local_decl, "loc", None))
+				imp_span = file_type_binding_span.get(local_name, Span())
+				diagnostics.append(
+					Diagnostic(
+						message=f"type name '{local_name}' conflicts with imported type from module '{imp_mod}'",
+						severity="error",
+						span=decl_span,
+						notes=[
+							f"imported as '{local_name}' from '{imp_mod}::{imp_sym}' at {getattr(imp_span, 'file', str(path))}:{getattr(imp_span, 'line', '?')}:{getattr(imp_span, 'column', '?')}",
+						],
+					)
+				)
+
+	# Collapse edge lists into a simple adjacency set for cycle detection.
+	deps: dict[str, set[str]] = {mid: {to for (to, _sp) in edges if to in merged_programs} for mid, edges in dep_edges.items()}
+
+	# Cycle detection (MVP: reject import cycles).
+	def _find_cycle() -> list[str] | None:
+		vis: set[str] = set()
+		stack: list[str] = []
+		onstack: set[str] = set()
+
+		def dfs(n: str) -> list[str] | None:
+			vis.add(n)
+			stack.append(n)
+			onstack.add(n)
+			for m in deps.get(n, set()):
+				if m not in merged_programs:
+					continue
+				if m not in vis:
+					c = dfs(m)
+					if c is not None:
+						return c
+				elif m in onstack:
+					try:
+						i = stack.index(m)
+					except ValueError:
+						i = 0
+					return stack[i:] + [m]
+			stack.pop()
+			onstack.remove(n)
+			return None
+
+		for n in merged_programs:
+			if n not in vis:
+				c = dfs(n)
+				if c is not None:
+					return c
+		return None
+
+	cycle = _find_cycle()
+	if cycle is not None:
+		# Anchor the diagnostic to one concrete import site in the cycle.
+		# (We choose the first edge in the reported cycle.)
+		primary_span: Span | None = None
+		notes: list[str] = []
+		for i in range(len(cycle) - 1):
+			a = cycle[i]
+			b = cycle[i + 1]
+			for to, sp in dep_edges.get(a, []):
+				if to == b:
+					if i == 0:
+						primary_span = sp
+					notes.append(f"{a} imports {b}")
+					break
+		if primary_span is None:
+			# Fallback: pick any import edge span from any node in the cycle.
+			for node in cycle:
+				for _to, sp in dep_edges.get(node, []):
+					primary_span = sp
+					break
+				if primary_span is not None:
+					break
+		diagnostics.append(
+			Diagnostic(
+				message=f"import cycle detected: {' -> '.join(cycle)}",
+				severity="error",
+				span=primary_span or Span(),
+				notes=notes,
+			)
+		)
+
+	if any(d.severity == "error" for d in diagnostics):
+		return {}, {}, TypeTable(), {}, diagnostics
+
+	# Lower modules using a shared TypeTable so TypeIds remain comparable across the workspace.
+	shared_type_table = TypeTable()
+
+	def _qualify_fn_name(module_id: str, name: str) -> str:
+		# Entrypoint is always the unqualified symbol `main` regardless of which
+		# module it is defined in. MVP rule: exactly one `main` across the whole
+		# build (enforced downstream by duplicate-symbol diagnostics).
+		if name == "main":
+			return "main"
+		return f"{module_id}::{name}"
+
+	def _qualify_symbol(module_id: str, sym: str, *, local_free_fns: set[str]) -> str:
+		"""
+		Qualify a module-local callable symbol for inclusion in a multi-module build.
+
+		MVP intent: avoid collisions when multiple modules are lowered into a single
+		LLVM module by making callable symbols module-scoped:
+		- free functions: `foo` → `mod::foo` (except the entry `main`)
+		- methods: `Type::method` → `mod::Type::method`
+
+		This does not define a long-term symbol identity model; it's a pragmatic
+		naming layer until the resolver carries explicit module/type identities.
+		"""
+		if sym in local_free_fns:
+			return _qualify_fn_name(module_id, sym)
+		if "::" in sym and not sym.startswith(f"{module_id}::"):
+			return f"{module_id}::{sym}"
+		return sym
+
+	all_func_hirs: dict[str, H.HBlock] = {}
+	all_sigs: dict[str, FnSignature] = {}
+	exc_catalog: dict[str, int] = {}
+	fn_owner_module: dict[str, str] = {}
+
+	# Lower each module and qualify its callable symbols.
+	for mid, prog in merged_programs.items():
+		func_hirs, sigs, _table, excs, diags = _lower_parsed_program_to_hir(
+			prog,
+			diagnostics=[],
+			type_table=shared_type_table,
+		)
+		diagnostics.extend(diags)
+		exc_catalog.update(excs)
+
+		local_free_fns = {fn.name for fn in getattr(prog, "functions", []) or []}
+		exported_values = exports_values_by_module.get(mid, {})
+
+		# Qualify and copy function bodies/signatures.
+		for local_name, block in func_hirs.items():
+			global_name = _qualify_symbol(mid, local_name, local_free_fns=local_free_fns)
+			if global_name in all_func_hirs:
+				diagnostics.append(
+					Diagnostic(
+						message=f"duplicate function symbol '{global_name}' across modules",
+						severity="error",
+						span=Span(),
+					)
+				)
+				continue
+			all_func_hirs[global_name] = block
+			fn_owner_module[global_name] = mid
+
+		for local_name, sig in sigs.items():
+			global_name = _qualify_symbol(mid, local_name, local_free_fns=local_free_fns)
+			# Mark module-interface entry points early so downstream phases can
+			# enforce visibility and (later) ABI-boundary rules consistently.
+			is_exported = (local_name in local_free_fns) and (local_name in exported_values) and (local_name != "main")
+			all_sigs[global_name] = replace(sig, name=global_name, is_exported_entrypoint=is_exported)
+
+	# Materialize re-exported functions as trampoline entry points.
+	#
+	# Even though `export { foo }` can refer to an imported binding (re-export),
+	# module interfaces must remain self-contained: importing a symbol from a module
+	# binds to `module::symbol`, not to some hidden downstream module.
+	#
+	# MVP implementation strategy:
+	# - if module `a` exports `foo` that maps to an underlying target `(b, foo)`,
+	#   synthesize `a::foo` as a trivial trampoline calling `b::foo`.
+	# - this ensures exported entrypoints exist in the exporting module and keeps
+	#   future package/interface metadata straightforward.
+	for mid, exported_values in exports_values_by_module.items():
+		for export_name, (target_mod, target_sym) in exported_values.items():
+			if export_name == "main":
+				continue
+			if (target_mod, target_sym) == (mid, export_name):
+				continue
+			trampoline_name = _qualify_fn_name(mid, export_name)
+			if trampoline_name in all_sigs:
+				continue
+			target_name = _qualify_fn_name(target_mod, target_sym)
+			target_sig = all_sigs.get(target_name)
+			if target_sig is None:
+				diagnostics.append(
+					Diagnostic(
+						message=f"internal: missing signature for re-export target '{target_mod}::{target_sym}'",
+						severity="error",
+						span=Span(),
+					)
+				)
+				continue
+			all_sigs[trampoline_name] = replace(target_sig, name=trampoline_name, is_exported_entrypoint=True)
+			fn_owner_module[trampoline_name] = mid
+
+			# Build a minimal HIR body that forwards to the underlying target.
+			arg_exprs: list[H.HExpr] = []
+			for p in getattr(target_sig, "param_names", None) or []:
+				if p:
+					arg_exprs.append(H.HVar(name=p))
+			callee = H.HVar(name=target_name)
+			call_expr = H.HCall(fn=callee, args=arg_exprs)
+			if target_sig.return_type_id is not None and shared_type_table.is_void(target_sig.return_type_id):
+				all_func_hirs[trampoline_name] = H.HBlock(
+					statements=[
+						H.HExprStmt(expr=call_expr),
+						H.HReturn(value=None),
+					]
+				)
+			else:
+				all_func_hirs[trampoline_name] = H.HBlock(statements=[H.HReturn(value=call_expr)])
+
+	if any(d.severity == "error" for d in diagnostics):
+		return {}, {}, TypeTable(), {}, diagnostics
+
+	# Rewrite call sites: HCall(fn=HVar(name="foo")) -> HVar(name="m::foo") for imported/local functions.
+	local_maps: dict[str, dict[str, str]] = {
+		mid: {fn.name: _qualify_fn_name(mid, fn.name) for fn in getattr(prog, "functions", []) or []}
+		for mid, prog in merged_programs.items()
+	}
+
+	def _rewrite_calls_in_block(
+		block: H.HBlock,
+		*,
+		module_id: str,
+		fn_symbol: str,
+		origin_file: Path | None,
+	) -> None:
+		local_map = local_maps.get(module_id, {})
+		file_bindings = from_value_bindings_by_file.get(origin_file or Path(), {})
+		import_map: dict[str, str] = {local_name: _qualify_fn_name(mod, sym) for local_name, (mod, sym) in file_bindings.items()}
+		# Call-site rewriting must be scope-correct: a local binding shadows only
+		# within its lexical block, not across the whole function.
+		#
+		# This is still a limited MVP resolver (it only rewrites direct calls
+		# represented as `HCall(HVar("foo"))`), but it avoids silent miscompiles by:
+		# - never rewriting names that are currently bound (params, lets, binders),
+		# - applying bindings as statements are traversed (let-binding is visible
+		#   only *after* its initializer).
+		param_names: list[str] = []
+		sig = all_sigs.get(fn_symbol)
+		if sig is not None and getattr(sig, "param_names", None):
+			param_names = [p for p in sig.param_names if p]
+
+		def rewrite_name(name: str, *, bound: set[str]) -> str:
+			if name in bound:
+				return name
+			if name in local_map:
+				return local_map[name]
+			if name in import_map:
+				return import_map[name]
+			return name
+
+		def walk_block(b: H.HBlock, *, bound: set[str]) -> None:
+			scope_bound = set(bound)
+			for st in b.statements:
+				walk_stmt(st, bound=scope_bound)
+				if isinstance(st, H.HLet):
+					scope_bound.add(st.name)
+
+		def walk_expr(expr: H.HExpr, *, bound: set[str]) -> None:
+			if isinstance(expr, H.HCall) and isinstance(expr.fn, H.HVar):
+				expr.fn.name = rewrite_name(expr.fn.name, bound=bound)
+			if isinstance(expr, H.HMethodCall):
+				walk_expr(expr.receiver, bound=bound)
+				for a in expr.args:
+					walk_expr(a, bound=bound)
+				for kw in getattr(expr, "kwargs", []) or []:
+					if getattr(kw, "value", None) is not None:
+						walk_expr(kw.value, bound=bound)
+			# Recurse into generic child expressions/blocks.
+			for child in getattr(expr, "__dict__", {}).values():
+				if isinstance(child, H.HExpr):
+					walk_expr(child, bound=bound)
+				elif isinstance(child, H.HBlock):
+					walk_block(child, bound=bound)
+				elif isinstance(child, list):
+					for it in child:
+						if isinstance(it, H.HExpr):
+							walk_expr(it, bound=bound)
+						elif isinstance(it, H.HBlock):
+							walk_block(it, bound=bound)
+						# Expression-form arms (match/try) live under expression nodes and
+						# must be handled here so binders introduce lexical scopes.
+						elif hasattr(H, "HMatchArm") and isinstance(it, getattr(H, "HMatchArm")):
+							arm_bound = set(bound)
+							for bname in getattr(it, "binders", []) or []:
+								arm_bound.add(bname)
+							walk_block(it.block, bound=arm_bound)
+							if getattr(it, "result", None) is not None:
+								walk_expr(it.result, bound=arm_bound)
+						elif hasattr(H, "HTryExprArm") and isinstance(it, getattr(H, "HTryExprArm")):
+							arm_bound = set(bound)
+							if getattr(it, "binder", None):
+								arm_bound.add(it.binder)
+							walk_block(it.block, bound=arm_bound)
+							if getattr(it, "result", None) is not None:
+								walk_expr(it.result, bound=arm_bound)
+			if isinstance(expr, H.HCall):
+				for kw in getattr(expr, "kwargs", []) or []:
+					if getattr(kw, "value", None) is not None:
+						walk_expr(kw.value, bound=bound)
+
+		def walk_stmt(stmt: H.HStmt, *, bound: set[str]) -> None:
+			if isinstance(stmt, H.HTry):
+				walk_block(stmt.body, bound=bound)
+				for arm in stmt.catches:
+					arm_bound = set(bound)
+					if arm.binder:
+						arm_bound.add(arm.binder)
+					walk_block(arm.block, bound=arm_bound)
+				return
+			for child in getattr(stmt, "__dict__", {}).values():
+				if isinstance(child, H.HExpr):
+					walk_expr(child, bound=bound)
+				elif isinstance(child, H.HBlock):
+					walk_block(child, bound=bound)
+				elif isinstance(child, list):
+					for it in child:
+						if isinstance(it, H.HStmt):
+							walk_stmt(it, bound=bound)
+						elif isinstance(it, H.HExpr):
+							walk_expr(it, bound=bound)
+						elif isinstance(it, H.HBlock):
+							walk_block(it, bound=bound)
+						elif hasattr(H, "HCatchArm") and isinstance(it, getattr(H, "HCatchArm")):
+							arm_bound = set(bound)
+							if getattr(it, "binder", None):
+								arm_bound.add(it.binder)
+							walk_block(it.block, bound=arm_bound)
+						elif hasattr(H, "HMatchArm") and isinstance(it, getattr(H, "HMatchArm")):
+							arm_bound = set(bound)
+							for bname in getattr(it, "binders", []) or []:
+								arm_bound.add(bname)
+							walk_block(it.block, bound=arm_bound)
+							if getattr(it, "result", None) is not None:
+								walk_expr(it.result, bound=arm_bound)
+						elif hasattr(H, "HTryExprArm") and isinstance(it, getattr(H, "HTryExprArm")):
+							arm_bound = set(bound)
+							if getattr(it, "binder", None):
+								arm_bound.add(it.binder)
+							walk_block(it.block, bound=arm_bound)
+							if getattr(it, "result", None) is not None:
+								walk_expr(it.result, bound=arm_bound)
+
+		initial_bound = set(param_names)
+		walk_block(block, bound=initial_bound)
+
+	# Apply rewrite to each function body using its origin file’s import environment.
+	fn_origin_file: dict[str, Path] = {}
+	for mid, origins in origin_by_module.items():
+		for local_sym, src_path in origins.items():
+			fn_origin_file[_qualify_fn_name(mid, local_sym)] = src_path
+
+	for fn_name, block in all_func_hirs.items():
+		_rewrite_calls_in_block(
+			block,
+			module_id=fn_owner_module.get(fn_name, "main"),
+			fn_symbol=fn_name,
+			origin_file=fn_origin_file.get(fn_name),
+		)
+
+	# Cross-module exception code collision detection: event codes are derived
+	# from the canonical event FQN (`module:Event`). Collisions are extremely
+	# unlikely, but if they happen we must diagnose them deterministically.
+	payload_seen: dict[int, str] = {}
+	for fqn, code in exc_catalog.items():
+		payload = code & PAYLOAD_MASK
+		other = payload_seen.get(payload)
+		if other is not None and other != fqn:
+			diagnostics.append(Diagnostic(message=f"exception code collision between '{other}' and '{fqn}' (payload {payload})", severity="error", span=Span()))
+		else:
+			payload_seen[payload] = fqn
+
+	return all_func_hirs, all_sigs, shared_type_table, exc_catalog, diagnostics
+
+
+def _lower_parsed_program_to_hir(
+	prog: parser_ast.Program,
+	*,
+	diagnostics: list[Diagnostic] | None = None,
+	type_table: TypeTable | None = None,
+) -> Tuple[Dict[str, H.HBlock], Dict[str, FnSignature], "TypeTable", Dict[str, int], List[Diagnostic]]:
+	"""
+	Lower an already-parsed `Program` to HIR/signatures/type table.
+
+	This is shared by both single-file and multi-file entry points.
+	"""
+	diagnostics = list(diagnostics or [])
 	module_name = getattr(prog, "module", None)
 	func_hirs: Dict[str, H.HBlock] = {}
 	decls: list[_FrontendDecl] = []
@@ -459,7 +1797,6 @@ def parse_drift_to_hir(path: Path) -> Tuple[Dict[str, H.HBlock], Dict[str, FnSig
 	lowerer._module_name = module_name
 	seen: set[str] = set()
 	method_keys: set[tuple[str, str]] = set()  # (impl_target_repr, method_name)
-	diagnostics: list[Diagnostic] = []
 	module_function_names: set[str] = {fn.name for fn in getattr(prog, "functions", []) or []}
 	exception_schemas: dict[str, tuple[str, list[str]]] = {}
 	struct_defs = list(getattr(prog, "structs", []) or [])
@@ -472,7 +1809,7 @@ def parse_drift_to_hir(path: Path) -> Tuple[Dict[str, H.HBlock], Dict[str, FnSig
 	# Build a TypeTable early so we can register user-defined type names (structs)
 	# before resolving function signatures. This prevents `resolve_opaque_type`
 	# from minting unrelated placeholder TypeIds for struct names.
-	type_table = TypeTable()
+	type_table = type_table or TypeTable()
 	# Prelude: `Optional<T>` is required for iterator-style `for` desugaring and
 	# other control-flow sugar. Until modules are supported, the compiler injects
 	# a canonical `Optional<T>` variant base into every compilation unit unless
@@ -497,7 +1834,10 @@ def parse_drift_to_hir(path: Path) -> Tuple[Dict[str, H.HBlock], Dict[str, FnSig
 	# Declare all struct names first (placeholder field types) to support recursion.
 	for s in struct_defs:
 		field_names = [f.name for f in getattr(s, "fields", [])]
-		type_table.declare_struct(s.name, field_names)
+		try:
+			type_table.declare_struct(s.name, field_names)
+		except ValueError as err:
+			diagnostics.append(Diagnostic(message=str(err), severity="error", span=Span.from_loc(getattr(s, "loc", None))))
 	# Declare all variant names/schemas next so type resolution can instantiate
 	# variants (e.g., Optional<Int>) while resolving later annotations/fields.
 	for v in variant_defs:
@@ -511,11 +1851,14 @@ def parse_drift_to_hir(path: Path) -> Tuple[Dict[str, H.HBlock], Dict[str, FnSig
 				for f in getattr(arm, "fields", []) or []
 			]
 			arms.append(VariantArmSchema(name=arm.name, fields=fields))
-		type_table.declare_variant(
-			v.name,
-			list(getattr(v, "type_params", []) or []),
-			arms,
-		)
+		try:
+			type_table.declare_variant(
+				v.name,
+				list(getattr(v, "type_params", []) or []),
+				arms,
+			)
+		except ValueError as err:
+			diagnostics.append(Diagnostic(message=str(err), severity="error", span=Span.from_loc(getattr(v, "loc", None))))
 	# Fill field TypeIds in a second pass now that all names exist.
 	for s in struct_defs:
 		struct_id = type_table.ensure_named(s.name)
@@ -544,7 +1887,15 @@ def parse_drift_to_hir(path: Path) -> Tuple[Dict[str, H.HBlock], Dict[str, FnSig
 	# non-generic variants so their concrete arm types are available.
 	type_table.finalize_variants()
 	# Thread struct schemas for downstream helpers (optional; TypeDefs are authoritative).
-	type_table.struct_schemas = {s.name: (s.name, [f.name for f in getattr(s, "fields", [])]) for s in struct_defs}
+	#
+	# Important: when `type_table` is shared across multiple modules (workspace
+	# builds), we must not overwrite schemas declared by previously-lowered
+	# modules. Update incrementally instead.
+	prev_struct_schemas = getattr(type_table, "struct_schemas", None)
+	if prev_struct_schemas is None:
+		prev_struct_schemas = {}
+	prev_struct_schemas.update({s.name: (s.name, [f.name for f in getattr(s, "fields", [])]) for s in struct_defs})
+	type_table.struct_schemas = prev_struct_schemas
 	for fn in prog.functions:
 		if fn.name in seen:
 			diagnostics.append(
@@ -698,8 +2049,38 @@ def parse_drift_to_hir(path: Path) -> Tuple[Dict[str, H.HBlock], Dict[str, FnSig
 	type_table, sigs = resolve_program_signatures(decls, table=type_table)
 	signatures.update(sigs)
 	# Thread exception schemas through the shared type table for downstream validators.
-	type_table.exception_schemas = exception_schemas
+	#
+	# In a multi-module build, this function may be called repeatedly with a
+	# shared TypeTable; preserve previously registered schemas and extend them.
+	prev_schemas = getattr(type_table, "exception_schemas", None)
+	if not isinstance(prev_schemas, dict):
+		prev_schemas = {}
+	prev_schemas.update(exception_schemas)
+	type_table.exception_schemas = prev_schemas
 	return func_hirs, signatures, type_table, exception_catalog, diagnostics
 
 
-__all__ = ["parse_drift_to_hir"]
+def parse_drift_to_hir(path: Path) -> Tuple[Dict[str, H.HBlock], Dict[str, FnSignature], "TypeTable", Dict[str, int], List[Diagnostic]]:
+	"""
+	Parse a Drift source file into lang2 HIR blocks + FnSignatures + TypeTable.
+
+	Collects parser/adapter diagnostics (e.g., duplicate functions) instead of
+	throwing, so callers can report them alongside later pipeline checks.
+	"""
+	source = path.read_text()
+	try:
+		prog = _parser.parse_program(source)
+	except _parser.FStringParseError as err:
+		return {}, {}, TypeTable(), {}, [Diagnostic(message=str(err), severity="error", span=_span_in_file(path, err.loc))]
+	except UnexpectedInput as err:
+		span = Span(
+			file=str(path),
+			line=getattr(err, "line", None),
+			column=getattr(err, "column", None),
+			raw=err,
+		)
+		return {}, {}, TypeTable(), {}, [Diagnostic(message=str(err), severity="error", span=span)]
+	return _lower_parsed_program_to_hir(prog, diagnostics=[])
+
+
+__all__ = ["parse_drift_to_hir", "parse_drift_files_to_hir", "parse_drift_workspace_to_hir"]

@@ -1,0 +1,8 @@
+{
+  "exit_code": 1,
+  "phase": "parser",
+  "module_paths": ["r1", "r2", "."],
+  "diagnostics": [
+    { "phase": "parser", "message_contains": "multiple module roots provide module 'lib'" }
+  ]
+}

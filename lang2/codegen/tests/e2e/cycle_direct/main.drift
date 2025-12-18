@@ -1,0 +1,4 @@
+module main
+from a import afn
+fn main() returns Int { return afn(); }
+

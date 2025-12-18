@@ -1431,28 +1431,106 @@ Together they form a flexible dual system:
 Drift uses explicit imports — no global or magic identifiers beyond the implicit
 `lang.core` prelude (Section 3.3). This chapter focuses on import mechanics.
 
+**Provider-agnostic imports.** From the programmer’s perspective, `import` and
+`from ... import ...` always import a module interface by **module id**. A build
+may supply modules either as Drift source files or as signed module packages
+(DMIR/DMP, Chapter 20). This does not change the surface syntax or the
+name-resolution rules; it only changes where the toolchain obtains the imported
+module’s interface and typed semantics.
+
+**Build targets vs compilation units.** Drift code is organized into **modules**
+(the language-level unit named by a module id and referenced by `import` / `from
+... import ...`). End users generally think in terms of producing an executable
+or a package artifact, not “building a module” directly.
+
+- **Executable build**: resolve imports from source roots and package roots,
+  compile all required modules, then link into a single executable with an entry
+  point.
+- **Package build**: compile one or more modules from source roots and bundle
+  them into a distributable package artifact (DMIR/DMP) together with module
+  interfaces and metadata.
+
+A **package** is a distribution artifact, not a namespace or import unit;
+imports always resolve against **modules**, whether they originate from source
+roots or package contents.
+
+**Packages are distribution containers.** A single package artifact (e.g., a
+signed DMIR/DMP) may contain **many modules**. Each contained module retains its
+own canonical **module id** (e.g., `std.io`, `std.net`, `std.fmt`) and exports an
+interface independently. Imports always target modules by module id; packages
+only determine **where** module contents and interfaces are sourced from (source
+roots vs package roots).
+
+Example: the Drift standard library is distributed as one package containing
+multiple modules under the `std.*` module-id prefix.
+
+**Tooling note — module roots vs package roots.** The compiler distinguishes:
+- **Source module roots**: directories searched for `.drift` source modules (CLI: `-M/--module-path`, repeatable).
+- **Package roots**: locations searched for signed module packages (DMP/DMIR). A package root may be either a directory containing many packages (a local repository/cache) or an individual package archive file (CLI: `-P/--package-path`, repeatable).
+
+This separation avoids ambiguity and makes builds reproducible: source roots are never treated as package roots and vice versa.
+
+### 7.0. Exports (module interface)
+
+Modules have an explicit **export set**: the list of names that are visible to
+other modules via `from ... import ...`. All other top-level items are private
+to the defining module.
+
+MVP syntax:
+
+```drift
+export { foo, Point, Boom }
+```
+
+Rules:
+
+- Items are **private by default**. A name is importable only if it appears in
+  the module’s export set.
+- The export list names top-level items declared in the current module:
+  - functions
+  - types such as `struct`, `variant`, `exception`, `trait`, `interface`, `type`
+- `export` may appear multiple times across multiple files in the same module;
+  the effective export set is their union.
+- Exporting a name that is not declared in the module is a compile-time error.
+
+Exported functions are module interface entry points and therefore use the
+cross-module can-throw ABI calling convention (Section 7.2).
+
 ### 7.1. Import syntax (modules and symbols)
+
+Drift has two import forms:
+
+1) **Module import** — binds a module name (or alias) into the local scope:
 
 ```drift
 import lang.array          // bind the module
 import std.concurrent as conc  // bind with alias
 ```
 
+2) **Symbol import** — binds a single exported symbol from a module into the
+local scope:
+
+```drift
+from lang.array import len
+from std.concurrent import spawn as go
+```
+
 **Name‑resolution semantics**
 
-- `QualifiedName` is resolved left‑to‑right.  
-- If it resolves to a **module**, the import binds that module under its last segment (or the `as` alias).  
-- If it resolves to an **exported symbol** inside a module, the import binds that symbol directly into the local scope under its own name (or the `as` alias).  
-- Ambiguities between module and symbol names must be disambiguated with `as` or avoided.
+- `import <ModuleId>` always resolves to a **module** and binds that module under
+  its last segment (or the `as` alias).
+- `from <ModuleId> import <Symbol>` resolves `<Symbol>` inside that module and
+  binds it directly into the local scope under its own name (or the `as` alias).
 - Aliases affect only the local binding; frames and module metadata always record the original module ID, not the alias.
 - For the implicit `lang.core` prelude, no import is needed; everything else
   must be imported explicitly.
-- Only **exported** symbols may be resolved by `import`. Attempting to `import M.f` when `f` is not exported by module `M` is a compile-time error.
+- Only **exported** symbols may be imported via `from ... import ...`. Attempting
+  to import a non-exported symbol is a compile-time error.
 
 **Module identifiers**
 
 - Declared with `module <id>` once per file; multiple files may share the same `<id>`, but a single-module build fails if any file is missing or mismatches the ID. A standalone file with no declaration defaults to `main`.
-- `<id>` must be lowercase alnum segments separated by dots, with optional underscores inside segments; no leading/trailing/consecutive dots/underscores; length ≤ 254 UTF-8 bytes.
+- `<id>` must be lowercase segments separated by dots. Each segment must start with a lowercase letter and may contain lowercase letters, digits, and underscores; underscores may not be leading/trailing or consecutive. Dots may not be leading/trailing or consecutive. Total length ≤ 254 UTF-8 bytes.
 - Reserved prefixes are rejected: `lang.`, `abi.`, `std.`, `core.`, `lib.`.
 - Frames/backtraces record the declared module ID (not filenames), so cross-module stacks are unambiguous.
 
@@ -1470,7 +1548,7 @@ Drift treats functions in the module interface as **can-throw entry points**:
 
 Import resolution (Section 7.1) only considers **exported** symbols:
 
-- `import my.module.foo` may only bind `foo` if `foo` appears in `my.module`’s export list.
+- `from my.module import foo` may only bind `foo` if `foo` appears in `my.module`’s export list.
 - Non-exported functions and types are private to the defining module and cannot be named from other modules.
 
 The export set is recorded in the module’s DMIR/DMP metadata (Chapter 20). Tools use this metadata to enforce that only exported, can-throw entry points participate in cross-module linking.
@@ -2093,10 +2171,10 @@ Exception declarations create constructor names in the value namespace. `throw E
 Exceptions are **not** UI messages: they carry machine-friendly context (event name, arguments, captured locals, stack) that can be logged, inspected, or transmitted without embedding human prose.
 `Error` itself is a catch-all handler type: user functions do not return `Error` or throw `Error` directly; they throw concrete exception events, and catch blocks may bind either a specific exception type or `Error` as a generic binder.
 
-**Exceptions and `Result<T, Error>` coexist, with distinct roles.**
-- **Exceptions** are for unwinding control flow: they move ownership of an `Error` up the stack via `throw` / `try` / `catch`. They are used when the caller is not expected to see the failure as part of a normal result type.
+**Exceptions and `Result<T, Error>` coexist, with distinct roles (single semantic model).**
+- **Exceptions** are the surface mechanism for propagating failures: semantically, every can-throw computation produces a `Result<T, Error>`, and `throw` / `try` / `catch` are the structured syntax for constructing, inspecting, and propagating that result while capturing context. Implementations may realize propagation via unwinding within static modules, but the semantic model remains result-based.
 - **`Result<T, Error>`** is the value-level encoding of a potentially failing computation. It is explicit in signatures and ideal for “expected” failures where the caller stays in-band (`match`/pattern matching, pipelines, etc.).
-- Drift’s ABI unifies the two: a can-throw function is *lowered as if* it returned `Result<T, Error>`, and `try`/`catch` is sugar over that model. Use `Result` directly when you want the failure handled in-band; use exceptions when you want stack unwinding with context capture.
+- Drift has one semantic error model: a can-throw computation produces a `Result<T, Error>` (conceptually), and `throw`/`try`/`catch` are surface sugar that construct, inspect, and propagate that `Result` while capturing context for debugging/logging.
 
 ### 14.1. Goals
 Drift’s exception system is designed to:
@@ -2314,6 +2392,17 @@ When a function is part of a module’s exported interface (Chapter 7.2), the `R
 - Callers in other modules must treat every exported function as potentially failing, even if its implementation never actually throws.
 - Internal, non-exported functions may be lowered more aggressively (for example, eliding the error channel when analysis proves “no throw”), but such optimizations must not change the behavior of exported entry points as seen through the module interface.
 
+**RAII and destruction semantics.**
+
+Destructors and deterministic resource cleanup (`Destructible`, scope exit, and move semantics) behave **exactly as if error propagation were implemented purely via explicit `Result<T, Error>` values**, regardless of whether a particular implementation realizes propagation using unwinding internally.
+
+In particular:
+- All destructors that would run on normal control-flow return also run during error propagation.
+- No destructor is skipped or reordered due to unwinding.
+- Error propagation must not introduce observable differences in lifetime or drop behavior.
+
+Unwinding, when used, is an **implementation strategy only** and must preserve the same destruction semantics as value-based propagation.
+
 ---
 
 #### 14.6.1. Can-throw vs non-throw functions (nothrow rules)
@@ -2463,6 +2552,10 @@ Every sized type `T` occupies `size_of<T>()` bytes. Sized types include primitiv
 - A value must be initialized exactly once before use.
 - A value must be destroyed exactly once when it leaves scope or is overwritten.
 - Types with destructors run them during destruction; other types are dropped with no action.
+
+**Error propagation and destruction.**
+
+Resource destruction is deterministic and independent of the mechanism used to propagate errors. Whether a failure is propagated via explicit value inspection or via internal unwinding, the set and order of destructor invocations is identical.
 
 #### 16.1.2. Uninitialized memory
 
@@ -3061,6 +3154,12 @@ Signed DMIR gives Drift a portable, semantically precise unit of distribution wh
 
 *Note:* The exact signing/verification scheme (PGP vs Ed25519, cert hierarchies, revocation policies) is still under design and will be finalized before the DMP format is stabilized. The structure here captures intent; cryptographic options may evolve.
 
+**Relationship to source builds.** A module may be built directly from source or
+loaded from a verified DMP/DMIR package. In both cases the module identity is
+its declared `module <id>` and it participates in imports via that id (Chapter
+7). Packages change the distribution and verification story; they do not change
+the language-level meaning of imports.
+
 **Design note — module interface and errors.** Drift deliberately restricts the module interface to a small, explicit set of exported functions that can throw. This keeps cross-module ABIs uniform (every exported function uses `Result<T, Error>`), simplifies plugin design, and prevents accidental exposure of internal helper functions. Internal code is free to optimize error handling aggressively, but anything that crosses a module boundary must treat errors as first-class values using the standard `Error` type and `Result<T, Error>` encoding.
 
 ---
@@ -3069,7 +3168,7 @@ Signed DMIR gives Drift a portable, semantically precise unit of distribution wh
 
 ## 21. Plugin-style extension via FFI
 
-Drift’s core module system is **static**: modules are compiled into a single image (either directly from source or via DMIR/DMP), and their interfaces are described by the export list in DMIR (Chapter 20). All exported functions are conceptually `Result<T, Error>` and may unwind across static module boundaries (Chapter 14.7).
+Drift’s core module system is **static**: modules are compiled into a single image (either directly from source or via DMIR/DMP), and their interfaces are described by the export list in DMIR (Chapter 20). All exported functions use the can‑throw boundary convention (conceptually `Result<T, Error>` / `{T, Error*}`) and exceptions may propagate across static module boundaries (Chapter 14.7).
 
 Dynamic, OS-level plugins (shared libraries such as `.so`, `.dll`, `.dylib`) are treated as **FFI**, not as first-class Drift modules:
 

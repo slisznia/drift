@@ -34,9 +34,11 @@ This file defines the lexical rules, precedence, and productions for Drift. It i
 
 Top-level:
 ```
-Program      ::= ModuleDecl? ImportDecl* TopDecl*
+Program      ::= ModuleDecl? ExportDecl* ImportDecl* TopDecl*
 ModuleDecl   ::= "module" ModulePath TERMINATOR?
 ModulePath   ::= Ident ("." Ident)*
+ExportDecl   ::= "export" "{" ExportItems? "}" TERMINATOR
+ExportItems  ::= Ident ("," Ident)*
 ImportDecl   ::= "import" ImportItem ("," ImportItem)* TERMINATOR
 ImportItem   ::= ModulePath ("as" Ident)?
 ```

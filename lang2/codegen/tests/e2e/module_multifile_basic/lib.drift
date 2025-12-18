@@ -1,0 +1,6 @@
+module m
+
+fn add1(x: Int) returns Int {
+	return x + 1;
+}
+
