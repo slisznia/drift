@@ -135,13 +135,40 @@ def encode_type_table(table: TypeTable) -> dict[str, Any]:
 			"field_names": list(td.field_names) if td.field_names is not None else None,
 		}
 
+	def _encode_generic_type_expr(expr: GenericTypeExpr) -> dict[str, Any]:
+		return {
+			"name": expr.name,
+			"args": [_encode_generic_type_expr(a) for a in expr.args],
+			"param_index": expr.param_index,
+		}
+
+	def _encode_variant_schema(schema: Any) -> dict[str, Any]:
+		# `VariantSchema` / `VariantArmSchema` / `VariantFieldSchema` are dataclasses,
+		# but we encode them manually so the payload stays stable even if we later
+		# refactor internal Python class names.
+		return {
+			"name": schema.name,
+			"type_params": list(schema.type_params),
+			"arms": [
+				{
+					"name": arm.name,
+					"fields": [{"name": f.name, "type_expr": _encode_generic_type_expr(f.type_expr)} for f in arm.fields],
+				}
+				for arm in schema.arms
+			],
+		}
+
 	defs: dict[str, Any] = {}
 	for tid in sorted(table._defs.keys()):  # type: ignore[attr-defined]
 		defs[str(tid)] = _def_to_obj(table._defs[tid])  # type: ignore[attr-defined]
+	variant_schemas: dict[str, Any] = {}
+	for base_id in sorted(table.variant_schemas.keys()):
+		variant_schemas[str(base_id)] = _encode_variant_schema(table.variant_schemas[base_id])
 	return {
 		"defs": defs,
 		"struct_schemas": {k: v for k, v in sorted(table.struct_schemas.items())},
 		"exception_schemas": {k: v for k, v in sorted(table.exception_schemas.items())},
+		"variant_schemas": variant_schemas,
 	}
 
 
@@ -185,6 +212,7 @@ def encode_module_payload_v0(
 	signatures: Mapping[str, FnSignature],
 	mir_funcs: Mapping[str, Any],
 	exported_values: list[str],
+	exported_types: list[str],
 ) -> dict[str, Any]:
 	"""Build the provisional payload object (not yet canonical-JSON encoded)."""
 	tt_obj = encode_type_table(type_table)
@@ -193,7 +221,7 @@ def encode_module_payload_v0(
 		"payload_version": 0,
 		"unstable_format": True,
 		"module_id": module_id,
-		"exports": {"values": list(exported_values)},
+		"exports": {"values": list(exported_values), "types": list(exported_types)},
 		"type_table": tt_obj,
 		"type_table_fingerprint": type_table_fingerprint(tt_obj),
 		"signatures": encode_signatures(signatures, module_id=module_id),
@@ -215,4 +243,3 @@ def decode_mir_funcs(mir_funcs_obj: Mapping[str, Any]) -> dict[str, Any]:
 	for name, obj in mir_funcs_obj.items():
 		out[str(name)] = from_jsonable(obj, dataclasses_by_name=dc, enums_by_name=enums)
 	return out
-

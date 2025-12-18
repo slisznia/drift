@@ -133,7 +133,7 @@ def _run_case(case_dir: Path) -> str:
 	# import resolution behavior is consistent:
 	# - missing module imports are diagnosed,
 	# - multi-file modules and multi-module cases share the same entry path.
-	func_hirs, signatures, type_table, exception_catalog, parse_diags = parse_drift_workspace_to_hir(
+	func_hirs, signatures, type_table, exception_catalog, _module_exports, parse_diags = parse_drift_workspace_to_hir(
 		drift_files,
 		module_paths=[case_dir / mp for mp in module_paths] or None,
 	)

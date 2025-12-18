@@ -13,8 +13,9 @@ Pinned policy:
   payload.
 
 This module implements verification using local tooling only (offline).
-To avoid adding heavyweight Python crypto dependencies in MVP, verification
-delegates to the system OpenSSL binary.
+Verification uses `cryptography` (Ed25519) and does not shell out to external
+tools. This keeps signature verification self-contained and avoids relying on
+system binaries for security-critical checks.
 """
 
 from __future__ import annotations
@@ -22,12 +23,12 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
-import subprocess
-import tempfile
-import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
+
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 from lang2.driftc.packages.trust_v0 import TrustStore
 
@@ -114,66 +115,22 @@ def load_sig_sidecar(path: Path) -> SigFile:
 	return SigFile(package_sha256_hex=pkg_sha_hex, signatures=entries)
 
 
-def _ed25519_pubkey_pem_from_raw(pubkey_raw: bytes) -> bytes:
+def verify_ed25519(*, pubkey_raw: bytes, message: bytes, signature_raw: bytes) -> bool:
 	"""
-	Build a minimal Ed25519 SubjectPublicKeyInfo PEM from raw public key bytes.
-
-	DER prefix for Ed25519 SPKI (RFC 8410):
-	  SEQUENCE {
-	    SEQUENCE { OID 1.3.101.112 }
-	    BIT STRING (0 unused bits) <32-byte key>
-	  }
-
-	We construct DER manually to keep MVP dependency-free.
-	"""
-	if len(pubkey_raw) != 32:
-		raise ValueError("ed25519 pubkey must be 32 bytes")
-	# DER: 30 2a 30 05 06 03 2b 65 70 03 21 00 <32 bytes>
-	der = bytes.fromhex("302a300506032b6570032100") + pubkey_raw
-	b64 = base64.b64encode(der)
-	lines = [b"-----BEGIN PUBLIC KEY-----"]
-	for i in range(0, len(b64), 64):
-		lines.append(b64[i : i + 64])
-	lines.append(b"-----END PUBLIC KEY-----")
-	return b"\n".join(lines) + b"\n"
-
-
-def verify_ed25519_openssl(*, pubkey_raw: bytes, message: bytes, signature_raw: bytes) -> bool:
-	"""
-	Verify an Ed25519 signature using the system OpenSSL binary.
+	Verify an Ed25519 signature.
 
 	Returns True on success, False on verification failure.
-	Raises on tool errors / missing OpenSSL.
+	Raises on internal decoding/usage errors.
 	"""
-	openssl = shutil.which("openssl")
-	if openssl is None:
-		raise ValueError("openssl not available for ed25519 verification")
-	pub_pem = _ed25519_pubkey_pem_from_raw(pubkey_raw)
-	with tempfile.TemporaryDirectory() as td:
-		tdp = Path(td)
-		pub_path = tdp / "pub.pem"
-		msg_path = tdp / "msg.bin"
-		sig_path = tdp / "sig.bin"
-		pub_path.write_bytes(pub_pem)
-		msg_path.write_bytes(message)
-		sig_path.write_bytes(signature_raw)
-		res = subprocess.run(
-			[
-				openssl,
-				"pkeyutl",
-				"-verify",
-				"-pubin",
-				"-inkey",
-				str(pub_path),
-				"-sigfile",
-				str(sig_path),
-				"-in",
-				str(msg_path),
-			],
-			capture_output=True,
-			text=True,
-		)
-		return res.returncode == 0
+	try:
+		key = Ed25519PublicKey.from_public_bytes(pubkey_raw)
+	except Exception as err:
+		raise ValueError("invalid ed25519 public key bytes") from err
+	try:
+		key.verify(signature_raw, message)
+		return True
+	except InvalidSignature:
+		return False
 
 
 def verify_package_signatures(
@@ -232,10 +189,12 @@ def verify_package_signatures(
 			# Ensure provided pubkey matches kid deterministically.
 			if compute_ed25519_kid(pub_raw) != entry.kid:
 				continue
+
 		if pub_raw is None:
 			continue
+
 		try:
-			ok = verify_ed25519_openssl(pubkey_raw=pub_raw, message=pkg_bytes, signature_raw=entry.sig_raw)
+			ok = verify_ed25519(pubkey_raw=pub_raw, message=pkg_bytes, signature_raw=entry.sig_raw)
 		except Exception as err:
 			raise ValueError(f"signature verification failed: {err}") from err
 		if ok:

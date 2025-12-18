@@ -330,19 +330,21 @@ fn main() returns Int {
 	assert rc != 0
 
 
-def test_driftc_rejects_type_table_fingerprint_mismatch(tmp_path: Path) -> None:
-	# Package defines an extra user type that is not present in the consuming build.
+def test_driftc_can_consume_package_with_additional_types_via_type_table_linking(tmp_path: Path) -> None:
+	# Package defines an extra user type that is not present in the consuming build,
+	# and exports it across the module boundary. The consumer should succeed via
+	# link-time TypeTable unification + TypeId remapping.
 	_write_file(
 		tmp_path / "lib" / "lib.drift",
 		"""
 module lib
 
-export { f }
+export { S, make }
 
 struct S(x: Int)
 
-fn f() returns Int {
-	return 1
+fn make() returns S {
+	return S(x = 42)
 }
 """.lstrip(),
 	)
@@ -354,11 +356,12 @@ fn f() returns Int {
 		"""
 module main
 
-from lib import f
+from lib import S
+from lib import make
 
 fn main() returns Int {
-	val x = f()
-	return 0
+	val s: S = make()
+	return s.x
 }
 """.lstrip(),
 	)
@@ -375,7 +378,7 @@ fn main() returns Int {
 			str(tmp_path / "out.ll"),
 		]
 	)
-	assert rc != 0
+	assert rc == 0
 
 
 def test_package_embedding_includes_only_call_graph_closure(tmp_path: Path) -> None:

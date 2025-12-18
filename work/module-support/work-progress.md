@@ -345,14 +345,15 @@ Work:
   - enforces exported ABI boundary rules using the recorded interface table
   - produces either an executable or another unsigned package artifact
 
-Status: in progress (MVP container + package consumption implemented; TypeId remapping and ABI-boundary enforcement deferred)
+Status: in progress (MVP container + package consumption + TypeId remapping implemented; ABI-boundary enforcement deferred)
 
 Progress note (current reality):
 - Unsigned package artifacts are implemented (DMIR-PKG v0, deterministic manifest+blobs, hash-verified).
 - `driftc` can:
   - emit unsigned packages (`--emit-package`) and load them from `--package-root`,
   - reject duplicate module ids across packages,
-  - enforce a strict TypeTable fingerprint match (until TypeId remapping exists),
+  - import package type tables into a unified link-time `TypeTable` and remap all package `TypeId`s into host `TypeId`s (link-time compatibility by merge/remap, not “equal fingerprints”),
+  - include variant schemas in package payloads and link them into the host type system (needed for `Optional<T>` and future variants),
   - embed only the call-graph closure of referenced package functions into codegen.
 - Signature sidecar verification is implemented (offline, at use time):
   - published packages may include `pkg.dmp.sig` sidecars (produced by `drift`),
@@ -360,7 +361,7 @@ Progress note (current reality):
   - unsigned packages are accepted only from local build outputs (`build/drift/localpkgs/`) or explicitly allowed unsigned roots.
 
 Remaining work for Milestone 4 (pinned for later):
-- Implement true TypeId remapping / link-time unified TypeTable across packages.
+- Harden determinism of type linking (canonical type keys vs incidental ordering) and expand schema-equality/collision diagnostics for richer generic/nested types.
 - Enforce exported ABI-boundary calling convention for cross-module calls using recorded interface metadata.
 
 ---

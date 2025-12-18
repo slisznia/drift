@@ -25,7 +25,7 @@ import sys
 import shutil
 import subprocess
 from pathlib import Path
-from typing import Dict, Mapping, List, Tuple
+from typing import Any, Dict, Mapping, List, Tuple
 
 # Repository root (lang2 lives under this).
 ROOT = Path(__file__).resolve().parents[2]
@@ -52,6 +52,7 @@ from lang2.driftc.type_checker import TypeChecker
 from lang2.driftc.method_registry import CallableRegistry, CallableSignature, Visibility, SelfMode
 from lang2.driftc.packages.dmir_pkg_v0 import canonical_json_bytes, sha256_hex, write_dmir_pkg_v0
 from lang2.driftc.packages.provisional_dmir_v0 import encode_module_payload_v0, decode_mir_funcs, type_table_fingerprint
+from lang2.driftc.packages.type_table_link_v0 import import_type_table_and_build_typeid_map
 from lang2.driftc.packages.provider_v0 import (
 	PackageTrustPolicy,
 	collect_external_exports,
@@ -60,6 +61,51 @@ from lang2.driftc.packages.provider_v0 import (
 	load_package_v0_with_policy,
 )
 from lang2.driftc.packages.trust_v0 import TrustStore, load_trust_store_json, merge_trust_stores
+
+
+def _remap_tid(tid_map: dict[int, int], tid: object) -> object:
+	"""
+	Remap a TypeId-like integer using `tid_map`.
+
+	This helper is intentionally tiny and defensive. Only fields that are known
+	to be TypeIds are remapped, so we don't accidentally rewrite non-TypeId ints
+	(e.g., tag values or indices).
+	"""
+	if isinstance(tid, int):
+		return tid_map.get(tid, tid)
+	return tid
+
+
+def _remap_mir_func_typeids(fn: M.MirFunc, tid_map: dict[int, int]) -> None:
+	"""
+	Remap TypeId fields in a MirFunc in-place.
+
+	Package payloads are produced independently, so their TypeIds must be mapped
+	into the host link-time TypeTable before SSA/LLVM lowering.
+	"""
+	for block in fn.blocks.values():
+		for instr in block.instructions:
+			if isinstance(instr, M.ZeroValue):
+				instr.ty = int(_remap_tid(tid_map, instr.ty))  # type: ignore[assignment]
+			elif isinstance(instr, (M.AddrOfArrayElem, M.LoadRef, M.StoreRef)):
+				instr.inner_ty = int(_remap_tid(tid_map, instr.inner_ty))  # type: ignore[assignment]
+			elif isinstance(instr, M.ConstructStruct):
+				instr.struct_ty = int(_remap_tid(tid_map, instr.struct_ty))  # type: ignore[assignment]
+			elif isinstance(instr, M.ConstructVariant):
+				instr.variant_ty = int(_remap_tid(tid_map, instr.variant_ty))  # type: ignore[assignment]
+			elif isinstance(instr, M.VariantTag):
+				instr.variant_ty = int(_remap_tid(tid_map, instr.variant_ty))  # type: ignore[assignment]
+			elif isinstance(instr, M.VariantGetField):
+				instr.variant_ty = int(_remap_tid(tid_map, instr.variant_ty))  # type: ignore[assignment]
+				instr.field_ty = int(_remap_tid(tid_map, instr.field_ty))  # type: ignore[assignment]
+			elif isinstance(instr, M.StructGetField):
+				instr.struct_ty = int(_remap_tid(tid_map, instr.struct_ty))  # type: ignore[assignment]
+				instr.field_ty = int(_remap_tid(tid_map, instr.field_ty))  # type: ignore[assignment]
+			elif isinstance(instr, M.AddrOfField):
+				instr.struct_ty = int(_remap_tid(tid_map, instr.struct_ty))  # type: ignore[assignment]
+				instr.field_ty = int(_remap_tid(tid_map, instr.field_ty))  # type: ignore[assignment]
+			elif isinstance(instr, (M.ArrayLit, M.ArrayIndexLoad, M.ArrayIndexStore)):
+				instr.elem_ty = int(_remap_tid(tid_map, instr.elem_ty))  # type: ignore[assignment]
 
 
 def _inject_prelude(signatures: dict[str, FnSignature], type_table: TypeTable) -> None:
@@ -600,7 +646,7 @@ def main(argv: list[str] | None = None) -> int:
 					return 1
 		external_exports = collect_external_exports(loaded_pkgs)
 
-	func_hirs, signatures, type_table, exception_catalog, parse_diags = parse_drift_workspace_to_hir(
+	func_hirs, signatures, type_table, exception_catalog, module_exports, parse_diags = parse_drift_workspace_to_hir(
 		source_paths,
 		module_paths=module_paths,
 		external_module_exports=external_exports,
@@ -636,37 +682,47 @@ def main(argv: list[str] | None = None) -> int:
 	type_table.new_optional(type_table.ensure_string())
 
 	# Verify package TypeTable compatibility before importing signatures/IR.
-	# MVP rule: fingerprints must match exactly; TypeId remapping/linking is deferred.
+	# Build link-time TypeId maps for packages and import their type definitions
+	# into the host TypeTable. This allows package consumption without requiring
+	# identical TypeId assignment across independently-produced artifacts.
+	pkg_typeid_maps: dict[Path, dict[int, int]] = {}
 	if loaded_pkgs:
-		host_tt_obj = {
-			"defs": {str(tid): {"kind": td.kind.name, "name": td.name, "param_types": list(td.param_types), "ref_mut": td.ref_mut, "field_names": list(td.field_names) if td.field_names is not None else None} for tid, td in sorted(type_table._defs.items())},  # type: ignore[attr-defined]
-			"struct_schemas": {k: v for k, v in sorted(type_table.struct_schemas.items())},
-			"exception_schemas": {k: v for k, v in sorted(type_table.exception_schemas.items())},
-		}
-		host_fp = type_table_fingerprint(host_tt_obj)
 		for pkg in loaded_pkgs:
+			# MVP rule: all modules in a package must share the same encoded type table.
+			pkg_tt_obj: dict[str, Any] | None = None
 			for mid, mod in pkg.modules_by_id.items():
 				payload = mod.payload
 				if not isinstance(payload, dict):
 					continue
-				pfp = payload.get("type_table_fingerprint")
 				tt = payload.get("type_table")
-				if pfp is None and isinstance(tt, dict):
-					pfp = type_table_fingerprint(tt)
-				if not isinstance(pfp, str):
-					msg = f"package '{pkg.path}' module '{mid}' is missing type_table_fingerprint"
+				if not isinstance(tt, dict):
+					msg = f"package '{pkg.path}' module '{mid}' is missing type_table"
 					if args.json:
-						print(json.dumps({"exit_code": 1, "diagnostics": [{"phase": "package", "message": msg, "severity": "error", "file": str(source_path), "line": None, "column": None}]}))
+						print(json.dumps({"exit_code": 1, "diagnostics": [{"phase": "package", "message": msg, "severity": "error", "file": str(pkg.path), "line": None, "column": None}]}))
 					else:
-						print(f"{source_path}:?:?: error: {msg}", file=sys.stderr)
+						print(f"{pkg.path}:?:?: error: {msg}", file=sys.stderr)
 					return 1
-				if pfp != host_fp:
-					msg = f"incompatible package type table for module '{mid}' from '{pkg.path}' (fingerprint mismatch)"
-					if args.json:
-						print(json.dumps({"exit_code": 1, "diagnostics": [{"phase": "package", "message": msg, "severity": "error", "file": str(source_path), "line": None, "column": None}]}))
-					else:
-						print(f"{source_path}:?:?: error: {msg}", file=sys.stderr)
-					return 1
+				if pkg_tt_obj is None:
+					pkg_tt_obj = tt
+				else:
+					if type_table_fingerprint(tt) != type_table_fingerprint(pkg_tt_obj):
+						msg = f"package '{pkg.path}' contains inconsistent type_table across modules"
+						if args.json:
+							print(json.dumps({"exit_code": 1, "diagnostics": [{"phase": "package", "message": msg, "severity": "error", "file": str(pkg.path), "line": None, "column": None}]}))
+						else:
+							print(f"{pkg.path}:?:?: error: {msg}", file=sys.stderr)
+						return 1
+			if pkg_tt_obj is None:
+				continue
+			try:
+				pkg_typeid_maps[pkg.path] = import_type_table_and_build_typeid_map(pkg_tt_obj, type_table)
+			except ValueError as err:
+				msg = f"failed to import package types from '{pkg.path}': {err}"
+				if args.json:
+					print(json.dumps({"exit_code": 1, "diagnostics": [{"phase": "package", "message": msg, "severity": "error", "file": str(pkg.path), "line": None, "column": None}]}))
+				else:
+					print(f"{pkg.path}:?:?: error: {msg}", file=sys.stderr)
+				return 1
 
 	# If package roots were provided, merge package signatures into the signature
 	# environment so type checking can validate calls to imported functions.
@@ -679,22 +735,32 @@ def main(argv: list[str] | None = None) -> int:
 				sigs_obj = payload.get("signatures")
 				if not isinstance(sigs_obj, dict):
 					continue
+				tid_map = pkg_typeid_maps.get(pkg.path, {})
 				for sym, sd in sigs_obj.items():
 					if not isinstance(sd, dict):
 						continue
 					name = str(sd.get("name") or sym)
 					if name in signatures:
 						continue
+					param_type_ids = sd.get("param_type_ids")
+					if isinstance(param_type_ids, list):
+						param_type_ids = [tid_map.get(int(x), int(x)) for x in param_type_ids]
+					ret_tid = sd.get("return_type_id")
+					if isinstance(ret_tid, int):
+						ret_tid = tid_map.get(ret_tid, ret_tid)
+					impl_tid = sd.get("impl_target_type_id")
+					if isinstance(impl_tid, int):
+						impl_tid = tid_map.get(impl_tid, impl_tid)
 					signatures[name] = FnSignature(
 						name=name,
 						module=sd.get("module"),
 						method_name=sd.get("method_name"),
 						param_names=sd.get("param_names"),
-						param_type_ids=sd.get("param_type_ids"),
-						return_type_id=sd.get("return_type_id"),
+						param_type_ids=param_type_ids,
+						return_type_id=ret_tid,
 						is_method=bool(sd.get("is_method", False)),
 						self_mode=sd.get("self_mode"),
-						impl_target_type_id=sd.get("impl_target_type_id"),
+						impl_target_type_id=impl_tid,
 						is_exported_entrypoint=bool(sd.get("is_exported_entrypoint", False)),
 					)
 
@@ -910,7 +976,8 @@ def main(argv: list[str] | None = None) -> int:
 				exported_values.append(sym_name[len(prefix) :] if sym_name.startswith(prefix) else sym_name)
 			exported_values.sort()
 
-			iface_obj = {"module_id": mid, "exports": {"values": exported_values, "types": []}}
+			exported_types = module_exports.get(mid, {}).get("types", []) if isinstance(module_exports, dict) else []
+			iface_obj = {"module_id": mid, "exports": {"values": exported_values, "types": list(exported_types)}}
 			iface_bytes = canonical_json_bytes(iface_obj)
 			iface_sha = sha256_hex(iface_bytes)
 			blobs_by_sha[iface_sha] = iface_bytes
@@ -924,6 +991,7 @@ def main(argv: list[str] | None = None) -> int:
 				signatures=per_module_sigs.get(mid, {}),
 				mir_funcs=per_module_mir.get(mid, {}),
 				exported_values=exported_values,
+				exported_types=list(exported_types),
 			)
 			payload_bytes = canonical_json_bytes(payload_obj)
 			payload_sha = sha256_hex(payload_bytes)
@@ -935,7 +1003,7 @@ def main(argv: list[str] | None = None) -> int:
 			manifest_modules.append(
 				{
 					"module_id": mid,
-					"exports": {"values": exported_values, "types": []},
+					"exports": {"values": exported_values, "types": list(exported_types)},
 					"interface_blob": f"sha256:{iface_sha}",
 					"payload_blob": f"sha256:{payload_sha}",
 				}
@@ -999,6 +1067,7 @@ def main(argv: list[str] | None = None) -> int:
 		pkg_mir_all: dict[str, M.MirFunc] = {}
 		pkg_sigs: dict[str, FnSignature] = {}
 		for pkg in loaded_pkgs:
+			tid_map = pkg_typeid_maps.get(pkg.path, {})
 			for _mid, mod in pkg.modules_by_id.items():
 				payload = mod.payload
 				if not isinstance(payload, dict):
@@ -1014,6 +1083,7 @@ def main(argv: list[str] | None = None) -> int:
 				if isinstance(mir_obj, dict):
 					for name, fn in decode_mir_funcs(mir_obj).items():
 						if isinstance(fn, M.MirFunc):
+							_remap_mir_func_typeids(fn, tid_map)
 							pkg_mir_all[name] = fn
 				sigs_obj = payload.get("signatures")
 				if isinstance(sigs_obj, dict):
@@ -1022,16 +1092,25 @@ def main(argv: list[str] | None = None) -> int:
 							continue
 						if not isinstance(sd, dict):
 							continue
+						param_type_ids = sd.get("param_type_ids")
+						if isinstance(param_type_ids, list):
+							param_type_ids = [tid_map.get(int(x), int(x)) for x in param_type_ids]
+						ret_tid = sd.get("return_type_id")
+						if isinstance(ret_tid, int):
+							ret_tid = tid_map.get(ret_tid, ret_tid)
+						impl_tid = sd.get("impl_target_type_id")
+						if isinstance(impl_tid, int):
+							impl_tid = tid_map.get(impl_tid, impl_tid)
 						pkg_sigs[name] = FnSignature(
 							name=str(sd.get("name") or name),
 							module=sd.get("module"),
 							method_name=sd.get("method_name"),
 							param_names=sd.get("param_names"),
-							param_type_ids=sd.get("param_type_ids"),
-							return_type_id=sd.get("return_type_id"),
+							param_type_ids=param_type_ids,
+							return_type_id=ret_tid,
 							is_method=bool(sd.get("is_method", False)),
 							self_mode=sd.get("self_mode"),
-							impl_target_type_id=sd.get("impl_target_type_id"),
+							impl_target_type_id=impl_tid,
 							is_exported_entrypoint=bool(sd.get("is_exported_entrypoint", False)),
 						)
 

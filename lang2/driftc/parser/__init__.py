@@ -650,7 +650,7 @@ def parse_drift_files_to_hir(
 		programs.append((path, prog))
 
 	if any(d.severity == "error" for d in diagnostics):
-		return {}, {}, TypeTable(), {}, diagnostics
+		return {}, {}, TypeTable(), {}, {}, diagnostics
 
 	# Enforce single-module membership across the file set.
 	def _effective_module_id(p: parser_ast.Program) -> str:
@@ -672,7 +672,7 @@ def parse_drift_files_to_hir(
 				)
 			)
 	if any(d.severity == "error" for d in diagnostics):
-		return {}, {}, TypeTable(), {}, diagnostics
+		return {}, {}, TypeTable(), {}, {}, diagnostics
 
 	merged, _origins = _merge_module_files(module_id, programs, diagnostics)
 
@@ -832,7 +832,14 @@ def parse_drift_workspace_to_hir(
 	*,
 	module_paths: list[Path] | None = None,
 	external_module_exports: dict[str, dict[str, set[str]]] | None = None,
-) -> Tuple[Dict[str, H.HBlock], Dict[str, FnSignature], "TypeTable", Dict[str, int], List[Diagnostic]]:
+) -> Tuple[
+	Dict[str, H.HBlock],
+	Dict[str, FnSignature],
+	"TypeTable",
+	Dict[str, int],
+	Dict[str, Dict[str, List[str]]],
+	List[Diagnostic],
+]:
 	"""
 	Parse and lower a set of Drift source files that may belong to multiple modules.
 
@@ -856,11 +863,11 @@ def parse_drift_workspace_to_hir(
 	  in MVP. Type-level imports are deferred (tests stay skipped).
 
 	Returns:
-	  (func_hirs, signatures, type_table, exception_catalog, diagnostics)
+	  (func_hirs, signatures, type_table, exception_catalog, module_exports, diagnostics)
 	"""
 	diagnostics: list[Diagnostic] = []
 	if not paths:
-		return {}, {}, TypeTable(), {}, [Diagnostic(message="no input files", severity="error")]
+		return {}, {}, TypeTable(), {}, {}, [Diagnostic(message="no input files", severity="error")]
 
 	def _effective_module_id(p: parser_ast.Program) -> str:
 		return getattr(p, "module", None) or "main"
@@ -889,7 +896,7 @@ def parse_drift_workspace_to_hir(
 		parsed.append((path, prog))
 
 	if any(d.severity == "error" for d in diagnostics):
-		return {}, {}, TypeTable(), {}, diagnostics
+		return {}, {}, TypeTable(), {}, {}, diagnostics
 
 	def _infer_module_id_from_paths(path: Path) -> tuple[str, Path] | tuple[None, None]:
 		"""
@@ -987,7 +994,7 @@ def parse_drift_workspace_to_hir(
 			by_module.setdefault(mid, []).append((path, prog))
 
 	if any(d.severity == "error" for d in diagnostics):
-		return {}, {}, TypeTable(), {}, diagnostics
+		return {}, {}, TypeTable(), {}, {}, diagnostics
 
 	# When module roots are used, reject ambiguous module ids coming from
 	# multiple roots (prevents accidental shadowing/selection by search order).
@@ -1010,7 +1017,7 @@ def parse_drift_workspace_to_hir(
 					)
 				)
 	if any(d.severity == "error" for d in diagnostics):
-		return {}, {}, TypeTable(), {}, diagnostics
+		return {}, {}, TypeTable(), {}, {}, diagnostics
 	# Merge each module (Milestone 1 rules) and retain callable provenance per file.
 	merged_programs: dict[str, parser_ast.Program] = {}
 	origin_by_module: dict[str, dict[str, Path]] = {}
@@ -1020,7 +1027,7 @@ def parse_drift_workspace_to_hir(
 		origin_by_module[mid] = origins
 
 	if any(d.severity == "error" for d in diagnostics):
-		return {}, {}, TypeTable(), {}, diagnostics
+		return {}, {}, TypeTable(), {}, {}, diagnostics
 
 	def _build_export_interface(
 		*,
@@ -1248,7 +1255,7 @@ def parse_drift_workspace_to_hir(
 						)
 
 	if any(d.severity == "error" for d in diagnostics):
-		return {}, {}, TypeTable(), {}, diagnostics
+		return {}, {}, TypeTable(), {}, {}, diagnostics
 
 	# Export sets (private by default, explicit exports required).
 	#
@@ -1272,7 +1279,17 @@ def parse_drift_workspace_to_hir(
 		exports_types_by_module[mid] = exported_types
 
 	if any(d.severity == "error" for d in diagnostics):
-		return {}, {}, TypeTable(), {}, diagnostics
+		return {}, {}, TypeTable(), {}, {}, diagnostics
+
+	# Export interface summary (used by package emission and future tooling).
+	module_exports: dict[str, dict[str, list[str]]] = {}
+	for mid in merged_programs.keys():
+		vals = exports_values_by_module.get(mid, {})
+		types = exports_types_by_module.get(mid, set())
+		module_exports[mid] = {
+			"values": sorted(list(vals.keys())),
+			"types": sorted(list(types)),
+		}
 
 	# Resolve imports and build a dependency graph.
 	#
@@ -1616,7 +1633,7 @@ def parse_drift_workspace_to_hir(
 		)
 
 	if any(d.severity == "error" for d in diagnostics):
-		return {}, {}, TypeTable(), {}, diagnostics
+		return {}, {}, TypeTable(), {}, {}, diagnostics
 
 	# Lower modules using a shared TypeTable so TypeIds remain comparable across the workspace.
 	shared_type_table = TypeTable()
@@ -1657,8 +1674,8 @@ def parse_drift_workspace_to_hir(
 			except ValueError as err:
 				diagnostics.append(Diagnostic(message=str(err), severity="error", span=Span.from_loc(getattr(_v, "loc", None))))
 
-	if any(d.severity == "error" for d in diagnostics):
-		return {}, {}, TypeTable(), {}, diagnostics
+		if any(d.severity == "error" for d in diagnostics):
+			return {}, {}, TypeTable(), {}, {}, diagnostics
 
 	def _qualify_fn_name(module_id: str, name: str) -> str:
 		# Entrypoint is always the unqualified symbol `main` regardless of which
@@ -1777,8 +1794,8 @@ def parse_drift_workspace_to_hir(
 			else:
 				all_func_hirs[trampoline_name] = H.HBlock(statements=[H.HReturn(value=call_expr)])
 
-	if any(d.severity == "error" for d in diagnostics):
-		return {}, {}, TypeTable(), {}, diagnostics
+		if any(d.severity == "error" for d in diagnostics):
+			return {}, {}, TypeTable(), {}, {}, diagnostics
 
 	# Rewrite call sites: HCall(fn=HVar(name="foo")) -> HVar(name="m::foo") for imported/local functions.
 	local_maps: dict[str, dict[str, str]] = {
@@ -2069,7 +2086,7 @@ def parse_drift_workspace_to_hir(
 		else:
 			payload_seen[payload] = fqn
 
-	return all_func_hirs, all_sigs, shared_type_table, exc_catalog, diagnostics
+	return all_func_hirs, all_sigs, shared_type_table, exc_catalog, module_exports, diagnostics
 
 
 def _lower_parsed_program_to_hir(
