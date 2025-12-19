@@ -225,8 +225,8 @@ Progress note (partial implementation):
 
 Remaining work for Milestone 2:
 - (none for MVP import resolution; remaining items are Milestone-4/package related)
-- Exported ABI boundary enforcement for cross-module calls is not wired yet (Milestone 3 pinned requirement).
-- True module-scoped type identity and cross-module type imports are deferred until type namespaces land.
+- (Moved to Milestone 4 and now implemented): exported ABI-boundary enforcement for cross-module calls (always uses the public entrypoint wrapper).
+- (Implemented): module-scoped nominal type identity (struct/variant/exception) so two modules can define `Point` without collisions.
 - Keep one canonical “module namespace” design (future): extend `x.foo` to permit deeper module paths or richer import mechanisms without introducing runtime module objects.
 
 Test maintenance (pinned):
@@ -236,8 +236,7 @@ Test maintenance (pinned):
   that are now supported, keeping the e2e suite authoritative without duplicating coverage.
 
 Skipped test inventory (non-exhaustive; keep up to date as new coverage is added):
-- Milestone 2 (deferred features): module-qualified type identity and cross-module type imports.
-- Future (glob imports / richer UX): `import_ambiguous_symbol_due_to_glob`, candidate-list diagnostics, minimal-cycle trace formatting.
+- Deferred features: full re-export semantics (`pub use` / re-export graphs) and richer import UX beyond MVP.
 
 ### Milestone 3 — Exports / visibility (minimal, spec-aligned)
 
@@ -361,10 +360,21 @@ Progress note (current reality):
   - published packages may include `pkg.dmp.sig` sidecars (produced by `drift`),
   - `driftc` verifies signatures at use time (gatekeeper) using project/user trust stores,
   - unsigned packages are accepted only from local build outputs (`build/drift/localpkgs/`) or explicitly allowed unsigned roots.
+- Deterministic type linking is implemented:
+  - package type tables are merged via canonical type keys (order-independent),
+  - builds are deterministic across package discovery/root ordering (locked by driver tests).
+- Exported ABI-boundary enforcement for cross-module calls is implemented:
+  - cross-module calls always target the public wrapper symbol and use the uniform `FnResult<Ok, Error*>` boundary ABI,
+  - nothrow callers unwrap via a trap helper (never “blindly extract ok”),
+  - locked by driver IR assertions and e2e tests (including by-value struct Ok payload).
+- Minimal trust UX tooling exists (`lang2/drift`):
+  - `drift sign pkg.dmp --key key.seed` emits `pkg.dmp.sig`,
+  - `drift trust add-key/list/revoke` manages a project-local `./drift/trust.json`,
+  - revocation is enforced by `driftc` at use time (locked by driver test: accept → revoke → reject).
 
 Remaining work for Milestone 4 (pinned for later):
-- Harden determinism of type linking (canonical type keys vs incidental ordering) and expand schema-equality/collision diagnostics for richer generic/nested types.
-- Enforce exported ABI-boundary calling convention for cross-module calls using recorded interface metadata.
+- Tighten and document the package interface table schema further as the package format evolves.
+- Implement `drift` package-manager/publisher flows (fetch/cache/vendor/publish), key UX, and repository/index signing (out of scope for `driftc`).
 
 ---
 

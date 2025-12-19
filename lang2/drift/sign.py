@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from lang2.drift.crypto import b64_encode, b64_decode, compute_ed25519_kid, ed25519_sign_from_seed, sha256_hex
 
@@ -13,6 +14,7 @@ class SignOptions:
 	package_path: Path
 	key_seed_path: Path
 	out_path: Path
+	add_signature: bool
 	include_pubkey: bool
 
 
@@ -33,7 +35,24 @@ def _load_seed32(path: Path) -> bytes:
 	return raw
 
 
+def _load_sig_sidecar_obj(path: Path) -> dict[str, Any]:
+	obj = json.loads(path.read_text(encoding="utf-8"))
+	if not isinstance(obj, dict):
+		raise ValueError("signature sidecar must be a JSON object")
+	if obj.get("format") != "dmir-pkg-sig" or obj.get("version") != 0:
+		raise ValueError("unsupported signature sidecar format/version")
+	if "package_sha256" not in obj:
+		raise ValueError("signature sidecar missing package_sha256")
+	sigs = obj.get("signatures")
+	if not isinstance(sigs, list):
+		raise ValueError("signature sidecar signatures must be an array")
+	return obj
+
+
 def sign_package_v0(opts: SignOptions) -> None:
+	if not opts.package_path.exists():
+		raise ValueError(f"package not found: {opts.package_path}")
+
 	pkg_bytes = opts.package_path.read_bytes()
 	pkg_sha = sha256_hex(pkg_bytes)
 	seed32 = _load_seed32(opts.key_seed_path)
@@ -48,11 +67,25 @@ def sign_package_v0(opts: SignOptions) -> None:
 	if opts.include_pubkey:
 		entry["pubkey"] = b64_encode(pub_raw)
 
-	obj = {
-		"format": "dmir-pkg-sig",
-		"version": 0,
-		"package_sha256": f"sha256:{pkg_sha}",
-		"signatures": [entry],
-	}
-	opts.out_path.write_text(json.dumps(obj, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+	if opts.add_signature:
+		if not opts.out_path.exists():
+			raise ValueError(f"signature sidecar not found: {opts.out_path}")
+		obj = _load_sig_sidecar_obj(opts.out_path)
+		if obj.get("package_sha256") != f"sha256:{pkg_sha}":
+			raise ValueError("signature sidecar package_sha256 mismatch")
+		obj["signatures"].append(entry)
+	else:
+		if opts.out_path.exists():
+			# If the sidecar already exists, ensure it matches the package and then
+			# overwrite it (deterministic "replace" semantics).
+			obj = _load_sig_sidecar_obj(opts.out_path)
+			if obj.get("package_sha256") != f"sha256:{pkg_sha}":
+				raise ValueError("signature sidecar package_sha256 mismatch")
+		obj = {
+			"format": "dmir-pkg-sig",
+			"version": 0,
+			"package_sha256": f"sha256:{pkg_sha}",
+			"signatures": [entry],
+		}
 
+	opts.out_path.write_text(json.dumps(obj, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")

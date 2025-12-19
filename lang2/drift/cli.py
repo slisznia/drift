@@ -26,6 +26,11 @@ def _build_parser() -> argparse.ArgumentParser:
 	sign.add_argument("--key", type=Path, required=True, help="Path to base64-encoded Ed25519 private seed (32 bytes)")
 	sign.add_argument("--out", type=Path, default=None, help="Output sidecar path (default: <pkg>.sig)")
 	sign.add_argument(
+		"--add-signature",
+		action="store_true",
+		help="Append a signature to an existing sidecar (fails if the sidecar is missing or mismatched)",
+	)
+	sign.add_argument(
 		"--include-pubkey",
 		action="store_true",
 		help="Include the public key bytes in the sidecar (driftc still verifies only against trust-store keys)",
@@ -82,15 +87,24 @@ def main(argv: list[str] | None = None) -> int:
 			package_path=pkg_path,
 			key_seed_path=args.key,
 			out_path=out,
+			add_signature=bool(args.add_signature),
 			include_pubkey=bool(args.include_pubkey),
 		)
-		sign_package_v0(opts)
-		return 0
+		try:
+			sign_package_v0(opts)
+			return 0
+		except Exception as err:
+			p.error(str(err))
+			return 2
 
 	if args.cmd == "keygen":
 		opts = KeygenOptions(out_path=args.out, print_pubkey=bool(args.print_pubkey), print_kid=bool(args.print_kid))
-		keygen_ed25519_seed(opts)
-		return 0
+		try:
+			keygen_ed25519_seed(opts)
+			return 0
+		except Exception as err:
+			p.error(str(err))
+			return 2
 
 	if args.cmd == "trust":
 		if args.trust_cmd == "list":
@@ -109,13 +123,21 @@ def main(argv: list[str] | None = None) -> int:
 				pubkey_b64=args.pubkey,
 				kid=args.kid,
 			)
-			add_key_to_trust_store(opts)
-			return 0
+			try:
+				add_key_to_trust_store(opts)
+				return 0
+			except Exception as err:
+				p.error(str(err))
+				return 2
 
 		if args.trust_cmd == "revoke":
 			opts = TrustRevokeOptions(trust_store_path=args.trust_store, kid=args.kid, reason=args.reason)
-			revoke_kid_in_trust_store(opts)
-			return 0
+			try:
+				revoke_kid_in_trust_store(opts)
+				return 0
+			except Exception as err:
+				p.error(str(err))
+				return 2
 
 		raise AssertionError("unreachable")
 

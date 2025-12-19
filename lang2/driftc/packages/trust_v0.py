@@ -113,6 +113,8 @@ def load_trust_store_json(path: Path) -> TrustStore:
 		if algo != "ed25519" or not isinstance(pub_b64, str):
 			continue
 		pub_raw = _b64_decode(pub_b64)
+		if len(pub_raw) != 32:
+			raise ValueError("ed25519 pubkey must be 32 bytes")
 		keys_by_kid[kid] = TrustedKey(algo=algo, kid=kid, pubkey_raw=pub_raw)
 
 	ns_obj = obj.get("namespaces") or {}
