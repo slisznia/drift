@@ -900,120 +900,120 @@ class HIRToMIR:
 		return is_array_iter_struct(ty_id, self._type_table)
 
 	def _lower_array_iter_next(self, receiver: H.HExpr, iter_ty: TypeId) -> M.ValueId:
-			"""
-			Lower `__ArrayIter_<T>.next()` to a CFG that:
-			- checks `idx < arr.len`,
-			- returns `Some(arr[idx])` and increments idx on success,
-			- returns `None()` on exhaustion.
+		"""
+		Lower `__ArrayIter_<T>.next()` to a CFG that:
+		- checks `idx < arr.len`,
+		- returns `Some(arr[idx])` and increments idx on success,
+		- returns `None()` on exhaustion.
 
-			This is a compiler intrinsic (no trait dispatch yet).
-			"""
-			if not isinstance(receiver, H.HVar):
-				raise AssertionError("array iterator next() receiver must be a local variable (for-loop lowering bug)")
-			iter_name = receiver.name
-			self.b.ensure_local(iter_name)
+		This is a compiler intrinsic (no trait dispatch yet).
+		"""
+		if not isinstance(receiver, H.HVar):
+			raise AssertionError("array iterator next() receiver must be a local variable (for-loop lowering bug)")
+		iter_name = receiver.name
+		self.b.ensure_local(iter_name)
 
-			iter_ptr = self.b.new_temp()
-			self.b.emit(M.AddrOfLocal(dest=iter_ptr, local=iter_name, is_mut=True))
+		iter_ptr = self.b.new_temp()
+		self.b.emit(M.AddrOfLocal(dest=iter_ptr, local=iter_name, is_mut=True))
 
-			iter_def = self._type_table.get(iter_ty)
-			if iter_def.kind is not TypeKind.STRUCT or not iter_def.param_types or len(iter_def.param_types) != 2:
-				raise AssertionError("array iterator type must be a 2-field struct (compiler bug)")
-			arr_ty, idx_ty = iter_def.param_types
-			if idx_ty != self._int_type:
-				raise AssertionError("array iterator idx field must be Int (compiler bug)")
-			arr_def = self._type_table.get(arr_ty)
-			if arr_def.kind is not TypeKind.ARRAY or not arr_def.param_types:
-				raise AssertionError("array iterator arr field must be Array<T> (compiler bug)")
-			elem_ty = arr_def.param_types[0]
+		iter_def = self._type_table.get(iter_ty)
+		if iter_def.kind is not TypeKind.STRUCT or not iter_def.param_types or len(iter_def.param_types) != 2:
+			raise AssertionError("array iterator type must be a 2-field struct (compiler bug)")
+		arr_ty, idx_ty = iter_def.param_types
+		if idx_ty != self._int_type:
+			raise AssertionError("array iterator idx field must be Int (compiler bug)")
+		arr_def = self._type_table.get(arr_ty)
+		if arr_def.kind is not TypeKind.ARRAY or not arr_def.param_types:
+			raise AssertionError("array iterator arr field must be Array<T> (compiler bug)")
+		elem_ty = arr_def.param_types[0]
 
-			arr_ptr = self.b.new_temp()
-			self.b.emit(M.AddrOfField(dest=arr_ptr, base_ptr=iter_ptr, struct_ty=iter_ty, field_index=0, field_ty=arr_ty))
-			idx_ptr = self.b.new_temp()
-			self.b.emit(
-				M.AddrOfField(dest=idx_ptr, base_ptr=iter_ptr, struct_ty=iter_ty, field_index=1, field_ty=idx_ty, is_mut=True)
-			)
-			arr_val = self.b.new_temp()
-			self.b.emit(M.LoadRef(dest=arr_val, ptr=arr_ptr, inner_ty=arr_ty))
-			idx_val = self.b.new_temp()
-			self.b.emit(M.LoadRef(dest=idx_val, ptr=idx_ptr, inner_ty=idx_ty))
+		arr_ptr = self.b.new_temp()
+		self.b.emit(M.AddrOfField(dest=arr_ptr, base_ptr=iter_ptr, struct_ty=iter_ty, field_index=0, field_ty=arr_ty))
+		idx_ptr = self.b.new_temp()
+		self.b.emit(
+			M.AddrOfField(dest=idx_ptr, base_ptr=iter_ptr, struct_ty=iter_ty, field_index=1, field_ty=idx_ty, is_mut=True)
+		)
+		arr_val = self.b.new_temp()
+		self.b.emit(M.LoadRef(dest=arr_val, ptr=arr_ptr, inner_ty=arr_ty))
+		idx_val = self.b.new_temp()
+		self.b.emit(M.LoadRef(dest=idx_val, ptr=idx_ptr, inner_ty=idx_ty))
 
-			# Ensure Optional<T> exists and instantiate Optional<elem>.
-			opt_base = self._type_table.get_variant_base(module_id="lang.core", name="Optional")
-			if opt_base is None:
-				raise AssertionError("Optional<T> variant base is missing (compiler bug)")
-			opt_ty = self._type_table.ensure_instantiated(opt_base, [elem_ty])
+		# Ensure Optional<T> exists and instantiate Optional<elem>.
+		opt_base = self._type_table.get_variant_base(module_id="lang.core", name="Optional")
+		if opt_base is None:
+			raise AssertionError("Optional<T> variant base is missing (compiler bug)")
+		opt_ty = self._type_table.ensure_instantiated(opt_base, [elem_ty])
 
-			# Hidden local to merge the Optional result.
-			#
-			# Important: we intentionally merge through an address-taken local
-			# (AddrOfLocal + StoreRef/LoadRef) rather than StoreLocal/LoadLocal.
-			#
-			# `next()` lowering emits a small CFG diamond and is frequently used inside
-			# loops (`for` desugaring). If we represent the merge as a logical local,
-			# the SSA pass may conservatively place loop-header φ nodes for that local
-			# even though the value never escapes the `next()` intrinsic CFG. LLVM IR
-			# then needs correct forward-referenced φ typing. Using an address-taken
-			# local keeps the merge in memory and avoids emitting spurious φ nodes,
-			# making the intrinsic robust without depending on SSA/cfg heuristics.
-			result_local = f"__next_tmp{self.b.new_temp()}"
-			self.b.ensure_local(result_local)
-			self._local_types[result_local] = opt_ty
-			#
-			# Seed the storage with a well-typed value before taking its address.
-			#
-			# LLVM lowering needs to know the alloca element type for `AddrOfLocal`.
-			# For most address-taken locals this is inferred from an earlier StoreLocal
-			# (the first store determines the slot type). This synthetic initialization
-			# makes that inference reliable for the internal `next()` merge slot even
-			# though later writes go through `StoreRef`.
-			init_none = self.b.new_temp()
-			self.b.emit(M.ConstructVariant(dest=init_none, variant_ty=opt_ty, ctor="None", args=[]))
-			self.b.emit(M.StoreLocal(local=result_local, value=init_none))
-			self._local_types[init_none] = opt_ty
-			result_ptr = self.b.new_temp()
-			self.b.emit(M.AddrOfLocal(dest=result_ptr, local=result_local, is_mut=True))
+		# Hidden local to merge the Optional result.
+		#
+		# Important: we intentionally merge through an address-taken local
+		# (AddrOfLocal + StoreRef/LoadRef) rather than StoreLocal/LoadLocal.
+		#
+		# `next()` lowering emits a small CFG diamond and is frequently used inside
+		# loops (`for` desugaring). If we represent the merge as a logical local,
+		# the SSA pass may conservatively place loop-header φ nodes for that local
+		# even though the value never escapes the `next()` intrinsic CFG. LLVM IR
+		# then needs correct forward-referenced φ typing. Using an address-taken
+		# local keeps the merge in memory and avoids emitting spurious φ nodes,
+		# making the intrinsic robust without depending on SSA/cfg heuristics.
+		result_local = f"__next_tmp{self.b.new_temp()}"
+		self.b.ensure_local(result_local)
+		self._local_types[result_local] = opt_ty
+		#
+		# Seed the storage with a well-typed value before taking its address.
+		#
+		# LLVM lowering needs to know the alloca element type for `AddrOfLocal`.
+		# For most address-taken locals this is inferred from an earlier StoreLocal
+		# (the first store determines the slot type). This synthetic initialization
+		# makes that inference reliable for the internal `next()` merge slot even
+		# though later writes go through `StoreRef`.
+		init_none = self.b.new_temp()
+		self.b.emit(M.ConstructVariant(dest=init_none, variant_ty=opt_ty, ctor="None", args=[]))
+		self.b.emit(M.StoreLocal(local=result_local, value=init_none))
+		self._local_types[init_none] = opt_ty
+		result_ptr = self.b.new_temp()
+		self.b.emit(M.AddrOfLocal(dest=result_ptr, local=result_local, is_mut=True))
 
-			then_block = self.b.new_block("array_next_some")
-			else_block = self.b.new_block("array_next_none")
-			join_block = self.b.new_block("array_next_join")
+		then_block = self.b.new_block("array_next_some")
+		else_block = self.b.new_block("array_next_none")
+		join_block = self.b.new_block("array_next_join")
 
-			# Compare idx < len(arr)
-			len_val = self.b.new_temp()
-			self.b.emit(M.ArrayLen(dest=len_val, array=arr_val))
-			cmp = self.b.new_temp()
-			self.b.emit(M.BinaryOpInstr(dest=cmp, op=M.BinaryOp.LT, left=idx_val, right=len_val))
-			self.b.set_terminator(M.IfTerminator(cond=cmp, then_target=then_block.name, else_target=else_block.name))
+		# Compare idx < len(arr)
+		len_val = self.b.new_temp()
+		self.b.emit(M.ArrayLen(dest=len_val, array=arr_val))
+		cmp = self.b.new_temp()
+		self.b.emit(M.BinaryOpInstr(dest=cmp, op=M.BinaryOp.LT, left=idx_val, right=len_val))
+		self.b.set_terminator(M.IfTerminator(cond=cmp, then_target=then_block.name, else_target=else_block.name))
 
-			# some branch
-			self.b.set_block(then_block)
-			elem_val = self.b.new_temp()
-			self.b.emit(M.ArrayIndexLoad(dest=elem_val, elem_ty=elem_ty, array=arr_val, index=idx_val))
-			one = self.b.new_temp()
-			self.b.emit(M.ConstInt(dest=one, value=1))
-			idx_next = self.b.new_temp()
-			self.b.emit(M.BinaryOpInstr(dest=idx_next, op=M.BinaryOp.ADD, left=idx_val, right=one))
-			self.b.emit(M.StoreRef(ptr=idx_ptr, value=idx_next, inner_ty=idx_ty))
-			some_val = self.b.new_temp()
-			self.b.emit(M.ConstructVariant(dest=some_val, variant_ty=opt_ty, ctor="Some", args=[elem_val]))
-			self.b.emit(M.StoreRef(ptr=result_ptr, value=some_val, inner_ty=opt_ty))
-			if self.b.block.terminator is None:
-				self.b.set_terminator(M.Goto(target=join_block.name))
+		# some branch
+		self.b.set_block(then_block)
+		elem_val = self.b.new_temp()
+		self.b.emit(M.ArrayIndexLoad(dest=elem_val, elem_ty=elem_ty, array=arr_val, index=idx_val))
+		one = self.b.new_temp()
+		self.b.emit(M.ConstInt(dest=one, value=1))
+		idx_next = self.b.new_temp()
+		self.b.emit(M.BinaryOpInstr(dest=idx_next, op=M.BinaryOp.ADD, left=idx_val, right=one))
+		self.b.emit(M.StoreRef(ptr=idx_ptr, value=idx_next, inner_ty=idx_ty))
+		some_val = self.b.new_temp()
+		self.b.emit(M.ConstructVariant(dest=some_val, variant_ty=opt_ty, ctor="Some", args=[elem_val]))
+		self.b.emit(M.StoreRef(ptr=result_ptr, value=some_val, inner_ty=opt_ty))
+		if self.b.block.terminator is None:
+			self.b.set_terminator(M.Goto(target=join_block.name))
 
-			# none branch
-			self.b.set_block(else_block)
-			none_val = self.b.new_temp()
-			self.b.emit(M.ConstructVariant(dest=none_val, variant_ty=opt_ty, ctor="None", args=[]))
-			self.b.emit(M.StoreRef(ptr=result_ptr, value=none_val, inner_ty=opt_ty))
-			if self.b.block.terminator is None:
-				self.b.set_terminator(M.Goto(target=join_block.name))
+		# none branch
+		self.b.set_block(else_block)
+		none_val = self.b.new_temp()
+		self.b.emit(M.ConstructVariant(dest=none_val, variant_ty=opt_ty, ctor="None", args=[]))
+		self.b.emit(M.StoreRef(ptr=result_ptr, value=none_val, inner_ty=opt_ty))
+		if self.b.block.terminator is None:
+			self.b.set_terminator(M.Goto(target=join_block.name))
 
-			# join: load the Optional value
-			self.b.set_block(join_block)
-			dest = self.b.new_temp()
-			self.b.emit(M.LoadRef(dest=dest, ptr=result_ptr, inner_ty=opt_ty))
-			self._local_types[dest] = opt_ty
-			return dest
+		# join: load the Optional value
+		self.b.set_block(join_block)
+		dest = self.b.new_temp()
+		self.b.emit(M.LoadRef(dest=dest, ptr=result_ptr, inner_ty=opt_ty))
+		self._local_types[dest] = opt_ty
+		return dest
 
 	def _visit_expr_HDVInit(self, expr: H.HDVInit) -> M.ValueId:
 		arg_vals = [self.lower_expr(a) for a in expr.args]

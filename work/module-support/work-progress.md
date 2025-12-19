@@ -202,6 +202,8 @@ Progress note (partial implementation):
   - call sites are rewritten so `from lib import add; add(...)` calls `lib::add`.
 - Method symbols are also module-qualified to avoid collisions across modules:
   - `Type::method` becomes `<module>::Type::method` in the merged workspace unit.
+- Stage2 lowering is hardened: method calls are always resolved and lowered as plain `Call` instructions.
+  - There is no MIR `MethodCall` instruction in v1; any unresolved method call reaching MIR lowering is a hard assertion (checker/resolution bug).
 - Module-qualified access is supported for both value and type namespaces:
   - `import lib as x; x.make(...)` resolves `make` in the imported module’s value exports.
   - `val p: x.Point = ...` resolves `Point` in the imported module’s type exports.
