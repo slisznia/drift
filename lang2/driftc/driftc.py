@@ -52,7 +52,7 @@ from lang2.driftc.type_checker import TypeChecker
 from lang2.driftc.method_registry import CallableRegistry, CallableSignature, Visibility, SelfMode
 from lang2.driftc.packages.dmir_pkg_v0 import canonical_json_bytes, sha256_hex, write_dmir_pkg_v0
 from lang2.driftc.packages.provisional_dmir_v0 import encode_module_payload_v0, decode_mir_funcs, type_table_fingerprint
-from lang2.driftc.packages.type_table_link_v0 import import_type_table_and_build_typeid_map, import_type_tables_and_build_typeid_maps
+from lang2.driftc.packages.type_table_link_v0 import import_type_tables_and_build_typeid_maps
 from lang2.driftc.packages.provider_v0 import (
 	PackageTrustPolicy,
 	collect_external_exports,
