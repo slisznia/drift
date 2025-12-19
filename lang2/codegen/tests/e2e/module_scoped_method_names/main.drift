@@ -1,0 +1,14 @@
+module main
+
+import a.geom as ag
+import b.geom as bg
+
+fn main() returns Int {
+	var p1: ag.Point = ag.make()
+	var p2: bg.Point = bg.make()
+
+	p1.move_by(10, 0)
+	p2.move_by(0, 20)
+
+	return p1.x + p2.y
+}

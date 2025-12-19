@@ -1933,18 +1933,22 @@ class HIRToMIR:
 			# so calls cannot become cross-module ambiguous after module-qualifying
 			# method symbols (`mod::Type::method`).
 			#
-			# If the TypeId is missing, accept only a strict textual match on the
-			# last two path segments, with an optional single module prefix:
-			#   - `Type::method`
-			#   - `mod::Type::method`
+			# If the TypeId is missing, accept only a strict textual match that is
+			# compatible with the receiver's nominal identity:
+			#   - If the receiver is module-scoped (STRUCT TypeDef has module_id),
+			#     require the fully qualified method symbol `mod::Type::method`.
+			#   - Otherwise (legacy/builtin-only), accept `Type::method`.
+			#
+			# This avoids accidental cross-module ambiguity for same-named types.
 			if impl_tid is None:
 				parts = sym.split("::")
-				if len(parts) == 2 and not (parts[0] == recv_name and parts[1] == method_name):
-					continue
-				if len(parts) == 3 and not (parts[1] == recv_name and parts[2] == method_name):
-					continue
-				if len(parts) not in (2, 3):
-					continue
+				recv_mod = getattr(self._type_table.get(recv_base), "module_id", None)
+				if recv_mod is not None:
+					if len(parts) != 3 or not (parts[0] == recv_mod and parts[1] == recv_name and parts[2] == method_name):
+						continue
+				else:
+					if len(parts) != 2 or not (parts[0] == recv_name and parts[1] == method_name):
+						continue
 			mode = getattr(sig, "self_mode", None)
 			if mode is None:
 				continue
