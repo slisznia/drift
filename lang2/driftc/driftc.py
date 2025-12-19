@@ -772,6 +772,29 @@ def main(argv: list[str] | None = None) -> int:
 					if not isinstance(sd, dict):
 						continue
 					name = str(sd.get("name") or sym)
+					if "__impl" in name:
+						msg = f"package signature references private symbol {name}; packages must expose only public entrypoints"
+						if args.json:
+							print(
+								json.dumps(
+									{
+										"exit_code": 1,
+										"diagnostics": [
+											{
+												"phase": "package",
+												"message": msg,
+												"severity": "error",
+												"file": str(source_path),
+												"line": None,
+												"column": None,
+											}
+										],
+									}
+								)
+							)
+						else:
+							print(f"{source_path}:?:?: error: {msg}", file=sys.stderr)
+						return 1
 					if name in signatures:
 						continue
 					param_type_ids = sd.get("param_type_ids")

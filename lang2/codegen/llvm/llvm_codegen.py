@@ -1689,26 +1689,10 @@ class _FuncBuilder:
 			arg_parts = [f"i64 {self._map_value(a)}" for a in instr.args]
 		args = ", ".join(arg_parts)
 
-		target_sym = instr.fn
 		is_exported_entry = bool(
 			callee_info.signature is not None and getattr(callee_info.signature, "is_exported_entrypoint", False)
 		)
-		caller_mod = (
-			getattr(self.fn_info.signature, "module", None) if self.fn_info.signature is not None else None
-		) or _module_id_from_symbol(self.func.name)
-		callee_mod = (
-			getattr(callee_info.signature, "module", None) if callee_info.signature is not None else None
-		) or _module_id_from_symbol(instr.fn)
-		# Treat unknown caller/callee module as cross-module to avoid accidentally
-		# targeting private `__impl` symbols from entrypoints like `main`.
-		is_cross_module = is_exported_entry and (caller_mod is None or callee_mod is None or caller_mod != callee_mod)
-		# For same-module calls to exported entrypoints, call the private `__impl`
-		# body so the internal calling convention (`returns T` for nothrow fns) is
-		# preserved. Cross-module calls use the public wrapper symbol.
-		if is_exported_entry and not is_cross_module:
-			target_sym = self.export_impl_map.get(instr.fn, instr.fn)
-		# Apply any final driver-level renames (e.g. argv wrapper) as a backstop.
-		target_sym = self.rename_map.get(target_sym, target_sym)
+		target_sym, is_cross_module = self._resolve_call_target_symbol(instr.fn, callee_info)
 
 		if is_exported_entry and is_cross_module and not callee_info.declared_can_throw:
 			# ABI boundary wrapper returns FnResult even for nothrow entrypoints.
@@ -1762,6 +1746,44 @@ class _FuncBuilder:
 				self.lines.append(f"  {dest} = call {ret_ty} {_llvm_fn_sym(target_sym)}({args})")
 				self.value_types[dest] = ret_ty
 
+	def _resolve_call_target_symbol(self, symbol: str, callee_info: FnInfo) -> tuple[str, bool]:
+		"""
+		Resolve the LLVM-level call target symbol for a MIR `Call`.
+
+		Contract:
+		- Same-module calls to exported entrypoints may target the private `__impl`
+		  body (internal calling convention).
+		- Cross-module calls to exported entrypoints must target the public wrapper
+		  symbol (FnResult boundary ABI), never `__impl`.
+		- Non-exported callees target their symbol name directly.
+		"""
+		is_exported_entry = bool(
+			callee_info.signature is not None and getattr(callee_info.signature, "is_exported_entrypoint", False)
+		)
+		caller_mod = (
+			getattr(self.fn_info.signature, "module", None) if self.fn_info.signature is not None else None
+		) or _module_id_from_symbol(self.func.name)
+		callee_mod = (
+			getattr(callee_info.signature, "module", None) if callee_info.signature is not None else None
+		) or _module_id_from_symbol(symbol)
+
+		# Treat unknown caller/callee module as cross-module to avoid accidentally
+		# targeting private `__impl` symbols from entrypoints like `main`.
+		is_cross_module = is_exported_entry and (caller_mod is None or callee_mod is None or caller_mod != callee_mod)
+
+		target_sym = symbol
+		if is_exported_entry and not is_cross_module:
+			target_sym = self.export_impl_map.get(symbol, symbol)
+
+		# Cross-module calls must never target `__impl`. If this trips, it is a
+		# compiler bug (bad module-id inference or bad signature metadata).
+		if is_exported_entry and is_cross_module and "__impl" in target_sym:
+			raise AssertionError(f"cross-module call resolved to __impl symbol {target_sym} (compiler bug)")
+
+		# Apply any final driver-level renames (e.g. argv wrapper) as a backstop.
+		target_sym = self.rename_map.get(target_sym, target_sym)
+		return target_sym, is_cross_module
+
 	def _lower_term(self, term: object) -> None:
 		if isinstance(term, Goto):
 			self.lines.append(f"  br label %{term.target}")
@@ -1799,6 +1821,13 @@ class _FuncBuilder:
 
 			val = self._map_value(term.value)
 			ty = self.value_types.get(val)
+			if ty is None:
+				# Best-effort fallback: some SSA aliases/loads may not carry a type tag
+				# even though the function signature is fully typed.
+				sig = self.fn_info.signature
+				if sig is not None and sig.return_type_id is not None and self.type_table is not None:
+					ty = self._llvm_type_for_typeid(sig.return_type_id)
+					self.value_types[val] = ty
 			if ty == DRIFT_STRING_TYPE:
 				self.lines.append(f"  ret {DRIFT_STRING_TYPE} {val}")
 			elif ty in ("i64", DRIFT_SIZE_TYPE):
