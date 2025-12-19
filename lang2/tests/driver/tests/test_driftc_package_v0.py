@@ -425,6 +425,133 @@ fn main() returns Int {
 	assert out1.read_bytes() == out2.read_bytes()
 
 
+def test_emit_package_is_deterministic_with_changed_package_filenames(tmp_path: Path) -> None:
+	"""
+	Determinism guard: package discovery ordering (filename sorting / rglob order)
+	must not affect build output.
+	"""
+	src_root = tmp_path / "src"
+	pkgs = tmp_path / "pkgs"
+	src_root.mkdir(parents=True, exist_ok=True)
+	pkgs.mkdir(parents=True, exist_ok=True)
+
+	_emit_lib_pkg(pkgs, module_id="acme.liba")
+	_emit_optional_variant_pkg(pkgs, module_id="acme.optb")
+
+	_write_file(
+		src_root / "main.drift",
+		"""
+module main
+
+from acme.liba import add
+from acme.optb import Optional
+from acme.optb import foo
+
+fn main() returns Int {
+	val x = add(40, 2)
+	val y: Optional<Int> = foo()
+	val z = match y {
+		Some(v) => { v }
+		default => { 0 }
+	}
+	return x + z
+}
+""".lstrip(),
+	)
+
+	out1 = tmp_path / "out_before.dmp"
+	out2 = tmp_path / "out_after.dmp"
+	argv = [
+		"-M",
+		str(src_root),
+		str(src_root / "main.drift"),
+		"--package-root",
+		str(pkgs),
+		"--allow-unsigned-from",
+		str(pkgs),
+		"--emit-package",
+	]
+
+	assert driftc_main(argv + [str(out1)]) == 0
+
+	# Rename package files to flip sorted discovery order.
+	# The content is identical; only the filesystem ordering changes.
+	(pkg1, pkg2) = (pkgs / "lib.dmp", pkgs / "acme_optb.dmp")
+	assert pkg1.exists()
+	assert pkg2.exists()
+	pkg1.rename(pkgs / "z_lib.dmp")
+	pkg2.rename(pkgs / "a_optb.dmp")
+
+	assert driftc_main(argv + [str(out2)]) == 0
+	assert out1.read_bytes() == out2.read_bytes()
+
+
+def test_emit_package_is_deterministic_with_three_packages_and_derived_types(tmp_path: Path) -> None:
+	"""
+	Determinism stress test:
+	- multiple single-module packages in one root (discovery order perturbations),
+	- derived/instantiated types created in the consuming build (Optional<geom.Point>),
+	- output bytes must remain identical.
+	"""
+	src_root = tmp_path / "src"
+	pkgs = tmp_path / "pkgs"
+	src_root.mkdir(parents=True, exist_ok=True)
+	pkgs.mkdir(parents=True, exist_ok=True)
+
+	_emit_lib_pkg(pkgs, module_id="acme.liba")
+	_emit_point_pkg(pkgs, module_id="acme.geom")
+	_emit_optional_variant_pkg(pkgs, module_id="acme.opt")
+
+	_write_file(
+		src_root / "main.drift",
+		"""
+module main
+
+import acme.geom as g
+
+from acme.liba import add
+from acme.opt import Optional
+
+fn main() returns Int {
+	val p: g.Point = g.make()
+	val o: Optional<g.Point> = Some(p)
+	val x = match o {
+		Some(v) => { v.x }
+		default => { 0 }
+	}
+	return add(40, 2) + x
+}
+""".lstrip(),
+	)
+
+	out1 = tmp_path / "out_before.dmp"
+	out2 = tmp_path / "out_after.dmp"
+	argv = [
+		"-M",
+		str(src_root),
+		str(src_root / "main.drift"),
+		"--package-root",
+		str(pkgs),
+		"--allow-unsigned-from",
+		str(pkgs),
+		"--emit-package",
+	]
+
+	assert driftc_main(argv + [str(out1)]) == 0
+
+	# Rename package files to change discovery order.
+	(pkg1, pkg2, pkg3) = (pkgs / "lib.dmp", pkgs / "acme_geom.dmp", pkgs / "acme_opt.dmp")
+	assert pkg1.exists()
+	assert pkg2.exists()
+	assert pkg3.exists()
+	pkg1.rename(pkgs / "z_lib.dmp")
+	pkg2.rename(pkgs / "m_geom.dmp")
+	pkg3.rename(pkgs / "a_opt.dmp")
+
+	assert driftc_main(argv + [str(out2)]) == 0
+	assert out1.read_bytes() == out2.read_bytes()
+
+
 def test_load_package_v0_round_trip(tmp_path: Path) -> None:
 	_write_file(
 		tmp_path / "main.drift",

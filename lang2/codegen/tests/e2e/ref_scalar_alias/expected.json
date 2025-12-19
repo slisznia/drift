@@ -1,4 +1,5 @@
 {
-  "skip": true,
-  "skip_reason": "requires SSA support for loops/backedges (while loop)"
+  "exit_code": 6,
+  "stdout": "",
+  "stderr": ""
 }

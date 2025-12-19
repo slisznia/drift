@@ -52,7 +52,7 @@ from lang2.driftc.type_checker import TypeChecker
 from lang2.driftc.method_registry import CallableRegistry, CallableSignature, Visibility, SelfMode
 from lang2.driftc.packages.dmir_pkg_v0 import canonical_json_bytes, sha256_hex, write_dmir_pkg_v0
 from lang2.driftc.packages.provisional_dmir_v0 import encode_module_payload_v0, decode_mir_funcs, type_table_fingerprint
-from lang2.driftc.packages.type_table_link_v0 import import_type_table_and_build_typeid_map
+from lang2.driftc.packages.type_table_link_v0 import import_type_table_and_build_typeid_map, import_type_tables_and_build_typeid_maps
 from lang2.driftc.packages.provider_v0 import (
 	PackageTrustPolicy,
 	collect_external_exports,
@@ -613,6 +613,13 @@ def main(argv: list[str] | None = None) -> int:
 				else:
 					print(f"{pkg_path}:?:?: error: {msg}", file=sys.stderr)
 				return 1
+
+		# Determinism: package discovery order (filenames, rglob ordering, CLI
+		# `--package-root` ordering) must not affect compilation results. Sort loaded
+		# packages by the module ids they provide, which is a content-derived key and
+		# independent of filesystem paths.
+		loaded_pkgs.sort(key=lambda p: tuple(sorted(p.modules_by_id.keys())))
+
 		# Reject duplicate module ids across package files early. Unioning exports
 		# is unsafe because it can mask collisions and make resolution nondeterministic.
 		mod_to_pkg: dict[str, Path] = {}
@@ -687,6 +694,8 @@ def main(argv: list[str] | None = None) -> int:
 	# identical TypeId assignment across independently-produced artifacts.
 	pkg_typeid_maps: dict[Path, dict[int, int]] = {}
 	if loaded_pkgs:
+		pkg_paths: list[Path] = []
+		pkg_tt_objs: list[dict[str, Any]] = []
 		for pkg in loaded_pkgs:
 			# MVP rule: all modules in a package must share the same encoded type table.
 			pkg_tt_obj: dict[str, Any] | None = None
@@ -698,7 +707,16 @@ def main(argv: list[str] | None = None) -> int:
 				if not isinstance(tt, dict):
 					msg = f"package '{pkg.path}' module '{mid}' is missing type_table"
 					if args.json:
-						print(json.dumps({"exit_code": 1, "diagnostics": [{"phase": "package", "message": msg, "severity": "error", "file": str(pkg.path), "line": None, "column": None}]}))
+						print(
+							json.dumps(
+								{
+									"exit_code": 1,
+									"diagnostics": [
+										{"phase": "package", "message": msg, "severity": "error", "file": str(pkg.path), "line": None, "column": None}
+									],
+								}
+							)
+						)
 					else:
 						print(f"{pkg.path}:?:?: error: {msg}", file=sys.stderr)
 					return 1
@@ -708,21 +726,35 @@ def main(argv: list[str] | None = None) -> int:
 					if type_table_fingerprint(tt) != type_table_fingerprint(pkg_tt_obj):
 						msg = f"package '{pkg.path}' contains inconsistent type_table across modules"
 						if args.json:
-							print(json.dumps({"exit_code": 1, "diagnostics": [{"phase": "package", "message": msg, "severity": "error", "file": str(pkg.path), "line": None, "column": None}]}))
+							print(
+								json.dumps(
+									{
+										"exit_code": 1,
+										"diagnostics": [
+											{"phase": "package", "message": msg, "severity": "error", "file": str(pkg.path), "line": None, "column": None}
+										],
+									}
+								)
+							)
 						else:
 							print(f"{pkg.path}:?:?: error: {msg}", file=sys.stderr)
 						return 1
 			if pkg_tt_obj is None:
 				continue
-			try:
-				pkg_typeid_maps[pkg.path] = import_type_table_and_build_typeid_map(pkg_tt_obj, type_table)
-			except ValueError as err:
-				msg = f"failed to import package types from '{pkg.path}': {err}"
-				if args.json:
-					print(json.dumps({"exit_code": 1, "diagnostics": [{"phase": "package", "message": msg, "severity": "error", "file": str(pkg.path), "line": None, "column": None}]}))
-				else:
-					print(f"{pkg.path}:?:?: error: {msg}", file=sys.stderr)
-				return 1
+			pkg_paths.append(pkg.path)
+			pkg_tt_objs.append(pkg_tt_obj)
+
+		try:
+			maps = import_type_tables_and_build_typeid_maps(pkg_tt_objs, type_table)
+		except ValueError as err:
+			msg = f"failed to import package types: {err}"
+			if args.json:
+				print(json.dumps({"exit_code": 1, "diagnostics": [{"phase": "package", "message": msg, "severity": "error", "file": str(source_path), "line": None, "column": None}]}))
+			else:
+				print(f"{source_path}:?:?: error: {msg}", file=sys.stderr)
+			return 1
+		for path, tid_map in zip(pkg_paths, maps):
+			pkg_typeid_maps[path] = tid_map
 
 	# If package roots were provided, merge package signatures into the signature
 	# environment so type checking can validate calls to imported functions.

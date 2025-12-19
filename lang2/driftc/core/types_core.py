@@ -305,9 +305,15 @@ class TypeTable:
 		variant declared later in the file, so instantiating while still parsing
 		can create placeholder types.
 		"""
-		for base_id, schema in list(self.variant_schemas.items()):
-			if schema.type_params:
-				continue
+		# Determinism requirement: instantiation of non-generic variants must not
+		# depend on dictionary insertion order (e.g. package discovery order).
+		#
+		# We create concrete instances in canonical (module_id,name) order so TypeId
+		# assignment for any derived types instantiated during field evaluation is
+		# stable across runs.
+		items = [(base_id, schema) for base_id, schema in self.variant_schemas.items() if not schema.type_params]
+		items.sort(key=lambda kv: (kv[1].module_id, kv[1].name))
+		for base_id, schema in items:
 			if base_id not in self.variant_instances:
 				self._define_variant_instance(base_id, base_id, [])
 
