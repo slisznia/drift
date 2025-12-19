@@ -334,6 +334,68 @@ For new third-party namespaces, default behavior is TOFU (trust-on-first-use):
 - The accepted namespace→key binding is recorded locally (project-local by default).
 - Subsequent signer changes for that namespace are rejected unless explicitly accepted (key rotation workflow).
 
+### Trust store schema (v0, JSON)
+
+Pinned (MVP):
+- `drift` manages trust stores (UX / TOFU / key rotation).
+- `driftc` is the offline gatekeeper and verifies trust at *use time*.
+- Trust stores are project-local by default: `./drift/trust.json` (override with `--trust-store`).
+- A user trust store may be optionally loaded: `~/.config/drift/trust.json` (disable with `--no-user-trust-store`).
+
+Canonical trust-store format:
+
+```json
+{
+  "format": "drift-trust",
+  "version": 0,
+  "namespaces": {
+    "acme.*": ["ed25519:...kid..."]
+  },
+  "keys": {
+    "ed25519:...kid...": { "algo": "ed25519", "pubkey": "<base64 32 bytes>" }
+  },
+  "revoked": {
+    "ed25519:...kid...": { "reason": "...", "revoked_at": "..." }
+  }
+}
+```
+
+Notes:
+- `kid` is derived from the public key bytes and is stable (see implementation docs in `lang2/driftc/packages/signature_v0.py`).
+- `revoked` is canonical as a JSON object keyed by `kid`. For backward compatibility, `driftc` also accepts legacy `revoked: ["<kid>", ...]`.
+- Namespace keys may be exact (`acme.crypto`) or prefix (`acme.*`), and `driftc` selects the most specific (longest) match.
+
+### Signature sidecar schema (v0, JSON)
+
+Pinned (MVP):
+- The package container is `pkg.dmp` (DMIR-PKG v0, uncompressed).
+- The signature sidecar is `pkg.dmp.sig` (JSON).
+- A sidecar may contain **multiple signatures**.
+- `driftc` verifies signatures **only** using trust-store keys (no TOFU); any `pubkey` embedded in the sidecar is informational only.
+
+Canonical sidecar format:
+
+```json
+{
+  "format": "dmir-pkg-sig",
+  "version": 0,
+  "package_sha256": "sha256:<hex>",
+  "signatures": [
+    { "algo": "ed25519", "kid": "ed25519:...kid...", "sig": "<base64 64 bytes>", "pubkey": "<optional base64 32 bytes>" }
+  ]
+}
+```
+
+What is signed:
+- `package_sha256` is the sha256 of the raw `pkg.dmp` bytes.
+- Each signature is computed over the raw `pkg.dmp` bytes (byte-for-byte).
+- Compression (e.g., `.zst`) is an outer transport layer; it is not part of the container format nor the signed payload.
+
+Precedence rules (pinned):
+- Revocation wins: if a key id is revoked in the trust store, any signature by that key is ignored.
+- Namespace allowlists win: a valid signature is accepted only if the signer `kid` is allowed for the module id(s) in the package.
+- Multi-signature acceptance: **any** valid + allowed + not-revoked signature is sufficient to accept the package.
+
 ---
 
 ## 14. Discovery and repositories
