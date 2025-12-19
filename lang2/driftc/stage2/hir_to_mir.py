@@ -1917,41 +1917,18 @@ class HIRToMIR:
 			if not getattr(sig, "is_method", False):
 				continue
 			decl_name = getattr(sig, "method_name", None)
-			if decl_name is None:
-				# Some legacy signatures don't set `method_name`; fall back to the
-				# canonical symbol suffix (`Type::name`).
-				if not sym.endswith(f"::{method_name}"):
-					continue
-			elif decl_name != method_name:
+			if decl_name != method_name:
 				continue
 			impl_tid = getattr(sig, "impl_target_type_id", None)
-			if impl_tid is not None and impl_tid != recv_base:
-				continue
-			# Backstop for signatures missing impl_target_type_id (legacy tests only).
-			#
-			# In production, method signatures should always carry `impl_target_type_id`
-			# so calls cannot become cross-module ambiguous after module-qualifying
-			# method symbols (`mod::Type::method`).
-			#
-			# If the TypeId is missing, accept only a strict textual match that is
-			# compatible with the receiver's nominal identity:
-			#   - If the receiver is module-scoped (STRUCT TypeDef has module_id),
-			#     require the fully qualified method symbol `mod::Type::method`.
-			#   - Otherwise (legacy/builtin-only), accept `Type::method`.
-			#
-			# This avoids accidental cross-module ambiguity for same-named types.
 			if impl_tid is None:
-				parts = sym.split("::")
-				recv_mod = getattr(self._type_table.get(recv_base), "module_id", None)
-				if recv_mod is not None:
-					if len(parts) != 3 or not (parts[0] == recv_mod and parts[1] == recv_name and parts[2] == method_name):
-						continue
-				else:
-					if len(parts) != 2 or not (parts[0] == recv_name and parts[1] == method_name):
-						continue
+				raise AssertionError(
+					f"missing impl_target_type_id for method signature '{sym}' (upstream bug)"
+				)
+			if impl_tid != recv_base:
+				continue
 			mode = getattr(sig, "self_mode", None)
 			if mode is None:
-				continue
+				raise AssertionError(f"missing self_mode for method signature '{sym}' (upstream bug)")
 			candidates.append((sym, mode))
 		if not candidates:
 			return None
