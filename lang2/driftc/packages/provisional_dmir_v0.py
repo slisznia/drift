@@ -231,6 +231,24 @@ def encode_module_payload_v0(
 	"""Build the provisional payload object (not yet canonical-JSON encoded)."""
 	tt_obj = encode_type_table(type_table)
 	consts: list[str] = list(exported_consts or [])
+	const_table: dict[str, Any] = {}
+	for name in consts:
+		sym = f"{module_id}::{name}"
+		entry = type_table.lookup_const(sym)
+		if entry is None:
+			raise ValueError(f"internal: exported const '{sym}' missing from TypeTable const table")
+		ty_id, val = entry
+		if isinstance(val, bool):
+			enc_val: Any = bool(val)
+		elif isinstance(val, int):
+			enc_val = int(val)
+		elif isinstance(val, float):
+			enc_val = float(val)
+		elif isinstance(val, str):
+			enc_val = str(val)
+		else:
+			raise ValueError(f"internal: unsupported const value type for '{sym}': {type(val).__name__}")
+		const_table[name] = {"type_id": int(ty_id), "value": enc_val}
 	types_obj = {
 		"structs": list(exported_types.get("structs", [])),
 		"variants": list(exported_types.get("variants", [])),
@@ -242,9 +260,7 @@ def encode_module_payload_v0(
 		"unstable_format": True,
 		"module_id": module_id,
 		"exports": {"values": list(exported_values), "types": types_obj, "consts": consts},
-		# Const payloads are not implemented yet in MVP; this is present so the
-		# package/interface schemas can evolve without changing container shape.
-		"consts": {},
+		"consts": const_table,
 		"type_table": tt_obj,
 		"type_table_fingerprint": type_table_fingerprint(tt_obj),
 		"signatures": encode_signatures(signatures, module_id=module_id),

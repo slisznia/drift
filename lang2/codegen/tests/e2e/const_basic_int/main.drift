@@ -1,0 +1,7 @@
+module main
+
+const ANSWER: Int = 42;
+
+fn main() returns Int {
+	return ANSWER;
+}

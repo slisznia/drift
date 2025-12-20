@@ -24,6 +24,7 @@ NEWLINE: /(\r?\n[ \t]*)/
 
 VAL: "val"
 VAR: "var"
+CONST: "const"
 MUT: "mut"
 THROW: "throw"
 VARIANT: "variant"
@@ -100,6 +101,7 @@ module_path: NAME (DOT NAME)*
 ident: NAME | MOVE
 
 ?item: func_def
+     | const_def
      | struct_def
      | exception_def
      | variant_def
@@ -108,6 +110,14 @@ ident: NAME | MOVE
      | from_import_stmt
      | export_stmt
      | stmt
+
+# Top-level constant definition.
+#
+# MVP constraints (enforced by the typed checker):
+# - const initializers must be compile-time literals (or unary +/- of a numeric literal),
+# - the declared type must match the initializer exactly,
+# - consts are values (not types) and may be exported/imported like functions.
+const_def: CONST NAME COLON type_expr EQUAL expr TERMINATOR
 
 func_def: "fn" ident "(" [params] ")" return_sig block
 return_sig: RETURNS type_expr

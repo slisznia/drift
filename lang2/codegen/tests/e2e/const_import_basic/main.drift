@@ -1,0 +1,7 @@
+module main
+
+from lib import ANSWER
+
+fn main() returns Int {
+	return ANSWER;
+}

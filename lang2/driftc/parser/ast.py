@@ -288,6 +288,7 @@ class FString(Expr):
 @dataclass
 class Program:
 	functions: List[FunctionDef] = field(default_factory=list)
+	consts: List["ConstDef"] = field(default_factory=list)
 	implements: List["ImplementDef"] = field(default_factory=list)
 	# Module directives are tracked separately from general statements so later
 	# compilation stages can ignore them without having to add stage0/HIR nodes
@@ -306,6 +307,25 @@ class Program:
 	# module-directive validation rules. When absent, the file implicitly declares
 	# its inferred module id (driver-level rule when module roots are provided).
 	module_loc: Optional[Located] = None
+
+
+@dataclass
+class ConstDef:
+	"""
+	Top-level constant definition.
+
+	Syntax:
+	  const NAME: Type = expr;
+
+	MVP constraints are enforced in the typed checker:
+	- `expr` must be a compile-time literal (or unary +/- applied to a numeric literal),
+	- the declared type must match exactly.
+	"""
+
+	loc: Located
+	name: str
+	type_expr: TypeExpr
+	value: "Expr"
 
 
 @dataclass

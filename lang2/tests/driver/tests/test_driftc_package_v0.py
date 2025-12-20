@@ -188,6 +188,35 @@ fn hidden() returns Int {{
 	return pkg_path
 
 
+def _emit_const_pkg(tmp_path: Path, *, module_id: str = "acme.consts") -> Path:
+	module_dir = tmp_path.joinpath(*module_id.split("."))
+	_write_file(
+		module_dir / "consts.drift",
+		f"""
+module {module_id}
+
+export {{ ANSWER }}
+
+const ANSWER: Int = 42;
+""".lstrip(),
+	)
+	pkg_path = tmp_path / "consts.dmp"
+	assert (
+		driftc_main(
+			[
+				"-M",
+				str(tmp_path),
+				str(module_dir / "consts.drift"),
+				*_emit_pkg_args(module_id),
+				"--emit-package",
+				str(pkg_path),
+			]
+		)
+		== 0
+	)
+	return pkg_path
+
+
 def _emit_point_type_only_pkg(tmp_path: Path, *, module_id: str = "acme.point") -> Path:
 	module_dir = tmp_path.joinpath(*module_id.split("."))
 	_write_file(
@@ -1939,6 +1968,41 @@ fn main() returns Int {
 	assert payload["exit_code"] == 1
 	assert payload["diagnostics"][0]["phase"] == "parser"
 	assert "does not export symbol 'hidden'" in payload["diagnostics"][0]["message"]
+
+
+def test_driftc_allows_import_of_exported_const_from_package(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+	_emit_const_pkg(tmp_path)
+
+	_write_file(
+		tmp_path / "main.drift",
+		"""
+module main
+
+from acme.consts import ANSWER
+
+fn main() returns Int {
+	return ANSWER
+}
+""".lstrip(),
+	)
+
+	rc, payload = _run_driftc_json(
+		[
+			"-M",
+			str(tmp_path),
+			"--package-root",
+			str(tmp_path),
+			"--allow-unsigned-from",
+			str(tmp_path),
+			str(tmp_path / "main.drift"),
+			"--emit-ir",
+			str(tmp_path / "out.ll"),
+		],
+		capsys,
+	)
+	assert rc == 0
+	assert payload["exit_code"] == 0
+	assert payload["diagnostics"] == []
 
 
 def test_driftc_allows_import_of_exported_type_but_rejects_non_exported_value_from_package(

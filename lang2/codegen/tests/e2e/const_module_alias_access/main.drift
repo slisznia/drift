@@ -1,0 +1,7 @@
+module main
+
+import lib as x
+
+fn main() returns Int {
+	return x.ANSWER;
+}

@@ -161,6 +161,35 @@ def _validate_package_interfaces(pkg: LoadedPackage) -> None:
 			if bool(payload_sd.get("is_method", False)):
 				raise _err(f"exported value '{v}' must not be a method")
 
+		# Exported const payloads must be present in both interface and payload.
+		#
+		# Consts are compile-time values; consumers import them without executing
+		# any code. Therefore, the interface must fully describe their type and
+		# literal value.
+		payload_consts_tbl = mod.payload.get("consts", {})
+		iface_consts_tbl = mod.interface.get("consts", {})
+		if not isinstance(payload_consts_tbl, dict):
+			raise _err(f"module '{mid}' payload consts table must be an object")
+		if not isinstance(iface_consts_tbl, dict):
+			raise _err(f"module '{mid}' interface consts table must be an object")
+		if set(payload_consts_tbl.keys()) != set(consts):
+			raise _err(f"module '{mid}' payload consts table does not match exports.consts")
+		if set(iface_consts_tbl.keys()) != set(consts):
+			raise _err(f"module '{mid}' interface consts table does not match exports.consts")
+		for c in consts:
+			p_entry = payload_consts_tbl.get(c)
+			i_entry = iface_consts_tbl.get(c)
+			if not isinstance(p_entry, dict) or not isinstance(i_entry, dict):
+				raise _err(f"exported const '{c}' has invalid const table entry")
+			if p_entry != i_entry:
+				raise _err(f"exported const '{c}' interface entry does not match payload")
+			ty_id = p_entry.get("type_id")
+			val = p_entry.get("value")
+			if not isinstance(ty_id, int):
+				raise _err(f"exported const '{c}' missing integer type_id")
+			if not isinstance(val, (bool, int, float, str)):
+				raise _err(f"exported const '{c}' has unsupported literal value kind")
+
 		payload_tt = mod.payload.get("type_table")
 		if not isinstance(payload_tt, dict):
 			raise _err(f"module '{mid}' payload missing type_table")

@@ -241,6 +241,30 @@ class TypeChecker:
 
 			# Names and bindings.
 			if isinstance(expr, H.HVar):
+				# Module-scoped compile-time constants.
+				#
+				# Consts live outside local scope bindings. We resolve them here so
+				# later stages can:
+				# - type-check `CONST` like a literal of its declared type,
+				# - lower it to an immediate MIR/LLVM constant at each use site.
+				#
+				# Resolution order:
+				#   1) local/param bindings (lexical scopes),
+				#   2) fully-qualified const symbols (`mod::NAME`) present in the TypeTable,
+				#   3) unqualified const names resolved within the current module id.
+				if expr.binding_id is None:
+					# Check for already-qualified const symbol (from imports/module-qualified access).
+					if "::" in expr.name:
+						cv = self.type_table.lookup_const(expr.name)
+						if cv is not None:
+							ty_id, _val = cv
+							return record_expr(expr, ty_id)
+					# Check for a module-local const by current module id.
+					cv = self.type_table.lookup_const(f"{current_module_name}::{expr.name}")
+					if cv is not None:
+						ty_id, _val = cv
+						expr.name = f"{current_module_name}::{expr.name}"
+						return record_expr(expr, ty_id)
 				if expr.binding_id is None:
 					for scope in reversed(scope_bindings):
 						if expr.name in scope:

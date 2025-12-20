@@ -165,6 +165,31 @@ class TypeTable:
 		self.variant_instances: dict[TypeId, VariantInstance] = {}
 		# Instantiation cache: (base_id, args...) -> instantiated TypeId.
 		self._instantiation_cache: dict[tuple[TypeId, tuple[TypeId, ...]], TypeId] = {}
+		# Compile-time constants keyed by their fully-qualified symbol name.
+		#
+		# MVP: constants are literal values embedded into IR at each use site; there
+		# is no runtime global storage. We still need a central table so:
+		# - type checking can resolve `Name` references to constants,
+		# - cross-module/package imports can supply constant values without source,
+		# - package emission can encode exported consts as part of the interface.
+		#
+		# Key format follows the callable naming scheme: "<module_id>::<name>".
+		# Values store the TypeId (so const refs can be typed) and the python value.
+		self.consts: dict[str, tuple[TypeId, object]] = {}
+
+	def define_const(self, *, module_id: str, name: str, type_id: TypeId, value: object) -> None:
+		"""
+		Define a compile-time constant.
+
+		Constants are module-scoped; the fully-qualified symbol is derived from
+		`module_id` and `name`.
+		"""
+		sym = f"{module_id}::{name}"
+		self.consts[sym] = (type_id, value)
+
+	def lookup_const(self, sym: str) -> tuple[TypeId, object] | None:
+		"""Return (TypeId, value) for a fully-qualified const symbol."""
+		return self.consts.get(sym)
 
 	def new_scalar(self, name: str) -> TypeId:
 		"""Register a scalar type (e.g., Int, Bool) and return its TypeId."""

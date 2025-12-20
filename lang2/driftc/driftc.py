@@ -864,6 +864,44 @@ def main(argv: list[str] | None = None) -> int:
 						is_exported_entrypoint=bool(sd.get("is_exported_entrypoint", False)),
 					)
 
+		# Import package constant tables into the host TypeTable so source code can
+		# reference imported consts as typed literals.
+		#
+		# Const entries in package payloads use package-local TypeIds; remap them
+		# through the link-time `tid_map` so the host TypeTable owns the canonical
+		# ids used by the rest of the pipeline.
+		for pkg in loaded_pkgs:
+			tid_map = pkg_typeid_maps.get(pkg.path, {})
+			for mid, mod in pkg.modules_by_id.items():
+				payload = mod.payload
+				if not isinstance(payload, dict):
+					continue
+				consts_obj = payload.get("consts")
+				if not isinstance(consts_obj, dict):
+					continue
+				for cname, entry in consts_obj.items():
+					if not isinstance(cname, str) or not cname:
+						continue
+					if not isinstance(entry, dict):
+						continue
+					raw_tid = entry.get("type_id")
+					val = entry.get("value")
+					if not isinstance(raw_tid, int):
+						continue
+					remapped_tid = tid_map.get(raw_tid, raw_tid)
+					sym = f"{mid}::{cname}"
+					prev = getattr(type_table, "consts", {}).get(sym)
+					if prev is not None:
+						if prev != (remapped_tid, val):
+							msg = f"const '{sym}' provided by multiple sources with different values"
+							if args.json:
+								print(json.dumps({"exit_code": 1, "diagnostics": [{"phase": "package", "message": msg, "severity": "error", "file": str(pkg.path), "line": None, "column": None}]}))
+							else:
+								print(f"{pkg.path}:?:?: error: {msg}", file=sys.stderr)
+							return 1
+						continue
+					type_table.define_const(module_id=mid, name=cname, type_id=remapped_tid, value=val)
+
 	# Checker (stub) enforces language-level rules (e.g., Void returns) before the
 	# lower-level TypeChecker/BorrowChecker run.
 	# Normalize HIR before any further analysis so:
@@ -1081,7 +1119,10 @@ def main(argv: list[str] | None = None) -> int:
 		manifest_modules: list[dict[str, object]] = []
 		manifest_blobs: dict[str, dict[str, object]] = {}
 
-		for mid in sorted(set(per_module_sigs.keys()) | set(per_module_mir.keys())):
+		all_module_ids: set[str] = set(per_module_sigs.keys()) | set(per_module_mir.keys())
+		if isinstance(module_exports, dict):
+			all_module_ids |= set(str(k) for k in module_exports.keys())
+		for mid in sorted(all_module_ids):
 			# MVP packaging: do not bundle the built-in prelude module. It is
 			# supplied by the toolchain and will later be distributed as its own
 			# package under the `std.*` namespace.

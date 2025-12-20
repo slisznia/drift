@@ -458,6 +458,37 @@ class HIRToMIR:
 		return acc
 
 	def _visit_expr_HVar(self, expr: H.HVar) -> M.ValueId:
+		# Compile-time constants are lowered to immediate MIR constants (no runtime
+		# storage). Const symbols are represented as fully-qualified names:
+		#   "<module_id>::<NAME>"
+		#
+		# For older unit tests that bypass the typed checker, we also accept an
+		# unqualified name and resolve it within the current module.
+		sym = expr.name
+		candidates: list[str] = [sym]
+		if "::" not in sym:
+			fn_name = getattr(self.b.func, "name", "")
+			mod = fn_name.split("::")[0] if "::" in fn_name else "main"
+			candidates.append(f"{mod}::{sym}")
+		for cand in candidates:
+			cv = self._type_table.lookup_const(cand)
+			if cv is None:
+				continue
+			ty_id, val = cv
+			dest = self.b.new_temp()
+			if ty_id == self._int_type or ty_id == self._uint_type:
+				self.b.emit(M.ConstInt(dest=dest, value=int(val)))
+				return dest
+			if ty_id == self._bool_type:
+				self.b.emit(M.ConstBool(dest=dest, value=bool(val)))
+				return dest
+			if ty_id == self._string_type:
+				self.b.emit(M.ConstString(dest=dest, value=str(val)))
+				return dest
+			if ty_id == self._float_type:
+				self.b.emit(M.ConstFloat(dest=dest, value=float(val)))
+				return dest
+			raise AssertionError("unsupported const type reached MIR lowering (checker/package bug)")
 		self.b.ensure_local(expr.name)
 		# Treat String.EMPTY as a builtin zero-length string literal.
 		if expr.name == "String.EMPTY":

@@ -15,6 +15,7 @@ from .ast import (
     Binary,
     Block,
     Call,
+    ConstDef,
     CatchClause,
     ExceptionArg,
     ExceptionDef,
@@ -504,6 +505,7 @@ class ModuleDeclError(ValueError):
 
 def _build_program(tree: Tree) -> Program:
 	functions: List[FunctionDef] = []
+	consts: List["ConstDef"] = []
 	implements: List[ImplementDef] = []
 	imports: List[ImportStmt] = []
 	from_imports: List[FromImportStmt] = []
@@ -536,6 +538,8 @@ def _build_program(tree: Tree) -> Program:
 		seen_non_module_item = True
 		if kind == "func_def":
 			functions.append(_build_function(child))
+		elif kind == "const_def":
+			consts.append(_build_const_def(child))
 		elif kind == "implement_def":
 			implements.append(_build_implement_def(child))
 		elif kind == "struct_def":
@@ -558,6 +562,7 @@ def _build_program(tree: Tree) -> Program:
 				statements.append(stmt)
 	return Program(
 		functions=functions,
+		consts=consts,
 		implements=implements,
 		imports=imports,
 		from_imports=from_imports,
@@ -568,6 +573,28 @@ def _build_program(tree: Tree) -> Program:
 		variants=variants,
 		module=module_name,
 		module_loc=module_loc,
+	)
+
+
+def _build_const_def(tree: Tree) -> "ConstDef":
+	"""
+	Build a top-level constant definition.
+
+	Grammar:
+	  const_def: CONST NAME COLON type_expr EQUAL expr TERMINATOR
+	"""
+	loc = _loc(tree)
+	name_tok = next(child for child in tree.children if isinstance(child, Token) and child.type == "NAME")
+	type_node = next(child for child in tree.children if isinstance(child, Tree) and _name(child) == "type_expr")
+	# `expr` is a rule alias (`?expr`), so the parse tree usually contains the
+	# concrete expression rule node directly (e.g., `postfix`, `sum`, ...), not an
+	# intermediate `expr` node.
+	expr_node = next(child for child in tree.children if isinstance(child, Tree) and _name(child) != "type_expr")
+	return ConstDef(
+		loc=loc,
+		name=name_tok.value,
+		type_expr=_build_type_expr(type_node),
+		value=_build_expr(expr_node),
 	)
 
 
