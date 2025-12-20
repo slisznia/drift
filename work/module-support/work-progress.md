@@ -486,42 +486,22 @@ Goal: `export { foo }` where `foo` is imported becomes fully supported and refle
 - Add tests:
   - re-exported function callable from a third module
   - re-exported type usable from a third module
+  - re-exported const usable from a third module
   - ambiguity errors when two imports try to re-export the same local name
-
-Concrete next commit (pinned):
-- Implement Phase 1 (publish/fetch/vendor) next; Phase 2 (identity/version fields) is complete.
-
-Status: pending (next)
-
-Execution plan (pinned for next work):
-
-#### 1) Make re-export resolution deterministic and explicit
-
-- `from a import foo` + `export { foo }` must always result in a real exported symbol of the current module.
-- Keep the trampoline strategy for values: generate `m::foo` as a wrapper forwarding to `a::foo`.
-- Re-exported types must be exported under the current module’s interface without duplicating the type definition.
-
-#### 2) Reflect re-exports in the interface table
-
-- The module interface export lists must represent what downstream sees, including re-exports.
-- For re-exported values, the interface signature must be the trampoline signature (byte-for-byte equal to the target signature, but owned by the exporting module identity).
-
-#### 3) Add tests (driver + e2e)
-
-- e2e: module `b` re-exports `a.foo`; module `c` imports from `b` and calls `foo()`.
-- e2e: module `b` re-exports type `a.Point`; module `c` uses `Point` via `b`.
-- negative: ambiguous re-export if two different imports bind the same local name and you try to export it.
 
 Status: completed
 
 Progress note:
 - Value re-exports are authoritative: `from a import foo; export { foo }` always materializes a trampoline `this_module::foo` forwarding to `a::foo`.
 - Type re-exports are supported without duplicating types: exported type names may resolve to a defining module identity (module-scoped nominal keys preserved).
+- Const re-exports are supported by materializing the origin const value into the exporting module’s const table (`b::ANSWER`), so downstream consumers do not need the origin module present.
 - Deterministic ambiguity diagnostics are enforced when a module attempts to export a name that is bound to conflicting imports.
 - E2E coverage:
   - `lang2/codegen/tests/e2e/reexport_smoke` (value re-export)
   - `lang2/codegen/tests/e2e/reexport_type_smoke` (type re-export + third-module consumption)
+  - `lang2/codegen/tests/e2e/reexport_const_smoke` (const re-export + third-module consumption)
   - `lang2/codegen/tests/e2e/reexport_ambiguous_import_conflict` (negative)
+  - `lang2/codegen/tests/e2e/reexport_const_ambiguous_import_conflict` (negative)
 
 ### Phase 5 — Ecosystem minimum polish (post re-export authority)
 

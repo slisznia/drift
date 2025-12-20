@@ -1,0 +1,6 @@
+module b
+
+from a import ANSWER
+
+export { ANSWER }
+

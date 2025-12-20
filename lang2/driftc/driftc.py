@@ -903,6 +903,98 @@ def main(argv: list[str] | None = None) -> int:
 						continue
 					type_table.define_const(module_id=mid, name=cname, type_id=remapped_tid, value=val)
 
+	# Materialize const re-exports into the exporting module’s const table.
+	#
+	# Consts are compile-time values embedded into IR at each use site and also
+	# recorded in module interfaces/packages. When a module re-exports an imported
+	# const (`from a import ANSWER; export { ANSWER }`), downstream consumers must
+	# be able to reference `b::ANSWER` *without* needing module `a` present at
+	# compile time.
+	#
+	# Implementation strategy (MVP):
+	# - export-resolution records `reexports.consts` mapping `{local: {module,name}}`
+	#   for provenance.
+	# - driftc copies the origin const's typed literal `(TypeId, value)` into the
+	#   exporting module’s const table under `exporting_mid::local`.
+	#
+	# This step is performed after package const import because origin const values
+	# may come from packages, and their TypeIds must be remapped into the host
+	# TypeTable before we can copy them.
+	for exporting_mid, exp in (module_exports or {}).items():
+		if not isinstance(exp, dict):
+			continue
+		reexp = exp.get("reexports")
+		if not isinstance(reexp, dict):
+			continue
+		consts_map = reexp.get("consts")
+		if not isinstance(consts_map, dict):
+			continue
+		for local_name, target in consts_map.items():
+			if not isinstance(local_name, str) or not local_name:
+				continue
+			if not isinstance(target, dict):
+				continue
+			origin_mid = target.get("module")
+			origin_name = target.get("name")
+			if not isinstance(origin_mid, str) or not origin_mid:
+				continue
+			if not isinstance(origin_name, str) or not origin_name:
+				continue
+			origin_sym = f"{origin_mid}::{origin_name}"
+			dst_sym = f"{exporting_mid}::{local_name}"
+			origin_entry = type_table.lookup_const(origin_sym)
+			if origin_entry is None:
+				msg = f"re-exported const '{dst_sym}' refers to missing const '{origin_sym}'"
+				if args.json:
+					print(
+						json.dumps(
+							{
+								"exit_code": 1,
+								"diagnostics": [
+									{
+										"phase": "typecheck",
+										"message": msg,
+										"severity": "error",
+										"file": str(source_path),
+										"line": None,
+										"column": None,
+									}
+								],
+							}
+						)
+					)
+				else:
+					print(f"{source_path}:?:?: error: {msg}", file=sys.stderr)
+				return 1
+			origin_tid, origin_val = origin_entry
+			prev = type_table.lookup_const(dst_sym)
+			if prev is not None:
+				if prev != (origin_tid, origin_val):
+					msg = f"const '{dst_sym}' defined with a different value than re-export target '{origin_sym}'"
+					if args.json:
+						print(
+							json.dumps(
+								{
+									"exit_code": 1,
+									"diagnostics": [
+										{
+											"phase": "typecheck",
+											"message": msg,
+											"severity": "error",
+											"file": str(source_path),
+											"line": None,
+											"column": None,
+										}
+									],
+								}
+							)
+						)
+					else:
+						print(f"{source_path}:?:?: error: {msg}", file=sys.stderr)
+					return 1
+				continue
+			type_table.define_const(module_id=exporting_mid, name=local_name, type_id=origin_tid, value=origin_val)
+
 	# Checker (stub) enforces language-level rules (e.g., Void returns) before the
 	# lower-level TypeChecker/BorrowChecker run.
 	# Normalize HIR before any further analysis so:

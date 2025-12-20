@@ -1300,9 +1300,11 @@ def parse_drift_workspace_to_hir(
 	# we extend the exporting module's interface with:
 	# - values: `foo` is exported and later materialized as a trampoline function
 	#   `this_module::foo` that forwards to `m::foo`,
-	# - consts/types: `foo` is exported as an alias of the underlying definition
-	#   and recorded in reexport target maps so import resolution can bind it to
-	#   the defining module identity (no type duplication).
+	# - consts: `foo` is exported and later materialized as a *local* compile-time
+	#   constant `this_module::foo` copied from `m::foo` (no runtime storage),
+	# - types: `foo` is exported as an alias of the underlying definition and is
+	#   recorded in reexport target maps so import resolution can bind it to the
+	#   defining module identity (no type duplication).
 	def _export_lookup(mod: str) -> tuple[set[str], set[str], dict[str, set[str]]]:
 		"""Return (exported_values, exported_consts, exported_types_by_kind) for a module."""
 		if mod in exports_values_by_module or mod in exports_types_by_module or mod in exports_consts_by_module:
@@ -1362,23 +1364,17 @@ def parse_drift_workspace_to_hir(
 				if is_val:
 					exports_values_by_module[mid][name] = (tmod, tsym)
 				elif is_const:
-					# MVP: consts are compile-time values embedded directly into module
-					# interfaces and packages. Re-exporting consts would require either:
-					# - duplicating the literal value into the exporting module, or
-					# - treating consts as indirect aliases across modules (with extra
-					#   interface metadata).
+					# Const re-export MVP:
+					# - the exporting module `mid` exports a *local* const symbol
+					#   `mid::name` as part of its interface.
+					# - later in the driver pipeline, `mid::name` is materialized by
+					#   copying the typed literal value of `tmod::tsym` into the exporting
+					#   module’s const table.
 					#
-					# We defer this and require explicit local const definitions for now.
-					diagnostics.append(
-						Diagnostic(
-							message=f"re-exporting const '{name}' is not supported yet; define a local const instead",
-							severity="error",
-							span=ex_span,
-						)
-					)
-					pending.pop(name, None)
-					progress = True
-					continue
+					# Import resolution must treat the const as belonging to the exporting
+					# module so consumers do not need to reference the origin module.
+					exports_consts_by_module[mid].add(name)
+					reexported_const_targets_by_module[mid][name] = (tmod, tsym)
 				elif is_struct:
 					exports_types_by_module[mid]["structs"].add(name)
 					reexported_type_targets_by_module[mid]["structs"][name] = (tmod, tsym)
@@ -1599,7 +1595,9 @@ def parse_drift_workspace_to_hir(
 							)
 					for c in glob_consts:
 						local_name = c
-						target = exported_const_targets.get(c, (mod, c))
+						# Const re-exports are materialized into the exporting module’s
+						# own const table, so the local binding always targets `mod::c`.
+						target = (mod, c)
 						prev = file_seen_consts.get(local_name)
 						if prev is None:
 							file_seen_consts[local_name] = target
@@ -1696,7 +1694,9 @@ def parse_drift_workspace_to_hir(
 					file_value_bindings[local_name] = target
 
 				if is_const:
-					target = exported_const_targets.get(sym, (mod, sym))
+					# Const re-exports are materialized into the exporting module’s
+					# own const table, so the local binding always targets `mod::sym`.
+					target = (mod, sym)
 					prev = file_seen_consts.get(local_name)
 					if prev is None:
 						file_seen_consts[local_name] = target
@@ -2172,6 +2172,35 @@ def parse_drift_workspace_to_hir(
 		if any(d.severity == "error" for d in diagnostics):
 			return {}, {}, TypeTable(), {}, {}, diagnostics
 
+	# Materialize const re-exports into the exporting module’s const table when
+	# the origin const value is already available in the shared TypeTable.
+	#
+	# This covers the source-only workspace case (all modules provided as source).
+	# When the origin const is provided by a package, the value is imported later
+	# in the driver pipeline (after package TypeId remapping); in that case we
+	# leave the const unresolved here and let `driftc` materialize it once the
+	# origin const becomes available.
+	for exporting_mid, targets in reexported_const_targets_by_module.items():
+		for local_name, (origin_mid, origin_name) in targets.items():
+			origin_sym = f"{origin_mid}::{origin_name}"
+			dst_sym = f"{exporting_mid}::{local_name}"
+			origin_entry = shared_type_table.lookup_const(origin_sym)
+			if origin_entry is None:
+				continue
+			origin_tid, origin_val = origin_entry
+			prev = shared_type_table.lookup_const(dst_sym)
+			if prev is not None:
+				if prev != (origin_tid, origin_val):
+					diagnostics.append(
+						Diagnostic(
+							message=f"const '{dst_sym}' defined with a different value than re-export target '{origin_sym}'",
+							severity="error",
+							span=Span(),
+						)
+					)
+				continue
+			shared_type_table.define_const(module_id=exporting_mid, name=local_name, type_id=origin_tid, value=origin_val)
+
 	# Rewrite call sites: HCall(fn=HVar(name="foo")) -> HVar(name="m::foo") for imported/local functions.
 	local_maps: dict[str, dict[str, str]] = {
 		mid: {fn.name: _qualify_fn_name(mid, fn.name) for fn in getattr(prog, "functions", []) or []}
@@ -2390,8 +2419,11 @@ def parse_drift_workspace_to_hir(
 					if expr.name in exported_value_names(mod):
 						return H.HVar(name=_qualify_fn_name(mod, expr.name))
 					if expr.name in exported_const_names(mod):
-						def_mod, def_name = reexported_const_targets_by_module.get(mod, {}).get(expr.name, (mod, expr.name))
-						return H.HVar(name=f"{def_mod}::{def_name}")
+						# Module-qualified const access always targets the module’s own
+						# const table. Const re-exports are materialized by copying the
+						# literal value into the exporting module, so consumers do not
+						# need to reference the origin module.
+						return H.HVar(name=f"{mod}::{expr.name}")
 					# Note: module-qualified type names are handled in type positions
 					# via TypeExpr.module_id. Expression-position `x.Point` without
 					# call is not a supported surface construct in MVP.

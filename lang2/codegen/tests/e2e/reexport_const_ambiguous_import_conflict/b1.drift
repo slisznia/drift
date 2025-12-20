@@ -1,0 +1,4 @@
+module b
+
+from a import ANSWER as X
+

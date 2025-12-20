@@ -1,0 +1,4 @@
+module b
+
+from c import ANSWER as X
+

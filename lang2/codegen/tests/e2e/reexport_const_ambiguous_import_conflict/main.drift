@@ -1,0 +1,8 @@
+module main
+
+from b import X
+
+fn main() returns Int {
+	return X;
+}
+

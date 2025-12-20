@@ -1,0 +1,6 @@
+module c
+
+export { ANSWER }
+
+const ANSWER: Int = 2;
+
