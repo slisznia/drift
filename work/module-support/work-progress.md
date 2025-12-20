@@ -459,6 +459,22 @@ Goal: module interface is authoritative and sufficient for import/typecheck/code
 - exported const missing type/value
 - method listed in exports → reject
 
+Status: in progress
+
+Progress note:
+- Package module interfaces now include:
+  - `exports.values/types/consts` (consts are present but remain empty in MVP),
+  - `exception_schemas` for exported exceptions (keyed by event FQN),
+  - `variant_schemas` for exported variants (keyed by variant name),
+  - `consts` table placeholder (empty until const declarations exist).
+- `driftc` validates these schemas at package load time and rejects:
+  - exported exception/variant missing or mismatched interface schemas,
+  - exported methods (guardrail; methods must not appear in exports).
+- Driver tests added to lock the new failure modes:
+  - `test_driftc_rejects_package_with_exported_exception_missing_schema`
+  - `test_driftc_rejects_package_with_exported_variant_missing_schema`
+  - `test_driftc_rejects_package_exporting_method_value`
+
 ### Phase 4 — Re-export authority
 
 Goal: `export { foo }` where `foo` is imported becomes fully supported and reflected.

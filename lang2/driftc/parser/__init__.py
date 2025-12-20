@@ -832,13 +832,13 @@ def parse_drift_workspace_to_hir(
 	paths: list[Path],
 	*,
 	module_paths: list[Path] | None = None,
-	external_module_exports: dict[str, dict[str, set[str]]] | None = None,
+	external_module_exports: dict[str, dict[str, object]] | None = None,
 ) -> Tuple[
 	Dict[str, H.HBlock],
 	Dict[str, FnSignature],
 	"TypeTable",
 	Dict[str, int],
-	Dict[str, Dict[str, List[str]]],
+	Dict[str, Dict[str, object]],
 	List[Diagnostic],
 ]:
 	"""
@@ -858,10 +858,10 @@ def parse_drift_workspace_to_hir(
 		  - Conflicting aliases/bindings in one file are diagnosed as errors.
 		  - Different files may import the same module/symbol freely; the module is still
 		    parsed/merged/compiled once per build and referenced from all import sites.
-		- Module-qualified access (`import m` then `m.foo()`) is parsed but not relied
-		  upon yet; MVP import resolution focuses on `from m import foo`.
-	- Cross-module name resolution is implemented for free functions (not types)
-	  in MVP. Type-level imports are deferred (tests stay skipped).
+		- Module-qualified access (`import m` then `m.foo()`) is supported for calling
+		  exported free functions and for struct constructor calls (`m.Point(...)`).
+		- Cross-module import validation supports both value and type namespaces
+		  (types: structs, variants, exceptions).
 
 	Returns:
 	  (func_hirs, signatures, type_table, exception_catalog, module_exports, diagnostics)
@@ -1035,7 +1035,7 @@ def parse_drift_workspace_to_hir(
 		module_id: str,
 		merged_prog: parser_ast.Program,
 		module_files: list[tuple[Path, parser_ast.Program]],
-	) -> tuple[dict[str, tuple[str, str]], set[str]]:
+	) -> tuple[dict[str, tuple[str, str]], dict[str, set[str]]]:
 		"""
 		Build the exported interface for a module.
 
@@ -1050,15 +1050,17 @@ def parse_drift_workspace_to_hir(
 		in both namespaces is ambiguous. Until we add explicit qualifiers, that is
 		a compile-time error.
 
+		Because `exports.types` is kind-separated (structs/variants/exceptions), an
+		exported name that resolves to multiple type kinds is also a compile-time
+		error.
+
 		Spans are anchored to the source file that contained the `export { ... }`
 		statement so diagnostics remain useful in multi-file modules.
 		"""
 		module_fn_names: set[str] = {fn.name for fn in getattr(merged_prog, "functions", []) or []}
-		module_type_names: set[str] = {
-			*(s.name for s in getattr(merged_prog, "structs", []) or []),
-			*(v.name for v in getattr(merged_prog, "variants", []) or []),
-			*(e.name for e in getattr(merged_prog, "exceptions", []) or []),
-		}
+		module_struct_names: set[str] = {s.name for s in getattr(merged_prog, "structs", []) or []}
+		module_variant_names: set[str] = {v.name for v in getattr(merged_prog, "variants", []) or []}
+		module_exception_names: set[str] = {e.name for e in getattr(merged_prog, "exceptions", []) or []}
 
 		raw_export_entries: list[tuple[str, Span]] = []
 		for path, parsed_prog in module_files:
@@ -1086,7 +1088,7 @@ def parse_drift_workspace_to_hir(
 		# the workspace loader materializes a trampoline function `a::foo` that
 		# forwards to the underlying target `other.module::foo`.
 		exported_values: dict[str, tuple[str, str]] = {}
-		exported_types: set[str] = set()
+		exported_types: dict[str, set[str]] = {"structs": set(), "variants": set(), "exceptions": set()}
 
 		# Collect re-export candidates from `from <module> import <symbol> [as alias]`
 		# statements across files in the module. Imports are per-file, but exports
@@ -1131,8 +1133,14 @@ def parse_drift_workspace_to_hir(
 					)
 				)
 				continue
+
 			in_values = n in module_fn_names
-			in_types = n in module_type_names
+			in_struct = n in module_struct_names
+			in_variant = n in module_variant_names
+			in_exc = n in module_exception_names
+			type_hits = int(in_struct) + int(in_variant) + int(in_exc)
+			in_types = type_hits > 0
+
 			if in_values and in_types:
 				diagnostics.append(
 					Diagnostic(
@@ -1142,12 +1150,22 @@ def parse_drift_workspace_to_hir(
 					)
 				)
 				continue
+			if type_hits > 1:
+				diagnostics.append(
+					Diagnostic(
+						message=f"exported type name '{n}' is ambiguous (defined as multiple type kinds in module '{module_id}')",
+						severity="error",
+						span=ex_span,
+					)
+				)
+				continue
+
 			if not in_values and not in_types:
 				# Allow exporting an imported value (re-export) when it is present
 				# unambiguously in the module's `from import` declarations.
 				conflict = reexport_conflicts.get(n)
 				if conflict is not None:
-					prev, new, first_span, second_span = conflict
+					prev, new, first_imp_span, second_imp_span = conflict
 					diagnostics.append(
 						Diagnostic(
 							message=(
@@ -1157,8 +1175,8 @@ def parse_drift_workspace_to_hir(
 							severity="error",
 							span=ex_span,
 							notes=[
-								f"first import was here: {first_span}",
-								f"conflicting import was here: {second_span}",
+								f"first import was here: {_format_span_short(first_imp_span)}",
+								f"conflicting import was here: {_format_span_short(second_imp_span)}",
 							],
 						)
 					)
@@ -1175,10 +1193,16 @@ def parse_drift_workspace_to_hir(
 					)
 				)
 				continue
+
 			if in_values:
 				exported_values[n] = (module_id, n)
-			if in_types:
-				exported_types.add(n)
+			if in_struct:
+				exported_types["structs"].add(n)
+			if in_variant:
+				exported_types["variants"].add(n)
+			if in_exc:
+				exported_types["exceptions"].add(n)
+
 		return exported_values, exported_types
 
 	# Note: module-scoped nominal type identity is implemented in lang2.
@@ -1196,7 +1220,7 @@ def parse_drift_workspace_to_hir(
 	# any module that defines the same name in both namespaces (until the language
 	# adds explicit `export type ...` / `export fn ...` syntax).
 	exports_values_by_module: dict[str, dict[str, tuple[str, str]]] = {}
-	exports_types_by_module: dict[str, set[str]] = {}
+	exports_types_by_module: dict[str, dict[str, set[str]]] = {}
 	for mid, prog in merged_programs.items():
 		exported_values, exported_types = _build_export_interface(
 			module_id=mid,
@@ -1206,6 +1230,14 @@ def parse_drift_workspace_to_hir(
 		exports_values_by_module[mid] = exported_values
 		exports_types_by_module[mid] = exported_types
 
+	def _union_exported_types(types_obj: dict[str, set[str]] | None) -> set[str]:
+		if not types_obj:
+			return set()
+		out: set[str] = set()
+		for vs in types_obj.values():
+			out |= set(vs)
+		return out
+
 	if any(d.severity == "error" for d in diagnostics):
 		return {}, {}, TypeTable(), {}, {}, diagnostics
 
@@ -1213,10 +1245,15 @@ def parse_drift_workspace_to_hir(
 	module_exports: dict[str, dict[str, list[str]]] = {}
 	for mid in merged_programs.keys():
 		vals = exports_values_by_module.get(mid, {})
-		types = exports_types_by_module.get(mid, set())
+		types = exports_types_by_module.get(mid, {"structs": set(), "variants": set(), "exceptions": set()})
 		module_exports[mid] = {
 			"values": sorted(list(vals.keys())),
-			"types": sorted(list(types)),
+			"types": {
+				"structs": sorted(list(types.get("structs", set()))),
+				"variants": sorted(list(types.get("variants", set()))),
+				"exceptions": sorted(list(types.get("exceptions", set()))),
+			},
+			"consts": [],
 		}
 
 	# Resolve imports and build a dependency graph.
@@ -1292,11 +1329,18 @@ def parse_drift_workspace_to_hir(
 					continue
 
 				exported_values_map = exports_values_by_module.get(mod, {})
-				exported_types_set = exports_types_by_module.get(mod, set())
+				exported_types_obj = exports_types_by_module.get(mod, {"structs": set(), "variants": set(), "exceptions": set()})
+				exported_types_set = _union_exported_types(exported_types_obj)
 				if mod not in merged_programs and external_module_exports is not None and mod in external_module_exports:
 					ext = external_module_exports.get(mod) or {}
 					exported_values_map = {n: (mod, n) for n in sorted(ext.get("values") or set())}
-					exported_types_set = set(ext.get("types") or set())
+					ext_types = ext.get("types")
+					if isinstance(ext_types, dict):
+						exported_types_set = set(ext_types.get("structs") or set()) | set(ext_types.get("variants") or set()) | set(
+							ext_types.get("exceptions") or set()
+						)
+					else:
+						exported_types_set = set()
 				available_exports = sorted(set(exported_values_map.keys()) | exported_types_set)
 				is_glob = bool(getattr(fi, "is_glob", False))
 				if is_glob:
@@ -1460,10 +1504,15 @@ def parse_drift_workspace_to_hir(
 	# preserves module-scoped nominal identity end-to-end.
 	def _exported_types_for_module(mod: str) -> set[str]:
 		if mod in exports_types_by_module:
-			return exports_types_by_module.get(mod, set())
+			return _union_exported_types(exports_types_by_module.get(mod))
 		if external_module_exports is not None and mod in external_module_exports:
 			ext = external_module_exports.get(mod) or {}
-			return set(ext.get("types") or set())
+			ext_types = ext.get("types")
+			if isinstance(ext_types, dict):
+				return set(ext_types.get("structs") or set()) | set(ext_types.get("variants") or set()) | set(
+					ext_types.get("exceptions") or set()
+				)
+			return set()
 		return set()
 
 	def _resolve_type_expr_in_file(
@@ -1844,10 +1893,28 @@ def parse_drift_workspace_to_hir(
 
 		def exported_type_names(mod: str) -> set[str]:
 			if mod in exports_types_by_module:
-				return set(exports_types_by_module.get(mod) or set())
+				return _union_exported_types(exports_types_by_module.get(mod))
 			if external_module_exports is not None and mod in external_module_exports:
 				ext = external_module_exports.get(mod) or {}
-				return set(ext.get("types") or set())
+				ext_types = ext.get("types")
+				if isinstance(ext_types, dict):
+					return (
+						set(ext_types.get("structs") or set())
+						| set(ext_types.get("variants") or set())
+						| set(ext_types.get("exceptions") or set())
+					)
+				return set()
+			return set()
+
+		def exported_struct_names(mod: str) -> set[str]:
+			if mod in exports_types_by_module:
+				return set((exports_types_by_module.get(mod) or {}).get("structs") or set())
+			if external_module_exports is not None and mod in external_module_exports:
+				ext = external_module_exports.get(mod) or {}
+				ext_types = ext.get("types")
+				if isinstance(ext_types, dict):
+					return set(ext_types.get("structs") or set())
+				return set()
 			return set()
 
 		def _rewrite_module_qualified_call(
@@ -1870,7 +1937,7 @@ def parse_drift_workspace_to_hir(
 			callable symbol (`lib::foo`) or an unqualified struct constructor (`Point`).
 
 			Note on representation: in stage1 HIR, a `.`-call like `x.foo(...)` is
-			represented as `HMethodCall(receiver=x, method_name="foo", ...)` (method
+			represented as `HMethodCall(receiver=x, method_name=\"foo\", ...)` (method
 			sugar). We reuse that syntactic form for module-qualified access and
 			rewrite it here into a plain `HCall` once we confirm `x` is a module alias.
 			"""
@@ -1885,9 +1952,10 @@ def parse_drift_workspace_to_hir(
 				return None
 			vals = exported_value_names(mod)
 			types = exported_type_names(mod)
+			structs = exported_struct_names(mod)
 			if member in vals:
 				return H.HCall(fn=H.HVar(name=_qualify_fn_name(mod, member)), args=args, kwargs=kwargs)
-			if member in types:
+			if member in structs:
 				# Constructor call through a module alias. MVP supports only struct ctors.
 				struct_id = shared_type_table.get_nominal(kind=TypeKind.STRUCT, module_id=mod, name=member)
 				if struct_id is None:
@@ -1904,7 +1972,11 @@ def parse_drift_workspace_to_hir(
 				# define the same short type name.
 				return H.HCall(fn=H.HVar(name=f"{mod}::{member}"), args=args, kwargs=kwargs)
 			available = ", ".join(sorted(vals | types))
-			notes = [f"available exports: {available}"] if available else [f"module '{mod}' exports nothing (private by default)"]
+			notes = (
+				[f"available exports: {available}"]
+				if available
+				else [f"module '{mod}' exports nothing (private by default)"]
+			)
 			diagnostics.append(
 				Diagnostic(
 					message=f"module '{mod}' does not export symbol '{member}'",

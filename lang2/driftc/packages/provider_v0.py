@@ -52,10 +52,10 @@ def _validate_package_interfaces(pkg: LoadedPackage) -> None:
 	"""
 	Validate module interfaces against payload metadata.
 
-	Pinned rule (ABI boundary): any exported value must have a corresponding
-	payload signature entry with `is_exported_entrypoint == True`.
+	Pinned ABI boundary rule: any exported value must have a corresponding payload
+	signature entry with `is_exported_entrypoint == True`.
 
-	This is a package consumption guardrail: it rejects malformed/inconsistent
+	This is a package-consumption guardrail: it rejects malformed/inconsistent
 	packages early, before imports are resolved or IR is embedded.
 	"""
 
@@ -75,16 +75,38 @@ def _validate_package_interfaces(pkg: LoadedPackage) -> None:
 		exports = mod.interface.get("exports")
 		if not isinstance(exports, dict):
 			raise _err(f"module '{mid}' interface missing exports")
+
 		values = exports.get("values")
 		types = exports.get("types")
+		consts = exports.get("consts", [])
 		if not isinstance(values, list) or not all(isinstance(v, str) for v in values):
 			raise _err(f"module '{mid}' interface exports.values must be a list of strings")
-		if not isinstance(types, list) or not all(isinstance(t, str) for t in types):
-			raise _err(f"module '{mid}' interface exports.types must be a list of strings")
+		if not isinstance(types, dict):
+			raise _err(f"module '{mid}' interface exports.types must be an object")
+		type_structs = types.get("structs")
+		type_variants = types.get("variants")
+		type_excs = types.get("exceptions")
+		if not isinstance(type_structs, list) or not all(isinstance(t, str) for t in type_structs):
+			raise _err(f"module '{mid}' interface exports.types.structs must be a list of strings")
+		if not isinstance(type_variants, list) or not all(isinstance(t, str) for t in type_variants):
+			raise _err(f"module '{mid}' interface exports.types.variants must be a list of strings")
+		if not isinstance(type_excs, list) or not all(isinstance(t, str) for t in type_excs):
+			raise _err(f"module '{mid}' interface exports.types.exceptions must be a list of strings")
+		if not isinstance(consts, list) or not all(isinstance(c, str) for c in consts):
+			raise _err(f"module '{mid}' interface exports.consts must be a list of strings")
 		if len(set(values)) != len(values):
 			raise _err(f"module '{mid}' interface exports.values contains duplicates")
-		if len(set(types)) != len(types):
-			raise _err(f"module '{mid}' interface exports.types contains duplicates")
+		if len(set(type_structs)) != len(type_structs):
+			raise _err(f"module '{mid}' interface exports.types.structs contains duplicates")
+		if len(set(type_variants)) != len(type_variants):
+			raise _err(f"module '{mid}' interface exports.types.variants contains duplicates")
+		if len(set(type_excs)) != len(type_excs):
+			raise _err(f"module '{mid}' interface exports.types.exceptions contains duplicates")
+		type_union = set(type_structs) | set(type_variants) | set(type_excs)
+		if len(type_union) != (len(type_structs) + len(type_variants) + len(type_excs)):
+			raise _err(f"module '{mid}' interface exports.types contains overlapping names across kinds")
+		if len(set(consts)) != len(consts):
+			raise _err(f"module '{mid}' interface exports.consts contains duplicates")
 
 		# Payload must agree with interface exports exactly.
 		payload_exports = mod.payload.get("exports")
@@ -92,15 +114,29 @@ def _validate_package_interfaces(pkg: LoadedPackage) -> None:
 			raise _err(f"module '{mid}' payload missing exports")
 		payload_values = payload_exports.get("values")
 		payload_types = payload_exports.get("types")
-		if not isinstance(payload_values, list) or not isinstance(payload_types, list):
-			raise _err(f"module '{mid}' payload exports must include values/types lists")
-		if sorted(payload_values) != sorted(values) or sorted(payload_types) != sorted(types):
+		payload_consts = payload_exports.get("consts", [])
+		if not isinstance(payload_values, list) or not isinstance(payload_consts, list) or not isinstance(payload_types, dict):
+			raise _err(f"module '{mid}' payload exports must include values/types/consts")
+		payload_structs = payload_types.get("structs")
+		payload_variants = payload_types.get("variants")
+		payload_excs = payload_types.get("exceptions")
+		if not isinstance(payload_structs, list) or not isinstance(payload_variants, list) or not isinstance(payload_excs, list):
+			raise _err(f"module '{mid}' payload exports.types must include structs/variants/exceptions lists")
+		payload_type_union = set(payload_structs) | set(payload_variants) | set(payload_excs)
+		if len(payload_type_union) != (len(payload_structs) + len(payload_variants) + len(payload_excs)):
+			raise _err(f"module '{mid}' payload exports.types contains overlapping names across kinds")
+		if (
+			sorted(payload_values) != sorted(values)
+			or sorted(payload_structs) != sorted(type_structs)
+			or sorted(payload_variants) != sorted(type_variants)
+			or sorted(payload_excs) != sorted(type_excs)
+			or sorted(payload_consts) != sorted(consts)
+		):
 			raise _err(f"module '{mid}' interface exports do not match payload exports")
 
 		iface_sigs = mod.interface.get("signatures")
 		if not isinstance(iface_sigs, dict):
 			raise _err(f"module '{mid}' interface missing signatures table")
-
 		payload_sigs = mod.payload.get("signatures")
 		if not isinstance(payload_sigs, dict):
 			raise _err(f"module '{mid}' payload missing signatures table")
@@ -124,6 +160,76 @@ def _validate_package_interfaces(pkg: LoadedPackage) -> None:
 				raise _err(f"exported value '{v}' is missing exported entrypoint signature metadata")
 			if bool(payload_sd.get("is_method", False)):
 				raise _err(f"exported value '{v}' must not be a method")
+
+		payload_tt = mod.payload.get("type_table")
+		if not isinstance(payload_tt, dict):
+			raise _err(f"module '{mid}' payload missing type_table")
+
+		# Exported exception schemas must be present and match.
+		payload_exc = payload_tt.get("exception_schemas")
+		if not isinstance(payload_exc, dict):
+			payload_exc = {}
+		expected_exc: dict[str, list[str]] = {}
+		for t in type_excs:
+			fqn = f"{mid}:{t}"
+			raw = payload_exc.get(fqn)
+			if not isinstance(raw, list) or len(raw) != 2 or not isinstance(raw[1], list):
+				raise _err(f"module '{mid}' payload has invalid exception schema for '{fqn}'")
+			expected_exc[fqn] = list(raw[1])
+
+		iface_exc = mod.interface.get("exception_schemas", {})
+		if expected_exc:
+			if not isinstance(iface_exc, dict):
+				raise _err(f"module '{mid}' interface exception_schemas must be an object")
+			for fqn, fields in expected_exc.items():
+				got = iface_exc.get(fqn)
+				if got is None:
+					raise _err(f"exported exception '{fqn}' is missing interface schema")
+				if not isinstance(got, list) or list(got) != list(fields):
+					raise _err(f"exported exception '{fqn}' interface schema does not match payload")
+			extra_exc = set(iface_exc.keys()) - set(expected_exc.keys())
+			if extra_exc:
+				raise _err(f"module '{mid}' interface contains non-export exception schemas")
+		else:
+			if iface_exc not in ({}, None) and isinstance(iface_exc, dict) and iface_exc:
+				raise _err(f"module '{mid}' interface contains non-export exception schemas")
+
+		# Exported variant schemas must be present and match.
+		payload_var = payload_tt.get("variant_schemas")
+		if not isinstance(payload_var, dict):
+			payload_var = {}
+		expected_var: dict[str, dict] = {}
+		for raw in payload_var.values():
+			if not isinstance(raw, dict):
+				continue
+			if raw.get("module_id") != mid:
+				continue
+			name = raw.get("name")
+			if not isinstance(name, str) or not name:
+				continue
+			if name not in type_variants:
+				continue
+			expected_var[name] = raw
+		missing_vars = set(type_variants) - set(expected_var.keys())
+		if missing_vars:
+			raise _err(f"module '{mid}' payload missing variant schema(s) for: {', '.join(sorted(missing_vars))}")
+
+		iface_var = mod.interface.get("variant_schemas", {})
+		if expected_var:
+			if not isinstance(iface_var, dict):
+				raise _err(f"module '{mid}' interface variant_schemas must be an object")
+			for name, schema in expected_var.items():
+				got = iface_var.get(name)
+				if got is None:
+					raise _err(f"exported variant '{name}' is missing interface schema")
+				if got != schema:
+					raise _err(f"exported variant '{name}' interface schema does not match payload")
+			extra_var = set(iface_var.keys()) - set(expected_var.keys())
+			if extra_var:
+				raise _err(f"module '{mid}' interface contains non-export variant schemas")
+		else:
+			if iface_var not in ({}, None) and isinstance(iface_var, dict) and iface_var:
+				raise _err(f"module '{mid}' interface contains non-export variant schemas")
 
 		# Forbid extra interface signature entries (strict interface).
 		extra = set(iface_sigs.keys()) - {f"{mid}::{v}" for v in values}
@@ -178,15 +284,19 @@ def load_package_v0_with_policy(path: Path, *, policy: PackageTrustPolicy, pkg_b
 	return pkg
 
 
-def collect_external_exports(packages: list[LoadedPackage]) -> dict[str, dict[str, set[str]]]:
+def collect_external_exports(packages: list[LoadedPackage]) -> dict[str, dict[str, object]]:
 	"""
 	Collect module export sets from loaded packages.
 
 	Returns:
-	  module_id -> { "values": set[str], "types": set[str] }
+	  module_id -> {
+	    "values": set[str],
+	    "types": {"structs": set[str], "variants": set[str], "exceptions": set[str]},
+	    "consts": set[str],
+	  }
 	"""
 	mod_to_pkg: dict[str, Path] = {}
-	out: dict[str, dict[str, set[str]]] = {}
+	out: dict[str, dict[str, object]] = {}
 	for pkg in packages:
 		for mid, mod in pkg.modules_by_id.items():
 			prev = mod_to_pkg.get(mid)
@@ -196,12 +306,24 @@ def collect_external_exports(packages: list[LoadedPackage]) -> dict[str, dict[st
 				raise ValueError(f"module '{mid}' provided by multiple packages: '{prev}' and '{pkg.path}'")
 			exports = mod.interface.get("exports")
 			if not isinstance(exports, dict):
-				out[mid] = {"values": set(), "types": set()}
+				out[mid] = {"values": set(), "types": {"structs": set(), "variants": set(), "exceptions": set()}, "consts": set()}
 				continue
 			values = exports.get("values")
 			types = exports.get("types")
+			consts = exports.get("consts")
+			type_structs: list[str] = []
+			type_variants: list[str] = []
+			type_excs: list[str] = []
+			if isinstance(types, dict):
+				if isinstance(types.get("structs"), list):
+					type_structs = [str(x) for x in types.get("structs") if isinstance(x, str)]
+				if isinstance(types.get("variants"), list):
+					type_variants = [str(x) for x in types.get("variants") if isinstance(x, str)]
+				if isinstance(types.get("exceptions"), list):
+					type_excs = [str(x) for x in types.get("exceptions") if isinstance(x, str)]
 			out[mid] = {
 				"values": set(values) if isinstance(values, list) else set(),
-				"types": set(types) if isinstance(types, list) else set(),
+				"types": {"structs": set(type_structs), "variants": set(type_variants), "exceptions": set(type_excs)},
+				"consts": set(consts) if isinstance(consts, list) else set(),
 			}
 	return out

@@ -1100,9 +1100,22 @@ def main(argv: list[str] | None = None) -> int:
 				exported_values.append(sym_name[len(prefix) :] if sym_name.startswith(prefix) else sym_name)
 			exported_values.sort()
 
-			exported_types = (
-				list(module_exports.get(mid, {}).get("types", [])) if isinstance(module_exports, dict) else []
+			exported_types_obj: object = {}
+			if isinstance(module_exports, dict):
+				mexp = module_exports.get(mid, {})
+				if isinstance(mexp, dict):
+					exported_types_obj = mexp.get("types", {})
+			if not isinstance(exported_types_obj, dict):
+				exported_types_obj = {}
+			exported_types: dict[str, list[str]] = {
+				"structs": list(exported_types_obj.get("structs", [])) if isinstance(exported_types_obj.get("structs"), list) else [],
+				"variants": list(exported_types_obj.get("variants", [])) if isinstance(exported_types_obj.get("variants"), list) else [],
+				"exceptions": list(exported_types_obj.get("exceptions", [])) if isinstance(exported_types_obj.get("exceptions"), list) else [],
+			}
+			exported_consts: list[str] = (
+				list(module_exports.get(mid, {}).get("consts", [])) if isinstance(module_exports, dict) else []
 			)
+
 			payload_obj = encode_module_payload_v0(
 				module_id=mid,
 				type_table=checked_pkg.type_table or type_table,
@@ -1110,6 +1123,7 @@ def main(argv: list[str] | None = None) -> int:
 				mir_funcs=per_module_mir.get(mid, {}),
 				exported_values=exported_values,
 				exported_types=exported_types,
+				exported_consts=exported_consts,
 			)
 
 			# Module interface (package interface table v0).
@@ -1151,12 +1165,54 @@ def main(argv: list[str] | None = None) -> int:
 						print(f"{source_path}:?:?: error: {msg}", file=sys.stderr)
 					return 1
 				iface_sigs[sym] = sd
+
+			# Exported schemas (exceptions/variants) for the type namespace.
+			#
+			# These are used as load-time guardrails: exported type schemas must match
+			# payload schemas exactly. For MVP, we include schemas only for exported
+			# exceptions and variants; structs are validated via TypeTable linking.
+			payload_tt = payload_obj.get("type_table") if isinstance(payload_obj, dict) else None
+			if not isinstance(payload_tt, dict):
+				payload_tt = {}
+
+			iface_exc: dict[str, object] = {}
+			payload_exc = payload_tt.get("exception_schemas")
+			if isinstance(payload_exc, dict):
+				for t in exported_types.get("exceptions", []):
+					fqn = f"{mid}:{t}"
+					raw = payload_exc.get(fqn)
+					if isinstance(raw, list) and len(raw) == 2 and isinstance(raw[1], list):
+						iface_exc[fqn] = list(raw[1])
+
+			iface_var: dict[str, object] = {}
+			payload_var = payload_tt.get("variant_schemas")
+			if isinstance(payload_var, dict):
+				for raw in payload_var.values():
+					if not isinstance(raw, dict):
+						continue
+					if raw.get("module_id") != mid:
+						continue
+					name = raw.get("name")
+					if not isinstance(name, str) or name not in exported_types.get("variants", []):
+						continue
+					iface_var[name] = raw
+
 			iface_obj = {
 				"format": "drift-module-interface",
 				"version": 0,
 				"module_id": mid,
-				"exports": payload_obj.get("exports", {"values": [], "types": []}),
+				"exports": payload_obj.get(
+					"exports",
+					{
+						"values": [],
+						"types": {"structs": [], "variants": [], "exceptions": []},
+						"consts": [],
+					},
+				),
 				"signatures": iface_sigs,
+				"exception_schemas": iface_exc,
+				"variant_schemas": iface_var,
+				"consts": payload_obj.get("consts", {}) if isinstance(payload_obj, dict) else {},
 			}
 			iface_bytes = canonical_json_bytes(iface_obj)
 			iface_sha = sha256_hex(iface_bytes)
@@ -1164,6 +1220,7 @@ def main(argv: list[str] | None = None) -> int:
 			blob_types[iface_sha] = 2
 			blob_names[iface_sha] = f"iface:{mid}"
 			manifest_blobs[f"sha256:{iface_sha}"] = {"type": "exports", "length": len(iface_bytes)}
+
 			payload_bytes = canonical_json_bytes(payload_obj)
 			payload_sha = sha256_hex(payload_bytes)
 			blobs_by_sha[payload_sha] = payload_bytes
@@ -1174,7 +1231,7 @@ def main(argv: list[str] | None = None) -> int:
 			manifest_modules.append(
 				{
 					"module_id": mid,
-					"exports": {"values": exported_values, "types": list(exported_types)},
+					"exports": {"values": exported_values, "types": exported_types, "consts": exported_consts},
 					"interface_blob": f"sha256:{iface_sha}",
 					"payload_blob": f"sha256:{payload_sha}",
 				}

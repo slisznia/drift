@@ -320,6 +320,45 @@ fn foo() returns Optional<Int> {{
 	return pkg_path
 
 
+def _emit_exception_pkg(tmp_path: Path, *, module_id: str = "acme.exc") -> Path:
+	"""
+Emit a package that exports an exception type (in the type namespace).
+
+We include a dummy function so the module has at least one signature/MIR body and
+is emitted into the package.
+	"""
+	module_dir = tmp_path.joinpath(*module_id.split("."))
+	_write_file(
+		module_dir / "exc.drift",
+		f"""
+module {module_id}
+
+export {{ Boom }}
+
+exception Boom(a: Int, b: String)
+
+fn dummy() returns Int {{
+	return 0
+}}
+""".lstrip(),
+	)
+	pkg_path = tmp_path / f"{module_id.replace('.', '_')}.dmp"
+	assert (
+		driftc_main(
+			[
+				"-M",
+				str(tmp_path),
+				str(module_dir / "exc.drift"),
+				*_emit_pkg_args(module_id),
+				"--emit-package",
+				str(pkg_path),
+			]
+		)
+		== 0
+	)
+	return pkg_path
+
+
 def _write_trust_store(path: Path, *, kid: str, pub_b64: str, ns: str = "acme.*", revoked: list[str] | None = None) -> None:
 	revoked = revoked or []
 	obj = {
@@ -2247,6 +2286,308 @@ fn main() returns Int {
 	assert payload["diagnostics"][0]["phase"] == "package"
 	assert "interface exports do not match payload exports" in payload["diagnostics"][0]["message"]
 
+
+def test_driftc_rejects_package_with_exported_exception_missing_schema(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+	"""
+Interface completeness: exported exceptions must have interface schema entries.
+	"""
+	pkg_path = _emit_exception_pkg(tmp_path, module_id="acme.badexc")
+	pkg = load_package_v0(pkg_path)
+	mod = pkg.modules_by_id["acme.badexc"]
+
+	iface_obj = dict(mod.interface)
+	payload_obj = dict(mod.payload)
+
+	iface_exc = dict(iface_obj.get("exception_schemas") or {})
+	# Remove the exported exception schema entry.
+	iface_exc.pop("acme.badexc:Boom", None)
+	iface_obj["exception_schemas"] = iface_exc
+
+	iface_bytes = canonical_json_bytes(iface_obj)
+	payload_bytes = canonical_json_bytes(payload_obj)
+	iface_sha = sha256_hex(iface_bytes)
+	payload_sha = sha256_hex(payload_bytes)
+	write_dmir_pkg_v0(
+		pkg_path,
+		manifest_obj={
+			"format": "dmir-pkg",
+			"format_version": 0,
+			"package_id": "acme.badexc",
+			"package_version": "0.0.0",
+			"target": "test-target",
+			"unsigned": True,
+			"unstable_format": True,
+			"payload_kind": "provisional-dmir",
+			"payload_version": 0,
+			"modules": [
+				{
+					"module_id": "acme.badexc",
+					"exports": iface_obj.get("exports", {}),
+					"interface_blob": f"sha256:{iface_sha}",
+					"payload_blob": f"sha256:{payload_sha}",
+				}
+			],
+			"blobs": {
+				f"sha256:{iface_sha}": {"type": "exports", "length": len(iface_bytes)},
+				f"sha256:{payload_sha}": {"type": "dmir", "length": len(payload_bytes)},
+			},
+		},
+		blobs={iface_sha: iface_bytes, payload_sha: payload_bytes},
+		blob_types={iface_sha: 2, payload_sha: 1},
+		blob_names={iface_sha: "iface:acme.badexc", payload_sha: "dmir:acme.badexc"},
+	)
+
+	_write_file(
+		tmp_path / "main.drift",
+		"""
+module main
+
+from acme.badexc import Boom
+
+fn main() returns Int {
+	return 0
+}
+""".lstrip(),
+	)
+	rc, payload = _run_driftc_json(
+		[
+			"-M",
+			str(tmp_path),
+			"--package-root",
+			str(tmp_path),
+			"--allow-unsigned-from",
+			str(tmp_path),
+			str(tmp_path / "main.drift"),
+			"--emit-ir",
+			str(tmp_path / "out.ll"),
+		],
+		capsys,
+	)
+	assert rc != 0
+	assert payload["exit_code"] == 1
+	assert payload["diagnostics"][0]["phase"] == "package"
+	assert "missing interface schema" in payload["diagnostics"][0]["message"]
+
+
+def test_driftc_rejects_package_with_exported_variant_missing_schema(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+	"""
+Interface completeness: exported variants must have interface schema entries.
+	"""
+	pkg_path = _emit_optional_variant_pkg(tmp_path, module_id="acme.badvar")
+	pkg = load_package_v0(pkg_path)
+	mod = pkg.modules_by_id["acme.badvar"]
+
+	iface_obj = dict(mod.interface)
+	payload_obj = dict(mod.payload)
+
+	iface_var = dict(iface_obj.get("variant_schemas") or {})
+	iface_var.pop("Optional", None)
+	iface_obj["variant_schemas"] = iface_var
+
+	iface_bytes = canonical_json_bytes(iface_obj)
+	payload_bytes = canonical_json_bytes(payload_obj)
+	iface_sha = sha256_hex(iface_bytes)
+	payload_sha = sha256_hex(payload_bytes)
+	write_dmir_pkg_v0(
+		pkg_path,
+		manifest_obj={
+			"format": "dmir-pkg",
+			"format_version": 0,
+			"package_id": "acme.badvar",
+			"package_version": "0.0.0",
+			"target": "test-target",
+			"unsigned": True,
+			"unstable_format": True,
+			"payload_kind": "provisional-dmir",
+			"payload_version": 0,
+			"modules": [
+				{
+					"module_id": "acme.badvar",
+					"exports": iface_obj.get("exports", {}),
+					"interface_blob": f"sha256:{iface_sha}",
+					"payload_blob": f"sha256:{payload_sha}",
+				}
+			],
+			"blobs": {
+				f"sha256:{iface_sha}": {"type": "exports", "length": len(iface_bytes)},
+				f"sha256:{payload_sha}": {"type": "dmir", "length": len(payload_bytes)},
+			},
+		},
+		blobs={iface_sha: iface_bytes, payload_sha: payload_bytes},
+		blob_types={iface_sha: 2, payload_sha: 1},
+		blob_names={iface_sha: "iface:acme.badvar", payload_sha: "dmir:acme.badvar"},
+	)
+
+	_write_file(
+		tmp_path / "main.drift",
+		"""
+module main
+
+from acme.badvar import Optional
+
+fn main() returns Int {
+	val o: Optional<Int> = None
+	return 0
+}
+""".lstrip(),
+	)
+	rc, payload = _run_driftc_json(
+		[
+			"-M",
+			str(tmp_path),
+			"--package-root",
+			str(tmp_path),
+			"--allow-unsigned-from",
+			str(tmp_path),
+			str(tmp_path / "main.drift"),
+			"--emit-ir",
+			str(tmp_path / "out.ll"),
+		],
+		capsys,
+	)
+	assert rc != 0
+	assert payload["exit_code"] == 1
+	assert payload["diagnostics"][0]["phase"] == "package"
+	assert "missing interface schema" in payload["diagnostics"][0]["message"]
+
+
+def test_driftc_rejects_package_exporting_method_value(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+	"""
+MVP guardrail: exported methods are forbidden.
+	"""
+	_write_file(
+		tmp_path / "m" / "lib.drift",
+		"""
+module m
+
+export { Point }
+
+struct Point { x: Int }
+
+implement Point {
+	fn move_by(self: &mut Point, dx: Int) returns Void {
+		self->x += dx;
+	}
+}
+
+fn dummy() returns Int { return 0; }
+""".lstrip(),
+	)
+	pkg_path = tmp_path / "m.dmp"
+	assert (
+		driftc_main(
+			[
+				"-M",
+				str(tmp_path),
+				str(tmp_path / "m" / "lib.drift"),
+				*_emit_pkg_args("m"),
+				"--emit-package",
+				str(pkg_path),
+			]
+		)
+		== 0
+	)
+	pkg = load_package_v0(pkg_path)
+	mod = pkg.modules_by_id["m"]
+	iface_obj = dict(mod.interface)
+	payload_obj = dict(mod.payload)
+
+	# Identify the method symbol key in the payload signatures.
+	payload_sigs = dict(payload_obj.get("signatures") or {})
+	method_sym = None
+	for k, sd in payload_sigs.items():
+		if isinstance(sd, dict) and sd.get("is_method") and "move_by" in k:
+			method_sym = str(k)
+			break
+	assert method_sym is not None
+	local_name = method_sym.split("::", 1)[1]
+
+	# Malform the package: export the method as a value.
+	exports = dict(payload_obj.get("exports") or {})
+	values = list(exports.get("values") or [])
+	if local_name not in values:
+		values.append(local_name)
+	exports["values"] = values
+	payload_obj["exports"] = exports
+
+	# Mark the method signature as an exported entrypoint and mirror it into the
+	# interface signature table so all other checks pass.
+	sd = dict(payload_sigs[method_sym])
+	sd["is_exported_entrypoint"] = True
+	payload_sigs[method_sym] = sd
+	payload_obj["signatures"] = payload_sigs
+
+	iface_exports = dict(iface_obj.get("exports") or {})
+	iface_values = list(iface_exports.get("values") or [])
+	if local_name not in iface_values:
+		iface_values.append(local_name)
+	iface_exports["values"] = iface_values
+	iface_obj["exports"] = iface_exports
+
+	iface_sigs = dict(iface_obj.get("signatures") or {})
+	iface_sigs[method_sym] = sd
+	iface_obj["signatures"] = iface_sigs
+
+	iface_bytes = canonical_json_bytes(iface_obj)
+	payload_bytes = canonical_json_bytes(payload_obj)
+	iface_sha = sha256_hex(iface_bytes)
+	payload_sha = sha256_hex(payload_bytes)
+	write_dmir_pkg_v0(
+		pkg_path,
+		manifest_obj={
+			"format": "dmir-pkg",
+			"format_version": 0,
+			"package_id": "m",
+			"package_version": "0.0.0",
+			"target": "test-target",
+			"unsigned": True,
+			"unstable_format": True,
+			"payload_kind": "provisional-dmir",
+			"payload_version": 0,
+			"modules": [
+				{
+					"module_id": "m",
+					"exports": iface_obj.get("exports", {}),
+					"interface_blob": f"sha256:{iface_sha}",
+					"payload_blob": f"sha256:{payload_sha}",
+				}
+			],
+			"blobs": {
+				f"sha256:{iface_sha}": {"type": "exports", "length": len(iface_bytes)},
+				f"sha256:{payload_sha}": {"type": "dmir", "length": len(payload_bytes)},
+			},
+		},
+		blobs={iface_sha: iface_bytes, payload_sha: payload_bytes},
+		blob_types={iface_sha: 2, payload_sha: 1},
+		blob_names={iface_sha: "iface:m", payload_sha: "dmir:m"},
+	)
+
+	_write_file(
+		tmp_path / "main.drift",
+		"""
+module main
+
+fn main() returns Int { return 0 }
+""".lstrip(),
+	)
+	rc, payload = _run_driftc_json(
+		[
+			"-M",
+			str(tmp_path),
+			"--package-root",
+			str(tmp_path),
+			"--allow-unsigned-from",
+			str(tmp_path),
+			str(tmp_path / "main.drift"),
+			"--emit-ir",
+			str(tmp_path / "out.ll"),
+		],
+		capsys,
+	)
+	assert rc != 0
+	assert payload["exit_code"] == 1
+	assert payload["diagnostics"][0]["phase"] == "package"
+	assert "must not be a method" in payload["diagnostics"][0]["message"]
 
 def test_driftc_require_signatures_rejects_unsigned_packages(tmp_path: Path) -> None:
 	_write_file(

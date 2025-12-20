@@ -225,16 +225,26 @@ def encode_module_payload_v0(
 	signatures: Mapping[str, FnSignature],
 	mir_funcs: Mapping[str, Any],
 	exported_values: list[str],
-	exported_types: list[str],
+	exported_types: dict[str, list[str]],
+	exported_consts: list[str] | None = None,
 ) -> dict[str, Any]:
 	"""Build the provisional payload object (not yet canonical-JSON encoded)."""
 	tt_obj = encode_type_table(type_table)
+	consts: list[str] = list(exported_consts or [])
+	types_obj = {
+		"structs": list(exported_types.get("structs", [])),
+		"variants": list(exported_types.get("variants", [])),
+		"exceptions": list(exported_types.get("exceptions", [])),
+	}
 	return {
 		"payload_kind": "provisional-dmir",
 		"payload_version": 0,
 		"unstable_format": True,
 		"module_id": module_id,
-		"exports": {"values": list(exported_values), "types": list(exported_types)},
+		"exports": {"values": list(exported_values), "types": types_obj, "consts": consts},
+		# Const payloads are not implemented yet in MVP; this is present so the
+		# package/interface schemas can evolve without changing container shape.
+		"consts": {},
 		"type_table": tt_obj,
 		"type_table_fingerprint": type_table_fingerprint(tt_obj),
 		"signatures": encode_signatures(signatures, module_id=module_id),
