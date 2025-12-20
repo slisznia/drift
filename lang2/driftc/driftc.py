@@ -453,6 +453,7 @@ def _diag_to_json(diag: Diagnostic, phase: str, source: Path) -> dict:
 		file = getattr(diag.span, "file", None)
 	if file is None:
 		file = str(source)
+	phase = getattr(diag, "phase", None) or phase
 	return {
 		"phase": phase,
 		"message": diag.message,

@@ -1,0 +1,7 @@
+module main
+
+const X: Int = "x";
+
+fn main() returns Int {
+	return 0;
+}

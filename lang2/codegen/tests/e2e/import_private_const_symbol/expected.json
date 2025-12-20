@@ -1,0 +1,5 @@
+{
+  "exit_code": 1,
+  "phase": "parser",
+  "diagnostics": [{ "phase": "parser", "message_contains": "does not export symbol 'SECRET'" }]
+}

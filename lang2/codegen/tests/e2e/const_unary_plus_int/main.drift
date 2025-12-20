@@ -1,0 +1,7 @@
+module main
+
+const THREE: Int = +3;
+
+fn main() returns Int {
+	return THREE;
+}

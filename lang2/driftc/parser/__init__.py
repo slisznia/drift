@@ -2323,17 +2323,19 @@ def _lower_parsed_program_to_hir(
 
 	# Register module-local compile-time constants.
 	#
-	# MVP: const initializers are restricted to literal values (or unary minus
-	# applied to a numeric literal). We evaluate them here so later phases can
+	# MVP: const initializers are restricted to literal values (or unary +/- applied
+	# to a numeric literal). We evaluate them here so later phases can
 	# treat const references as typed literals without requiring whole-program
 	# evaluation infrastructure.
 	def _eval_const_value(expr: parser_ast.Expr) -> object | None:
 		if isinstance(expr, parser_ast.Literal):
 			return expr.value
-		if isinstance(expr, parser_ast.Unary) and getattr(expr, "op", None) == "-":
+		if isinstance(expr, parser_ast.Unary) and getattr(expr, "op", None) in ("-", "+"):
 			inner = getattr(expr, "operand", None)
 			if isinstance(inner, parser_ast.Literal) and isinstance(inner.value, (int, float)):
-				return -inner.value
+				if getattr(expr, "op", None) == "-":
+					return -inner.value
+				return inner.value
 		return None
 
 	for c in getattr(prog, "consts", []) or []:
@@ -2342,9 +2344,10 @@ def _lower_parsed_program_to_hir(
 		if val is None:
 			diagnostics.append(
 				Diagnostic(
+					phase="typecheck",
 					message=(
 						f"const '{c.name}' initializer must be a compile-time literal in MVP "
-						"(Int/Uint/Bool/String/Float, optionally with unary '-')"
+						"(Int/Uint/Bool/String/Float, optionally with unary '+' or '-')"
 					),
 					severity="error",
 					span=Span.from_loc(getattr(c, "loc", None)),
@@ -2370,6 +2373,7 @@ def _lower_parsed_program_to_hir(
 		if not ok:
 			diagnostics.append(
 				Diagnostic(
+					phase="typecheck",
 					message=f"const '{c.name}' declared type does not match initializer value",
 					severity="error",
 					span=Span.from_loc(getattr(c, "loc", None)),

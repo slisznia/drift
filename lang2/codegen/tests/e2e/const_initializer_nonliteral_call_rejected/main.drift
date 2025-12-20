@@ -1,0 +1,9 @@
+module main
+
+fn foo() returns Int { return 1; }
+
+const X: Int = foo();
+
+fn main() returns Int {
+	return 0;
+}

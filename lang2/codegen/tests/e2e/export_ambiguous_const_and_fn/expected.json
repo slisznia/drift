@@ -1,0 +1,7 @@
+{
+  "exit_code": 1,
+  "phase": "parser",
+  "diagnostics": [
+    { "phase": "parser", "message_contains": "exported name 'X' is ambiguous" }
+  ]
+}

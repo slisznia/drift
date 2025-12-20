@@ -339,6 +339,7 @@ term_tail: (STAR | SLASH | PERCENT) factor
 ?factor: postfix
        | STAR factor -> deref
        | MOVE factor -> move_op
+       | "+" factor -> pos
        | "-" factor -> neg
        | "not" factor -> not_op
        | BANG factor -> not_op

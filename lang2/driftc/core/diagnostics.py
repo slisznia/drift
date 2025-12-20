@@ -17,6 +17,13 @@ class Diagnostic:
 	"""Represents a compiler diagnostic (error/warning/etc.)."""
 
 	message: str
+	# Optional diagnostic phase label.
+	#
+	# Most compiler code paths emit diagnostics into a phase-specific sink (parser,
+	# typecheck, borrowcheck, codegen). Some early semantic validations happen
+	# while still building HIR; in those cases, attaching an explicit phase makes
+	# JSON output and test expectations unambiguous.
+	phase: str | None = None
 	severity: str = "error"
 	span: Span = field(default_factory=Span)  # Source location (Span() denotes unknown).
 	notes: list[str] = field(default_factory=list)

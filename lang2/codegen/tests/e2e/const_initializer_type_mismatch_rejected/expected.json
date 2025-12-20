@@ -1,0 +1,7 @@
+{
+  "exit_code": 1,
+  "phase": "parser",
+  "diagnostics": [
+    { "phase": "typecheck", "message_contains": "declared type does not match initializer value" }
+  ]
+}

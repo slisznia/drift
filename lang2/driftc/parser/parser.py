@@ -1446,6 +1446,16 @@ def _build_expr(node) -> Expr:
             raise TypeError(f"neg expects an operand, got {node.children!r}")
         expr = _build_expr(target)
         return Unary(loc=_loc(node), op="-", operand=expr)
+    if name == "pos":
+        # Unary plus: `+<expr>`.
+        #
+        # This is a no-op semantically, but we keep it as an AST node so later
+        # phases can diagnose/handle it consistently (e.g., const evaluation).
+        target = next((c for c in node.children if isinstance(c, Tree)), None)
+        if target is None:
+            raise TypeError(f"pos expects an operand, got {node.children!r}")
+        expr = _build_expr(target)
+        return Unary(loc=_loc(node), op="+", operand=expr)
     if name == "not_op":
         # Logical negation: children include the '!' token (or 'not') and the operand.
         target = next((c for c in node.children if isinstance(c, Tree)), None)

@@ -369,6 +369,10 @@ class AstToHIR:
 		Unary op lowering. Only maps the simple ops; more exotic ops can be
 		added later with explicit enum entries.
 		"""
+		# Unary plus is a semantic no-op. We lower it by lowering its operand,
+		# preserving source locations via the operand node.
+		if expr.op == "+":
+			return self.lower_expr(expr.operand)
 		# Borrowing (& / &mut) lowers to HBorrow (lvalue-only check happens later).
 		if expr.op in ("&", "&mut"):
 			return H.HBorrow(subject=self.lower_expr(expr.operand), is_mut=expr.op == "&mut")

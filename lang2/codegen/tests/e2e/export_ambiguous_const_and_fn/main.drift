@@ -1,0 +1,9 @@
+module main
+
+const X: Int = 1;
+
+fn X() returns Int { return 2; }
+
+export { X }
+
+fn main() returns Int { return 0; }

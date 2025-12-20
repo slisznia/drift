@@ -1,0 +1,5 @@
+module main
+
+from lib import SECRET
+
+fn main() returns Int { return SECRET; }

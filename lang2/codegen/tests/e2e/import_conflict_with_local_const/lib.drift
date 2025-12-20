@@ -1,0 +1,5 @@
+module lib
+
+export { ANSWER }
+
+const ANSWER: Int = 42;
