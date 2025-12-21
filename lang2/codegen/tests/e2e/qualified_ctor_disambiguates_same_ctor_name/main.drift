@@ -1,0 +1,23 @@
+variant A {
+	Some(value: Int),
+	None,
+}
+
+variant B {
+	Some(value: Int),
+	None,
+}
+
+fn main() returns Int {
+	val a = A::Some(10)
+	val b = B::Some(20)
+	val ax = match a {
+		Some(v) => { v }
+		None => { 0 }
+	}
+	val bx = match b {
+		Some(v) => { v }
+		None => { 0 }
+	}
+	return ax + bx
+}

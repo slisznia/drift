@@ -22,8 +22,9 @@ from lang2.driftc import stage1 as H
 from lang2.driftc.checker import FnSignature
 from lang2.driftc.core.diagnostics import Diagnostic
 from lang2.driftc.core.span import Span
-from lang2.driftc.core.types_core import TypeId, TypeTable, TypeKind
+from lang2.driftc.core.types_core import TypeId, TypeTable, TypeKind, VariantInstance, VariantSchema
 from lang2.driftc.core.type_resolve_common import resolve_opaque_type
+from lang2.driftc.core.generic_type_expr import GenericTypeExpr
 from lang2.driftc.borrow_checker import (
 	DerefProj,
 	FieldProj,
@@ -98,6 +99,68 @@ class TypeChecker:
 		# collide (e.g. param 1 and local 1), silently corrupting identity-based
 		# maps like `binding_types`.
 		self._next_binding_id: int = 1
+
+	def _pretty_type_name(self, ty: TypeId, *, current_module: str | None) -> str:
+		"""
+		Render a user-facing type name for diagnostics.
+
+		This is intentionally small: enough for MVP error messages without
+		committing to a full surface type renderer.
+		"""
+		td = self.type_table.get(ty)
+		name = td.name
+		if td.module_id and current_module and td.module_id not in {current_module, "lang.core"}:
+			name = f"{td.module_id}.{name}"
+		if td.param_types:
+			args = ", ".join(self._pretty_type_name(t, current_module=current_module) for t in td.param_types)
+			return f"{name}<{args}>"
+		return name
+
+	def _format_ctor_signature_list(
+		self,
+		*,
+		schema: VariantSchema,
+		instance: VariantInstance | None,
+		current_module: str | None,
+	) -> list[str]:
+		"""
+		Return a stable, user-facing list of constructor “signatures”.
+
+		Pinned formatting rules (MVP):
+		- Sort by constructor name, then arity.
+		- Render as: `CtorName(arg1, arg2)` with no extra spaces.
+		- If a payload type is unknown/unrenderable, show `_`.
+
+		When `instance` is available we prefer concrete field types; otherwise we
+		fall back to schema generic expressions (`T`, `Array<T>`, etc.).
+		"""
+
+		def _render_generic(g: GenericTypeExpr) -> str:
+			if g.param_index is not None:
+				idx = int(g.param_index)
+				if 0 <= idx < len(schema.type_params):
+					return schema.type_params[idx]
+				return "_"
+			name = g.name
+			args = list(g.args or [])
+			if not args:
+				return name
+			return f"{name}<{', '.join(_render_generic(a) for a in args)}>"
+
+		arms = sorted(schema.arms, key=lambda a: (a.name, len(a.fields)))
+		out: list[str] = []
+		for arm in arms:
+			field_parts: list[str] = []
+			if instance is not None:
+				inst_arm = instance.arms_by_name.get(arm.name)
+				if inst_arm is not None:
+					for ft in inst_arm.field_types:
+						field_parts.append(self._pretty_type_name(ft, current_module=current_module))
+			if not field_parts:
+				for f in arm.fields:
+					field_parts.append(_render_generic(f.type_expr))
+			out.append(f"`{arm.name}({', '.join(field_parts)})`")
+		return out
 
 	def check_function(
 		self,
@@ -278,6 +341,19 @@ class TypeChecker:
 				diagnostics.append(
 					Diagnostic(
 						message=f"unknown variable '{expr.name}'",
+						severity="error",
+						span=getattr(expr, "loc", Span()),
+					)
+				)
+				return record_expr(expr, self._unknown)
+
+			if hasattr(H, "HQualifiedMember") and isinstance(expr, getattr(H, "HQualifiedMember")):
+				diagnostics.append(
+					Diagnostic(
+						message=(
+							"E-QMEM-NOT-CALLABLE: qualified member reference is not a first-class value in MVP; "
+							"call it directly (e.g. `Type::Ctor(...)`)"
+						),
 						severity="error",
 						span=getattr(expr, "loc", Span()),
 					)
@@ -699,6 +775,209 @@ class TypeChecker:
 
 			# Calls.
 			if isinstance(expr, H.HCall):
+				# Qualified type member call: `TypeRef::member(args...)`.
+				#
+				# MVP: only variant constructors are supported, and the qualified
+				# member must be called (bare `TypeRef::member` is rejected above).
+				if hasattr(H, "HQualifiedMember") and isinstance(expr.fn, getattr(H, "HQualifiedMember")):
+					qm = expr.fn
+					kw_pairs = getattr(expr, "kwargs", []) or []
+					if kw_pairs:
+						diagnostics.append(
+							Diagnostic(
+								message="variant constructors do not support keyword arguments in MVP",
+								severity="error",
+								span=getattr(kw_pairs[0], "loc", getattr(expr, "loc", Span())),
+							)
+						)
+					arg_types = [type_expr(a) for a in expr.args]
+
+					base_te = getattr(qm, "base_type_expr", None)
+					base_tid = resolve_opaque_type(base_te, self.type_table, module_id=current_module_name)
+					# TypeRef without explicit module context may refer to lang.core
+					# variants (e.g., `Optional`). Prefer that base when present.
+					try:
+						base_def = self.type_table.get(base_tid)
+					except Exception:
+						base_def = None
+					if base_def is None or base_def.kind is not TypeKind.VARIANT:
+						name = getattr(base_te, "name", None)
+						if isinstance(name, str):
+							vb = self.type_table.get_variant_base(module_id=current_module_name, name=name) or self.type_table.get_variant_base(
+								module_id="lang.core", name=name
+							)
+							if vb is not None:
+								base_tid = vb
+								base_def = self.type_table.get(base_tid)
+
+					if base_def is None or base_def.kind is not TypeKind.VARIANT:
+						diagnostics.append(
+							Diagnostic(
+								message="E-QMEM-NONVARIANT: qualified member base is not a variant type",
+								severity="error",
+								span=getattr(qm, "loc", getattr(expr, "loc", Span())),
+							)
+						)
+						return record_expr(expr, self._unknown)
+
+					schema = self.type_table.get_variant_schema(base_tid)
+					if schema is None:
+						diagnostics.append(
+							Diagnostic(
+								message="internal: missing variant schema for qualified member base (compiler bug)",
+								severity="error",
+								span=getattr(qm, "loc", getattr(expr, "loc", Span())),
+							)
+						)
+						return record_expr(expr, self._unknown)
+
+					# Determine the concrete variant type for this constructor call.
+					inst_tid: TypeId = base_tid
+					has_explicit_type_args = bool(getattr(base_te, "args", []) or [])
+					if schema.type_params and not has_explicit_type_args:
+						arm_schema = next((a for a in schema.arms if a.name == qm.member), None)
+						if arm_schema is None:
+							ctors = self._format_ctor_signature_list(
+								schema=schema, instance=None, current_module=current_module_name
+							)
+							diagnostics.append(
+								Diagnostic(
+									message=(
+										f"E-QMEM-NO-CTOR: constructor '{qm.member}' not found in variant "
+										f"'{self._pretty_type_name(base_tid, current_module=current_module_name)}'. "
+										f"Available constructors: {', '.join(ctors)}"
+									),
+									severity="error",
+									span=getattr(qm, "loc", getattr(expr, "loc", Span())),
+								)
+							)
+							return record_expr(expr, self._unknown)
+						if len(expr.args) != len(arm_schema.fields):
+							diagnostics.append(
+								Diagnostic(
+									message=f"E-QMEM-ARITY: constructor '{qm.member}' expects {len(arm_schema.fields)} arguments, got {len(expr.args)}",
+									severity="error",
+									span=getattr(expr, "loc", Span()),
+								)
+							)
+							return record_expr(expr, self._unknown)
+
+						inferred: list[TypeId | None] = [None for _ in schema.type_params]
+
+						def unify(gexpr: GenericTypeExpr, actual: TypeId) -> None:
+							# Only infer from occurrences of type parameters. Shape mismatches
+							# are reported later as normal argument type mismatches once the
+							# variant instantiation is determined.
+							if gexpr.param_index is not None:
+								idx = int(gexpr.param_index)
+								prev = inferred[idx]
+								if prev is None:
+									inferred[idx] = actual
+									return
+								if prev != actual:
+									diagnostics.append(
+										Diagnostic(
+											message=(
+												f"E-QMEM-INFER-CONFLICT: inferred type argument '{schema.type_params[idx]}' "
+												f"conflicts ({self.type_table.get(prev).name} vs {self.type_table.get(actual).name})"
+											),
+											severity="error",
+											span=getattr(expr, "loc", Span()),
+										)
+									)
+								return
+
+							name = gexpr.name
+							args = list(gexpr.args or [])
+							td = self.type_table.get(actual)
+							if name in {"&", "&mut"} and args:
+								if td.kind is TypeKind.REF and td.param_types:
+									if name == "&mut" and not td.ref_mut:
+										return
+									unify(args[0], td.param_types[0])
+								return
+							if name == "Array" and args:
+								if td.kind is TypeKind.ARRAY and td.param_types:
+									unify(args[0], td.param_types[0])
+								return
+							if not args:
+								return
+							# Recurse into variant instantiations to discover nested params.
+							if td.kind is TypeKind.VARIANT and len(td.param_types) == len(args):
+								for sub_g, sub_t in zip(args, td.param_types):
+									unify(sub_g, sub_t)
+
+						for f, at in zip(arm_schema.fields, arg_types):
+							unify(f.type_expr, at)
+
+						if any(t is None for t in inferred):
+							diagnostics.append(
+								Diagnostic(
+									message=(
+										"E-QMEM-CANNOT-INFER: cannot infer type arguments for generic variant "
+										"(underconstrained; arguments do not determine all type parameters). "
+										"Fix: add an expected type (e.g., `val x: Optional<Int> = Optional::None()`) "
+										"or add explicit type arguments (e.g., `Optional<Int>::None()` or `Optional::None<Int>()`)."
+									),
+									severity="error",
+									span=getattr(expr, "loc", Span()),
+								)
+							)
+							return record_expr(expr, self._unknown)
+						inst_tid = self.type_table.ensure_instantiated(base_tid, [t for t in inferred if t is not None])
+
+					inst = self.type_table.get_variant_instance(inst_tid)
+					if inst is None:
+						diagnostics.append(
+							Diagnostic(
+								message="internal: variant instance missing for qualified member base (compiler bug)",
+								severity="error",
+								span=getattr(qm, "loc", getattr(expr, "loc", Span())),
+							)
+						)
+						return record_expr(expr, self._unknown)
+					arm_def = inst.arms_by_name.get(qm.member)
+					if arm_def is None:
+						ctors = self._format_ctor_signature_list(
+							schema=schema, instance=inst, current_module=current_module_name
+						)
+						diagnostics.append(
+							Diagnostic(
+								message=(
+									f"E-QMEM-NO-CTOR: constructor '{qm.member}' not found in variant "
+									f"'{self._pretty_type_name(inst_tid, current_module=current_module_name)}'. "
+									f"Available constructors: {', '.join(ctors)}"
+								),
+								severity="error",
+								span=getattr(qm, "loc", getattr(expr, "loc", Span())),
+							)
+						)
+						return record_expr(expr, self._unknown)
+					if len(expr.args) != len(arm_def.field_types):
+						diagnostics.append(
+							Diagnostic(
+								message=f"E-QMEM-ARITY: constructor '{qm.member}' expects {len(arm_def.field_types)} arguments, got {len(expr.args)}",
+								severity="error",
+								span=getattr(expr, "loc", Span()),
+							)
+						)
+						return record_expr(expr, self._unknown)
+
+					for i, (have, want) in enumerate(zip(arg_types, arm_def.field_types)):
+						if have != want:
+							arg_span = getattr(expr.args[i], "loc", getattr(expr, "loc", Span()))
+							diagnostics.append(
+								Diagnostic(
+									message=(
+										f"constructor '{qm.member}' argument {i} type mismatch "
+										f"(have {self.type_table.get(have).name}, expected {self.type_table.get(want).name})"
+									),
+									severity="error",
+									span=arg_span,
+								)
+							)
+					return record_expr(expr, inst_tid)
+
 				# Variant constructor call in expression position.
 				#
 				# MVP rule: constructor calls require an *expected* variant type from
@@ -1130,7 +1409,8 @@ class TypeChecker:
 									Diagnostic(
 										message=(
 											"E-CTOR-EXPECTED-TYPE: constructor call requires an expected variant type; "
-											"add a type annotation or call a function that expects this variant"
+											"add a type annotation or call a function that expects this variant. "
+											"Hint: qualify the constructor (e.g., `Optional::None()` or `Optional<Int>::None()`)."
 										),
 										severity="error",
 										span=getattr(expr, "loc", Span()),
@@ -1154,7 +1434,8 @@ class TypeChecker:
 							Diagnostic(
 								message=(
 									"E-CTOR-EXPECTED-TYPE: constructor call requires an expected variant type; "
-									"add a type annotation or call a function that expects this variant"
+									"add a type annotation or call a function that expects this variant. "
+									"Hint: qualify the constructor (e.g., `Optional::None()` or `Optional<Int>::None()`)."
 								),
 								severity="error",
 								span=getattr(expr, "loc", Span()),

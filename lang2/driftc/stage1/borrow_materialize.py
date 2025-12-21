@@ -192,6 +192,8 @@ class BorrowMaterializeRewriter:
 	def _rewrite_expr(self, expr: H.HExpr) -> Tuple[List[H.HStmt], H.HExpr]:
 		if isinstance(expr, H.HVar):
 			return [], expr
+		if hasattr(H, "HQualifiedMember") and isinstance(expr, getattr(H, "HQualifiedMember")):
+			return [], expr
 		if isinstance(expr, (H.HLiteralInt, H.HLiteralFloat, H.HLiteralString, H.HLiteralBool)):
 			return [], expr
 		if isinstance(expr, H.HCall):

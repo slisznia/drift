@@ -1,0 +1,18 @@
+variant Optional<T> {
+	Some(value: T),
+	None,
+}
+
+fn main() returns Int {
+	val x: Optional<Int> = Optional::Some(1)
+	val y = match x {
+		Some(v) => {
+			// Shadow the binder name inside the arm block. This must not corrupt
+			// the binder binding or generate invalid SSA/PHI nodes.
+			val v = v + 1
+			v
+		}
+		None => { 0 }
+	}
+	return y
+}

@@ -1,0 +1,9 @@
+variant Optional<T> {
+	Some(value: T),
+	None,
+}
+
+fn main() returns Int {
+	val x = Optional::None()
+	return 0
+}

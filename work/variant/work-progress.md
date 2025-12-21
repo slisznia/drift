@@ -126,9 +126,7 @@ during MVP.
     - Stub SSA typing (`Checker.build_type_env_from_ssa`) recognizes `ConstructVariant`/`VariantTag`/`VariantGetField` so stage4 return-shape checks accept variant returns.
     - LLVM backend allows returning `%Variant_<id>` values from non-can-throw functions.
 
-- Still pending / deferred:
-  - Constructor name collision UX improvements (list candidates).
-  - Named-field patterns and named-field construction (explicitly deferred).
+- Deferred follow-ups are tracked in `TODO.md` under `[Iteration]`.
 
 ## Plan
 

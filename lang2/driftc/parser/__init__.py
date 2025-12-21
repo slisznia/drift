@@ -221,6 +221,12 @@ def _convert_expr(expr: parser_ast.Expr) -> s0.Expr:
 		if getattr(expr, "op", ".") == "->":
 			base = s0.Unary(op="*", operand=base, loc=Span.from_loc(getattr(expr.value, "loc", None)))
 		return s0.Attr(value=base, attr=expr.attr, loc=Span.from_loc(getattr(expr, "loc", None)))
+	if isinstance(expr, parser_ast.QualifiedMember):
+		return s0.QualifiedMember(
+			base_type_expr=expr.base_type,
+			member=expr.member,
+			loc=Span.from_loc(getattr(expr, "loc", None)),
+		)
 	if isinstance(expr, parser_ast.Index):
 		return s0.Index(
 			value=_convert_expr(expr.value),
@@ -636,6 +642,9 @@ def parse_drift_files_to_hir(
 		except _parser.ModuleDeclError as err:
 			diagnostics.append(Diagnostic(message=str(err), severity="error", span=_span_in_file(path, err.loc)))
 			continue
+		except _parser.QualifiedMemberParseError as err:
+			diagnostics.append(Diagnostic(message=str(err), severity="error", span=_span_in_file(path, err.loc)))
+			continue
 		except _parser.FStringParseError as err:
 			diagnostics.append(Diagnostic(message=str(err), severity="error", span=_span_in_file(path, err.loc)))
 			continue
@@ -899,6 +908,9 @@ def parse_drift_workspace_to_hir(
 		try:
 			prog = _parser.parse_program(source)
 		except _parser.ModuleDeclError as err:
+			diagnostics.append(Diagnostic(message=str(err), severity="error", span=_span_in_file(path, err.loc)))
+			continue
+		except _parser.QualifiedMemberParseError as err:
 			diagnostics.append(Diagnostic(message=str(err), severity="error", span=_span_in_file(path, err.loc)))
 			continue
 		except _parser.FStringParseError as err:
@@ -1897,20 +1909,100 @@ def parse_drift_workspace_to_hir(
 
 	def _resolve_types_in_block(path: Path, file_aliases: dict[str, str], file_type_bindings: dict[str, tuple[str, str]], blk: parser_ast.Block) -> None:
 		for st in getattr(blk, "statements", []) or []:
+			# Resolve any type-level references embedded in expressions (e.g.,
+			# `TypeRef::Ctor(...)` where `TypeRef` may include a module alias).
+			def _resolve_types_in_expr(expr: parser_ast.Expr) -> None:
+				if isinstance(expr, parser_ast.QualifiedMember):
+					_resolve_type_expr_in_file(path, file_aliases, file_type_bindings, expr.base_type)
+					return
+				if isinstance(expr, parser_ast.Call):
+					_resolve_types_in_expr(expr.func)
+					for a in getattr(expr, "args", []) or []:
+						_resolve_types_in_expr(a)
+					for kw in getattr(expr, "kwargs", []) or []:
+						_resolve_types_in_expr(kw.value)
+					return
+				if isinstance(expr, parser_ast.Attr):
+					_resolve_types_in_expr(expr.value)
+					return
+				if isinstance(expr, parser_ast.Index):
+					_resolve_types_in_expr(expr.value)
+					_resolve_types_in_expr(expr.index)
+					return
+				if isinstance(expr, parser_ast.Unary):
+					_resolve_types_in_expr(expr.operand)
+					return
+				if isinstance(expr, parser_ast.Binary):
+					_resolve_types_in_expr(expr.left)
+					_resolve_types_in_expr(expr.right)
+					return
+				if isinstance(expr, parser_ast.Move):
+					_resolve_types_in_expr(expr.value)
+					return
+				if isinstance(expr, parser_ast.Ternary):
+					_resolve_types_in_expr(expr.condition)
+					_resolve_types_in_expr(expr.then_value)
+					_resolve_types_in_expr(expr.else_value)
+					return
+				if isinstance(expr, parser_ast.ArrayLiteral):
+					for e in getattr(expr, "elements", []) or []:
+						_resolve_types_in_expr(e)
+					return
+				if isinstance(expr, parser_ast.TryCatchExpr):
+					_resolve_types_in_expr(expr.attempt)
+					for arm in getattr(expr, "catch_arms", []) or []:
+						_resolve_types_in_block(path, file_aliases, file_type_bindings, arm.block)
+					return
+				if isinstance(expr, parser_ast.MatchExpr):
+					_resolve_types_in_expr(expr.scrutinee)
+					for arm in getattr(expr, "arms", []) or []:
+						_resolve_types_in_block(path, file_aliases, file_type_bindings, arm.block)
+					return
+				if isinstance(expr, parser_ast.ExceptionCtor):
+					for a in getattr(expr, "args", []) or []:
+						_resolve_types_in_expr(a)
+					for kw in getattr(expr, "kwargs", []) or []:
+						_resolve_types_in_expr(kw.value)
+					return
+				if isinstance(expr, parser_ast.FString):
+					for h in getattr(expr, "holes", []) or []:
+						_resolve_types_in_expr(h.expr)
+					return
+				# literals/names/placeholders are leaf nodes
+
 			if isinstance(st, parser_ast.LetStmt) and getattr(st, "type_expr", None) is not None:
 				_resolve_type_expr_in_file(path, file_aliases, file_type_bindings, st.type_expr)
+			if isinstance(st, parser_ast.LetStmt):
+				_resolve_types_in_expr(st.value)
+			if isinstance(st, parser_ast.AssignStmt):
+				_resolve_types_in_expr(st.target)
+				_resolve_types_in_expr(st.value)
+			if isinstance(st, parser_ast.AugAssignStmt):
+				_resolve_types_in_expr(st.target)
+				_resolve_types_in_expr(st.value)
+			if isinstance(st, parser_ast.ReturnStmt) and st.value is not None:
+				_resolve_types_in_expr(st.value)
+			if isinstance(st, parser_ast.ExprStmt):
+				_resolve_types_in_expr(st.value)
 			if isinstance(st, parser_ast.IfStmt):
+				_resolve_types_in_expr(st.condition)
 				_resolve_types_in_block(path, file_aliases, file_type_bindings, st.then_block)
 				if st.else_block is not None:
 					_resolve_types_in_block(path, file_aliases, file_type_bindings, st.else_block)
 			if isinstance(st, parser_ast.TryStmt):
+				if isinstance(getattr(st, "attempt", None), parser_ast.Expr):
+					_resolve_types_in_expr(st.attempt)
 				_resolve_types_in_block(path, file_aliases, file_type_bindings, st.body)
 				for c in getattr(st, "catches", []) or []:
 					_resolve_types_in_block(path, file_aliases, file_type_bindings, c.block)
 			if isinstance(st, parser_ast.WhileStmt):
+				_resolve_types_in_expr(st.condition)
 				_resolve_types_in_block(path, file_aliases, file_type_bindings, st.body)
 			if isinstance(st, parser_ast.ForStmt):
+				_resolve_types_in_expr(st.iter_expr)
 				_resolve_types_in_block(path, file_aliases, file_type_bindings, st.body)
+			if isinstance(st, parser_ast.ThrowStmt):
+				_resolve_types_in_expr(st.expr)
 
 	for mid, files in by_module.items():
 		for path, prog in files:
@@ -2904,6 +2996,8 @@ def parse_drift_to_hir(path: Path) -> Tuple[Dict[str, H.HBlock], Dict[str, FnSig
 	try:
 		prog = _parser.parse_program(source)
 	except _parser.FStringParseError as err:
+		return {}, {}, TypeTable(), {}, [Diagnostic(message=str(err), severity="error", span=_span_in_file(path, err.loc))]
+	except _parser.QualifiedMemberParseError as err:
 		return {}, {}, TypeTable(), {}, [Diagnostic(message=str(err), severity="error", span=_span_in_file(path, err.loc))]
 	except UnexpectedInput as err:
 		span = Span(

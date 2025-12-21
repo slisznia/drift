@@ -12,6 +12,7 @@ from .ast import (
     AssignStmt,
     AugAssignStmt,
     Attr,
+    QualifiedMember,
     Binary,
     Block,
     Call,
@@ -466,11 +467,171 @@ class TerminatorInserter:
         return ttype in self.TERMINABLE
 
     def _should_emit_terminator(self) -> bool:
-        return (
-            self.paren_depth == 0
-            and self.bracket_depth == 0
-            and self.can_terminate
-        )
+        return self.paren_depth == 0 and self.bracket_depth == 0 and self.can_terminate
+
+
+class QualifiedTypeArgInserter:
+    """
+    Disambiguate `<...>` as type arguments in expression position for qualified members.
+
+    We want to support:
+      - `TypeName<T>::Ctor(...)`
+      - `TypeName::Ctor<T>(...)`   (fallback)
+
+    …without making `<` ambiguous with the `<` comparison operator (e.g. `i < 3`).
+
+    This post-lexer rewrites `LT`/`GT` tokens into `TYPE_LT`/`TYPE_GT` **only** when
+    the bracketed group is followed by an unambiguous commit token:
+      - pre-`::` type args: `> ::`
+      - post-member type args: `> (`
+    """
+
+    def process(self, stream):
+        recent: list[Token] = []
+        pending_angle: list[Token] | None = None
+        angle_depth = 0
+        angle_kind: str | None = None  # "pre" | "post"
+        allowed_in_type_args = {
+            # Type refs.
+            "NAME",
+            "DOT",
+            # Type arg lists.
+            "COMMA",
+            "LT",
+            "GT",
+            # Ref types.
+            "AMP",
+            "MUT",
+            # Square type args (e.g., Array[T], if enabled).
+            "LSQB",
+            "RSQB",
+        }
+
+        def _emit(tok: Token):
+            recent.append(tok)
+            if len(recent) > 4:
+                recent.pop(0)
+            return tok
+
+        def _is_post_member_context() -> bool:
+            # ... DCOLON NAME < ...
+            return len(recent) >= 2 and recent[-1].type == "NAME" and recent[-2].type == "DCOLON"
+
+        def _is_pre_base_context() -> bool:
+            # ... NAME < ...
+            #
+            # This is intentionally permissive; we rely on:
+            #   - early bailout on non-type tokens (e.g. numeric literals), and
+            #   - commit only when `>` is followed by `::`.
+            return len(recent) >= 1 and recent[-1].type == "NAME"
+
+        it = iter(stream)
+        pushback: list[Token] = []
+
+        while True:
+            try:
+                token = pushback.pop() if pushback else next(it)
+            except StopIteration:
+                break
+
+            # Inside a nested generic type argument list, `>>` is lexed as `SHR`
+            # (shift-right). When we're speculatively parsing `<...>` as type
+            # arguments, treat `SHR` as two consecutive `>` tokens so nested
+            # generics like `Optional<Array<String>>::None()` parse correctly.
+            if pending_angle is not None and token.type == "SHR":
+                # Process the first `>` now and push the second one back into the
+                # token stream.
+                pushback.append(Token.new_borrow_pos("GT", ">", token))
+                token = Token.new_borrow_pos("GT", ">", token)
+
+            tt = token.type
+
+            if pending_angle is None:
+                if tt == "LT" and (_is_post_member_context() or _is_pre_base_context()):
+                    # Start buffering only in syntactic contexts where this *might* be a
+                    # generic type-argument list for a qualified member.
+                    angle_kind = "post" if _is_post_member_context() else "pre"
+                    pending_angle = [token]
+                    angle_depth = 1
+                    continue
+                yield _emit(token)
+                continue
+
+            # We are buffering a potential `<...>` span.
+            if tt not in allowed_in_type_args:
+                # Bail early: this cannot be a type-argument list, so treat the buffered
+                # tokens as normal expression tokens.
+                for t in pending_angle:
+                    yield _emit(t)
+                pending_angle = None
+                angle_kind = None
+                yield _emit(token)
+                continue
+
+            pending_angle.append(token)
+            if tt == "LT":
+                angle_depth += 1
+                continue
+            if tt == "GT":
+                angle_depth -= 1
+                if angle_depth != 0:
+                    continue
+
+                # Closing '>' for the buffered span; peek the next token to decide
+                # whether this was a type-arg group.
+                try:
+                    next_tok = pushback.pop() if pushback else next(it)
+                except StopIteration:
+                    for t in pending_angle:
+                        yield _emit(t)
+                    pending_angle = None
+                    angle_kind = None
+                    break
+
+                commit = False
+                if angle_kind == "pre" and next_tok.type == "DCOLON":
+                    commit = True
+                if angle_kind == "post" and next_tok.type == "LPAR":
+                    commit = True
+
+                if commit:
+                    for t in pending_angle:
+                        if t.type == "LT":
+                            yield _emit(Token.new_borrow_pos("TYPE_LT", t.value, t))
+                        elif t.type == "GT":
+                            yield _emit(Token.new_borrow_pos("TYPE_GT", t.value, t))
+                        else:
+                            yield _emit(t)
+                    yield _emit(next_tok)
+                else:
+                    for t in pending_angle:
+                        yield _emit(t)
+                    yield _emit(next_tok)
+
+                pending_angle = None
+                angle_kind = None
+                continue
+
+        # Flush unterminated span (treat as normal tokens).
+        if pending_angle is not None:
+            for t in pending_angle:
+                yield _emit(t)
+
+
+class DriftPostLex:
+	"""Combined post-lexer: type-arg disambiguation, then terminator insertion."""
+
+	# Lark may drop tokens that aren't referenced in the grammar unless the
+	# post-lexer asks to keep them. We need newlines/semicolons for terminator
+	# insertion.
+	always_accept = TerminatorInserter.always_accept
+
+	def __init__(self) -> None:
+		self._type_args = QualifiedTypeArgInserter()
+		self._terminators = TerminatorInserter()
+
+	def process(self, stream):
+		return self._terminators.process(self._type_args.process(stream))
 
 
 
@@ -481,7 +642,7 @@ _PARSER = Lark(
     start="program",
     propagate_positions=True,
     maybe_placeholders=False,
-    postlex=TerminatorInserter(),
+    postlex=DriftPostLex(),
 )
 
 
@@ -496,6 +657,20 @@ class ModuleDeclError(ValueError):
 
 	The driver converts this into a pinned parser-phase diagnostic (it is not an
 	internal compiler bug).
+	"""
+
+	def __init__(self, message: str, *, loc: object | None) -> None:
+		super().__init__(message)
+		self.loc = loc
+
+
+class QualifiedMemberParseError(ValueError):
+	"""
+	User-facing parse error for invalid `TypeRef::member` syntax.
+
+	This is raised from the parser AST builder (not from the grammar) so the
+	driver can report a pinned parser diagnostic instead of crashing with a raw
+	Python exception.
 	"""
 
 	def __init__(self, message: str, *, loc: object | None) -> None:
@@ -1435,6 +1610,42 @@ def _build_expr(node) -> Expr:
         return Move(loc=_loc(node), value=expr)
     if name == "postfix":
         return _build_postfix(node)
+    if name == "qualified_member":
+        name_toks = [c for c in node.children if isinstance(c, Token) and c.type == "NAME"]
+        if len(name_toks) != 2:
+            raise QualifiedMemberParseError(
+                "E-PARSE-QMEM-SHAPE: qualified member must have exactly 2 NAME tokens",
+                loc=_loc(node),
+            )
+
+        type_arg_nodes = [
+            c for c in node.children if isinstance(c, Tree) and _name(c) == "qualified_angle_type_args"
+        ]
+        if len(type_arg_nodes) > 1:
+            # MVP: accept at most one explicit type-argument list. Supporting both
+            # `Optional<T>::Ctor(...)` and `Optional::Ctor<T>(...)` is enough; mixing
+            # both is ambiguous and not needed yet.
+            raise QualifiedMemberParseError(
+                "E-PARSE-QMEM-DUP-TYPEARGS: qualified member may specify type arguments only once",
+                loc=_loc(type_arg_nodes[1]),
+            )
+
+        type_args: list[TypeExpr] = []
+        if type_arg_nodes:
+            type_args = [
+                _build_type_expr(t)
+                for t in type_arg_nodes[0].children
+                if isinstance(t, Tree) and _name(t) == "type_expr"
+            ]
+
+        base_first = name_toks[0]
+        base_type = TypeExpr(
+            name=base_first.value,
+            args=type_args,
+            loc=Located(line=base_first.line, column=base_first.column),
+        )
+        member_tok = name_toks[1]
+        return QualifiedMember(loc=_loc(node), base_type=base_type, member=member_tok.value)
     if name == "leading_dot":
         return _build_leading_dot(node)
     if name == "primary":

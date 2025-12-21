@@ -1,0 +1,9 @@
+{
+  "exit_code": 1,
+  "diagnostics": [
+    { "phase": "typecheck", "message_contains": "E-QMEM-CANNOT-INFER" },
+    { "phase": "typecheck", "message_contains": "underconstrained" },
+    { "phase": "typecheck", "message_contains": "Optional<Int>::None()" },
+    { "phase": "typecheck", "message_contains": "Optional::None<Int>()" }
+  ]
+}

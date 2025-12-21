@@ -66,6 +66,26 @@ class Attr(Expr):
 
 
 @dataclass
+class QualifiedMember(Expr):
+	"""
+	Type-level qualified member reference: `TypeRef::member`.
+
+	This is a general expression form (not ctor-only). MVP semantics are
+	restricted by the typed checker:
+	- only variant constructors are supported as members, and
+	- the qualified member must be called (`TypeRef::Ctor(...)`).
+
+	`base_type_expr` is a parser type expression object (duck-typed on `name`,
+	`args`, and optional `module_id`) so later phases can resolve it into a
+	concrete `TypeId` without re-parsing.
+	"""
+
+	base_type_expr: object
+	member: str
+	loc: Span = field(default_factory=Span)
+
+
+@dataclass
 class Call(Expr):
 	"""Function or method call prior to desugaring."""
 	func: Expr

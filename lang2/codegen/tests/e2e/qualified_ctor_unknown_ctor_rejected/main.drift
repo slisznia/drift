@@ -1,0 +1,9 @@
+variant Optional<T> {
+	Some(value: T),
+	None,
+}
+
+fn main() returns Int {
+	val x = Optional::Bogus(1)
+	return 0
+}

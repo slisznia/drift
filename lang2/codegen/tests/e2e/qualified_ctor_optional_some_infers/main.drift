@@ -1,0 +1,13 @@
+variant Optional<T> {
+	Some(value: T),
+	None,
+}
+
+fn main() returns Int {
+	val x = Optional::Some(41)
+	val y = match x {
+		Some(v) => { v + 1 }
+		None => { 0 }
+	}
+	return y
+}

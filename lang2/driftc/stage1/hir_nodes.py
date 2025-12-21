@@ -402,6 +402,23 @@ class HField(HExpr):
 
 
 @dataclass
+class HQualifiedMember(HExpr):
+	"""
+	Type-level qualified member reference: `TypeRef::member`.
+
+	This is a general expression form. MVP semantics (enforced by the typed
+	checker) restrict it to variant constructors and require it to be called.
+
+	`base_type_expr` is a parser/adapter type expression object used for type
+	resolution (duck-typed on `name`, `args`, and optional module id fields).
+	"""
+
+	base_type_expr: object
+	member: str
+	loc: Span = field(default_factory=Span)
+
+
+@dataclass
 class HIndex(HExpr):
 	"""Indexing: subject[index]"""
 	subject: HExpr
@@ -602,7 +619,7 @@ __all__ = [
 	"HFString", "HFStringHole",
 	"HCall", "HMethodCall", "HTernary", "HTryResult", "HResultOk",
 	"HPlaceExpr", "HPlaceProj", "HPlaceField", "HPlaceIndex", "HPlaceDeref",
-	"HField", "HIndex", "HBorrow", "HDVInit",
+	"HField", "HQualifiedMember", "HIndex", "HBorrow", "HDVInit",
 	"HMove",
 	"HKwArg",
 	"HExceptionInit",

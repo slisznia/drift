@@ -48,6 +48,8 @@ LTE: "<="
 GTE: ">="
 LT: "<"
 GT: ">"
+
+%declare TYPE_LT TYPE_GT
 PLUS: "+"
 PLUS_EQ: "+="
 MINUS: "-"
@@ -62,6 +64,7 @@ STAR: "*"
 SLASH: "/"
 PERCENT: "%"
 DOT: "."
+DCOLON: "::"
 COLON: ":"
 COMMA: ","
 AMP: "&"
@@ -147,7 +150,7 @@ base_type: NAME DOT NAME type_args? -> qualified_base_type
 type_args: square_type_args
          | angle_type_args
 square_type_args: "[" type_expr (COMMA type_expr)* "]"
-angle_type_args: "<" type_expr (COMMA type_expr)* ">"
+angle_type_args: ("<" | TYPE_LT) type_expr (COMMA type_expr)* (">" | TYPE_GT)
 
 block: "{" (stmt | TERMINATOR)* "}"
 
@@ -360,10 +363,35 @@ index_suffix: "[" (leading_dot | expr) "]"
 event_fqn: module_path COLON NAME
 
 primary: literal
+       | qualified_member
        | ident -> var
        | leading_dot
        | "(" expr ")"
        | array_literal
+
+// Type-level qualified member reference: `TypeRef::member`.
+//
+// This is intentionally narrow in MVP: the left-hand side is `base_type`
+// (a nominal type reference with optional type arguments), not an arbitrary
+// type expression.
+//
+// Semantics are determined by the typed checker. In MVP, only variant
+// constructors are valid members, and the qualified member must be called.
+// Qualified type member reference used for variant constructors (MVP).
+//
+// This is intentionally restricted to avoid ambiguity with existing expression
+// syntax (notably module-alias member access and comparisons).
+//
+// Generic type arguments are supported in a narrowly disambiguated form:
+// - `TypeName<T>::Ctor(...)`
+// - `TypeName::Ctor<T>(...)` (fallback)
+//
+// The lexer/post-lexer only treats `<...>` as type arguments when the matching
+// `>` is followed by an unambiguous commit token (`::` for the pre-`::` form,
+// `(` for the post-member form). This keeps `i < 3` comparisons unambiguous.
+qualified_angle_type_args: TYPE_LT type_expr (COMMA type_expr)* TYPE_GT
+
+qualified_member: NAME qualified_angle_type_args? DCOLON NAME qualified_angle_type_args?
 
 leading_dot: DOT NAME leading_suffix*
 leading_suffix: call_suffix

@@ -1716,7 +1716,7 @@ MVP rules:
 
 - Constructors are **unqualified identifiers** (`Ok`, `Err`, `Some`, `None`).
 - **Positional arguments only** in MVP (no named-field construction).
-- A constructor call in expression position requires an **expected variant type** from context (e.g., an annotation, a parameter type, or a function return type). If there is no expected type, the compiler rejects the call rather than guessing.
+- An **unqualified** constructor call in expression position requires an **expected variant type** from context (e.g., an annotation, a parameter type, or a function return type). If there is no expected type, the compiler rejects the call rather than guessing.
 
 Examples:
 
@@ -1724,6 +1724,36 @@ Examples:
 val x: Optional<Int> = Some(1)   // OK: expected type is Optional<Int>
 val y = Some(1)                 // error (no expected variant type)
 ```
+
+#### 10.3.1. Qualified constructor calls (`TypeRef::Ctor(...)`)
+
+To disambiguate constructors (and to allow type argument inference without an expected type), Drift supports *qualified* constructor calls:
+
+```drift
+val x = Optional::Some(1)          // OK: infers Optional<Int>
+val y = Optional<Int>::None()      // OK: explicit type arguments on the variant type
+val z = Optional::None<Int>()      // OK: explicit type arguments after the constructor name (fallback)
+```
+
+Rules (v1 MVP):
+
+- Syntax: `TypeRef::Ctor(args...)`.
+- `TypeRef` is a nominal type reference (a variant type name; module-qualified type names may be supported where type references are supported).
+- In MVP, only **variant constructors** may be referenced through `TypeRef::Ctor(...)`.
+- The constructor name must exist on the referenced variant type and the argument count must match the constructor’s fields.
+- Generic type arguments may be inferred from constructor arguments:
+  - `Optional::Some(1)` infers `T = Int`.
+  - If type arguments are underconstrained (e.g., `Optional::None()`), the compiler rejects the call unless an expected type provides them (e.g., via a return type or an explicit annotation).
+
+Type argument spelling (v1 MVP):
+
+- Either `TypeRef<T>::Ctor(...)` or `TypeRef::Ctor<T>(...)` may be used to provide explicit type arguments for a generic variant.
+- At most one explicit type-argument list may appear in a qualified constructor call.
+- The explicit type-argument list always applies to the **variant type instantiation** (not to the constructor name itself). The two spellings are equivalent in v1.
+
+MVP restriction:
+
+- `TypeRef::Ctor` is not a first-class value in MVP. For example, `val f = Optional::Some` is rejected; use a direct call `Optional::Some(...)`.
 
 ### 10.4. Pattern matching and exhaustiveness
 

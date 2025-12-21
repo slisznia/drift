@@ -1,0 +1,7 @@
+{
+  "exit_code": 1,
+  "diagnostics": [
+    { "phase": "typecheck", "message_contains": "E-QMEM-NO-CTOR" },
+    { "phase": "typecheck", "message_contains": "Available constructors:" }
+  ]
+}

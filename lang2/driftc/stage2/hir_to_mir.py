@@ -34,6 +34,7 @@ from lang2.driftc.checker import FnSignature
 from lang2.driftc.core.span import Span
 from lang2.driftc.core.types_core import TypeKind, TypeTable, TypeId
 from lang2.driftc.core.type_resolve_common import resolve_opaque_type
+from lang2.driftc.core.generic_type_expr import GenericTypeExpr
 from lang2.driftc.core.iter_intrinsics import ensure_array_iter_struct, is_array_iter_struct
 from . import mir_nodes as M
 
@@ -682,6 +683,27 @@ class HIRToMIR:
 		Plain function call. For now only direct function names are supported;
 		indirect/function-valued calls will be added later if needed.
 		"""
+		if hasattr(H, "HQualifiedMember") and isinstance(expr.fn, getattr(H, "HQualifiedMember")):
+			if getattr(expr, "kwargs", None):
+				raise AssertionError("qualified variant constructors do not accept keyword args (checker bug)")
+			qm = expr.fn
+			expected = self._current_expected_type()
+			variant_ty = self._infer_qualified_ctor_variant_type(qm, expr.args, expected_type=expected)
+			if variant_ty is None:
+				raise AssertionError("qualified constructor call cannot determine variant type (checker bug)")
+			inst = self._type_table.get_variant_instance(variant_ty)
+			if inst is None:
+				raise AssertionError("qualified constructor call variant instance missing (type table bug)")
+			arm_def = inst.arms_by_name.get(qm.member)
+			if arm_def is None:
+				raise AssertionError("unknown constructor reached MIR lowering (checker bug)")
+			if len(expr.args) != len(arm_def.field_types):
+				raise AssertionError("variant constructor arity mismatch reached MIR lowering (checker bug)")
+			arg_vals = [self.lower_expr(a, expected_type=fty) for a, fty in zip(expr.args, arm_def.field_types)]
+			dest = self.b.new_temp()
+			self.b.emit(M.ConstructVariant(dest=dest, variant_ty=variant_ty, ctor=qm.member, args=arg_vals))
+			self._local_types[dest] = variant_ty
+			return dest
 		if isinstance(expr.fn, H.HVar):
 			name = expr.fn.name
 			# Variant constructor call in expression position.
@@ -2225,6 +2247,8 @@ class HIRToMIR:
 			if all(t == first for t in arm_tys):
 				return first
 			return None
+		if isinstance(expr, H.HCall) and hasattr(H, "HQualifiedMember") and isinstance(expr.fn, getattr(H, "HQualifiedMember")):
+			return self._infer_qualified_ctor_variant_type(expr.fn, expr.args)
 		if isinstance(expr, H.HCall) and isinstance(expr.fn, H.HVar):
 			name = expr.fn.name
 			# Struct constructor call: result is the struct TypeId.
@@ -2326,6 +2350,7 @@ class HIRToMIR:
 			# Boolean logic returns Bool.
 			if expr.op in (H.BinaryOp.AND, H.BinaryOp.OR):
 				return self._bool_type if left == right == self._bool_type else None
+
 		if hasattr(H, "HPlaceExpr") and isinstance(expr, getattr(H, "HPlaceExpr")):
 			# Canonical place expression: its type is the type of the referenced
 			# storage location (same as reading the lvalue).
@@ -2411,6 +2436,98 @@ class HIRToMIR:
 		if hasattr(H, "HTryExpr") and isinstance(expr, getattr(H, "HTryExpr")):
 			return self._infer_expr_type(expr.attempt)
 		return None
+
+	def _infer_qualified_ctor_variant_type(
+		self,
+		qm: H.HQualifiedMember,
+		args: list[H.HExpr],
+		*,
+		expected_type: TypeId | None = None,
+	) -> TypeId | None:
+		"""
+		Best-effort inference of the concrete variant TypeId for a qualified ctor call.
+
+		This supports `TypeRef::Ctor(args...)` lowering in stage2 without relying
+		on typed-checker annotations. The typed checker is responsible for user-
+		facing diagnostics; this helper returns None on underconstrained cases.
+		"""
+		base_te = getattr(qm, "base_type_expr", None)
+		cur_mod = self._current_module_name()
+		base_tid = resolve_opaque_type(base_te, self._type_table, module_id=cur_mod)
+		td = self._type_table.get(base_tid)
+		if td.kind is not TypeKind.VARIANT:
+			# `resolve_opaque_type` is conservative for bare generic variant names;
+			# prefer a declared variant base when present.
+			name = getattr(base_te, "name", None)
+			if isinstance(name, str):
+				vb = self._type_table.get_variant_base(module_id=cur_mod, name=name) or self._type_table.get_variant_base(
+					module_id="lang.core", name=name
+				)
+				if vb is not None:
+					base_tid = vb
+					td = self._type_table.get(base_tid)
+		if td.kind is not TypeKind.VARIANT:
+			return None
+
+		# If an expected type exists and it is an instantiation of the same base
+		# variant, prefer it. This allows underconstrained constructor calls like
+		# `Optional::None()` to be typed via context (`val x: Optional<Int> = ...`).
+		if expected_type is not None and self._type_table.get(expected_type).kind is TypeKind.VARIANT:
+			inst = self._type_table.get_variant_instance(expected_type)
+			if inst is not None and inst.base_id == base_tid:
+				return expected_type
+			if inst is None and expected_type == base_tid:
+				return expected_type
+
+		schema = self._type_table.get_variant_schema(base_tid)
+		if schema is None:
+			return None
+
+		has_explicit_args = bool(getattr(base_te, "args", []) or [])
+		if schema.type_params and not has_explicit_args:
+			arm_schema = next((a for a in schema.arms if a.name == qm.member), None)
+			if arm_schema is None:
+				return None
+			if len(args) != len(arm_schema.fields):
+				return None
+
+			inferred: list[TypeId | None] = [None for _ in schema.type_params]
+
+			def unify(gexpr: GenericTypeExpr, actual: TypeId) -> None:
+				if gexpr.param_index is not None:
+					idx = int(gexpr.param_index)
+					prev = inferred[idx]
+					if prev is None:
+						inferred[idx] = actual
+					return
+				name = gexpr.name
+				sub = list(gexpr.args or [])
+				if not sub:
+					return
+				td2 = self._type_table.get(actual)
+				if name in {"&", "&mut"} and td2.kind is TypeKind.REF and td2.param_types:
+					if name == "&mut" and not td2.ref_mut:
+						return
+					unify(sub[0], td2.param_types[0])
+					return
+				if name == "Array" and td2.kind is TypeKind.ARRAY and td2.param_types:
+					unify(sub[0], td2.param_types[0])
+					return
+				if td2.kind is TypeKind.VARIANT and len(td2.param_types) == len(sub):
+					for gsub, tsub in zip(sub, td2.param_types):
+						unify(gsub, tsub)
+
+			for f, arg_expr in zip(arm_schema.fields, args):
+				arg_ty = self._infer_expr_type(arg_expr)
+				if arg_ty is None:
+					return None
+				unify(f.type_expr, arg_ty)
+
+			if any(t is None for t in inferred):
+				return None
+			return self._type_table.ensure_instantiated(base_tid, [t for t in inferred if t is not None])
+
+		return base_tid
 
 	def _lower_addr_of_place(self, expr: H.HPlaceExpr, *, is_mut: bool) -> tuple[M.ValueId, TypeId]:
 		"""

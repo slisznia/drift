@@ -59,6 +59,14 @@ class AstToHIR:
 		# language spec): unknown identifiers inside a method body may resolve to
 		# fields/methods on `self`.
 		self._implicit_self_stack: list[dict[str, object]] = []
+		# Counter for generating unique, compiler-internal binder names in pattern
+		# matches (e.g., `match x { Some(v) => { ... } }`).
+		#
+		# HIR is a flat namespace (no lexical scopes for locals), while match-arm
+		# binders are block-scoped by language semantics. To preserve those
+		# semantics in later pipeline stages (SSA/codegen), we alpha-rename match
+		# binders to unique internal names during lowering.
+		self._match_binder_counter = 0
 
 	def _push_implicit_self(
 		self,
@@ -358,6 +366,20 @@ class AstToHIR:
 		subject = self.lower_expr(expr.value)
 		return H.HField(subject=subject, name=expr.attr)
 
+	def _visit_expr_QualifiedMember(self, expr: ast.QualifiedMember) -> H.HExpr:
+		"""
+		Type-level qualified member reference: `TypeRef::member`.
+
+		This is a general HIR node (not ctor-only). The typed checker resolves the
+		member kind and enforces MVP restrictions. MIR lowering handles the
+		constructor-call case as pure syntax sugar.
+		"""
+		return H.HQualifiedMember(
+			base_type_expr=expr.base_type_expr,
+			member=expr.member,
+			loc=getattr(expr, "loc", None) or Span(),
+		)
+
 	def _visit_expr_Index(self, expr: ast.Index) -> H.HExpr:
 		"""Indexing: subject[index] (no placeholder/index sugar here)."""
 		subject = self.lower_expr(expr.value)
@@ -566,34 +588,175 @@ class AstToHIR:
 
 		This lowering is intentionally structural: it preserves the arm block
 		statements (minus an optional trailing `ExprStmt`) and stores the trailing
-		expression separately as `HMatchArm.result` so later passes can reason
-		about "arm yields a value" without re-walking the block.
-		"""
+			expression separately as `HMatchArm.result` so later passes can reason
+			about "arm yields a value" without re-walking the block.
+			"""
 		if not expr.arms:
 			raise NotImplementedError("match expression requires at least one arm")
 
+		def _rename_expr(e: H.HExpr, mapping: dict[str, str]) -> H.HExpr:
+			"""
+			Alpha-rename variable references within an expression.
+
+			This is used for match-arm binder scoping. It renames *uses* of variables
+			(HVar and place bases) according to `mapping`. It does not rename binding
+			sites (e.g., `let` statement names); block-level renaming handles
+			shadowing by adjusting the mapping as it walks statements.
+			"""
+			if isinstance(e, H.HVar) and e.name in mapping:
+				return H.HVar(name=mapping[e.name], binding_id=e.binding_id)
+			if isinstance(e, H.HPlaceExpr):
+				base = e.base
+				if isinstance(base, H.HVar) and base.name in mapping:
+					base = H.HVar(name=mapping[base.name], binding_id=base.binding_id)
+				return H.HPlaceExpr(base=base, projections=e.projections, loc=e.loc)
+			if isinstance(e, H.HCall):
+				return H.HCall(
+					fn=_rename_expr(e.fn, mapping),
+					args=[_rename_expr(a, mapping) for a in e.args],
+					kwargs=[H.HKwArg(name=kw.name, value=_rename_expr(kw.value, mapping), loc=kw.loc) for kw in e.kwargs],
+				)
+			if isinstance(e, H.HMethodCall):
+				return H.HMethodCall(
+					receiver=_rename_expr(e.receiver, mapping),
+					method_name=e.method_name,
+					args=[_rename_expr(a, mapping) for a in e.args],
+					kwargs=[H.HKwArg(name=kw.name, value=_rename_expr(kw.value, mapping), loc=kw.loc) for kw in e.kwargs],
+				)
+			if isinstance(e, H.HField):
+				return H.HField(subject=_rename_expr(e.subject, mapping), name=e.name)
+			if isinstance(e, H.HIndex):
+				return H.HIndex(subject=_rename_expr(e.subject, mapping), index=_rename_expr(e.index, mapping))
+			if isinstance(e, H.HUnary):
+				return H.HUnary(op=e.op, expr=_rename_expr(e.expr, mapping))
+			if isinstance(e, H.HBinary):
+				return H.HBinary(op=e.op, left=_rename_expr(e.left, mapping), right=_rename_expr(e.right, mapping))
+			if isinstance(e, H.HArrayLiteral):
+				return H.HArrayLiteral(elements=[_rename_expr(a, mapping) for a in e.elements])
+			if isinstance(e, H.HFString):
+				return H.HFString(
+					parts=e.parts,
+					holes=[H.HFStringHole(expr=_rename_expr(h.expr, mapping), spec=h.spec, loc=h.loc) for h in e.holes],
+					loc=e.loc,
+				)
+			if isinstance(e, H.HTryExpr):
+				renamed_arms: list[H.HTryExprArm] = []
+				for arm in e.arms:
+					renamed_block, after_map = _rename_block(arm.block, mapping)
+					renamed_result = _rename_expr(arm.result, after_map) if arm.result is not None else None
+					renamed_arms.append(
+						H.HTryExprArm(
+							event_fqn=arm.event_fqn,
+							binder=arm.binder,
+							block=renamed_block,
+							result=renamed_result,
+							loc=arm.loc,
+						)
+					)
+				return H.HTryExpr(attempt=_rename_expr(e.attempt, mapping), arms=renamed_arms, loc=e.loc)
+			if isinstance(e, H.HMatchExpr):
+				renamed_arms: list[H.HMatchArm] = []
+				for arm in e.arms:
+					renamed_block, after_map = _rename_block(arm.block, mapping)
+					renamed_result = _rename_expr(arm.result, after_map) if arm.result is not None else None
+					renamed_arms.append(
+						H.HMatchArm(
+							ctor=arm.ctor,
+							binders=arm.binders,
+							block=renamed_block,
+							result=renamed_result,
+							loc=arm.loc,
+						)
+					)
+				return H.HMatchExpr(scrutinee=_rename_expr(e.scrutinee, mapping), arms=renamed_arms, loc=e.loc)
+			if hasattr(H, "HQualifiedMember") and isinstance(e, getattr(H, "HQualifiedMember")):
+				return e
+			return e
+
+		def _rename_stmt(st: H.HStmt, mapping: dict[str, str]) -> tuple[H.HStmt, dict[str, str]]:
+			"""
+			Rename variable uses within a statement, returning an updated mapping
+			for subsequent statements (to model shadowing by `let`).
+			"""
+			if isinstance(st, H.HLet):
+				new_value = _rename_expr(st.value, mapping)
+				next_map = mapping
+				if st.name in mapping:
+					next_map = dict(mapping)
+					next_map.pop(st.name, None)
+				return (
+					H.HLet(
+						name=st.name,
+						value=new_value,
+						binding_id=st.binding_id,
+						declared_type_expr=st.declared_type_expr,
+						is_mutable=st.is_mutable,
+					),
+					next_map,
+				)
+			if isinstance(st, H.HAssign):
+				return (H.HAssign(target=_rename_expr(st.target, mapping), value=_rename_expr(st.value, mapping)), mapping)
+			if isinstance(st, H.HAugAssign):
+				return (
+					H.HAugAssign(target=_rename_expr(st.target, mapping), op=st.op, value=_rename_expr(st.value, mapping), loc=st.loc),
+					mapping,
+				)
+			if isinstance(st, H.HReturn):
+				return (H.HReturn(value=_rename_expr(st.value, mapping) if st.value is not None else None), mapping)
+			if isinstance(st, H.HExprStmt):
+				return (H.HExprStmt(expr=_rename_expr(st.expr, mapping)), mapping)
+			if isinstance(st, H.HIf):
+				then_block, _ = _rename_block(st.then_block, mapping)
+				else_block = None
+				if st.else_block is not None:
+					else_block, _ = _rename_block(st.else_block, mapping)
+				return (H.HIf(cond=_rename_expr(st.cond, mapping), then_block=then_block, else_block=else_block), mapping)
+			return (st, mapping)
+
+		def _rename_block(block: H.HBlock, mapping: dict[str, str]) -> tuple[H.HBlock, dict[str, str]]:
+			cur = dict(mapping)
+			out: list[H.HStmt] = []
+			for st in block.statements:
+				new_st, cur = _rename_stmt(st, cur)
+				out.append(new_st)
+			return H.HBlock(statements=out), cur
+
 		arms: list[H.HMatchArm] = []
 		for arm in expr.arms:
+			# Allocate unique internal names for binders to preserve binder scoping
+			# even though HIR locals are function-scoped.
+			rename_map: dict[str, str] = {}
+			new_binders: list[str] = []
+			for b in list(getattr(arm, "binders", []) or []):
+				self._match_binder_counter += 1
+				internal = f"__match_binder_{self._match_binder_counter}_{b}"
+				rename_map[b] = internal
+				new_binders.append(internal)
+
 			arm_result: Optional[H.HExpr] = None
 			stmts = list(arm.block)
 			if stmts and isinstance(stmts[-1], ast.ExprStmt):
 				last_expr_stmt = stmts.pop()
 				arm_result = self.lower_expr(last_expr_stmt.expr)
 			arm_block = self.lower_block(stmts)
+			if rename_map:
+				arm_block, after_map = _rename_block(arm_block, rename_map)
+				if arm_result is not None:
+					arm_result = _rename_expr(arm_result, after_map)
 			arms.append(
 				H.HMatchArm(
 					ctor=arm.ctor,
-					binders=list(getattr(arm, "binders", []) or []),
+					binders=new_binders,
 					block=arm_block,
 					result=arm_result,
-					loc=self._as_span(getattr(arm, "loc", None)),
+					loc=Span.from_loc(arm.loc),
 				)
 			)
 
 		return H.HMatchExpr(
 			scrutinee=self.lower_expr(expr.scrutinee),
 			arms=arms,
-			loc=self._as_span(getattr(expr, "loc", None)),
+			loc=Span.from_loc(getattr(expr, "loc", None)),
 		)
 
 	def _visit_stmt_AssignStmt(self, stmt: ast.AssignStmt) -> H.HStmt:

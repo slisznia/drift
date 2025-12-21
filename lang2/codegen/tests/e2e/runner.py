@@ -97,6 +97,20 @@ def _run_case(case_dir: Path) -> str:
 		module_args.extend(["-M", str(case_dir / mp)])
 	# Compile-error path: delegate to driftc --json for structured diags.
 	if expected.get("diagnostics"):
+		def _match_diag_span(exp: dict, d: dict) -> bool:
+			# Optional span assertions for diagnostics emitted via driftc --json.
+			#
+			# These are best-effort and intentionally minimal: we only compare file/line/column
+			# when the expectation includes them. This keeps tests stable while still locking
+			# the key “pinned span” invariants for important parse/typecheck errors.
+			if "file" in exp and exp["file"] != d.get("file"):
+				return False
+			if "line" in exp and exp["line"] != d.get("line"):
+				return False
+			if "column" in exp and exp["column"] != d.get("column"):
+				return False
+			return True
+
 		cmd = [
 			str(Path(sys.executable)),
 			"-m",
@@ -123,6 +137,8 @@ def _run_case(case_dir: Path) -> str:
 				if phase is not None and d.get("phase") != phase:
 					continue
 				if msg_sub is not None and msg_sub not in d.get("message", ""):
+					continue
+				if not _match_diag_span(exp, d):
 					continue
 				match_found = True
 				break

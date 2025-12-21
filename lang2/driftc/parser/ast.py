@@ -204,6 +204,24 @@ class Attr(Expr):
 
 
 @dataclass
+class QualifiedMember(Expr):
+	"""
+	Type-level qualified member reference: `TypeRef::member`.
+
+	This is intentionally a general expression node (not ctor-only). The typed
+	checker determines which kinds of members are valid. In MVP, only variant
+	constructor names are supported, and the qualified member must be called.
+
+	`base_type` is a parser `TypeExpr` so later phases can resolve it into a
+	concrete `TypeId` (including generic instantiation) without re-parsing.
+	"""
+
+	loc: Located
+	base_type: TypeExpr
+	member: str
+
+
+@dataclass
 class KwArg:
     """
     Keyword argument `name = value`.

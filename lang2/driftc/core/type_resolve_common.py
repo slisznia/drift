@@ -76,8 +76,17 @@ def resolve_opaque_type(raw: object, table: TypeTable, *, module_id: str | None 
 			ty = table.get_nominal(kind=TypeKind.VARIANT, module_id=origin_mod, name=str(name))
 			if ty is not None:
 				return ty
+			# Toolchain-provided variants (e.g. lang.core Optional) are visible as
+			# unqualified type references even in user modules. If the current module
+			# does not define a variant of this name, prefer the toolchain base.
+			core_base = table.get_variant_base(module_id="lang.core", name=str(name))
+			if core_base is not None:
+				return core_base
 			return table.ensure_named(str(name), module_id=origin_mod)
 		# No module context: fall back to a scalar nominal placeholder.
+		core_base = table.get_variant_base(module_id="lang.core", name=str(name))
+		if core_base is not None:
+			return core_base
 		return table.ensure_named(str(name))
 
 	# String forms.
