@@ -5,6 +5,7 @@ import base64
 import hashlib
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from cryptography.hazmat.primitives import serialization
 
 
 def sha256_hex(data: bytes) -> str:
@@ -29,6 +30,16 @@ def compute_ed25519_kid(pubkey_raw: bytes) -> str:
 	return "ed25519:" + b64_encode(hashlib.sha256(pubkey_raw).digest())
 
 
+def ed25519_public_bytes_raw(pubkey) -> bytes:
+	try:
+		return pubkey.public_bytes_raw()
+	except AttributeError:
+		return pubkey.public_bytes(
+			encoding=serialization.Encoding.Raw,
+			format=serialization.PublicFormat.Raw,
+		)
+
+
 def ed25519_sign_from_seed(*, priv_seed32: bytes, message: bytes) -> tuple[bytes, bytes]:
 	"""
 	Sign `message` with an Ed25519 private key seed.
@@ -44,6 +55,5 @@ def ed25519_sign_from_seed(*, priv_seed32: bytes, message: bytes) -> tuple[bytes
 		raise ValueError("ed25519 private key seed must be 32 bytes")
 	priv = Ed25519PrivateKey.from_private_bytes(priv_seed32)
 	sig = priv.sign(message)
-	pub = priv.public_key().public_bytes_raw()
+	pub = ed25519_public_bytes_raw(priv.public_key())
 	return sig, pub
-

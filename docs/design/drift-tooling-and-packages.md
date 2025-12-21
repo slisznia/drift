@@ -500,7 +500,7 @@ Example:
   "arch": "x86_64",
   "abi": "sysv",
   "libc": "glibc",
-  "capabilities": ["posix", "epoll", "threads", "sockets"]
+	"capabilities": ["posix", "epoll", "threads", "sockets"]
 }
 ```
 
@@ -517,6 +517,45 @@ Targets/packages may declare minimum requirements in `drift-target.json`:
   }
 }
 ```
+
+---
+
+## 19. Operational CLI contracts (current toolchain)
+
+### 19.1 `drift fetch --json`
+- Output is **JSON only** (no human text mixed in).
+- Shape:
+  - `ok: bool`
+  - `mode: "lock" | "unlocked"`
+  - `selected[]`: per package `{ package_id, identity, source_id, index_path, artifact_path, cache_path, sha256, signer_kids, unsigned }`
+  - `errors[]`: structured errors with `reason_code`, identities, paths, sha values.
+  - `cache_index_written: bool`
+- Exit codes:
+  - `0` on success
+  - `2` on any error
+- Lock mode: no resolution; requires matching sources and exact `lock.path` + sha; failures are fatal.
+
+### 19.2 Cache layout invariant
+- Cache packages are stored under `cache/driftpm/pkgs/<lock-normalized-path>`.
+- `lock.path` is the normalized relative path (no `.`/`..`); the cache **must** follow this shape.
+- Filename-only caches are invalid; if vendoring fails on a missing cache path, rerun `drift fetch` with the current toolchain to rebuild the cache in the normalized layout.
+
+### 19.3 `drift doctor`
+- Severities: `fatal`, `degraded`, `info`, `ok`.
+- Exit codes (`--fail-on`):
+  - `0`: no fatal; and when `--fail-on degraded`, also no degraded.
+  - `1`: degraded findings when `--fail-on degraded`.
+  - `2`: any fatal findings.
+- Flags:
+  - `--json` (machine output only), `--deep` (expensive existence/hash checks), `--cache-dir` (default `cache/driftpm`), `--vendor-dir` (default `vendor/driftpkgs`), `--fail-on fatal|degraded`.
+- Checks (each has `check_id`, findings sorted, includes sha expected/got + paths on mismatches):
+  - `sources` (schema + existence)
+  - `indexes` (schema + optional deep file/hash/identity)
+  - `trust` (schema + key/namespace sanity)
+  - `lock` (schema + optional deep source bytes/signature checks)
+  - `vendor_consistency` (deep only, degraded-only): missing vendor dir (`VENDOR_DIR_MISSING`), missing vendored artifact (`VENDOR_MISSING_ARTIFACT`), sha mismatch (`VENDOR_SHA_MISMATCH`)
+  - `cache_consistency` (deep only, degraded-only): missing cache dir/index (`CACHE_MISSING`, `CACHE_INDEX_MISSING`/`CACHE_INDEX_INVALID`), missing cache entry (`LOCK_CACHE_MISSING_ENTRY`), sha divergence (`LOCK_CACHE_DIVERGENCE`), missing artifact (`CACHE_MISSING_ARTIFACT`)
+- JSON reports are strict: stderr should be empty in success/structured error paths; findings include `artifact_path` and `sha256_expected/got` where relevant.
 
 Rules:
 - `drift` must refuse to install incompatible packages.

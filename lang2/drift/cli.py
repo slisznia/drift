@@ -3,9 +3,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 
 from lang2.drift.fetch import FetchOptions, fetch_v0
+from lang2.drift.doctor import DoctorOptions, doctor_exit_code, doctor_v0
 from lang2.drift.publish import PublishOptions, publish_packages_v0
 from lang2.drift.sign import SignOptions, sign_package_v0
 from lang2.drift.trust import (
@@ -102,6 +104,37 @@ def _build_parser() -> argparse.ArgumentParser:
 		default=Path("drift.lock.json"),
 		help="Lockfile path; if it exists, fetch reproduces it exactly (default: ./drift.lock.json)",
 	)
+	fetch.add_argument("--json", action="store_true", help="Emit machine-readable JSON report")
+
+	doctor = sub.add_parser("doctor", help="Sanity checks for sources/index/trust/lock configuration")
+	doctor.add_argument("--sources", type=Path, default=Path("drift-sources.json"), help="Path to drift-sources.json")
+	doctor.add_argument(
+		"--trust-store",
+		type=Path,
+		default=Path("drift") / "trust.json",
+		help="Path to trust store file (default: ./drift/trust.json)",
+	)
+	doctor.add_argument("--lock", type=Path, default=Path("drift.lock.json"), help="Path to drift.lock.json")
+	doctor.add_argument(
+		"--cache-dir",
+		type=Path,
+		default=Path("cache") / "driftpm",
+		help="Cache directory (default: ./cache/driftpm)",
+	)
+	doctor.add_argument(
+		"--vendor-dir",
+		type=Path,
+		default=Path("vendor") / "driftpkgs",
+		help="Vendor directory (default: ./vendor/driftpkgs)",
+	)
+	doctor.add_argument("--deep", action="store_true", help="Perform expensive existence/hash checks")
+	doctor.add_argument("--json", action="store_true", help="Emit machine-readable JSON report")
+	doctor.add_argument(
+		"--fail-on",
+		choices=["fatal", "degraded"],
+		default="fatal",
+		help="Exit non-zero on this severity (fatal always exits 2; degraded exits 1 when selected)",
+	)
 
 	vendor = sub.add_parser("vendor", help="Vendor cached packages into vendor/driftpkgs and write a lockfile")
 	vendor.add_argument(
@@ -129,6 +162,7 @@ def _build_parser() -> argparse.ArgumentParser:
 		default=None,
 		help="Restrict vendoring to specific package_id (repeatable); defaults to all cached packages",
 	)
+	vendor.add_argument("--json", action="store_true", help="Emit machine-readable JSON report")
 	return p
 
 
@@ -213,12 +247,52 @@ def main(argv: list[str] | None = None) -> int:
 
 	if args.cmd == "fetch":
 		opts = FetchOptions(sources_path=args.sources, cache_dir=args.cache_dir, force=bool(args.force), lock_path=args.lock)
-		try:
-			fetch_v0(opts)
+		report = fetch_v0(opts)
+		if args.json:
+			print(json.dumps(report.to_dict(), sort_keys=True, separators=(",", ":")))
+			return 0 if report.ok else 2
+		if report.ok:
 			return 0
-		except Exception as err:
-			p.error(str(err))
-			return 2
+		for err in report.errors:
+			print(err.format_human(), file=sys.stderr)
+		return 2
+
+	if args.cmd == "doctor":
+		opts = DoctorOptions(
+			sources_path=args.sources,
+			trust_store_path=args.trust_store,
+			lock_path=args.lock,
+			cache_dir=args.cache_dir,
+			vendor_dir=args.vendor_dir,
+			deep=bool(args.deep),
+			fail_on=args.fail_on,
+		)
+		report = doctor_v0(opts)
+		code = doctor_exit_code(report, fail_on=args.fail_on)
+		if args.json:
+			print(json.dumps(report.to_dict(), sort_keys=True, separators=(",", ":")))
+			return code
+		# Human mode: compact summary + findings.
+		print(
+			f"doctor: fatal={report.fatal_count} degraded={report.degraded_count} info={report.info_count} ok={report.ok}",
+			file=sys.stderr if code != 0 else sys.stdout,
+		)
+		for check in sorted(report.checks, key=lambda c: c.check_id):
+			if check.status == "ok":
+				continue
+			stream = sys.stderr if check.status in ("fatal", "degraded") else sys.stdout
+			print(f"- {check.check_id}: {check.status} ({check.summary})", file=stream)
+			for finding in sorted(
+				check.findings,
+				key=lambda e: (
+					e.reason_code,
+					(e.identity.package_id if e.identity is not None and e.identity.package_id is not None else ""),
+					(e.source_id or ""),
+					(e.artifact_path or ""),
+				),
+			):
+				print(f"  - {finding.format_human()}", file=stream)
+		return code
 
 	if args.cmd == "vendor":
 		opts = VendorOptions(
@@ -226,10 +300,10 @@ def main(argv: list[str] | None = None) -> int:
 			dest_dir=args.dest_dir,
 			lock_path=args.lock,
 			package_ids=list(args.package_ids) if args.package_ids else None,
+			json=bool(args.json),
 		)
 		try:
-			vendor_v0(opts)
-			return 0
+			return int(vendor_v0(opts))
 		except Exception as err:
 			p.error(str(err))
 			return 2

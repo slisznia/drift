@@ -7,7 +7,7 @@ from pathlib import Path
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-from lang2.drift.crypto import b64_encode, compute_ed25519_kid
+from lang2.drift.crypto import b64_encode, compute_ed25519_kid, ed25519_public_bytes_raw
 
 
 @dataclass(frozen=True)
@@ -30,9 +30,8 @@ def keygen_ed25519_seed(opts: KeygenOptions) -> None:
 
 	if opts.print_pubkey or opts.print_kid:
 		priv = Ed25519PrivateKey.from_private_bytes(seed32)
-		pub_raw = priv.public_key().public_bytes_raw()
+		pub_raw = ed25519_public_bytes_raw(priv.public_key())
 		if opts.print_pubkey:
 			print(b64_encode(pub_raw))
 		if opts.print_kid:
 			print(compute_ed25519_kid(pub_raw))
-
