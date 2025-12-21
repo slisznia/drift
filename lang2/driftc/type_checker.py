@@ -1406,15 +1406,15 @@ class TypeChecker:
 							)
 							if not candidates:
 								diagnostics.append(
-									Diagnostic(
-										message=(
-											"E-CTOR-EXPECTED-TYPE: constructor call requires an expected variant type; "
-											"add a type annotation or call a function that expects this variant. "
-											"Hint: qualify the constructor (e.g., `Optional::None()` or `Optional<Int>::None()`)."
-										),
-										severity="error",
-										span=getattr(expr, "loc", Span()),
-									)
+											Diagnostic(
+												message=(
+													"E-CTOR-EXPECTED-TYPE: constructor call requires an expected variant type; "
+													"add a type annotation or call a function that expects this variant. "
+													"Hint: qualify the constructor (e.g., `Optional::None()` or `Optional<Int>::None()` or `Optional::None<Int>()`)."
+												),
+												severity="error",
+												span=getattr(expr, "loc", Span()),
+											)
 								)
 								return record_expr(expr, self._unknown)
 						diagnostics.append(
@@ -1435,7 +1435,7 @@ class TypeChecker:
 								message=(
 									"E-CTOR-EXPECTED-TYPE: constructor call requires an expected variant type; "
 									"add a type annotation or call a function that expects this variant. "
-									"Hint: qualify the constructor (e.g., `Optional::None()` or `Optional<Int>::None()`)."
+									"Hint: qualify the constructor (e.g., `Optional::None()` or `Optional<Int>::None()` or `Optional::None<Int>()`)."
 								),
 								severity="error",
 								span=getattr(expr, "loc", Span()),
