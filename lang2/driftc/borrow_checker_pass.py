@@ -21,11 +21,14 @@ from enum import Enum, auto
 from typing import Dict, List, Optional, Mapping, Callable, Tuple, Set
 
 from lang2.driftc import stage1 as H
+from lang2.driftc.stage1 import closures as C
+from lang2.driftc.stage1.capture_discovery import discover_captures
 from lang2.driftc.borrow_checker import (
 	Place,
 	PlaceBase,
 	PlaceKind,
 	PlaceState,
+	FieldProj,
 	merge_place_state,
 	place_from_expr,
 	places_overlap,
@@ -111,6 +114,87 @@ class BorrowChecker:
 		# Ensure we always have a binding_id -> TypeId mapping to avoid repeated scans.
 		if self.binding_types is None:
 			self.binding_types = {pb.local_id: ty for pb, ty in self.fn_types.items()}
+		self._bases_by_binding: Dict[int, PlaceBase] = {pb.local_id: pb for pb in self.fn_types.keys()}
+		self._method_sig_by_key: Dict[Tuple[int, str], FnSignature] = {}
+		if self.signatures:
+			for sig in self.signatures.values():
+				if sig.is_method and sig.impl_target_type_id is not None:
+					key = (sig.impl_target_type_id, sig.method_name or sig.name)
+					self._method_sig_by_key[key] = sig
+
+	def _base_for_binding(self, binding_id: int) -> Optional[PlaceBase]:
+		return self._bases_by_binding.get(binding_id)
+
+	def _place_from_capture_key(self, key: C.HCaptureKey) -> Optional[Place]:
+		base = self._base_for_binding(int(key.root_local))
+		if base is None:
+			return None
+		place = Place(base)
+		for proj in key.proj:
+			place = place.with_projection(FieldProj(proj.field))
+		return place
+
+	def _resolve_sig_for_call(self, expr: H.HExpr) -> Optional[FnSignature]:
+		if not self.signatures:
+			return None
+		if isinstance(expr, H.HCall):
+			if isinstance(expr.fn, H.HVar):
+				sig = self.signatures.get(expr.fn.name)
+				if sig is not None:
+					return sig
+			resolution = self.call_resolutions.get(id(expr)) if self.call_resolutions is not None else None
+			if isinstance(resolution, CallableDecl):
+				return self.signatures.get(resolution.name)
+			return None
+		if isinstance(expr, H.HMethodCall):
+			resolution = self.call_resolutions.get(id(expr)) if self.call_resolutions is not None else None
+			if isinstance(resolution, MethodResolution):
+				impl_target = resolution.decl.impl_target_type_id
+				if impl_target is None:
+					return None
+				return self._method_sig_by_key.get((impl_target, resolution.decl.name))
+		return None
+
+	def _param_index_for_call(
+		self,
+		sig: FnSignature,
+		*,
+		arg_index: int | None = None,
+		kw_name: str | None = None,
+	) -> Optional[int]:
+		if kw_name is not None:
+			if not sig.param_names:
+				return None
+			try:
+				idx = sig.param_names.index(kw_name)
+			except ValueError:
+				return None
+			if sig.is_method and idx == 0:
+				return None
+			return idx
+		if arg_index is None:
+			return None
+		if sig.is_method:
+			return arg_index + 1
+		return arg_index
+
+	def _add_lambda_capture_loans(self, state: _FlowState, lam: H.HLambda) -> None:
+		if not lam.captures:
+			discover_captures(lam)
+		for cap in lam.captures:
+			if cap.kind not in (C.HCaptureKind.REF, C.HCaptureKind.REF_MUT):
+				continue
+			place = self._place_from_capture_key(cap.key)
+			if place is None:
+				continue
+			kind = LoanKind.MUT if cap.kind is C.HCaptureKind.REF_MUT else LoanKind.SHARED
+			self._borrow_place(
+				state,
+				place,
+				kind,
+				temporary=True,
+				span=cap.span,
+			)
 
 	@classmethod
 	def from_typed_fn(
@@ -456,9 +540,6 @@ class BorrowChecker:
 		if isinstance(expr, H.HResultOk):
 			self._collect_ref_uses_in_expr(expr.value, bid, ref_uses)
 			return
-		if isinstance(expr, H.HTryResult):
-			self._collect_ref_uses_in_expr(expr.expr, bid, ref_uses)
-			return
 
 	def _reachable_forward(self, start: int, succs: Dict[int, List[int]]) -> Set[int]:
 		seen: Set[int] = set()
@@ -525,6 +606,17 @@ class BorrowChecker:
 			self._force_move_place_use(state, place, getattr(expr, "loc", Span()))
 			return
 		if isinstance(expr, H.HCall):
+			if isinstance(expr.fn, H.HLambda):
+				pre_loans = set(state.loans)
+				self._add_lambda_capture_loans(state, expr.fn)
+				for arg in expr.args:
+					self._visit_expr(state, arg, as_value=True)
+				for kw in expr.kwargs:
+					self._visit_expr(state, kw.value, as_value=True)
+				# Call executes here; keep capture loans live for the duration of the call.
+				new_loans = state.loans - pre_loans
+				state.loans -= {ln for ln in new_loans if ln.temporary}
+				return
 			# swap/replace are builtin place-manipulation operations.
 			#
 			# They mutate their first argument (and `swap` mutates both). For borrow
@@ -575,6 +667,24 @@ class BorrowChecker:
 
 			pre_loans = set(state.loans)
 			self._visit_expr(state, expr.fn, as_value=True)
+			sig = self._resolve_sig_for_call(expr)
+			if sig and sig.param_nonescaping:
+				for idx, arg in enumerate(expr.args):
+					param_index = self._param_index_for_call(sig, arg_index=idx)
+					if param_index is None or param_index >= len(sig.param_nonescaping):
+						continue
+					if not sig.param_nonescaping[param_index]:
+						continue
+					if isinstance(arg, H.HLambda):
+						self._add_lambda_capture_loans(state, arg)
+				for kw in expr.kwargs:
+					param_index = self._param_index_for_call(sig, kw_name=kw.name)
+					if param_index is None or param_index >= len(sig.param_nonescaping):
+						continue
+					if not sig.param_nonescaping[param_index]:
+						continue
+					if isinstance(kw.value, H.HLambda):
+						self._add_lambda_capture_loans(state, kw.value)
 			resolution = self.call_resolutions.get(id(expr)) if self.call_resolutions is not None else None
 			param_types = None
 			if isinstance(resolution, CallableDecl):
@@ -610,6 +720,24 @@ class BorrowChecker:
 			return
 		if isinstance(expr, H.HMethodCall):
 			pre_loans = set(state.loans)
+			sig = self._resolve_sig_for_call(expr)
+			if sig and sig.param_nonescaping:
+				for idx, arg in enumerate(expr.args):
+					param_index = self._param_index_for_call(sig, arg_index=idx)
+					if param_index is None or param_index >= len(sig.param_nonescaping):
+						continue
+					if not sig.param_nonescaping[param_index]:
+						continue
+					if isinstance(arg, H.HLambda):
+						self._add_lambda_capture_loans(state, arg)
+				for kw in expr.kwargs:
+					param_index = self._param_index_for_call(sig, kw_name=kw.name)
+					if param_index is None or param_index >= len(sig.param_nonescaping):
+						continue
+					if not sig.param_nonescaping[param_index]:
+						continue
+					if isinstance(kw.value, H.HLambda):
+						self._add_lambda_capture_loans(state, kw.value)
 			resolution = self.call_resolutions.get(id(expr)) if self.call_resolutions is not None else None
 			param_types = None
 			receiver_autoborrow: Optional[SelfMode] = None
@@ -693,9 +821,6 @@ class BorrowChecker:
 			return
 		if isinstance(expr, H.HResultOk):
 			self._visit_expr(state, expr.value, as_value=True)
-			return
-		if isinstance(expr, H.HTryResult):
-			self._visit_expr(state, expr.expr, as_value=True)
 			return
 		if isinstance(expr, H.HArrayLiteral):
 			for el in expr.elements:

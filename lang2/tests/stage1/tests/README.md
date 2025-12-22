@@ -7,5 +7,3 @@ Test coverage overview:
 
 * `ast_to_hir_*` — basic expressions/statements, calls, DV ctor, ternary, loops,
   and try/throw lowering to `HTry`/`HCatchArm`/`HThrow`.
-* `try_result_rewrite` — desugaring of result-driven try sugar (expr?) into
-  explicit HIR: evaluate once, `if is_err { throw unwrap_err }`, then unwrap.

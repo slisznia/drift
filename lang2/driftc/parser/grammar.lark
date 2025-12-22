@@ -30,6 +30,7 @@ THROW: "throw"
 VARIANT: "variant"
 MATCH: "match"
 DEFAULT: "default"
+NONESCAPING: "nonescaping"
 # Note: `>>=` must be recognized before `>>` (longest match).
 SHR_EQ: ">>="
 SHR: ">>"
@@ -126,7 +127,7 @@ func_def: "fn" ident "(" [params] ")" return_sig block
 return_sig: RETURNS type_expr
 
 params: param (COMMA param)*
-param: ident COLON type_expr
+param: NONESCAPING? ident COLON type_expr
 
 # implement Type { fn ... }
 implement_def: "implement" type_expr implement_body
@@ -371,7 +372,16 @@ primary: literal
        | ident -> var
        | leading_dot
        | "(" expr ")"
+       | lambda_expr
        | array_literal
+
+lambda_expr: BAR lambda_params? BAR lambda_returns? FATARROW lambda_body
+lambda_returns: RETURNS type_expr
+lambda_params: lambda_param (COMMA lambda_param)*
+lambda_param: NAME (COLON type_expr)?
+lambda_body: expr
+           | value_block
+           | block
 
 // Type-level qualified member reference: `TypeRef::member`.
 //

@@ -227,6 +227,25 @@ class HFString(HExpr):
 
 
 @dataclass
+class HParam(HNode):
+	name: str
+	type: Optional["HTypeExpr"] = None
+	binding_id: Optional[BindingId] = None
+	span: Span = field(default_factory=Span)
+
+
+@dataclass
+class HLambda(HExpr):
+	"""Lambda expression prior to capture inference/lowering."""
+	params: list[HParam]
+	ret_type: Optional["HTypeExpr"] = None
+	body_expr: Optional[HExpr] = None
+	body_block: Optional["HBlock"] = None
+	captures: list["HCapture"] = field(default_factory=list)
+	span: Span = field(default_factory=Span)
+
+
+@dataclass
 class HCall(HExpr):
 	"""Plain function call: fn(args...)."""
 	fn: HExpr
@@ -254,18 +273,6 @@ class HTernary(HExpr):
 	cond: HExpr
 	then_expr: HExpr
 	else_expr: HExpr
-
-
-@dataclass
-class HTryResult(HExpr):
-	"""
-	Result-driven try sugar marker (e.g., expr?).
-
-	This remains in HIR until a rewrite pass desugars it into an explicit
-	`if is_err { throw unwrap_err() } else { unwrap() }` pattern. Keeping it
-	syntactic here avoids entangling lowering with sugar.
-	"""
-	expr: HExpr
 
 
 @dataclass
@@ -631,7 +638,8 @@ __all__ = [
 	"UnaryOp", "BinaryOp",
 	"HVar", "HLiteralInt", "HLiteralString", "HLiteralBool", "HLiteralFloat",
 	"HFString", "HFStringHole",
-	"HCall", "HMethodCall", "HTernary", "HTryResult", "HResultOk",
+	"HParam", "HLambda",
+	"HCall", "HMethodCall", "HTernary", "HResultOk",
 	"HPlaceExpr", "HPlaceProj", "HPlaceField", "HPlaceIndex", "HPlaceDeref",
 	"HField", "HQualifiedMember", "HIndex", "HBorrow", "HDVInit",
 	"HMove",

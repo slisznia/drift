@@ -1,0 +1,17 @@
+module m
+
+exception Boom()
+
+fn may_fail(flag: Int) returns Int {
+	if flag == 0 {
+		return 41
+	}
+	throw Boom()
+}
+
+fn main() returns Int {
+	return (|| => {
+		val x: Int = try may_fail(0) catch { 0 };
+		return x + 1;
+	})()
+}

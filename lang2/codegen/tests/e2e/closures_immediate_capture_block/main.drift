@@ -1,0 +1,6 @@
+module m
+
+fn main() returns Int {
+	val a: Int = 10;
+	return (|x: Int| => { return a + x; })(2)
+}

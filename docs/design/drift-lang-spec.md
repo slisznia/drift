@@ -1,4 +1,5 @@
 # Drift Language Specification 1.0
+<!-- CANONICAL-SPEC -->
 
 ## 1. Overview
 
@@ -49,7 +50,7 @@ Drift expressions largely follow a C-style surface with explicit ownership rules
 - Binary operators: `+`, `-`, `*`, `/`, comparisons (`<`, `<=`, `>`, `>=`, `==`, `!=`), boolean (`and`, `or`)
 - Bitwise operators: `&`, `|`, `^`, `~`, `<<`, `>>` — **require `Uint` operands**; using any other type (including `Int`, `Bool`, `String`, or arrays) is a type error.
 - Ternary conditional: `cond ? then_expr : else_expr` (lower precedence than `or`; `cond` must be `Bool`, and both arms must have the same type)
-- Pipeline: `lhs |> stage` (left-associative; lower precedence than ternary/`or`; stages are calls/idents)
+- Pipeline: `lhs |> stage` (left-associative; lower precedence than `or` and higher than ternary; stages are calls/idents)
 - Move expression: `move x` transfers ownership
 - Array literals: `[1, 2, 3]`
 - String concatenation uses `+`
@@ -2975,9 +2976,7 @@ Drift’s standard concurrency module exposes straightforward helpers:
 ```drift
 import std.concurrent as conc
 
-val t = conc.spawn(fn() returns Int {
-    return compute_answer()
-})
+val t = conc.spawn(| | => compute_answer())
 
 val ans = t.join()
 ```
@@ -2999,9 +2998,7 @@ val policy = ExecutorPolicy.builder()
 
 val exec = conc.make_executor(policy)
 
-val t = conc.spawn_on(exec, fn() returns Void {
-    handle_connection()
-})
+val t = conc.spawn_on(exec, | | => handle_connection())
 ```
 
 #### 19.2.2. Structured concurrency
@@ -3009,9 +3006,9 @@ val t = conc.spawn_on(exec, fn() returns Void {
 `conc.scope` groups spawned threads so they finish before the scope exits:
 
 ```drift
-conc.scope(fn(scope: conc.Scope) returns Void {
-    val u = scope.spawn(fn() returns User { load_user(42) })
-    val d = scope.spawn(fn() returns Data { fetch_data() })
+conc.scope(|scope: conc.Scope| => {
+    val u = scope.spawn(| | => load_user(42))
+    val d = scope.spawn(| | => fetch_data())
 
     val user = u.join()
     val data = d.join()
@@ -3093,10 +3090,10 @@ Library code such as `std.concurrent` is responsible for presenting straightforw
 Structured scopes ensure children finish (or are cancelled) before scope exit:
 
 ```drift
-conc.scope(fn(scope: conc.Scope) returns Void {
-    val a = scope.spawn(fn() returns Int { slow_calc() })
-    val b = scope.spawn(fn() returns Int { slow_calc() })
-    val c = scope.spawn(fn() returns Int { slow_calc() })
+conc.scope(|scope: conc.Scope| => {
+    val a = scope.spawn(| | => slow_calc())
+    val b = scope.spawn(| | => slow_calc())
+    val c = scope.spawn(| | => slow_calc())
 
     val ra = a.join()
     val rb = b.join()
@@ -3361,25 +3358,36 @@ This pattern keeps the OS plugin ABI small and stable while preserving Drift’s
 
 ## 22. Closures and callable traits
 
-Drift treats callables as **traits first**, with an optional dynamic wrapper when you explicitly want type erasure. Capture modes are ownership-based; borrow captures (`&`, `&mut`) are intentionally deferred until the borrow/lifetime rules are specified.
+Drift treats callables as **traits first**, with an optional dynamic wrapper when you explicitly want type erasure. Capture modes are ownership-based and include borrows (`&`, `&mut`) in this revision (non-escaping closures only).
 
 ### 22.1. Surface syntax
 
 - Expression-bodied closures: `|params| => expr` (the expression value is returned).
-- Block-bodied closures may be added later; if present, they follow normal function rules with explicit `return`.
+- Block-bodied closures: `|params| => { ... }` follow normal function rules with explicit `return`.
+- Pipe-style lambdas use `=>` by design; Rust-style `|params| expr` (without `=>`) is **not** a Drift form (avoids conflicts with the pipeline operator `|>`).
+- Non-escaping parameters are marked explicitly: `fn apply(nonescaping f: Fn, ...) returns ...`. Lambdas may be passed only to parameters annotated `nonescaping` (or used in immediate-call position).
+
+#### 22.1.1. Optional lambda return types
+
+- Default: lambda return type is inferred from the body.
+- Optional: `|params| returns Ty => ...` pins the return type; the checker enforces the body is assignable to `Ty`.
+- Block-bodied lambdas return a value from a trailing expression (`{ expr }`) when allowed, otherwise `return` statements govern the result. If `returns Ty` is present, the body must produce a value.
 
 ### 22.2. Capture modes (current revision)
 
+Captures are **inferred** from free variables; there is no explicit capture list syntax.
+
 - `x` — **move** capture. Consumes the binding when the closure is created and stores it in the closure environment. Mutating the captured value mutates only the environment copy.
 - `copy x` — **copy** capture. Requires `x` to implement `Copy`; duplicates the value into the environment and leaves the original usable.
-- `&x`, `&mut x` — **not yet supported**; rejected until borrow/lifetime checking is specified.
+- `&x`, `&mut x` — **borrow** captures. Borrow the captured place with the usual aliasing rules. Borrowed captures participate in the borrow checker (see §4.12) and are valid only while the closure is non-escaping (current revision).
+- Current implementation note: read-only captures are treated as shared borrows until typed capture kinds (Copy vs Move) are inferred from TypeIds/traits.
 
-Each captured name must be spelled explicitly; there is no implicit capture list.
+Current revision constraint: closures are **non-escaping**; they may only be used in immediate call position or passed to known synchronous callees. Storing/returning closures (and sending them across async/concurrency boundaries) will be specified in a later revision once the lifetime model is expanded.
 
 ### 22.3. Lowering model
 
 - **Non-capturing** closures/functions lower to **thin function pointers** and are `Copy`.
-- **Capturing** closures lower to a **fat object** `{ env_ptr, call_ptr }`, where `env_ptr` points to a heap box holding the captured values under their capture modes. The environment has a single destructor; dropping the closure drops the env exactly once.
+- **Capturing** closures lower to an **environment + code pair** `{ env_ptr, call_ptr }`. The environment holds captured values/borrows under their capture modes; dropping the closure drops the environment exactly once. This ABI is internal-only in the current revision.
 
 ### 22.4. Callable traits (static dispatch)
 
@@ -3447,7 +3455,7 @@ Erasure is explicit; the default callable path remains trait-based static dispat
 
 - Closures are ordinary Drift values and can cross Drift module/plugin boundaries like any other value.
 - Capturing closures are **not** automatically wrapped for C ABIs. To interoperate with C callbacks, use a thin (non-capturing) function pointer or build an explicit `{ void* ctx, fn(ctx, …) }` trampoline; see `lang.abi` for guidance.
-- Borrow captures will be added once the borrow/lifetime model is specified; until then they are rejected.
+Borrow captures were rejected in earlier revisions; in this revision they are supported under the non-escaping closure rules above and participate in the borrow checker.
 
 
 ## Appendix A — Ownership Examples
@@ -3470,4 +3478,4 @@ process(j)    // error: use of moved value
 
 ## Appendix B — Formal grammar (external)
 
-This specification focuses on semantics: ownership, types, errors, concurrency, and runtime behavior. The complete formal grammar (tokens, precedence, productions) lives in `docs/drift-lang-grammar.md` and is authoritative for syntax. In case of conflict: semantics in this spec win for meaning; syntax in the grammar file wins for how code is parsed.
+This specification focuses on semantics: ownership, types, errors, concurrency, and runtime behavior. The complete formal grammar (tokens, precedence, productions) lives in `docs/design/drift-lang-grammar.md` and is authoritative for syntax. In case of conflict: semantics in this spec win for meaning; syntax in the grammar file wins for how code is parsed.

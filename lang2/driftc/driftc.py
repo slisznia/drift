@@ -7,7 +7,7 @@ This is **not** a full compiler. It exists to document how the lang2 pipeline
 should be orchestrated once a real parser/type checker lands:
 
 AST -> HIR (stage0/1)
-   -> normalize_hir (stage1) to desugar result-driven try sugar
+   -> normalize_hir (stage1) for HIR normalization (no result-try sugar)
    -> HIR->MIR (stage2)
    -> MIR pre-analysis + throw summaries (stage3)
    -> throw checks (stage4) using `declared_can_throw` from the checker
@@ -34,6 +34,7 @@ if str(ROOT) not in sys.path:
 
 from lang2.driftc import stage1 as H
 from lang2.driftc.stage1 import normalize_hir
+from lang2.driftc.stage1.lambda_validate import validate_lambdas_non_escaping
 from lang2.driftc.stage2 import HIRToMIR, MirBuilder, mir_nodes as M
 from lang2.driftc.stage3.throw_summary import ThrowSummaryBuilder
 from lang2.driftc.stage4 import run_throw_checks
@@ -195,7 +196,7 @@ def compile_stubbed_funcs(
 
 	# Important: run the checker on the original HIR (pre-normalization) so it can
 	# diagnose surface constructs that are later desugared/rewritten during
-	# normalization (e.g., `try` sugar). We normalize only after the checker runs,
+	# normalization (structural only). We normalize only after the checker runs,
 	# and normalization copies checker-produced annotations (like match binder
 	# field indices) forward via `getattr(..., "binder_field_indices", ...)`.
 
@@ -268,6 +269,17 @@ def compile_stubbed_funcs(
 		if sig is not None and sig.param_names is not None:
 			builder.func.params = list(sig.param_names)
 		mir_funcs[name] = builder.func
+		if getattr(builder, "extra_funcs", None):
+			for extra in builder.extra_funcs:
+				mir_funcs[extra.name] = extra
+				if extra.name not in checked.fn_infos and extra.name in signatures:
+					info = FnInfo(
+						name=extra.name,
+						declared_can_throw=bool(getattr(signatures[extra.name], "declared_can_throw", False)),
+						signature=signatures[extra.name],
+					)
+					checked.fn_infos[extra.name] = info
+					declared[extra.name] = info.declared_can_throw
 
 	# Stage3: summaries
 	code_to_exc = {code: name for name, code in (exc_env or {}).items()}
@@ -1133,8 +1145,31 @@ def main(argv: list[str] | None = None) -> int:
 				"diagnostics": [_diag_to_json(d, "typecheck", source_path) for d in type_diags],
 			}
 			print(json.dumps(payload))
+			return 1
 		else:
 			for d in type_diags:
+				loc = f"{getattr(d.span, 'line', '?')}:{getattr(d.span, 'column', '?')}" if d.span else "?:?"
+				print(f"{source_path}:{loc}: {d.severity}: {d.message}", file=sys.stderr)
+			return 1
+
+	# Enforce non-escaping lambda rule after type resolution so method calls are visible.
+	lambda_diags: list[Diagnostic] = []
+	for fn_name, typed_fn in typed_fns.items():
+		res = validate_lambdas_non_escaping(
+			typed_fn.body,
+			signatures=signatures,
+			call_resolutions=getattr(typed_fn, "call_resolutions", None),
+		)
+		lambda_diags.extend(res.diagnostics)
+	if lambda_diags:
+		if args.json:
+			payload = {
+				"exit_code": 1,
+				"diagnostics": [_diag_to_json(d, "typecheck", source_path) for d in lambda_diags],
+			}
+			print(json.dumps(payload))
+		else:
+			for d in lambda_diags:
 				loc = f"{getattr(d.span, 'line', '?')}:{getattr(d.span, 'column', '?')}" if d.span else "?:?"
 				print(f"{source_path}:{loc}: {d.severity}: {d.message}", file=sys.stderr)
 		return 1
@@ -1152,6 +1187,7 @@ def main(argv: list[str] | None = None) -> int:
 				"diagnostics": [_diag_to_json(d, "borrowcheck", source_path) for d in borrow_diags],
 			}
 			print(json.dumps(payload))
+			return 1
 		else:
 			for d in borrow_diags:
 				loc = f"{getattr(d.span, 'line', '?')}:{getattr(d.span, 'column', '?')}" if d.span else "?:?"

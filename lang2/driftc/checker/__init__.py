@@ -59,6 +59,7 @@ class FnSignature:
 	is_extern: bool = False
 	is_intrinsic: bool = False
 	param_names: Optional[list[str]] = None
+	param_nonescaping: Optional[list[bool]] = None
 	error_type_id: Optional[TypeId] = None  # resolved error TypeId
 	# Method metadata (set when the declaration comes from an `implement Type` block).
 	is_method: bool = False
@@ -309,15 +310,6 @@ class Checker:
 				error_type_id=error_type_id,
 			)
 
-		# Validate result-driven try sugar operands when HIR is available. This is
-		# intentionally conservative: only known FnResult-returning calls are
-		# accepted; everything else produces a diagnostic so that non-FnResult
-		# operands are rejected early.
-		for fn_name, hir_block in self._hir_blocks.items():
-			if fn_name not in fn_infos:
-				continue
-			self._validate_try_results(fn_name, hir_block, diagnostics)
-
 		# TODO: real checker will:
 		#   - resolve signatures (FnResult/throws),
 		#   - collect catch arms per function and validate them against the exception catalog,
@@ -492,8 +484,6 @@ class Checker:
 					walk_block(arm.block, caught_events, catch_all)
 					if arm.result is not None:
 						walk_expr(arm.result, caught_events, catch_all)
-			elif isinstance(expr, H.HTryResult):
-				walk_expr(expr.expr, caught_events, catch_all)
 			elif isinstance(expr, H.HResultOk):
 				walk_expr(expr.value, caught_events, catch_all)
 			elif isinstance(expr, H.HBinary):
@@ -745,6 +735,68 @@ class Checker:
 				if callee is not None and callee.signature and callee.signature.return_type_id is not None:
 					return callee.signature.return_type_id
 				return None
+			if isinstance(expr, H.HCall) and isinstance(expr.fn, H.HLambda):
+				lam = expr.fn
+				prev_locals = dict(self.locals)
+				try:
+					mod = None
+					if self.current_fn is not None and self.current_fn.signature is not None:
+						mod = getattr(self.current_fn.signature, "module", None)
+					for p in lam.params:
+						ptype = None
+						if getattr(p, "type", None) is not None:
+							ptype = checker._resolve_typeexpr(p.type, module_id=mod)
+						self.locals[p.name] = ptype
+					expected_ret: TypeId | None = None
+					if getattr(lam, "ret_type", None) is not None:
+						expected_ret = checker._resolve_typeexpr(lam.ret_type, module_id=mod)
+					if lam.body_expr is not None:
+						body_ty = self._infer_expr_type(lam.body_expr)
+						if expected_ret is not None and body_ty is not None and body_ty != expected_ret:
+							self._append_diag(
+								Diagnostic(
+									message="lambda return type does not match body type",
+									severity="error",
+									span=getattr(lam, "span", Span()),
+								)
+							)
+						return expected_ret if expected_ret is not None else body_ty
+					if lam.body_block is not None and lam.body_block.statements:
+						last = lam.body_block.statements[-1]
+						if isinstance(last, H.HExprStmt):
+							body_ty = self._infer_expr_type(last.expr)
+							if expected_ret is not None and body_ty is not None and body_ty != expected_ret:
+								self._append_diag(
+									Diagnostic(
+										message="lambda return type does not match body type",
+										severity="error",
+										span=getattr(lam, "span", Span()),
+									)
+								)
+							return expected_ret if expected_ret is not None else body_ty
+						if isinstance(last, H.HReturn) and last.value is not None:
+							body_ty = self._infer_expr_type(last.value)
+							if expected_ret is not None and body_ty is not None and body_ty != expected_ret:
+								self._append_diag(
+									Diagnostic(
+										message="lambda return type does not match body type",
+										severity="error",
+										span=getattr(lam, "span", Span()),
+									)
+								)
+							return expected_ret if expected_ret is not None else body_ty
+					if expected_ret is not None:
+						self._append_diag(
+							Diagnostic(
+								message="lambda with explicit return type must return a value",
+								severity="error",
+								span=getattr(lam, "span", Span()),
+							)
+						)
+						return expected_ret
+					return None
+				finally:
+					self.locals = prev_locals
 			if isinstance(expr, H.HCall) and isinstance(expr.fn, H.HQualifiedMember):
 				# Qualified member calls like `Optional<Int>::Some(1)` produce an
 				# instance of the referenced variant type. This is used for match
@@ -1102,14 +1154,18 @@ class Checker:
 					walk_expr(arg)
 				for kw in getattr(expr, "kwargs", []) or []:
 					walk_expr(kw.value)
+			elif isinstance(expr, H.HCall) and isinstance(expr.fn, H.HLambda):
+				self._infer_hir_expr_type(expr, fn_infos, current_fn, diagnostics)
+				for arg in expr.args:
+					walk_expr(arg)
+				for kw in getattr(expr, "kwargs", []) or []:
+					walk_expr(kw.value)
 			elif isinstance(expr, H.HMethodCall):
 				walk_expr(expr.receiver)
 				for arg in expr.args:
 					walk_expr(arg)
 				for kw in getattr(expr, "kwargs", []) or []:
 					walk_expr(kw.value)
-			elif isinstance(expr, H.HTryResult):
-				walk_expr(expr.expr)
 			elif isinstance(expr, H.HResultOk):
 				walk_expr(expr.value)
 			elif isinstance(expr, H.HBinary):
@@ -1315,124 +1371,6 @@ class Checker:
 			return self._type_table.ensure_uint()
 		return None
 
-	def _validate_try_results(
-		self,
-		fn_name: str,
-		block: "H.HBlock",
-		diagnostics: List[Diagnostic],
-	) -> None:
-		"""
-		Walk a HIR block and require that every HTryResult operand is a known
-		FnResult value based on signatures (or explicit constructors).
-
-		HTryResult (`expr?`) is result-driven sugar. It is intentionally separate
-		from exception-based try/catch: it operates on an in-band result carrier
-		(FnResult in the current internal implementation) and expands to
-		`if is_err { throw unwrap_err } else { unwrap }`.
-
-		This validation is deliberately shallow for now: it accepts:
-		  - explicit HResultOk constructors (known FnResult), and
-		  - HCall/HMethodCall whose target signature return_type_id is FnResult.
-
-		Everything else is flagged so that try-sugar cannot wrap non-FnResult
-		values.
-		"""
-		from lang2.driftc import stage1 as H
-
-		def report(msg: str, *, span: Span) -> None:
-			diagnostics.append(Diagnostic(message=msg, severity="error", span=span))
-
-		def is_fnresult_sig(sig: FnSignature | None) -> bool:
-			if sig is None or sig.return_type_id is None:
-				return False
-			td = self._type_table.get(sig.return_type_id)
-			return td.kind is TypeKind.FNRESULT
-
-		def validate_try_expr(expr: H.HExpr, span_descr: str) -> None:
-			span = getattr(expr, "loc", None)
-			span_obj = Span.from_loc(span) if span is not None else Span()
-			# Explicit constructor form is always a known FnResult.
-			if isinstance(expr, H.HResultOk):
-				return
-			# Only accept simple calls/method calls to signatures we know are FnResult.
-			if isinstance(expr, H.HCall) and isinstance(expr.fn, H.HVar):
-				cands = self._sigs_by_display_name.get(expr.fn.name, [])
-				if len(cands) == 1 and is_fnresult_sig(cands[0]):
-					return
-			if isinstance(expr, H.HMethodCall):
-				cands = self._sigs_by_display_name.get(expr.method_name, [])
-				if len(cands) == 1 and is_fnresult_sig(cands[0]):
-					return
-			report(
-				msg=(
-					f"function {fn_name} uses try-expression on a non-FnResult operand "
-					f"({span_descr}); try sugar requires FnResult<_, Error>"
-				),
-				span=span_obj,
-			)
-
-		def walk_expr(expr: H.HExpr) -> None:
-			if isinstance(expr, H.HTryResult):
-				validate_try_expr(expr.expr, span_descr="try operand")
-				walk_expr(expr.expr)
-			elif isinstance(expr, H.HCall):
-				walk_expr(expr.fn)
-				for arg in expr.args:
-					walk_expr(arg)
-				for kw in getattr(expr, "kwargs", []) or []:
-					walk_expr(kw.value)
-			elif isinstance(expr, H.HMethodCall):
-				walk_expr(expr.receiver)
-				for arg in expr.args:
-					walk_expr(arg)
-				for kw in getattr(expr, "kwargs", []) or []:
-					walk_expr(kw.value)
-			elif hasattr(H, "HMatchExpr") and isinstance(expr, getattr(H, "HMatchExpr")):
-				walk_expr(expr.scrutinee)
-				for arm in expr.arms:
-					walk_block(arm.block)
-					if getattr(arm, "result", None) is not None:
-						walk_expr(arm.result)
-			elif isinstance(expr, H.HTernary):
-				walk_expr(expr.cond)
-				walk_expr(expr.then_expr)
-				walk_expr(expr.else_expr)
-			elif isinstance(expr, H.HUnary):
-				# HUnary stores its operand in `expr`, not `operand`.
-				walk_expr(expr.expr)
-			elif isinstance(expr, H.HBinary):
-				walk_expr(expr.left)
-				walk_expr(expr.right)
-			# Literals/vars need no action.
-
-		def walk_block(hb: H.HBlock) -> None:
-			for stmt in hb.statements:
-				if isinstance(stmt, H.HExprStmt):
-					walk_expr(stmt.expr)
-				elif isinstance(stmt, H.HLet):
-					walk_expr(stmt.value)
-				elif isinstance(stmt, H.HAssign):
-					walk_expr(stmt.value)
-				elif isinstance(stmt, H.HIf):
-					walk_expr(stmt.cond)
-					walk_block(stmt.then_block)
-					if stmt.else_block is not None:
-						walk_block(stmt.else_block)
-				elif isinstance(stmt, H.HLoop):
-					walk_block(stmt.body)
-				elif isinstance(stmt, H.HReturn):
-					if stmt.value is not None:
-						walk_expr(stmt.value)
-				elif isinstance(stmt, H.HThrow):
-					walk_expr(stmt.value)
-				elif isinstance(stmt, H.HTry):
-					walk_block(stmt.body)
-					for arm in stmt.catches:
-						walk_block(arm.block)
-				# HBreak/HContinue carry no expressions.
-
-		walk_block(block)
-
 	def _walk_hir(
 		self,
 		block: "H.HBlock",
@@ -1477,8 +1415,6 @@ class Checker:
 			elif isinstance(expr, H.HBinary):
 				walk_expr(expr.left)
 				walk_expr(expr.right)
-			elif isinstance(expr, H.HTryResult):
-				walk_expr(expr.expr)
 			elif isinstance(expr, H.HResultOk):
 				walk_expr(expr.value)
 			elif isinstance(expr, H.HField):

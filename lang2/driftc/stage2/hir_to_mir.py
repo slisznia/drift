@@ -30,12 +30,14 @@ from dataclasses import dataclass
 from typing import List, Set, Mapping, Optional
 
 from lang2.driftc import stage1 as H
+from lang2.driftc.stage1 import closures as C
 from lang2.driftc.checker import FnSignature
 from lang2.driftc.core.span import Span
 from lang2.driftc.core.types_core import TypeKind, TypeTable, TypeId
 from lang2.driftc.core.type_resolve_common import resolve_opaque_type
 from lang2.driftc.core.generic_type_expr import GenericTypeExpr
 from lang2.driftc.core.iter_intrinsics import ensure_array_iter_struct, is_array_iter_struct
+from lang2.driftc.stage1.capture_discovery import discover_captures
 from . import mir_nodes as M
 
 
@@ -63,6 +65,7 @@ class MirBuilder:
 			blocks={"entry": entry_block},
 			entry="entry",
 		)
+		self.extra_funcs: list[M.MirFunc] = []
 		self.block = entry_block
 		self._temp_counter = 0
 		self._locals_set: Set[M.LocalId] = set()
@@ -203,6 +206,132 @@ class HIRToMIR:
 		# necessary for MVP features that require context to resolve (e.g., variant
 		# constructors as unqualified identifiers).
 		self._expected_type_stack: list[TypeId | None] = [None]
+		# BindingId -> local name mapping (for shadowing-aware lowering).
+		self._binding_locals: dict[int, str] = {}
+		# BindingId -> source name mapping (for capture reconstruction).
+		self._binding_names: dict[int, str] = {}
+		# Lambda lowering context (hidden fn + env).
+		self._lambda_env_local: str | None = None
+		self._lambda_env_ty: TypeId | None = None
+		self._lambda_env_field_types: list[TypeId] | None = None
+		self._lambda_capture_slots: dict[C.HCaptureKey, int] | None = None
+		self._lambda_capture_kinds: list[C.HCaptureKind] | None = None
+		self._lambda_counter = 0
+		# Names reserved for this function (params + locals).
+		self._reserved_names: set[str] = set(self.b.func.params)
+		self._local_binding_ids: set[int] = set()
+
+	def _canonical_local(self, binding_id: int | None, fallback: str) -> str:
+		"""
+		Map a binding id to a unique local name, avoiding collisions on shadowed names.
+
+		We prefer the original name when unused; otherwise suffix with the binding id.
+		"""
+		if fallback.startswith("__match_binder_"):
+			self._reserved_names.add(fallback)
+			return fallback
+		if binding_id is None:
+			return fallback
+		existing = self._binding_locals.get(binding_id)
+		if existing:
+			return existing
+		if binding_id not in self._local_binding_ids and fallback in self.b.func.params:
+			name = fallback
+		elif fallback in self._reserved_names or fallback in self._binding_locals.values():
+			name = f"{fallback}__b{binding_id}"
+		else:
+			name = fallback
+		self._binding_locals[binding_id] = name
+		self._reserved_names.add(name)
+		return name
+
+	def _capture_key_for_expr(self, expr: H.HExpr) -> C.HCaptureKey | None:
+		"""
+		Return a capture key for a local or local.field.field chain, else None.
+		"""
+		if isinstance(expr, H.HPlaceExpr):
+			root = getattr(expr.base, "binding_id", None)
+			if root is None:
+				return None
+			fields: list[str] = []
+			for proj in expr.projections:
+				if isinstance(proj, H.HPlaceField):
+					fields.append(proj.name)
+				else:
+					return None
+			return C.HCaptureKey(root_local=int(root), proj=tuple(C.HCaptureProj(field=f) for f in fields))
+		if isinstance(expr, H.HVar):
+			if expr.binding_id is None:
+				return None
+			return C.HCaptureKey(root_local=int(expr.binding_id), proj=())
+		if isinstance(expr, H.HField):
+			fields: list[str] = []
+			cur = expr
+			while isinstance(cur, H.HField):
+				fields.append(cur.name)
+				cur = cur.subject
+			if not isinstance(cur, H.HVar):
+				return None
+			if cur.binding_id is None:
+				return None
+			return C.HCaptureKey(
+				root_local=int(cur.binding_id),
+				proj=tuple(C.HCaptureProj(field=f) for f in reversed(fields)),
+			)
+		return None
+
+	def _expr_from_capture_key(self, key: C.HCaptureKey) -> H.HExpr:
+		root_name = self._binding_names.get(key.root_local, f"__b{key.root_local}")
+		expr: H.HExpr = H.HVar(name=root_name, binding_id=key.root_local)
+		for proj in key.proj:
+			expr = H.HField(subject=expr, name=proj.field)
+		return expr
+
+	def _place_from_capture_key(self, key: C.HCaptureKey) -> H.HPlaceExpr:
+		root_name = self._binding_names.get(key.root_local, f"__b{key.root_local}")
+		return H.HPlaceExpr(
+			base=H.HVar(name=root_name, binding_id=key.root_local),
+			projections=[H.HPlaceField(name=proj.field) for proj in key.proj],
+			loc=Span(),
+		)
+
+	def _load_capture_from_env(self, slot: int) -> M.ValueId:
+		if self._lambda_env_local is None or self._lambda_env_ty is None or self._lambda_env_field_types is None:
+			raise AssertionError("capture env not initialized (lowering bug)")
+		field_ty = self._lambda_env_field_types[slot]
+		field_val = self._load_capture_slot_value(slot)
+		kind = None
+		if self._lambda_capture_kinds is not None and slot < len(self._lambda_capture_kinds):
+			kind = self._lambda_capture_kinds[slot]
+		if kind in (C.HCaptureKind.REF, C.HCaptureKind.REF_MUT):
+			inner_ty = field_ty
+			td = self._type_table.get(field_ty)
+			if td.kind is TypeKind.REF and td.param_types:
+				inner_ty = td.param_types[0]
+			dest = self.b.new_temp()
+			self.b.emit(M.LoadRef(dest=dest, ptr=field_val, inner_ty=inner_ty))
+			return dest
+		return field_val
+
+	def _load_capture_slot_value(self, slot: int) -> M.ValueId:
+		if self._lambda_env_local is None or self._lambda_env_ty is None or self._lambda_env_field_types is None:
+			raise AssertionError("capture env not initialized (lowering bug)")
+		env_ptr = self.b.new_temp()
+		self.b.emit(M.LoadLocal(dest=env_ptr, local=self._lambda_env_local))
+		env_val = self.b.new_temp()
+		self.b.emit(M.LoadRef(dest=env_val, ptr=env_ptr, inner_ty=self._lambda_env_ty))
+		field_ty = self._lambda_env_field_types[slot]
+		dest = self.b.new_temp()
+		self.b.emit(
+			M.StructGetField(
+				dest=dest,
+				subject=env_val,
+				struct_ty=self._lambda_env_ty,
+				field_index=slot,
+				field_ty=field_ty,
+			)
+		)
+		return dest
 
 	def _fn_can_throw(self) -> bool | None:
 		"""
@@ -548,12 +677,17 @@ class HIRToMIR:
 				self.b.emit(M.ConstFloat(dest=dest, value=float(val)))
 				return dest
 			raise AssertionError("unsupported const type reached MIR lowering (checker/package bug)")
-		self.b.ensure_local(expr.name)
+		if self._lambda_capture_slots is not None:
+			key = self._capture_key_for_expr(expr)
+			if key is not None and key in self._lambda_capture_slots:
+				return self._load_capture_from_env(self._lambda_capture_slots[key])
+		local_name = self._canonical_local(getattr(expr, "binding_id", None), expr.name)
+		self.b.ensure_local(local_name)
 		# Treat String.EMPTY as a builtin zero-length string literal.
 		if expr.name == "String.EMPTY":
 			return self._string_empty_const
 		dest = self.b.new_temp()
-		self.b.emit(M.LoadLocal(dest=dest, local=expr.name))
+		self.b.emit(M.LoadLocal(dest=dest, local=local_name))
 		return dest
 
 	def _visit_expr_HBorrow(self, expr: H.HBorrow) -> M.ValueId:
@@ -654,6 +788,10 @@ class HIRToMIR:
 		return dest
 
 	def _visit_expr_HField(self, expr: H.HField) -> M.ValueId:
+		if self._lambda_capture_slots is not None:
+			key = self._capture_key_for_expr(expr)
+			if key is not None and key in self._lambda_capture_slots:
+				return self._load_capture_from_env(self._lambda_capture_slots[key])
 		subject = self.lower_expr(expr.subject)
 		# Array/String len/capacity sugar: field access produces ArrayLen/ArrayCap/StringLen.
 		if expr.name == "len":
@@ -741,6 +879,8 @@ class HIRToMIR:
 		Plain function call. For now only direct function names are supported;
 		indirect/function-valued calls will be added later if needed.
 		"""
+		if isinstance(expr.fn, H.HLambda):
+			return self._lower_lambda_immediate_call(expr.fn, expr.args)
 		if hasattr(H, "HQualifiedMember") and isinstance(expr.fn, getattr(H, "HQualifiedMember")):
 			qm = expr.fn
 			expected = self._current_expected_type()
@@ -960,6 +1100,284 @@ class HIRToMIR:
 			return self._lower_can_throw_call_value(emit_call=emit_call, ok_ty=ok_tid)
 		return result
 
+	def _lambda_can_throw(self, lam: H.HLambda) -> bool:
+		"""
+		Conservatively detect whether a lambda body can throw.
+
+		This is intentionally conservative: any throw or can-throw call in the
+		lambda body marks the hidden lambda as can-throw so we never lower throws
+		to `unreachable` in the hidden function.
+		"""
+		def expr_can_throw(expr: H.HExpr) -> bool:
+			if isinstance(expr, H.HCall):
+				if isinstance(expr.fn, H.HVar) and self._callee_is_can_throw(expr.fn.name):
+					return True
+				if isinstance(expr.fn, H.HLambda):
+					return self._lambda_can_throw(expr.fn)
+				return any(expr_can_throw(a) for a in expr.args)
+			if isinstance(expr, H.HMethodCall):
+				if self._callee_is_can_throw(expr.method_name):
+					return True
+				if expr_can_throw(expr.receiver):
+					return True
+				return any(expr_can_throw(a) for a in expr.args)
+			if isinstance(expr, H.HTryExpr):
+				if expr_can_throw(expr.attempt):
+					return True
+				for arm in expr.arms:
+					if block_can_throw(arm.block):
+						return True
+					if arm.result is not None and expr_can_throw(arm.result):
+						return True
+				return False
+			if isinstance(expr, H.HLambda):
+				return self._lambda_can_throw(expr)
+			if isinstance(expr, H.HResultOk):
+				return expr_can_throw(expr.value)
+			if isinstance(expr, H.HTernary):
+				return (
+					expr_can_throw(expr.cond)
+					or expr_can_throw(expr.then_expr)
+					or expr_can_throw(expr.else_expr)
+				)
+			if isinstance(expr, H.HUnary):
+				return expr_can_throw(expr.expr)
+			if isinstance(expr, H.HBinary):
+				return expr_can_throw(expr.left) or expr_can_throw(expr.right)
+			if isinstance(expr, H.HField):
+				return expr_can_throw(expr.subject)
+			if isinstance(expr, H.HIndex):
+				return expr_can_throw(expr.subject) or expr_can_throw(expr.index)
+			if isinstance(expr, H.HPlaceExpr):
+				for proj in expr.projections:
+					if isinstance(proj, H.HPlaceIndex) and expr_can_throw(proj.index):
+						return True
+				return False
+			if isinstance(expr, H.HArrayLiteral):
+				return any(expr_can_throw(el) for el in expr.elements)
+			if isinstance(expr, H.HDVInit):
+				return any(expr_can_throw(a) for a in expr.args)
+			return False
+
+		def stmt_can_throw(stmt: H.HStmt) -> bool:
+			if isinstance(stmt, H.HThrow) or isinstance(stmt, H.HRethrow):
+				return True
+			if isinstance(stmt, H.HExprStmt):
+				return expr_can_throw(stmt.expr)
+			if isinstance(stmt, H.HLet):
+				return expr_can_throw(stmt.value)
+			if isinstance(stmt, H.HAssign):
+				return expr_can_throw(stmt.value)
+			if isinstance(stmt, H.HAugAssign):
+				return expr_can_throw(stmt.value) or expr_can_throw(stmt.target)
+			if isinstance(stmt, H.HReturn):
+				return expr_can_throw(stmt.value) if stmt.value is not None else False
+			if isinstance(stmt, H.HIf):
+				if expr_can_throw(stmt.cond):
+					return True
+				if block_can_throw(stmt.then_block):
+					return True
+				return block_can_throw(stmt.else_block) if stmt.else_block is not None else False
+			if isinstance(stmt, H.HLoop):
+				return block_can_throw(stmt.body)
+			if isinstance(stmt, H.HTry):
+				if block_can_throw(stmt.body):
+					return True
+				return any(block_can_throw(arm.block) for arm in stmt.catches)
+			return False
+
+		def block_can_throw(block: H.HBlock | None) -> bool:
+			if block is None:
+				return False
+			return any(stmt_can_throw(stmt) for stmt in block.statements)
+
+		if lam.body_expr is not None:
+			return expr_can_throw(lam.body_expr)
+		if lam.body_block is not None:
+			return block_can_throw(lam.body_block)
+		return False
+
+	def _lower_lambda_immediate_call(self, lam: H.HLambda, args: list[H.HExpr]) -> M.ValueId:
+		"""Lower an immediate-call lambda via env + hidden function."""
+		if not lam.captures:
+			discover_captures(lam)
+
+		lambda_id = self._lambda_counter
+		self._lambda_counter += 1
+		mod = self._current_module_name()
+		unknown = self._type_table.ensure_unknown()
+		can_throw = self._lambda_can_throw(lam)
+		declared_ret_type: TypeId | None = None
+		if getattr(lam, "ret_type", None) is not None:
+			try:
+				declared_ret_type = resolve_opaque_type(lam.ret_type, self._type_table, module_id=mod)
+			except Exception:
+				declared_ret_type = None
+
+		has_captures = bool(lam.captures)
+		capture_map: dict[C.HCaptureKey, int] = {cap.key: idx for idx, cap in enumerate(lam.captures)}
+		capture_kinds: list[C.HCaptureKind] = [cap.kind for cap in lam.captures]
+		env_ty: TypeId | None = None
+		env_field_types: list[TypeId] = []
+		env_ptr: M.ValueId | None = None
+		if has_captures:
+			env_name = f"__lambda_env_{lambda_id}"
+			field_names = [f"c{i}" for i in range(len(lam.captures))]
+			env_ty = self._type_table.declare_struct(module_id=mod, name=env_name, field_names=field_names)
+			env_local = f"__env_{lambda_id}"
+			self.b.ensure_local(env_local)
+			env_vals: list[M.ValueId] = []
+			for cap in lam.captures:
+				expr = self._expr_from_capture_key(cap.key)
+				if cap.kind in (C.HCaptureKind.REF, C.HCaptureKind.REF_MUT):
+					place = self._place_from_capture_key(cap.key)
+					ptr, inner = self._lower_addr_of_place(place, is_mut=cap.kind is C.HCaptureKind.REF_MUT)
+					env_vals.append(ptr)
+					inner_ty = inner or unknown
+					if cap.kind is C.HCaptureKind.REF_MUT:
+						env_field_types.append(self._type_table.ensure_ref_mut(inner_ty))
+					else:
+						env_field_types.append(self._type_table.ensure_ref(inner_ty))
+				elif cap.kind is C.HCaptureKind.MOVE:
+					place = self._place_from_capture_key(cap.key)
+					if cap.key.proj:
+						env_vals.append(self.lower_expr(expr))
+						env_field_types.append(self._infer_expr_type(expr) or unknown)
+					else:
+						env_vals.append(self._visit_expr_HMove(H.HMove(subject=place)))
+						env_field_types.append(self._infer_expr_type(expr) or unknown)
+				else:
+					env_vals.append(self.lower_expr(expr))
+					env_field_types.append(self._infer_expr_type(expr) or unknown)
+			self._type_table.define_struct_fields(env_ty, env_field_types)
+			env_val = self.b.new_temp()
+			self.b.emit(M.ConstructStruct(dest=env_val, struct_ty=env_ty, args=env_vals))
+			self.b.emit(M.StoreLocal(local=env_local, value=env_val))
+
+			env_ptr = self.b.new_temp()
+			self.b.emit(M.AddrOfLocal(dest=env_ptr, local=env_local, is_mut=False))
+		arg_vals = [self.lower_expr(a) for a in args]
+
+		hidden_name = f"__lambda_{self.b.func.name.replace('::', '_')}_{lambda_id}"
+		hidden_builder = MirBuilder(hidden_name)
+		hidden_lower = HIRToMIR(
+			hidden_builder,
+			type_table=self._type_table,
+			signatures=self._signatures,
+			can_throw_by_name={**self._can_throw_by_name, hidden_name: can_throw},
+			return_type=declared_ret_type or self._type_table.ensure_unknown(),
+		)
+		hidden_env_local = "__env"
+		param_type_ids: list[TypeId] = []
+		param_names: list[str] = []
+		if has_captures:
+			hidden_builder.func.params.append(hidden_env_local)
+			hidden_lower._lambda_env_local = hidden_env_local
+			hidden_lower._lambda_env_ty = env_ty
+			hidden_lower._lambda_env_field_types = list(env_field_types)
+			hidden_lower._lambda_capture_slots = dict(capture_map)
+			hidden_lower._lambda_capture_kinds = list(capture_kinds)
+			param_type_ids.append(self._type_table.ensure_ref(env_ty))
+			param_names.append(hidden_env_local)
+		for p in lam.params:
+			if getattr(p, "binding_id", None) is not None:
+				hidden_lower._binding_names[int(p.binding_id)] = p.name
+			p_local = hidden_lower._canonical_local(getattr(p, "binding_id", None), p.name)
+			hidden_builder.func.params.append(p_local)
+			param_names.append(p_local)
+			ptype = None
+			if getattr(p, "type", None) is not None:
+				try:
+					ptype = resolve_opaque_type(p.type, self._type_table, module_id=mod)
+				except Exception:
+					ptype = None
+			if ptype is not None:
+				hidden_lower._local_types[p_local] = ptype
+				param_type_ids.append(ptype)
+			else:
+				param_type_ids.append(unknown)
+
+		ret_type: TypeId | None = declared_ret_type
+		if lam.body_expr is not None:
+			if ret_type is None:
+				ret_type = hidden_lower._infer_expr_type(lam.body_expr)
+			ret_val = hidden_lower.lower_expr(lam.body_expr)
+			hidden_builder.set_terminator(M.Return(value=ret_val))
+		elif lam.body_block is not None:
+			self._seed_lambda_locals_for_inference(hidden_lower, lam.body_block)
+			if lam.body_block.statements:
+				last_stmt = lam.body_block.statements[-1]
+				if isinstance(last_stmt, H.HExprStmt):
+					if ret_type is None:
+						ret_type = hidden_lower._infer_expr_type(last_stmt.expr)
+				elif isinstance(last_stmt, H.HReturn) and last_stmt.value is not None:
+					if ret_type is None:
+						ret_type = hidden_lower._infer_expr_type(last_stmt.value)
+			ret_val = self._lower_lambda_block(hidden_lower, lam.body_block)
+			if hidden_builder.block.terminator is None:
+				if ret_val is None:
+					raise NotImplementedError("lambda block must end with a value or return")
+				hidden_builder.set_terminator(M.Return(value=ret_val))
+		else:
+			raise AssertionError("lambda missing body reached lowering (bug)")
+		if ret_type is None:
+			ret_type = unknown
+		self._signatures[hidden_name] = FnSignature(
+			name=hidden_name,
+			param_type_ids=param_type_ids,
+			param_names=param_names,
+			return_type_id=ret_type,
+			declared_can_throw=can_throw,
+			module=mod,
+		)
+		if not hasattr(self.b, "extra_funcs"):
+			self.b.extra_funcs = []
+		self.b.extra_funcs.append(hidden_builder.func)
+
+		call_args = [env_ptr] + arg_vals if has_captures else arg_vals
+		if can_throw:
+			ok_ty = ret_type or unknown
+			def emit_call() -> M.ValueId:
+				dest = self.b.new_temp()
+				self.b.emit(M.Call(dest=dest, fn=hidden_name, args=call_args))
+				return dest
+			return self._lower_can_throw_call_value(emit_call=emit_call, ok_ty=ok_ty)
+		dest = self.b.new_temp()
+		self.b.emit(M.Call(dest=dest, fn=hidden_name, args=call_args))
+		return dest
+
+	def _lower_lambda_block(self, lower: "HIRToMIR", block: H.HBlock) -> M.ValueId | None:
+		"""
+		Lower a lambda block body. If the final statement is an ExprStmt, return its value.
+		"""
+		if not block.statements:
+			return None
+		*prefix, last = block.statements
+		for stmt in prefix:
+			lower.lower_stmt(stmt)
+			if lower.b.block.terminator is not None:
+				return None
+		if isinstance(last, H.HExprStmt):
+			return lower.lower_expr(last.expr)
+		lower.lower_stmt(last)
+		return None
+
+	def _seed_lambda_locals_for_inference(self, lower: "HIRToMIR", block: H.HBlock) -> None:
+		"""Seed declared local types for lambda return-type inference."""
+		for stmt in block.statements:
+			if isinstance(stmt, H.HLet) and getattr(stmt, "declared_type_expr", None) is not None:
+				try:
+					decl_ty = resolve_opaque_type(
+						stmt.declared_type_expr,
+						self._type_table,
+						module_id=self._current_module_name(),
+					)
+				except Exception:
+					decl_ty = None
+				if decl_ty is not None:
+					local_name = lower._canonical_local(getattr(stmt, "binding_id", None), stmt.name)
+					lower._local_types[local_name] = decl_ty
+
 	def _visit_expr_HMethodCall(self, expr: H.HMethodCall) -> M.ValueId:
 		if getattr(expr, "kwargs", None):
 			raise AssertionError("keyword arguments for method calls are not supported in MIR lowering (checker bug)")
@@ -992,14 +1410,8 @@ class HIRToMIR:
 			recv_ty = self._infer_expr_type(expr.receiver)
 			if recv_ty is not None and self._is_array_iter_struct(recv_ty):
 				return self._lower_array_iter_next(expr.receiver, recv_ty)
-		# FnResult / try-sugar intrinsic methods.
-		#
-		# `HTryResult` desugaring produces method calls like:
-		#   res.is_err(), res.unwrap(), res.unwrap_err()
-		#
-		# These are not user-defined methods and do not require signature-based
-		# resolution. We lower them directly to dedicated MIR ops so later stages
-		# (SSA/codegen) can handle them without an ad-hoc method-call convention.
+		# FnResult intrinsic methods (`is_err`/`unwrap`/`unwrap_err`) lower to
+		# dedicated MIR ops so later stages don't need ad-hoc method dispatch.
 		if expr.method_name in ("is_err", "unwrap", "unwrap_err") and not expr.args:
 			res_val = self.lower_expr(expr.receiver)
 			dest = self.b.new_temp()
@@ -1486,7 +1898,12 @@ class HIRToMIR:
 		self.lower_block(stmt)
 
 	def _visit_stmt_HLet(self, stmt: H.HLet) -> None:
-		self.b.ensure_local(stmt.name)
+		if getattr(stmt, "binding_id", None) is not None:
+			self._local_binding_ids.add(int(stmt.binding_id))
+		local_name = self._canonical_local(getattr(stmt, "binding_id", None), stmt.name)
+		self.b.ensure_local(local_name)
+		if getattr(stmt, "binding_id", None) is not None:
+			self._binding_names[int(stmt.binding_id)] = stmt.name
 		declared_ty: TypeId | None = None
 		if getattr(stmt, "declared_type_expr", None) is not None:
 			try:
@@ -1500,8 +1917,8 @@ class HIRToMIR:
 		val = self.lower_expr(stmt.value, expected_type=declared_ty)
 		val_ty = declared_ty or self._infer_expr_type(stmt.value)
 		if val_ty is not None:
-			self._local_types[stmt.name] = val_ty
-		self.b.emit(M.StoreLocal(local=stmt.name, value=val))
+			self._local_types[local_name] = val_ty
+		self.b.emit(M.StoreLocal(local=local_name, value=val))
 
 	def _visit_stmt_HAssign(self, stmt: H.HAssign) -> None:
 		val = self.lower_expr(stmt.value)
@@ -1515,11 +1932,12 @@ class HIRToMIR:
 		# except for the trivial "local = value" case which keeps the `StoreLocal`
 		# primitive (important for SSA/local-type tracking).
 		if not stmt.target.projections:
-			self.b.ensure_local(stmt.target.base.name)
+			local_name = self._canonical_local(getattr(stmt.target.base, "binding_id", None), stmt.target.base.name)
+			self.b.ensure_local(local_name)
 			val_ty = self._infer_expr_type(stmt.value)
 			if val_ty is not None:
-				self._local_types[stmt.target.base.name] = val_ty
-			self.b.emit(M.StoreLocal(local=stmt.target.base.name, value=val))
+				self._local_types[local_name] = val_ty
+			self.b.emit(M.StoreLocal(local=local_name, value=val))
 			return
 		ptr, inner_ty = self._lower_addr_of_place(stmt.target, is_mut=True)
 		self.b.emit(M.StoreRef(ptr=ptr, value=val, inner_ty=inner_ty))
@@ -1564,13 +1982,14 @@ class HIRToMIR:
 
 		# Trivial local case: keep locals in SSA-friendly `LoadLocal`/`StoreLocal` form.
 		if not stmt.target.projections:
-			self.b.ensure_local(stmt.target.base.name)
+			local_name = self._canonical_local(getattr(stmt.target.base, "binding_id", None), stmt.target.base.name)
+			self.b.ensure_local(local_name)
 			old = self.b.new_temp()
-			self.b.emit(M.LoadLocal(dest=old, local=stmt.target.base.name))
+			self.b.emit(M.LoadLocal(dest=old, local=local_name))
 			new = self.b.new_temp()
 			self.b.emit(M.BinaryOpInstr(dest=new, op=bin_op, left=old, right=rhs))
-			self._local_types[stmt.target.base.name] = inner_ty
-			self.b.emit(M.StoreLocal(local=stmt.target.base.name, value=new))
+			self._local_types[local_name] = inner_ty
+			self.b.emit(M.StoreLocal(local=local_name, value=new))
 			return
 
 		ptr, elem_ty = self._lower_addr_of_place(stmt.target, is_mut=True)
@@ -2406,7 +2825,33 @@ class HIRToMIR:
 			elem_ty = self._infer_array_literal_elem_type(expr)
 			return self._type_table.new_array(elem_ty)
 		if isinstance(expr, H.HVar):
-			return self._local_types.get(expr.name)
+			if self._lambda_capture_slots is not None:
+				key = self._capture_key_for_expr(expr)
+				if key is not None and self._lambda_env_field_types is not None and key in self._lambda_capture_slots:
+					slot = self._lambda_capture_slots[key]
+					field_ty = self._lambda_env_field_types[slot]
+					if self._lambda_capture_kinds is not None and slot < len(self._lambda_capture_kinds):
+						kind = self._lambda_capture_kinds[slot]
+						if kind in (C.HCaptureKind.REF, C.HCaptureKind.REF_MUT):
+							td = self._type_table.get(field_ty)
+							if td.kind is TypeKind.REF and td.param_types:
+								return td.param_types[0]
+					return field_ty
+			local_name = self._canonical_local(getattr(expr, "binding_id", None), expr.name)
+			return self._local_types.get(local_name)
+		if isinstance(expr, H.HField):
+			if self._lambda_capture_slots is not None:
+				key = self._capture_key_for_expr(expr)
+				if key is not None and self._lambda_env_field_types is not None and key in self._lambda_capture_slots:
+					slot = self._lambda_capture_slots[key]
+					field_ty = self._lambda_env_field_types[slot]
+					if self._lambda_capture_kinds is not None and slot < len(self._lambda_capture_kinds):
+						kind = self._lambda_capture_kinds[slot]
+						if kind in (C.HCaptureKind.REF, C.HCaptureKind.REF_MUT):
+							td = self._type_table.get(field_ty)
+							if td.kind is TypeKind.REF and td.param_types:
+								return td.param_types[0]
+					return field_ty
 		if isinstance(expr, H.HUnary):
 			# Unary ops preserve the numeric type when it can be inferred locally.
 			inner = self._infer_expr_type(expr.expr)
@@ -2669,8 +3114,37 @@ class HIRToMIR:
 		  - The checker (plus stage1 temporary materialization) ensures `expr` is a
 		    real place. If we see an rvalue here, it's a pipeline bug.
 		"""
+		if self._lambda_capture_slots is not None:
+			key = self._capture_key_for_expr(expr)
+			if key is not None and self._lambda_env_field_types is not None and key in self._lambda_capture_slots:
+				slot = self._lambda_capture_slots[key]
+				field_ty = self._lambda_env_field_types[slot]
+				kind = None
+				if self._lambda_capture_kinds is not None and slot < len(self._lambda_capture_kinds):
+					kind = self._lambda_capture_kinds[slot]
+				if kind in (C.HCaptureKind.REF, C.HCaptureKind.REF_MUT):
+					ptr_val = self._load_capture_slot_value(slot)
+					td = self._type_table.get(field_ty)
+					inner_ty = field_ty
+					if td.kind is TypeKind.REF and td.param_types:
+						inner_ty = td.param_types[0]
+					return ptr_val, inner_ty
+				env_ptr = self.b.new_temp()
+				self.b.emit(M.LoadLocal(dest=env_ptr, local=self._lambda_env_local))
+				addr = self.b.new_temp()
+				self.b.emit(
+					M.AddrOfField(
+						dest=addr,
+						base_ptr=env_ptr,
+						struct_ty=self._lambda_env_ty,
+						field_index=slot,
+						field_ty=field_ty,
+						is_mut=is_mut,
+					)
+				)
+				return addr, field_ty
 		# Canonical place expression (stage1→stage2 boundary).
-		base_name = expr.base.name
+		base_name = self._canonical_local(getattr(expr.base, "binding_id", None), expr.base.name)
 		self.b.ensure_local(base_name)
 		cur_ty = self._infer_expr_type(expr.base)
 		if cur_ty is None:

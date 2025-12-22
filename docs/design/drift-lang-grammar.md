@@ -1,4 +1,5 @@
 # Drift Language Grammar 1.0 (syntax-only, normative for parsing)
+<!-- CANONICAL-GRAMMAR -->
 
 This file defines the lexical rules, precedence, and productions for Drift. It is authoritative for **syntax**. The main language specification (`drift-lang-spec.md`) remains authoritative for **semantics** (ownership, types, runtime behavior). If syntax and semantics appear to conflict, parsing follows this document; meaning follows the main spec.
 
@@ -136,7 +137,7 @@ MulExpr      ::= UnaryExpr (MulOp UnaryExpr)*
 MulOp        ::= "*" | "/" | "%"
 UnaryExpr    ::= BorrowExpr | NormalUnary
 BorrowExpr   ::= "&" "mut"? PostfixExpr
-NormalUnary  ::= ("-" | "!" | "not")* PostfixExpr
+NormalUnary  ::= ("move" | "copy" | "-" | "!" | "not")* PostfixExpr
 UnaryOp      ::= "-" | "!" | "not" | "&"
 
 PostfixExpr  ::= PrimaryExpr PostfixTail*
@@ -180,8 +181,7 @@ CatchExprArm ::= Ident "(" Ident ")" Block    // event-specific
 LambdaExpr   ::= "|" LambdaParams? "|" "=>" (Expr | Block)
 LambdaParams ::= LambdaParam ("," LambdaParam)*
 
-LambdaParam  ::= Capture? Ident (":" Ty)?
-Capture      ::= "copy"
+LambdaParam  ::= Ident (":" Ty)?
 Literal      ::= IntLiteral | FloatLiteral | StringLiteral | BoolLiteral
 ```
 
@@ -189,7 +189,8 @@ Literal      ::= IntLiteral | FloatLiteral | StringLiteral | BoolLiteral
 
 - Tuple types require at least two elements; `(T)` is just `T`.
 - Pipelines use `|>` and are left-associative; `<|` is reserved for a future reverse-pipeline form.
+- Lambda captures are **inferred**; there is no explicit capture list syntax in the parameter list.
 - Zero-argument callables use `Void` as their argument type and are called with `f.call()`.
 - This grammar is a reference for parsers; semantic rules (ownership, moves, errors) are defined in `drift-lang-spec.md`.
-- In blocks, a bare expression must appear as a statement (`ExprStmt`) with a terminator (`;` or newline), e.g., `catch { 0; }` or `catch { return 0; }`. A future ergonomics pass may allow `{ 0 }` in expression contexts, but it is not supported today.
+- In general blocks, a bare expression must appear as a statement (`ExprStmt`) with a terminator (`;` or newline), e.g., `catch { 0; }` or `catch { return 0; }`. Expression-only forms that explicitly use `value_block` (e.g., lambda bodies, match arms) may allow `{ expr }` as a value-producing block.
 - Leading-dot expressions (`.foo`, `.foo(...)`) are only valid inside indexing brackets or argument lists; they desugar to member access on the receiver value (see §2.x “Receiver placeholder” in `drift-lang-spec.md` for semantics).

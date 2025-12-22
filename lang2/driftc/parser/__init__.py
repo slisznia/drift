@@ -197,6 +197,25 @@ def _convert_expr(expr: parser_ast.Expr) -> s0.Expr:
 		return s0.Literal(value=expr.value, loc=Span.from_loc(getattr(expr, "loc", None)))
 	if isinstance(expr, parser_ast.Name):
 		return s0.Name(ident=expr.ident, loc=Span.from_loc(getattr(expr, "loc", None)))
+	if isinstance(expr, parser_ast.Lambda):
+		params = [
+			s0.Param(
+				name=p.name,
+				type_expr=p.type_expr,
+				non_escaping=getattr(p, "non_escaping", False),
+				loc=Span.from_loc(getattr(p, "loc", None)),
+			)
+			for p in expr.params
+		]
+		body_expr = _convert_expr(expr.body_expr) if expr.body_expr is not None else None
+		body_block = s0.Block(statements=_convert_block(expr.body_block)) if expr.body_block is not None else None
+		return s0.Lambda(
+			params=params,
+			ret_type=getattr(expr, "ret_type", None),
+			body_expr=body_expr,
+			body_block=body_block,
+			loc=Span.from_loc(getattr(expr, "loc", None)),
+		)
 	if isinstance(expr, parser_ast.Call):
 		return s0.Call(
 			func=_convert_expr(expr.func),
@@ -446,11 +465,19 @@ def _convert_block(block: parser_ast.Block) -> list[s0.Stmt]:
 
 
 class _FrontendParam:
-	def __init__(self, name: str, type_expr: parser_ast.TypeExpr, loc: Optional[parser_ast.Located]) -> None:
+	def __init__(
+		self,
+		name: str,
+		type_expr: parser_ast.TypeExpr | None,
+		loc: Optional[parser_ast.Located],
+		*,
+		non_escaping: bool = False,
+	) -> None:
 		self.name = name
 		# Preserve the parsed type expression so the resolver can build real TypeIds.
 		self.type = type_expr
 		self.loc = loc
+		self.non_escaping = non_escaping
 
 
 class _FrontendDecl:
@@ -481,7 +508,15 @@ class _FrontendDecl:
 
 
 def _decl_from_parser_fn(fn: parser_ast.FunctionDef) -> _FrontendDecl:
-	params = [_FrontendParam(p.name, p.type_expr, getattr(p, "loc", None)) for p in fn.params]
+	params = [
+		_FrontendParam(
+			p.name,
+			p.type_expr,
+			getattr(p, "loc", None),
+			non_escaping=getattr(p, "non_escaping", False),
+		)
+		for p in fn.params
+	]
 	return _FrontendDecl(
 		fn.name,
 		fn.orig_name,
@@ -513,6 +548,14 @@ def _typeexpr_uses_internal_fnresult(typ: parser_ast.TypeExpr) -> bool:
 		if _typeexpr_uses_internal_fnresult(arg):
 			return True
 	return False
+
+
+def _typeexpr_is_callable(typ: parser_ast.TypeExpr | None) -> bool:
+	if typ is None:
+		return False
+	if typ.name in {"&", "&mut"} and getattr(typ, "args", None):
+		return _typeexpr_is_callable(typ.args[0])
+	return typ.name in {"Fn", "Callable"}
 
 
 def _report_internal_fnresult_in_surface_type(
@@ -2848,6 +2891,13 @@ def _lower_parsed_program_to_hir(
 					loc=getattr(p.type_expr, "loc", getattr(p, "loc", None)),
 					diagnostics=diagnostics,
 				)
+			if getattr(p, "non_escaping", False) and not _typeexpr_is_callable(p.type_expr):
+				diagnostics.append(
+					_diagnostic(
+						f"nonescaping parameter '{fn.name}({p.name})' must have a callable type",
+						getattr(p.type_expr, "loc", getattr(p, "loc", None)),
+					)
+				)
 		decls.append(decl_decl)
 		stmt_block = _convert_block(fn.body)
 		param_names = [p.name for p in getattr(fn, "params", []) or []]
@@ -2883,7 +2933,15 @@ def _lower_parsed_program_to_hir(
 			target_str = _type_expr_to_str(impl.target)
 			symbol_name = f"{target_str}::{fn.name}"
 
-			params = [_FrontendParam(p.name, p.type_expr, getattr(p, "loc", None)) for p in fn.params]
+			params = [
+				_FrontendParam(
+					p.name,
+					p.type_expr,
+					getattr(p, "loc", None),
+					non_escaping=getattr(p, "non_escaping", False),
+				)
+				for p in fn.params
+			]
 			# Reject FnResult in method surface type annotations too.
 			if _typeexpr_uses_internal_fnresult(fn.return_type):
 				_report_internal_fnresult_in_surface_type(
@@ -2899,6 +2957,13 @@ def _lower_parsed_program_to_hir(
 						symbol=f"{symbol_name}({p.name})",
 						loc=getattr(p.type_expr, "loc", getattr(p, "loc", None)),
 						diagnostics=diagnostics,
+					)
+				if getattr(p, "non_escaping", False) and not _typeexpr_is_callable(p.type_expr):
+					diagnostics.append(
+						_diagnostic(
+							f"nonescaping parameter '{symbol_name}({p.name})' must have a callable type",
+							getattr(p.type_expr, "loc", getattr(p, "loc", None)),
+						)
 					)
 			if fn.name in seen:
 				diagnostics.append(

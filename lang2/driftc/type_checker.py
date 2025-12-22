@@ -2098,8 +2098,6 @@ class TypeChecker:
 				ok_ty = type_expr(expr.value)
 				err_ty = self._unknown
 				return record_expr(expr, self.type_table.new_fnresult(ok_ty, err_ty))
-			if isinstance(expr, H.HTryResult):
-				return record_expr(expr, type_expr(expr.expr))
 
 			# Fallback: unknown type.
 			return record_expr(expr, self._unknown)

@@ -33,6 +33,7 @@ from .ast import (
     KwArg,
     LetStmt,
     Literal,
+    Lambda,
     Located,
     Move,
     Name,
@@ -954,16 +955,53 @@ def _build_value_block(tree: Tree) -> Block:
 
 
 def _build_param(tree: Tree) -> Param:
-    ident_node = next(
-        child
-        for child in tree.children
-        if (isinstance(child, Token) and child.type in {"NAME", "MOVE"})
-        or (isinstance(child, Tree) and _name(child) == "ident")
-    )
-    name_token = _unwrap_ident(ident_node)
-    type_node = next(child for child in tree.children if isinstance(child, Tree) and _name(child) == "type_expr")
-    type_expr = _build_type_expr(type_node)
-    return Param(name=name_token.value, type_expr=type_expr)
+	non_escaping = any(isinstance(child, Token) and child.type == "NONESCAPING" for child in tree.children)
+	ident_node = next(
+		child
+		for child in tree.children
+		if (isinstance(child, Token) and child.type in {"NAME", "MOVE"})
+		or (isinstance(child, Tree) and _name(child) == "ident")
+	)
+	name_token = _unwrap_ident(ident_node)
+	type_node = next((child for child in tree.children if isinstance(child, Tree) and _name(child) == "type_expr"), None)
+	type_expr = _build_type_expr(type_node) if type_node is not None else None
+	return Param(name=name_token.value, type_expr=type_expr, non_escaping=non_escaping)
+
+
+def _build_lambda(tree: Tree) -> Lambda:
+	params: list[Param] = []
+	body_expr: Expr | None = None
+	body_block: Block | None = None
+	ret_type: TypeExpr | None = None
+	for child in tree.children:
+		if isinstance(child, Tree) and _name(child) == "lambda_params":
+			for param_node in child.children:
+				if isinstance(param_node, Tree) and _name(param_node) == "lambda_param":
+					name_tok = next(tok for tok in param_node.children if isinstance(tok, Token) and tok.type == "NAME")
+					type_node = next(
+						(c for c in param_node.children if isinstance(c, Tree) and _name(c) == "type_expr"), None
+					)
+					params.append(
+						Param(
+							name=name_tok.value,
+							type_expr=_build_type_expr(type_node) if type_node is not None else None,
+						)
+					)
+		elif isinstance(child, Tree) and _name(child) == "lambda_returns":
+			type_node = next((c for c in child.children if isinstance(c, Tree) and _name(c) == "type_expr"), None)
+			ret_type = _build_type_expr(type_node) if type_node is not None else None
+		elif isinstance(child, Tree):
+			# lambda_body or direct expr/block if the parser simplified.
+			target = child
+			if _name(child) == "lambda_body" and child.children:
+				target = next(c for c in child.children if isinstance(c, Tree))
+			if _name(target) == "block":
+				body_block = _build_block(target)
+			elif _name(target) == "value_block":
+				body_block = _build_value_block(target)
+			else:
+				body_expr = _build_expr(target)
+	return Lambda(loc=_loc(tree), params=params, ret_type=ret_type, body_expr=body_expr, body_block=body_block)
 
 
 def _build_type_expr(tree: Tree) -> TypeExpr:
@@ -1557,6 +1595,8 @@ def _build_expr(node) -> Expr:
         # Pipeline operators are a left-associative chain of `pipeline_tail`
         # nodes (token + rhs).
         return _fold_chain(node, "pipeline_tail")
+    if name == "lambda_expr":
+        return _build_lambda(node)
     if name == "exception_ctor":
         return _build_exception_ctor(node)
     if name == "logic_and":

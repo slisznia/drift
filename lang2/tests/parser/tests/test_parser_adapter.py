@@ -198,6 +198,36 @@ fn drift_main() returns Int {
 	assert type_table.get(sig.return_type_id).name == "Int"
 
 
+def test_nonescaping_param_annotation_rejects_non_callable_param(tmp_path: Path):
+	src = tmp_path / "main.drift"
+	src.write_text(
+		"""
+fn apply(nonescaping f: Int, x: Int) returns Int {
+    return x;
+}
+"""
+	)
+	_func_hirs, sigs, _type_table, _exc_catalog, diagnostics = parse_drift_to_hir(src)
+	assert any("nonescaping parameter" in d.message for d in diagnostics)
+	sig = sigs["apply"]
+	assert sig.param_nonescaping == [True, False]
+
+
+def test_nonescaping_param_annotation_accepts_callable_param(tmp_path: Path):
+	src = tmp_path / "main.drift"
+	src.write_text(
+		"""
+fn apply(nonescaping f: Fn, x: Int) returns Int {
+    return x;
+}
+"""
+	)
+	_func_hirs, sigs, _type_table, _exc_catalog, diagnostics = parse_drift_to_hir(src)
+	assert diagnostics == []
+	sig = sigs["apply"]
+	assert sig.param_nonescaping == [True, False]
+
+
 def test_duplicate_function_definition_reports_diagnostic(tmp_path: Path) -> None:
 	src = tmp_path / "main.drift"
 	src.write_text(

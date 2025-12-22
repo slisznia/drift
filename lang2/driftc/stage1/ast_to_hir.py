@@ -487,6 +487,34 @@ class AstToHIR:
 		"""Lower array literal by lowering each element expression."""
 		return H.HArrayLiteral(elements=[self.lower_expr(e) for e in expr.elements])
 
+	def _visit_expr_Lambda(self, expr: ast.Lambda) -> H.HExpr:
+		self._push_scope()
+		try:
+			params: list[H.HParam] = []
+			for p in expr.params:
+				bid = self._alloc_binding(p.name)
+				params.append(
+					H.HParam(
+						name=p.name,
+						type=p.type_expr,
+						binding_id=bid,
+						span=Span.from_loc(getattr(p, "loc", None)),
+					)
+				)
+			body_expr = self.lower_expr(expr.body_expr) if expr.body_expr is not None else None
+			body_block = None
+			if expr.body_block is not None:
+				body_block = H.HBlock(statements=[self.lower_stmt(s) for s in expr.body_block.statements])
+			return H.HLambda(
+				params=params,
+				ret_type=getattr(expr, "ret_type", None),
+				body_expr=body_expr,
+				body_block=body_block,
+				span=Span.from_loc(getattr(expr, "loc", None)),
+			)
+		finally:
+			self._pop_scope()
+
 	def _visit_expr_ExceptionCtor(self, expr: ast.ExceptionCtor) -> H.HExpr:
 		"""
 		Exception constructor → structured exception init node.
@@ -523,15 +551,6 @@ class AstToHIR:
 		then_h = self.lower_expr(expr.then_expr)
 		else_h = self.lower_expr(expr.else_expr)
 		return H.HTernary(cond=cond_h, then_expr=then_h, else_expr=else_h)
-
-	def _visit_expr_TryExpr(self, expr: ast.TryExpr) -> H.HExpr:
-		"""
-		Result-driven try sugar marker (expr? / try expr).
-
-		We lower to HTryResult and leave desugaring to a dedicated HIR rewrite
-		pass (see stage1/try_result_rewrite.py). That keeps this pass sugar-only.
-		"""
-		return H.HTryResult(expr=self.lower_expr(expr.expr))
 
 	def _visit_expr_TryCatchExpr(self, expr: ast.TryCatchExpr) -> H.HExpr:
 		"""

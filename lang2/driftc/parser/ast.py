@@ -70,13 +70,14 @@ class TypeExpr:
 
 @dataclass
 class Param:
-    name: str
-    type_expr: TypeExpr
+	name: str
+	type_expr: TypeExpr | None
+	non_escaping: bool = False
 
 
 @dataclass
 class Block:
-    statements: List["Stmt"]
+	statements: List["Stmt"]
 
 
 class Stmt:
@@ -240,6 +241,15 @@ class Call(Expr):
     func: Expr
     args: List[Expr]
     kwargs: List[KwArg]
+
+
+@dataclass
+class Lambda(Expr):
+    loc: Located
+    params: List[Param]
+    ret_type: TypeExpr | None
+    body_expr: Expr | None
+    body_block: Block | None
 
 
 @dataclass

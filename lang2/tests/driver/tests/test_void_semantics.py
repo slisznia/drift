@@ -130,23 +130,3 @@ def test_void_not_allowed_in_array_literal():
 
 	assert any("Void value is not allowed in an array literal" in d.message for d in checked.diagnostics)
 
-
-def test_void_not_allowed_as_try_operand():
-	table, void_ty = _void_sig_table()
-	sigs = {
-		"v": FnSignature(name="v", param_type_ids=[], return_type_id=void_ty, declared_can_throw=False),
-		"main": FnSignature(name="main", param_type_ids=[], return_type_id=table.ensure_int(), declared_can_throw=False),
-	}
-	funcs = {
-		"v": H.HBlock(statements=[H.HReturn(value=None)]),
-		"main": H.HBlock(
-			statements=[
-				H.HReturn(value=H.HTryResult(expr=H.HCall(fn=H.HVar(name="v"), args=[]))),
-			]
-		),
-	}
-
-	checker = Checker(signatures=sigs, hir_blocks=funcs, type_table=table)
-	checked = checker.check(funcs.keys())
-
-	assert any("try-expression on a non-FnResult operand" in d.message for d in checked.diagnostics)

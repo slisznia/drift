@@ -95,6 +95,23 @@ class Call(Expr):
 
 
 @dataclass
+class Lambda(Expr):
+	"""Lambda expression: params + body (expr or block)."""
+	params: List["Param"]
+	ret_type: object | None = None
+	body_expr: Expr | None = None
+	body_block: "Block" | None = None
+	loc: Optional[object] = None
+
+
+@dataclass
+class Block(Expr):
+	"""Block expression: sequence of statements and an optional trailing expression."""
+	statements: List[Stmt]
+	loc: Optional[object] = None
+
+
+@dataclass
 class KwArg:
 	"""
 	Keyword argument `name = value` (used by calls and exception constructors).
@@ -105,6 +122,15 @@ class KwArg:
 	name: str
 	value: Expr
 	loc: Span = field(default_factory=Span)
+
+
+@dataclass
+class Param:
+	"""Function/lambda parameter (name + optional parsed type)."""
+	name: str
+	type_expr: object | None = None
+	non_escaping: bool = False
+	loc: Optional[object] = None
 
 
 @dataclass
@@ -236,17 +262,6 @@ class Ternary(Expr):
 	else_expr: Expr
 	loc: Optional[object] = None
 
-
-@dataclass
-class TryExpr(Expr):
-	"""
-	Result-driven try sugar (e.g., expr? / try expr).
-
-	This is a syntactic marker that will be desugared in a later HIR rewrite
-	pass once types are known. Semantics: treat an Err from expr as a throw.
-	"""
-	expr: Expr
-	loc: Optional[object] = None
 
 
 @dataclass
@@ -408,8 +423,9 @@ class RethrowStmt(Stmt):
 
 __all__ = [
 	"Node", "Expr", "Stmt",
-	"Literal", "Name", "Placeholder", "Attr", "Call", "Binary", "Unary", "Move",
-	"Index", "ArrayLiteral", "ExceptionCtor", "CatchExprArm", "TryCatchExpr", "Ternary", "TryExpr",
+	"Literal", "Name", "Placeholder", "Attr", "QualifiedMember",
+	"Param", "KwArg", "Call", "Lambda", "Block",
+	"Binary", "Unary", "Move", "Index", "ArrayLiteral", "ExceptionCtor", "CatchExprArm", "TryCatchExpr", "Ternary",
 	"LetStmt", "AssignStmt", "AugAssignStmt", "IfStmt", "ReturnStmt", "RaiseStmt", "ExprStmt", "ImportStmt",
 	"TryStmt", "WhileStmt", "ForStmt", "BreakStmt", "ContinueStmt", "ThrowStmt", "RethrowStmt",
 ]
