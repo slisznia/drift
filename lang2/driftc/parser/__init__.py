@@ -534,6 +534,7 @@ class _FrontendDecl:
 		name: str,
 		method_name: Optional[str],
 		type_params: list[str],
+		type_param_locs: list[parser_ast.Located],
 		params: list[_FrontendParam],
 		return_type: parser_ast.TypeExpr,
 		loc: Optional[parser_ast.Located],
@@ -546,6 +547,7 @@ class _FrontendDecl:
 		self.name = name
 		self.method_name = method_name
 		self.type_params = type_params
+		self.type_param_locs = type_param_locs
 		self.params = params
 		self.return_type = return_type
 		self.throws = ()
@@ -573,6 +575,7 @@ def _decl_from_parser_fn(fn: parser_ast.FunctionDef, *, fn_id: FunctionId) -> _F
 		fn.name,
 		fn.orig_name,
 		fn.type_params,
+		list(getattr(fn, "type_param_locs", []) or []),
 		params,
 		fn.return_type,
 		getattr(fn, "loc", None),
@@ -3170,7 +3173,8 @@ def _lower_parsed_program_to_hir(
 					fn_id,
 					symbol_name,
 					fn.orig_name,
-		fn.type_params,
+					fn.type_params,
+					list(getattr(fn, "type_param_locs", []) or []),
 					params,
 					fn.return_type,
 					getattr(fn, "loc", None),

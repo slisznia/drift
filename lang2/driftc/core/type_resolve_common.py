@@ -8,10 +8,16 @@ This centralizes the knowledge of builtin names (`Int`, `Bool`, `String`,
 stay in sync as the language evolves.
 """
 
-from lang2.driftc.core.types_core import TypeId, TypeKind, TypeTable
+from lang2.driftc.core.types_core import TypeId, TypeKind, TypeParamId, TypeTable
 
 
-def resolve_opaque_type(raw: object, table: TypeTable, *, module_id: str | None = None) -> TypeId:
+def resolve_opaque_type(
+	raw: object,
+	table: TypeTable,
+	*,
+	module_id: str | None = None,
+	type_params: dict[str, TypeParamId] | None = None,
+) -> TypeId:
 	"""
 	Map a raw type shape (TypeExpr-like, string, tuple, or TypeId) to a TypeId.
 
@@ -32,6 +38,8 @@ def resolve_opaque_type(raw: object, table: TypeTable, *, module_id: str | None 
 		name = getattr(raw, "name")
 		args = getattr(raw, "args")
 		origin_mod = getattr(raw, "module_id", None) or module_id
+		if type_params and name in type_params and not args:
+			return table.ensure_typevar(type_params[name], name=name)
 		if name in {"&", "&mut"}:
 			inner = resolve_opaque_type(args[0] if args else None, table, module_id=origin_mod)
 			return table.ensure_ref_mut(inner) if name == "&mut" else table.ensure_ref(inner)
@@ -91,6 +99,8 @@ def resolve_opaque_type(raw: object, table: TypeTable, *, module_id: str | None 
 
 	# String forms.
 	if isinstance(raw, str):
+		if type_params and raw in type_params:
+			return table.ensure_typevar(type_params[raw], name=raw)
 		if raw == "Void":
 			return table.ensure_void()
 		if raw == "Int":

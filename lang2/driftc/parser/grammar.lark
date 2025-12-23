@@ -4,7 +4,7 @@
 // Identifiers: allow leading underscore, but reserve double-underscore (compiler use).
 // Give identifiers a lower priority than keyword terminals so the basic lexer
 // prefers `and`, `or`, `val`, etc. as their own tokens instead of `NAME`.
-NAME.0: /[A-Za-z][A-Za-z0-9_]*/ | /_[A-Za-z0-9_]*(?<!__)/
+NAME.0: /(?!type\b)[A-Za-z][A-Za-z0-9_]*/ | /_[A-Za-z0-9_]*(?<!__)/
 %import common.SIGNED_INT
 // Float literals: decimal only, digits on both sides of '.', optional exponent.
 // Important: float literals never include a leading sign; unary '-' is parsed separately.
@@ -25,8 +25,9 @@ NEWLINE: /(\r?\n[ \t]*)/
 VAL: "val"
 VAR: "var"
 CONST: "const"
-TYPE.3: "type"
 MUT: "mut"
+TYPE.2: "type"
+CALL_TYPE_LT.2: /<\s*type\b/
 THROW: "throw"
 VARIANT: "variant"
 MATCH: "match"
@@ -52,7 +53,7 @@ GTE: ">="
 LT: "<"
 GT: ">"
 
-%declare TYPE_LT TYPE_GT QUAL_TYPE_LT QUAL_TYPE_GT CALL_TYPE_LT
+%declare TYPE_LT TYPE_GT QUAL_TYPE_LT QUAL_TYPE_GT
 PLUS: "+"
 PLUS_EQ: "+="
 MINUS: "-"

@@ -17,10 +17,11 @@ from __future__ import annotations
 
 from typing import Iterable, Tuple, Optional
 
-from lang2.driftc.checker import FnSignature
+from lang2.driftc.checker import FnSignature, TypeParam
 from lang2.driftc.core.function_id import FunctionId
 from lang2.driftc.core.type_resolve_common import resolve_opaque_type
-from lang2.driftc.core.types_core import TypeId, TypeKind, TypeTable
+from lang2.driftc.core.types_core import TypeId, TypeKind, TypeParamId, TypeTable
+from lang2.driftc.core.span import Span
 
 
 def resolve_program_signatures(
@@ -57,17 +58,31 @@ def resolve_program_signatures(
 
 	signatures: dict[FunctionId, FnSignature] = {}
 
+	name_ord: dict[tuple[str, str], int] = {}
 	for decl in func_decls:
 		name = getattr(decl, "name")
 		module_name = getattr(decl, "module", None)
 		fn_id = getattr(decl, "fn_id", None)
 		if not isinstance(fn_id, FunctionId):
-			fn_id = FunctionId(module=module_name or "main", name=name, ordinal=0)
+			ord_key = (module_name or "main", name)
+			ordinal = name_ord.get(ord_key, 0)
+			name_ord[ord_key] = ordinal + 1
+			fn_id = FunctionId(module=module_name or "main", name=name, ordinal=ordinal)
 		decl_loc = getattr(decl, "loc", None)
 		is_extern = bool(getattr(decl, "is_extern", False))
 		is_intrinsic = bool(getattr(decl, "is_intrinsic", False))
 
-		type_params = list(getattr(decl, "type_params", []) or [])
+		raw_type_params = list(getattr(decl, "type_params", []) or [])
+		raw_type_param_locs = list(getattr(decl, "type_param_locs", []) or [])
+		type_params: list[TypeParam] = []
+		type_param_map: dict[str, TypeParamId] = {}
+		for idx, name in enumerate(raw_type_params):
+			param_id = TypeParamId(owner=fn_id, index=idx)
+			span = None
+			if idx < len(raw_type_param_locs):
+				span = Span.from_loc(raw_type_param_locs[idx])
+			type_params.append(TypeParam(id=param_id, name=name, span=span))
+			type_param_map[name] = param_id
 		# Params
 		raw_params = []
 		param_names: list[str] = []
@@ -77,12 +92,14 @@ def resolve_program_signatures(
 			raw_ty = getattr(p, "type", None)
 			raw_params.append(raw_ty)
 			param_names.append(getattr(p, "name", f"p{len(param_names)}"))
-			param_type_ids.append(resolve_opaque_type(raw_ty, table, module_id=module_name))
+			param_type_ids.append(
+				resolve_opaque_type(raw_ty, table, module_id=module_name, type_params=type_param_map)
+			)
 			param_nonescaping.append(bool(getattr(p, "non_escaping", False)))
 
 		# Return
 		raw_ret = getattr(decl, "return_type", None)
-		return_type_id = resolve_opaque_type(raw_ret, table, module_id=module_name)
+		return_type_id = resolve_opaque_type(raw_ret, table, module_id=module_name, type_params=type_param_map)
 		error_type_id = None
 		ret_def = table.get(return_type_id)
 		if ret_def.kind is TypeKind.FNRESULT and len(ret_def.param_types) >= 2:

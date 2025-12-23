@@ -26,6 +26,7 @@ not a stable public ABI and can change once real traits/modules exist.
 from __future__ import annotations
 
 from lang2.driftc.core.types_core import TypeId, TypeKind, TypeTable
+from lang2.driftc.core.function_id import function_symbol
 
 
 def type_key_for_typeid(ty_id: TypeId, table: TypeTable) -> str:
@@ -47,6 +48,11 @@ def type_key_for_typeid(ty_id: TypeId, table: TypeTable) -> str:
 	if td.kind is TypeKind.REF and td.param_types:
 		pfx = "RefMut" if td.ref_mut else "Ref"
 		return f"{pfx}_{type_key_for_typeid(td.param_types[0], table)}"
+	if td.kind is TypeKind.TYPEVAR:
+		param_id = td.type_param_id
+		if param_id is None:
+			return td.name
+		return f"Tv_{function_symbol(param_id.owner)}_{param_id.index}"
 	return td.kind.name
 
 

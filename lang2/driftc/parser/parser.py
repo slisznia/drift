@@ -475,9 +475,9 @@ class QualifiedTypeArgInserter:
 
     …without making `<` ambiguous with the `<` comparison operator (e.g. `i < 3`).
 
-    This post-lexer rewrites `LT`/`GT` tokens into `TYPE_LT`/`TYPE_GT` **only** when
-    the bracketed group is followed by an unambiguous commit token:
-      - pre-`::` type args: `> ::`
+    This post-lexer rewrites generic-angle spans for two deterministic cases:
+      - split `>>` inside `<type ...>` call spans
+      - pre-`::` type args: `Type<T>::Ctor` -> `QUAL_TYPE_LT/QUAL_TYPE_GT`
     """
 
     def process(self, stream):
@@ -485,6 +485,7 @@ class QualifiedTypeArgInserter:
         pending_angle: list[Token] | None = None
         angle_depth = 0
         angle_kind: str | None = None  # "pre" | "post"
+        call_angle_depth = 0
         allowed_in_type_args = {
             # Type refs.
             "NAME",
@@ -543,30 +544,45 @@ class QualifiedTypeArgInserter:
             except StopIteration:
                 break
 
-            if pending_angle is None and token.type == "LT":
-                try:
-                    next_tok = pushback.pop() if pushback else next(it)
-                except StopIteration:
-                    yield _emit(token)
-                    break
-
-                if next_tok.type == "TYPE" or (next_tok.type == "NAME" and next_tok.value == "type"):
-                    yield _emit(Token.new_borrow_pos("CALL_TYPE_LT", "<type", token))
-                    continue
-
-                pushback.append(next_tok)
-
             tt = token.type
 
             if pending_angle is None:
-                is_pre = _is_pre_base_context(token)
-                if tt == "LT" and is_pre:
-                    # Start buffering only in syntactic contexts where this *might* be a
-                    # generic type-argument list for a qualified member.
-                    angle_kind = "pre"
-                    pending_angle = [token]
-                    angle_depth = 1
+                if call_angle_depth:
+                    if tt in {"LT", "TYPE_LT", "QUAL_TYPE_LT"}:
+                        call_angle_depth += 1
+                        yield _emit(token)
+                        continue
+                    if tt in {"GT", "TYPE_GT", "QUAL_TYPE_GT"}:
+                        call_angle_depth -= 1
+                        yield _emit(token)
+                        if call_angle_depth <= 0:
+                            call_angle_depth = 0
+                        continue
+                    if tt == "SHR":
+                        for _ in range(2):
+                            yield _emit(Token.new_borrow_pos("GT", ">", token))
+                            call_angle_depth -= 1
+                            if call_angle_depth <= 0:
+                                call_angle_depth = 0
+                                break
+                        continue
+                    yield _emit(token)
                     continue
+
+                if tt == "CALL_TYPE_LT":
+                    yield _emit(token)
+                    call_angle_depth = 1
+                    continue
+
+                if tt == "LT":
+                    is_pre = _is_pre_base_context(token)
+                    if is_pre:
+                        # Start buffering only in syntactic contexts where this *might* be a
+                        # generic type-argument list for a qualified member.
+                        angle_kind = "pre"
+                        pending_angle = [token]
+                        angle_depth = 1
+                        continue
                 yield _emit(token)
                 continue
 
@@ -1108,10 +1124,12 @@ def _build_function(tree: Tree) -> FunctionDef:
 	idx += 1
 	orig_name = name_token.value
 	type_params: list[str] = []
+	type_param_locs: list[Located] = []
 	if idx < len(children) and _name(children[idx]) == "type_params":
-		type_params = [
-			tok.value for tok in children[idx].children if isinstance(tok, Token) and tok.type == "NAME"
-		]
+		for tok in children[idx].children:
+			if isinstance(tok, Token) and tok.type == "NAME":
+				type_params.append(tok.value)
+				type_param_locs.append(_loc_from_token(tok))
 		idx += 1
 	params: List[Param] = []
 	if idx < len(children) and _name(children[idx]) == "params":
@@ -1130,6 +1148,7 @@ def _build_function(tree: Tree) -> FunctionDef:
 		name=name_token.value,
 		orig_name=orig_name,
 		type_params=type_params,
+		type_param_locs=type_param_locs,
 		params=params,
 		return_type=return_type,
 		body=body,

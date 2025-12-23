@@ -1194,7 +1194,7 @@ def main(argv: list[str] | None = None) -> int:
 				impl_id=next_callable_id,
 				impl_target_type_id=sig.impl_target_type_id,
 				self_mode=self_mode,
-				is_generic=False,
+				is_generic=bool(sig.type_params),
 			)
 			next_callable_id += 1
 		else:
@@ -1208,7 +1208,7 @@ def main(argv: list[str] | None = None) -> int:
 				visibility=Visibility.public(),
 				signature=CallableSignature(param_types=param_types_tuple, result_type=sig.return_type_id),
 				fn_id=fn_id,
-				is_generic=False,
+				is_generic=bool(sig.type_params),
 			)
 			next_callable_id += 1
 
@@ -1251,7 +1251,7 @@ def main(argv: list[str] | None = None) -> int:
 				impl_id=next_callable_id,
 				impl_target_type_id=sig.impl_target_type_id,
 				self_mode=self_mode,
-				is_generic=False,
+				is_generic=bool(sig.type_params),
 			)
 			next_callable_id += 1
 		else:
@@ -1262,7 +1262,7 @@ def main(argv: list[str] | None = None) -> int:
 				visibility=Visibility.public(),
 				signature=CallableSignature(param_types=param_types_tuple, result_type=sig.return_type_id),
 				fn_id=None,
-				is_generic=False,
+				is_generic=bool(sig.type_params),
 			)
 			next_callable_id += 1
 

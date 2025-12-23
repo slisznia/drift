@@ -165,6 +165,7 @@ class FunctionDef:
 	return_type: TypeExpr
 	body: Block
 	loc: Located
+	type_param_locs: List[Located] = field(default_factory=list)
 	require: Optional["RequireClause"] = None
 	is_method: bool = False
 	self_mode: str | None = None  # "value", "ref", "ref_mut"

@@ -27,12 +27,21 @@ from lang2.driftc.core.span import Span
 from lang2.driftc.core.types_protocol import TypeEnv
 from lang2.driftc.checker.catch_arms import CatchArmInfo, validate_catch_arms
 from lang2.driftc.core.type_resolve_common import resolve_opaque_type
-from lang2.driftc.core.types_core import TypeTable, TypeId, TypeKind
+from lang2.driftc.core.types_core import TypeTable, TypeId, TypeKind, TypeParamId
 from lang2.driftc.stage1.hir_utils import collect_catch_arms_from_block
 from lang2.driftc.stage1.normalize import normalize_hir
 
 if TYPE_CHECKING:
 	from lang2.driftc import stage1 as H
+
+
+@dataclass(frozen=True)
+class TypeParam:
+	"""Function type parameter descriptor."""
+
+	id: TypeParamId
+	name: str
+	span: Optional[Any] = None
 
 
 @dataclass
@@ -52,7 +61,7 @@ class FnSignature:
 
 	# Display name used at call sites (e.g., method name without type scoping).
 	method_name: Optional[str] = None
-	type_params: list[str] = field(default_factory=list)
+	type_params: list[TypeParam] = field(default_factory=list)
 	# Canonical, type-checked fields (preferred).
 	param_type_ids: Optional[list[TypeId]] = None
 	return_type_id: Optional[TypeId] = None

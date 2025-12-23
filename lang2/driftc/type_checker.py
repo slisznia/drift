@@ -25,6 +25,7 @@ from lang2.driftc.core.span import Span
 from lang2.driftc.core.types_core import TypeId, TypeTable, TypeKind, VariantInstance, VariantSchema
 from lang2.driftc.core.function_id import FunctionId, function_symbol
 from lang2.driftc.core.type_resolve_common import resolve_opaque_type
+from lang2.driftc.core.type_subst import Subst, apply_subst
 from lang2.driftc.core.generic_type_expr import GenericTypeExpr
 from lang2.driftc.borrow_checker import (
 	DerefProj,
@@ -36,7 +37,7 @@ from lang2.driftc.borrow_checker import (
 	place_from_expr,
 	places_overlap,
 )
-from lang2.driftc.method_registry import CallableDecl, CallableRegistry, ModuleId
+from lang2.driftc.method_registry import CallableDecl, CallableRegistry, CallableSignature, ModuleId
 from lang2.driftc.method_resolver import MethodResolution, ResolutionError, resolve_method_call
 from lang2.driftc.core.iter_intrinsics import ensure_array_iter_struct, is_array_iter_struct
 from lang2.driftc.parser import ast as parser_ast
@@ -290,36 +291,102 @@ class TypeChecker:
 			*,
 			name: str,
 			arg_types: List[TypeId],
-		) -> CallableDecl:
+			call_type_args: List[TypeId] | None = None,
+			call_type_args_span: Span | None = None,
+		) -> tuple[CallableDecl, CallableSignature]:
 			candidates = callable_registry.get_free_candidates(
 				name=name,
 				visible_modules=visible_modules or (current_module,),
 				include_private_in=current_module,
 			)
-			viable: List[CallableDecl] = []
+			viable: List[tuple[CallableDecl, CallableSignature]] = []
 			for decl in candidates:
-				if decl.is_generic:
+				sig = None
+				if decl.fn_id is not None and signatures_by_id is not None:
+					sig = signatures_by_id.get(decl.fn_id)
+				if sig is None:
+					sig = _single_sig(decl.name)
+
+				if sig is None:
+					if call_type_args:
+						raise ResolutionError(
+							f"type arguments require a typed signature for function '{name}'",
+							span=call_type_args_span,
+						)
+					params = list(decl.signature.param_types)
+					result_type = decl.signature.result_type
+					if len(params) != len(arg_types):
+						continue
+					if all(p == a for p, a in zip(params, arg_types)):
+						viable.append(
+							(
+								decl,
+								CallableSignature(param_types=tuple(params), result_type=result_type),
+							)
+						)
 					continue
-				params = decl.signature.param_types
+
+				if sig.param_type_ids is None and sig.param_types is not None:
+					local_type_params = {p.name: p.id for p in sig.type_params}
+					param_type_ids = [
+						resolve_opaque_type(p, self.type_table, module_id=sig.module, type_params=local_type_params)
+						for p in sig.param_types
+					]
+					sig = replace(sig, param_type_ids=param_type_ids)
+
+				if sig.return_type_id is None and sig.return_type is not None:
+					local_type_params = {p.name: p.id for p in sig.type_params}
+					ret_id = resolve_opaque_type(sig.return_type, self.type_table, module_id=sig.module, type_params=local_type_params)
+					sig = replace(sig, return_type_id=ret_id)
+
+				if sig.param_type_ids is None or sig.return_type_id is None:
+					continue
+
+				if call_type_args:
+					if not sig.type_params:
+						continue
+					if len(call_type_args) != len(sig.type_params):
+						raise ResolutionError(
+							f"type argument count mismatch for '{name}': expected {len(sig.type_params)}, got {len(call_type_args)}",
+							span=call_type_args_span,
+						)
+					subst = Subst(owner=sig.type_params[0].id.owner, args=list(call_type_args))
+					inst_params = [apply_subst(p, subst, self.type_table) for p in sig.param_type_ids]
+					inst_return = apply_subst(sig.return_type_id, subst, self.type_table)
+					params = inst_params
+					result_type = inst_return
+				else:
+					if sig.type_params:
+						continue
+					params = list(sig.param_type_ids)
+					result_type = sig.return_type_id
+
 				if len(params) != len(arg_types):
 					continue
 				if all(p == a for p, a in zip(params, arg_types)):
-					viable.append(decl)
+					viable.append(
+						(
+							decl,
+							CallableSignature(param_types=tuple(params), result_type=result_type),
+						)
+					)
 			if not viable:
+				if call_type_args:
+					raise ResolutionError(f"no matching overload for function '{name}' with provided type arguments")
 				raise ResolutionError(f"no matching overload for function '{name}' with args {arg_types}")
 			world = None
-			applicable: List[CallableDecl] = []
+			applicable: List[tuple[CallableDecl, CallableSignature]] = []
 			ranks: Dict[int, tuple[bool, int]] = {}
-			for decl in viable:
+			for decl, sig_inst in viable:
 				fn_id = _fn_id_for_decl(decl)
 				if fn_id is None:
-					applicable.append(decl)
+					applicable.append((decl, sig_inst))
 					ranks[decl.callable_id] = (True, 0)
 					continue
 				world = trait_worlds.get(fn_id.module) if isinstance(trait_worlds, dict) else None
 				req = world.requires_by_fn.get(fn_id) if world is not None else None
 				if req is None:
-					applicable.append(decl)
+					applicable.append((decl, sig_inst))
 					ranks[decl.callable_id] = (True, 0)
 					continue
 				subjects: set[str] = set()
@@ -344,16 +411,16 @@ class TypeChecker:
 				env = TraitEnv(default_module=fn_id.module or current_module_name)
 				res = prove_expr(world, env, subst, req)
 				if res.status is ProofStatus.PROVED:
-					applicable.append(decl)
+					applicable.append((decl, sig_inst))
 					ranks[decl.callable_id] = _require_rank(req)
 			if not applicable:
 				raise ResolutionError(f"no matching overload for function '{name}' with args {arg_types}")
 			if len(applicable) == 1:
 				return applicable[0]
-			if any(not ranks[decl.callable_id][0] for decl in applicable):
+			if any(not ranks[decl.callable_id][0] for decl, _sig in applicable):
 				raise ResolutionError(f"ambiguous call to function '{name}' with args {arg_types}")
-			best = max(ranks[decl.callable_id][1] for decl in applicable)
-			winners = [d for d in applicable if ranks[d.callable_id][1] == best]
+			best = max(ranks[decl.callable_id][1] for decl, _sig in applicable)
+			winners = [(d, s) for d, s in applicable if ranks[d.callable_id][1] == best]
 			if len(winners) != 1:
 				raise ResolutionError(f"ambiguous call to function '{name}' with args {arg_types}")
 			return winners[0]
@@ -1738,14 +1805,25 @@ class TypeChecker:
 				# Try registry-based resolution when available.
 				if callable_registry and isinstance(expr.fn, H.HVar):
 					try:
-						decl = _resolve_free_call_with_require(
+						type_arg_ids: List[TypeId] | None = None
+						call_type_args_span = None
+						if getattr(expr, "type_args", None):
+							type_arg_ids = [
+								resolve_opaque_type(t, self.type_table, module_id=current_module_name)
+								for t in (expr.type_args or [])
+							]
+							first_loc = getattr((expr.type_args or [None])[0], "loc", None)
+							call_type_args_span = Span.from_loc(first_loc)
+						decl, inst_sig = _resolve_free_call_with_require(
 							name=expr.fn.name,
 							arg_types=arg_types,
+							call_type_args=type_arg_ids,
+							call_type_args_span=call_type_args_span or getattr(expr, "loc", Span()),
 						)
 						if decl.fn_id is not None:
 							expr.fn.name = function_symbol(decl.fn_id)
 						call_resolutions[id(expr)] = decl
-						return record_expr(expr, decl.signature.result_type)
+						return record_expr(expr, inst_sig.result_type)
 					except ResolutionError as err:
 						# If this call looks like a variant constructor invocation (unqualified
 						# constructor name) but we have no expected variant type, prefer a
@@ -1773,9 +1851,8 @@ class TypeChecker:
 											)
 								)
 								return record_expr(expr, self._unknown)
-						diagnostics.append(
-							Diagnostic(message=str(err), severity="error", span=getattr(expr, "loc", Span()))
-						)
+						diag_span = getattr(err, "span", None) or getattr(expr, "loc", Span())
+						diagnostics.append(Diagnostic(message=str(err), severity="error", span=diag_span))
 						return record_expr(expr, self._unknown)
 
 				# Fallback: signature map by name.

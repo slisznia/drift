@@ -14,6 +14,7 @@ from enum import Enum, auto
 from typing import Dict, List
 
 from lang2.driftc.core.generic_type_expr import GenericTypeExpr
+from lang2.driftc.core.function_id import FunctionId
 
 
 TypeId = int  # opaque handle into the TypeTable
@@ -24,6 +25,7 @@ class TypeKind(Enum):
 
 	SCALAR = auto()
 	STRUCT = auto()
+	TYPEVAR = auto()
 	ERROR = auto()
 	DIAGNOSTICVALUE = auto()
 	OPTIONAL = auto()
@@ -34,6 +36,14 @@ class TypeKind(Enum):
 	REF = auto()
 	VARIANT = auto()
 	UNKNOWN = auto()
+
+
+@dataclass(frozen=True)
+class TypeParamId:
+	"""Stable identity for a type parameter within a function/signature."""
+
+	owner: FunctionId
+	index: int
 
 
 @dataclass(frozen=True)
@@ -61,6 +71,7 @@ class TypeDef:
 	kind: TypeKind
 	name: str
 	param_types: List[TypeId]
+	type_param_id: TypeParamId | None = None
 	# Module id for nominal types (STRUCT/VARIANT and any other module-scoped
 	# named types). Builtins use module_id=None.
 	module_id: str | None = None
@@ -165,6 +176,8 @@ class TypeTable:
 		self.variant_instances: dict[TypeId, VariantInstance] = {}
 		# Instantiation cache: (base_id, args...) -> instantiated TypeId.
 		self._instantiation_cache: dict[tuple[TypeId, tuple[TypeId, ...]], TypeId] = {}
+		# Type parameter cache: TypeParamId -> TypeId.
+		self._typevar_cache: dict[TypeParamId, TypeId] = {}
 		# Compile-time constants keyed by their fully-qualified symbol name.
 		#
 		# MVP: constants are literal values embedded into IR at each use site; there
@@ -637,6 +650,21 @@ class TypeTable:
 		"""Register an unknown type (debug/fallback)."""
 		return self._add(TypeKind.UNKNOWN, name, [])
 
+	def ensure_typevar(self, param_id: TypeParamId, *, name: str | None = None) -> TypeId:
+		"""Return a stable TypeId for a type parameter."""
+		if param_id in self._typevar_cache:
+			return self._typevar_cache[param_id]
+		display_name = name or f"T{param_id.index}"
+		ty_id = self._add(
+			TypeKind.TYPEVAR,
+			display_name,
+			[],
+			register_named=False,
+			type_param_id=param_id,
+		)
+		self._typevar_cache[param_id] = ty_id
+		return ty_id
+
 	def _add(
 		self,
 		kind: TypeKind,
@@ -644,6 +672,7 @@ class TypeTable:
 		params: List[TypeId],
 		ref_mut: bool | None = None,
 		field_names: List[str] | None = None,
+		type_param_id: TypeParamId | None = None,
 		*,
 		register_named: bool | None = None,
 		module_id: str | None = None,
@@ -654,6 +683,7 @@ class TypeTable:
 			kind=kind,
 			name=name,
 			param_types=list(params),
+			type_param_id=type_param_id if kind is TypeKind.TYPEVAR else None,
 			module_id=module_id,
 			ref_mut=ref_mut if kind is TypeKind.REF else None,
 			field_names=list(field_names) if field_names is not None else None,
@@ -677,6 +707,7 @@ class TypeTable:
 __all__ = [
 	"TypeId",
 	"TypeKind",
+	"TypeParamId",
 	"NominalKey",
 	"TypeDef",
 	"TypeTable",

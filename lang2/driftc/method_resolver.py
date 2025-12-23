@@ -31,6 +31,10 @@ from lang2.driftc.method_registry import (
 class ResolutionError(ValueError):
 	"""Raised when no viable or ambiguous callables are found."""
 
+	def __init__(self, message: str, *, span: object | None = None) -> None:
+		super().__init__(message)
+		self.span = span
+
 
 @dataclass(frozen=True)
 class MethodResolution:
