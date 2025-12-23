@@ -67,6 +67,7 @@ def resolve_program_signatures(
 		is_extern = bool(getattr(decl, "is_extern", False))
 		is_intrinsic = bool(getattr(decl, "is_intrinsic", False))
 
+		type_params = list(getattr(decl, "type_params", []) or [])
 		# Params
 		raw_params = []
 		param_names: list[str] = []
@@ -101,6 +102,7 @@ def resolve_program_signatures(
 		signatures[fn_id] = FnSignature(
 			name=name,
 			method_name=getattr(decl, "method_name", None) or name,
+			type_params=type_params,
 			loc=decl_loc,
 			param_type_ids=param_type_ids,
 			return_type_id=return_type_id,

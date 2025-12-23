@@ -123,6 +123,7 @@ class Call(Expr):
 	func: Expr
 	args: List[Expr]
 	kwargs: List["KwArg"]
+	type_args: Optional[List[object]] = None
 	loc: Optional[object] = None
 
 

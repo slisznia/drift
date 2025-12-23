@@ -283,6 +283,7 @@ class HCall(HExpr):
 	fn: HExpr
 	args: List[HExpr]
 	kwargs: List["HKwArg"] = field(default_factory=list)
+	type_args: Optional[list["HTypeExpr"]] = None
 
 
 @dataclass
@@ -297,6 +298,7 @@ class HMethodCall(HExpr):
 	method_name: str
 	args: List[HExpr]
 	kwargs: List["HKwArg"] = field(default_factory=list)
+	type_args: Optional[list["HTypeExpr"]] = None
 
 
 @dataclass

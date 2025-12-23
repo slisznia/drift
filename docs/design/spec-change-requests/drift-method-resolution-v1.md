@@ -341,7 +341,7 @@ To avoid complexity:
 
   * All its type parameters are either:
 
-    * Explicitly specified by the caller (`foo::<T>(...)`), or
+    * Explicitly specified by the caller (`foo<type T>(...)`), or
     * Fully determined by the **receiver type** and argument types, with no remaining unknowns.
 * v1 may choose to **require explicit type arguments** for generic methods/functions. That’s simpler and safe.
 

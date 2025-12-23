@@ -4,11 +4,10 @@ variant Optional<T> {
 }
 
 fn main() returns Int {
-	val x = Optional::Some<Int>(2)
+val x = Optional::Some<type Int>(2)
 	val y = match x {
 		Some(v) => { v }
 		None => { 0 }
 	}
 	return y
 }
-

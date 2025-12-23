@@ -170,7 +170,12 @@ class PlaceCanonicalizeRewriter:
 					pa = place_expr_from_lvalue_expr(new_args[0])
 					if pa is not None:
 						new_args[0] = pa
-			return [], H.HCall(fn=fn, args=new_args, kwargs=new_kwargs)
+			return [], H.HCall(
+				fn=fn,
+				args=new_args,
+				kwargs=new_kwargs,
+				type_args=getattr(expr, "type_args", None),
+			)
 		if isinstance(expr, H.HMethodCall):
 			_, recv = self._rewrite_expr(expr.receiver)
 			new_args: List[H.HExpr] = []
@@ -181,7 +186,13 @@ class PlaceCanonicalizeRewriter:
 			for kw in getattr(expr, "kwargs", []) or []:
 				_, kv = self._rewrite_expr(kw.value)
 				new_kwargs.append(H.HKwArg(name=kw.name, value=kv, loc=kw.loc))
-			return [], H.HMethodCall(receiver=recv, method_name=expr.method_name, args=new_args, kwargs=new_kwargs)
+			return [], H.HMethodCall(
+				receiver=recv,
+				method_name=expr.method_name,
+				args=new_args,
+				kwargs=new_kwargs,
+				type_args=getattr(expr, "type_args", None),
+			)
 		if isinstance(expr, H.HField):
 			_, subj = self._rewrite_expr(expr.subject)
 			return [], H.HField(subject=subj, name=expr.name)

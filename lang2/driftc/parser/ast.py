@@ -160,6 +160,7 @@ class ExprStmt(Stmt):
 class FunctionDef:
 	name: str
 	orig_name: str
+	type_params: List[str]
 	params: Sequence[Param]
 	return_type: TypeExpr
 	body: Block
@@ -281,6 +282,7 @@ class Call(Expr):
     func: Expr
     args: List[Expr]
     kwargs: List[KwArg]
+    type_args: List[TypeExpr] | None = None
 
 
 @dataclass

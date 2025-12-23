@@ -351,6 +351,7 @@ class AstToHIR:
 			)
 			for kw in kw_pairs
 		]
+		type_args = getattr(expr, "type_args", None)
 		# Recognize Result.Ok constructor in source -> HResultOk for FnResult.
 		if isinstance(expr.func, ast.Name) and expr.func.ident == "Ok" and len(expr.args) == 1:
 			if h_kwargs:
@@ -361,7 +362,13 @@ class AstToHIR:
 		if isinstance(expr.func, ast.Attr):
 			receiver = self.lower_expr(expr.func.value)
 			args = [self.lower_expr(a) for a in expr.args]
-			return H.HMethodCall(receiver=receiver, method_name=expr.func.attr, args=args, kwargs=h_kwargs)
+			return H.HMethodCall(
+				receiver=receiver,
+				method_name=expr.func.attr,
+				args=args,
+				kwargs=h_kwargs,
+				type_args=type_args,
+			)
 
 		# Implicit `self` method call: inside a method body, an unqualified call
 		# `foo(...)` may resolve to `self.foo(...)` when:
@@ -381,12 +388,18 @@ class AstToHIR:
 					if name not in module_funcs and name in methods:
 						recv = H.HVar(name=self_name, binding_id=self._lookup_binding(self_name))
 						args = [self.lower_expr(a) for a in expr.args]
-						return H.HMethodCall(receiver=recv, method_name=name, args=args, kwargs=h_kwargs)
+						return H.HMethodCall(
+							receiver=recv,
+							method_name=name,
+							args=args,
+							kwargs=h_kwargs,
+							type_args=type_args,
+						)
 
 		# Plain function call (or call through an expression value).
 		fn_expr = self.lower_expr(expr.func)
 		args = [self.lower_expr(a) for a in expr.args]
-		return H.HCall(fn=fn_expr, args=args, kwargs=h_kwargs)
+		return H.HCall(fn=fn_expr, args=args, kwargs=h_kwargs, type_args=type_args)
 
 	def _visit_expr_Attr(self, expr: ast.Attr) -> H.HExpr:
 		"""Field access: subject.name (no method/placeholder sugar here)."""

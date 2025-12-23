@@ -5,7 +5,7 @@
       "phase": "parser",
       "message_contains": "E-PARSE-QMEM-DUP-TYPEARGS",
       "line": 7,
-      "column": 44
+      "column": 43
     }
   ]
 }

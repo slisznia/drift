@@ -799,6 +799,10 @@ fn print_both<T, U>
 
 Using a function with unmet trait requirements triggers a compile-time error.
 
+**Subject restriction:** in this revision, trait requirements refer to type
+parameters (e.g., `T is Trait`) or `Self`. Value identifiers (`x is Trait`)
+are not part of the surface language.
+
 ---
 
 ### 5.7. Trait guards (`if T is TraitName`)
@@ -820,6 +824,8 @@ Semantics:
 - `if T is Debuggable` is a **compile-time condition**.
 - Only the active branch must type-check for the given `T`.
 - Inside the guarded block, methods from the trait become valid (`value.fmt()` here).
+- Guard subjects must be type parameters (or `Self`); value identifiers are not
+  allowed in this revision.
 
 ### 5.8. Multiple trait conditions
 
@@ -1733,7 +1739,7 @@ To disambiguate constructors (and to allow type argument inference without an ex
 ```drift
 val x = Optional::Some(1)          // OK: infers Optional<Int>
 val y = Optional<Int>::None()      // OK: explicit type arguments on the variant type
-val z = Optional::None<Int>()      // OK: explicit type arguments after the constructor name (fallback)
+val z = Optional::None<type Int>() // OK: explicit type arguments after the constructor name
 ```
 
 Rules (v1 MVP):
@@ -1748,7 +1754,7 @@ Rules (v1 MVP):
 
 Type argument spelling (v1 MVP):
 
-- Either `TypeRef<T>::Ctor(...)` or `TypeRef::Ctor<T>(...)` may be used to provide explicit type arguments for a generic variant.
+- Either `TypeRef<T>::Ctor(...)` or `TypeRef::Ctor<type T>(...)` may be used to provide explicit type arguments for a generic variant.
 - At most one explicit type-argument list may appear in a qualified constructor call.
 - The explicit type-argument list always applies to the **variant type instantiation** (not to the constructor name itself). The two spellings are equivalent in v1.
 
@@ -1828,7 +1834,8 @@ Recursive variants require an explicit indirection strategy (e.g. references or 
 
 ### 10.6. Generics
 
-Variants may declare type parameters. In the MVP, **generic functions** are deferred; generics are used for nominal types (e.g. `Optional<T>`, `Result<T, E>`), and codegen monomorphizes only the concrete instantiations used by the program.
+Variants and functions may declare type parameters. Codegen monomorphizes only
+the concrete instantiations used by the program.
 
 ```drift
 variant PairOrError<T, E> {
@@ -1843,6 +1850,19 @@ fn make_pair(x: Int, y: Int) returns PairOrError<Int, String> {
     return Pair(x, y)
 }
 ```
+
+**Generic functions (MVP in this revision).** Functions may declare type
+parameters and be instantiated explicitly. Call-site type arguments require
+the `type` marker to avoid ambiguity with comparisons:
+
+```drift
+fn id<T>(value: T) returns T { return value }
+val x = id<type Int>(1)
+```
+
+Type arguments may be inferred from arguments in obvious cases, but if any type
+parameter remains underconstrained the call is rejected unless explicit type
+arguments are provided.
 
 ### 10.7. Value semantics and equality
 

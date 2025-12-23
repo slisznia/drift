@@ -52,6 +52,7 @@ class FnSignature:
 
 	# Display name used at call sites (e.g., method name without type scoping).
 	method_name: Optional[str] = None
+	type_params: list[str] = field(default_factory=list)
 	# Canonical, type-checked fields (preferred).
 	param_type_ids: Optional[list[TypeId]] = None
 	return_type_id: Optional[TypeId] = None

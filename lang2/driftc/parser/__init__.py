@@ -274,6 +274,7 @@ def _convert_expr(expr: parser_ast.Expr) -> s0.Expr:
 				)
 				for kw in getattr(expr, "kwargs", [])
 			],
+			type_args=getattr(expr, "type_args", None),
 			loc=Span.from_loc(getattr(expr, "loc", None)),
 		)
 	if isinstance(expr, parser_ast.Attr):
@@ -532,6 +533,7 @@ class _FrontendDecl:
 		fn_id: FunctionId,
 		name: str,
 		method_name: Optional[str],
+		type_params: list[str],
 		params: list[_FrontendParam],
 		return_type: parser_ast.TypeExpr,
 		loc: Optional[parser_ast.Located],
@@ -543,6 +545,7 @@ class _FrontendDecl:
 		self.fn_id = fn_id
 		self.name = name
 		self.method_name = method_name
+		self.type_params = type_params
 		self.params = params
 		self.return_type = return_type
 		self.throws = ()
@@ -569,6 +572,7 @@ def _decl_from_parser_fn(fn: parser_ast.FunctionDef, *, fn_id: FunctionId) -> _F
 		fn_id,
 		fn.name,
 		fn.orig_name,
+		fn.type_params,
 		params,
 		fn.return_type,
 		getattr(fn, "loc", None),
@@ -2559,6 +2563,7 @@ def parse_drift_workspace_to_hir(
 			member: str,
 			args: list[H.HExpr],
 			kwargs: list[H.HKwArg],
+			type_args: list[object] | None,
 		) -> H.HExpr | None:
 			"""
 			Rewrite a syntactic member call `x.member(...)` when `x` is a module alias.
@@ -2590,7 +2595,12 @@ def parse_drift_workspace_to_hir(
 			types = exported_type_names(mod)
 			structs = exported_struct_names(mod)
 			if member in vals:
-				return H.HCall(fn=H.HVar(name=_qualify_fn_name(mod, member)), args=args, kwargs=kwargs)
+				return H.HCall(
+					fn=H.HVar(name=_qualify_fn_name(mod, member)),
+					args=args,
+					kwargs=kwargs,
+					type_args=type_args,
+				)
 			if member in structs:
 				# Constructor call through a module alias. MVP supports only struct ctors.
 				def_mod, def_name = reexported_type_targets_by_module.get(mod, {}).get("structs", {}).get(member, (mod, member))
@@ -2607,7 +2617,12 @@ def parse_drift_workspace_to_hir(
 				# Rewrite to an internal fully-qualified constructor name so later
 				# phases can resolve it deterministically even when multiple modules
 				# define the same short type name.
-				return H.HCall(fn=H.HVar(name=f"{def_mod}::{def_name}"), args=args, kwargs=kwargs)
+				return H.HCall(
+					fn=H.HVar(name=f"{def_mod}::{def_name}"),
+					args=args,
+					kwargs=kwargs,
+					type_args=type_args,
+				)
 			available = ", ".join(sorted(vals | types))
 			notes = (
 				[f"available exports: {available}"]
@@ -2646,6 +2661,7 @@ def parse_drift_workspace_to_hir(
 					member=expr.method_name,
 					args=expr.args,
 					kwargs=getattr(expr, "kwargs", []) or [],
+					type_args=getattr(expr, "type_args", None),
 				)
 				if rewritten is not None:
 					return rewritten
@@ -2667,6 +2683,7 @@ def parse_drift_workspace_to_hir(
 						member=expr.fn.name,
 						args=expr.args,
 						kwargs=getattr(expr, "kwargs", []) or [],
+						type_args=getattr(expr, "type_args", None),
 					)
 					if isinstance(q, H.HCall):
 						# Preserve the rewritten call and ignore the original callee expression.
@@ -3153,6 +3170,7 @@ def _lower_parsed_program_to_hir(
 					fn_id,
 					symbol_name,
 					fn.orig_name,
+		fn.type_params,
 					params,
 					fn.return_type,
 					getattr(fn, "loc", None),

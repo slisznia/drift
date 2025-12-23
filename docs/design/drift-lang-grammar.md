@@ -49,7 +49,8 @@ Declarations:
 TopDecl      ::= FnDef | StructDef | TraitDef | Implement | VariantDef
                | ExceptionDef | InterfaceDef | TypeDef | ConstDef
 
-FnDef        ::= "fn" Ident "(" Params? ")" Returns? TraitReq? Block
+FnDef        ::= "fn" Ident FnTypeParams? "(" Params? ")" Returns? TraitReq? Block
+FnTypeParams ::= "<" Ident ("," Ident)* ">"
 Params       ::= Param ("," Param)*
 Param        ::= ("^")? Ident ":" Ty
 Returns      ::= "returns" Ty | ":" Ty
@@ -142,9 +143,12 @@ UnaryOp      ::= "-" | "!" | "not" | "&"
 
 PostfixExpr  ::= PrimaryExpr PostfixTail*
 PostfixTail  ::= "." Ident
+              | "::" Ident
               | "[" ExprOrLeadingDot "]"
-              | "(" ArgsOrLeadingDot? ")"
               | "->" Ident
+              | CallSuffix
+CallSuffix   ::= CallTypeArgs? "(" ArgsOrLeadingDot? ")"
+CallTypeArgs ::= "<" "type" Ty ("," Ty)* ">"
 
 CallExpr     ::= PostfixExpr  // for pipeline staging clarity
 

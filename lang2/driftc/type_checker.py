@@ -15,7 +15,7 @@ checker integration will consume TypedFn once this matures.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Dict, List, Optional, Mapping, Tuple
 
 from lang2.driftc import stage1 as H
@@ -1003,6 +1003,18 @@ class TypeChecker:
 					kw_pairs = getattr(expr, "kwargs", []) or []
 
 					base_te = getattr(qm, "base_type_expr", None)
+					call_type_args = getattr(expr, "type_args", None) or []
+					if base_te is not None and call_type_args:
+						if getattr(base_te, "args", []) or []:
+							diagnostics.append(
+								Diagnostic(
+									message="E-QMEM-DUP-TYPEARGS: qualified member may specify type arguments only once",
+									severity="error",
+									span=getattr(expr, "loc", Span()),
+								)
+							)
+							return record_expr(expr, self._unknown)
+						base_te = replace(base_te, args=list(call_type_args))
 					base_tid = resolve_opaque_type(base_te, self.type_table, module_id=current_module_name)
 					# TypeRef without explicit module context may refer to lang.core
 					# variants (e.g., `Optional`). Prefer that base when present.
@@ -1188,7 +1200,7 @@ class TypeChecker:
 										"E-QMEM-CANNOT-INFER: cannot infer type arguments for generic variant "
 										"(underconstrained; arguments do not determine all type parameters). "
 										"Fix: add an expected type (e.g., `val x: Optional<Int> = Optional::None()`) "
-										"or add explicit type arguments (e.g., `Optional<Int>::None()` or `Optional::None<Int>()`)."
+										"or add explicit type arguments (e.g., `Optional<Int>::None()` or `Optional::None<type Int>()`)."
 									),
 									severity="error",
 									span=getattr(expr, "loc", Span()),
@@ -1754,7 +1766,7 @@ class TypeChecker:
 												message=(
 													"E-CTOR-EXPECTED-TYPE: constructor call requires an expected variant type; "
 													"add a type annotation or call a function that expects this variant. "
-													"Hint: qualify the constructor (e.g., `Optional::None()` or `Optional<Int>::None()` or `Optional::None<Int>()`)."
+													"Hint: qualify the constructor (e.g., `Optional::None()` or `Optional<Int>::None()` or `Optional::None<type Int>()`)."
 												),
 												severity="error",
 												span=getattr(expr, "loc", Span()),
@@ -1781,7 +1793,7 @@ class TypeChecker:
 								message=(
 									"E-CTOR-EXPECTED-TYPE: constructor call requires an expected variant type; "
 									"add a type annotation or call a function that expects this variant. "
-									"Hint: qualify the constructor (e.g., `Optional::None()` or `Optional<Int>::None()` or `Optional::None<Int>()`)."
+									"Hint: qualify the constructor (e.g., `Optional::None()` or `Optional<Int>::None()` or `Optional::None<type Int>()`)."
 								),
 								severity="error",
 								span=getattr(expr, "loc", Span()),
