@@ -2,7 +2,19 @@ from pathlib import Path
 import pytest
 
 from lang2.driftc import stage1 as H
+from lang2.driftc.core.function_id import FunctionId
 from lang2.driftc.parser import parse_drift_to_hir
+
+
+def _main_fn_id(fn_ids_by_name: dict[str, list[FunctionId]]) -> FunctionId:
+	ids = fn_ids_by_name.get("main") or []
+	if len(ids) == 1:
+		return ids[0]
+	qualified = [name for name in fn_ids_by_name.keys() if name.endswith("::main")]
+	assert len(qualified) == 1
+	ids = fn_ids_by_name.get(qualified[0]) or []
+	assert len(ids) == 1
+	return ids[0]
 
 
 def test_parse_simple_return(tmp_path: Path):
@@ -14,11 +26,12 @@ fn main() returns Int {
 }
 """
 	)
-	func_hirs, sigs, _type_table, _exc_catalog, diagnostics = parse_drift_to_hir(src)
+	func_hirs, sigs, fn_ids_by_name, _type_table, _exc_catalog, diagnostics = parse_drift_to_hir(src)
 	assert diagnostics == []
-	assert set(func_hirs.keys()) == {"main"}
-	assert sigs["main"].return_type.name == "Int"
-	block = func_hirs["main"]
+	assert {fid.name for fid in func_hirs} == {"main"}
+	fn_id = _main_fn_id(fn_ids_by_name)
+	assert sigs[fn_id].return_type.name == "Int"
+	block = func_hirs[fn_id]
 	assert len(block.statements) == 1
 	assert isinstance(block.statements[0], H.HReturn)
 	assert isinstance(block.statements[0].value, H.HLiteralInt)
@@ -33,11 +46,12 @@ def test_parse_float_literal(tmp_path: Path):
 	}
 	"""
 	)
-	func_hirs, sigs, _type_table, _exc_catalog, diagnostics = parse_drift_to_hir(src)
+	func_hirs, sigs, fn_ids_by_name, _type_table, _exc_catalog, diagnostics = parse_drift_to_hir(src)
 	assert diagnostics == []
-	assert set(func_hirs.keys()) == {"main"}
-	assert sigs["main"].return_type.name == "Float"
-	block = func_hirs["main"]
+	assert {fid.name for fid in func_hirs} == {"main"}
+	fn_id = _main_fn_id(fn_ids_by_name)
+	assert sigs[fn_id].return_type.name == "Float"
+	block = func_hirs[fn_id]
 	assert isinstance(block.statements[0], H.HReturn)
 	assert isinstance(block.statements[0].value, H.HLiteralFloat)
 
@@ -64,7 +78,7 @@ def test_invalid_float_literals_produce_diagnostics(tmp_path: Path, lit: str):
 	"""
 	src = tmp_path / "main.drift"
 	src.write_text(f"fn main() returns Float {{ return {lit}; }}\n")
-	_func_hirs, _sigs, _type_table, _exc_catalog, diagnostics = parse_drift_to_hir(src)
+	_func_hirs, _sigs, _fn_ids_by_name, _type_table, _exc_catalog, diagnostics = parse_drift_to_hir(src)
 	assert diagnostics, f"expected diagnostics for invalid float literal {lit!r}"
 	assert any(d.severity == "error" for d in diagnostics)
 
@@ -84,7 +98,7 @@ fn callee() returns FnResult<Int, Error> {
 }
 """
 	)
-	_func_hirs, _sigs, _type_table, _exc_catalog, diagnostics = parse_drift_to_hir(src)
+	_func_hirs, _sigs, _fn_ids_by_name, _type_table, _exc_catalog, diagnostics = parse_drift_to_hir(src)
 	assert diagnostics
 	assert any("internal-only type 'FnResult'" in d.message for d in diagnostics)
 
@@ -98,11 +112,12 @@ fn main() returns Int {
 }
 """
 	)
-	func_hirs, sigs, _type_table, _exc_catalog, diagnostics = parse_drift_to_hir(src)
+	func_hirs, sigs, fn_ids_by_name, _type_table, _exc_catalog, diagnostics = parse_drift_to_hir(src)
 	assert diagnostics == []
-	assert set(func_hirs.keys()) == {"main"}
-	assert sigs["main"].return_type.name == "Int"
-	main = func_hirs["main"]
+	assert {fid.name for fid in func_hirs} == {"main"}
+	fn_id = _main_fn_id(fn_ids_by_name)
+	assert sigs[fn_id].return_type.name == "Int"
+	main = func_hirs[fn_id]
 	assert isinstance(main.statements[0], H.HReturn)
 	# ns.Ok should not be rewritten to HResultOk (attr call stays a normal call)
 	assert isinstance(main.statements[0].value, (H.HCall, H.HMethodCall))
@@ -121,10 +136,11 @@ fn main() returns Int {
 }
 """
 	)
-	func_hirs, sigs, _type_table, _exc_catalog, diagnostics = parse_drift_to_hir(src)
+	func_hirs, sigs, fn_ids_by_name, _type_table, _exc_catalog, diagnostics = parse_drift_to_hir(src)
 	assert diagnostics == []
-	assert sigs["main"].return_type.name == "Int"
-	main = func_hirs["main"]
+	fn_id = _main_fn_id(fn_ids_by_name)
+	assert sigs[fn_id].return_type.name == "Int"
+	main = func_hirs[fn_id]
 	assert isinstance(main.statements[0], H.HThrow)
 
 
@@ -137,10 +153,11 @@ fn main() returns Int {
 }
 """
 	)
-	func_hirs, sigs, _type_table, _exc_catalog, diagnostics = parse_drift_to_hir(src)
+	func_hirs, sigs, fn_ids_by_name, _type_table, _exc_catalog, diagnostics = parse_drift_to_hir(src)
 	assert diagnostics == []
-	assert sigs["main"].return_type.name == "Int"
-	main = func_hirs["main"]
+	fn_id = _main_fn_id(fn_ids_by_name)
+	assert sigs[fn_id].return_type.name == "Int"
+	main = func_hirs[fn_id]
 	assert len(main.statements) == 1
 	assert isinstance(main.statements[0], H.HThrow)
 
@@ -154,7 +171,7 @@ implement &Point {
 }
 """
 	)
-	_, _sigs, _type_table, _exc_catalog, diagnostics = parse_drift_to_hir(src)
+	_, _sigs, _fn_ids_by_name, _type_table, _exc_catalog, diagnostics = parse_drift_to_hir(src)
 	assert diagnostics, "expected diagnostic for reference-qualified implement header"
 	assert "nominal type" in diagnostics[0].message
 
@@ -170,9 +187,9 @@ fn main() returns Int {
 }
 """
 	)
-	func_hirs, _sigs, _type_table, _exc_catalog, diagnostics = parse_drift_to_hir(src)
+	func_hirs, _sigs, fn_ids_by_name, _type_table, _exc_catalog, diagnostics = parse_drift_to_hir(src)
 	assert diagnostics == []
-	block = func_hirs["main"]
+	block = func_hirs[_main_fn_id(fn_ids_by_name)]
 	assert isinstance(block.statements[0], H.HLoop)
 
 
@@ -191,9 +208,11 @@ fn drift_main() returns Int {
 }
 """
 	)
-	_, sigs, type_table, _exc_catalog, diagnostics = parse_drift_to_hir(src)
+	_, sigs, fn_ids_by_name, type_table, _exc_catalog, diagnostics = parse_drift_to_hir(src)
 	assert diagnostics == []
-	sig = sigs.get("drift_main") or sigs["main"]
+	drift_ids = fn_ids_by_name.get("main::drift_main") or fn_ids_by_name.get("drift_main") or []
+	assert len(drift_ids) == 1
+	sig = sigs[drift_ids[0]]
 	assert sig.return_type_id is not None
 	assert type_table.get(sig.return_type_id).name == "Int"
 
@@ -207,9 +226,11 @@ fn apply(nonescaping f: Int, x: Int) returns Int {
 }
 """
 	)
-	_func_hirs, sigs, _type_table, _exc_catalog, diagnostics = parse_drift_to_hir(src)
+	_func_hirs, sigs, fn_ids_by_name, _type_table, _exc_catalog, diagnostics = parse_drift_to_hir(src)
 	assert any("nonescaping parameter" in d.message for d in diagnostics)
-	sig = sigs["apply"]
+	apply_ids = fn_ids_by_name.get("main::apply") or fn_ids_by_name.get("apply") or []
+	assert len(apply_ids) == 1
+	sig = sigs[apply_ids[0]]
 	assert sig.param_nonescaping == [True, False]
 
 
@@ -222,9 +243,11 @@ fn apply(nonescaping f: Fn, x: Int) returns Int {
 }
 """
 	)
-	_func_hirs, sigs, _type_table, _exc_catalog, diagnostics = parse_drift_to_hir(src)
+	_func_hirs, sigs, fn_ids_by_name, _type_table, _exc_catalog, diagnostics = parse_drift_to_hir(src)
 	assert diagnostics == []
-	sig = sigs["apply"]
+	apply_ids = fn_ids_by_name.get("main::apply") or fn_ids_by_name.get("apply") or []
+	assert len(apply_ids) == 1
+	sig = sigs[apply_ids[0]]
 	assert sig.param_nonescaping == [True, False]
 
 
@@ -236,6 +259,6 @@ fn main() returns Int { return 0; }
 fn main() returns Int { return 1; }
 """
 	)
-	_, sigs, _type_table, _exc_catalog, diagnostics = parse_drift_to_hir(src)
-	assert any("duplicate function definition" in d.message for d in diagnostics)
-	assert "main" in sigs
+	_, sigs, _fn_ids_by_name, _type_table, _exc_catalog, diagnostics = parse_drift_to_hir(src)
+	assert any("duplicate function signature" in d.message for d in diagnostics)
+	assert any(fid.name == "main" for fid in sigs)

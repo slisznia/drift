@@ -5,17 +5,22 @@
 
 from lang2.driftc import stage1 as H
 from lang2.driftc.type_checker import TypeChecker
-from lang2.driftc.core.types_core import TypeTable, TypeKind
+from lang2.driftc.core.function_id import FunctionId
+from lang2.driftc.core.types_core import TypeKind, TypeTable
 
 
 def _checker():
 	return TypeChecker(TypeTable())
 
 
+def _fn_id(name: str) -> FunctionId:
+	return FunctionId(module="main", name=name, ordinal=0)
+
+
 def test_literal_and_var_types():
 	tc = _checker()
 	block = H.HBlock(statements=[H.HLet(name="x", value=H.HLiteralInt(1), declared_type_expr=None)])
-	result = tc.check_function("f", block)
+	result = tc.check_function(_fn_id("f"), block)
 	assert result.diagnostics == []
 	x_binding = block.statements[0].binding_id
 	assert x_binding is not None
@@ -23,7 +28,7 @@ def test_literal_and_var_types():
 	assert block.statements[0].binding_id in result.typed_fn.locals
 	# Var lookup
 	block2 = H.HBlock(statements=[H.HLet(name="x", value=H.HLiteralInt(1), declared_type_expr=None), H.HExprStmt(expr=H.HVar("x"))])
-	result2 = tc.check_function("g", block2)
+	result2 = tc.check_function(_fn_id("g"), block2)
 	var_expr = block2.statements[1].expr
 	assert isinstance(var_expr, H.HVar)
 	assert tc.type_table.ensure_int() in result2.typed_fn.expr_types.values()
@@ -42,7 +47,7 @@ def test_borrow_types():
 			H.HLet(name="m", value=H.HBorrow(subject=H.HVar("x"), is_mut=True), declared_type_expr=None),
 		]
 	)
-	res = tc.check_function("h", block)
+	res = tc.check_function(_fn_id("h"), block)
 	assert res.diagnostics == []
 	r_let = block.statements[1]
 	m_let = block.statements[2]
@@ -67,7 +72,7 @@ def test_shadowing_respects_lexical_scope():
 			H.HExprStmt(expr=H.HVar("x")),
 		]
 	)
-	res = tc.check_function("shadow", block)
+	res = tc.check_function(_fn_id("shadow"), block)
 	assert res.diagnostics == []
 	var_expr = block.statements[2].expr
 	assert isinstance(var_expr, H.HVar)
@@ -81,7 +86,7 @@ def test_param_binding_and_type_tracked():
 	tc = _checker()
 	int_ty = tc.type_table.ensure_int()
 	fn_body = H.HBlock(statements=[H.HExprStmt(expr=H.HVar("x"))])
-	res = tc.check_function("p", fn_body, param_types={"x": int_ty})
+	res = tc.check_function(_fn_id("p"), fn_body, param_types={"x": int_ty})
 	assert res.diagnostics == []
 	assert res.typed_fn.params
 	assert res.typed_fn.param_bindings
@@ -100,7 +105,7 @@ def test_binding_types_capture_ref_mut():
 			H.HLet(name="m", value=H.HBorrow(subject=H.HVar("x", binding_id=1), is_mut=True), declared_type_expr=None, binding_id=2),
 		]
 	)
-	res = tc.check_function("mutref", block)
+	res = tc.check_function(_fn_id("mutref"), block)
 	assert res.diagnostics == []
 	ref_ty = res.typed_fn.binding_types[2]
 	td = tc.type_table.get(ref_ty)
@@ -116,5 +121,5 @@ def test_mut_borrow_of_val_is_rejected():
 			H.HLet(name="m", value=H.HBorrow(subject=H.HVar("x"), is_mut=True), declared_type_expr=None),
 		]
 	)
-	res = tc.check_function("bad_mut_borrow", block)
+	res = tc.check_function(_fn_id("bad_mut_borrow"), block)
 	assert any("cannot take &mut of an immutable binding" in d.message for d in res.diagnostics)

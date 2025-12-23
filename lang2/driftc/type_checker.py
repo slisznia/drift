@@ -23,6 +23,7 @@ from lang2.driftc.checker import FnSignature
 from lang2.driftc.core.diagnostics import Diagnostic
 from lang2.driftc.core.span import Span
 from lang2.driftc.core.types_core import TypeId, TypeTable, TypeKind, VariantInstance, VariantSchema
+from lang2.driftc.core.function_id import FunctionId, function_symbol
 from lang2.driftc.core.type_resolve_common import resolve_opaque_type
 from lang2.driftc.core.generic_type_expr import GenericTypeExpr
 from lang2.driftc.borrow_checker import (
@@ -36,8 +37,11 @@ from lang2.driftc.borrow_checker import (
 	places_overlap,
 )
 from lang2.driftc.method_registry import CallableDecl, CallableRegistry, ModuleId
-from lang2.driftc.method_resolver import MethodResolution, ResolutionError, resolve_function_call, resolve_method_call
+from lang2.driftc.method_resolver import MethodResolution, ResolutionError, resolve_method_call
 from lang2.driftc.core.iter_intrinsics import ensure_array_iter_struct, is_array_iter_struct
+from lang2.driftc.parser import ast as parser_ast
+from lang2.driftc.traits.solver import Env as TraitEnv, ProofStatus, prove_expr
+from lang2.driftc.traits.world import type_key_from_typeid
 
 # Identifier aliases for clarity.
 ParamId = int
@@ -48,6 +52,7 @@ LocalId = int
 class TypedFn:
 	"""Typed view of a single function's HIR."""
 
+	fn_id: FunctionId
 	name: str
 	params: List[ParamId]
 	param_bindings: List[int]
@@ -164,11 +169,12 @@ class TypeChecker:
 
 	def check_function(
 		self,
-		name: str,
+		fn_id: FunctionId,
 		body: H.HBlock,
 		param_types: Mapping[str, TypeId] | None = None,
 		return_type: TypeId | None = None,
-		call_signatures: Mapping[str, FnSignature] | None = None,
+		call_signatures: Mapping[str, list[FnSignature]] | None = None,
+		signatures_by_id: Mapping[FunctionId, FnSignature] | None = None,
 		callable_registry: CallableRegistry | None = None,
 		visible_modules: Optional[Tuple[ModuleId, ...]] = None,
 		current_module: ModuleId = 0,
@@ -179,14 +185,7 @@ class TypeChecker:
 		# (e.g., `Point(...)` inside module `a.geom` must refer to `a.geom:Point`
 		# even if another module also defines `Point`).
 		current_module_name: str | None = None
-		if call_signatures is not None and name in call_signatures:
-			current_module_name = getattr(call_signatures[name], "module", None)
-		if current_module_name is None and "::" in name:
-			parts = name.split("::")
-			if len(parts) >= 2:
-				current_module_name = parts[0]
-		if current_module_name is None:
-			current_module_name = "main"
+		current_module_name = fn_id.module or "main"
 
 		scope_env: List[Dict[str, TypeId]] = [dict()]
 		scope_bindings: List[Dict[str, int]] = [dict()]
@@ -225,6 +224,139 @@ class TypeChecker:
 		ref_origin_param: Dict[int, Optional[int]] = {}
 		diagnostics: List[Diagnostic] = []
 		call_resolutions: Dict[int, CallableDecl | MethodResolution] = {}
+		trait_worlds = getattr(self.type_table, "trait_worlds", {}) or {}
+
+		def _single_sig(name: str) -> FnSignature | None:
+			if not call_signatures:
+				return None
+			sigs = call_signatures.get(name)
+			if sigs is None:
+				return None
+			if isinstance(sigs, FnSignature):
+				return sigs
+			if len(sigs) == 1:
+				return sigs[0]
+			return None
+
+		def _loc_from_span(span: Span) -> parser_ast.Located:
+			return parser_ast.Located(line=span.line or 0, column=span.column or 0)
+
+		def _trait_expr_to_parser(expr: H.HTraitExpr) -> parser_ast.TraitExpr:
+			if isinstance(expr, H.HTraitIs):
+				loc = _loc_from_span(expr.loc)
+				return parser_ast.TraitIs(loc=loc, subject=expr.subject, trait=expr.trait)
+			if isinstance(expr, H.HTraitAnd):
+				loc = _loc_from_span(expr.loc)
+				return parser_ast.TraitAnd(loc=loc, left=_trait_expr_to_parser(expr.left), right=_trait_expr_to_parser(expr.right))
+			if isinstance(expr, H.HTraitOr):
+				loc = _loc_from_span(expr.loc)
+				return parser_ast.TraitOr(loc=loc, left=_trait_expr_to_parser(expr.left), right=_trait_expr_to_parser(expr.right))
+			if isinstance(expr, H.HTraitNot):
+				loc = _loc_from_span(expr.loc)
+				return parser_ast.TraitNot(loc=loc, expr=_trait_expr_to_parser(expr.expr))
+			raise TypeError(f"unsupported trait expr node: {type(expr).__name__}")
+
+		def _collect_trait_subjects(expr: parser_ast.TraitExpr, out: set[str]) -> None:
+			if isinstance(expr, parser_ast.TraitIs):
+				out.add(expr.subject)
+			elif isinstance(expr, (parser_ast.TraitAnd, parser_ast.TraitOr)):
+				_collect_trait_subjects(expr.left, out)
+				_collect_trait_subjects(expr.right, out)
+			elif isinstance(expr, parser_ast.TraitNot):
+				_collect_trait_subjects(expr.expr, out)
+
+		def _normalize_type_key(key: object) -> object:
+			if getattr(key, "module", None) is None:
+				return type(key)(module=current_module_name, name=key.name, args=key.args)
+			return key
+
+		def _require_rank(expr: parser_ast.TraitExpr | None) -> tuple[bool, int]:
+			if expr is None:
+				return True, 0
+			if isinstance(expr, parser_ast.TraitIs):
+				return True, 1
+			if isinstance(expr, parser_ast.TraitAnd):
+				left_ok, left_cnt = _require_rank(expr.left)
+				right_ok, right_cnt = _require_rank(expr.right)
+				return (left_ok and right_ok), left_cnt + right_cnt
+			if isinstance(expr, (parser_ast.TraitOr, parser_ast.TraitNot)):
+				return False, 0
+			return False, 0
+
+		def _fn_id_for_decl(decl: CallableDecl) -> FunctionId | None:
+			return decl.fn_id
+
+		def _resolve_free_call_with_require(
+			*,
+			name: str,
+			arg_types: List[TypeId],
+		) -> CallableDecl:
+			candidates = callable_registry.get_free_candidates(
+				name=name,
+				visible_modules=visible_modules or (current_module,),
+				include_private_in=current_module,
+			)
+			viable: List[CallableDecl] = []
+			for decl in candidates:
+				if decl.is_generic:
+					continue
+				params = decl.signature.param_types
+				if len(params) != len(arg_types):
+					continue
+				if all(p == a for p, a in zip(params, arg_types)):
+					viable.append(decl)
+			if not viable:
+				raise ResolutionError(f"no matching overload for function '{name}' with args {arg_types}")
+			world = None
+			applicable: List[CallableDecl] = []
+			ranks: Dict[int, tuple[bool, int]] = {}
+			for decl in viable:
+				fn_id = _fn_id_for_decl(decl)
+				if fn_id is None:
+					applicable.append(decl)
+					ranks[decl.callable_id] = (True, 0)
+					continue
+				world = trait_worlds.get(fn_id.module) if isinstance(trait_worlds, dict) else None
+				req = world.requires_by_fn.get(fn_id) if world is not None else None
+				if req is None:
+					applicable.append(decl)
+					ranks[decl.callable_id] = (True, 0)
+					continue
+				subjects: set[str] = set()
+				_collect_trait_subjects(req, subjects)
+				subst: dict[str, object] = {}
+				sig = None
+				if decl.fn_id is not None and signatures_by_id is not None:
+					sig = signatures_by_id.get(decl.fn_id)
+				if sig is None:
+					sig = _single_sig(decl.name)
+				if sig and sig.param_names:
+					param_to_idx = {p: i for i, p in enumerate(sig.param_names)}
+					for subj in subjects:
+						if subj == "Self":
+							continue
+						idx = param_to_idx.get(subj)
+						if idx is None or idx >= len(arg_types):
+							continue
+						subst[subj] = _normalize_type_key(type_key_from_typeid(self.type_table, arg_types[idx]))
+				if world is None:
+					continue
+				env = TraitEnv(default_module=fn_id.module or current_module_name)
+				res = prove_expr(world, env, subst, req)
+				if res.status is ProofStatus.PROVED:
+					applicable.append(decl)
+					ranks[decl.callable_id] = _require_rank(req)
+			if not applicable:
+				raise ResolutionError(f"no matching overload for function '{name}' with args {arg_types}")
+			if len(applicable) == 1:
+				return applicable[0]
+			if any(not ranks[decl.callable_id][0] for decl in applicable):
+				raise ResolutionError(f"ambiguous call to function '{name}' with args {arg_types}")
+			best = max(ranks[decl.callable_id][1] for decl in applicable)
+			winners = [d for d in applicable if ranks[d.callable_id][1] == best]
+			if len(winners) != 1:
+				raise ResolutionError(f"ambiguous call to function '{name}' with args {arg_types}")
+			return winners[0]
 
 		params: List[ParamId] = []
 		param_bindings: List[int] = []
@@ -271,6 +403,9 @@ class TypeChecker:
 			if hasattr(H, "HLiteralFloat") and isinstance(expr, getattr(H, "HLiteralFloat")):
 				return record_expr(expr, self._float)
 			if isinstance(expr, H.HLiteralBool):
+				return record_expr(expr, self._bool)
+			if isinstance(expr, H.HTraitExpr):
+				# Trait guard expressions are compile-time only; treat them as Bool.
 				return record_expr(expr, self._bool)
 			if isinstance(expr, H.HLiteralString):
 				return record_expr(expr, self._string)
@@ -1257,14 +1392,13 @@ class TypeChecker:
 						struct_ctor_tid = self.type_table.get_nominal(
 							kind=TypeKind.STRUCT, module_id=current_module_name, name=expr.fn.name
 						) or self.type_table.find_unique_nominal_by_name(kind=TypeKind.STRUCT, name=expr.fn.name)
-					is_struct_ctor = struct_ctor_tid is not None and (
-						call_signatures is None or expr.fn.name not in call_signatures
-					)
+					sig = _single_sig(expr.fn.name)
+					is_struct_ctor = struct_ctor_tid is not None and sig is None
 					if is_struct_ctor:
 						should_type_fn = False
 					if callable_registry is not None:
 						should_type_fn = False
-					elif call_signatures and expr.fn.name in call_signatures:
+					elif _single_sig(expr.fn.name):
 						should_type_fn = False
 				if should_type_fn:
 					type_expr(expr.fn)
@@ -1274,13 +1408,12 @@ class TypeChecker:
 				# arguments, e.g. `takes_opt(Some(1))` where `takes_opt` expects
 				# `Optional<Int>`.
 				arg_types: list[TypeId] = []
-				if (
-					isinstance(expr.fn, H.HVar)
-					and call_signatures
-					and expr.fn.name in call_signatures
-					and call_signatures[expr.fn.name].param_type_ids is not None
-				):
-					expected_params = call_signatures[expr.fn.name].param_type_ids or []
+				if isinstance(expr.fn, H.HVar):
+					sig = _single_sig(expr.fn.name)
+				else:
+					sig = None
+				if sig and sig.param_type_ids is not None:
+					expected_params = sig.param_type_ids or []
 					for i, a in enumerate(expr.args):
 						want = expected_params[i] if i < len(expected_params) else None
 						arg_types.append(type_expr(a, expected_type=want))
@@ -1483,11 +1616,8 @@ class TypeChecker:
 					struct_id = _resolve_struct_ctor_type_id(expr.fn.name)
 					struct_name = expr.fn.name
 
-				if (
-					(call_signatures is None or not (isinstance(expr.fn, H.HVar) and expr.fn.name in call_signatures))
-					and isinstance(expr.fn, H.HVar)
-					and struct_id is not None
-				):
+				sig = _single_sig(expr.fn.name) if isinstance(expr.fn, H.HVar) else None
+				if sig is None and isinstance(expr.fn, H.HVar) and struct_id is not None:
 					struct_def = self.type_table.get(struct_id)
 					if struct_def.kind is not TypeKind.STRUCT:
 						diagnostics.append(
@@ -1596,14 +1726,12 @@ class TypeChecker:
 				# Try registry-based resolution when available.
 				if callable_registry and isinstance(expr.fn, H.HVar):
 					try:
-						decl = resolve_function_call(
-							callable_registry,
-							self.type_table,
+						decl = _resolve_free_call_with_require(
 							name=expr.fn.name,
 							arg_types=arg_types,
-							visible_modules=visible_modules or (current_module,),
-							current_module=current_module,
 						)
+						if decl.fn_id is not None:
+							expr.fn.name = function_symbol(decl.fn_id)
 						call_resolutions[id(expr)] = decl
 						return record_expr(expr, decl.signature.result_type)
 					except ResolutionError as err:
@@ -1639,10 +1767,12 @@ class TypeChecker:
 						return record_expr(expr, self._unknown)
 
 				# Fallback: signature map by name.
-				if call_signatures and isinstance(expr.fn, H.HVar):
-					sig = call_signatures.get(expr.fn.name)
-					if sig and sig.return_type_id is not None:
-						return record_expr(expr, sig.return_type_id)
+				if isinstance(expr.fn, H.HVar):
+					sig = _single_sig(expr.fn.name)
+				else:
+					sig = None
+				if sig and sig.return_type_id is not None:
+					return record_expr(expr, sig.return_type_id)
 				# Constructor calls without an expected variant type are rejected in MVP.
 				if isinstance(expr.fn, H.HVar) and expected_type is None:
 					if expr.fn.name in ctor_to_variant_bases:
@@ -1766,7 +1896,7 @@ class TypeChecker:
 						return record_expr(expr, self._unknown)
 
 				if call_signatures:
-					sig = call_signatures.get(expr.method_name)
+					sig = _single_sig(expr.method_name)
 					if sig and sig.return_type_id is not None:
 						return record_expr(expr, sig.return_type_id)
 				return record_expr(expr, self._unknown)
@@ -2337,10 +2467,56 @@ class TypeChecker:
 				if stmt.value is not None:
 					type_expr(stmt.value, expected_type=return_type)
 			elif isinstance(stmt, H.HIf):
-				type_expr(stmt.cond)
-				type_block(stmt.then_block)
-				if stmt.else_block:
-					type_block(stmt.else_block)
+				if isinstance(stmt.cond, H.HTraitExpr):
+					parser_expr = _trait_expr_to_parser(stmt.cond)
+					subst: dict[str, object] = {}
+					subjects: set[str] = set()
+					_collect_trait_subjects(parser_expr, subjects)
+					for subj in subjects:
+						if subj == "Self":
+							continue
+						for scope in reversed(scope_env):
+							if subj in scope:
+								subst[subj] = _normalize_type_key(type_key_from_typeid(self.type_table, scope[subj]))
+								break
+					world = None
+					if isinstance(trait_worlds, dict):
+						world = trait_worlds.get(current_module_name)
+					if world is None:
+						diagnostics.append(
+							Diagnostic(
+								message="trait guard cannot be evaluated without a trait world",
+								severity="error",
+								span=getattr(stmt.cond, "loc", Span()),
+							)
+						)
+						type_block(stmt.then_block)
+						if stmt.else_block:
+							type_block(stmt.else_block)
+					else:
+						env = TraitEnv(default_module=current_module_name)
+						res = prove_expr(world, env, subst, parser_expr)
+						if res.status is ProofStatus.PROVED:
+							type_block(stmt.then_block)
+						elif res.status is ProofStatus.REFUTED:
+							if stmt.else_block:
+								type_block(stmt.else_block)
+						else:
+							diagnostics.append(
+								Diagnostic(
+									message="trait guard is not decidable at compile time",
+									severity="error",
+									span=getattr(stmt.cond, "loc", Span()),
+								)
+							)
+							type_block(stmt.then_block)
+							if stmt.else_block:
+								type_block(stmt.else_block)
+				else:
+					type_expr(stmt.cond)
+					type_block(stmt.then_block)
+					if stmt.else_block:
+						type_block(stmt.else_block)
 			elif isinstance(stmt, H.HLoop):
 				type_block(stmt.body)
 			elif isinstance(stmt, H.HTry):
@@ -2388,7 +2564,8 @@ class TypeChecker:
 		type_block(body)
 
 		typed = TypedFn(
-			name=name,
+			fn_id=fn_id,
+			name=fn_id.name,
 			params=params,
 			param_bindings=param_bindings,
 			locals=locals,

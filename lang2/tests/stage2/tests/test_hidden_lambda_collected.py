@@ -19,7 +19,7 @@ fn main() returns Int {
 }
 """
 	)
-	func_hirs, sigs, type_table, exc_env, diagnostics = parse_drift_to_hir(src)
+	func_hirs, sigs, _fn_ids_by_name, type_table, exc_env, diagnostics = parse_drift_to_hir(src)
 	assert diagnostics == []
 
 	mir_funcs = compile_stubbed_funcs(

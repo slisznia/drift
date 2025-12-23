@@ -15,6 +15,7 @@ class StructDef:
     name: str
     fields: List[StructField]
     loc: "Located"
+    require: Optional["RequireClause"] = None
 
 
 @dataclass
@@ -163,6 +164,7 @@ class FunctionDef:
 	return_type: TypeExpr
 	body: Block
 	loc: Located
+	require: Optional["RequireClause"] = None
 	is_method: bool = False
 	self_mode: str | None = None  # "value", "ref", "ref_mut"
 	impl_target: TypeExpr | None = None
@@ -170,6 +172,44 @@ class FunctionDef:
 
 class Expr:
     loc: Located
+
+
+@dataclass
+class RequireClause:
+    expr: "TraitExpr"
+    loc: Located
+
+
+class TraitExpr(Expr):
+    """Boolean trait requirement expression (type-level)."""
+    pass
+
+
+@dataclass
+class TraitIs(TraitExpr):
+    loc: Located
+    subject: str
+    trait: TypeExpr
+
+
+@dataclass
+class TraitAnd(TraitExpr):
+    loc: Located
+    left: TraitExpr
+    right: TraitExpr
+
+
+@dataclass
+class TraitOr(TraitExpr):
+    loc: Located
+    left: TraitExpr
+    right: TraitExpr
+
+
+@dataclass
+class TraitNot(TraitExpr):
+    loc: Located
+    expr: TraitExpr
 
 
 @dataclass
@@ -318,6 +358,7 @@ class Program:
 	functions: List[FunctionDef] = field(default_factory=list)
 	consts: List["ConstDef"] = field(default_factory=list)
 	implements: List["ImplementDef"] = field(default_factory=list)
+	traits: List["TraitDef"] = field(default_factory=list)
 	# Module directives are tracked separately from general statements so later
 	# compilation stages can ignore them without having to add stage0/HIR nodes
 	# for import/export syntax.
@@ -397,9 +438,27 @@ class VariantDef:
 
 
 @dataclass
+class TraitMethodSig:
+	name: str
+	params: Sequence[Param]
+	return_type: TypeExpr
+	loc: Located
+
+
+@dataclass
+class TraitDef:
+	name: str
+	methods: List[TraitMethodSig]
+	loc: Located
+	require: Optional["RequireClause"] = None
+
+
+@dataclass
 class ImplementDef:
 	target: TypeExpr
 	loc: Located
+	trait: Optional[TypeExpr] = None
+	require: Optional["RequireClause"] = None
 	methods: List[FunctionDef] = field(default_factory=list)
 
 

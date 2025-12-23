@@ -91,6 +91,38 @@ class HVar(HExpr):
 	binding_id: Optional[BindingId] = None
 
 
+class HTraitExpr(HExpr):
+	"""Trait guard expression (type-level boolean)."""
+	pass
+
+
+@dataclass
+class HTraitIs(HTraitExpr):
+	subject: str
+	trait: object
+	loc: Span = field(default_factory=Span)
+
+
+@dataclass
+class HTraitAnd(HTraitExpr):
+	left: HTraitExpr
+	right: HTraitExpr
+	loc: Span = field(default_factory=Span)
+
+
+@dataclass
+class HTraitOr(HTraitExpr):
+	left: HTraitExpr
+	right: HTraitExpr
+	loc: Span = field(default_factory=Span)
+
+
+@dataclass
+class HTraitNot(HTraitExpr):
+	expr: HTraitExpr
+	loc: Span = field(default_factory=Span)
+
+
 @dataclass(frozen=True)
 class HPlaceProj(HNode):
 	"""
@@ -636,7 +668,8 @@ class HReturn(HStmt):
 __all__ = [
 	"HNode", "HExpr", "HStmt",
 	"UnaryOp", "BinaryOp",
-	"HVar", "HLiteralInt", "HLiteralString", "HLiteralBool", "HLiteralFloat",
+	"HVar", "HTraitExpr", "HTraitIs", "HTraitAnd", "HTraitOr", "HTraitNot",
+	"HLiteralInt", "HLiteralString", "HLiteralBool", "HLiteralFloat",
 	"HFString", "HFStringHole",
 	"HParam", "HLambda",
 	"HCall", "HMethodCall", "HTernary", "HResultOk",

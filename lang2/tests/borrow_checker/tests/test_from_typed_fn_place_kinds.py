@@ -6,6 +6,7 @@
 from lang2.driftc import stage1 as H
 from lang2.driftc.borrow_checker_pass import BorrowChecker
 from lang2.driftc.borrow_checker import PlaceKind
+from lang2.driftc.core.function_id import FunctionId
 from lang2.driftc.type_checker import TypeChecker
 
 
@@ -26,7 +27,7 @@ def test_from_typed_fn_marks_params_as_params():
 			H.HLet(name="y", value=H.HLiteralInt(1), declared_type_expr=None),
 		]
 	)
-	res = tc.check_function("f", body, param_types={"x": int_ty})
+	res = tc.check_function(FunctionId(module="main", name="f", ordinal=0), body, param_types={"x": int_ty})
 	assert res.diagnostics == []
 	typed_fn = res.typed_fn
 
@@ -34,4 +35,3 @@ def test_from_typed_fn_marks_params_as_params():
 	param_binding_id = typed_fn.param_bindings[0]
 	assert any(pb.kind is PlaceKind.PARAM and pb.local_id == param_binding_id for pb in bc.fn_types.keys())
 	assert any(pb.kind is PlaceKind.LOCAL for pb in bc.fn_types.keys())
-

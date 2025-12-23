@@ -5,7 +5,8 @@
 
 from lang2.driftc import stage1 as H
 from lang2.driftc.type_checker import TypeChecker
-from lang2.driftc.core.types_core import TypeTable, TypeKind
+from lang2.driftc.core.function_id import FunctionId
+from lang2.driftc.core.types_core import TypeKind, TypeTable
 from lang2.driftc.checker import FnSignature
 from lang2.driftc.method_registry import CallableRegistry, CallableSignature, Visibility, SelfMode
 from lang2.driftc.method_resolver import MethodResolution
@@ -13,6 +14,10 @@ from lang2.driftc.method_resolver import MethodResolution
 
 def _tc() -> TypeChecker:
 	return TypeChecker(TypeTable())
+
+
+def _fn_id(name: str) -> FunctionId:
+	return FunctionId(module="main", name=name, ordinal=0)
 
 
 def test_binary_int_ops_infer_int():
@@ -24,7 +29,7 @@ def test_binary_int_ops_infer_int():
 			)
 		]
 	)
-	res = tc.check_function("f", block)
+	res = tc.check_function(_fn_id("f"), block)
 	assert res.diagnostics == []
 	assert tc.type_table.ensure_int() in res.typed_fn.expr_types.values()
 
@@ -38,7 +43,7 @@ def test_logical_ops_infer_bool():
 			)
 		]
 	)
-	res = tc.check_function("g", block)
+	res = tc.check_function(_fn_id("g"), block)
 	assert res.diagnostics == []
 	assert tc.type_table.ensure_bool() in res.typed_fn.expr_types.values()
 
@@ -51,7 +56,7 @@ def test_unary_ops():
 			H.HExprStmt(expr=H.HUnary(op=H.UnaryOp.NOT, expr=H.HLiteralBool(True))),
 		]
 	)
-	res = tc.check_function("u", block)
+	res = tc.check_function(_fn_id("u"), block)
 	assert res.diagnostics == []
 	assert tc.type_table.ensure_int() in res.typed_fn.expr_types.values()
 	assert tc.type_table.ensure_bool() in res.typed_fn.expr_types.values()
@@ -69,7 +74,7 @@ def test_array_literal_and_index():
 			H.HExprStmt(expr=H.HIndex(subject=H.HVar("xs"), index=H.HLiteralInt(0))),
 		]
 	)
-	res = tc.check_function("arr", block)
+	res = tc.check_function(_fn_id("arr"), block)
 	assert res.diagnostics == []
 	int_ty = tc.type_table.ensure_int()
 	arr_ty = tc.type_table.new_array(int_ty)
@@ -90,7 +95,7 @@ def test_ternary_prefers_common_type():
 			)
 		]
 	)
-	res = tc.check_function("tern", block)
+	res = tc.check_function(_fn_id("tern"), block)
 	assert res.diagnostics == []
 	assert tc.type_table.ensure_int() in res.typed_fn.expr_types.values()
 
@@ -106,7 +111,7 @@ def test_call_return_type_uses_signature():
 			H.HExprStmt(expr=H.HCall(fn=H.HVar("foo"), args=[H.HVar("x", binding_id=1)])),
 		]
 	)
-	res = tc.check_function("c", block, param_types=None, call_signatures={"foo": sig})
+	res = tc.check_function(_fn_id("c"), block, param_types=None, call_signatures={"foo": sig})
 	assert res.diagnostics == []
 	assert ret_ty in res.typed_fn.expr_types.values()
 
@@ -131,7 +136,7 @@ def test_call_resolution_uses_registry_and_types():
 		]
 	)
 	res = tc.check_function(
-		"c",
+		_fn_id("c"),
 		block,
 		param_types={"x": int_ty},
 		callable_registry=registry,
@@ -166,7 +171,7 @@ def test_method_resolution_uses_registry_and_types():
 		]
 	)
 	res = tc.check_function(
-		"mcall",
+		_fn_id("mcall"),
 		block,
 		param_types={"x": int_ty},
 		callable_registry=registry,
@@ -187,7 +192,6 @@ def test_method_resolution_uses_registry_and_types():
 def test_result_ok_uses_fnresult_type():
 	tc = _tc()
 	block = H.HBlock(statements=[H.HExprStmt(expr=H.HResultOk(value=H.HLiteralInt(1)))])
-	res = tc.check_function("res", block)
+	res = tc.check_function(_fn_id("res"), block)
 	assert res.diagnostics == []
 	assert any(tc.type_table.get(ty).kind is TypeKind.FNRESULT for ty in res.typed_fn.expr_types.values())
-

@@ -17,7 +17,7 @@ fn main() returns Int {
 }
 """
 	)
-	_func_hirs, _sigs, _type_table, _exc_catalog, diagnostics = parse_drift_to_hir(src)
+	_func_hirs, _sigs, _fn_ids_by_name, _type_table, _exc_catalog, diagnostics = parse_drift_to_hir(src)
 	assert diagnostics
 	assert any("E-FSTR-UNBALANCED-BRACE" in d.message for d in diagnostics)
 
@@ -34,7 +34,7 @@ fn main() returns Int {
 }
 """
 	)
-	_func_hirs, _sigs, _type_table, _exc_catalog, diagnostics = parse_drift_to_hir(src)
+	_func_hirs, _sigs, _fn_ids_by_name, _type_table, _exc_catalog, diagnostics = parse_drift_to_hir(src)
 	assert diagnostics
 	assert any("E-FSTR-EMPTY-HOLE" in d.message for d in diagnostics)
 
@@ -51,7 +51,6 @@ fn main() returns Int {
 }
 """
 	)
-	_func_hirs, _sigs, _type_table, _exc_catalog, diagnostics = parse_drift_to_hir(src)
+	_func_hirs, _sigs, _fn_ids_by_name, _type_table, _exc_catalog, diagnostics = parse_drift_to_hir(src)
 	assert diagnostics
 	assert any("E-FSTR-NESTED" in d.message for d in diagnostics)
-

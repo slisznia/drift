@@ -45,6 +45,7 @@ AND.2: "and"
 OR.2: "or"
 EQEQ: "=="
 NOTEQ: "!="
+IS: "is"
 LTE: "<="
 GTE: ">="
 LT: "<"
@@ -85,6 +86,8 @@ RETHROW: "rethrow"
 ARROW: "->"
 FATARROW: "=>"
 EXCEPTION: "exception"
+TRAIT: "trait"
+REQUIRE: "require"
 TRY: "try"
 CATCH: "catch"
 EXPORT: "export"
@@ -109,6 +112,7 @@ ident: NAME | MOVE
      | struct_def
      | exception_def
      | variant_def
+     | trait_def
      | implement_def
      | import_stmt
      | from_import_stmt
@@ -123,16 +127,21 @@ ident: NAME | MOVE
 # - consts are values (not types) and may be exported/imported like functions.
 const_def: CONST NAME COLON type_expr EQUAL expr TERMINATOR
 
-func_def: "fn" ident "(" [params] ")" return_sig block
+func_def: "fn" ident "(" [params] ")" return_sig require_clause? block
 return_sig: RETURNS type_expr
 
 params: param (COMMA param)*
 param: NONESCAPING? ident COLON type_expr
 
-# implement Type { fn ... }
-implement_def: "implement" type_expr implement_body
+# implement Trait for Type { fn ... }
+implement_def: "implement" type_expr ("for" type_expr)? require_clause? implement_body
 implement_body: "{" (implement_item | TERMINATOR)* "}"
 implement_item: func_def   -> implement_func
+
+trait_def: TRAIT NAME require_clause? trait_body
+trait_body: "{" (trait_item | TERMINATOR)* "}"
+trait_item: trait_method_sig TERMINATOR*
+trait_method_sig: "fn" ident "(" [params] ")" return_sig
 
 type_expr: ref_type
          | base_type
@@ -202,7 +211,8 @@ assign_target: postfix
 
 for_stmt: "for" ident "in" expr terminator_opt block
 
-if_stmt: IF expr terminator_opt block else_clause? terminator_opt
+if_stmt: IF if_cond terminator_opt block else_clause? terminator_opt
+if_cond: trait_expr | expr
 else_clause: terminator_opt ELSE terminator_opt block
 break_stmt: BREAK
 continue_stmt: CONTINUE
@@ -216,6 +226,8 @@ binding_name: capture_marker? ident
 capture_marker: CARET
 alias_clause: "as" STRING
 type_spec: COLON type_expr
+
+require_clause: REQUIRE trait_expr (COMMA trait_expr)*
 
 return_stmt: "return" expr?
 rethrow_stmt: RETHROW
@@ -239,7 +251,7 @@ from_import_stmt: FROM module_path "import" (STAR | NAME) import_alias?
 export_stmt: EXPORT "{" export_items? "}"
 export_items: NAME (COMMA NAME)*
 
-struct_def: "struct" NAME struct_body
+struct_def: "struct" NAME require_clause? struct_body
 struct_body: tuple_struct | block_struct
 tuple_struct: "(" struct_field_list? ")"
 struct_field_list: struct_field (COMMA struct_field)*
@@ -379,6 +391,16 @@ lambda_expr: BAR lambda_params? BAR lambda_returns? FATARROW lambda_body
 lambda_returns: RETURNS type_expr
 lambda_params: lambda_param (COMMA lambda_param)*
 lambda_param: NAME (COLON type_expr)?
+
+trait_expr: trait_or
+trait_or: trait_and (OR trait_and)*
+trait_and: trait_not (AND trait_not)*
+trait_not: "not" trait_not
+         | trait_atom
+trait_atom: trait_subject IS trait_name
+          | "(" trait_expr ")"
+trait_subject: NAME
+trait_name: base_type
 lambda_body: expr
            | value_block
            | block

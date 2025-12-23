@@ -3,12 +3,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Sequence
 
+from lang2.driftc.core.function_id import FunctionId
 
 @dataclass
 class FakeDecl:
 	name: str
 	params: Sequence[Any]
 	return_type: Any
+	fn_id: FunctionId | None = None
 	throws_events: tuple[str, ...] = ()
 	loc: Any = None
 	is_extern: bool = False

@@ -18,6 +18,7 @@ from enum import Enum, auto
 from typing import Dict, Iterable, List, Optional, Tuple
 
 from lang2.driftc.core.types_core import TypeId
+from lang2.driftc.core.function_id import FunctionId
 
 # Opaque identifiers; use stable ints (or real symbol IDs) to keep hashing reliable.
 ModuleId = int
@@ -75,6 +76,7 @@ class CallableDecl:
 	visibility: Visibility
 	signature: CallableSignature
 
+	fn_id: Optional[FunctionId] = None
 	impl_id: Optional[ImplId] = None
 	impl_target_type_id: Optional[TypeId] = None  # nominal type T in impl T { ... }
 	self_mode: Optional[SelfMode] = None
@@ -119,6 +121,7 @@ class CallableRegistry:
 		module_id: ModuleId,
 		visibility: Visibility,
 		signature: CallableSignature,
+		fn_id: Optional[FunctionId] = None,
 		is_generic: bool = False,
 	) -> None:
 		if callable_id in self._by_id:
@@ -130,6 +133,7 @@ class CallableRegistry:
 			module_id=module_id,
 			visibility=visibility,
 			signature=signature,
+			fn_id=fn_id,
 			is_generic=is_generic,
 		)
 		self._by_id[callable_id] = decl
@@ -143,6 +147,7 @@ class CallableRegistry:
 		module_id: ModuleId,
 		visibility: Visibility,
 		signature: CallableSignature,
+		fn_id: Optional[FunctionId] = None,
 		impl_id: ImplId,
 		impl_target_type_id: TypeId,
 		self_mode: SelfMode,
@@ -157,6 +162,7 @@ class CallableRegistry:
 			module_id=module_id,
 			visibility=visibility,
 			signature=signature,
+			fn_id=fn_id,
 			impl_id=impl_id,
 			impl_target_type_id=impl_target_type_id,
 			self_mode=self_mode,
@@ -174,6 +180,7 @@ class CallableRegistry:
 		module_id: ModuleId,
 		visibility: Visibility,
 		signature: CallableSignature,
+		fn_id: Optional[FunctionId] = None,
 		impl_id: ImplId,
 		impl_target_type_id: TypeId,
 		trait_id: TraitId,
@@ -189,6 +196,7 @@ class CallableRegistry:
 			module_id=module_id,
 			visibility=visibility,
 			signature=signature,
+			fn_id=fn_id,
 			impl_id=impl_id,
 			impl_target_type_id=impl_target_type_id,
 			trait_id=trait_id,

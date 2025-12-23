@@ -18,6 +18,7 @@ from __future__ import annotations
 from typing import Iterable, Tuple, Optional
 
 from lang2.driftc.checker import FnSignature
+from lang2.driftc.core.function_id import FunctionId
 from lang2.driftc.core.type_resolve_common import resolve_opaque_type
 from lang2.driftc.core.types_core import TypeId, TypeKind, TypeTable
 
@@ -26,7 +27,7 @@ def resolve_program_signatures(
 	func_decls: Iterable[object],
 	*,
 	table: Optional[TypeTable] = None,
-) -> tuple[TypeTable, dict[str, FnSignature]]:
+) -> tuple[TypeTable, dict[FunctionId, FnSignature]]:
 	"""
 	Resolve declared types on function declarations into TypeIds.
 
@@ -54,14 +55,17 @@ def resolve_program_signatures(
 	table.ensure_uint()
 	table.ensure_void()
 
-	signatures: dict[str, FnSignature] = {}
+	signatures: dict[FunctionId, FnSignature] = {}
 
 	for decl in func_decls:
 		name = getattr(decl, "name")
+		module_name = getattr(decl, "module", None)
+		fn_id = getattr(decl, "fn_id", None)
+		if not isinstance(fn_id, FunctionId):
+			fn_id = FunctionId(module=module_name or "main", name=name, ordinal=0)
 		decl_loc = getattr(decl, "loc", None)
 		is_extern = bool(getattr(decl, "is_extern", False))
 		is_intrinsic = bool(getattr(decl, "is_intrinsic", False))
-		module_name = getattr(decl, "module", None)
 
 		# Params
 		raw_params = []
@@ -94,7 +98,7 @@ def resolve_program_signatures(
 		if is_method and getattr(decl, "impl_target", None) is not None:
 			impl_target_type_id = resolve_opaque_type(decl.impl_target, table, module_id=module_name)
 
-		signatures[name] = FnSignature(
+		signatures[fn_id] = FnSignature(
 			name=name,
 			method_name=getattr(decl, "method_name", None) or name,
 			loc=decl_loc,

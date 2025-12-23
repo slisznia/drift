@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from lang2.driftc import stage1 as H
 from lang2.driftc.borrow_checker_pass import BorrowChecker
+from lang2.driftc.core.function_id import FunctionId
 from lang2.driftc.checker import FnSignature
 from lang2.driftc.core.types_core import TypeTable
 from lang2.driftc.method_registry import CallableDecl, CallableKind, CallableSignature, SelfMode, Visibility
@@ -70,6 +71,7 @@ def _typed_fn_with_method_call(
 	call_resolutions = {id(call): MethodResolution(decl=decl, receiver_autoborrow=receiver_autoborrow)}
 
 	typed_fn = TypedFn(
+		fn_id=FunctionId(module="main", name="main", ordinal=0),
 		name="main",
 		params=[],
 		param_bindings=[],

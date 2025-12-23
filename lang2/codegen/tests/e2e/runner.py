@@ -27,6 +27,7 @@ from typing import Iterable, Optional
 
 from lang2.driftc.parser import parse_drift_to_hir, parse_drift_files_to_hir, parse_drift_workspace_to_hir
 from lang2.driftc.driftc import compile_to_llvm_ir_for_tests
+from lang2.driftc.core.function_id import function_symbol
 from lang2.drift_core.runtime import get_runtime_sources
 
 
@@ -149,7 +150,7 @@ def _run_case(case_dir: Path) -> str:
 	# import resolution behavior is consistent:
 	# - missing module imports are diagnosed,
 	# - multi-file modules and multi-module cases share the same entry path.
-	func_hirs, signatures, type_table, exception_catalog, _module_exports, parse_diags = parse_drift_workspace_to_hir(
+	func_hirs, signatures, fn_ids_by_name, type_table, exception_catalog, _module_exports, parse_diags = parse_drift_workspace_to_hir(
 		drift_files,
 		module_paths=[case_dir / mp for mp in module_paths] or None,
 	)
@@ -169,12 +170,33 @@ def _run_case(case_dir: Path) -> str:
 		if expected.get("stderr", actual_stderr) != actual_stderr:
 			return "FAIL (parser phase stderr mismatch)"
 		return "ok"
+
+	# Require exactly one user-facing main. Prefer a zero-arg Int main; if a single
+	# param main exists, assume it's Array<String> and let the backend emit the
+	# argv wrapper.
+	main_ids = fn_ids_by_name.get("main") or []
+	if not main_ids:
+		qualified = [name for name in fn_ids_by_name.keys() if name.endswith("::main")]
+		if len(qualified) == 1:
+			main_ids = fn_ids_by_name.get(qualified[0]) or []
+	if len(main_ids) != 1:
+		return "FAIL (must define exactly one fn main)"
+	entry = function_symbol(main_ids[0])
+	main_sig = signatures.get(main_ids[0])
+	needs_argv = False
+	if main_sig and main_sig.param_type_ids and len(main_sig.param_type_ids) == 1 and type_table is not None:
+		param_ty = main_sig.param_type_ids[0]
+		td = type_table.get(param_ty)
+		if td.kind.name == "ARRAY" and td.param_types:
+			elem_def = type_table.get(td.param_types[0])
+			if elem_def.name == "String":
+				needs_argv = True
 	try:
 		ir, checked = compile_to_llvm_ir_for_tests(
 			func_hirs=func_hirs,
 			signatures=signatures,
 			exc_env=exception_catalog,
-			entry="main",
+			entry=entry,
 			type_table=type_table,
 		)
 	except Exception as err:  # pragma: no cover - defensive for negative e2e cases
@@ -205,23 +227,6 @@ def _run_case(case_dir: Path) -> str:
 		return "ok"
 	if checked_diags:
 		return "FAIL (unexpected checker diagnostics)"
-
-	# Require exactly one user-facing main. Prefer a zero-arg Int main; if a single
-	# param main exists, assume it's Array<String> and let the backend emit the
-	# argv wrapper.
-	main_funcs = [name for name in func_hirs if name == "main"]
-	if len(main_funcs) != 1:
-		return "FAIL (must define exactly one fn main)"
-	entry = "main"
-	main_sig = signatures.get("main")
-	needs_argv = False
-	if main_sig and main_sig.param_type_ids and len(main_sig.param_type_ids) == 1 and type_table is not None:
-		param_ty = main_sig.param_type_ids[0]
-		td = type_table.get(param_ty)
-		if td.kind.name == "ARRAY" and td.param_types:
-			elem_def = type_table.get(td.param_types[0])
-			if elem_def.name == "String":
-				needs_argv = True
 
 	if checked.diagnostics:
 		expected_exit = expected.get("exit_code", 1)

@@ -45,6 +45,14 @@ from .ast import (
     ReturnStmt,
     StructDef,
     StructField,
+    TraitDef,
+    TraitMethodSig,
+    RequireClause,
+    TraitExpr,
+    TraitIs,
+    TraitAnd,
+    TraitOr,
+    TraitNot,
     TypeExpr,
     Ternary,
     TryCatchExpr,
@@ -683,6 +691,7 @@ def _build_program(tree: Tree) -> Program:
 	functions: List[FunctionDef] = []
 	consts: List["ConstDef"] = []
 	implements: List[ImplementDef] = []
+	traits: List[TraitDef] = []
 	imports: List[ImportStmt] = []
 	from_imports: List[FromImportStmt] = []
 	exports: List[ExportStmt] = []
@@ -724,6 +733,8 @@ def _build_program(tree: Tree) -> Program:
 			exceptions.append(_build_exception_def(child))
 		elif kind == "variant_def":
 			variants.append(_build_variant_def(child))
+		elif kind == "trait_def":
+			traits.append(_build_trait_def(child))
 		else:
 			stmt = _build_stmt(child)
 			if stmt is None:
@@ -740,6 +751,7 @@ def _build_program(tree: Tree) -> Program:
 		functions=functions,
 		consts=consts,
 		implements=implements,
+		traits=traits,
 		imports=imports,
 		from_imports=from_imports,
 		exports=exports,
@@ -848,6 +860,134 @@ def _build_exception_arg(tree: Tree) -> ExceptionArg:
     return ExceptionArg(name=name_token.value, type_expr=_build_type_expr(type_node))
 
 
+def _build_trait_expr(node: Tree) -> TraitExpr:
+	name = _name(node)
+	if name == "trait_expr":
+		child = next((c for c in node.children if isinstance(c, Tree)), None)
+		if child is None:
+			raise ValueError("trait_expr missing child")
+		return _build_trait_expr(child)
+	if name in {"trait_or", "trait_and"}:
+		op_name = "or" if name == "trait_or" else "and"
+		current: TraitExpr | None = None
+		pending_op: str | None = None
+		for child in node.children:
+			if isinstance(child, Token) and child.type in {"OR", "AND"}:
+				pending_op = child.value
+				continue
+			if not isinstance(child, Tree):
+				continue
+			rhs = _build_trait_expr(child)
+			if current is None:
+				current = rhs
+				continue
+			if pending_op is None:
+				raise ValueError("trait boolean chain missing operator")
+			if pending_op == "and":
+				current = TraitAnd(loc=_loc(node), left=current, right=rhs)
+			elif pending_op == "or":
+				current = TraitOr(loc=_loc(node), left=current, right=rhs)
+			else:
+				raise ValueError(f"unexpected trait boolean op {pending_op}")
+			pending_op = None
+		if current is None:
+			raise ValueError("trait boolean chain missing operands")
+		return current
+	if name == "trait_not":
+		child = next((c for c in node.children if isinstance(c, Tree)), None)
+		if child is None:
+			raise ValueError("trait_not missing operand")
+		inner = _build_trait_expr(child)
+		if _name(child) == "trait_not" or any(isinstance(c, Token) and c.value == "not" for c in node.children):
+			return TraitNot(loc=_loc(node), expr=inner)
+		return inner
+	if name == "trait_atom":
+		child_expr = next(
+			(
+				c
+				for c in node.children
+				if isinstance(c, Tree) and _name(c) in {"trait_expr", "trait_or", "trait_and", "trait_not", "trait_atom"}
+			),
+			None,
+		)
+		if child_expr is not None:
+			return _build_trait_expr(child_expr)
+		subject_tok = next((c for c in node.children if isinstance(c, Token) and c.type == "NAME"), None)
+		if subject_tok is None:
+			subject_node = next((c for c in node.children if isinstance(c, Tree) and _name(c) == "trait_subject"), None)
+			if subject_node is not None:
+				subject_tok = next(
+					(c for c in subject_node.children if isinstance(c, Token) and c.type == "NAME"),
+					None,
+				)
+		trait_node = next(
+			(
+				c
+				for c in node.children
+				if isinstance(c, Tree) and _name(c) in {"trait_name", "base_type", "qualified_base_type"}
+			),
+			None,
+		)
+		if subject_tok is None or trait_node is None:
+			raise ValueError("trait atom missing subject or trait name")
+		if _name(trait_node) == "trait_name":
+			trait_child = next((c for c in trait_node.children if isinstance(c, Tree)), None)
+			if trait_child is None:
+				raise ValueError("trait name missing base type")
+			trait_node = trait_child
+		return TraitIs(loc=_loc(node), subject=subject_tok.value, trait=_build_type_expr(trait_node))
+	raise ValueError(f"unsupported trait expr node: {name}")
+
+
+def _build_require_clause(tree: Tree) -> RequireClause:
+	exprs: list[TraitExpr] = []
+	for child in tree.children:
+		if isinstance(child, Tree) and _name(child).startswith("trait_"):
+			exprs.append(_build_trait_expr(child))
+	if not exprs:
+		raise ValueError("require clause missing trait expressions")
+	combined = exprs[0]
+	for expr in exprs[1:]:
+		combined = TraitAnd(loc=_loc(tree), left=combined, right=expr)
+	return RequireClause(expr=combined, loc=_loc(tree))
+
+
+def _build_trait_method_sig(tree: Tree) -> TraitMethodSig:
+	loc = _loc(tree)
+	children = list(tree.children)
+	idx = 0
+	name_token = _unwrap_ident(children[idx])
+	idx += 1
+	params: List[Param] = []
+	if idx < len(children) and _name(children[idx]) == "params":
+		params = [_build_param(p) for p in children[idx].children if isinstance(p, Tree)]
+		idx += 1
+	return_sig = children[idx]
+	type_child = next(child for child in return_sig.children if isinstance(child, Tree))
+	return_type = _build_type_expr(type_child)
+	return TraitMethodSig(name=name_token.value, params=params, return_type=return_type, loc=loc)
+
+
+def _build_trait_def(tree: Tree) -> TraitDef:
+	loc = _loc(tree)
+	name_token = next(child for child in tree.children if isinstance(child, Token) and child.type == "NAME")
+	require_node = next((c for c in tree.children if isinstance(c, Tree) and _name(c) == "require_clause"), None)
+	body_node = next((c for c in tree.children if isinstance(c, Tree) and _name(c) == "trait_body"), None)
+	methods: list[TraitMethodSig] = []
+	if body_node is not None:
+		for item in body_node.children:
+			if not isinstance(item, Tree):
+				continue
+			if _name(item) == "trait_item":
+				sig_node = next((c for c in item.children if isinstance(c, Tree) and _name(c) == "trait_method_sig"), None)
+				if sig_node is not None:
+					methods.append(_build_trait_method_sig(sig_node))
+			elif _name(item) == "trait_method_sig":
+				methods.append(_build_trait_method_sig(item))
+	require = _build_require_clause(require_node) if require_node is not None else None
+	return TraitDef(name=name_token.value, methods=methods, require=require, loc=loc)
+
+
 def _build_function(tree: Tree) -> FunctionDef:
 	loc = _loc(tree)
 	children = list(tree.children)
@@ -863,6 +1003,10 @@ def _build_function(tree: Tree) -> FunctionDef:
 	type_child = next(child for child in return_sig.children if isinstance(child, Tree))
 	return_type = _build_type_expr(type_child)
 	idx += 1
+	require = None
+	if idx < len(children) and isinstance(children[idx], Tree) and _name(children[idx]) == "require_clause":
+		require = _build_require_clause(children[idx])
+		idx += 1
 	body = _build_block(children[idx])
 	return FunctionDef(
 		name=name_token.value,
@@ -871,13 +1015,23 @@ def _build_function(tree: Tree) -> FunctionDef:
 		return_type=return_type,
 		body=body,
 		loc=loc,
+		require=require,
 	)
 
 
 def _build_implement_def(tree: Tree) -> ImplementDef:
 	loc = _loc(tree)
-	target_node = next(child for child in tree.children if isinstance(child, Tree) and _name(child) == "type_expr")
-	target = _build_type_expr(target_node)
+	type_nodes = [child for child in tree.children if isinstance(child, Tree) and _name(child) == "type_expr"]
+	if not type_nodes:
+		raise ValueError("implement missing target type")
+	trait = None
+	if len(type_nodes) >= 2:
+		trait = _build_type_expr(type_nodes[0])
+		target = _build_type_expr(type_nodes[1])
+	else:
+		target = _build_type_expr(type_nodes[0])
+	require_node = next((c for c in tree.children if isinstance(c, Tree) and _name(c) == "require_clause"), None)
+	require = _build_require_clause(require_node) if require_node is not None else None
 	methods: List[FunctionDef] = []
 	body_node = next(child for child in tree.children if isinstance(child, Tree) and _name(child) == "implement_body")
 	for item in body_node.children:
@@ -902,7 +1056,7 @@ def _build_implement_def(tree: Tree) -> ImplementDef:
 		fn.is_method = True
 		fn.impl_target = target
 		methods.append(fn)
-	return ImplementDef(target=target, methods=methods, loc=loc)
+	return ImplementDef(target=target, trait=trait, require=require, methods=methods, loc=loc)
 
 
 def _build_block(tree: Tree) -> Block:
@@ -1336,11 +1490,18 @@ def _build_expr_stmt(tree: Tree) -> ExprStmt:
 
 def _build_struct_def(tree: Tree) -> StructDef:
     loc = _loc(tree)
-    name_token = tree.children[0]
-    body = tree.children[1]
+    name_token = next(child for child in tree.children if isinstance(child, Token) and child.type == "NAME")
+    require_node = next((c for c in tree.children if isinstance(c, Tree) and _name(c) == "require_clause"), None)
+    body = next(
+        (c for c in tree.children if isinstance(c, Tree) and _name(c) in {"struct_body", "tuple_struct", "block_struct"}),
+        None,
+    )
+    if body is None:
+        raise ValueError("struct definition missing body")
     field_nodes = _collect_struct_fields(body)
     fields = [_build_struct_field(node) for node in field_nodes]
-    return StructDef(name=name_token.value, fields=fields, loc=loc)
+    require = _build_require_clause(require_node) if require_node is not None else None
+    return StructDef(name=name_token.value, fields=fields, require=require, loc=loc)
 
 
 def _collect_struct_fields(tree: Tree) -> List[Tree]:
@@ -1450,7 +1611,13 @@ def _build_if_stmt(tree: Tree) -> IfStmt:
             break
     if condition_node is None or then_block_node is None:
         raise ValueError("malformed if statement")
-    condition = _build_expr(condition_node)
+    cond_node = condition_node
+    if _name(cond_node) == "if_cond":
+        cond_node = next((c for c in cond_node.children if isinstance(c, Tree)), cond_node)
+    if isinstance(cond_node, Tree) and _name(cond_node).startswith("trait_"):
+        condition = _build_trait_expr(cond_node)
+    else:
+        condition = _build_expr(cond_node)
     then_block = _build_block(then_block_node)
     else_block = _build_block(else_block_node) if else_block_node else None
     return IfStmt(loc=loc, condition=condition, then_block=then_block, else_block=else_block)

@@ -19,7 +19,7 @@ exception EvtA(code: Int)
 fn main() returns Int { return 0; }
 """
 	)
-	_, _, _type_table, exc_catalog, diagnostics = parse_drift_to_hir(src)
+	_, _, _fn_ids_by_name, _type_table, exc_catalog, diagnostics = parse_drift_to_hir(src)
 	assert diagnostics == []
 	assert "foo.bar:EvtA" in exc_catalog
 	assert exc_catalog["foo.bar:EvtA"] == event_code("foo.bar:EvtA")
@@ -35,7 +35,7 @@ exception Boom(code: Int)
 fn main() returns Int { return 0; }
 """
 	)
-	_, _, _type_table, _exc_catalog, diagnostics = parse_drift_to_hir(src)
+	_, _, _fn_ids_by_name, _type_table, _exc_catalog, diagnostics = parse_drift_to_hir(src)
 	assert diagnostics
 	assert any("duplicate exception" in d.message for d in diagnostics)
 
@@ -57,7 +57,7 @@ exception Zoom(code: Int)
 fn main() returns Int { return 0; }
 """
 	)
-	_, _, _type_table, exc_catalog, diagnostics = parse_drift_to_hir(src)
+	_, _, _fn_ids_by_name, _type_table, exc_catalog, diagnostics = parse_drift_to_hir(src)
 	assert diagnostics
 	assert any("exception code collision" in d.message for d in diagnostics)
 	# Colliding entries should not both be present.

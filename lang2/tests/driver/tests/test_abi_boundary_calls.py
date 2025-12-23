@@ -69,7 +69,7 @@ def test_cross_module_exported_call_uses_wrapper_not_impl(tmp_path: Path) -> Non
 	)
 
 	drift_files = sorted(tmp_path.rglob("*.drift"))
-	func_hirs, signatures, type_table, exception_catalog, _exports, diags = parse_drift_workspace_to_hir(
+	func_hirs, signatures, _fn_ids_by_name, type_table, exception_catalog, _exports, diags = parse_drift_workspace_to_hir(
 		drift_files,
 		module_paths=[tmp_path],
 	)

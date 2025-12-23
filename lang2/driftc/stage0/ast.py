@@ -30,6 +30,38 @@ class Expr(Node):
 	pass
 
 
+class TraitExpr(Expr):
+	"""Trait guard expression (type-level boolean)."""
+	pass
+
+
+@dataclass
+class TraitIs(TraitExpr):
+	subject: str
+	trait: object
+	loc: Span = field(default_factory=Span)
+
+
+@dataclass
+class TraitAnd(TraitExpr):
+	left: TraitExpr
+	right: TraitExpr
+	loc: Span = field(default_factory=Span)
+
+
+@dataclass
+class TraitOr(TraitExpr):
+	left: TraitExpr
+	right: TraitExpr
+	loc: Span = field(default_factory=Span)
+
+
+@dataclass
+class TraitNot(TraitExpr):
+	expr: TraitExpr
+	loc: Span = field(default_factory=Span)
+
+
 class Stmt(Node):
 	"""Base class for statements."""
 	pass
@@ -423,6 +455,7 @@ class RethrowStmt(Stmt):
 
 __all__ = [
 	"Node", "Expr", "Stmt",
+	"TraitExpr", "TraitIs", "TraitAnd", "TraitOr", "TraitNot",
 	"Literal", "Name", "Placeholder", "Attr", "QualifiedMember",
 	"Param", "KwArg", "Call", "Lambda", "Block",
 	"Binary", "Unary", "Move", "Index", "ArrayLiteral", "ExceptionCtor", "CatchExprArm", "TryCatchExpr", "Ternary",

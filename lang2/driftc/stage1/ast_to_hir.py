@@ -228,6 +228,33 @@ class AstToHIR:
 		# authority for rejecting unknown variables with a source span.
 		return H.HVar(name=expr.ident, binding_id=None)
 
+	def _visit_expr_TraitIs(self, expr: ast.TraitIs) -> H.HExpr:
+		return H.HTraitIs(
+			subject=expr.subject,
+			trait=expr.trait,
+			loc=self._as_span(getattr(expr, "loc", None)),
+		)
+
+	def _visit_expr_TraitAnd(self, expr: ast.TraitAnd) -> H.HExpr:
+		return H.HTraitAnd(
+			left=self.lower_expr(expr.left),
+			right=self.lower_expr(expr.right),
+			loc=self._as_span(getattr(expr, "loc", None)),
+		)
+
+	def _visit_expr_TraitOr(self, expr: ast.TraitOr) -> H.HExpr:
+		return H.HTraitOr(
+			left=self.lower_expr(expr.left),
+			right=self.lower_expr(expr.right),
+			loc=self._as_span(getattr(expr, "loc", None)),
+		)
+
+	def _visit_expr_TraitNot(self, expr: ast.TraitNot) -> H.HExpr:
+		return H.HTraitNot(
+			expr=self.lower_expr(expr.expr),
+			loc=self._as_span(getattr(expr, "loc", None)),
+		)
+
 	def _visit_expr_Literal(self, expr: ast.Literal) -> H.HExpr:
 		"""
 		Map a stage0 literal to the appropriate HIR literal node.

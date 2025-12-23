@@ -3,13 +3,14 @@
 from pathlib import Path
 
 from lang2.driftc.driftc import compile_stubbed_funcs
+from lang2.driftc.core.function_id import function_symbol
 from lang2.driftc.parser import parse_drift_to_hir
 
 
 def _compile_source(src: str, tmp_path: Path):
 	path = tmp_path / "main.drift"
 	path.write_text(src)
-	func_hirs, signatures, type_table, exc_catalog, diagnostics = parse_drift_to_hir(path)
+	func_hirs, signatures, fn_ids_by_name, type_table, exc_catalog, diagnostics = parse_drift_to_hir(path)
 	assert diagnostics == []
 	mir_funcs, checked = compile_stubbed_funcs(
 		func_hirs=func_hirs,
@@ -18,11 +19,11 @@ def _compile_source(src: str, tmp_path: Path):
 		type_table=type_table,
 		return_checked=True,
 	)
-	return mir_funcs, checked
+	return mir_funcs, checked, fn_ids_by_name
 
 
 def test_catch_unknown_event_reports_diagnostic(tmp_path: Path) -> None:
-	_, checked = _compile_source(
+	_, checked, _fn_ids_by_name = _compile_source(
 		"""
 module m
 
@@ -43,7 +44,7 @@ fn main() returns Int {
 
 
 def test_declared_exception_enables_catch(tmp_path: Path) -> None:
-	mir_funcs, checked = _compile_source(
+	mir_funcs, checked, fn_ids_by_name = _compile_source(
 		"""
 module m
 
@@ -62,4 +63,10 @@ fn main() returns Int {
 	)
 	# No checker diagnostics; try lowering should succeed with event codes.
 	assert checked.diagnostics == []
-	assert "main" in mir_funcs
+	main_ids = fn_ids_by_name.get("main") or []
+	if not main_ids:
+		qualified = [name for name in fn_ids_by_name.keys() if name.endswith("::main")]
+		if len(qualified) == 1:
+			main_ids = fn_ids_by_name.get(qualified[0]) or []
+	assert len(main_ids) == 1
+	assert function_symbol(main_ids[0]) in mir_funcs
