@@ -3226,6 +3226,10 @@ def _lower_parsed_program_to_hir(
 
 	type_table, sigs = resolve_program_signatures(decls, table=type_table)
 	signatures.update(sigs)
+	# Resolve function require subjects (T -> TypeParamId) now that signatures exist.
+	from lang2.driftc.traits.world import resolve_fn_require_subjects
+
+	resolve_fn_require_subjects(world, signatures)
 	# Thread exception schemas through the shared type table for downstream validators.
 	#
 	# In a multi-module build, this function may be called repeatedly with a

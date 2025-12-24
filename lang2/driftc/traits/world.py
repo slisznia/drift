@@ -7,6 +7,7 @@ from typing import Dict, List, Optional, Tuple
 from lang2.driftc.core.diagnostics import Diagnostic
 from lang2.driftc.core.function_id import FunctionId
 from lang2.driftc.core.span import Span
+from lang2.driftc.core.types_core import TypeParamId
 from lang2.driftc.parser import ast as parser_ast
 
 
@@ -266,6 +267,53 @@ def build_trait_world(prog: parser_ast.Program, *, diagnostics: Optional[List[Di
 			world.diagnostics.append(_diag(msg, other.loc))
 
 	return world
+
+
+def _resolve_trait_subjects(
+	expr: parser_ast.TraitExpr,
+	type_param_map: Dict[str, TypeParamId],
+) -> parser_ast.TraitExpr:
+	if isinstance(expr, parser_ast.TraitIs):
+		subj = expr.subject
+		if isinstance(subj, str) and subj in type_param_map:
+			return parser_ast.TraitIs(loc=expr.loc, subject=type_param_map[subj], trait=expr.trait)
+		return expr
+	if isinstance(expr, parser_ast.TraitAnd):
+		return parser_ast.TraitAnd(
+			loc=expr.loc,
+			left=_resolve_trait_subjects(expr.left, type_param_map),
+			right=_resolve_trait_subjects(expr.right, type_param_map),
+		)
+	if isinstance(expr, parser_ast.TraitOr):
+		return parser_ast.TraitOr(
+			loc=expr.loc,
+			left=_resolve_trait_subjects(expr.left, type_param_map),
+			right=_resolve_trait_subjects(expr.right, type_param_map),
+		)
+	if isinstance(expr, parser_ast.TraitNot):
+		return parser_ast.TraitNot(
+			loc=expr.loc,
+			expr=_resolve_trait_subjects(expr.expr, type_param_map),
+		)
+	return expr
+
+
+def resolve_fn_require_subjects(
+	world: TraitWorld,
+	signatures: Dict[FunctionId, object],
+) -> None:
+	"""Lower function-require subjects from names to TypeParamIds."""
+	for fn_id, req in list(world.requires_by_fn.items()):
+		sig = signatures.get(fn_id)
+		if sig is None:
+			continue
+		type_params = getattr(sig, "type_params", []) or []
+		if not type_params:
+			continue
+		type_param_map = {p.name: p.id for p in type_params if hasattr(p, "name") and hasattr(p, "id")}
+		if not type_param_map:
+			continue
+		world.requires_by_fn[fn_id] = _resolve_trait_subjects(req, type_param_map)
 
 
 __all__ = [

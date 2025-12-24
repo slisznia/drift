@@ -257,7 +257,7 @@ class TypeChecker:
 				return parser_ast.TraitNot(loc=loc, expr=_trait_expr_to_parser(expr.expr))
 			raise TypeError(f"unsupported trait expr node: {type(expr).__name__}")
 
-		def _collect_trait_subjects(expr: parser_ast.TraitExpr, out: set[str]) -> None:
+		def _collect_trait_subjects(expr: parser_ast.TraitExpr, out: set[object]) -> None:
 			if isinstance(expr, parser_ast.TraitIs):
 				out.add(expr.subject)
 			elif isinstance(expr, (parser_ast.TraitAnd, parser_ast.TraitOr)):
@@ -389,23 +389,22 @@ class TypeChecker:
 					applicable.append((decl, sig_inst))
 					ranks[decl.callable_id] = (True, 0)
 					continue
-				subjects: set[str] = set()
+				subjects: set[object] = set()
 				_collect_trait_subjects(req, subjects)
-				subst: dict[str, object] = {}
+				subst: dict[object, object] = {}
 				sig = None
 				if decl.fn_id is not None and signatures_by_id is not None:
 					sig = signatures_by_id.get(decl.fn_id)
 				if sig is None:
 					sig = _single_sig(decl.name)
-				if sig and sig.param_names:
-					param_to_idx = {p: i for i, p in enumerate(sig.param_names)}
-					for subj in subjects:
-						if subj == "Self":
-							continue
-						idx = param_to_idx.get(subj)
-						if idx is None or idx >= len(arg_types):
-							continue
-						subst[subj] = _normalize_type_key(type_key_from_typeid(self.type_table, arg_types[idx]))
+				if sig and getattr(sig, "type_params", None) and call_type_args:
+					type_params = list(getattr(sig, "type_params", []) or [])
+					if len(call_type_args) == len(type_params):
+						for idx, tp in enumerate(type_params):
+							if tp.id in subjects:
+								subst[tp.id] = _normalize_type_key(
+									type_key_from_typeid(self.type_table, call_type_args[idx])
+								)
 				if world is None:
 					continue
 				env = TraitEnv(default_module=fn_id.module or current_module_name)

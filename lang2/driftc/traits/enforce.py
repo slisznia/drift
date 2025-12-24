@@ -12,6 +12,7 @@ from lang2.driftc.method_resolver import MethodResolution
 from lang2.driftc.traits.solver import Env, ProofStatus, prove_expr
 from lang2.driftc.core.function_id import FunctionId, function_symbol
 from lang2.driftc.traits.world import TraitWorld, TypeKey, type_key_from_typeid
+from lang2.driftc.core.type_resolve_common import resolve_opaque_type
 
 
 @dataclass
@@ -89,7 +90,7 @@ def _normalize_type_key(key: TypeKey, *, module_name: str) -> TypeKey:
 	return key
 
 
-def _collect_trait_subjects(expr: parser_ast.TraitExpr, out: Set[str]) -> None:
+def _collect_trait_subjects(expr: parser_ast.TraitExpr, out: Set[object]) -> None:
 	if isinstance(expr, parser_ast.TraitIs):
 		out.add(expr.subject)
 	elif isinstance(expr, (parser_ast.TraitAnd, parser_ast.TraitOr)):
@@ -158,8 +159,8 @@ def enforce_fn_requires(
 		if req is None:
 			continue
 		sig = signatures.get(fn_id)
-		subst: Dict[str, TypeKey] = {}
-		subjects: Set[str] = set()
+		subst: Dict[object, TypeKey] = {}
+		subjects: Set[object] = set()
 		_collect_trait_subjects(req, subjects)
 		arg_keys: List[TypeKey] = []
 		for arg in expr.args:
@@ -167,16 +168,14 @@ def enforce_fn_requires(
 			if tid is None:
 				continue
 			arg_keys.append(_normalize_type_key(type_key_from_typeid(type_table, tid), module_name=module_name))
-		if sig and getattr(sig, "param_names", None):
-			param_to_idx = {p: i for i, p in enumerate(sig.param_names)}
-			for subj in subjects:
-				if subj == "Self":
-					continue
-				idx = param_to_idx.get(subj)
-				if idx is None:
-					continue
-				if idx < len(arg_keys):
-					subst[subj] = arg_keys[idx]
+		if sig and getattr(sig, "type_params", None):
+			type_params = list(getattr(sig, "type_params", []) or [])
+			type_args = getattr(expr, "type_args", None) or []
+			if type_args and len(type_args) == len(type_params):
+				for idx, tp in enumerate(type_params):
+					if tp.id in subjects:
+						ty_id = resolve_opaque_type(type_args[idx], type_table, module_id=module_name)
+						subst[tp.id] = _normalize_type_key(type_key_from_typeid(type_table, ty_id), module_name=module_name)
 		subst_key = tuple(arg_keys)
 		seen_key = (fn_id, subst_key)
 		if seen_key in seen:

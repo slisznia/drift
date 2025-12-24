@@ -40,16 +40,17 @@ Goal: add function generics with explicit instantiation and a stable, ID-based s
   - `Type::Ctor<type T>(...)` uses the same substitution mechanism (no special casing beyond callee selection).
 
 ### G2.5 Trait requirement subjects (data correctness)
-- Store `T is Trait` with subject lowered to `TypeVar(TypeParamId)` (never stringly).
+- Store `T is Trait` with subject lowered to `TypeParamId` (never stringly).
 - Checking “satisfies trait” can be deferred, but the representation must be correct now.
 
 ## Tests (G2)
 - Same name, different owners: `f<T>` vs `g<T>` remain isolated (no cross-capture).
 - Substitution through nesting: `Array<T>` → `Array<Int>` and deeper nests.
-- Requirements are ID-based: `where T is Hashable` stores `TypeVar` subject.
+- Requirements are ID-based: `where T is Hashable` stores `TypeParamId` subject.
 - Length mismatch diagnostic for explicit `<type ...>` call args.
+- Explicit `<type ...>` instantiation substitutes param/return types in the checker.
 
 ## Exit criteria
 - Signatures carry `TypeParamId` and types can contain `TypeVar`.
 - Explicit `<type ...>` instantiation substitutes parameter/return types via `Subst`.
-- Trait requirements store `TypeVar` subjects (not strings).
+- Trait requirements store `TypeParamId` subjects (not strings).

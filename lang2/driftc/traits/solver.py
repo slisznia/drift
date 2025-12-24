@@ -25,12 +25,12 @@ class ProofResult:
 
 @dataclass
 class Env:
-	assumed_true: Set[Tuple[str, TraitKey]] = field(default_factory=set)
-	assumed_false: Set[Tuple[str, TraitKey]] = field(default_factory=set)
+	assumed_true: Set[Tuple[object, TraitKey]] = field(default_factory=set)
+	assumed_false: Set[Tuple[object, TraitKey]] = field(default_factory=set)
 	default_module: Optional[str] = None
 
 
-CacheKey = Tuple[str, str, Optional[TypeKey]]
+CacheKey = Tuple[object, str, Optional[TypeKey]]
 
 
 def _type_key_str(key: TypeKey) -> str:
@@ -58,7 +58,7 @@ def _impl_sort_key(impl: ImplDef) -> Tuple[str, str, int, int]:
 def prove_expr(
 	world: TraitWorld,
 	env: Env,
-	subst: Dict[str, TypeKey],
+	subst: Dict[object, TypeKey],
 	expr: parser_ast.TraitExpr,
 	*,
 	_cache: Optional[Dict[CacheKey, ProofResult]] = None,
@@ -101,7 +101,7 @@ def prove_expr(
 def deny_expr(
 	world: TraitWorld,
 	env: Env,
-	subst: Dict[str, TypeKey],
+	subst: Dict[object, TypeKey],
 	expr: parser_ast.TraitExpr,
 	*,
 	_cache: Optional[Dict[CacheKey, ProofResult]] = None,
@@ -141,8 +141,8 @@ def deny_expr(
 def prove_is(
 	world: TraitWorld,
 	env: Env,
-	subst: Dict[str, TypeKey],
-	subject: str,
+	subst: Dict[object, TypeKey],
+	subject: object,
 	trait_key: TraitKey,
 	*,
 	_cache: Optional[Dict[CacheKey, ProofResult]] = None,

@@ -6,10 +6,12 @@
 from lang2.driftc import stage1 as H
 from lang2.driftc.type_checker import TypeChecker
 from lang2.driftc.core.function_id import FunctionId
-from lang2.driftc.core.types_core import TypeKind, TypeTable
-from lang2.driftc.checker import FnSignature
+from lang2.driftc.core.types_core import TypeKind, TypeParamId, TypeTable
+from lang2.driftc.checker import FnSignature, TypeParam
 from lang2.driftc.method_registry import CallableRegistry, CallableSignature, Visibility, SelfMode
 from lang2.driftc.method_resolver import MethodResolution
+from lang2.driftc.parser import ast as parser_ast
+from lang2.driftc.core.span import Span
 
 
 def _tc() -> TypeChecker:
@@ -145,6 +147,56 @@ def test_call_resolution_uses_registry_and_types():
 	)
 	assert res.diagnostics == []
 	assert ret_ty in res.typed_fn.expr_types.values()
+
+
+def test_call_with_explicit_type_args_instantiates_signature():
+	table = TypeTable()
+	tc = TypeChecker(table)
+	fn_id = _fn_id("id")
+	type_param_id = TypeParamId(owner=fn_id, index=0)
+	type_param = TypeParam(id=type_param_id, name="T", span=Span())
+	type_var = table.ensure_typevar(type_param_id, name="T")
+	sig = FnSignature(
+		name="id",
+		return_type_id=type_var,
+		param_type_ids=[type_var],
+		type_params=[type_param],
+		module="main",
+	)
+	registry = CallableRegistry()
+	registry.register_free_function(
+		callable_id=1,
+		name="id",
+		module_id=0,
+		visibility=Visibility.public(),
+		signature=CallableSignature(param_types=(type_var,), result_type=type_var),
+		fn_id=fn_id,
+		is_generic=True,
+	)
+	call = H.HCall(
+		fn=H.HVar("id"),
+		args=[H.HLiteralInt(1)],
+		type_args=[
+			parser_ast.TypeExpr(
+				name="Int",
+				args=[],
+				module_alias=None,
+				module_id=None,
+				loc=parser_ast.Located(line=1, column=1),
+			)
+		],
+	)
+	block = H.HBlock(statements=[H.HExprStmt(expr=call)])
+	res = tc.check_function(
+		_fn_id("caller"),
+		block,
+		callable_registry=registry,
+		signatures_by_id={fn_id: sig},
+		visible_modules=(0,),
+		current_module=0,
+	)
+	assert res.diagnostics == []
+	assert table.ensure_int() in res.typed_fn.expr_types.values()
 
 
 def test_method_resolution_uses_registry_and_types():

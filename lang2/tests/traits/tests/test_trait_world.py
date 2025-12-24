@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 from lang2.driftc.parser import parser as p
+from lang2.driftc.parser import parse_drift_to_hir
+from lang2.driftc.core.types_core import TypeParamId
 from lang2.driftc.traits.world import build_trait_world
 
 
@@ -65,3 +67,25 @@ fn use_file() returns Int require Self is Debuggable { return 0; }
 	)
 	world = build_trait_world(prog)
 	assert any("function require clause cannot use 'Self'" in d.message for d in world.diagnostics)
+
+
+def test_trait_world_lowers_fn_require_subjects_to_typeparam_ids(tmp_path) -> None:
+	src = tmp_path / "main.drift"
+	src.write_text(
+		"""
+trait Debuggable { fn fmt(self: Int) returns String }
+
+fn use<T>(x: T) returns Int require T is Debuggable { return 0; }
+"""
+	)
+	_func_hirs, sigs, _ids, table, _excs, diagnostics = parse_drift_to_hir(src)
+	assert diagnostics == []
+	world = table.trait_worlds.get("main")
+	assert world is not None
+	fn_id = next(fid for fid in sigs.keys() if fid.name == "use")
+	req = world.requires_by_fn.get(fn_id)
+	assert req is not None
+	if hasattr(req, "subject"):
+		assert isinstance(req.subject, TypeParamId)
+	elif hasattr(req, "left"):
+		assert isinstance(req.left.subject, TypeParamId)
