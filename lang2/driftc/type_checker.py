@@ -777,7 +777,7 @@ class TypeChecker:
 				#   2) fully-qualified const symbols (`mod::NAME`) present in the TypeTable,
 				#   3) unqualified const names resolved within the current module id.
 				if expr.binding_id is None:
-					# Check for already-qualified const symbol (from imports/module-qualified access).
+					# Check for already-qualified const symbol (module-qualified access).
 					if "::" in expr.name:
 						cv = self.type_table.lookup_const(expr.name)
 						if cv is not None:

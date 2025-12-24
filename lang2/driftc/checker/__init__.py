@@ -77,6 +77,8 @@ class FnSignature:
 	impl_target_type_id: Optional[TypeId] = None
 	impl_target_type_args: Optional[list[TypeId]] = None
 	impl_type_params: list[TypeParam] = field(default_factory=list)
+	# Visibility marker (currently only `pub` vs private for method calls).
+	is_pub: bool = False
 
 	# Legacy/raw fields (to be removed once real type checker is wired).
 	return_type: Any = None

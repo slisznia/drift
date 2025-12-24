@@ -4,6 +4,8 @@
 - Spec now uses **pub + export list** for visibility and **module-only imports**.
 - `export { module.* }` re-exports are the only cross-module surface mechanism.
 - This milestone assumes those rules when defining “visible modules” and “public methods”.
+- Export-star pipeline audit complete: `module_exports` is the sole source for qualified access, external exports load from package payloads, and export-star targets are added to module deps for visibility.
+- Package regressions for export-star and pub-but-not-exported are green (driver fixtures in `lang2/tests/driver/tests/test_driftc_package_v0.py`).
 - Workspace impl matching now works across modules after:
   - preserving impl type params during module merge,
   - predeclaring struct schemas before per-module lowering (prevents empty-field instantiations),

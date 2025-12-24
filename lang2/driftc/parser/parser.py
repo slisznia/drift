@@ -1211,24 +1211,31 @@ def _build_implement_def(tree: Tree) -> ImplementDef:
 	methods: List[FunctionDef] = []
 	body_node = next(child for child in tree.children if isinstance(child, Tree) and _name(child) == "implement_body")
 	for item in body_node.children:
-		# Grammar: implement_item: func_def -> implement_func
+		# Grammar:
+		#   implement_item: PUB func_def -> implement_func_pub
+		#                | func_def      -> implement_func
 		#
 		# So we accept either:
-		# - `implement_func(func_def)` (preferred), or
+		# - `implement_func(func_def)` (preferred),
+		# - `implement_func_pub(PUB, func_def)`, or
 		# - legacy/alternate shapes that may appear during grammar evolution.
 		if not isinstance(item, Tree):
 			continue
 		item_kind = _name(item)
-		if item_kind not in {"implement_func", "implement_item", "func_def"}:
+		if item_kind not in {"implement_func", "implement_func_pub", "implement_item", "func_def"}:
 			continue
 		fn_node: Tree | None = None
+		is_pub = False
 		if item_kind == "func_def":
 			fn_node = item
 		else:
 			fn_node = next((c for c in item.children if isinstance(c, Tree) and _name(c) == "func_def"), None)
+			if any(isinstance(c, Token) and c.type == "PUB" for c in item.children):
+				is_pub = True
 		if fn_node is None:
 			continue
 		fn = _build_function(fn_node)
+		fn.is_pub = is_pub
 		fn.is_method = True
 		fn.impl_target = target
 		methods.append(fn)

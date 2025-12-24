@@ -62,7 +62,7 @@ class TypeExpr:
     # Canonical resolved module id for this type reference (best-effort).
     #
     # For unqualified type names this is usually the current module id, but it
-    # can also refer to an imported type (`from other.mod import Point`).
+    # can also refer to an imported type (e.g. `import other.mod as o; o.Point`).
     #
     # Builtins use module_id=None.
     module_id: Optional[str] = None

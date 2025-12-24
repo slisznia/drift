@@ -553,6 +553,7 @@ class _FrontendDecl:
 		params: list[_FrontendParam],
 		return_type: parser_ast.TypeExpr,
 		loc: Optional[parser_ast.Located],
+		is_pub: bool = False,
 		is_method: bool = False,
 		self_mode: Optional[str] = None,
 		impl_target: Optional[parser_ast.TypeExpr] = None,
@@ -570,6 +571,7 @@ class _FrontendDecl:
 		self.return_type = return_type
 		self.throws = ()
 		self.loc = loc
+		self.is_pub = is_pub
 		self.is_extern = False
 		self.is_intrinsic = False
 		self.is_method = is_method
@@ -607,6 +609,7 @@ def _decl_from_parser_fn(
 		params,
 		fn.return_type,
 		getattr(fn, "loc", None),
+		fn.is_pub,
 		fn.is_method,
 		fn.self_mode,
 		fn.impl_target,
@@ -1078,7 +1081,7 @@ def parse_drift_workspace_to_hir(
 	- input is an unordered set of files (typically all `*.drift` files in a build),
 	- files are grouped by their declared `module <id>` (or default to `main`),
 	- each module is merged from its file set (Milestone 1 behavior),
-	- imports are resolved across modules (MVP: `from <module> import <symbol>`),
+	- imports are resolved across modules (MVP: module-only imports),
 	- resulting HIR/signatures are returned as a single program unit suitable for
 	  the existing HIR→MIR→SSA→LLVM pipeline.
 
@@ -1410,7 +1413,7 @@ def parse_drift_workspace_to_hir(
 				if n not in module_pub_fn_names:
 					diagnostics.append(
 						Diagnostic(
-							message=f"cannot export '{n}': symbol is not public (mark it 'pub')",
+							message=f"cannot export '{n}' from module '{module_id}': symbol is not public (mark it 'pub')",
 							severity="error",
 							span=ex_span,
 						)
@@ -1421,7 +1424,7 @@ def parse_drift_workspace_to_hir(
 				if n not in module_pub_const_names:
 					diagnostics.append(
 						Diagnostic(
-							message=f"cannot export '{n}': symbol is not public (mark it 'pub')",
+							message=f"cannot export '{n}' from module '{module_id}': symbol is not public (mark it 'pub')",
 							severity="error",
 							span=ex_span,
 						)
@@ -1432,7 +1435,7 @@ def parse_drift_workspace_to_hir(
 				if n not in module_pub_struct_names:
 					diagnostics.append(
 						Diagnostic(
-							message=f"cannot export '{n}': symbol is not public (mark it 'pub')",
+							message=f"cannot export '{n}' from module '{module_id}': symbol is not public (mark it 'pub')",
 							severity="error",
 							span=ex_span,
 						)
@@ -1443,7 +1446,7 @@ def parse_drift_workspace_to_hir(
 				if n not in module_pub_variant_names:
 					diagnostics.append(
 						Diagnostic(
-							message=f"cannot export '{n}': symbol is not public (mark it 'pub')",
+							message=f"cannot export '{n}' from module '{module_id}': symbol is not public (mark it 'pub')",
 							severity="error",
 							span=ex_span,
 						)
@@ -1454,7 +1457,7 @@ def parse_drift_workspace_to_hir(
 				if n not in module_pub_exception_names:
 					diagnostics.append(
 						Diagnostic(
-							message=f"cannot export '{n}': symbol is not public (mark it 'pub')",
+							message=f"cannot export '{n}' from module '{module_id}': symbol is not public (mark it 'pub')",
 							severity="error",
 							span=ex_span,
 						)
@@ -1711,6 +1714,8 @@ def parse_drift_workspace_to_hir(
 			# Record module aliases for later module-qualified access resolution.
 			# This is per-file by design (imports are file-scoped in MVP).
 			module_aliases_by_file[path] = dict(file_module_aliases)
+		for target_mod, ex_span in (star_reexports_by_module.get(mid) or {}).items():
+			dep_edges[mid].append((target_mod, ex_span))
 
 	# Collapse edge lists into a simple adjacency set for cycle detection.
 	# Include external modules so visibility rules can see package imports.
@@ -2175,7 +2180,12 @@ def parse_drift_workspace_to_hir(
 				continue
 			ordinal = len(fn_ids_by_name.get(trampoline_name, []))
 			trampoline_id = FunctionId(module=mid, name=export_name, ordinal=ordinal)
-			all_sigs[trampoline_id] = replace(target_sig, name=trampoline_name, is_exported_entrypoint=True)
+			all_sigs[trampoline_id] = replace(
+				target_sig,
+				name=trampoline_name,
+				module=mid,
+				is_exported_entrypoint=True,
+			)
 			fn_owner_module[trampoline_id] = mid
 			fn_symbol_by_id[trampoline_id] = trampoline_name
 			fn_ids_by_name.setdefault(trampoline_name, []).append(trampoline_id)
@@ -2970,6 +2980,7 @@ def _lower_parsed_program_to_hir(
 					params,
 					fn.return_type,
 					getattr(fn, "loc", None),
+					fn.is_pub,
 					is_method=True,
 					self_mode=self_mode,
 					impl_target=impl.target,

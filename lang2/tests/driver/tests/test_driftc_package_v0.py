@@ -188,6 +188,88 @@ fn hidden() returns Int {{
 	return pkg_path
 
 
+def _emit_pub_hidden_fn_pkg(tmp_path: Path, *, module_id: str = "acme.hiddenpub") -> Path:
+	module_dir = tmp_path.joinpath(*module_id.split("."))
+	_write_file(
+		module_dir / "lib.drift",
+		f"""
+module {module_id}
+
+export {{ add }}
+
+pub fn add(a: Int, b: Int) returns Int {{
+	return a + b
+}}
+
+pub fn hidden() returns Int {{
+	return 1
+}}
+""".lstrip(),
+	)
+	pkg_path = tmp_path / "hiddenpub.dmp"
+	assert (
+		driftc_main(
+			[
+				"-M",
+				str(tmp_path),
+				str(module_dir / "lib.drift"),
+				*_emit_pkg_args(module_id),
+				"--emit-package",
+				str(pkg_path),
+			]
+		)
+		== 0
+	)
+	return pkg_path
+
+
+def _emit_star_reexport_pkg(
+	tmp_path: Path,
+	*,
+	core_id: str = "acme.core",
+	api_id: str = "acme.api",
+	package_id: str = "acme",
+) -> Path:
+	core_dir = tmp_path.joinpath(*core_id.split("."))
+	api_dir = tmp_path.joinpath(*api_id.split("."))
+	_write_file(
+		core_dir / "lib.drift",
+		f"""
+module {core_id}
+
+export {{ add }}
+
+pub fn add(a: Int, b: Int) returns Int {{
+	return a + b
+}}
+""".lstrip(),
+	)
+	_write_file(
+		api_dir / "lib.drift",
+		f"""
+module {api_id}
+
+export {{ {core_id}.* }}
+""".lstrip(),
+	)
+	pkg_path = tmp_path / "star.dmp"
+	assert (
+		driftc_main(
+			[
+				"-M",
+				str(tmp_path),
+				str(core_dir / "lib.drift"),
+				str(api_dir / "lib.drift"),
+				*_emit_pkg_args(package_id),
+				"--emit-package",
+				str(pkg_path),
+			]
+		)
+		== 0
+	)
+	return pkg_path
+
+
 def _emit_const_pkg(tmp_path: Path, *, module_id: str = "acme.consts") -> Path:
 	module_dir = tmp_path.joinpath(*module_id.split("."))
 	_write_file(
@@ -2069,6 +2151,76 @@ fn main() returns Int {
 	assert payload["exit_code"] == 1
 	assert payload["diagnostics"][0]["phase"] == "parser"
 	assert "does not export symbol 'hidden'" in payload["diagnostics"][0]["message"]
+
+
+def test_driftc_rejects_import_of_pub_but_not_exported_value_from_package(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+	_emit_pub_hidden_fn_pkg(tmp_path)
+
+	_write_file(
+		tmp_path / "main.drift",
+		"""
+module main
+
+import acme.hiddenpub as hidden
+
+fn main() returns Int {
+	return hidden.hidden()
+}
+""".lstrip(),
+	)
+
+	rc, payload = _run_driftc_json(
+		[
+			"-M",
+			str(tmp_path),
+			"--package-root",
+			str(tmp_path),
+			"--allow-unsigned-from",
+			str(tmp_path),
+			str(tmp_path / "main.drift"),
+			"--emit-ir",
+			str(tmp_path / "out.ll"),
+		],
+		capsys,
+	)
+	assert rc != 0
+	assert payload["exit_code"] == 1
+	assert payload["diagnostics"][0]["phase"] == "parser"
+	assert "does not export symbol 'hidden'" in payload["diagnostics"][0]["message"]
+
+
+def test_driftc_can_consume_package_with_export_star(tmp_path: Path) -> None:
+	pkg = _emit_star_reexport_pkg(tmp_path)
+	pkg_root = pkg.parent
+
+	_write_file(
+		tmp_path / "main.drift",
+		"""
+module main
+
+import acme.api as api
+
+fn main() returns Int {
+	return api.add(40, 2)
+}
+""".lstrip(),
+	)
+	assert (
+		driftc_main(
+			[
+				"-M",
+				str(tmp_path),
+				"--package-root",
+				str(pkg_root),
+				"--allow-unsigned-from",
+				str(pkg_root),
+				str(tmp_path / "main.drift"),
+				"--emit-ir",
+				str(tmp_path / "out.ll"),
+			]
+		)
+		== 0
+	)
 
 
 def test_driftc_allows_import_of_exported_const_from_package(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

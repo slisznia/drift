@@ -171,6 +171,7 @@ def resolve_program_signatures(
 			impl_target_type_id=impl_target_type_id,
 			impl_target_type_args=impl_target_type_args,
 			impl_type_params=impl_type_params,
+			is_pub=bool(getattr(decl, "is_pub", False)),
 			module=module_name,
 		)
 

@@ -211,6 +211,7 @@ def encode_signatures(signatures: Mapping[str, FnSignature], *, module_id: str) 
 			"method_name": getattr(sig, "method_name", None),
 			"impl_target_type_id": getattr(sig, "impl_target_type_id", None),
 			"self_mode": getattr(sig, "self_mode", None),
+			"is_pub": bool(getattr(sig, "is_pub", False)),
 			"param_names": list(sig.param_names or []),
 			"param_type_ids": list(sig.param_type_ids or []) if sig.param_type_ids is not None else None,
 			"return_type_id": sig.return_type_id,

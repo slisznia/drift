@@ -961,35 +961,53 @@ def main(argv: list[str] | None = None) -> int:
 						continue
 					module_name = sd.get("module")
 					if module_name is None:
-						if "::" in name:
-							module_name = name.rsplit("::", 1)[0]
-						elif "::" in sym:
-							module_name = sym.rsplit("::", 1)[0]
-						elif args.require_signatures:
-							msg = f"package signature '{name}' missing module; signatures must include module or qualified name"
-							if args.json:
-								print(
-									json.dumps(
-										{
-											"exit_code": 1,
-											"diagnostics": [
-												{
-													"phase": "package",
-													"message": msg,
-													"severity": "error",
-													"file": str(source_path),
-													"line": None,
-													"column": None,
-												}
-											],
-										}
-									)
+						msg = f"package signature '{name}' missing module; signatures must include module"
+						if args.json:
+							print(
+								json.dumps(
+									{
+										"exit_code": 1,
+										"diagnostics": [
+											{
+												"phase": "package",
+												"message": msg,
+												"severity": "error",
+												"file": str(source_path),
+												"line": None,
+												"column": None,
+											}
+										],
+									}
 								)
-							else:
-								print(f"{source_path}:?:?: error: {msg}", file=sys.stderr)
-							return 1
+							)
+						else:
+							print(f"{source_path}:?:?: error: {msg}", file=sys.stderr)
+						return 1
 					if module_name is not None and "::" not in name:
 						name = f"{module_name}::{name}"
+					if "is_pub" not in sd:
+						msg = f"package signature '{name}' missing is_pub; signatures must include is_pub"
+						if args.json:
+							print(
+								json.dumps(
+									{
+										"exit_code": 1,
+										"diagnostics": [
+											{
+												"phase": "package",
+												"message": msg,
+												"severity": "error",
+												"file": str(source_path),
+												"line": None,
+												"column": None,
+											}
+										],
+									}
+								)
+							)
+						else:
+							print(f"{source_path}:?:?: error: {msg}", file=sys.stderr)
+						return 1
 					param_type_ids = sd.get("param_type_ids")
 					if isinstance(param_type_ids, list):
 						param_type_ids = [tid_map.get(int(x), int(x)) for x in param_type_ids]
@@ -1009,6 +1027,7 @@ def main(argv: list[str] | None = None) -> int:
 						is_method=bool(sd.get("is_method", False)),
 						self_mode=sd.get("self_mode"),
 						impl_target_type_id=impl_tid,
+						is_pub=bool(sd.get("is_pub")),
 						is_exported_entrypoint=bool(sd.get("is_exported_entrypoint", False)),
 					)
 
@@ -1053,10 +1072,10 @@ def main(argv: list[str] | None = None) -> int:
 	# Materialize const re-exports into the exporting module’s const table.
 	#
 	# Consts are compile-time values embedded into IR at each use site and also
-	# recorded in module interfaces/packages. When a module re-exports an imported
-	# const (`from a import ANSWER; export { ANSWER }`), downstream consumers must
-	# be able to reference `b::ANSWER` *without* needing module `a` present at
-	# compile time.
+	# recorded in module interfaces/packages. When a module re-exports a const from
+	# another module (e.g. `export { a.* }` where `a` exports `ANSWER`), downstream
+	# consumers must be able to reference `b::ANSWER` *without* needing module `a`
+	# present at compile time.
 	#
 	# Implementation strategy (MVP):
 	# - export-resolution records `reexports.consts` mapping `{local: {module,name}}`
@@ -1219,7 +1238,7 @@ def main(argv: list[str] | None = None) -> int:
 				callable_id=next_callable_id,
 				name=sig.method_name or sig.name,
 				module_id=module_id,
-				visibility=Visibility.public(),
+				visibility=Visibility.public() if sig.is_pub else Visibility.private(),
 				signature=CallableSignature(param_types=param_types_tuple, result_type=sig.return_type_id),
 				fn_id=fn_id,
 				impl_id=next_callable_id,
@@ -1276,7 +1295,7 @@ def main(argv: list[str] | None = None) -> int:
 				callable_id=next_callable_id,
 				name=sig.method_name or sig_name,
 				module_id=module_id,
-				visibility=Visibility.public(),
+				visibility=Visibility.public() if sig.is_pub else Visibility.private(),
 				signature=CallableSignature(param_types=param_types_tuple, result_type=sig.return_type_id),
 				fn_id=None,
 				impl_id=next_callable_id,
