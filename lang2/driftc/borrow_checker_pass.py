@@ -10,8 +10,9 @@ Scope:
 - Handles implicit moves for non-Copy values used by value.
 - Adds explicit borrow handling (& / &mut) with shared-vs-mut conflicts.
 - Loan lifetimes: function-wide for most forms, block-liveness regions for
-  explicit HLet+HBorrow, and temporary-borrow dropping for expr/cond/call
-  scopes. Full general region analysis for all borrow forms is still TODO.
+  explicit HLet+HBorrow (NLL-lite: until last use within scope), and
+  temporary-borrow dropping for expr/cond/call scopes. Full general region
+  analysis for all borrow forms is still TODO.
 """
 
 from __future__ import annotations
@@ -357,6 +358,7 @@ class BorrowChecker:
 		*,
 		temporary: bool = False,
 		span: Span | None = None,
+		ref_binding_id: Optional[int] = None,
 	) -> None:
 		"""
 		Process a borrow of `place` with the given kind, enforcing lvalue validity
@@ -379,8 +381,8 @@ class BorrowChecker:
 				self._diagnostic(f"cannot take mutable borrow while borrow active on '{place.base.name}'", span)
 				return
 		live_blocks = None
-		if not temporary and hasattr(self, "_target_live_blocks") and self._target_live_blocks is not None:
-			lbs = self._target_live_blocks.get(place.base.local_id)
+		if not temporary and hasattr(self, "_ref_live_blocks") and self._ref_live_blocks is not None:
+			lbs = self._ref_live_blocks.get(ref_binding_id) if ref_binding_id is not None else None
 			if lbs is not None:
 				live_blocks = frozenset(lbs)
 		state.loans.add(
@@ -435,28 +437,47 @@ class BorrowChecker:
 
 	def _build_regions(self, blocks: List[BasicBlock], scopes: List[Set[int]]) -> Optional[Dict[int, Set[int]]]:
 		"""
-		Compute per-target live block sets for explicit borrows.
+		Compute per-ref live block sets for explicit borrows.
 
-		MVP policy: lexical lifetime (to end of scope), not NLL.
+		NLL-lite policy: explicit borrow bindings are live until their last use
+		within the smallest lexical scope that contains the borrow definition.
 
-		We approximate a binding's lexical scope by selecting the *smallest* scope
-		set produced by `_build_cfg` that contains the borrow-binding's definition
-		block.
-
-		Returns mapping target_binding_id -> set(block_ids) or None if no ref info.
+		Returns mapping ref_binding_id -> set(block_ids) or None if no ref info.
 		"""
 		ref_defs: Dict[int, int] = {}  # ref_binding_id -> def block
-		ref_to_target: Dict[int, int] = {}  # ref_binding_id -> target binding id
+		ref_uses: Dict[int, Set[int]] = {}
+		succs: Dict[int, List[int]] = {}
+		preds: Dict[int, List[int]] = {}
 
 		for blk in blocks:
+			succs[blk.id] = blk.terminator.targets if blk.terminator else []
+			for tgt in succs[blk.id]:
+				preds.setdefault(tgt, []).append(blk.id)
 			for stmt in blk.statements:
 				if isinstance(stmt, H.HLet):
+					self._collect_ref_uses_in_expr(stmt.value, blk.id, ref_uses)
 					if isinstance(stmt.value, H.HBorrow):
 						ref_bid = getattr(stmt, "binding_id", None)
 						sub_place = place_from_expr(stmt.value.subject, base_lookup=self.base_lookup)
 						if ref_bid is not None and sub_place is not None:
 							ref_defs[ref_bid] = blk.id
-							ref_to_target[ref_bid] = sub_place.base.local_id
+				elif isinstance(stmt, H.HAssign):
+					self._collect_ref_uses_in_expr(stmt.target, blk.id, ref_uses)
+					self._collect_ref_uses_in_expr(stmt.value, blk.id, ref_uses)
+				elif hasattr(H, "HAugAssign") and isinstance(stmt, getattr(H, "HAugAssign")):
+					self._collect_ref_uses_in_expr(stmt.target, blk.id, ref_uses)
+					self._collect_ref_uses_in_expr(stmt.value, blk.id, ref_uses)
+				elif isinstance(stmt, H.HReturn) and stmt.value is not None:
+					self._collect_ref_uses_in_expr(stmt.value, blk.id, ref_uses)
+				elif isinstance(stmt, H.HThrow):
+					self._collect_ref_uses_in_expr(stmt.value, blk.id, ref_uses)
+				elif isinstance(stmt, H.HExprStmt):
+					self._collect_ref_uses_in_expr(stmt.expr, blk.id, ref_uses)
+			if blk.terminator:
+				if blk.terminator.cond is not None:
+					self._collect_ref_uses_in_expr(blk.terminator.cond, blk.id, ref_uses)
+				if blk.terminator.value is not None:
+					self._collect_ref_uses_in_expr(blk.terminator.value, blk.id, ref_uses)
 
 		if not ref_defs:
 			return None
@@ -477,17 +498,28 @@ class BorrowChecker:
 			scope = _smallest_scope_containing(def_block)
 			if scope is None:
 				continue
-			ref_regions[rid] = set(scope)
-
-		target_live: Dict[int, Set[int]] = {}
-		for rid, target_bid in ref_to_target.items():
-			region = ref_regions.get(rid, set())
-			if not region:
+			use_blocks = ref_uses.get(rid, set())
+			if not use_blocks:
+				# No tracked uses: keep the lexical scope to stay conservative.
+				ref_regions[rid] = set(scope)
 				continue
-			target_live.setdefault(target_bid, set()).update(region)
-		return target_live
+			forward = self._reachable_forward(def_block, succs)
+			backward = self._reachable_backward(use_blocks, preds)
+			region = forward & backward
+			region &= scope
+			if not region:
+				region = set(scope)
+			ref_regions[rid] = set(region)
+
+		return ref_regions
 
 	def _collect_ref_uses_in_expr(self, expr: H.HExpr, bid: int, ref_uses: Dict[int, Set[int]]) -> None:
+		if hasattr(H, "HPlaceExpr") and isinstance(expr, getattr(H, "HPlaceExpr")):
+			self._collect_ref_uses_in_expr(expr.base, bid, ref_uses)
+			for proj in expr.projections:
+				if isinstance(proj, H.HPlaceIndex):
+					self._collect_ref_uses_in_expr(proj.index, bid, ref_uses)
+			return
 		if isinstance(expr, H.HVar):
 			bid_id = getattr(expr, "binding_id", None)
 			if bid_id is not None:
@@ -843,7 +875,20 @@ class BorrowChecker:
 		)
 		for stmt in block.statements:
 			if isinstance(stmt, H.HLet):
-				self._visit_expr(state, stmt.value, as_value=True)
+				if isinstance(stmt.value, H.HBorrow):
+					place = place_from_expr(stmt.value.subject, base_lookup=self.base_lookup)
+					if place is None:
+						self._diagnostic("cannot borrow from a non-lvalue expression", getattr(stmt.value, "loc", Span()))
+					else:
+						self._borrow_place(
+							state,
+							place,
+							LoanKind.MUT if stmt.value.is_mut else LoanKind.SHARED,
+							span=getattr(stmt.value, "loc", Span()),
+							ref_binding_id=getattr(stmt, "binding_id", None),
+						)
+				else:
+					self._visit_expr(state, stmt.value, as_value=True)
 				if getattr(stmt, "binding_id", None) is not None:
 					base = PlaceBase(PlaceKind.LOCAL, stmt.binding_id, stmt.name)
 				else:
@@ -855,8 +900,7 @@ class BorrowChecker:
 				tgt = place_from_expr(stmt.target, base_lookup=self.base_lookup)
 				if tgt is not None:
 					# MVP rule: do not silently "drop" active borrows on assignment.
-					# Instead, reject the write. This keeps borrow lifetimes lexical
-					# (until end-of-scope) and prevents hard-to-debug unsoundness.
+					# Instead, reject the write while any *live* loan overlaps the target.
 					tgt_span = getattr(stmt.target, "loc", Span())
 					if self._reject_write_while_borrowed(state, tgt, tgt_span):
 						self._set_state(state, tgt, PlaceState.VALID)
@@ -901,11 +945,11 @@ class BorrowChecker:
 		blocks, entry_id, scopes = self._build_cfg(block)
 		# Build region info for explicit borrows.
 		#
-		# MVP policy: borrows are *lexical* (to end of scope), not NLL. We
-		# approximate scope boundaries using the structured-CFG construction: each
-		# nested HIR block corresponds to a set of CFG blocks. A borrow-binding
-		# lives for the smallest scope-set that contains its definition site.
-		self._target_live_blocks = self._build_regions(blocks, scopes)
+		# NLL-lite: borrow bindings live until last use within their lexical scope.
+		# We approximate scope boundaries using the structured-CFG construction:
+		# each nested HIR block corresponds to a set of CFG blocks, and the borrow
+		# lifetime is capped to that smallest enclosing scope.
+		self._ref_live_blocks = self._build_regions(blocks, scopes)
 		in_states: Dict[int, _FlowState] = {b.id: _FlowState() for b in blocks}
 		worklist = [entry_id]
 		while worklist:

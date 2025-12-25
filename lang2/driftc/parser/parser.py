@@ -26,6 +26,8 @@ from .ast import (
     FunctionDef,
     IfStmt,
     ImportStmt,
+    UseTraitStmt,
+    TraitRef,
     ExportItem,
     ExportModuleStar,
     ExportName,
@@ -833,6 +835,7 @@ def _build_program(tree: Tree) -> Program:
 	traits: List[TraitDef] = []
 	imports: List[ImportStmt] = []
 	exports: List[ExportStmt] = []
+	used_traits: List[TraitRef] = []
 	statements: List[ExprStmt | LetStmt | ReturnStmt | RaiseStmt] = []
 	structs: List[StructDef] = []
 	exceptions: List[ExceptionDef] = []
@@ -904,6 +907,8 @@ def _build_program(tree: Tree) -> Program:
 				imports.append(stmt)
 			elif isinstance(stmt, ExportStmt):
 				exports.append(stmt)
+			elif isinstance(stmt, UseTraitStmt):
+				used_traits.append(stmt.trait)
 			else:
 				statements.append(stmt)
 	return Program(
@@ -913,6 +918,7 @@ def _build_program(tree: Tree) -> Program:
 		traits=traits,
 		imports=imports,
 		exports=exports,
+		used_traits=used_traits,
 		statements=statements,
 		structs=structs,
 		exceptions=exceptions,
@@ -1432,6 +1438,8 @@ def _build_stmt(tree: Tree):
 			return _build_import_stmt(target)
 		if stmt_kind == "export_stmt":
 			return _build_export_stmt(target)
+		if stmt_kind == "use_trait_stmt":
+			return _build_use_trait_stmt(target)
 		if stmt_kind == "while_stmt":
 			return _build_while_stmt(target)
 		if stmt_kind == "break_stmt":
@@ -1463,6 +1471,8 @@ def _build_stmt(tree: Tree):
 		return _build_import_stmt(tree)
 	if kind == "export_stmt":
 		return _build_export_stmt(tree)
+	if kind == "use_trait_stmt":
+		return _build_use_trait_stmt(tree)
 	return None
 
 
@@ -1769,6 +1779,33 @@ def _build_export_item(tree: Tree) -> ExportItem:
 	if name_tok is not None:
 		return ExportName(loc=loc, name=name_tok.value)
 	raise ValueError("export item missing name or module path")
+
+
+def _build_use_trait_stmt(tree: Tree) -> UseTraitStmt:
+	loc = _loc(tree)
+	ref_node = next(
+		(
+			c
+			for c in tree.children
+			if isinstance(c, Tree) and _name(c) in {"trait_ref", "module_path"}
+		),
+		None,
+	)
+	if ref_node is None:
+		raise ValueError("use trait missing trait reference")
+	if _name(ref_node) == "trait_ref":
+		child = next((c for c in ref_node.children if isinstance(c, Tree) and _name(c) == "module_path"), None)
+		if child is not None:
+			ref_node = child
+	parts = [tok.value for tok in ref_node.children if isinstance(tok, Token) and tok.type == "NAME"]
+	if len(parts) < 2:
+		raise ValueError("trait reference missing module path or trait name")
+	module_path = parts[:-1]
+	trait_name = parts[-1]
+	return UseTraitStmt(
+		loc=loc,
+		trait=TraitRef(loc=_loc(ref_node), module_path=module_path, name=trait_name),
+	)
 
 
 def _build_if_stmt(tree: Tree) -> IfStmt:

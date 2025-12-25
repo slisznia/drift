@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from dataclasses import replace
-from typing import Callable, Dict, Tuple, Optional, List
+from typing import Callable, Dict, Tuple, Optional, List, TYPE_CHECKING
 
 from lark.exceptions import UnexpectedInput
 
@@ -32,6 +32,8 @@ from lang2.driftc.core.types_core import (
 from lang2.driftc.core.type_resolve_common import resolve_opaque_type
 from lang2.driftc.core.generic_type_expr import GenericTypeExpr
 from lang2.driftc.impl_index import ImplMeta, ImplMethodMeta
+if TYPE_CHECKING:
+	from lang2.driftc.traits.world import TraitKey
 
 
 def _qualify_fn_name(module_id: str, name: str) -> str:
@@ -976,10 +978,11 @@ def _merge_module_files(
 			first_trait[tr.name] = (path, getattr(tr, "loc", None))
 			merged.traits.append(tr)
 
-	# Combine module directives (imports/exports).
+	# Combine module directives (imports/exports/use-trait).
 	for _, prog in files:
 		merged.imports.extend(getattr(prog, "imports", []) or [])
 		merged.exports.extend(getattr(prog, "exports", []) or [])
+		merged.used_traits.extend(getattr(prog, "used_traits", []) or [])
 
 	# Merge implement blocks by target repr.
 	impls_by_key: dict[tuple[tuple | None, tuple], parser_ast.ImplementDef] = {}
@@ -1087,6 +1090,8 @@ def parse_drift_workspace_to_hir(
 	Returns:
 	  (func_hirs, signatures, fn_ids_by_name, type_table, exception_catalog, module_exports, module_deps, diagnostics)
 	"""
+	from lang2.driftc.traits.world import TraitKey
+
 	diagnostics: list[Diagnostic] = []
 	if not paths:
 		return {}, {}, {}, TypeTable(), {}, {}, {}, [Diagnostic(message="no input files", severity="error")]
@@ -1295,11 +1300,13 @@ def parse_drift_workspace_to_hir(
 		module_struct_names: set[str] = {s.name for s in getattr(merged_prog, "structs", []) or []}
 		module_variant_names: set[str] = {v.name for v in getattr(merged_prog, "variants", []) or []}
 		module_exception_names: set[str] = {e.name for e in getattr(merged_prog, "exceptions", []) or []}
+		module_trait_names: set[str] = {t.name for t in getattr(merged_prog, "traits", []) or []}
 		module_pub_fn_names: set[str] = {fn.name for fn in getattr(merged_prog, "functions", []) or [] if getattr(fn, "is_pub", False)}
 		module_pub_const_names: set[str] = {c.name for c in getattr(merged_prog, "consts", []) or [] if getattr(c, "is_pub", False)}
 		module_pub_struct_names: set[str] = {s.name for s in getattr(merged_prog, "structs", []) or [] if getattr(s, "is_pub", False)}
 		module_pub_variant_names: set[str] = {v.name for v in getattr(merged_prog, "variants", []) or [] if getattr(v, "is_pub", False)}
 		module_pub_exception_names: set[str] = {e.name for e in getattr(merged_prog, "exceptions", []) or [] if getattr(e, "is_pub", False)}
+		module_pub_trait_names: set[str] = {t.name for t in getattr(merged_prog, "traits", []) or [] if getattr(t, "is_pub", False)}
 
 		raw_export_entries: list[tuple[str, Span]] = []
 		star_export_entries: list[tuple[str, Span]] = []
@@ -1329,6 +1336,7 @@ def parse_drift_workspace_to_hir(
 		exported_values: dict[str, tuple[str, str]] = {}
 		exported_types: dict[str, set[str]] = {"structs": set(), "variants": set(), "exceptions": set()}
 		exported_consts: set[str] = set()
+		exported_traits: set[str] = set()
 		star_reexports: dict[str, Span] = {}
 		for mod, ex_span in star_export_entries:
 			prev = seen_star_modules.get(mod)
@@ -1365,10 +1373,19 @@ def parse_drift_workspace_to_hir(
 			in_struct = n in module_struct_names
 			in_variant = n in module_variant_names
 			in_exc = n in module_exception_names
+			in_trait = n in module_trait_names
 			type_hits = int(in_struct) + int(in_variant) + int(in_exc)
 			in_types = type_hits > 0
-
 			if (in_values and in_consts) or (in_values and in_types) or (in_consts and in_types):
+				diagnostics.append(
+					Diagnostic(
+						message=f"exported name '{n}' is ambiguous (defined as multiple kinds in module '{module_id}')",
+						severity="error",
+						span=ex_span,
+					)
+				)
+				continue
+			if in_trait and (in_values or in_consts or in_types):
 				diagnostics.append(
 					Diagnostic(
 						message=f"exported name '{n}' is ambiguous (defined as multiple kinds in module '{module_id}')",
@@ -1387,7 +1404,7 @@ def parse_drift_workspace_to_hir(
 				)
 				continue
 
-			if not in_values and not in_consts and not in_types:
+			if not in_values and not in_consts and not in_types and not in_trait:
 				diagnostics.append(
 					Diagnostic(
 						message=f"module '{module_id}' exports unknown symbol '{n}'",
@@ -1452,11 +1469,23 @@ def parse_drift_workspace_to_hir(
 					)
 					continue
 				exported_types["exceptions"].add(n)
+			if in_trait:
+				if n not in module_pub_trait_names:
+					diagnostics.append(
+						Diagnostic(
+							message=f"cannot export '{n}' from module '{module_id}': symbol is not public (mark it 'pub')",
+							severity="error",
+							span=ex_span,
+						)
+					)
+					continue
+				exported_traits.add(n)
 
 		return (
 			exported_values,
 			exported_types,
 			exported_consts,
+			exported_traits,
 			star_reexports,
 		)
 
@@ -1477,18 +1506,22 @@ def parse_drift_workspace_to_hir(
 	exports_values_by_module: dict[str, dict[str, tuple[str, str]]] = {}
 	exports_types_by_module: dict[str, dict[str, set[str]]] = {}
 	exports_consts_by_module: dict[str, set[str]] = {}
+	exports_traits_by_module: dict[str, set[str]] = {}
 	star_reexports_by_module: dict[str, dict[str, Span]] = {}
 	exported_const_origins_by_module: dict[str, dict[str, tuple[str, str]]] = {}
 	exported_type_origins_by_module: dict[str, dict[str, dict[str, tuple[str, str]]]] = {}
+	exported_trait_origins_by_module: dict[str, dict[str, tuple[str, str]]] = {}
 	# Re-export target maps (for types/consts). Values are materialized as
 	# trampolines, so consumers always reference the exporting module id.
 	reexported_type_targets_by_module: dict[str, dict[str, dict[str, tuple[str, str]]]] = {}
 	reexported_const_targets_by_module: dict[str, dict[str, tuple[str, str]]] = {}
+	reexported_trait_targets_by_module: dict[str, dict[str, tuple[str, str]]] = {}
 	for mid, prog in merged_programs.items():
 		(
 			exported_values,
 			exported_types,
 			exported_consts,
+			exported_traits,
 			star_reexports,
 		) = _build_export_interface(
 			module_id=mid,
@@ -1498,6 +1531,7 @@ def parse_drift_workspace_to_hir(
 		exports_values_by_module[mid] = exported_values
 		exports_types_by_module[mid] = exported_types
 		exports_consts_by_module[mid] = exported_consts
+		exports_traits_by_module[mid] = exported_traits
 		star_reexports_by_module[mid] = star_reexports
 		exported_const_origins_by_module[mid] = {n: (mid, n) for n in exported_consts}
 		exported_type_origins_by_module[mid] = {
@@ -1505,24 +1539,33 @@ def parse_drift_workspace_to_hir(
 			"variants": {n: (mid, n) for n in exported_types.get("variants") or set()},
 			"exceptions": {n: (mid, n) for n in exported_types.get("exceptions") or set()},
 		}
+		exported_trait_origins_by_module[mid] = {n: (mid, n) for n in exported_traits}
 		reexported_type_targets_by_module[mid] = {"structs": {}, "variants": {}, "exceptions": {}}
 		reexported_const_targets_by_module[mid] = {}
+		reexported_trait_targets_by_module[mid] = {}
 
 	# Resolve star re-exports across modules deterministically.
 	def _export_origin_lookup(
 		mod: str,
-	) -> tuple[dict[str, tuple[str, str]], dict[str, tuple[str, str]], dict[str, dict[str, tuple[str, str]]]]:
-		"""Return (exported_values, exported_consts, exported_types_by_kind) with origin targets."""
+	) -> tuple[
+		dict[str, tuple[str, str]],
+		dict[str, tuple[str, str]],
+		dict[str, dict[str, tuple[str, str]]],
+		dict[str, tuple[str, str]],
+	]:
+		"""Return (exported_values, exported_consts, exported_types_by_kind, exported_traits) with origin targets."""
 		if mod in exports_values_by_module or mod in exports_types_by_module or mod in exports_consts_by_module:
 			return (
 				exports_values_by_module.get(mod) or {},
 				exported_const_origins_by_module.get(mod) or {},
 				exported_type_origins_by_module.get(mod) or {"structs": {}, "variants": {}, "exceptions": {}},
+				exported_trait_origins_by_module.get(mod) or {},
 			)
 		if external_module_exports is not None and mod in external_module_exports:
 			ext = external_module_exports.get(mod) or {}
 			values_obj = {n: (mod, n) for n in sorted(ext.get("values") or set())}
 			consts_obj = {n: (mod, n) for n in sorted(ext.get("consts") or set())}
+			traits_obj = {n: (mod, n) for n in sorted(ext.get("traits") or set())}
 			types_obj: dict[str, dict[str, tuple[str, str]]] = {"structs": {}, "variants": {}, "exceptions": {}}
 			ext_types = ext.get("types")
 			if isinstance(ext_types, dict):
@@ -1533,6 +1576,7 @@ def parse_drift_workspace_to_hir(
 			if isinstance(ext_reexp, dict):
 				ext_reexp_types = ext_reexp.get("types")
 				ext_reexp_consts = ext_reexp.get("consts")
+				ext_reexp_traits = ext_reexp.get("traits")
 				if isinstance(ext_reexp_consts, dict):
 					for name, v in ext_reexp_consts.items():
 						if isinstance(v, dict):
@@ -1550,8 +1594,15 @@ def parse_drift_workspace_to_hir(
 									tn = v.get("name")
 									if isinstance(tm, str) and isinstance(tn, str):
 										types_obj[kind][name] = (tm, tn)
-			return values_obj, consts_obj, types_obj
-		return {}, {}, {"structs": {}, "variants": {}, "exceptions": {}}
+				if isinstance(ext_reexp_traits, dict):
+					for name, v in ext_reexp_traits.items():
+						if isinstance(v, dict):
+							tm = v.get("module")
+							tn = v.get("name")
+							if isinstance(tm, str) and isinstance(tn, str):
+								traits_obj[name] = (tm, tn)
+			return values_obj, consts_obj, types_obj, traits_obj
+		return {}, {}, {"structs": {}, "variants": {}, "exceptions": {}}, {}
 
 	# We iterate until no progress so multi-hop star re-exports resolve deterministically.
 	for _ in range(len(merged_programs) + 1):
@@ -1567,7 +1618,7 @@ def parse_drift_workspace_to_hir(
 						)
 					)
 					continue
-				vals, consts, types_obj = _export_origin_lookup(target_mod)
+				vals, consts, types_obj, traits_obj = _export_origin_lookup(target_mod)
 				for name, origin in vals.items():
 					prev = exports_values_by_module[mid].get(name)
 					if prev is None:
@@ -1623,6 +1674,25 @@ def parse_drift_workspace_to_hir(
 									span=ex_span,
 								)
 							)
+				for name, origin in traits_obj.items():
+					prev = exported_trait_origins_by_module[mid].get(name)
+					if prev is None:
+						exports_traits_by_module[mid].add(name)
+						exported_trait_origins_by_module[mid][name] = origin
+						if origin[0] != mid:
+							reexported_trait_targets_by_module[mid][name] = origin
+						progress = True
+					elif prev != origin:
+						diagnostics.append(
+							Diagnostic(
+								message=(
+									f"exported trait '{name}' is ambiguous due to re-exports "
+									f"('{prev[0]}' vs '{origin[0]}') in module '{mid}'"
+								),
+								severity="error",
+								span=ex_span,
+							)
+						)
 		if not progress:
 			break
 
@@ -1643,8 +1713,10 @@ def parse_drift_workspace_to_hir(
 		vals = exports_values_by_module.get(mid, {})
 		types = exports_types_by_module.get(mid, {"structs": set(), "variants": set(), "exceptions": set()})
 		consts = exports_consts_by_module.get(mid, set())
+		traits = exports_traits_by_module.get(mid, set())
 		reexp_types = reexported_type_targets_by_module.get(mid, {"structs": {}, "variants": {}, "exceptions": {}})
 		reexp_consts = reexported_const_targets_by_module.get(mid, {})
+		reexp_traits = reexported_trait_targets_by_module.get(mid, {})
 		module_exports[mid] = {
 			"values": sorted(list(vals.keys())),
 			"types": {
@@ -1653,6 +1725,7 @@ def parse_drift_workspace_to_hir(
 				"exceptions": sorted(list(types.get("exceptions", set()))),
 			},
 			"consts": sorted(list(consts)),
+			"traits": sorted(list(traits)),
 			"reexports": {
 				"types": {
 					"structs": {n: {"module": m, "name": s} for n, (m, s) in sorted(reexp_types.get("structs", {}).items())},
@@ -1660,6 +1733,7 @@ def parse_drift_workspace_to_hir(
 					"exceptions": {n: {"module": m, "name": s} for n, (m, s) in sorted(reexp_types.get("exceptions", {}).items())},
 				},
 				"consts": {n: {"module": m, "name": s} for n, (m, s) in sorted(reexp_consts.items())},
+				"traits": {n: {"module": m, "name": s} for n, (m, s) in sorted(reexp_traits.items())},
 			},
 		}
 
@@ -1705,6 +1779,96 @@ def parse_drift_workspace_to_hir(
 		for target_mod, ex_span in (star_reexports_by_module.get(mid) or {}).items():
 			dep_edges[mid].append((target_mod, ex_span))
 
+	# Resolve `use trait ...` directives into per-module trait scopes.
+	trait_scope_by_module: dict[str, list[TraitKey]] = {mid: [] for mid in merged_programs}
+	trait_scope_seen: dict[str, set[TraitKey]] = {mid: set() for mid in merged_programs}
+
+	def _exported_traits_for_module(mod: str) -> set[str]:
+		if mod in exports_traits_by_module:
+			return set(exports_traits_by_module.get(mod) or set())
+		if external_module_exports is not None and mod in external_module_exports:
+			ext = external_module_exports.get(mod) or {}
+			traits = ext.get("traits")
+			if isinstance(traits, (list, set)):
+				return set(traits)
+			return set()
+		return set()
+
+	def _resolve_trait_origin(mod: str, trait_name: str) -> tuple[str, str]:
+		if mod in reexported_trait_targets_by_module:
+			origin = reexported_trait_targets_by_module.get(mod, {}).get(trait_name)
+			if origin is not None:
+				return origin
+		if external_module_exports is not None and mod in external_module_exports:
+			ext = external_module_exports.get(mod) or {}
+			ext_reexp = ext.get("reexports")
+			if isinstance(ext_reexp, dict):
+				tr = ext_reexp.get("traits")
+				if isinstance(tr, dict):
+					entry = tr.get(trait_name)
+					if isinstance(entry, dict):
+						tm = entry.get("module")
+						tn = entry.get("name")
+						if isinstance(tm, str) and isinstance(tn, str):
+							return tm, tn
+		return mod, trait_name
+
+	for mid, files in by_module.items():
+		for path, prog in files:
+			file_aliases = module_aliases_by_file.get(path, {})
+			for tr in getattr(prog, "used_traits", []) or []:
+				ref_path = list(getattr(tr, "module_path", []) or [])
+				if not ref_path:
+					continue
+				alias = ".".join(ref_path)
+				mod = file_aliases.get(alias)
+				span = _span_in_file(path, getattr(tr, "loc", None))
+				if mod is None:
+					diagnostics.append(
+						Diagnostic(
+							message=f"unknown module alias '{alias}' in trait reference '{alias}.{tr.name}'",
+							severity="error",
+							span=span,
+						)
+					)
+					continue
+				if mod not in merged_programs and (external_module_exports is None or mod not in external_module_exports):
+					diagnostics.append(
+						Diagnostic(
+							message=f"unknown module '{mod}' in trait reference '{alias}.{tr.name}'",
+							severity="error",
+							span=span,
+						)
+					)
+					continue
+				exported_traits = _exported_traits_for_module(mod)
+				if tr.name not in exported_traits:
+					available = ", ".join(sorted(exported_traits))
+					notes = (
+						[f"available exported traits: {available}"]
+						if available
+						else [f"module '{mod}' exports no traits (private by default)"]
+					)
+					diagnostics.append(
+						Diagnostic(
+							message=f"module '{mod}' does not export trait '{tr.name}'",
+							severity="error",
+							span=span,
+							notes=notes,
+						)
+					)
+					continue
+				origin_mod, origin_name = _resolve_trait_origin(mod, tr.name)
+				key = TraitKey(module=origin_mod, name=origin_name)
+				if key in trait_scope_seen[mid]:
+					continue
+				trait_scope_seen[mid].add(key)
+				trait_scope_by_module[mid].append(key)
+
+	for mid, traits in trait_scope_by_module.items():
+		if mid in module_exports:
+			module_exports[mid]["trait_scope"] = list(traits)
+
 	# Collapse edge lists into a simple adjacency set for cycle detection.
 	# Include external modules so visibility rules can see package imports.
 	deps: dict[str, set[str]] = {
@@ -1735,6 +1899,8 @@ def parse_drift_workspace_to_hir(
 		path: Path,
 		file_aliases: dict[str, str],
 		te: parser_ast.TypeExpr | None,
+		*,
+		allow_traits: bool = False,
 	) -> None:
 		if te is None:
 			return
@@ -1752,22 +1918,7 @@ def parse_drift_workspace_to_hir(
 				)
 			else:
 				types = _exported_types_for_module(mod)
-				if te.name not in types:
-					available = ", ".join(sorted(types))
-					notes = (
-						[f"available exported types: {available}"]
-						if available
-						else [f"module '{mod}' exports no types (private by default)"]
-					)
-					diagnostics.append(
-						Diagnostic(
-							message=f"module '{mod}' does not export type '{te.name}'",
-							severity="error",
-							span=span,
-							notes=notes,
-						)
-					)
-				else:
+				if te.name in types:
 					# Record the canonical module id for later lowering.
 					#
 					# If `mod` re-exports this type, resolve it to the defining module
@@ -1799,8 +1950,45 @@ def parse_drift_workspace_to_hir(
 					te.module_id = def_mod
 					te.name = def_name
 					te.module_alias = None
+				elif allow_traits:
+					traits = _exported_traits_for_module(mod)
+					if te.name in traits:
+						def_mod, def_name = _resolve_trait_origin(mod, te.name)
+						te.module_id = def_mod
+						te.name = def_name
+						te.module_alias = None
+					else:
+						available = ", ".join(sorted(traits))
+						notes = (
+							[f"available exported traits: {available}"]
+							if available
+							else [f"module '{mod}' exports no traits (private by default)"]
+						)
+						diagnostics.append(
+							Diagnostic(
+								message=f"module '{mod}' does not export trait '{te.name}'",
+								severity="error",
+								span=span,
+								notes=notes,
+							)
+						)
+				else:
+					available = ", ".join(sorted(types))
+					notes = (
+						[f"available exported types: {available}"]
+						if available
+						else [f"module '{mod}' exports no types (private by default)"]
+					)
+					diagnostics.append(
+						Diagnostic(
+							message=f"module '{mod}' does not export type '{te.name}'",
+							severity="error",
+							span=span,
+							notes=notes,
+						)
+					)
 		for a in getattr(te, "args", []) or []:
-			_resolve_type_expr_in_file(path, file_aliases, a)
+			_resolve_type_expr_in_file(path, file_aliases, a, allow_traits=allow_traits)
 
 	def _resolve_types_in_block(path: Path, file_aliases: dict[str, str], blk: parser_ast.Block) -> None:
 		for st in getattr(blk, "statements", []) or []:
@@ -1910,6 +2098,7 @@ def parse_drift_workspace_to_hir(
 				_resolve_types_in_block(path, file_aliases, fn.body)
 			for impl in getattr(prog, "implements", []) or []:
 				_resolve_type_expr_in_file(path, file_aliases, impl.target)
+				_resolve_type_expr_in_file(path, file_aliases, getattr(impl, "trait", None), allow_traits=True)
 				for mfn in getattr(impl, "methods", []) or []:
 					for p in getattr(mfn, "params", []) or []:
 						_resolve_type_expr_in_file(path, file_aliases, p.type_expr)
@@ -2627,6 +2816,8 @@ def _lower_parsed_program_to_hir(
 
 	This is shared by both single-file and multi-file entry points.
 	"""
+	from lang2.driftc.traits.world import build_trait_world, trait_key_from_expr
+
 	diagnostics = list(diagnostics or [])
 	module_name = getattr(prog, "module", None)
 	module_id = module_name or "main"
@@ -2637,7 +2828,6 @@ def _lower_parsed_program_to_hir(
 	impl_metas: list[ImplMeta] = []
 	lowerer = AstToHIR()
 	lowerer._module_name = module_id
-	from lang2.driftc.traits.world import build_trait_world
 	module_function_names: set[str] = {fn.name for fn in getattr(prog, "functions", []) or []}
 	exception_schemas: dict[str, tuple[str, list[str]]] = {}
 	struct_defs = list(getattr(prog, "structs", []) or [])
@@ -2887,6 +3077,11 @@ def _lower_parsed_program_to_hir(
 		impl_type_param_locs = list(getattr(impl, "type_param_locs", []) or [])
 		impl_target_str = _type_expr_key_str(impl.target)
 		impl_trait_str = _type_expr_key_str(impl.trait) if getattr(impl, "trait", None) is not None else None
+		impl_trait_key = (
+			trait_key_from_expr(impl.trait, default_module=module_id)
+			if getattr(impl, "trait", None) is not None
+			else None
+		)
 		impl_owner = FunctionId(
 			module="lang.__internal",
 			name=f"__impl_{module_id}::{impl_trait_str or 'inherent'}::{impl_target_str}",
@@ -2903,6 +3098,8 @@ def _lower_parsed_program_to_hir(
 			impl_id=impl_index,
 			def_module=module_id,
 			target_type_id=impl_target_type_id,
+			trait_key=impl_trait_key,
+			require_expr=impl.require.expr if getattr(impl, "require", None) is not None else None,
 			loc=Span.from_loc(getattr(impl, "loc", None)),
 			methods=[],
 		)

@@ -352,6 +352,50 @@ fn main() returns Int {
 	assert signatures[res.decl.fn_id].is_method
 
 
+def test_local_impl_wins_over_unimported_impl(tmp_path: Path) -> None:
+	files = {
+		Path("m_box/lib.drift"): """
+module m_box
+
+export { Box }
+
+pub struct Box<T> { value: T }
+""",
+		Path("m_impl/lib.drift"): """
+module m_impl
+
+import m_box
+
+implement m_box.Box<Int> {
+	pub fn tag(self: m_box.Box<Int>) returns Int { return 2; }
+}
+""",
+		Path("m_main/main.drift"): """
+module m_main
+
+import m_box
+
+implement m_box.Box<Int> {
+	pub fn tag(self: m_box.Box<Int>) returns Int { return 1; }
+}
+
+fn main() returns Int {
+	val b: m_box.Box<Int> = m_box.Box<type Int>(1);
+	return b.tag();
+}
+""",
+	}
+	main_block, call_resolutions, signatures, _deps, _module_ids = _resolve_main_block(
+		tmp_path, files, main_module="m_main"
+	)
+	calls = _collect_method_calls(main_block)
+	assert len(calls) == 1
+	res = call_resolutions.get(id(calls[0]))
+	assert res is not None and res.decl.fn_id is not None
+	assert res.decl.fn_id.module == "m_main"
+	assert signatures[res.decl.fn_id].is_method
+
+
 def test_private_method_not_visible_across_modules(tmp_path: Path) -> None:
 	files = {
 		Path("m_types/lib.drift"): """

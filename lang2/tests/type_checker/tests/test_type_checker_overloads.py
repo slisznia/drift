@@ -171,7 +171,7 @@ fn main(x: S) returns Int { return h(x); }
 		visible_modules=(current_mod,),
 		current_module=current_mod,
 	)
-	assert any("no matching overload" in d.message for d in result.diagnostics)
+	assert any("trait requirements not met" in d.message for d in result.diagnostics)
 
 
 def test_overload_type_arg_count_selects_matching_candidate(tmp_path: Path) -> None:

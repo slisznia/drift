@@ -14,6 +14,10 @@
 - Global impl index is built from per-module `ImplMeta` (attached to `module_exports`) and method resolution now queries that index.
 - Cross-module method/impl driver tests live in `lang2/tests/driver/tests/test_method_resolution_multimodule.py` and are green.
 - Link-time duplicate inherent method check runs before typecheck and is covered by the cross-module ambiguity fixture.
+- Trait dot-call plumbing is now wired: `use trait` directives populate `trait_scope_by_module`, trait indexes are built from `trait_worlds` + `module_exports`, and the type checker resolves trait methods after inherent lookup.
+- Trait exports and reexports are serialized in package payloads, and package interface validation now checks `exports.traits`/`reexports.traits`.
+- Function call require enforcement now infers type args from arg types when explicit `<type ...>` is absent, substitutes TypeParamId subjects, and dedupes checks across identical arg+type-arg tuples.
+- Targeted driver suite (`just lang2-driver-suite`) is green after these changes.
 
 ## Goal
 Enable method/impl matching across module boundaries using a workspace-wide impl index and call-site visibility, with deterministic ambiguity handling and production-grade diagnostics.

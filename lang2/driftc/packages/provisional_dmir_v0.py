@@ -228,6 +228,7 @@ def encode_module_payload_v0(
 	mir_funcs: Mapping[str, Any],
 	exported_values: list[str],
 	exported_types: dict[str, list[str]],
+	exported_traits: list[str] | None = None,
 	exported_consts: list[str] | None = None,
 	reexports: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -263,7 +264,12 @@ def encode_module_payload_v0(
 		"payload_version": 0,
 		"unstable_format": True,
 		"module_id": module_id,
-		"exports": {"values": list(exported_values), "types": types_obj, "consts": consts},
+		"exports": {
+			"values": list(exported_values),
+			"types": types_obj,
+			"consts": consts,
+			"traits": list(exported_traits or []),
+		},
 		"reexports": _to_jsonable(reexports_obj),
 		"consts": const_table,
 		"type_table": tt_obj,

@@ -11,6 +11,7 @@ from lang2.driftc.parser import ast as parser_ast
 from lang2.driftc.method_resolver import MethodResolution
 from lang2.driftc.traits.solver import Env, ProofStatus, prove_expr
 from lang2.driftc.core.function_id import FunctionId, function_symbol
+from lang2.driftc.core.types_core import TypeKind, TypeParamId
 from lang2.driftc.traits.world import TraitWorld, TypeKey, type_key_from_typeid
 from lang2.driftc.core.type_resolve_common import resolve_opaque_type
 
@@ -140,8 +141,76 @@ def enforce_fn_requires(
 	_walk_block(getattr(typed_fn, "body"), exprs)
 	expr_types = getattr(typed_fn, "expr_types", {})
 	call_resolutions = getattr(typed_fn, "call_resolutions", {}) or {}
-	seen: Set[Tuple[FunctionId, Tuple[TypeKey, ...]]] = set()
+	seen: Set[Tuple[FunctionId, Tuple[TypeKey, ...], Tuple[TypeKey, ...]]] = set()
 	symbol_to_id = {function_symbol(fid): fid for fid in signatures.keys()}
+
+	def _infer_type_args_from_call(sig: object, arg_type_ids: List[object]) -> Dict[TypeParamId, object] | None:
+		type_params = list(getattr(sig, "type_params", []) or [])
+		if not type_params:
+			return {}
+		param_types = list(getattr(sig, "param_type_ids", []) or [])
+		if not param_types or len(param_types) != len(arg_type_ids):
+			return None
+		owner = type_params[0].id.owner
+		bindings: Dict[TypeParamId, object] = {}
+
+		def _bind(tp_id: TypeParamId, actual: object) -> bool:
+			if tp_id.owner != owner:
+				return False
+			cur = bindings.get(tp_id)
+			if cur is None:
+				bindings[tp_id] = actual
+				return True
+			return cur == actual
+
+		def _unify(param: object, actual: object) -> bool:
+			if param == actual:
+				return True
+			pdef = type_table.get(param)
+			if pdef.kind is TypeKind.TYPEVAR and pdef.type_param_id is not None:
+				return _bind(pdef.type_param_id, actual)
+			adef = type_table.get(actual)
+			if pdef.kind is not adef.kind:
+				return False
+			if pdef.kind is TypeKind.REF:
+				if pdef.ref_mut != adef.ref_mut or not pdef.param_types or not adef.param_types:
+					return False
+				return _unify(pdef.param_types[0], adef.param_types[0])
+			if pdef.kind in (TypeKind.ARRAY, TypeKind.OPTIONAL, TypeKind.FNRESULT, TypeKind.FUNCTION):
+				if len(pdef.param_types) != len(adef.param_types):
+					return False
+				return all(_unify(p, a) for p, a in zip(pdef.param_types, adef.param_types))
+			if pdef.kind is TypeKind.STRUCT:
+				pinst = type_table.get_struct_instance(param)
+				ainst = type_table.get_struct_instance(actual)
+				if pinst is None and ainst is None:
+					return param == actual
+				if pinst is None or ainst is None or pinst.base_id != ainst.base_id:
+					return False
+				if len(pinst.type_args) != len(ainst.type_args):
+					return False
+				return all(_unify(p, a) for p, a in zip(pinst.type_args, ainst.type_args))
+			if pdef.kind is TypeKind.VARIANT:
+				pinst = type_table.get_variant_instance(param)
+				ainst = type_table.get_variant_instance(actual)
+				if pinst is None and ainst is None:
+					return param == actual
+				if pinst is None or ainst is None or pinst.base_id != ainst.base_id:
+					return False
+				if len(pinst.type_args) != len(ainst.type_args):
+					return False
+				return all(_unify(p, a) for p, a in zip(pinst.type_args, ainst.type_args))
+			return False
+
+		for p, a in zip(param_types, arg_type_ids):
+			if not _unify(p, a):
+				return None
+
+		for tp in type_params:
+			if tp.id not in bindings:
+				return None
+		return bindings
+
 	for expr in exprs:
 		if not isinstance(expr, H.HCall) or not isinstance(expr.fn, H.HVar):
 			continue
@@ -163,21 +232,39 @@ def enforce_fn_requires(
 		subjects: Set[object] = set()
 		_collect_trait_subjects(req, subjects)
 		arg_keys: List[TypeKey] = []
+		type_arg_keys: List[TypeKey] = []
+		arg_type_ids: List[object] = []
 		for arg in expr.args:
 			tid = expr_types.get(id(arg))
 			if tid is None:
 				continue
+			arg_type_ids.append(tid)
 			arg_keys.append(_normalize_type_key(type_key_from_typeid(type_table, tid), module_name=module_name))
 		if sig and getattr(sig, "type_params", None):
 			type_params = list(getattr(sig, "type_params", []) or [])
 			type_args = getattr(expr, "type_args", None) or []
+			bindings: Dict[TypeParamId, object] | None = None
 			if type_args and len(type_args) == len(type_params):
+				bindings = {}
 				for idx, tp in enumerate(type_params):
-					if tp.id in subjects:
-						ty_id = resolve_opaque_type(type_args[idx], type_table, module_id=module_name)
-						subst[tp.id] = _normalize_type_key(type_key_from_typeid(type_table, ty_id), module_name=module_name)
-		subst_key = tuple(arg_keys)
-		seen_key = (fn_id, subst_key)
+					ty_id = resolve_opaque_type(type_args[idx], type_table, module_id=module_name)
+					bindings[tp.id] = ty_id
+			else:
+				bindings = _infer_type_args_from_call(sig, arg_type_ids)
+			if bindings:
+				for tp_id, ty_id in bindings.items():
+					if tp_id in subjects:
+						subst[tp_id] = _normalize_type_key(type_key_from_typeid(type_table, ty_id), module_name=module_name)
+				for tp in type_params:
+					ty_id = bindings.get(tp.id)
+					if ty_id is None:
+						continue
+					type_arg_keys.append(_normalize_type_key(type_key_from_typeid(type_table, ty_id), module_name=module_name))
+			if getattr(sig, "param_names", None):
+				for idx, pname in enumerate(sig.param_names or []):
+					if pname in subjects and idx < len(arg_keys):
+						subst[pname] = arg_keys[idx]
+		seen_key = (fn_id, tuple(arg_keys), tuple(type_arg_keys))
 		if seen_key in seen:
 			continue
 		seen.add(seen_key)

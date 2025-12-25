@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, Iterable, List, Tuple
+from typing import Dict, Iterable, List, Tuple, TYPE_CHECKING
 
 from lang2.driftc.core.diagnostics import Diagnostic
 from lang2.driftc.core.function_id import FunctionId
 from lang2.driftc.core.span import Span
 from lang2.driftc.core.types_core import TypeId, TypeKind, TypeTable
 from lang2.driftc.method_registry import ModuleId
+if TYPE_CHECKING:
+	from lang2.driftc.traits.world import TraitKey
+else:
+	TraitKey = object  # type: ignore[misc]
 
 
 @dataclass(frozen=True)
@@ -23,6 +27,8 @@ class ImplMeta:
 	impl_id: int
 	def_module: str
 	target_type_id: TypeId
+	trait_key: TraitKey | None = None
+	require_expr: object | None = None
 	methods: List[ImplMethodMeta] = field(default_factory=list)
 	loc: Span | None = None
 
@@ -59,6 +65,8 @@ class GlobalImplIndex:
 		type_table: TypeTable,
 		module_ids: Dict[str | None, ModuleId],
 	) -> None:
+		if impl.trait_key is not None:
+			return
 		base_id = self._target_base_id(type_table, impl.target_type_id)
 		if base_id is None:
 			return
@@ -138,6 +146,8 @@ def find_impl_method_conflicts(
 	conflicts: list[Diagnostic] = []
 	candidate_map: Dict[tuple[TypeId, str, tuple[tuple[TypeId, ...], TypeId | None]], list[ImplMethodCandidate]] = {}
 	for impl in impls:
+		if impl.trait_key is not None:
+			continue
 		base_id = _base_id(impl.target_type_id)
 		if base_id is None:
 			continue

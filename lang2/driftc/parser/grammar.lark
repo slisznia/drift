@@ -4,7 +4,7 @@
 // Identifiers: allow leading underscore, but reserve double-underscore (compiler use).
 // Give identifiers a lower priority than keyword terminals so the basic lexer
 // prefers `and`, `or`, `val`, etc. as their own tokens instead of `NAME`.
-NAME.0: /(?!type\b)(?!pub\b)[A-Za-z][A-Za-z0-9_]*/ | /_[A-Za-z0-9_]*(?<!__)/
+NAME.0: /(?!type\b)(?!pub\b)(?!use\b)[A-Za-z][A-Za-z0-9_]*/ | /_[A-Za-z0-9_]*(?<!__)/
 %import common.SIGNED_INT
 // Float literals: decimal only, digits on both sides of '.', optional exponent.
 // Important: float literals never include a leading sign; unary '-' is parsed separately.
@@ -22,18 +22,19 @@ FSTRING_PREFIX.3: /f(?=\")/
 SEMI: ";"
 NEWLINE: /(\r?\n[ \t]*)/
 
-VAL: "val"
-VAR: "var"
-CONST: "const"
-PUB.2: "pub"
-MUT: "mut"
-TYPE.2: "type"
+VAL.2: /val\b/
+VAR.2: /var\b/
+CONST.2: /const\b/
+PUB.2: /pub\b/
+USE.2: /use\b/
+MUT.2: /mut\b/
+TYPE.2: /type\b/
 CALL_TYPE_LT.2: /<\s*type\b/
-THROW: "throw"
-VARIANT: "variant"
-MATCH: "match"
-DEFAULT: "default"
-NONESCAPING: "nonescaping"
+THROW.2: /throw\b/
+VARIANT.2: /variant\b/
+MATCH.2: /match\b/
+DEFAULT.2: /default\b/
+NONESCAPING.2: /nonescaping\b/
 # Note: `>>=` must be recognized before `>>` (longest match).
 SHR_EQ: ">>="
 SHR: ">>"
@@ -44,11 +45,11 @@ PIPE_REV: "<|"
 # Note: `<<=` / `<<` must be recognized before `<` / `<=`.
 LSHIFT_EQ: "<<="
 LSHIFT: "<<"
-AND.2: "and"
-OR.2: "or"
+AND.2: /and\b/
+OR.2: /or\b/
 EQEQ: "=="
 NOTEQ: "!="
-IS: "is"
+IS.2: /is\b/
 LTE: "<="
 GTE: ">="
 LT: "<"
@@ -77,25 +78,25 @@ BAR: "|"
 EQUAL: "="
 CARET: "^"
 TILDE: "~"
-RETURNS: "returns"
+RETURNS.2: /returns\b/
 BANG: "!"
-IF: "if"
-ELSE: "else"
-WHILE: "while"
-MOVE: "move"
-BREAK: "break"
-CONTINUE: "continue"
-RETHROW: "rethrow"
+IF.2: /if\b/
+ELSE.2: /else\b/
+WHILE.2: /while\b/
+MOVE.2: /move\b/
+BREAK.2: /break\b/
+CONTINUE.2: /continue\b/
+RETHROW.2: /rethrow\b/
 ARROW: "->"
 FATARROW: "=>"
-EXCEPTION: "exception"
-TRAIT: "trait"
-REQUIRE: "require"
-TRY: "try"
-CATCH: "catch"
-EXPORT: "export"
+EXCEPTION.2: /exception\b/
+TRAIT.2: /trait\b/
+REQUIRE.2: /require\b/
+TRY.2: /try\b/
+CATCH.2: /catch\b/
+EXPORT.2: /export\b/
 QMARK: "?"
-MODULE: "module"
+MODULE.2: /module\b/
 LINE_COMMENT: /\/\/[^\n]*/
 BLOCK_COMMENT: /\/\*([^*]|\*(?!\/))*\*\//
 
@@ -117,6 +118,7 @@ ident: NAME | MOVE
      | variant_def
      | trait_def
      | implement_def
+     | use_trait_stmt
      | import_stmt
      | export_stmt
      | stmt
@@ -255,6 +257,8 @@ export_stmt: EXPORT "{" export_items? "}"
 export_items: export_item (COMMA export_item)*
 export_item: NAME | module_path_star
 module_path_star: NAME (DOT NAME)* DOT STAR
+use_trait_stmt: USE TRAIT trait_ref
+trait_ref: module_path
 
 struct_def: "struct" NAME type_params? require_clause? struct_body
 struct_body: tuple_struct | block_struct

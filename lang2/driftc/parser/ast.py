@@ -379,6 +379,7 @@ class Program:
 	# for import/export syntax.
 	imports: List["ImportStmt"] = field(default_factory=list)
 	exports: List["ExportStmt"] = field(default_factory=list)
+	used_traits: List["TraitRef"] = field(default_factory=list)
 	statements: List[Stmt] = field(default_factory=list)
 	structs: List[StructDef] = field(default_factory=list)
 	exceptions: List[ExceptionDef] = field(default_factory=list)
@@ -487,6 +488,19 @@ class ImportStmt(Stmt):
     loc: Located
     path: List[str]
     alias: Optional[str] = None
+
+
+@dataclass
+class TraitRef:
+	loc: Located
+	module_path: List[str]
+	name: str
+
+
+@dataclass
+class UseTraitStmt(Stmt):
+	loc: Located
+	trait: TraitRef
 
 
 @dataclass

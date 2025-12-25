@@ -56,6 +56,7 @@ from lang2.driftc.core.type_resolve_common import resolve_opaque_type
 from lang2.driftc.type_checker import TypeChecker
 from lang2.driftc.method_registry import CallableRegistry, CallableSignature, Visibility, SelfMode
 from lang2.driftc.impl_index import GlobalImplIndex, find_impl_method_conflicts
+from lang2.driftc.trait_index import GlobalTraitImplIndex, GlobalTraitIndex, validate_trait_scopes
 from lang2.driftc.fake_decl import FakeDecl
 from lang2.driftc.packages.dmir_pkg_v0 import canonical_json_bytes, sha256_hex, write_dmir_pkg_v0
 from lang2.driftc.packages.provisional_dmir_v0 import encode_module_payload_v0, decode_mir_funcs, type_table_fingerprint
@@ -1387,12 +1388,36 @@ def main(argv: list[str] | None = None) -> int:
 		type_table=type_table,
 		module_ids=module_ids,
 	)
+	global_trait_index = GlobalTraitIndex.from_trait_worlds(getattr(type_table, "trait_worlds", None))
+	global_trait_impl_index = GlobalTraitImplIndex.from_module_exports(
+		module_exports=module_exports,
+		type_table=type_table,
+		module_ids=module_ids,
+	)
+	trait_scope_by_module: dict[str, list] = {}
+	if isinstance(module_exports, dict):
+		for mod_name, exp in module_exports.items():
+			if isinstance(exp, dict):
+				scope = exp.get("trait_scope", [])
+				if isinstance(scope, list):
+					trait_scope_by_module[mod_name] = list(scope)
+				else:
+					trait_scope_by_module[mod_name] = []
 	if isinstance(module_deps, dict):
 		visible_modules_by_name_set = {
 			mod: set(dep_set) | {mod} for mod, dep_set in module_deps.items()
 		}
 	else:
 		visible_modules_by_name_set = {}
+
+	type_diags.extend(
+		validate_trait_scopes(
+			trait_index=global_trait_index,
+			trait_impl_index=global_trait_impl_index,
+			trait_scope_by_module=trait_scope_by_module,
+			module_ids=module_ids,
+		)
+	)
 	type_diags.extend(
 		find_impl_method_conflicts(
 			module_exports=module_exports,
@@ -1420,6 +1445,9 @@ def main(argv: list[str] | None = None) -> int:
 			call_signatures=call_sigs_by_name,
 			callable_registry=callable_registry,
 			impl_index=global_impl_index,
+			trait_index=global_trait_index,
+			trait_impl_index=global_trait_impl_index,
+			trait_scope_by_module=trait_scope_by_module,
 			visible_modules=visible_modules,
 			current_module=fn_module_id,
 			signatures_by_id=signatures_by_id,
@@ -1616,11 +1644,13 @@ def main(argv: list[str] | None = None) -> int:
 			exported_values.sort()
 
 			exported_types_obj: object = {}
+			exported_traits_obj: object = {}
 			reexports_obj: object = {}
 			if isinstance(module_exports, dict):
 				mexp = module_exports.get(mid, {})
 				if isinstance(mexp, dict):
 					exported_types_obj = mexp.get("types", {})
+					exported_traits_obj = mexp.get("traits", [])
 					reexports_obj = mexp.get("reexports", {})
 			if not isinstance(exported_types_obj, dict):
 				exported_types_obj = {}
@@ -1631,6 +1661,9 @@ def main(argv: list[str] | None = None) -> int:
 				"variants": list(exported_types_obj.get("variants", [])) if isinstance(exported_types_obj.get("variants"), list) else [],
 				"exceptions": list(exported_types_obj.get("exceptions", [])) if isinstance(exported_types_obj.get("exceptions"), list) else [],
 			}
+			exported_traits: list[str] = (
+				list(exported_traits_obj) if isinstance(exported_traits_obj, (list, set, tuple)) else []
+			)
 			exported_consts: list[str] = (
 				list(module_exports.get(mid, {}).get("consts", [])) if isinstance(module_exports, dict) else []
 			)
@@ -1642,6 +1675,7 @@ def main(argv: list[str] | None = None) -> int:
 				mir_funcs=per_module_mir.get(mid, {}),
 				exported_values=exported_values,
 				exported_types=exported_types,
+				exported_traits=exported_traits,
 				exported_consts=exported_consts,
 				reexports=reexports_obj,
 			)
@@ -1727,6 +1761,7 @@ def main(argv: list[str] | None = None) -> int:
 						"values": [],
 						"types": {"structs": [], "variants": [], "exceptions": []},
 						"consts": [],
+						"traits": [],
 					},
 				),
 				"reexports": payload_obj.get("reexports", {}) if isinstance(payload_obj, dict) else {},
@@ -1752,7 +1787,12 @@ def main(argv: list[str] | None = None) -> int:
 			manifest_modules.append(
 				{
 					"module_id": mid,
-					"exports": {"values": exported_values, "types": exported_types, "consts": exported_consts},
+					"exports": {
+						"values": exported_values,
+						"types": exported_types,
+						"consts": exported_consts,
+						"traits": exported_traits,
+					},
 					"interface_blob": f"sha256:{iface_sha}",
 					"payload_blob": f"sha256:{payload_sha}",
 				}

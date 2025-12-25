@@ -3,10 +3,9 @@
 # author: Sławomir Liszniański; created: 2025-12-09
 """Borrow lifetime tests.
 
-MVP policy: borrows are lexical (to end of scope), not NLL.
-
-These tests lock that behavior so later NLL-lite improvements are measurable
-and intentional (tests can be updated when we adopt NLL).
+Current policy: explicit borrow bindings are shortened to last use within
+their lexical scope (NLL-lite). This keeps borrows live before first use and
+across joins when the ref is still used, but releases them after the last use.
 """
 
 from lang2.driftc import stage1 as H
@@ -40,7 +39,7 @@ def _bc(bindings: dict[str, tuple[int, str]]) -> BorrowChecker:
 	return BorrowChecker(type_table=table, fn_types=fn_types, base_lookup=base_lookup)
 
 
-def test_borrow_is_lexical_blocks_mut_even_after_last_use():
+def test_borrow_ends_after_last_use_allows_mut():
 	block = H.HBlock(
 		statements=[
 			H.HLet(name="x", value=H.HLiteralInt(1), declared_type_expr=None, binding_id=1),
@@ -51,8 +50,7 @@ def test_borrow_is_lexical_blocks_mut_even_after_last_use():
 				binding_id=2,
 			),  # ref binding
 			H.HExprStmt(expr=H.HVar("r", binding_id=2)),  # use ref
-			# Even if the ref is no longer used, the borrow stays live until the end
-			# of its scope (lexical, no NLL yet).
+			# NLL-lite: the borrow ends after the last use of r, so &mut is allowed.
 			H.HIf(
 				cond=H.HLiteralBool(True),
 				then_block=H.HBlock(
@@ -63,7 +61,7 @@ def test_borrow_is_lexical_blocks_mut_even_after_last_use():
 		]
 	)
 	diags = _bc({"x": (1, "Int"), "r": (2, "RefInt")}).check_block(block)
-	assert any("borrow" in d.message for d in diags)
+	assert diags == []
 
 
 def test_borrow_still_live_before_first_use_blocks_mut():
@@ -84,7 +82,7 @@ def test_borrow_still_live_before_first_use_blocks_mut():
 	assert any("borrow" in d.message for d in diags)
 
 
-def test_borrow_used_in_one_branch_still_blocks_mut_after_join():
+def test_borrow_used_in_one_branch_allows_mut_after_join():
 	block = H.HBlock(
 		statements=[
 			H.HLet(name="x", value=H.HLiteralInt(1), declared_type_expr=None, binding_id=1),
@@ -99,12 +97,12 @@ def test_borrow_used_in_one_branch_still_blocks_mut_after_join():
 				then_block=H.HBlock(statements=[H.HExprStmt(expr=H.HVar("r", binding_id=2))]),
 				else_block=H.HBlock(statements=[]),
 			),
-			# Lexical rule: r is still in scope here, so &mut should be blocked.
+			# NLL-lite: r is only used in the then branch, so &mut after the join is ok.
 			H.HExprStmt(expr=H.HBorrow(subject=H.HVar("x", binding_id=1), is_mut=True)),
 		]
 	)
 	diags = _bc({"x": (1, "Int"), "r": (2, "RefInt")}).check_block(block)
-	assert any("borrow" in d.message for d in diags)
+	assert diags == []
 
 
 def test_borrow_used_after_join_keeps_mut_blocked_until_then():
@@ -133,8 +131,8 @@ def test_borrow_used_after_join_keeps_mut_blocked_until_then():
 	assert any("borrow" in d.message for d in diags)
 
 
-def test_borrow_live_in_loop_still_blocks_mut_after_loop_exit_in_same_scope():
-	# Lexical rule: the borrow binding is still in scope after the loop, so &mut is blocked.
+def test_borrow_used_in_loop_allows_mut_after_exit():
+	# NLL-lite: the borrow ends after the last use inside the loop, so &mut after the loop is ok.
 	block = H.HBlock(
 		statements=[
 			H.HLet(name="x", value=H.HLiteralInt(1), declared_type_expr=None, binding_id=1),
@@ -149,12 +147,45 @@ def test_borrow_live_in_loop_still_blocks_mut_after_loop_exit_in_same_scope():
 		]
 	)
 	diags = _bc({"x": (1, "Int"), "r": (2, "RefInt")}).check_block(block)
+	assert diags == []
+
+
+def test_borrow_use_in_assign_target_keeps_live():
+	# The borrow is used in a later assignment target (index expression). That
+	# use should keep the loan live and block an intervening &mut borrow.
+	block = H.HBlock(
+		statements=[
+			H.HLet(name="x", value=H.HLiteralInt(1), declared_type_expr=None, binding_id=1),
+			H.HLet(
+				name="r",
+				value=H.HBorrow(subject=H.HVar("x", binding_id=1), is_mut=False),
+				declared_type_expr=None,
+				binding_id=2,
+			),
+			H.HExprStmt(expr=H.HVar("r", binding_id=2)),
+			# This should be rejected because r is still used later in the target.
+			H.HExprStmt(expr=H.HBorrow(subject=H.HVar("x", binding_id=1), is_mut=True)),
+			H.HLet(
+				name="arr",
+				value=H.HArrayLiteral(elements=[H.HLiteralInt(0)]),
+				declared_type_expr=None,
+				binding_id=3,
+			),
+			H.HAssign(
+				target=H.HPlaceExpr(
+					base=H.HVar("arr", binding_id=3),
+					projections=[H.HPlaceIndex(index=H.HVar("r", binding_id=2))],
+				),
+				value=H.HLiteralInt(1),
+			),
+		]
+	)
+	diags = _bc({"x": (1, "Int"), "r": (2, "RefInt"), "arr": (3, "Unknown")}).check_block(block)
 	assert any("borrow" in d.message for d in diags)
 
 
-def test_multiple_refs_keep_mut_blocked_in_scope():
-	# Two refs to the same target; lexical rule keeps the target frozen until both
-	# bindings are out of scope (here: end of function).
+def test_multiple_refs_allow_mut_after_last_uses():
+	# Two refs to the same target; NLL-lite releases after the last use of both refs.
 	block = H.HBlock(
 		statements=[
 			H.HLet(name="x", value=H.HLiteralInt(1), declared_type_expr=None, binding_id=1),
@@ -177,7 +208,7 @@ def test_multiple_refs_keep_mut_blocked_in_scope():
 		]
 	)
 	diags = _bc({"x": (1, "Int"), "r1": (2, "RefInt"), "r2": (3, "RefInt")}).check_block(block)
-	assert any("borrow" in d.message for d in diags)
+	assert diags == []
 
 
 def test_borrow_declared_in_branch_scope_does_not_block_after_branch():
@@ -276,8 +307,8 @@ def test_try_body_borrow_allows_mut_after_try():
 	assert diags == []
 
 
-def test_borrow_used_in_catch_blocks_mut_until_catch_done():
-	# Lexical rule: borrow binding is still in scope after try/catch, so &mut is blocked.
+def test_borrow_used_in_catch_allows_mut_after_catch():
+	# NLL-lite: borrow ends after catch use, so &mut after try/catch is allowed.
 	block = H.HBlock(
 		statements=[
 			H.HLet(name="x", value=H.HLiteralInt(1), declared_type_expr=None, binding_id=1),
@@ -305,4 +336,4 @@ def test_borrow_used_in_catch_blocks_mut_until_catch_done():
 		]
 	)
 	diags = _bc({"x": (1, "Int"), "r": (2, "RefInt")}).check_block(block)
-	assert any("borrow" in d.message for d in diags)
+	assert diags == []

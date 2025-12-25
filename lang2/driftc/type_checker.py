@@ -39,11 +39,12 @@ from lang2.driftc.borrow_checker import (
 )
 from lang2.driftc.method_registry import CallableDecl, CallableRegistry, CallableSignature, ModuleId, SelfMode
 from lang2.driftc.impl_index import GlobalImplIndex
+from lang2.driftc.trait_index import GlobalTraitImplIndex, GlobalTraitIndex, TraitImplCandidate
+from lang2.driftc.traits.world import TraitKey, trait_key_from_expr, type_key_from_typeid
 from lang2.driftc.method_resolver import MethodResolution, ResolutionError, resolve_method_call
 from lang2.driftc.core.iter_intrinsics import ensure_array_iter_struct, is_array_iter_struct
 from lang2.driftc.parser import ast as parser_ast
 from lang2.driftc.traits.solver import Env as TraitEnv, ProofStatus, prove_expr
-from lang2.driftc.traits.world import type_key_from_typeid
 
 # Identifier aliases for clarity.
 ParamId = int
@@ -180,6 +181,9 @@ class TypeChecker:
 		signatures_by_id: Mapping[FunctionId, FnSignature] | None = None,
 		callable_registry: CallableRegistry | None = None,
 		impl_index: GlobalImplIndex | None = None,
+		trait_index: GlobalTraitIndex | None = None,
+		trait_impl_index: GlobalTraitImplIndex | None = None,
+		trait_scope_by_module: Mapping[str, list[TraitKey]] | None = None,
 		visible_modules: Optional[Tuple[ModuleId, ...]] = None,
 		current_module: ModuleId = 0,
 	) -> TypeCheckResult:
@@ -202,9 +206,8 @@ class TypeChecker:
 		# MVP borrow rules depend on this:
 		#   - `&mut x` requires `x` to be declared mutable (`var`).
 		binding_mutable: Dict[int, bool] = {}
-		# Binding identity kind (param vs local). This avoids accidental collisions:
-		# ParamId and LocalId are allocated from separate counters, so a param and
-		# local can share the same numeric id.
+		# Binding identity kind (param vs local). Binding ids share a single counter,
+		# but we still track the origin kind to keep place reasoning explicit.
 		binding_place_kind: Dict[int, PlaceKind] = {}
 		# Borrow exclusivity (MVP): tracked within a single statement/expression.
 		#
@@ -229,6 +232,67 @@ class TypeChecker:
 		diagnostics: List[Diagnostic] = []
 		call_resolutions: Dict[int, CallableDecl | MethodResolution] = {}
 		trait_worlds = getattr(self.type_table, "trait_worlds", {}) or {}
+		type_param_map: dict[str, TypeParamId] = {}
+		fn_require_assumed: set[tuple[object, TraitKey]] = set()
+
+		def _collect_trait_is(expr: parser_ast.TraitExpr, out: list[parser_ast.TraitIs]) -> None:
+			if isinstance(expr, parser_ast.TraitIs):
+				out.append(expr)
+				return
+			if isinstance(expr, (parser_ast.TraitAnd, parser_ast.TraitOr)):
+				_collect_trait_is(expr.left, out)
+				_collect_trait_is(expr.right, out)
+				return
+			if isinstance(expr, parser_ast.TraitNot):
+				_collect_trait_is(expr.expr, out)
+
+		def _resolve_trait_subjects_for_type_params(
+			expr: parser_ast.TraitExpr,
+			map_by_name: dict[str, TypeParamId],
+		) -> parser_ast.TraitExpr:
+			if isinstance(expr, parser_ast.TraitIs):
+				subj = expr.subject
+				if isinstance(subj, str) and subj in map_by_name:
+					return parser_ast.TraitIs(loc=expr.loc, subject=map_by_name[subj], trait=expr.trait)
+				return expr
+			if isinstance(expr, parser_ast.TraitAnd):
+				return parser_ast.TraitAnd(
+					loc=expr.loc,
+					left=_resolve_trait_subjects_for_type_params(expr.left, map_by_name),
+					right=_resolve_trait_subjects_for_type_params(expr.right, map_by_name),
+				)
+			if isinstance(expr, parser_ast.TraitOr):
+				return parser_ast.TraitOr(
+					loc=expr.loc,
+					left=_resolve_trait_subjects_for_type_params(expr.left, map_by_name),
+					right=_resolve_trait_subjects_for_type_params(expr.right, map_by_name),
+				)
+			if isinstance(expr, parser_ast.TraitNot):
+				return parser_ast.TraitNot(
+					loc=expr.loc,
+					expr=_resolve_trait_subjects_for_type_params(expr.expr, map_by_name),
+				)
+			return expr
+
+		if signatures_by_id is not None:
+			sig = signatures_by_id.get(fn_id)
+			if sig is not None:
+				type_param_map = {p.name: p.id for p in getattr(sig, "type_params", []) or []}
+		world_for_fn = None
+		if isinstance(trait_worlds, dict):
+			world_for_fn = trait_worlds.get(current_module_name)
+		if world_for_fn is not None:
+			req = world_for_fn.requires_by_fn.get(fn_id)
+			if req is not None:
+				atoms: list[parser_ast.TraitIs] = []
+				_collect_trait_is(req, atoms)
+				for atom in atoms:
+					subj = atom.subject
+					if isinstance(subj, str) and subj in type_param_map:
+						subj = type_param_map[subj]
+					if isinstance(subj, TypeParamId):
+						trait_key = trait_key_from_expr(atom.trait, default_module=current_module_name)
+						fn_require_assumed.add((subj, trait_key))
 
 		def _single_sig(name: str) -> FnSignature | None:
 			if not call_signatures:
@@ -541,6 +605,7 @@ class TypeChecker:
 			saw_registry_only_with_type_args = False
 			saw_typed_nongeneric_with_type_args = False
 			saw_infer_incomplete = False
+			saw_require_failed = False
 			for decl in candidates:
 				sig = None
 				if decl.fn_id is not None and signatures_by_id is not None:
@@ -669,12 +734,16 @@ class TypeChecker:
 								)
 				if world is None:
 					continue
-				env = TraitEnv(default_module=fn_id.module or current_module_name)
+				env = TraitEnv(default_module=fn_id.module or current_module_name, assumed_true=set(fn_require_assumed))
 				res = prove_expr(world, env, subst, req)
 				if res.status is ProofStatus.PROVED:
 					applicable.append((decl, sig_inst))
 					ranks[decl.callable_id] = _require_rank(req)
+				else:
+					saw_require_failed = True
 			if not applicable:
+				if saw_require_failed:
+					raise ResolutionError(f"trait requirements not met for function '{name}'")
 				raise ResolutionError(f"no matching overload for function '{name}' with args {arg_types}")
 			if len(applicable) == 1:
 				return applicable[0]
@@ -3169,6 +3238,206 @@ class TypeChecker:
 									)
 								)
 								return record_expr(expr, self._unknown)
+						if not viable and trait_index and trait_impl_index and trait_scope_by_module:
+							trait_candidates: list[tuple[MethodResolution, TraitImplCandidate]] = []
+							trait_hidden: list[tuple[CallableDecl, TraitImplCandidate, TraitKey]] = []
+							trait_type_arg_counts: set[int] = set()
+							trait_saw_typed_nongeneric = False
+							trait_saw_infer_incomplete = False
+							traits_in_scope = trait_scope_by_module.get(current_module_name, [])
+							for trait_key in traits_in_scope:
+								if not trait_index.has_method(trait_key, expr.method_name):
+									continue
+								for cand in trait_impl_index.get_candidates(trait_key, receiver_base, expr.method_name):
+									decl = callable_registry.get_by_fn_id(cand.fn_id) if callable_registry else None
+									if decl is None:
+										continue
+									if cand.def_module_id not in visible_set:
+										trait_hidden.append((decl, cand, trait_key))
+										continue
+									if not cand.is_pub and cand.def_module_id != current_module:
+										trait_hidden.append((decl, cand, trait_key))
+										continue
+									sig = signatures_by_id.get(decl.fn_id) if signatures_by_id is not None else None
+									if sig is None:
+										continue
+									if sig.param_type_ids is None and sig.param_types is not None:
+										local_type_params = {p.name: p.id for p in sig.type_params}
+										param_type_ids = [
+											resolve_opaque_type(
+												p,
+												self.type_table,
+												module_id=sig.module,
+												type_params=local_type_params,
+											)
+											for p in sig.param_types
+										]
+										sig = replace(sig, param_type_ids=param_type_ids)
+									if sig.return_type_id is None and sig.return_type is not None:
+										local_type_params = {p.name: p.id for p in sig.type_params}
+										ret_id = resolve_opaque_type(
+											sig.return_type,
+											self.type_table,
+											module_id=sig.module,
+											type_params=local_type_params,
+										)
+										sig = replace(sig, return_type_id=ret_id)
+									if sig.param_type_ids is None or sig.return_type_id is None:
+										continue
+									if sig.impl_target_type_args:
+										impl_type_params = list(getattr(sig, "impl_type_params", []) or [])
+										if not impl_type_params:
+											if receiver_args != sig.impl_target_type_args:
+												continue
+											impl_subst = None
+										else:
+											impl_subst = _match_impl_type_args(
+												template_args=sig.impl_target_type_args,
+												recv_args=receiver_args,
+												impl_type_params=impl_type_params,
+											)
+											if impl_subst is None:
+												continue
+										if impl_subst is not None:
+											inst_param_ids = [
+												apply_subst(t, impl_subst, self.type_table) for t in sig.param_type_ids
+											]
+											inst_return_id = apply_subst(sig.return_type_id, impl_subst, self.type_table)
+											sig = replace(sig, param_type_ids=inst_param_ids, return_type_id=inst_return_id)
+										# Enforce impl-level requirements after impl substitution.
+										if cand.require_expr is not None:
+											def_mod = (
+												decl.fn_id.module
+												if decl.fn_id is not None and decl.fn_id.module
+												else current_module_name
+											)
+											world = trait_worlds.get(def_mod) if isinstance(trait_worlds, dict) else None
+											if world is None:
+												continue
+											subjects: set[object] = set()
+											_collect_trait_subjects(cand.require_expr, subjects)
+											subst: dict[object, object] = {}
+											if impl_subst is not None and impl_type_params:
+												for tp in impl_type_params:
+													idx = int(tp.id.index)
+													if idx < len(impl_subst.args):
+														key = _normalize_type_key(
+															type_key_from_typeid(self.type_table, impl_subst.args[idx])
+														)
+														subst[tp.id] = key
+														subst[tp.name] = key
+											env = TraitEnv(default_module=def_mod, assumed_true=set(fn_require_assumed))
+											res = prove_expr(world, env, subst, cand.require_expr)
+											if res.status is not ProofStatus.PROVED:
+												continue
+
+									inst_params: list[TypeId] | None = None
+									inst_return: TypeId | None = None
+									inst_params, inst_return, inst_err = _instantiate_sig(
+										sig=sig,
+										arg_types=[recv_ty, *arg_types],
+										expected_type=expected_type,
+										explicit_type_args=type_arg_ids,
+										allow_infer=True,
+									)
+									if inst_err == "no_typeparams" and type_arg_ids:
+										trait_saw_typed_nongeneric = True
+										continue
+									if inst_err == "typearg_count" and type_arg_ids:
+										trait_type_arg_counts.add(len(sig.type_params))
+										continue
+									if inst_err == "cannot_infer":
+										trait_saw_infer_incomplete = True
+										continue
+									if inst_err:
+										continue
+
+									if inst_params is None or inst_return is None:
+										continue
+									if len(inst_params) - 1 != len(arg_types):
+										continue
+									ok, autoborrow = _receiver_compat(recv_ty, inst_params[0], decl.self_mode)
+									if not ok:
+										continue
+									if all(p == a for p, a in zip(inst_params[1:], arg_types)):
+										trait_candidates.append(
+											(
+												MethodResolution(
+													decl=decl,
+													receiver_autoborrow=autoborrow,
+													result_type=inst_return,
+												),
+												cand,
+											)
+										)
+
+							if trait_candidates:
+								if len(trait_candidates) > 1:
+									labels: list[str] = []
+									for res, cand in trait_candidates:
+										trait_label = f"{cand.trait.module}.{cand.trait.name}" if cand.trait.module else cand.trait.name
+										mod_label = (
+											res.decl.fn_id.module
+											if res.decl.fn_id and res.decl.fn_id.module
+											else str(res.decl.module_id)
+										)
+										labels.append(f"{trait_label}@{mod_label}")
+									label_str = ", ".join(sorted(set(labels)))
+									raise ResolutionError(
+										f"ambiguous method '{expr.method_name}' for receiver {recv_ty} and args {arg_types}; candidates from traits: {label_str}",
+										span=getattr(expr, "loc", Span()),
+									)
+								resolution = trait_candidates[0][0]
+								call_resolutions[id(expr)] = resolution
+								result_type = resolution.result_type or resolution.decl.signature.result_type
+								return record_expr(expr, result_type)
+							if trait_hidden:
+								mod_names: list[str] = []
+								notes: list[str] = []
+								for decl, cand, trait_key in trait_hidden:
+									mod = (
+										decl.fn_id.module
+										if decl.fn_id is not None and decl.fn_id.module
+										else str(cand.def_module_id)
+									)
+									trait_name = f"{trait_key.module}.{trait_key.name}" if trait_key.module else trait_key.name
+									mod_names.append(f"{trait_name}@{mod}")
+									span = cand.method_loc or cand.impl_loc
+									if span and span.line is not None:
+										loc = f"{span.file}:{span.line}:{span.column}" if span.file else f"line {span.line}"
+										notes.append(f"candidate in trait '{trait_name}' at {loc}")
+									else:
+										notes.append(f"candidate in trait '{trait_name}'")
+								mod_list = ", ".join(sorted(set(mod_names)))
+								diagnostics.append(
+									Diagnostic(
+										message=(
+											f"method '{expr.method_name}' exists but is not visible here; "
+											f"candidates from traits: {mod_list}"
+										),
+										severity="error",
+										span=getattr(expr, "loc", Span()),
+										notes=notes,
+									)
+								)
+								return record_expr(expr, self._unknown)
+							if type_arg_ids and trait_type_arg_counts:
+								exp = ", ".join(str(n) for n in sorted(trait_type_arg_counts))
+								raise ResolutionError(
+									f"type argument count mismatch for method '{expr.method_name}': expected one of ({exp}), got {len(type_arg_ids)}",
+									span=call_type_args_span,
+								)
+							if type_arg_ids and trait_saw_typed_nongeneric:
+								raise ResolutionError(
+									f"type arguments require a generic method signature for '{expr.method_name}'",
+									span=call_type_args_span,
+								)
+							if trait_saw_infer_incomplete:
+								raise ResolutionError(
+									f"cannot infer type arguments for method '{expr.method_name}'; add explicit '<type ...>'",
+									span=call_type_args_span,
+								)
+						if not viable:
 							if type_arg_ids and type_arg_counts:
 								exp = ", ".join(str(n) for n in sorted(type_arg_counts))
 								raise ResolutionError(
@@ -3791,8 +4060,10 @@ class TypeChecker:
 			elif isinstance(stmt, H.HIf):
 				if isinstance(stmt.cond, H.HTraitExpr):
 					parser_expr = _trait_expr_to_parser(stmt.cond)
-					subst: dict[str, object] = {}
-					subjects: set[str] = set()
+					if type_param_map:
+						parser_expr = _resolve_trait_subjects_for_type_params(parser_expr, type_param_map)
+					subst: dict[object, object] = {}
+					subjects: set[object] = set()
 					_collect_trait_subjects(parser_expr, subjects)
 					for subj in subjects:
 						if subj == "Self":
@@ -3816,7 +4087,7 @@ class TypeChecker:
 						if stmt.else_block:
 							type_block(stmt.else_block)
 					else:
-						env = TraitEnv(default_module=current_module_name)
+						env = TraitEnv(default_module=current_module_name, assumed_true=set(fn_require_assumed))
 						res = prove_expr(world, env, subst, parser_expr)
 						if res.status is ProofStatus.PROVED:
 							type_block(stmt.then_block)
