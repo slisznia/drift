@@ -101,7 +101,8 @@ fn main() returns Int { return f<type String>("s"); }
 		tmp_path,
 		"main",
 	)
-	assert any("trait requirements not met" in d.message for d in res.diagnostics)
+	assert any("requirement not satisfied" in d.message for d in res.diagnostics)
+	assert any("Show" in d.message for d in res.diagnostics)
 
 
 def test_type_param_bounds_with_guard_is_decidable(tmp_path: Path) -> None:
@@ -161,4 +162,5 @@ fn main() returns Int { return f<type Int>(1); }
 		tmp_path,
 		"main",
 	)
-	assert any("trait requirements not met" in d.message for d in res.diagnostics)
+	assert any("requirement not satisfied" in d.message for d in res.diagnostics)
+	assert any("main.B" in d.message or "B" in d.message for d in res.diagnostics)

@@ -2042,9 +2042,9 @@ def _build_expr(node) -> Expr:
         return _build_postfix(node)
     if name == "qualified_member":
         name_toks = [c for c in node.children if isinstance(c, Token) and c.type == "NAME"]
-        if len(name_toks) != 2:
+        if len(name_toks) not in {2, 3}:
             raise QualifiedMemberParseError(
-                "E-PARSE-QMEM-SHAPE: qualified member must have exactly 2 NAME tokens",
+                "E-PARSE-QMEM-SHAPE: qualified member must have a base name (optionally module-qualified) and a member name",
                 loc=_loc(node),
             )
 
@@ -2071,13 +2071,23 @@ def _build_expr(node) -> Expr:
                 if isinstance(t, Tree) and _name(t) == "type_expr"
             ]
 
-        base_first = name_toks[0]
+        if len(name_toks) == 3:
+            base_alias = name_toks[0].value
+            base_name = name_toks[1].value
+            member_tok = name_toks[2]
+            base_loc = Located(line=name_toks[0].line, column=name_toks[0].column)
+        else:
+            base_alias = None
+            base_name = name_toks[0].value
+            member_tok = name_toks[1]
+            base_loc = Located(line=name_toks[0].line, column=name_toks[0].column)
+
         base_type = TypeExpr(
-            name=base_first.value,
+            name=base_name,
             args=type_args,
-            loc=Located(line=base_first.line, column=base_first.column),
+            module_alias=base_alias,
+            loc=base_loc,
         )
-        member_tok = name_toks[1]
         return QualifiedMember(loc=_loc(node), base_type=base_type, member=member_tok.value)
     if name == "leading_dot":
         return _build_leading_dot(node)
@@ -2485,6 +2495,52 @@ def _apply_postfix_suffixes(expr: Expr, suffix_nodes: List[Tree]) -> Expr:
                     loc=_loc(child),
                 )
             expr = TypeApp(loc=_loc(child), func=expr, type_args=type_args)
+        elif child_name == "qualified_suffix":
+            type_arg_node = next(
+                (c for c in child.children if isinstance(c, Tree) and _name(c) == "qualified_pre_type_args"),
+                None,
+            )
+            type_args: list[TypeExpr] = []
+            if type_arg_node is not None:
+                type_args = [
+                    _build_type_expr(t)
+                    for t in type_arg_node.children
+                    if isinstance(t, Tree) and _name(t) == "type_expr"
+                ]
+            if isinstance(expr, TypeApp):
+                raise QualifiedMemberParseError(
+                    "E-PARSE-QMEM-DUP-TYPEARGS: qualified member may specify type arguments only once",
+                    loc=_loc(child),
+                )
+            base_alias: str | None = None
+            base_name: str | None = None
+            base_loc = getattr(expr, "loc", _loc(child))
+            if isinstance(expr, Attr) and isinstance(expr.value, Name):
+                base_alias = expr.value.ident
+                base_name = expr.attr
+            elif isinstance(expr, Name):
+                base_name = expr.ident
+            else:
+                raise QualifiedMemberParseError(
+                    "E-PARSE-QMEM-SHAPE: qualified member base must be a name or module-qualified name",
+                    loc=_loc(child),
+                )
+            base_type = TypeExpr(
+                name=base_name or "<unknown>",
+                args=type_args,
+                module_alias=base_alias,
+                loc=base_loc,
+            )
+            member_tok = next(
+                (tok for tok in child.children if isinstance(tok, Token) and tok.type == "NAME"),
+                None,
+            )
+            if member_tok is None:
+                raise QualifiedMemberParseError(
+                    "E-PARSE-QMEM-SHAPE: qualified member missing member name",
+                    loc=_loc(child),
+                )
+            expr = QualifiedMember(loc=_loc(child), base_type=base_type, member=member_tok.value)
         else:
             raise ValueError(f"Unexpected postfix child: {child_name}")
     return expr

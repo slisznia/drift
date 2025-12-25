@@ -1996,7 +1996,7 @@ def parse_drift_workspace_to_hir(
 			# `TypeRef::Ctor(...)` where `TypeRef` may include a module alias).
 			def _resolve_types_in_expr(expr: parser_ast.Expr) -> None:
 				if isinstance(expr, parser_ast.QualifiedMember):
-					_resolve_type_expr_in_file(path, file_aliases, expr.base_type)
+					_resolve_type_expr_in_file(path, file_aliases, expr.base_type, allow_traits=True)
 					return
 				if isinstance(expr, parser_ast.Call):
 					_resolve_types_in_expr(expr.func)
@@ -2816,7 +2816,13 @@ def _lower_parsed_program_to_hir(
 
 	This is shared by both single-file and multi-file entry points.
 	"""
-	from lang2.driftc.traits.world import build_trait_world, trait_key_from_expr
+	from lang2.driftc.traits.world import (
+		TypeKey,
+		build_trait_world,
+		resolve_trait_subjects,
+		resolve_struct_require_subjects,
+		trait_key_from_expr,
+	)
 
 	diagnostics = list(diagnostics or [])
 	module_name = getattr(prog, "module", None)
@@ -2832,6 +2838,7 @@ def _lower_parsed_program_to_hir(
 	exception_schemas: dict[str, tuple[str, list[str]]] = {}
 	struct_defs = list(getattr(prog, "structs", []) or [])
 	variant_defs = list(getattr(prog, "variants", []) or [])
+	struct_param_maps: dict[TypeKey, dict[str, TypeParamId]] = {}
 	exception_catalog: dict[str, int] = _build_exception_catalog(prog.exceptions, module_name, diagnostics)
 	for exc in prog.exceptions:
 		fqn = f"{module_name}:{exc.name}" if module_name else exc.name
@@ -2937,12 +2944,17 @@ def _lower_parsed_program_to_hir(
 	for s in struct_defs:
 		field_names = [f.name for f in getattr(s, "fields", [])]
 		try:
-			type_table.declare_struct(
+			struct_base_id = type_table.declare_struct(
 				module_id,
 				s.name,
 				field_names,
 				list(getattr(s, "type_params", []) or []),
 			)
+			param_ids = type_table.get_struct_type_param_ids(struct_base_id) or []
+			if param_ids:
+				struct_param_maps[TypeKey(module=module_id, name=s.name, args=())] = {
+					name: pid for name, pid in zip(getattr(s, "type_params", []) or [], param_ids)
+				}
 		except ValueError as err:
 			diagnostics.append(Diagnostic(message=str(err), severity="error", span=Span.from_loc(getattr(s, "loc", None))))
 	# Declare all variant names/schemas next so type resolution can instantiate
@@ -3006,6 +3018,8 @@ def _lower_parsed_program_to_hir(
 	# After all variant schemas are known and structs are declared, finalize
 	# non-generic variants so their concrete arm types are available.
 	type_table.finalize_variants()
+	# Resolve struct require subjects now that struct type params are known.
+	resolve_struct_require_subjects(world, struct_param_maps)
 	seen_sig: dict[tuple, object | None] = {}
 	name_ord: dict[str, int] = {}
 	for fn in prog.functions:
@@ -3094,12 +3108,15 @@ def _lower_parsed_program_to_hir(
 			module_id=module_id,
 			type_params=impl_param_ids,
 		)
+		require_expr = None
+		if getattr(impl, "require", None) is not None:
+			require_expr = resolve_trait_subjects(impl.require.expr, impl_param_ids)
 		impl_meta = ImplMeta(
 			impl_id=impl_index,
 			def_module=module_id,
 			target_type_id=impl_target_type_id,
 			trait_key=impl_trait_key,
-			require_expr=impl.require.expr if getattr(impl, "require", None) is not None else None,
+			require_expr=require_expr,
 			loc=Span.from_loc(getattr(impl, "loc", None)),
 			methods=[],
 		)

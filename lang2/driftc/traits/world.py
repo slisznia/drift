@@ -176,8 +176,10 @@ def build_trait_world(prog: parser_ast.Program, *, diagnostics: Optional[List[Di
 		type_key = TypeKey(module=module_id, name=s.name, args=())
 		req_expr = s.require.expr
 		world.requires_by_struct[type_key] = req_expr
+		type_param_names = set(getattr(s, "type_params", []) or [])
 		for atom in _collect_trait_is(req_expr):
-			if atom.subject == "Self":
+			subj = atom.subject
+			if subj == "Self" or (isinstance(subj, str) and subj in type_param_names):
 				trait_key = trait_key_from_expr(atom.trait, default_module=module_id)
 				if trait_key not in world.traits:
 					world.diagnostics.append(
@@ -188,7 +190,7 @@ def build_trait_world(prog: parser_ast.Program, *, diagnostics: Optional[List[Di
 					)
 			else:
 				world.diagnostics.append(
-					_diag("require clause on struct must use 'Self is Trait'", getattr(atom, "loc", None))
+					_diag("require clause on struct must use a type parameter or 'Self'", getattr(atom, "loc", None))
 				)
 
 	name_ord: Dict[str, int] = {}
@@ -298,6 +300,26 @@ def _resolve_trait_subjects(
 	return expr
 
 
+def resolve_trait_subjects(
+	expr: parser_ast.TraitExpr,
+	type_param_map: Dict[str, TypeParamId],
+) -> parser_ast.TraitExpr:
+	"""Lower trait subjects using a name -> TypeParamId map."""
+	return _resolve_trait_subjects(expr, type_param_map)
+
+
+def resolve_struct_require_subjects(
+	world: TraitWorld,
+	struct_param_maps: Dict[TypeKey, Dict[str, TypeParamId]],
+) -> None:
+	"""Lower struct-require subjects from names to TypeParamIds."""
+	for ty_key, req in list(world.requires_by_struct.items()):
+		type_param_map = struct_param_maps.get(ty_key)
+		if not type_param_map:
+			continue
+		world.requires_by_struct[ty_key] = _resolve_trait_subjects(req, type_param_map)
+
+
 def resolve_fn_require_subjects(
 	world: TraitWorld,
 	signatures: Dict[FunctionId, object],
@@ -325,5 +347,7 @@ __all__ = [
 	"TraitDef",
 	"FnKey",
 	"build_trait_world",
+	"resolve_struct_require_subjects",
+	"resolve_trait_subjects",
 	"type_key_from_typeid",
 ]

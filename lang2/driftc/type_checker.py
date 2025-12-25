@@ -40,11 +40,21 @@ from lang2.driftc.borrow_checker import (
 from lang2.driftc.method_registry import CallableDecl, CallableKind, CallableRegistry, CallableSignature, ModuleId, SelfMode, Visibility
 from lang2.driftc.impl_index import GlobalImplIndex
 from lang2.driftc.trait_index import GlobalTraitImplIndex, GlobalTraitIndex, TraitImplCandidate
-from lang2.driftc.traits.world import TraitKey, TraitWorld, trait_key_from_expr, type_key_from_typeid
+from lang2.driftc.traits.world import TraitKey, TraitWorld, TypeKey, trait_key_from_expr, type_key_from_typeid
 from lang2.driftc.method_resolver import MethodResolution, ResolutionError, resolve_method_call
 from lang2.driftc.core.iter_intrinsics import ensure_array_iter_struct, is_array_iter_struct
 from lang2.driftc.parser import ast as parser_ast
-from lang2.driftc.traits.solver import Env as TraitEnv, ProofStatus, prove_expr
+from lang2.driftc.traits.solver import (
+	Env as TraitEnv,
+	Obligation,
+	ObligationOrigin,
+	ObligationOriginKind,
+	ProofFailure,
+	ProofFailureReason,
+	ProofStatus,
+	prove_expr,
+	prove_obligation,
+)
 
 # Identifier aliases for clarity.
 ParamId = int
@@ -301,6 +311,19 @@ class TypeChecker:
 				return type(key)(module=current_module_name, name=key.name, args=key.args)
 			return key
 
+		def _type_key_label(key: object) -> str:
+			module = getattr(key, "module", None)
+			name = getattr(key, "name", "")
+			base = f"{module}.{name}" if module else name
+			args = getattr(key, "args", None) or ()
+			if not args:
+				return base
+			inner = ", ".join(_type_key_label(a) for a in args)
+			return f"{base}<{inner}>"
+
+		def _trait_label(trait_key: TraitKey) -> str:
+			return f"{trait_key.module}.{trait_key.name}" if trait_key.module else trait_key.name
+
 		if signatures_by_id is not None:
 			sig = signatures_by_id.get(fn_id)
 			if sig is not None:
@@ -362,6 +385,53 @@ class TypeChecker:
 				_collect_trait_subjects(expr.right, out)
 			elif isinstance(expr, parser_ast.TraitNot):
 				_collect_trait_subjects(expr.expr, out)
+
+		def _first_obligation_failure(
+			*,
+			req_expr: parser_ast.TraitExpr,
+			subst: dict[object, object],
+			origin: ObligationOrigin,
+			span: Span,
+			env: TraitEnv,
+			world: TraitWorld | None,
+		) -> ProofFailure | None:
+			if world is None:
+				return None
+			atoms: list[parser_ast.TraitIs] = []
+			_collect_trait_is(req_expr, atoms)
+			for atom in atoms:
+				trait_key = trait_key_from_expr(atom.trait, default_module=env.default_module)
+				subject_key = subst.get(atom.subject)
+				if subject_key is None and isinstance(atom.subject, str):
+					subject_key = subst.get(atom.subject)
+				if subject_key is None and isinstance(atom.subject, TypeParamId):
+					subject_key = subst.get(atom.subject)
+				if subject_key is None:
+					continue
+				obl = Obligation(
+					subject=subject_key,
+					trait=trait_key,
+					origin=origin,
+					span=span,
+				)
+				failure = prove_obligation(world, env, obl)
+				if failure is not None:
+					return failure
+			return None
+
+		def _format_failure_message(failure: ProofFailure) -> str:
+			subj = _type_key_label(failure.obligation.subject)
+			trait = _trait_label(failure.obligation.trait)
+			if failure.reason is ProofFailureReason.AMBIGUOUS_IMPL:
+				msg = f"requirement is ambiguous: {subj} is {trait}"
+			elif failure.reason is ProofFailureReason.UNKNOWN:
+				msg = f"requirement cannot be proven: {subj} is {trait}"
+			else:
+				msg = f"requirement not satisfied: {subj} is {trait}"
+			label = failure.obligation.origin.label
+			if label:
+				msg = f"{msg} (required by {label})"
+			return msg
 
 		def _require_rank(expr: parser_ast.TraitExpr | None) -> tuple[bool, int]:
 			if expr is None:
@@ -458,6 +528,7 @@ class TypeChecker:
 			expected_type: TypeId | None,
 			explicit_type_args: list[TypeId] | None,
 			allow_infer: bool,
+			diag_span: Span | None = None,
 		) -> tuple[list[TypeId] | None, TypeId | None, Subst | None, str | None]:
 			if sig.param_type_ids is None or sig.return_type_id is None:
 				return None, None, None, "no_types"
@@ -467,6 +538,8 @@ class TypeChecker:
 				if len(explicit_type_args) != len(sig.type_params):
 					return None, None, None, "typearg_count"
 				subst = Subst(owner=sig.type_params[0].id.owner, args=list(explicit_type_args))
+				for arg in subst.args:
+					_enforce_struct_requires(arg, diag_span or Span())
 				inst_params = [apply_subst(p, subst, self.type_table) for p in sig.param_type_ids]
 				inst_return = apply_subst(sig.return_type_id, subst, self.type_table)
 				return inst_params, inst_return, subst, None
@@ -483,6 +556,8 @@ class TypeChecker:
 					if infer_err == "incomplete":
 						return None, None, None, "cannot_infer"
 					return None, None, None, "mismatch"
+				for arg in subst.args:
+					_enforce_struct_requires(arg, diag_span or Span())
 				return inst_params, inst_return, subst, None
 			return list(sig.param_type_ids), sig.return_type_id, None, None
 
@@ -493,6 +568,7 @@ class TypeChecker:
 			expected_type: TypeId | None,
 			explicit_type_args: list[TypeId] | None,
 			allow_infer: bool,
+			diag_span: Span | None = None,
 		) -> tuple[list[TypeId] | None, TypeId | None, str | None]:
 			inst_params, inst_return, _subst, err = _instantiate_sig_with_subst(
 				sig=sig,
@@ -500,6 +576,7 @@ class TypeChecker:
 				expected_type=expected_type,
 				explicit_type_args=explicit_type_args,
 				allow_infer=allow_infer,
+				diag_span=diag_span,
 			)
 			return inst_params, inst_return, err
 
@@ -541,6 +618,60 @@ class TypeChecker:
 			if inst is not None:
 				return inst.base_id, list(inst.type_args)
 			return ty, []
+
+		def _enforce_struct_requires(ty: TypeId, span: Span) -> None:
+			if global_trait_world is None:
+				return
+			base_id, args = _struct_base_and_args(ty)
+			if not args:
+				return
+			if any(self.type_table.get(a).kind is TypeKind.TYPEVAR for a in args):
+				return
+			base_def = self.type_table.get(base_id)
+			struct_key = TypeKey(module=getattr(base_def, "module_id", None), name=getattr(base_def, "name", ""), args=())
+			req = global_trait_world.requires_by_struct.get(struct_key)
+			if req is None:
+				return
+			param_ids = self.type_table.get_struct_type_param_ids(base_id) or []
+			subst: dict[object, object] = {}
+			if param_ids and len(param_ids) == len(args):
+				for pid, arg in zip(param_ids, args):
+					key = _normalize_type_key(type_key_from_typeid(self.type_table, arg))
+					subst[pid] = key
+			schema = self.type_table.get_struct_schema(base_id)
+			if schema is not None and schema.type_params:
+				for name, arg in zip(schema.type_params, args):
+					subst.setdefault(name, _normalize_type_key(type_key_from_typeid(self.type_table, arg)))
+			subst.setdefault("Self", _normalize_type_key(type_key_from_typeid(self.type_table, ty)))
+			env = TraitEnv(
+				default_module=struct_key.module or current_module_name,
+				assumed_true=set(fn_require_assumed),
+			)
+			failure = _first_obligation_failure(
+				req_expr=req,
+				subst=subst,
+				origin=ObligationOrigin(
+					kind=ObligationOriginKind.CALLEE_REQUIRE,
+					label=f"struct '{struct_key.name}'",
+					span=Span.from_loc(getattr(req, "loc", None)),
+				),
+				span=span,
+				env=env,
+				world=global_trait_world,
+			)
+			if failure is not None:
+				diagnostics.append(Diagnostic(message=_format_failure_message(failure), severity="error", span=span))
+
+		sig_span = Span()
+		if signatures_by_id is not None:
+			fn_sig = signatures_by_id.get(fn_id)
+			if fn_sig is not None:
+				sig_span = Span.from_loc(getattr(fn_sig, "loc", None))
+		if param_types:
+			for ty in param_types.values():
+				_enforce_struct_requires(ty, sig_span)
+		if return_type is not None:
+			_enforce_struct_requires(return_type, sig_span)
 
 		def _match_impl_type_args(
 			*,
@@ -695,6 +826,7 @@ class TypeChecker:
 					expected_type=expected_type,
 					explicit_type_args=call_type_args,
 					allow_infer=True,
+					diag_span=call_type_args_span,
 				)
 				if inst_err == "no_typeparams" and call_type_args:
 					saw_typed_nongeneric_with_type_args = True
@@ -748,6 +880,7 @@ class TypeChecker:
 			world = None
 			applicable: List[tuple[CallableDecl, CallableSignature, Subst | None]] = []
 			ranks: Dict[int, tuple[bool, int]] = {}
+			require_failure: ProofFailure | None = None
 			for decl, sig_inst, inst_subst in viable:
 				fn_id = _fn_id_for_decl(decl)
 				if fn_id is None:
@@ -776,6 +909,11 @@ class TypeChecker:
 								key = _normalize_type_key(type_key_from_typeid(self.type_table, inst_subst.args[idx]))
 								subst[tp.id] = key
 								subst[tp.name] = key
+				if sig and sig.param_names:
+					for idx, pname in enumerate(sig.param_names):
+						if pname in subjects and idx < len(arg_types):
+							key = _normalize_type_key(type_key_from_typeid(self.type_table, arg_types[idx]))
+							subst[pname] = key
 				if world is None:
 					continue
 				env = TraitEnv(default_module=fn_id.module or current_module_name, assumed_true=set(fn_require_assumed))
@@ -785,8 +923,26 @@ class TypeChecker:
 					ranks[decl.callable_id] = _require_rank(req)
 				else:
 					saw_require_failed = True
+					if require_failure is None:
+						origin = ObligationOrigin(
+							kind=ObligationOriginKind.CALLEE_REQUIRE,
+							label=f"function '{name}'",
+							span=Span.from_loc(getattr(req, "loc", None)),
+						)
+						failure = _first_obligation_failure(
+							req_expr=req,
+							subst=subst,
+							origin=origin,
+							span=call_type_args_span or Span(),
+							env=env,
+							world=world,
+						)
+						if failure is not None:
+							require_failure = failure
 			if not applicable:
 				if saw_require_failed:
+					if require_failure is not None:
+						raise ResolutionError(_format_failure_message(require_failure), span=call_type_args_span)
 					raise ResolutionError(f"trait requirements not met for function '{name}'")
 				raise ResolutionError(f"no matching overload for function '{name}' with args {arg_types}")
 			if len(applicable) == 1:
@@ -1082,6 +1238,7 @@ class TypeChecker:
 					expected_type=None,
 					explicit_type_args=explicit_type_args,
 					allow_infer=False,
+					diag_span=call_type_args_span or getattr(expr, "loc", Span()),
 				)
 				if inst_err == "typearg_count":
 					diagnostics.append(
@@ -1160,6 +1317,7 @@ class TypeChecker:
 								expected_type=None,
 								explicit_type_args=type_arg_ids,
 								allow_infer=False,
+								diag_span=call_type_args_span or getattr(expr, "loc", Span()),
 							)
 							if inst_err == "no_typeparams":
 								saw_typed_nongeneric = True
@@ -1234,6 +1392,7 @@ class TypeChecker:
 						expected_type=None,
 						explicit_type_args=type_arg_ids,
 						allow_infer=False,
+						diag_span=call_type_args_span or getattr(expr, "loc", Span()),
 					)
 					if inst_err == "typearg_count":
 						diagnostics.append(
@@ -1410,6 +1569,7 @@ class TypeChecker:
 						expected_type=None,
 						explicit_type_args=type_arg_ids,
 						allow_infer=False,
+						diag_span=call_type_args_span or getattr(expr, "loc", Span()),
 					)
 					if inst_err == "typearg_count":
 						diagnostics.append(
@@ -1968,6 +2128,451 @@ class TypeChecker:
 
 					base_te = getattr(qm, "base_type_expr", None)
 					call_type_args = getattr(expr, "type_args", None) or []
+					call_type_args_span = None
+					type_arg_ids: list[TypeId] | None = None
+					if call_type_args:
+						first_loc = getattr(call_type_args[0], "loc", None)
+						if first_loc is not None:
+							call_type_args_span = Span.from_loc(first_loc)
+						type_arg_ids = [
+							resolve_opaque_type(t, self.type_table, module_id=current_module_name)
+							for t in call_type_args
+						]
+					if (
+						trait_index is not None
+						and trait_impl_index is not None
+						and base_te is not None
+						and not (getattr(base_te, "args", None) or [])
+					):
+						trait_key = trait_key_from_expr(base_te, default_module=current_module_name)
+						if trait_key in trait_index.traits_by_id:
+							if kw_pairs:
+								diagnostics.append(
+									Diagnostic(
+										message="keyword arguments are not supported for UFCS method calls in MVP",
+										severity="error",
+										span=getattr(kw_pairs[0], "loc", getattr(expr, "loc", Span())),
+									)
+								)
+								return record_expr(expr, self._unknown)
+							if not expr.args:
+								diagnostics.append(
+									Diagnostic(
+										message="UFCS call requires a receiver argument",
+										severity="error",
+										span=getattr(expr, "loc", Span()),
+									)
+								)
+								return record_expr(expr, self._unknown)
+							recv_ty = type_expr(expr.args[0])
+							arg_types = [type_expr(a) for a in expr.args[1:]]
+							receiver_nominal = _unwrap_ref_type(recv_ty)
+							receiver_base, receiver_args = _struct_base_and_args(receiver_nominal)
+							recv_def = self.type_table.get(receiver_nominal)
+							recv_type_param_id = recv_def.type_param_id if recv_def.kind is TypeKind.TYPEVAR else None
+							recv_type_key = None
+							if recv_type_param_id is not None:
+								recv_type_key = _normalize_type_key(
+									type_key_from_typeid(self.type_table, receiver_nominal)
+								)
+							visible_set = set(visible_modules or (current_module,))
+							trait_candidates: list[tuple[MethodResolution, TraitImplCandidate]] = []
+							trait_hidden: list[tuple[CallableDecl, TraitImplCandidate, TraitKey]] = []
+							trait_require_failures: list[ProofFailure] = []
+							trait_type_arg_counts: set[int] = set()
+							trait_saw_typed_nongeneric = False
+							trait_saw_infer_incomplete = False
+							if trait_index.has_method(trait_key, qm.member):
+								if recv_type_param_id is not None:
+									if (
+										(recv_type_param_id, trait_key) in fn_require_assumed
+										or (recv_type_key, trait_key) in fn_require_assumed
+									):
+										trait_def = trait_index.traits_by_id.get(trait_key)
+										method_sig = None
+										if trait_def is not None:
+											for method in getattr(trait_def, "methods", []) or []:
+												if getattr(method, "name", None) == qm.member:
+													method_sig = method
+													break
+										if method_sig is not None:
+											type_param_map = {"Self": recv_type_param_id}
+											param_type_ids: list[TypeId] = []
+											param_names: list[str] = []
+											for param in list(getattr(method_sig, "params", []) or []):
+												param_names.append(param.name)
+												if param.type_expr is None:
+													if param.name != "self":
+														param_type_ids = []
+														break
+													param_type_ids.append(receiver_nominal)
+													continue
+												param_type_ids.append(
+													resolve_opaque_type(
+														param.type_expr,
+														self.type_table,
+														module_id=trait_key.module or current_module_name,
+														type_params=type_param_map,
+													)
+												)
+											if param_type_ids:
+												ret_id = resolve_opaque_type(
+													method_sig.return_type,
+													self.type_table,
+													module_id=trait_key.module or current_module_name,
+													type_params=type_param_map,
+												)
+												self_mode = SelfMode.SELF_BY_VALUE
+												if param_type_ids:
+													param0 = self.type_table.get(param_type_ids[0])
+													if param0.kind is TypeKind.REF:
+														self_mode = (
+															SelfMode.SELF_BY_REF_MUT
+															if param0.ref_mut
+															else SelfMode.SELF_BY_REF
+														)
+												trait_sig = FnSignature(
+													name=method_sig.name,
+													method_name=method_sig.name,
+													param_type_ids=param_type_ids,
+													return_type_id=ret_id,
+													param_names=param_names if param_names else None,
+													is_method=True,
+													self_mode={SelfMode.SELF_BY_VALUE: "value", SelfMode.SELF_BY_REF: "ref", SelfMode.SELF_BY_REF_MUT: "ref_mut"}[
+														self_mode
+													],
+													module=trait_key.module or current_module_name,
+												)
+												inst_params, inst_return, inst_subst, inst_err = _instantiate_sig_with_subst(
+													sig=trait_sig,
+													arg_types=[recv_ty, *arg_types],
+													expected_type=expected_type,
+													explicit_type_args=type_arg_ids,
+													allow_infer=True,
+													diag_span=call_type_args_span or getattr(expr, "loc", Span()),
+												)
+												if inst_err == "no_typeparams" and type_arg_ids:
+													trait_saw_typed_nongeneric = True
+												elif inst_err == "typearg_count" and type_arg_ids:
+													trait_type_arg_counts.add(len(trait_sig.type_params))
+												elif inst_err == "cannot_infer":
+													trait_saw_infer_incomplete = True
+												elif not inst_err and inst_params and inst_return is not None:
+													trait_decl = CallableDecl(
+														callable_id=-1,
+														name=method_sig.name,
+														kind=CallableKind.METHOD_TRAIT,
+														module_id=0,
+														visibility=Visibility.public(),
+														signature=CallableSignature(
+															param_types=tuple(param_type_ids),
+															result_type=ret_id,
+														),
+														fn_id=FunctionId(
+															module=trait_key.module or current_module_name,
+															name=method_sig.name,
+															ordinal=0,
+														),
+														impl_target_type_id=None,
+														self_mode=self_mode,
+													)
+													ok, autoborrow = _receiver_compat(recv_ty, inst_params[0], self_mode)
+													if ok and all(p == a for p, a in zip(inst_params[1:], arg_types)):
+														trait_candidates.append(
+															(
+																MethodResolution(
+																	decl=trait_decl,
+																	receiver_autoborrow=autoborrow,
+																	result_type=inst_return,
+																),
+																TraitImplCandidate(
+																	fn_id=trait_decl.fn_id,
+																	name=method_sig.name,
+																	trait=trait_key,
+																	def_module_id=0,
+																	is_pub=True,
+																	impl_id=-1,
+																	impl_loc=None,
+																	method_loc=Span.from_loc(getattr(method_sig, "loc", None)),
+																	require_expr=None,
+																),
+															)
+														)
+								for cand in trait_impl_index.get_candidates(trait_key, receiver_base, qm.member):
+									decl = callable_registry.get_by_fn_id(cand.fn_id) if callable_registry else None
+									if decl is None:
+										continue
+									if cand.def_module_id not in visible_set:
+										trait_hidden.append((decl, cand, trait_key))
+										continue
+									if not cand.is_pub and cand.def_module_id != current_module:
+										trait_hidden.append((decl, cand, trait_key))
+										continue
+									sig = signatures_by_id.get(decl.fn_id) if signatures_by_id is not None else None
+									if sig is None:
+										continue
+									if sig.param_type_ids is None and sig.param_types is not None:
+										local_type_params = {p.name: p.id for p in sig.type_params}
+										param_type_ids = [
+											resolve_opaque_type(
+												p,
+												self.type_table,
+												module_id=sig.module,
+												type_params=local_type_params,
+											)
+											for p in sig.param_types
+										]
+										sig = replace(sig, param_type_ids=param_type_ids)
+									if sig.return_type_id is None and sig.return_type is not None:
+										local_type_params = {p.name: p.id for p in sig.type_params}
+										ret_id = resolve_opaque_type(
+											sig.return_type,
+											self.type_table,
+											module_id=sig.module,
+											type_params=local_type_params,
+										)
+										sig = replace(sig, return_type_id=ret_id)
+									if sig.param_type_ids is None or sig.return_type_id is None:
+										continue
+									if sig.impl_target_type_args:
+										impl_type_params = list(getattr(sig, "impl_type_params", []) or [])
+										if not impl_type_params:
+											if receiver_args != sig.impl_target_type_args:
+												continue
+											impl_subst = None
+										else:
+											impl_subst = _match_impl_type_args(
+												template_args=sig.impl_target_type_args,
+												recv_args=receiver_args,
+												impl_type_params=impl_type_params,
+											)
+											if impl_subst is None:
+												continue
+										if impl_subst is not None:
+											inst_param_ids = [
+												apply_subst(t, impl_subst, self.type_table) for t in sig.param_type_ids
+											]
+											inst_return_id = apply_subst(sig.return_type_id, impl_subst, self.type_table)
+											sig = replace(sig, param_type_ids=inst_param_ids, return_type_id=inst_return_id)
+										if cand.require_expr is not None:
+											def_mod = (
+												decl.fn_id.module
+												if decl.fn_id is not None and decl.fn_id.module
+												else current_module_name
+											)
+											world = global_trait_world
+											if world is None:
+												continue
+											subjects: set[object] = set()
+											_collect_trait_subjects(cand.require_expr, subjects)
+											subst: dict[object, object] = {}
+											if impl_subst is not None and impl_type_params:
+												for tp in impl_type_params:
+													idx = int(tp.id.index)
+													if idx < len(impl_subst.args):
+														key = _normalize_type_key(
+															type_key_from_typeid(self.type_table, impl_subst.args[idx])
+														)
+														subst[tp.id] = key
+														subst[tp.name] = key
+											for subj in subjects:
+												if subj in subst:
+													continue
+												if isinstance(subj, str):
+													try:
+														ty_expr = parser_ast.TypeExpr(
+															name=subj,
+															args=[],
+															module_alias=None,
+															module_id=None,
+															loc=getattr(cand.require_expr, "loc", None),
+														)
+														ty_id = resolve_opaque_type(
+															ty_expr, self.type_table, module_id=def_mod
+														)
+														subst[subj] = _normalize_type_key(
+															type_key_from_typeid(self.type_table, ty_id)
+														)
+													except Exception:
+														continue
+											env = TraitEnv(default_module=def_mod, assumed_true=set(fn_require_assumed))
+											res = prove_expr(world, env, subst, cand.require_expr)
+											if res.status is not ProofStatus.PROVED:
+												failure = _first_obligation_failure(
+													req_expr=cand.require_expr,
+													subst=subst,
+													origin=ObligationOrigin(
+														kind=ObligationOriginKind.IMPL_REQUIRE,
+														label=f"impl for trait '{trait_key.name}'",
+														span=cand.impl_loc,
+													),
+													span=getattr(expr, "loc", Span()),
+													env=env,
+													world=world,
+												)
+												if failure is not None:
+													trait_require_failures.append(failure)
+												continue
+
+									inst_params: list[TypeId] | None = None
+									inst_return: TypeId | None = None
+									inst_subst: Subst | None = None
+									inst_params, inst_return, inst_subst, inst_err = _instantiate_sig_with_subst(
+										sig=sig,
+										arg_types=[recv_ty, *arg_types],
+										expected_type=expected_type,
+										explicit_type_args=type_arg_ids,
+										allow_infer=True,
+										diag_span=call_type_args_span or getattr(expr, "loc", Span()),
+									)
+									if inst_err == "no_typeparams" and type_arg_ids:
+										trait_saw_typed_nongeneric = True
+										continue
+									if inst_err == "typearg_count" and type_arg_ids:
+										trait_type_arg_counts.add(len(sig.type_params))
+										continue
+									if inst_err == "cannot_infer":
+										trait_saw_infer_incomplete = True
+										continue
+									if inst_err:
+										continue
+
+									if inst_params is None or inst_return is None:
+										continue
+									if decl.fn_id is not None:
+										world = global_trait_world
+										req = world.requires_by_fn.get(decl.fn_id) if world is not None else None
+										if req is not None:
+											subjects = set()
+											_collect_trait_subjects(req, subjects)
+											subst = {}
+											if inst_subst is not None and sig.type_params:
+												for idx, tp in enumerate(sig.type_params):
+													if tp.id in subjects or tp.name in subjects:
+														if idx < len(inst_subst.args):
+															key = _normalize_type_key(
+																type_key_from_typeid(self.type_table, inst_subst.args[idx])
+															)
+															subst[tp.id] = key
+															subst[tp.name] = key
+											env = TraitEnv(
+												default_module=decl.fn_id.module or current_module_name,
+												assumed_true=set(fn_require_assumed),
+											)
+											res = prove_expr(world, env, subst, req)
+											if res.status is not ProofStatus.PROVED:
+												failure = _first_obligation_failure(
+													req_expr=req,
+													subst=subst,
+													origin=ObligationOrigin(
+														kind=ObligationOriginKind.CALLEE_REQUIRE,
+														label=f"method '{qm.member}'",
+														span=Span.from_loc(getattr(req, "loc", None)),
+													),
+													span=getattr(expr, "loc", Span()),
+													env=env,
+													world=world,
+												)
+												if failure is not None:
+													trait_require_failures.append(failure)
+												continue
+									if len(inst_params) - 1 != len(arg_types):
+										continue
+									ok, autoborrow = _receiver_compat(recv_ty, inst_params[0], decl.self_mode)
+									if not ok:
+										continue
+									if all(p == a for p, a in zip(inst_params[1:], arg_types)):
+										trait_candidates.append(
+											(
+												MethodResolution(
+													decl=decl,
+													receiver_autoborrow=autoborrow,
+													result_type=inst_return,
+												),
+												cand,
+											)
+										)
+
+							if trait_candidates:
+								if len(trait_candidates) > 1:
+									labels: list[str] = []
+									for res, cand in trait_candidates:
+										trait_label = f"{cand.trait.module}.{cand.trait.name}" if cand.trait.module else cand.trait.name
+										mod_label = (
+											res.decl.fn_id.module
+											if res.decl.fn_id and res.decl.fn_id.module
+											else str(res.decl.module_id)
+										)
+										labels.append(f"{trait_label}@{mod_label}")
+									label_str = ", ".join(sorted(set(labels)))
+									raise ResolutionError(
+										f"ambiguous method '{qm.member}' for receiver {recv_ty} and args {arg_types}; candidates from traits: {label_str}",
+										span=getattr(expr, "loc", Span()),
+									)
+								resolution = trait_candidates[0][0]
+								call_resolutions[id(expr)] = resolution
+								result_type = resolution.result_type or resolution.decl.signature.result_type
+								return record_expr(expr, result_type)
+							if trait_hidden:
+								mod_names: list[str] = []
+								notes: list[str] = []
+								for decl, cand, _ in trait_hidden:
+									mod = (
+										decl.fn_id.module
+										if decl.fn_id is not None and decl.fn_id.module
+										else str(cand.def_module_id)
+									)
+									trait_name = f"{trait_key.module}.{trait_key.name}" if trait_key.module else trait_key.name
+									mod_names.append(f"{trait_name}@{mod}")
+									span = cand.method_loc or cand.impl_loc
+									if span and span.line is not None:
+										loc = f"{span.file}:{span.line}:{span.column}" if span.file else f"line {span.line}"
+										notes.append(f"candidate in trait '{trait_name}' at {loc}")
+									else:
+										notes.append(f"candidate in trait '{trait_name}'")
+								mod_list = ", ".join(sorted(set(mod_names)))
+								diagnostics.append(
+									Diagnostic(
+										message=(
+											f"method '{qm.member}' exists but is not visible here; "
+											f"candidates from traits: {mod_list}"
+										),
+										severity="error",
+										span=getattr(expr, "loc", Span()),
+										notes=notes,
+									)
+								)
+								return record_expr(expr, self._unknown)
+							if type_arg_ids and trait_type_arg_counts:
+								exp = ", ".join(str(n) for n in sorted(trait_type_arg_counts))
+								raise ResolutionError(
+									f"type argument count mismatch for method '{qm.member}': expected one of ({exp}), got {len(type_arg_ids)}",
+									span=call_type_args_span,
+								)
+							if type_arg_ids and trait_saw_typed_nongeneric:
+								raise ResolutionError(
+									f"type arguments require a generic method signature for '{qm.member}'",
+									span=call_type_args_span,
+								)
+							if trait_saw_infer_incomplete:
+								raise ResolutionError(
+									f"cannot infer type arguments for method '{qm.member}'; add explicit '<type ...>'",
+									span=call_type_args_span,
+								)
+							if trait_require_failures:
+								failure = trait_require_failures[0]
+								diagnostics.append(
+									Diagnostic(
+										message=_format_failure_message(failure),
+										severity="error",
+										span=failure.obligation.span or getattr(expr, "loc", Span()),
+									)
+								)
+								return record_expr(expr, self._unknown)
+							raise ResolutionError(
+								f"no matching method '{qm.member}' for receiver {recv_ty} and args {arg_types}",
+								span=getattr(expr, "loc", Span()),
+							)
 					if base_te is not None and call_type_args:
 						if getattr(base_te, "args", []) or []:
 							diagnostics.append(
@@ -1980,11 +2585,6 @@ class TypeChecker:
 							return record_expr(expr, self._unknown)
 						base_te = replace(base_te, args=list(call_type_args))
 					base_tid = resolve_opaque_type(base_te, self.type_table, module_id=current_module_name)
-					call_type_args_span = None
-					if call_type_args:
-						first_loc = getattr(call_type_args[0], "loc", None)
-						if first_loc is not None:
-							call_type_args_span = Span.from_loc(first_loc)
 					# TypeRef without explicit module context may refer to lang.core
 					# variants (e.g., `Optional`). Prefer that base when present.
 					try:
@@ -2210,6 +2810,7 @@ class TypeChecker:
 						expected_type=expected_type,
 						explicit_type_args=explicit_type_args,
 						allow_infer=True,
+						diag_span=call_type_args_span or getattr(expr, "loc", Span()),
 					)
 					if inst_err == "typearg_count":
 						span = call_type_args_span or getattr(expr, "loc", Span())
@@ -2738,6 +3339,7 @@ class TypeChecker:
 								)
 							)
 							return record_expr(expr, self._unknown)
+						_enforce_struct_requires(struct_id, call_type_args_span or getattr(expr, "loc", Span()))
 					elif type_arg_ids:
 						diagnostics.append(
 							Diagnostic(
@@ -2980,6 +3582,7 @@ class TypeChecker:
 						expected_type=expected_type,
 						explicit_type_args=type_arg_ids,
 						allow_infer=True,
+						diag_span=call_type_args_span or getattr(expr, "loc", Span()),
 					)
 					if inst_err == "typearg_count" and type_arg_ids:
 						diagnostics.append(
@@ -3161,6 +3764,8 @@ class TypeChecker:
 								include_private_in=current_module,
 							)
 						viable: List[MethodResolution] = []
+						require_failures: list[ProofFailure] = []
+						trait_require_failures: list[ProofFailure] = []
 						type_arg_counts: set[int] = set()
 						saw_registry_only_with_type_args = False
 						saw_typed_nongeneric_with_type_args = False
@@ -3229,6 +3834,7 @@ class TypeChecker:
 								expected_type=expected_type,
 								explicit_type_args=type_arg_ids,
 								allow_infer=True,
+								diag_span=call_type_args_span or getattr(expr, "loc", Span()),
 							)
 							if inst_err == "no_typeparams" and type_arg_ids:
 								saw_typed_nongeneric_with_type_args = True
@@ -3246,7 +3852,7 @@ class TypeChecker:
 								continue
 							# Enforce method-level requirements after instantiation.
 							if decl.fn_id is not None:
-								world = trait_worlds.get(decl.fn_id.module) if isinstance(trait_worlds, dict) else None
+								world = global_trait_world
 								req = world.requires_by_fn.get(decl.fn_id) if world is not None else None
 								if req is not None:
 									subjects: set[object] = set()
@@ -3267,6 +3873,20 @@ class TypeChecker:
 									)
 									res = prove_expr(world, env, subst, req)
 									if res.status is not ProofStatus.PROVED:
+										failure = _first_obligation_failure(
+											req_expr=req,
+											subst=subst,
+											origin=ObligationOrigin(
+												kind=ObligationOriginKind.CALLEE_REQUIRE,
+												label=f"method '{expr.method_name}'",
+												span=Span.from_loc(getattr(req, "loc", None)),
+											),
+											span=getattr(expr, "loc", Span()),
+											env=env,
+											world=world,
+										)
+										if failure is not None:
+											require_failures.append(failure)
 										continue
 							if len(inst_params) - 1 != len(arg_types):
 								continue
@@ -3389,6 +4009,7 @@ class TypeChecker:
 												expected_type=expected_type,
 												explicit_type_args=type_arg_ids,
 												allow_infer=True,
+												diag_span=call_type_args_span or getattr(expr, "loc", Span()),
 											)
 											if inst_err == "no_typeparams" and type_arg_ids:
 												trait_saw_typed_nongeneric = True
@@ -3515,9 +4136,43 @@ class TypeChecker:
 														)
 														subst[tp.id] = key
 														subst[tp.name] = key
+											for subj in subjects:
+												if subj in subst:
+													continue
+												if isinstance(subj, str):
+													try:
+														ty_expr = parser_ast.TypeExpr(
+															name=subj,
+															args=[],
+															module_alias=None,
+															module_id=None,
+															loc=getattr(cand.require_expr, "loc", None),
+														)
+														ty_id = resolve_opaque_type(
+															ty_expr, self.type_table, module_id=def_mod
+														)
+														subst[subj] = _normalize_type_key(
+															type_key_from_typeid(self.type_table, ty_id)
+														)
+													except Exception:
+														continue
 											env = TraitEnv(default_module=def_mod, assumed_true=set(fn_require_assumed))
 											res = prove_expr(world, env, subst, cand.require_expr)
 											if res.status is not ProofStatus.PROVED:
+												failure = _first_obligation_failure(
+													req_expr=cand.require_expr,
+													subst=subst,
+													origin=ObligationOrigin(
+														kind=ObligationOriginKind.IMPL_REQUIRE,
+														label=f"impl for trait '{trait_key.name}'",
+														span=cand.impl_loc,
+													),
+													span=getattr(expr, "loc", Span()),
+													env=env,
+													world=world,
+												)
+												if failure is not None:
+													trait_require_failures.append(failure)
 												continue
 
 									inst_params: list[TypeId] | None = None
@@ -3529,6 +4184,7 @@ class TypeChecker:
 										expected_type=expected_type,
 										explicit_type_args=type_arg_ids,
 										allow_infer=True,
+										diag_span=call_type_args_span or getattr(expr, "loc", Span()),
 									)
 									if inst_err == "no_typeparams" and type_arg_ids:
 										trait_saw_typed_nongeneric = True
@@ -3567,6 +4223,20 @@ class TypeChecker:
 											)
 											res = prove_expr(world, env, subst, req)
 											if res.status is not ProofStatus.PROVED:
+												failure = _first_obligation_failure(
+													req_expr=req,
+													subst=subst,
+													origin=ObligationOrigin(
+														kind=ObligationOriginKind.CALLEE_REQUIRE,
+														label=f"method '{expr.method_name}'",
+														span=Span.from_loc(getattr(req, "loc", None)),
+													),
+													span=getattr(expr, "loc", Span()),
+													env=env,
+													world=world,
+												)
+												if failure is not None:
+													trait_require_failures.append(failure)
 												continue
 									if len(inst_params) - 1 != len(arg_types):
 										continue
@@ -3672,6 +4342,18 @@ class TypeChecker:
 								raise ResolutionError(
 									f"cannot infer type arguments for method '{expr.method_name}'; add explicit '<type ...>'",
 									span=call_type_args_span,
+								)
+							if trait_require_failures:
+								failure = trait_require_failures[0]
+								raise ResolutionError(
+									_format_failure_message(failure),
+									span=failure.obligation.span or getattr(expr, "loc", Span()),
+								)
+							if require_failures:
+								failure = require_failures[0]
+								raise ResolutionError(
+									_format_failure_message(failure),
+									span=failure.obligation.span or getattr(expr, "loc", Span()),
 								)
 							raise ResolutionError(
 								f"no matching method '{expr.method_name}' for receiver {recv_ty} and args {arg_types}",
@@ -4053,6 +4735,11 @@ class TypeChecker:
 						declared_ty = resolve_opaque_type(stmt.declared_type_expr, self.type_table, module_id=current_module_name)
 					except Exception:
 						declared_ty = None
+					if declared_ty is not None:
+						_enforce_struct_requires(
+							declared_ty,
+							Span.from_loc(getattr(stmt.declared_type_expr, "loc", None)),
+						)
 				# If the user provides a type annotation, treat it as the expected type
 				# for the initializer. This enables constructor calls like:
 				#   val x: Optional<Int> = Some(1)

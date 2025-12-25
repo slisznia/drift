@@ -206,6 +206,8 @@ class TypeTable:
 		self.struct_schemas: dict[NominalKey, tuple[str, list[str]]] = {}
 		# Struct base schemas keyed by the base TypeId (declared name).
 		self.struct_bases: dict[TypeId, StructSchema] = {}
+		# Struct type parameter ids keyed by the base TypeId (declared name).
+		self.struct_type_param_ids: dict[TypeId, list[TypeParamId]] = {}
 		# Concrete instantiations keyed by the instantiated TypeId.
 		self.struct_instances: dict[TypeId, StructInstance] = {}
 		# Variant schemas keyed by the *base* TypeId (declared name).
@@ -316,6 +318,11 @@ class TypeTable:
 			type_params=type_params,
 			fields=[],
 		)
+		if ty_id not in self.struct_type_param_ids:
+			owner = FunctionId(module="lang.__internal", name=f"__struct_{module_id}::{name}", ordinal=0)
+			self.struct_type_param_ids[ty_id] = [
+				TypeParamId(owner=owner, index=idx) for idx, _name in enumerate(type_params)
+			]
 		return ty_id
 
 	def declare_variant(self, module_id: str, name: str, type_params: list[str], arms: list[VariantArmSchema]) -> TypeId:
@@ -364,6 +371,10 @@ class TypeTable:
 		if inst is not None:
 			return self.struct_bases.get(inst.base_id)
 		return None
+
+	def get_struct_type_param_ids(self, base_id: TypeId) -> list[TypeParamId] | None:
+		"""Return struct type parameter ids for a base TypeId, if known."""
+		return self.struct_type_param_ids.get(base_id)
 
 	def get_struct_base(self, *, module_id: str, name: str) -> TypeId | None:
 		"""Return the base TypeId for a declared struct in `module_id`, if present."""

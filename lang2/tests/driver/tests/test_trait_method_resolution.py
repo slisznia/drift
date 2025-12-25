@@ -478,7 +478,8 @@ fn main() returns Int {
 	)
 	assert result.diagnostics
 	msgs = [d.message for d in result.diagnostics]
-	assert any("no matching method 'show'" in m for m in msgs)
+	assert any("requirement not satisfied" in m for m in msgs)
+	assert any("Hashable" in m for m in msgs)
 
 
 def test_trait_private_impl_not_visible_across_modules(tmp_path: Path) -> None:
@@ -693,4 +694,238 @@ fn main() returns Int { return f<type String>("s"); }
 	)
 	assert result.diagnostics
 	msgs = [d.message for d in result.diagnostics]
-	assert any("trait requirements not met" in m for m in msgs)
+	assert any("requirement not satisfied" in m for m in msgs)
+	assert any("m_trait.Show" in m for m in msgs)
+
+
+def test_ufcs_call_without_use_trait(tmp_path: Path) -> None:
+	files = {
+		Path("m_box.drift"): """
+module m_box
+
+pub struct Box<T> { value: T }
+
+export { Box }
+""",
+		Path("m_trait.drift"): """
+module m_trait
+
+import m_box
+
+pub trait Show {
+	fn show(self: m_box.Box<Int>) returns Int
+}
+
+export { Show }
+
+implement Show for m_box.Box<Int> {
+	pub fn show(self: m_box.Box<Int>) returns Int { return self.value; }
+}
+""",
+		Path("m_main.drift"): """
+module m_main
+
+import m_box
+import m_trait
+
+fn main() returns Int {
+	val b: m_box.Box<Int> = m_box.Box<type Int>(1);
+	return m_trait.Show::show(b);
+}
+""",
+	}
+	_, result, _sigs, _deps, _ids, _types, _trait_scope = _resolve_main_block(
+		tmp_path, files, main_module="m_main"
+	)
+	assert result.diagnostics == []
+
+
+def test_ufcs_disambiguates_traits(tmp_path: Path) -> None:
+	files = {
+		Path("m_box.drift"): """
+module m_box
+
+pub struct Box<T> { value: T }
+
+export { Box }
+""",
+		Path("m_a.drift"): """
+module m_a
+
+import m_box
+
+pub trait Show {
+	fn show(self: m_box.Box<Int>) returns Int
+}
+
+export { Show }
+
+implement Show for m_box.Box<Int> {
+	pub fn show(self: m_box.Box<Int>) returns Int { return 1; }
+}
+""",
+		Path("m_b.drift"): """
+module m_b
+
+import m_box
+
+pub trait Show {
+	fn show(self: m_box.Box<Int>) returns Int
+}
+
+export { Show }
+
+implement Show for m_box.Box<Int> {
+	pub fn show(self: m_box.Box<Int>) returns Int { return 2; }
+}
+""",
+		Path("m_main.drift"): """
+module m_main
+
+import m_box
+import m_a
+import m_b
+
+fn main() returns Int {
+	val b: m_box.Box<Int> = m_box.Box<type Int>(1);
+	return m_a.Show::show(b);
+}
+""",
+	}
+	_, result, _sigs, _deps, _ids, _types, _trait_scope = _resolve_main_block(
+		tmp_path, files, main_module="m_main"
+	)
+	assert result.diagnostics == []
+
+
+def test_ufcs_respects_method_visibility(tmp_path: Path) -> None:
+	files = {
+		Path("m_box.drift"): """
+module m_box
+
+pub struct Box<T> { value: T }
+
+export { Box }
+""",
+		Path("m_trait.drift"): """
+module m_trait
+
+import m_box
+
+pub trait Show {
+	fn show(self: m_box.Box<Int>) returns Int
+}
+
+export { Show }
+""",
+		Path("m_impl.drift"): """
+module m_impl
+
+import m_box
+import m_trait
+
+implement m_trait.Show for m_box.Box<Int> {
+	fn show(self: m_box.Box<Int>) returns Int { return 1; }
+}
+""",
+		Path("m_main.drift"): """
+module m_main
+
+import m_box
+import m_trait
+import m_impl
+
+fn main() returns Int {
+	val b: m_box.Box<Int> = m_box.Box<type Int>(1);
+	return m_trait.Show::show(b);
+}
+""",
+	}
+	_, result, _sigs, _deps, _ids, _types, _trait_scope = _resolve_main_block(
+		tmp_path, files, main_module="m_main"
+	)
+	assert result.diagnostics
+	msgs = [d.message for d in result.diagnostics]
+	assert any("exists but is not visible" in m for m in msgs)
+
+
+def test_ufcs_respects_requirements(tmp_path: Path) -> None:
+	files = {
+		Path("m_box.drift"): """
+module m_box
+
+pub struct Box<T> { value: T }
+
+export { Box }
+""",
+		Path("m_trait.drift"): """
+module m_trait
+
+import m_box
+
+pub trait Hashable {
+	fn hash(self: Int) returns Int
+}
+
+export { Hashable, Show }
+
+implement Hashable for Int {
+	pub fn hash(self: Int) returns Int { return self; }
+}
+
+pub trait Show {
+	fn show(self: m_box.Box<String>) returns Int
+}
+
+implement Show for m_box.Box<String> require String is Hashable {
+	pub fn show(self: m_box.Box<String>) returns Int { return 0; }
+}
+""",
+		Path("m_main.drift"): """
+module m_main
+
+import m_box
+import m_trait
+
+fn main() returns Int {
+	val b: m_box.Box<String> = m_box.Box<type String>("s");
+	return m_trait.Show::show(b);
+}
+""",
+	}
+	_, result, _sigs, _deps, _ids, _types, _trait_scope = _resolve_main_block(
+		tmp_path, files, main_module="m_main"
+	)
+	assert result.diagnostics
+	msgs = [d.message for d in result.diagnostics]
+	assert any("requirement not satisfied" in m for m in msgs)
+	assert any("Hashable" in m for m in msgs)
+
+
+def test_ufcs_requires_exported_trait(tmp_path: Path) -> None:
+	files = {
+		Path("m_trait.drift"): """
+module m_trait
+
+pub trait Show {
+	fn show(self: Self) returns Int
+}
+""",
+		Path("m_main.drift"): """
+module m_main
+
+import m_trait
+
+fn main() returns Int {
+	return m_trait.Show::show(1);
+}
+""",
+	}
+	mod_root = tmp_path / "mods"
+	for rel, content in files.items():
+		_write_file(mod_root / rel, content)
+	paths = sorted(mod_root.rglob("*.drift"))
+	_func_hirs, _sigs, _ids, _types, _exc, _exports, _deps, diagnostics = parse_drift_workspace_to_hir(paths)
+	assert diagnostics
+	msgs = [d.message for d in diagnostics]
+	assert any("does not export trait 'Show'" in m for m in msgs)

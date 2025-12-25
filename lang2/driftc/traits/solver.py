@@ -16,6 +16,44 @@ class ProofStatus(Enum):
 	AMBIGUOUS = auto()
 
 
+class ProofFailureReason(Enum):
+	NO_IMPL = auto()
+	AMBIGUOUS_IMPL = auto()
+	UNKNOWN = auto()
+
+
+class ObligationOriginKind(Enum):
+	CALL_SITE = auto()
+	METHOD_CALL = auto()
+	CANDIDATE_IMPL = auto()
+	CALLEE_REQUIRE = auto()
+	IMPL_REQUIRE = auto()
+
+
+@dataclass(frozen=True)
+class ObligationOrigin:
+	kind: ObligationOriginKind
+	label: Optional[str] = None
+	span: Optional[object] = None
+
+
+@dataclass(frozen=True)
+class Obligation:
+	subject: TypeKey
+	trait: TraitKey
+	origin: ObligationOrigin
+	span: Optional[object] = None
+	notes: List[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class ProofFailure:
+	obligation: Obligation
+	reason: ProofFailureReason
+	impl_ids: Tuple[int, ...] = ()
+	details: Tuple[str, ...] = ()
+
+
 @dataclass
 class ProofResult:
 	status: ProofStatus
@@ -151,6 +189,8 @@ def prove_is(
 	cache = _cache if _cache is not None else {}
 	in_progress = _in_progress if _in_progress is not None else set()
 	subject_ty = subst.get(subject)
+	if subject_ty is None and isinstance(subject, TypeKey):
+		subject_ty = subject
 	cache_key: CacheKey = (subject, _trait_key_str(trait_key), subject_ty)
 	if cache_key in cache:
 		return cache[cache_key]
@@ -223,4 +263,48 @@ def prove_is(
 		in_progress.remove(cycle_key)
 
 
-__all__ = ["Env", "ProofResult", "ProofStatus", "prove_expr", "prove_is", "deny_expr", "CacheKey"]
+def prove_obligation(
+	world: TraitWorld,
+	env: Env,
+	obligation: Obligation,
+) -> ProofFailure | None:
+	res = prove_is(world, env, {}, obligation.subject, obligation.trait)
+	if res.status is ProofStatus.PROVED:
+		return None
+	if res.status is ProofStatus.AMBIGUOUS:
+		return ProofFailure(
+			obligation=obligation,
+			reason=ProofFailureReason.AMBIGUOUS_IMPL,
+			impl_ids=tuple(res.used_impls),
+			details=tuple(res.reasons),
+		)
+	if res.status is ProofStatus.UNKNOWN:
+		return ProofFailure(
+			obligation=obligation,
+			reason=ProofFailureReason.UNKNOWN,
+			impl_ids=tuple(res.used_impls),
+			details=tuple(res.reasons),
+		)
+	return ProofFailure(
+		obligation=obligation,
+		reason=ProofFailureReason.NO_IMPL,
+		impl_ids=tuple(res.used_impls),
+		details=tuple(res.reasons),
+	)
+
+
+__all__ = [
+	"Env",
+	"ProofFailure",
+	"ProofFailureReason",
+	"ProofResult",
+	"ProofStatus",
+	"Obligation",
+	"ObligationOrigin",
+	"ObligationOriginKind",
+	"prove_expr",
+	"prove_is",
+	"deny_expr",
+	"prove_obligation",
+	"CacheKey",
+]
