@@ -463,17 +463,6 @@ class TypeChecker:
 				return False, 0
 			return False, 0
 
-		def _bind_type_param(
-			bindings: dict[TypeParamId, TypeId],
-			tp_id: TypeParamId,
-			actual: TypeId,
-		) -> bool:
-			prev = bindings.get(tp_id)
-			if prev is None:
-				bindings[tp_id] = actual
-				return True
-			return prev == actual
-
 		def _infer_from_types(
 			*,
 			sig: FnSignature,
@@ -488,14 +477,35 @@ class TypeChecker:
 			if not type_param_ids:
 				return None, None, None, None
 			bindings: dict[TypeParamId, TypeId] = {}
+			constraints: list[tuple[TypeId, TypeId]] = []
+			if len(param_types) != len(actual_types):
+				return None, None, None, "arity"
+			constraints.extend(list(zip(param_types, actual_types)))
+			if expected_type is not None and sig.return_type_id is not None:
+				constraints.append((sig.return_type_id, expected_type))
+
+			changed = False
+
+			def _bind_typevar(tp_id: TypeParamId, actual: TypeId) -> bool:
+				nonlocal changed
+				prev = bindings.get(tp_id)
+				if prev is None:
+					bindings[tp_id] = actual
+					changed = True
+					return True
+				if prev == actual:
+					return True
+				return unify(prev, actual)
 
 			def unify(param_ty: TypeId, actual_ty: TypeId) -> bool:
-				pd = self.type_table.get(param_ty)
-				if pd.kind is TypeKind.TYPEVAR and pd.type_param_id in type_param_ids:
-					return _bind_type_param(bindings, pd.type_param_id, actual_ty)
 				if param_ty == actual_ty:
 					return True
+				pd = self.type_table.get(param_ty)
 				ad = self.type_table.get(actual_ty)
+				if pd.kind is TypeKind.TYPEVAR and pd.type_param_id in type_param_ids:
+					return _bind_typevar(pd.type_param_id, actual_ty)
+				if ad.kind is TypeKind.TYPEVAR and ad.type_param_id in type_param_ids:
+					return _bind_typevar(ad.type_param_id, param_ty)
 				if pd.kind != ad.kind:
 					return False
 				if pd.kind in (TypeKind.ARRAY, TypeKind.OPTIONAL, TypeKind.FNRESULT):
@@ -506,25 +516,73 @@ class TypeChecker:
 					if pd.ref_mut != ad.ref_mut or not pd.param_types or not ad.param_types:
 						return False
 					return unify(pd.param_types[0], ad.param_types[0])
-				if pd.kind in (TypeKind.STRUCT, TypeKind.VARIANT):
+				if pd.kind is TypeKind.STRUCT:
+					p_inst = self.type_table.get_struct_instance(param_ty)
+					a_inst = self.type_table.get_struct_instance(actual_ty)
+					if p_inst is not None or a_inst is not None:
+						p_base = p_inst.base_id if p_inst is not None else param_ty
+						a_base = a_inst.base_id if a_inst is not None else actual_ty
+						if p_base != a_base:
+							return False
+						p_args = list(p_inst.type_args) if p_inst is not None else []
+						a_args = list(a_inst.type_args) if a_inst is not None else []
+						if len(p_args) != len(a_args):
+							return False
+						return all(unify(p, a) for p, a in zip(p_args, a_args))
 					if pd.name != ad.name or pd.module_id != ad.module_id:
 						return False
-					if len(pd.param_types) != len(ad.param_types):
+					return True
+				if pd.kind is TypeKind.VARIANT:
+					p_inst = self.type_table.get_variant_instance(param_ty)
+					a_inst = self.type_table.get_variant_instance(actual_ty)
+					if p_inst is None and a_inst is not None and pd.param_types:
+						base_id = self.type_table.get_variant_base(
+							module_id=pd.module_id or "", name=pd.name
+						)
+						if base_id is None or base_id != a_inst.base_id:
+							return False
+						p_args = list(pd.param_types)
+						a_args = list(a_inst.type_args)
+						if len(p_args) != len(a_args):
+							return False
+						return all(unify(p, a) for p, a in zip(p_args, a_args))
+					if p_inst is not None and a_inst is None and ad.param_types:
+						base_id = self.type_table.get_variant_base(
+							module_id=ad.module_id or "", name=ad.name
+						)
+						if base_id is None or base_id != p_inst.base_id:
+							return False
+						p_args = list(p_inst.type_args)
+						a_args = list(ad.param_types)
+						if len(p_args) != len(a_args):
+							return False
+						return all(unify(p, a) for p, a in zip(p_args, a_args))
+					if p_inst is not None or a_inst is not None:
+						p_base = p_inst.base_id if p_inst is not None else param_ty
+						a_base = a_inst.base_id if a_inst is not None else actual_ty
+						if p_base != a_base:
+							return False
+						p_args = list(p_inst.type_args) if p_inst is not None else []
+						a_args = list(a_inst.type_args) if a_inst is not None else []
+						if len(p_args) != len(a_args):
+							return False
+						return all(unify(p, a) for p, a in zip(p_args, a_args))
+					if pd.name != ad.name or pd.module_id != ad.module_id:
 						return False
-					return all(unify(p, a) for p, a in zip(pd.param_types, ad.param_types))
+					return True
 				if pd.kind is TypeKind.FUNCTION:
 					if len(pd.param_types) != len(ad.param_types):
 						return False
 					return all(unify(p, a) for p, a in zip(pd.param_types, ad.param_types))
 				return False
 
-			if len(param_types) != len(actual_types):
-				return None, None, None, "arity"
-			for p, a in zip(param_types, actual_types):
-				if not unify(p, a):
-					return None, None, None, "mismatch"
-			if expected_type is not None and sig.return_type_id is not None:
-				unify(sig.return_type_id, expected_type)
+			for _ in range(2):
+				changed = False
+				for p, a in constraints:
+					if not unify(p, a):
+						return None, None, None, "mismatch"
+				if not changed:
+					break
 
 			args: list[TypeId] = []
 			for tp in type_params:
@@ -3338,14 +3396,134 @@ class TypeChecker:
 					struct_schema = self.type_table.get_struct_schema(struct_id)
 					if struct_schema is not None and struct_schema.type_params:
 						if not type_arg_ids:
-							diagnostics.append(
-								Diagnostic(
-									message=f"cannot infer type arguments for struct '{struct_name}'; add explicit '<type ...>'",
-									severity="error",
-									span=call_type_args_span or getattr(expr, "loc", Span()),
+							inferred: list[TypeId] | None = None
+							if expected_type is not None:
+								exp_inst = self.type_table.get_struct_instance(expected_type)
+								if exp_inst is not None and exp_inst.base_id == struct_id:
+									inferred = list(exp_inst.type_args)
+							if inferred is None:
+								field_names: list[str] = []
+								field_types: list[TypeId] = []
+								param_ids = self.type_table.get_struct_type_param_ids(struct_id) or []
+								typevar_ids: list[TypeId] = []
+								for idx, tp_name in enumerate(struct_schema.type_params):
+									if idx < len(param_ids):
+										typevar_ids.append(self.type_table.ensure_typevar(param_ids[idx], name=tp_name))
+
+								type_cache: dict[tuple[TypeId, tuple[TypeId, ...]], TypeId] = {}
+
+								def _lower_generic_expr(expr: GenericTypeExpr) -> TypeId:
+									if expr.param_index is not None:
+										idx = int(expr.param_index)
+										if 0 <= idx < len(typevar_ids):
+											return typevar_ids[idx]
+										return self._unknown
+									name = expr.name
+									if name == "Int":
+										return self._int
+									if name == "Uint":
+										return self._uint
+									if name == "Bool":
+										return self._bool
+									if name == "Float":
+										return self._float
+									if name == "String":
+										return self._string
+									if name == "Void":
+										return self._void
+									if name == "Error":
+										return self._error
+									if name == "DiagnosticValue":
+										return self._dv
+									if name == "Unknown":
+										return self._unknown
+									if name in {"&", "&mut"} and expr.args:
+										inner = _lower_generic_expr(expr.args[0])
+										return self.type_table.ensure_ref_mut(inner) if name == "&mut" else self.type_table.ensure_ref(inner)
+									if name == "Array" and expr.args:
+										elem = _lower_generic_expr(expr.args[0])
+										return self.type_table.new_array(elem)
+									origin_mod = expr.module_id or struct_schema.module_id
+									base_id = (
+										self.type_table.get_nominal(kind=TypeKind.STRUCT, module_id=origin_mod, name=name)
+										or self.type_table.get_nominal(kind=TypeKind.VARIANT, module_id=origin_mod, name=name)
+										or self.type_table.ensure_named(name, module_id=origin_mod)
+									)
+									if expr.args:
+										arg_ids = [_lower_generic_expr(a) for a in expr.args]
+										if base_id in self.type_table.variant_schemas:
+											if any(self.type_table.get(a).kind is TypeKind.TYPEVAR for a in arg_ids):
+												key = (base_id, tuple(arg_ids))
+												if key not in type_cache:
+													td = self.type_table.get(base_id)
+													type_cache[key] = self.type_table._add(
+														TypeKind.VARIANT,
+														td.name,
+														list(arg_ids),
+														register_named=False,
+														module_id=td.module_id,
+													)
+												return type_cache[key]
+											return self.type_table.ensure_instantiated(base_id, arg_ids)
+										if base_id in self.type_table.struct_bases:
+											if any(self.type_table.get(a).kind is TypeKind.TYPEVAR for a in arg_ids):
+												key = (base_id, tuple(arg_ids))
+												if key not in type_cache:
+													td = self.type_table.get(base_id)
+													type_cache[key] = self.type_table._add(
+														TypeKind.STRUCT,
+														td.name,
+														list(arg_ids),
+														register_named=False,
+														module_id=td.module_id,
+													)
+												return type_cache[key]
+											return self.type_table.ensure_struct_instantiated(base_id, arg_ids)
+									return base_id
+
+								field_names = [f.name for f in struct_schema.fields]
+								field_types = [_lower_generic_expr(f.type_expr) for f in struct_schema.fields]
+								mapped_types: list[Optional[TypeId]] = [None] * len(field_types)
+								for idx, ty in enumerate(arg_types):
+									if idx < len(mapped_types):
+										mapped_types[idx] = ty
+								for kw, kw_ty in zip(kw_pairs, kw_types):
+									if kw.name in field_names:
+										field_idx = field_names.index(kw.name)
+										mapped_types[field_idx] = kw_ty
+								template_types: list[TypeId] = []
+								actual_types: list[TypeId] = []
+								for tmpl, have in zip(field_types, mapped_types):
+									if have is None:
+										continue
+									template_types.append(tmpl)
+									actual_types.append(have)
+								if template_types:
+									type_params: list[TypeParam] = []
+									for idx, tp_name in enumerate(struct_schema.type_params):
+										if idx < len(param_ids):
+											type_params.append(TypeParam(id=param_ids[idx], name=tp_name, span=None))
+									if type_params:
+										dummy_sig = FnSignature(name=f"__struct_ctor_{struct_name}", type_params=type_params)
+										subst, _inst_params, _inst_return, infer_err = _infer_from_types(
+											sig=dummy_sig,
+											param_types=template_types,
+											actual_types=actual_types,
+											expected_type=None,
+										)
+										if subst is not None and infer_err is None:
+											inferred = list(subst.args)
+							if inferred:
+								type_arg_ids = inferred
+							else:
+								diagnostics.append(
+									Diagnostic(
+										message=f"cannot infer type arguments for struct '{struct_name}'; add explicit '<type ...>'",
+										severity="error",
+										span=call_type_args_span or getattr(expr, "loc", Span()),
+									)
 								)
-							)
-							return record_expr(expr, self._unknown)
+								return record_expr(expr, self._unknown)
 						try:
 							struct_id = self.type_table.ensure_struct_instantiated(struct_id, type_arg_ids)
 						except ValueError as err:
