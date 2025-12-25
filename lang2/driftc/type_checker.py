@@ -37,10 +37,10 @@ from lang2.driftc.borrow_checker import (
 	place_from_expr,
 	places_overlap,
 )
-from lang2.driftc.method_registry import CallableDecl, CallableRegistry, CallableSignature, ModuleId, SelfMode
+from lang2.driftc.method_registry import CallableDecl, CallableKind, CallableRegistry, CallableSignature, ModuleId, SelfMode, Visibility
 from lang2.driftc.impl_index import GlobalImplIndex
 from lang2.driftc.trait_index import GlobalTraitImplIndex, GlobalTraitIndex, TraitImplCandidate
-from lang2.driftc.traits.world import TraitKey, trait_key_from_expr, type_key_from_typeid
+from lang2.driftc.traits.world import TraitKey, TraitWorld, trait_key_from_expr, type_key_from_typeid
 from lang2.driftc.method_resolver import MethodResolution, ResolutionError, resolve_method_call
 from lang2.driftc.core.iter_intrinsics import ensure_array_iter_struct, is_array_iter_struct
 from lang2.driftc.parser import ast as parser_ast
@@ -232,7 +232,29 @@ class TypeChecker:
 		diagnostics: List[Diagnostic] = []
 		call_resolutions: Dict[int, CallableDecl | MethodResolution] = {}
 		trait_worlds = getattr(self.type_table, "trait_worlds", {}) or {}
+		global_trait_world: TraitWorld | None = None
+		if isinstance(trait_worlds, dict) and trait_worlds:
+			global_trait_world = getattr(self.type_table, "_global_trait_world", None)
+			if global_trait_world is None:
+				merged = TraitWorld()
+				for world in trait_worlds.values():
+					for key, tr in world.traits.items():
+						merged.traits.setdefault(key, tr)
+				for world in trait_worlds.values():
+					for fn_key, req in world.requires_by_fn.items():
+						merged.requires_by_fn.setdefault(fn_key, req)
+					for ty_key, req in world.requires_by_struct.items():
+						merged.requires_by_struct.setdefault(ty_key, req)
+					for impl in world.impls:
+						impl_id = len(merged.impls)
+						merged.impls.append(impl)
+						merged.impls_by_trait.setdefault(impl.trait, []).append(impl_id)
+						merged.impls_by_target_head.setdefault(impl.target_head, []).append(impl_id)
+						merged.impls_by_trait_target.setdefault((impl.trait, impl.target_head), []).append(impl_id)
+				global_trait_world = merged
+				self.type_table._global_trait_world = merged
 		type_param_map: dict[str, TypeParamId] = {}
+		type_param_names: dict[TypeParamId, str] = {}
 		fn_require_assumed: set[tuple[object, TraitKey]] = set()
 
 		def _collect_trait_is(expr: parser_ast.TraitExpr, out: list[parser_ast.TraitIs]) -> None:
@@ -274,13 +296,17 @@ class TypeChecker:
 				)
 			return expr
 
+		def _normalize_type_key(key: object) -> object:
+			if getattr(key, "module", None) is None:
+				return type(key)(module=current_module_name, name=key.name, args=key.args)
+			return key
+
 		if signatures_by_id is not None:
 			sig = signatures_by_id.get(fn_id)
 			if sig is not None:
 				type_param_map = {p.name: p.id for p in getattr(sig, "type_params", []) or []}
-		world_for_fn = None
-		if isinstance(trait_worlds, dict):
-			world_for_fn = trait_worlds.get(current_module_name)
+				type_param_names = {p.id: p.name for p in getattr(sig, "type_params", []) or []}
+		world_for_fn = global_trait_world
 		if world_for_fn is not None:
 			req = world_for_fn.requires_by_fn.get(fn_id)
 			if req is not None:
@@ -293,6 +319,10 @@ class TypeChecker:
 					if isinstance(subj, TypeParamId):
 						trait_key = trait_key_from_expr(atom.trait, default_module=current_module_name)
 						fn_require_assumed.add((subj, trait_key))
+						tp_name = type_param_names.get(subj)
+						ty_id = self.type_table.ensure_typevar(subj, name=tp_name)
+						key = _normalize_type_key(type_key_from_typeid(self.type_table, ty_id))
+						fn_require_assumed.add((key, trait_key))
 
 		def _single_sig(name: str) -> FnSignature | None:
 			if not call_signatures:
@@ -332,11 +362,6 @@ class TypeChecker:
 				_collect_trait_subjects(expr.right, out)
 			elif isinstance(expr, parser_ast.TraitNot):
 				_collect_trait_subjects(expr.expr, out)
-
-		def _normalize_type_key(key: object) -> object:
-			if getattr(key, "module", None) is None:
-				return type(key)(module=current_module_name, name=key.name, args=key.args)
-			return key
 
 		def _require_rank(expr: parser_ast.TraitExpr | None) -> tuple[bool, int]:
 			if expr is None:
@@ -426,28 +451,28 @@ class TypeChecker:
 			inst_return = apply_subst(sig.return_type_id, subst, self.type_table) if sig.return_type_id is not None else None
 			return subst, inst_params, inst_return, None
 
-		def _instantiate_sig(
+		def _instantiate_sig_with_subst(
 			*,
 			sig: FnSignature,
 			arg_types: list[TypeId],
 			expected_type: TypeId | None,
 			explicit_type_args: list[TypeId] | None,
 			allow_infer: bool,
-		) -> tuple[list[TypeId] | None, TypeId | None, str | None]:
+		) -> tuple[list[TypeId] | None, TypeId | None, Subst | None, str | None]:
 			if sig.param_type_ids is None or sig.return_type_id is None:
-				return None, None, "no_types"
+				return None, None, None, "no_types"
 			if explicit_type_args:
 				if not sig.type_params:
-					return None, None, "no_typeparams"
+					return None, None, None, "no_typeparams"
 				if len(explicit_type_args) != len(sig.type_params):
-					return None, None, "typearg_count"
+					return None, None, None, "typearg_count"
 				subst = Subst(owner=sig.type_params[0].id.owner, args=list(explicit_type_args))
 				inst_params = [apply_subst(p, subst, self.type_table) for p in sig.param_type_ids]
 				inst_return = apply_subst(sig.return_type_id, subst, self.type_table)
-				return inst_params, inst_return, None
+				return inst_params, inst_return, subst, None
 			if sig.type_params:
 				if not allow_infer:
-					return None, None, "cannot_infer"
+					return None, None, None, "cannot_infer"
 				subst, inst_params, inst_return, infer_err = _infer_from_types(
 					sig=sig,
 					param_types=list(sig.param_type_ids),
@@ -456,10 +481,27 @@ class TypeChecker:
 				)
 				if subst is None or inst_params is None or inst_return is None:
 					if infer_err == "incomplete":
-						return None, None, "cannot_infer"
-					return None, None, "mismatch"
-				return inst_params, inst_return, None
-			return list(sig.param_type_ids), sig.return_type_id, None
+						return None, None, None, "cannot_infer"
+					return None, None, None, "mismatch"
+				return inst_params, inst_return, subst, None
+			return list(sig.param_type_ids), sig.return_type_id, None, None
+
+		def _instantiate_sig(
+			*,
+			sig: FnSignature,
+			arg_types: list[TypeId],
+			expected_type: TypeId | None,
+			explicit_type_args: list[TypeId] | None,
+			allow_infer: bool,
+		) -> tuple[list[TypeId] | None, TypeId | None, str | None]:
+			inst_params, inst_return, _subst, err = _instantiate_sig_with_subst(
+				sig=sig,
+				arg_types=arg_types,
+				expected_type=expected_type,
+				explicit_type_args=explicit_type_args,
+				allow_infer=allow_infer,
+			)
+			return inst_params, inst_return, err
 
 		def _receiver_compat(
 			receiver_type: TypeId,
@@ -600,7 +642,7 @@ class TypeChecker:
 				visible_modules=visible_modules or (current_module,),
 				include_private_in=current_module,
 			)
-			viable: List[tuple[CallableDecl, CallableSignature]] = []
+			viable: List[tuple[CallableDecl, CallableSignature, Subst | None]] = []
 			type_arg_counts: set[int] = set()
 			saw_registry_only_with_type_args = False
 			saw_typed_nongeneric_with_type_args = False
@@ -626,6 +668,7 @@ class TypeChecker:
 							(
 								decl,
 								CallableSignature(param_types=tuple(params), result_type=result_type),
+								None,
 							)
 						)
 					continue
@@ -646,7 +689,7 @@ class TypeChecker:
 				if sig.param_type_ids is None or sig.return_type_id is None:
 					continue
 
-				inst_params, inst_return, inst_err = _instantiate_sig(
+				inst_params, inst_return, inst_subst, inst_err = _instantiate_sig_with_subst(
 					sig=sig,
 					arg_types=arg_types,
 					expected_type=expected_type,
@@ -674,6 +717,7 @@ class TypeChecker:
 						(
 							decl,
 							CallableSignature(param_types=tuple(params), result_type=result_type),
+							inst_subst,
 						)
 					)
 			if not viable:
@@ -702,18 +746,18 @@ class TypeChecker:
 					)
 				raise ResolutionError(f"no matching overload for function '{name}' with args {arg_types}")
 			world = None
-			applicable: List[tuple[CallableDecl, CallableSignature]] = []
+			applicable: List[tuple[CallableDecl, CallableSignature, Subst | None]] = []
 			ranks: Dict[int, tuple[bool, int]] = {}
-			for decl, sig_inst in viable:
+			for decl, sig_inst, inst_subst in viable:
 				fn_id = _fn_id_for_decl(decl)
 				if fn_id is None:
-					applicable.append((decl, sig_inst))
+					applicable.append((decl, sig_inst, inst_subst))
 					ranks[decl.callable_id] = (True, 0)
 					continue
-				world = trait_worlds.get(fn_id.module) if isinstance(trait_worlds, dict) else None
+				world = global_trait_world
 				req = world.requires_by_fn.get(fn_id) if world is not None else None
 				if req is None:
-					applicable.append((decl, sig_inst))
+					applicable.append((decl, sig_inst, inst_subst))
 					ranks[decl.callable_id] = (True, 0)
 					continue
 				subjects: set[object] = set()
@@ -724,20 +768,20 @@ class TypeChecker:
 					sig = signatures_by_id.get(decl.fn_id)
 				if sig is None:
 					sig = _single_sig(decl.name)
-				if sig and getattr(sig, "type_params", None) and call_type_args:
+				if sig and getattr(sig, "type_params", None) and inst_subst is not None:
 					type_params = list(getattr(sig, "type_params", []) or [])
-					if len(call_type_args) == len(type_params):
-						for idx, tp in enumerate(type_params):
-							if tp.id in subjects:
-								subst[tp.id] = _normalize_type_key(
-									type_key_from_typeid(self.type_table, call_type_args[idx])
-								)
+					for idx, tp in enumerate(type_params):
+						if tp.id in subjects or tp.name in subjects:
+							if idx < len(inst_subst.args):
+								key = _normalize_type_key(type_key_from_typeid(self.type_table, inst_subst.args[idx]))
+								subst[tp.id] = key
+								subst[tp.name] = key
 				if world is None:
 					continue
 				env = TraitEnv(default_module=fn_id.module or current_module_name, assumed_true=set(fn_require_assumed))
 				res = prove_expr(world, env, subst, req)
 				if res.status is ProofStatus.PROVED:
-					applicable.append((decl, sig_inst))
+					applicable.append((decl, sig_inst, inst_subst))
 					ranks[decl.callable_id] = _require_rank(req)
 				else:
 					saw_require_failed = True
@@ -746,11 +790,11 @@ class TypeChecker:
 					raise ResolutionError(f"trait requirements not met for function '{name}'")
 				raise ResolutionError(f"no matching overload for function '{name}' with args {arg_types}")
 			if len(applicable) == 1:
-				return applicable[0]
-			if any(not ranks[decl.callable_id][0] for decl, _sig in applicable):
+				return applicable[0][0], applicable[0][1]
+			if any(not ranks[decl.callable_id][0] for decl, _sig, _subst in applicable):
 				raise ResolutionError(f"ambiguous call to function '{name}' with args {arg_types}")
-			best = max(ranks[decl.callable_id][1] for decl, _sig in applicable)
-			winners = [(d, s) for d, s in applicable if ranks[d.callable_id][1] == best]
+			best = max(ranks[decl.callable_id][1] for decl, _sig, _subst in applicable)
+			winners = [(d, s) for d, s, _subst in applicable if ranks[d.callable_id][1] == best]
 			if len(winners) != 1:
 				raise ResolutionError(f"ambiguous call to function '{name}' with args {arg_types}")
 			return winners[0]
@@ -3087,6 +3131,11 @@ class TypeChecker:
 							]
 						receiver_nominal = _unwrap_ref_type(recv_ty)
 						receiver_base, receiver_args = _struct_base_and_args(receiver_nominal)
+						recv_def = self.type_table.get(receiver_nominal)
+						recv_type_param_id = recv_def.type_param_id if recv_def.kind is TypeKind.TYPEVAR else None
+						recv_type_key = None
+						if recv_type_param_id is not None:
+							recv_type_key = _normalize_type_key(type_key_from_typeid(self.type_table, receiver_nominal))
 						if impl_index is not None:
 							candidates: list[CallableDecl] = []
 							hidden_candidates: list[tuple[CallableDecl, ImplMethodCandidate]] = []
@@ -3173,7 +3222,8 @@ class TypeChecker:
 
 							inst_params: list[TypeId] | None = None
 							inst_return: TypeId | None = None
-							inst_params, inst_return, inst_err = _instantiate_sig(
+							inst_subst: Subst | None = None
+							inst_params, inst_return, inst_subst, inst_err = _instantiate_sig_with_subst(
 								sig=sig,
 								arg_types=[recv_ty, *arg_types],
 								expected_type=expected_type,
@@ -3194,6 +3244,30 @@ class TypeChecker:
 
 							if inst_params is None or inst_return is None:
 								continue
+							# Enforce method-level requirements after instantiation.
+							if decl.fn_id is not None:
+								world = trait_worlds.get(decl.fn_id.module) if isinstance(trait_worlds, dict) else None
+								req = world.requires_by_fn.get(decl.fn_id) if world is not None else None
+								if req is not None:
+									subjects: set[object] = set()
+									_collect_trait_subjects(req, subjects)
+									subst: dict[object, object] = {}
+									if inst_subst is not None and sig.type_params:
+										for idx, tp in enumerate(sig.type_params):
+											if tp.id in subjects or tp.name in subjects:
+												if idx < len(inst_subst.args):
+													key = _normalize_type_key(
+														type_key_from_typeid(self.type_table, inst_subst.args[idx])
+													)
+													subst[tp.id] = key
+													subst[tp.name] = key
+									env = TraitEnv(
+										default_module=decl.fn_id.module or current_module_name,
+										assumed_true=set(fn_require_assumed),
+									)
+									res = prove_expr(world, env, subst, req)
+									if res.status is not ProofStatus.PROVED:
+										continue
 							if len(inst_params) - 1 != len(arg_types):
 								continue
 							ok, autoborrow = _receiver_compat(recv_ty, inst_params[0], decl.self_mode)
@@ -3248,6 +3322,121 @@ class TypeChecker:
 							for trait_key in traits_in_scope:
 								if not trait_index.has_method(trait_key, expr.method_name):
 									continue
+								if recv_type_param_id is not None:
+									if (
+										(recv_type_param_id, trait_key) not in fn_require_assumed
+										and (recv_type_key, trait_key) not in fn_require_assumed
+									):
+										continue
+									trait_def = trait_index.traits_by_id.get(trait_key)
+									method_sig = None
+									if trait_def is not None:
+										for method in getattr(trait_def, "methods", []) or []:
+											if getattr(method, "name", None) == expr.method_name:
+												method_sig = method
+												break
+									if method_sig is not None:
+										type_param_map = {"Self": recv_type_param_id}
+										param_type_ids: list[TypeId] = []
+										param_names: list[str] = []
+										for param in list(getattr(method_sig, "params", []) or []):
+											param_names.append(param.name)
+											if param.type_expr is None:
+												if param.name != "self":
+													param_type_ids = []
+													break
+												param_type_ids.append(receiver_nominal)
+												continue
+											param_type_ids.append(
+												resolve_opaque_type(
+													param.type_expr,
+													self.type_table,
+													module_id=trait_key.module or current_module_name,
+													type_params=type_param_map,
+												)
+											)
+										if param_type_ids:
+											ret_id = resolve_opaque_type(
+												method_sig.return_type,
+												self.type_table,
+												module_id=trait_key.module or current_module_name,
+												type_params=type_param_map,
+											)
+											self_mode = SelfMode.SELF_BY_VALUE
+											if param_type_ids:
+												param0 = self.type_table.get(param_type_ids[0])
+												if param0.kind is TypeKind.REF:
+													self_mode = (
+														SelfMode.SELF_BY_REF_MUT
+														if param0.ref_mut
+														else SelfMode.SELF_BY_REF
+													)
+											trait_sig = FnSignature(
+												name=method_sig.name,
+												method_name=method_sig.name,
+												param_type_ids=param_type_ids,
+												return_type_id=ret_id,
+												param_names=param_names if param_names else None,
+												is_method=True,
+												self_mode={SelfMode.SELF_BY_VALUE: "value", SelfMode.SELF_BY_REF: "ref", SelfMode.SELF_BY_REF_MUT: "ref_mut"}[
+													self_mode
+												],
+												module=trait_key.module or current_module_name,
+											)
+											inst_params, inst_return, inst_subst, inst_err = _instantiate_sig_with_subst(
+												sig=trait_sig,
+												arg_types=[recv_ty, *arg_types],
+												expected_type=expected_type,
+												explicit_type_args=type_arg_ids,
+												allow_infer=True,
+											)
+											if inst_err == "no_typeparams" and type_arg_ids:
+												trait_saw_typed_nongeneric = True
+											elif inst_err == "typearg_count" and type_arg_ids:
+												trait_type_arg_counts.add(len(trait_sig.type_params))
+											elif inst_err == "cannot_infer":
+												trait_saw_infer_incomplete = True
+											elif not inst_err and inst_params and inst_return is not None:
+												trait_decl = CallableDecl(
+													callable_id=-1,
+													name=method_sig.name,
+													kind=CallableKind.METHOD_TRAIT,
+													module_id=0,
+													visibility=Visibility.public(),
+													signature=CallableSignature(
+														param_types=tuple(param_type_ids),
+														result_type=ret_id,
+													),
+													fn_id=FunctionId(
+														module=trait_key.module or current_module_name,
+														name=method_sig.name,
+														ordinal=0,
+													),
+													impl_target_type_id=None,
+													self_mode=self_mode,
+												)
+												ok, autoborrow = _receiver_compat(recv_ty, inst_params[0], self_mode)
+												if ok and all(p == a for p, a in zip(inst_params[1:], arg_types)):
+													trait_candidates.append(
+														(
+															MethodResolution(
+																decl=trait_decl,
+																receiver_autoborrow=autoborrow,
+																result_type=inst_return,
+															),
+															TraitImplCandidate(
+																fn_id=trait_decl.fn_id,
+																name=method_sig.name,
+																trait=trait_key,
+																def_module_id=0,
+																is_pub=True,
+																impl_id=-1,
+																impl_loc=None,
+																method_loc=Span.from_loc(getattr(method_sig, "loc", None)),
+																require_expr=None,
+															),
+														)
+													)
 								for cand in trait_impl_index.get_candidates(trait_key, receiver_base, expr.method_name):
 									decl = callable_registry.get_by_fn_id(cand.fn_id) if callable_registry else None
 									if decl is None:
@@ -3311,7 +3500,7 @@ class TypeChecker:
 												if decl.fn_id is not None and decl.fn_id.module
 												else current_module_name
 											)
-											world = trait_worlds.get(def_mod) if isinstance(trait_worlds, dict) else None
+											world = global_trait_world
 											if world is None:
 												continue
 											subjects: set[object] = set()
@@ -3333,7 +3522,8 @@ class TypeChecker:
 
 									inst_params: list[TypeId] | None = None
 									inst_return: TypeId | None = None
-									inst_params, inst_return, inst_err = _instantiate_sig(
+									inst_subst: Subst | None = None
+									inst_params, inst_return, inst_subst, inst_err = _instantiate_sig_with_subst(
 										sig=sig,
 										arg_types=[recv_ty, *arg_types],
 										expected_type=expected_type,
@@ -3354,6 +3544,30 @@ class TypeChecker:
 
 									if inst_params is None or inst_return is None:
 										continue
+									# Enforce method-level requirements after instantiation.
+									if decl.fn_id is not None:
+										world = global_trait_world
+										req = world.requires_by_fn.get(decl.fn_id) if world is not None else None
+										if req is not None:
+											subjects: set[object] = set()
+											_collect_trait_subjects(req, subjects)
+											subst: dict[object, object] = {}
+											if inst_subst is not None and sig.type_params:
+												for idx, tp in enumerate(sig.type_params):
+													if tp.id in subjects or tp.name in subjects:
+														if idx < len(inst_subst.args):
+															key = _normalize_type_key(
+																type_key_from_typeid(self.type_table, inst_subst.args[idx])
+															)
+															subst[tp.id] = key
+															subst[tp.name] = key
+											env = TraitEnv(
+												default_module=decl.fn_id.module or current_module_name,
+												assumed_true=set(fn_require_assumed),
+											)
+											res = prove_expr(world, env, subst, req)
+											if res.status is not ProofStatus.PROVED:
+												continue
 									if len(inst_params) - 1 != len(arg_types):
 										continue
 									ok, autoborrow = _receiver_compat(recv_ty, inst_params[0], decl.self_mode)
@@ -4072,9 +4286,7 @@ class TypeChecker:
 							if subj in scope:
 								subst[subj] = _normalize_type_key(type_key_from_typeid(self.type_table, scope[subj]))
 								break
-					world = None
-					if isinstance(trait_worlds, dict):
-						world = trait_worlds.get(current_module_name)
+					world = global_trait_world
 					if world is None:
 						diagnostics.append(
 							Diagnostic(

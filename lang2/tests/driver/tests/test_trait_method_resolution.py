@@ -179,6 +179,66 @@ def _resolve_main_block(
 	)
 
 
+def _typecheck_named_fn(
+	tmp_path: Path,
+	files: dict[Path, str],
+	*,
+	module_name: str,
+	fn_name: str,
+) -> object:
+	mod_root = tmp_path / "mods"
+	for rel, content in files.items():
+		_write_file(mod_root / rel, content)
+	paths = sorted(mod_root.rglob("*.drift"))
+	func_hirs, signatures, fn_ids_by_name, type_table, _exc_catalog, module_exports, module_deps, diagnostics = parse_drift_workspace_to_hir(
+		paths,
+	)
+	assert diagnostics == []
+	registry, module_ids = _build_registry(signatures)
+	impl_index = GlobalImplIndex.from_module_exports(
+		module_exports=module_exports,
+		type_table=type_table,
+		module_ids=module_ids,
+	)
+	trait_index = GlobalTraitIndex.from_trait_worlds(getattr(type_table, "trait_worlds", None))
+	trait_impl_index = GlobalTraitImplIndex.from_module_exports(
+		module_exports=module_exports,
+		type_table=type_table,
+		module_ids=module_ids,
+	)
+	trait_scope_by_module: dict[str, list[object]] = {}
+	for mod, exp in module_exports.items():
+		if isinstance(exp, dict):
+			scope = exp.get("trait_scope", [])
+			trait_scope_by_module[mod] = list(scope) if isinstance(scope, list) else []
+	key = f"{module_name}::{fn_name}"
+	fn_ids = fn_ids_by_name.get(key) or []
+	assert len(fn_ids) == 1
+	fn_id = fn_ids[0]
+	block = func_hirs[fn_id]
+	sig = signatures.get(fn_id)
+	param_types = {}
+	if sig and sig.param_names and sig.param_type_ids:
+		param_types = {pname: pty for pname, pty in zip(sig.param_names, sig.param_type_ids)}
+	current_mod = module_ids.setdefault(module_name, len(module_ids))
+	visible_modules = _visible_modules_for(module_name, module_deps, module_ids)
+	type_checker = TypeChecker(type_table=type_table)
+	return type_checker.check_function(
+		fn_id,
+		block,
+		param_types=param_types,
+		return_type=sig.return_type_id if sig is not None else None,
+		signatures_by_id=signatures,
+		callable_registry=registry,
+		impl_index=impl_index,
+		trait_index=trait_index,
+		trait_impl_index=trait_impl_index,
+		trait_scope_by_module=trait_scope_by_module,
+		visible_modules=visible_modules,
+		current_module=current_mod,
+	)
+
+
 def test_trait_dot_call_succeeds_with_use_trait(tmp_path: Path) -> None:
 	files = {
 		Path("m_box.drift"): """
@@ -187,7 +247,7 @@ module m_box
 pub struct Box<T> { value: T }
 
 pub trait Show {
-	fn show(self: Box<Int>) returns Int
+	fn show(self: Self) returns Int
 }
 
 export { Box, Show }
@@ -241,11 +301,11 @@ module m_main
 
 import m_box as box
 
-fn main() returns Int {
-	val b: box.Box<Int> = box.Box<type Int>(1);
-	return b.show();
-}
-""",
+	fn main() returns Int {
+		val b: box.Box<Int> = box.Box<type Int>(1);
+		return b.show();
+	}
+	""",
 	}
 	_, result, _sigs, _deps, _ids, _types, _trait_scope = _resolve_main_block(
 		tmp_path, files, main_module="m_main"
@@ -535,3 +595,102 @@ fn main() returns Int {
 	assert result.diagnostics
 	msgs = [d.message for d in result.diagnostics]
 	assert any("ambiguous method 'show'" in m for m in msgs)
+
+
+def test_trait_bound_does_not_expand_scope(tmp_path: Path) -> None:
+	files = {
+		Path("m_trait.drift"): """
+module m_trait
+
+export { Show }
+
+pub trait Show {
+	fn show(self: Self) returns Int
+}
+
+implement Show for Int {
+	pub fn show(self: Int) returns Int { return self; }
+}
+""",
+		Path("m_main.drift"): """
+module m_main
+
+import m_trait
+
+fn f<T>(x: T) returns Int require T is m_trait.Show { return x.show(); }
+
+fn main() returns Int { return f<type Int>(1); }
+""",
+	}
+	result = _typecheck_named_fn(
+		tmp_path, files, module_name="m_main", fn_name="f"
+	)
+	assert result.diagnostics
+	msgs = [d.message for d in result.diagnostics]
+	assert any("no matching method 'show'" in m for m in msgs)
+
+
+def test_trait_bound_with_use_trait_succeeds(tmp_path: Path) -> None:
+	files = {
+		Path("m_trait.drift"): """
+module m_trait
+
+export { Show }
+
+pub trait Show {
+	fn show(self: Self) returns Int
+}
+
+implement Show for Int {
+	pub fn show(self: Int) returns Int { return self; }
+}
+""",
+		Path("m_main.drift"): """
+module m_main
+
+import m_trait
+use trait m_trait.Show
+
+fn f<T>(x: T) returns Int require T is m_trait.Show { return x.show(); }
+
+fn main() returns Int { return f<type Int>(1); }
+""",
+	}
+	result = _typecheck_named_fn(
+		tmp_path, files, module_name="m_main", fn_name="f"
+	)
+	assert result.diagnostics == []
+
+
+def test_trait_bound_enforced_at_call_site(tmp_path: Path) -> None:
+	files = {
+		Path("m_trait.drift"): """
+module m_trait
+
+export { Show }
+
+pub trait Show {
+	fn show(self: Self) returns Int
+}
+
+implement Show for Int {
+	pub fn show(self: Int) returns Int { return self; }
+}
+""",
+		Path("m_main.drift"): """
+module m_main
+
+import m_trait
+use trait m_trait.Show
+
+fn f<T>(x: T) returns Int require T is m_trait.Show { return x.show(); }
+
+fn main() returns Int { return f<type String>("s"); }
+""",
+	}
+	_, result, _sigs, _deps, _ids, _types, _trait_scope = _resolve_main_block(
+		tmp_path, files, main_module="m_main"
+	)
+	assert result.diagnostics
+	msgs = [d.message for d in result.diagnostics]
+	assert any("trait requirements not met" in m for m in msgs)

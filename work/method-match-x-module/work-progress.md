@@ -15,6 +15,12 @@
 - Cross-module method/impl driver tests live in `lang2/tests/driver/tests/test_method_resolution_multimodule.py` and are green.
 - Link-time duplicate inherent method check runs before typecheck and is covered by the cross-module ambiguity fixture.
 - Trait dot-call plumbing is now wired: `use trait` directives populate `trait_scope_by_module`, trait indexes are built from `trait_worlds` + `module_exports`, and the type checker resolves trait methods after inherent lookup.
+- T1 guardrails added: parser + driver tests now lock `use trait` parsing and resolution (alias, export gating, unknown trait).
+- T2 trait dot-call fallback is implemented and covered by driver tests in `lang2/tests/driver/tests/test_trait_method_resolution.py` (scope required, inherent beats trait, ambiguity, require blocks, private impl visibility).
+- Trait bounds now act as ambient assumptions inside a generic function body and are enforced at call sites (with `use trait` still controlling dot-call scope). Tests cover bound inference, bound failure, and dot-call inside bounded functions.
+- Spec clarification added: inside a trait, an untyped `self` is implicitly `self: Self`.
+- Added a local-vs-cross-module coverage test (`test_local_impl_wins_over_unimported_impl`) in `lang2/tests/driver/tests/test_method_resolution_multimodule.py`.
+- Borrow checker NLL-lite cleanup complete: per-ref live-region tracking, target-use collection, and updated e2e case `borrow_nll_last_use_allows_write`.
 - Trait exports and reexports are serialized in package payloads, and package interface validation now checks `exports.traits`/`reexports.traits`.
 - Function call require enforcement now infers type args from arg types when explicit `<type ...>` is absent, substitutes TypeParamId subjects, and dedupes checks across identical arg+type-arg tuples.
 - Targeted driver suite (`just lang2-driver-suite`) is green after these changes.

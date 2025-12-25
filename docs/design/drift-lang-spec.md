@@ -687,6 +687,7 @@ Rules:
 
 - Traits declare **behavior only** (no fields).
 - `Self` refers to the implementing type.
+- Inside a trait, an untyped receiver `self` is implicitly `self: Self`.
 - Traits can depend on other traits (via `require Self is TraitX`).
 - Trait names should be **adjectives** describing the capability.
 
@@ -802,6 +803,35 @@ Using a function with unmet trait requirements triggers a compile-time error.
 **Subject restriction:** in this revision, trait requirements refer to type
 parameters (e.g., `T is Trait`) or `Self`. Value identifiers (`x is Trait`)
 are not part of the surface language.
+
+---
+
+### 5.6.1. Trait method lookup and scope
+
+Trait dot-call lookup is explicit and file-scoped:
+
+- Traits participate in dot-call lookup only if listed via `use trait`.
+- `use trait <QualifiedTraitName>` is a module-level directive (file-scoped).
+- Multiple `use trait` directives are allowed; all listed traits are in scope.
+- Dot-call lookup does **not** consider traits outside the file-scoped list.
+- Ambiguity between traits requires explicit disambiguation (UFCS); there is no
+  block-scoped trait import.
+
+Trait bounds and `use trait` are orthogonal:
+
+- `use trait` controls *which* traits are considered for dot-call lookup.
+- `require T is Trait` controls *which instantiations are allowed*.
+
+Example:
+
+```drift
+import m_traits as t
+use trait t.Show
+
+fn f<T>(x: T) returns Int require T is t.Show {
+    return x.show()
+}
+```
 
 ---
 

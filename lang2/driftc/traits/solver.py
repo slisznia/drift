@@ -158,7 +158,15 @@ def prove_is(
 		res = ProofResult(status=ProofStatus.PROVED, reasons=["assumed true"])
 		cache[cache_key] = res
 		return res
+	if subject_ty is not None and (subject_ty, trait_key) in env.assumed_true:
+		res = ProofResult(status=ProofStatus.PROVED, reasons=["assumed true"])
+		cache[cache_key] = res
+		return res
 	if (subject, trait_key) in env.assumed_false:
+		res = ProofResult(status=ProofStatus.REFUTED, reasons=["assumed false"])
+		cache[cache_key] = res
+		return res
+	if subject_ty is not None and (subject_ty, trait_key) in env.assumed_false:
 		res = ProofResult(status=ProofStatus.REFUTED, reasons=["assumed false"])
 		cache[cache_key] = res
 		return res

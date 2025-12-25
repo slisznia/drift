@@ -71,7 +71,7 @@ def _enforce_fn_requires(tc: TypeChecker, typed_fn: object, sigs: dict[FunctionI
 def test_type_param_bound_satisfied(tmp_path: Path) -> None:
 	tc, res, sigs, fn_id = _typecheck_fn(
 		"""
-trait Show { fn show(self: Int) returns Int }
+trait Show { fn show(self: Self) returns Int }
 
 implement Show for Int {
 	pub fn show(self: Int) returns Int { return self; }
@@ -92,7 +92,7 @@ fn main() returns Int { return f<type Int>(1); }
 def test_type_param_bound_unsatisfied(tmp_path: Path) -> None:
 	tc, res, sigs, fn_id = _typecheck_fn(
 		"""
-trait Show { fn show(self: Int) returns Int }
+trait Show { fn show(self: Self) returns Int }
 
 fn f<T>(x: T) returns Int require T is Show { return 0; }
 
@@ -107,7 +107,7 @@ fn main() returns Int { return f<type String>("s"); }
 def test_type_param_bounds_with_guard_is_decidable(tmp_path: Path) -> None:
 	tc, res, sigs, fn_id = _typecheck_fn(
 		"""
-trait Show { fn show(self: Int) returns Int }
+trait Show { fn show(self: Self) returns Int }
 
 implement Show for Int {
 	pub fn show(self: Int) returns Int { return self; }
@@ -123,3 +123,42 @@ fn main() returns Int { return f<type Int>(1); }
 		"f",
 	)
 	assert res.diagnostics == []
+
+
+def test_type_param_bound_inferred_success(tmp_path: Path) -> None:
+	tc, res, sigs, fn_id = _typecheck_fn(
+		"""
+trait Show { fn show(self: Self) returns Int }
+
+implement Show for Int {
+	pub fn show(self: Int) returns Int { return self; }
+}
+
+fn f<T>(x: T) returns Int require T is Show { return 0; }
+
+fn main() returns Int { return f(1); }
+""",
+		tmp_path,
+		"main",
+	)
+	assert res.diagnostics == []
+
+
+def test_type_param_bounds_multiple_one_fails(tmp_path: Path) -> None:
+	tc, res, sigs, fn_id = _typecheck_fn(
+		"""
+trait A { fn a(self: Self) returns Int }
+trait B { fn b(self: Self) returns Int }
+
+implement A for Int {
+	pub fn a(self: Int) returns Int { return self; }
+}
+
+fn f<T>(x: T) returns Int require T is A, T is B { return 0; }
+
+fn main() returns Int { return f<type Int>(1); }
+""",
+		tmp_path,
+		"main",
+	)
+	assert any("trait requirements not met" in d.message for d in res.diagnostics)
