@@ -184,6 +184,93 @@ def test_borrow_use_in_assign_target_keeps_live():
 	assert any("borrow" in d.message for d in diags)
 
 
+def test_borrow_last_use_same_block_allows_write():
+	# NLL-lite with statement-level liveness drops the loan after the last use.
+	block = H.HBlock(
+		statements=[
+			H.HLet(name="x", value=H.HLiteralInt(0), declared_type_expr=None, binding_id=1),
+			H.HLet(
+				name="r",
+				value=H.HBorrow(subject=H.HVar("x", binding_id=1), is_mut=True),
+				declared_type_expr=None,
+				binding_id=2,
+			),
+			H.HExprStmt(expr=H.HVar("r", binding_id=2)),
+			H.HAssign(target=H.HVar("x", binding_id=1), value=H.HLiteralInt(1)),
+		]
+	)
+	diags = _bc({"x": (1, "Int"), "r": (2, "RefMutInt")}).check_block(block)
+	assert diags == []
+
+
+def test_unused_borrow_same_block_still_blocks_write():
+	# Unused borrows stay live until the end of their lexical scope (conservative).
+	block = H.HBlock(
+		statements=[
+			H.HLet(name="x", value=H.HLiteralInt(0), declared_type_expr=None, binding_id=1),
+			H.HLet(
+				name="p",
+				value=H.HBorrow(subject=H.HVar("x", binding_id=1), is_mut=False),
+				declared_type_expr=None,
+				binding_id=2,
+			),
+			H.HAssign(target=H.HVar("x", binding_id=1), value=H.HLiteralInt(1)),
+		]
+	)
+	diags = _bc({"x": (1, "Int"), "p": (2, "RefInt")}).check_block(block)
+	assert any("cannot write" in d.message for d in diags)
+
+
+def test_unused_borrow_in_inner_scope_allows_after_scope():
+	block = H.HBlock(
+		statements=[
+			H.HLet(name="x", value=H.HLiteralInt(0), declared_type_expr=None, binding_id=1),
+			H.HIf(
+				cond=H.HLiteralBool(True),
+				then_block=H.HBlock(
+					statements=[
+						H.HLet(
+							name="p",
+							value=H.HBorrow(subject=H.HVar("x", binding_id=1), is_mut=False),
+							declared_type_expr=None,
+							binding_id=2,
+						)
+					]
+				),
+				else_block=H.HBlock(statements=[]),
+			),
+			H.HAssign(target=H.HVar("x", binding_id=1), value=H.HLiteralInt(1)),
+		]
+	)
+	diags = _bc({"x": (1, "Int"), "p": (2, "RefInt")}).check_block(block)
+	assert diags == []
+
+
+def test_ref_copy_keeps_borrow_live_until_last_use():
+	block = H.HBlock(
+		statements=[
+			H.HLet(name="x", value=H.HLiteralInt(0), declared_type_expr=None, binding_id=1),
+			H.HLet(
+				name="r",
+				value=H.HBorrow(subject=H.HVar("x", binding_id=1), is_mut=True),
+				declared_type_expr=None,
+				binding_id=2,
+			),
+			H.HLet(
+				name="s",
+				value=H.HVar("r", binding_id=2),
+				declared_type_expr=None,
+				binding_id=3,
+			),
+			H.HExprStmt(expr=H.HVar("s", binding_id=3)),
+			H.HAssign(target=H.HVar("x", binding_id=1), value=H.HLiteralInt(1)),
+			H.HExprStmt(expr=H.HVar("s", binding_id=3)),
+		]
+	)
+	diags = _bc({"x": (1, "Int"), "r": (2, "RefMutInt"), "s": (3, "RefMutInt")}).check_block(block)
+	assert any("cannot write" in d.message for d in diags)
+
+
 def test_multiple_refs_allow_mut_after_last_uses():
 	# Two refs to the same target; NLL-lite releases after the last use of both refs.
 	block = H.HBlock(

@@ -1,3 +1,9 @@
+## 2025-12-26 – Borrow checker statement-level liveness + ref-copy loans
+- Refined NLL-lite borrow tracking with per-statement ref liveness inside blocks, while preserving conservative “unused borrow stays live” behavior via lexical-scope caps.
+- Propagated loans across ref-to-ref `let`/assignment by cloning loans onto the destination ref with its own region cap.
+- Added regression tests for same-block last use, ref-copy liveness, and unused-borrow conservatism (including inner-scope release).
+- Borrow checker suite and targeted borrow codegen e2e cases passed.
+
 ## 2025-12-21 – Modules + packages + trust, plus core language additions
 - Landed multi-module workspace builds with explicit module roots (`-M/--module-path`) and deterministic module-id inference from directory paths, with strict module header validation (duplicate headers / not-first / mismatch / invalid ids / reserved prefixes).
 - Implemented explicit exports (`export { ... }`) and module-only imports (`import m [as x]`) with private-by-default visibility, deterministic star export expansion, and strict conflict rules (import/import + import/local are hard errors; repeated imports idempotent).
