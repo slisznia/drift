@@ -3,7 +3,7 @@
   "diagnostics": [
     { "phase": "typecheck", "message_contains": "E-QMEM-CANNOT-INFER" },
     { "phase": "typecheck", "message_contains": "underconstrained" },
-    { "phase": "typecheck", "message_contains": "Optional<Int>::None()" },
-    { "phase": "typecheck", "message_contains": "Optional::None<type Int>()" }
+    { "phase": "typecheck", "message_contains": "Optional<T>::None()" },
+    { "phase": "typecheck", "message_contains": "Optional::None<type T>()" }
   ]
 }

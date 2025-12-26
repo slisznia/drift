@@ -1,0 +1,8 @@
+{
+  "exit_code": 1,
+  "diagnostics": [
+    { "message_contains": "cannot write to 'x' while it is borrowed" },
+    { "message_contains": "borrow created here" },
+    { "message_contains": "borrow considered live here because of use at (on some path)" }
+  ]
+}

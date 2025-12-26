@@ -64,7 +64,7 @@ def _build_registry(signatures: dict[FunctionId, object]) -> tuple[CallableRegis
 def _visible_modules_for(module_name: str, module_deps: dict[str, set[str]], module_ids: dict[object, int]) -> tuple[int, ...]:
 	visible = set(module_deps.get(module_name, set()))
 	visible.add(module_name)
-	return tuple(sorted(module_ids.get(mod, 0) for mod in visible))
+	return tuple(sorted(module_ids.setdefault(mod, len(module_ids)) for mod in visible))
 
 
 def _typecheck_main(src: str, tmp_path: Path) -> list[object]:

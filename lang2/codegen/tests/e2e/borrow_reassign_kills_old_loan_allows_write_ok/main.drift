@@ -1,0 +1,8 @@
+fn main() returns Int {
+	var x = 0;
+	var y = 0;
+	var r = &mut x;
+	r = &mut y;
+	x = 7;
+	return x;
+}

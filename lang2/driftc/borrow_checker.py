@@ -25,6 +25,7 @@ class IndexKind(Enum):
 
 	ANY = auto()       # Unknown / non-constant index; conservatively overlaps.
 	CONST = auto()     # Known constant index.
+	VAR = auto()       # Variable index (binding id); overlaps unless facts prove disjoint.
 
 
 @dataclass(frozen=True)
@@ -87,6 +88,32 @@ def merge_place_state(a: PlaceState, b: PlaceState) -> PlaceState:
 	return PlaceState.UNINIT
 
 
+def _try_eval_const_int(expr: H.HExpr) -> Optional[int]:
+	"""Best-effort constant folding for integer index expressions."""
+	if isinstance(expr, H.HLiteralInt):
+		try:
+			return int(expr.value)
+		except Exception:
+			return None
+	if isinstance(expr, H.HUnary) and expr.op is H.UnaryOp.NEG:
+		inner = _try_eval_const_int(expr.expr)
+		if inner is None:
+			return None
+		return -inner
+	if isinstance(expr, H.HBinary):
+		left = _try_eval_const_int(expr.left)
+		right = _try_eval_const_int(expr.right)
+		if left is None or right is None:
+			return None
+		if expr.op is H.BinaryOp.ADD:
+			return left + right
+		if expr.op is H.BinaryOp.SUB:
+			return left - right
+		if expr.op is H.BinaryOp.MUL:
+			return left * right
+	return None
+
+
 class PlaceKind(Enum):
 	LOCAL = auto()
 	PARAM = auto()
@@ -135,6 +162,7 @@ def places_overlap(a: Place, b: Place) -> bool:
 	- Index projections:
 	  - CONST vs CONST are disjoint when indices differ (`arr[0]` vs `arr[1]`).
 	  - ANY overlaps everything (`arr[i]` overlaps `arr[0]` and `arr[j]`).
+	  - VAR overlaps everything unless a fact system proves disjointness.
 	- Any projection-kind mismatch at the same depth is treated as overlapping
 	  (conservative until we have more precise type/layout information).
 	"""
@@ -199,14 +227,16 @@ def place_from_expr(expr: H.HExpr, *, base_lookup: Callable[[object], Optional[P
 				place = place.with_projection(DerefProj())
 				continue
 			if isinstance(proj, H.HPlaceIndex):
-				const_val: Optional[int] = None
-				if isinstance(proj.index, H.HLiteralInt):
-					try:
-						const_val = int(proj.index.value)
-					except Exception:
-						const_val = None
-				kind = IndexKind.CONST if const_val is not None else IndexKind.ANY
-				place = place.with_projection(IndexProj(kind=kind, value=const_val))
+				const_val = _try_eval_const_int(proj.index)
+				if const_val is not None:
+					place = place.with_projection(IndexProj(kind=IndexKind.CONST, value=const_val))
+					continue
+				if isinstance(proj.index, H.HVar):
+					bid = getattr(proj.index, "binding_id", None)
+					if bid is not None:
+						place = place.with_projection(IndexProj(kind=IndexKind.VAR, value=int(bid)))
+						continue
+				place = place.with_projection(IndexProj(kind=IndexKind.ANY))
 				continue
 			# Unknown projections conservatively make this non-addressable until
 			# the place model is extended.
@@ -227,14 +257,14 @@ def place_from_expr(expr: H.HExpr, *, base_lookup: Callable[[object], Optional[P
 		base_place = place_from_expr(expr.subject, base_lookup=base_lookup)
 		if base_place is None:
 			return None
-		const_val: Optional[int] = None
-		if isinstance(expr.index, H.HLiteralInt):
-			try:
-				const_val = int(expr.index.value)
-			except Exception:
-				const_val = None
-		kind = IndexKind.CONST if const_val is not None else IndexKind.ANY
-		return base_place.with_projection(IndexProj(kind=kind, value=const_val))
+		const_val = _try_eval_const_int(expr.index)
+		if const_val is not None:
+			return base_place.with_projection(IndexProj(kind=IndexKind.CONST, value=const_val))
+		if isinstance(expr.index, H.HVar):
+			bid = getattr(expr.index, "binding_id", None)
+			if bid is not None:
+				return base_place.with_projection(IndexProj(kind=IndexKind.VAR, value=int(bid)))
+		return base_place.with_projection(IndexProj(kind=IndexKind.ANY))
 	if isinstance(expr, H.HUnary) and expr.op is H.UnaryOp.DEREF:
 		base_place = place_from_expr(expr.expr, base_lookup=base_lookup)
 		if base_place is None:

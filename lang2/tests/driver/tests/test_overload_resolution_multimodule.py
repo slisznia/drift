@@ -47,7 +47,7 @@ def _visible_modules_for(
 ) -> tuple[int, ...]:
 	visible = set(module_deps.get(module_name, set()))
 	visible.add(module_name)
-	return tuple(sorted(module_ids.get(mod, 0) for mod in visible))
+	return tuple(sorted(module_ids.setdefault(mod, len(module_ids)) for mod in visible))
 
 
 def _collect_calls(block: H.HBlock) -> list[H.HCall]:

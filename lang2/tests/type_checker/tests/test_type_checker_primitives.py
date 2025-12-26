@@ -123,3 +123,45 @@ def test_mut_borrow_of_val_is_rejected():
 	)
 	res = tc.check_function(_fn_id("bad_mut_borrow"), block)
 	assert any("cannot take &mut of an immutable binding" in d.message for d in res.diagnostics)
+
+
+def test_conflicting_borrows_overlap_in_same_stmt():
+	tc = _checker()
+	base = H.HVar("s", binding_id=1)
+	field = H.HPlaceExpr(base=H.HVar("s", binding_id=1), projections=[H.HPlaceField("a")])
+	block = H.HBlock(
+		statements=[
+			H.HLet(name="s", value=H.HLiteralInt(1), declared_type_expr=None, binding_id=1, is_mutable=True),
+			H.HExprStmt(
+				expr=H.HArrayLiteral(
+					elements=[
+						H.HBorrow(subject=base, is_mut=True),
+						H.HBorrow(subject=field, is_mut=False),
+					]
+				)
+			),
+		]
+	)
+	res = tc.check_function(_fn_id("borrow_overlap"), block)
+	assert any("conflicting borrows in the same statement" in d.message for d in res.diagnostics)
+
+
+def test_disjoint_field_borrows_ok_in_same_stmt():
+	tc = _checker()
+	field_a = H.HPlaceExpr(base=H.HVar("s", binding_id=1), projections=[H.HPlaceField("a")])
+	field_b = H.HPlaceExpr(base=H.HVar("s", binding_id=1), projections=[H.HPlaceField("b")])
+	block = H.HBlock(
+		statements=[
+			H.HLet(name="s", value=H.HLiteralInt(1), declared_type_expr=None, binding_id=1, is_mutable=True),
+			H.HExprStmt(
+				expr=H.HArrayLiteral(
+					elements=[
+						H.HBorrow(subject=field_a, is_mut=True),
+						H.HBorrow(subject=field_b, is_mut=False),
+					]
+				)
+			),
+		]
+	)
+	res = tc.check_function(_fn_id("borrow_disjoint"), block)
+	assert not any("conflicting borrows in the same statement" in d.message for d in res.diagnostics)

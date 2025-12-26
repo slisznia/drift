@@ -1,0 +1,10 @@
+fn main() returns Int {
+	var arr = [0, 0];
+	val i: Int = 0;
+	val j: Int = 1;
+	if i != j {
+		val p = &mut arr[i];
+		arr[j] = 7;
+	}
+	return arr[1];
+}

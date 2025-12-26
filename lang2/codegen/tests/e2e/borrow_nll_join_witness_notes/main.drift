@@ -1,0 +1,12 @@
+fn main() returns Int {
+	var x = 0;
+	val r = &mut x;
+	if 1 == 1 { } else { }
+	x = 1;
+	if 1 == 1 {
+		val t = r;
+	} else {
+		val t = r;
+	}
+	return 0;
+}

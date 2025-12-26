@@ -1,0 +1,12 @@
+struct S(a: Int, b: Int)
+
+fn main() returns Int {
+	var s = S(0, 0)
+	val xs = [0, 1]
+	for x in xs {
+		val r = &s.a
+		val y = *r
+	}
+	s.a = 1
+	return s.a
+}

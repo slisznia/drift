@@ -182,6 +182,7 @@ stage-for-review:
 	staged_dir=staged
 	rm -rf "$staged_dir"
 	mkdir -p "$staged_dir"
+	rm -f combined_*
 	git ls-files -m -o --exclude-standard | while IFS= read -r f; do
 		[ -f "$f" ] || continue
 		mkdir -p "$staged_dir/$(dirname "$f")"

@@ -57,3 +57,10 @@
 - Checker refactor: introduced shared _TypingContext + _walk_hir; array/bool validators share locals/diagnostics, and new tests cover param-indexed arrays and param-based if conditions.
 - Parser now builds signatures and HIR from the same non-duplicate function set so duplicates can’t desync signature vs. body; parser tests updated and pass.
 - All updated parser/checker/e2e tests passing (PYTHONPATH=. pytest ...; runner duplicate_main ok).
+## 2025-12-25 – Generics, traits, visibility, and NLL-lite borrow polish
+- Adopted **`<type …>` call-site generics** with hard `type` keyword, explicit type application in calls and callable refs, and parser guards against duplicate type-app suffixes; added UFCS calls (`Trait::method(...)`) and `use trait` directives for explicit trait scope.
+- Introduced **TypeParamId/TypeVar** spine, explicit instantiation + inference via `InferContext/InferResult`, and centralized inference diagnostics with structured failure notes and new tests.
+- Added **struct generics + impl matching** (including nested generic templates), impl requires and struct requires enforcement, and trait bounds as ambient assumptions with call-site proofing.
+- Implemented **workspace-wide impl index + method resolution across modules**, method visibility (`pub` gating), and link-time duplicate inherent method checks with deterministic ambiguity diagnostics.
+- Completed **visibility model** in code: `pub` eligibility + explicit exports, `export { module.* }` re-exports, module-only imports, and package payload export surfaces with trait exports/reexports and validation.
+- NLL-lite borrow checker upgrades: per-ref live-region analysis, join/loop witness notes on conflicts, ref rebinding kills old loans, const-folded index disjointness, and `i != j` branch facts for disjoint indices (with new e2e tests).

@@ -22,7 +22,13 @@
 - Added driver regression `lang2/tests/driver/tests/test_method_require_diagnostics.py` to ensure “candidates exist but require failed” yields a `requirement not satisfied` message.
 - Spec clarification added: inside a trait, an untyped `self` is implicitly `self: Self`.
 - Added a local-vs-cross-module coverage test (`test_local_impl_wins_over_unimported_impl`) in `lang2/tests/driver/tests/test_method_resolution_multimodule.py`.
+- Inference diagnostics refactor landed: centralized `InferContext/InferResult` formatting with new tests in `lang2/tests/type_checker/tests/test_type_checker_infer_diagnostics.py`.
+- Driver visibility helpers now use `module_ids.setdefault(...)` to avoid module-id collapse in multi-module tests.
 - Borrow checker NLL-lite cleanup complete: per-ref live-region tracking, target-use collection, and updated e2e case `borrow_nll_last_use_allows_write`.
+- Borrow checker diagnostics now include borrow-origin + live-use witness notes at join conflicts, and index disjointness recognizes const-folded expressions (e2e `borrow_array_const_expr_disjoint_write_ok`).
+- Added e2e coverage for borrow join witness notes (`borrow_nll_join_witness_notes`) and ref rebinding kills old loans (`borrow_reassign_kills_old_loan_allows_write_ok`).
+- Added symbolic index fact support for `i != j` inside branches (e2e `borrow_array_index_ineq_write_ok`), plus const-folded index disjointness.
+- Added regression for `i != j` else-branch staying conservative (`borrow_array_index_ineq_else_rejected`).
 - Trait exports and reexports are serialized in package payloads, and package interface validation now checks `exports.traits`/`reexports.traits`.
 - Function call require enforcement now infers type args from arg types when explicit `<type ...>` is absent, substitutes TypeParamId subjects, and dedupes checks across identical arg+type-arg tuples.
 - Targeted driver suite (`just lang2-driver-suite`) is green after these changes.

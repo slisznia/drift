@@ -1,3 +1,72 @@
+[==== FILE LIST ====]
+staged/lang2/codegen/tests/e2e/borrow_array_index_ineq_write_ok/expected.json
+staged/lang2/codegen/tests/e2e/borrow_array_index_ineq_write_ok/main.drift
+staged/lang2/codegen/tests/e2e/borrow_nll_join_witness_notes/expected.json
+staged/lang2/codegen/tests/e2e/borrow_nll_join_witness_notes/main.drift
+staged/lang2/codegen/tests/e2e/borrow_reassign_kills_old_loan_allows_write_ok/expected.json
+staged/lang2/codegen/tests/e2e/borrow_reassign_kills_old_loan_allows_write_ok/main.drift
+staged/lang2/driftc/borrow_checker_pass.py
+staged/lang2/driftc/borrow_checker.py
+staged/work/method-match-x-module/work-progress.md
+
+
+[==== File: staged/lang2/codegen/tests/e2e/borrow_array_index_ineq_write_ok/expected.json =====]
+{
+  "exit_code": 7
+}
+
+[==== File: staged/lang2/codegen/tests/e2e/borrow_array_index_ineq_write_ok/main.drift =====]
+fn main() returns Int {
+	var arr = [0, 0];
+	val i: Int = 0;
+	val j: Int = 1;
+	if i != j {
+		val p = &mut arr[i];
+		arr[j] = 7;
+	}
+	return arr[1];
+}
+
+[==== File: staged/lang2/codegen/tests/e2e/borrow_nll_join_witness_notes/expected.json =====]
+{
+  "exit_code": 1,
+  "diagnostics": [
+    { "message_contains": "cannot write to 'x' while it is borrowed" },
+    { "message_contains": "borrow created here" },
+    { "message_contains": "borrow considered live here because of use at (on some path)" }
+  ]
+}
+
+[==== File: staged/lang2/codegen/tests/e2e/borrow_nll_join_witness_notes/main.drift =====]
+fn main() returns Int {
+	var x = 0;
+	val r = &mut x;
+	if 1 == 1 { } else { }
+	x = 1;
+	if 1 == 1 {
+		val t = r;
+	} else {
+		val t = r;
+	}
+	return 0;
+}
+
+[==== File: staged/lang2/codegen/tests/e2e/borrow_reassign_kills_old_loan_allows_write_ok/expected.json =====]
+{
+  "exit_code": 7
+}
+
+[==== File: staged/lang2/codegen/tests/e2e/borrow_reassign_kills_old_loan_allows_write_ok/main.drift =====]
+fn main() returns Int {
+	var x = 0;
+	var y = 0;
+	var r = &mut x;
+	r = &mut y;
+	x = 7;
+	return x;
+}
+
+[==== File: staged/lang2/driftc/borrow_checker_pass.py =====]
 #!/usr/bin/env python3
 # vim: set noexpandtab: -*- indent-tabs-mode: t -*-
 # author: Sławomir Liszniański; created: 2025-12-09
@@ -1302,3 +1371,486 @@ class BorrowChecker:
 		# Ensure the top-level scope is recorded.
 		scope_sets.append(set(ids))
 		return blocks, entry, scope_sets
+
+[==== File: staged/lang2/driftc/borrow_checker.py =====]
+#!/usr/bin/env python3
+# vim: set noexpandtab: -*- indent-tabs-mode: t -*-
+# author: Sławomir Liszniański; created: 2025-12-09
+"""
+Borrow-checker scaffolding: place representation and basic lvalue detection.
+
+This models the "where" of values (locals + projections) so later passes can
+track moves/borrows per place. It intentionally avoids policy (no diagnostics
+or CFG yet) and just answers:
+  * Is this HIR expression an lvalue (borrowable/moveable place)?
+  * If so, what place does it identify?
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from enum import Enum, auto
+from typing import Callable, Tuple, Optional
+
+from lang2.driftc import stage1 as H
+
+
+class IndexKind(Enum):
+	"""Coarse-grained index classification to keep Place hashable."""
+
+	ANY = auto()       # Unknown / non-constant index; conservatively overlaps.
+	CONST = auto()     # Known constant index.
+	VAR = auto()       # Variable index (binding id); overlaps unless facts prove disjoint.
+
+
+@dataclass(frozen=True)
+class FieldProj:
+	"""Field access projection (e.g., `.name`)."""
+
+	name: str
+
+
+@dataclass(frozen=True)
+class IndexProj:
+	"""
+	Index projection (e.g., `[i]`).
+
+	Hashability: we classify indices instead of storing raw HIR to keep Place
+	hashable. `value` is only set for CONST indices.
+	"""
+
+	kind: IndexKind
+	value: Optional[int] = None
+
+
+@dataclass(frozen=True)
+class DerefProj:
+	"""
+	Dereference projection (`*p`).
+
+	We model deref as a projection so the place `*p` is represented as:
+	  Place(base=p, projections=[DerefProj()])
+
+	This keeps the place model composable for future extensions like `(*p).field`
+	and `p[i]` on borrowed aggregates.
+	"""
+	pass
+
+Projection = FieldProj | IndexProj | DerefProj
+
+
+class PlaceState(Enum):
+	"""Validity state for a place: uninitialized, valid, or moved."""
+
+	UNINIT = auto()
+	VALID = auto()
+	MOVED = auto()
+
+
+def merge_place_state(a: PlaceState, b: PlaceState) -> PlaceState:
+	"""
+	Meet operation for place states used in dataflow joins.
+
+	Heuristic: MOVED dominates, then VALID, then UNINIT. Extend when finer
+	granularity (TOP/⊥) is introduced.
+	"""
+	if a is b:
+		return a
+	if PlaceState.MOVED in (a, b):
+		return PlaceState.MOVED
+	if PlaceState.VALID in (a, b):
+		return PlaceState.VALID
+	return PlaceState.UNINIT
+
+
+def _try_eval_const_int(expr: H.HExpr) -> Optional[int]:
+	"""Best-effort constant folding for integer index expressions."""
+	if isinstance(expr, H.HLiteralInt):
+		try:
+			return int(expr.value)
+		except Exception:
+			return None
+	if isinstance(expr, H.HUnary) and expr.op is H.UnaryOp.NEG:
+		inner = _try_eval_const_int(expr.expr)
+		if inner is None:
+			return None
+		return -inner
+	if isinstance(expr, H.HBinary):
+		left = _try_eval_const_int(expr.left)
+		right = _try_eval_const_int(expr.right)
+		if left is None or right is None:
+			return None
+		if expr.op is H.BinaryOp.ADD:
+			return left + right
+		if expr.op is H.BinaryOp.SUB:
+			return left - right
+		if expr.op is H.BinaryOp.MUL:
+			return left * right
+	return None
+
+
+class PlaceKind(Enum):
+	LOCAL = auto()
+	PARAM = auto()
+	GLOBAL = auto()
+	CAPTURE = auto()
+	TEMP = auto()
+
+
+@dataclass(frozen=True)
+class PlaceBase:
+	"""Identity for the root of a Place (locals, params, globals)."""
+
+	kind: PlaceKind
+	local_id: int
+	name: str
+
+
+@dataclass(frozen=True)
+class Place:
+	"""
+	A borrowable/moveable storage location.
+
+	`base` carries identity (local/param/etc). `projections` capture field/index
+	accesses, so `foo.bar[0]` becomes base `foo` with projections `.bar`, `[0]`.
+	"""
+
+	base: PlaceBase
+	projections: Tuple[Projection, ...] = field(default_factory=tuple)
+
+	def with_projection(self, proj: Projection) -> "Place":
+		"""Return a new Place with an additional projection appended."""
+		return Place(self.base, self.projections + (proj,))
+
+
+def places_overlap(a: Place, b: Place) -> bool:
+	"""
+	Return True when two places may refer to overlapping storage.
+
+	This function is the single source of truth for "place overlap" used by
+	borrow checking and write-frozen rules.
+
+	MVP rules (pinned in `work/borrow-support/work-progress.md`):
+	- Different bases never overlap.
+	- Prefix overlap counts: `x` overlaps `x.field` and `x[0]`.
+	- Field projections are disjoint when the field names differ.
+	- Index projections:
+	  - CONST vs CONST are disjoint when indices differ (`arr[0]` vs `arr[1]`).
+	  - ANY overlaps everything (`arr[i]` overlaps `arr[0]` and `arr[j]`).
+	  - VAR overlaps everything unless a fact system proves disjointness.
+	- Any projection-kind mismatch at the same depth is treated as overlapping
+	  (conservative until we have more precise type/layout information).
+	"""
+	if a.base != b.base:
+		return False
+
+	ap = a.projections
+	bp = b.projections
+	n = min(len(ap), len(bp))
+	for idx in range(n):
+		pa = ap[idx]
+		pb = bp[idx]
+		if pa == pb:
+			continue
+
+		# Field-vs-field: disjoint when names differ.
+		if isinstance(pa, FieldProj) and isinstance(pb, FieldProj):
+			return False
+
+		# Index-vs-index: disjoint only when both are CONST and values differ.
+		if isinstance(pa, IndexProj) and isinstance(pb, IndexProj):
+			if pa.kind is IndexKind.CONST and pb.kind is IndexKind.CONST:
+				if pa.value is not None and pb.value is not None and pa.value != pb.value:
+					return False
+			# Otherwise: ANY overlaps, or equal const handled by pa==pb above.
+			return True
+
+		# Deref-vs-deref: pa==pb above; any other deref mismatch is conservative overlap.
+		return True
+
+	# One place is a prefix of the other (or identical): overlaps by definition.
+	return True
+
+
+def is_lvalue(expr: H.HExpr, *, base_lookup: Callable[[object], Optional[PlaceBase]]) -> bool:
+	"""
+	Decide if a HIR expression denotes a storage location (`Place`) per spec:
+	- Locals/params (`HVar`) are lvalues.
+	- Field/index access of an lvalue is an lvalue.
+	- Everything else is an rvalue (temporaries, literals, calls, binops, etc.).
+	"""
+	return place_from_expr(expr, base_lookup=base_lookup) is not None
+
+
+def place_from_expr(expr: H.HExpr, *, base_lookup: Callable[[object], Optional[PlaceBase]]) -> Optional[Place]:
+	"""
+	Construct a `Place` from a HIR expression when the expression is an lvalue.
+
+	Returns None for rvalues.
+	"""
+	# Canonical place expression (stage1→stage2 boundary).
+	if hasattr(H, "HPlaceExpr") and isinstance(expr, getattr(H, "HPlaceExpr")):
+		base = base_lookup(expr.base)
+		if base is None:
+			return None
+		place = Place(base)
+		for proj in expr.projections:
+			if isinstance(proj, H.HPlaceField):
+				place = place.with_projection(FieldProj(proj.name))
+				continue
+			if isinstance(proj, H.HPlaceDeref):
+				place = place.with_projection(DerefProj())
+				continue
+			if isinstance(proj, H.HPlaceIndex):
+				const_val = _try_eval_const_int(proj.index)
+				if const_val is not None:
+					place = place.with_projection(IndexProj(kind=IndexKind.CONST, value=const_val))
+					continue
+				if isinstance(proj.index, H.HVar):
+					bid = getattr(proj.index, "binding_id", None)
+					if bid is not None:
+						place = place.with_projection(IndexProj(kind=IndexKind.VAR, value=int(bid)))
+						continue
+				place = place.with_projection(IndexProj(kind=IndexKind.ANY))
+				continue
+			# Unknown projections conservatively make this non-addressable until
+			# the place model is extended.
+			return None
+		return place
+
+	if isinstance(expr, H.HVar):
+		base = base_lookup(expr)
+		if base is None:
+			return None
+		return Place(base)
+	if isinstance(expr, H.HField):
+		base_place = place_from_expr(expr.subject, base_lookup=base_lookup)
+		if base_place is None:
+			return None
+		return base_place.with_projection(FieldProj(expr.name))
+	if isinstance(expr, H.HIndex):
+		base_place = place_from_expr(expr.subject, base_lookup=base_lookup)
+		if base_place is None:
+			return None
+		const_val = _try_eval_const_int(expr.index)
+		if const_val is not None:
+			return base_place.with_projection(IndexProj(kind=IndexKind.CONST, value=const_val))
+		if isinstance(expr.index, H.HVar):
+			bid = getattr(expr.index, "binding_id", None)
+			if bid is not None:
+				return base_place.with_projection(IndexProj(kind=IndexKind.VAR, value=int(bid)))
+		return base_place.with_projection(IndexProj(kind=IndexKind.ANY))
+	if isinstance(expr, H.HUnary) and expr.op is H.UnaryOp.DEREF:
+		base_place = place_from_expr(expr.expr, base_lookup=base_lookup)
+		if base_place is None:
+			return None
+		return base_place.with_projection(DerefProj())
+	# Other expressions are rvalues: calls, literals, binops, method calls, etc.
+	return None
+
+
+def place_from_expr_default(expr: H.HExpr) -> Optional[Place]:
+	"""
+	Backward-compatible helper using base names as identity.
+
+	Prefer passing an explicit base_lookup in new code.
+	"""
+	return place_from_expr(
+		expr,
+		base_lookup=lambda hv: PlaceBase(
+			PlaceKind.LOCAL,
+			getattr(hv, "binding_id", 0) if getattr(hv, "binding_id", None) is not None else 0,
+			hv.name if hasattr(hv, "name") else str(hv),
+		),
+	)
+
+[==== File: staged/work/method-match-x-module/work-progress.md =====]
+# Method impl matching across modules (workspace)
+
+## Status (visibility detour)
+- Spec now uses **pub + export list** for visibility and **module-only imports**.
+- `export { module.* }` re-exports are the only cross-module surface mechanism.
+- This milestone assumes those rules when defining “visible modules” and “public methods”.
+- Export-star pipeline audit complete: `module_exports` is the sole source for qualified access, external exports load from package payloads, and export-star targets are added to module deps for visibility.
+- Package regressions for export-star and pub-but-not-exported are green (driver fixtures in `lang2/tests/driver/tests/test_driftc_package_v0.py`).
+- Workspace impl matching now works across modules after:
+  - preserving impl type params during module merge,
+  - predeclaring struct schemas before per-module lowering (prevents empty-field instantiations),
+  - and including external modules in visibility deps.
+- `lang2-driver-suite` passes after updating method-resolution tests to use qualified impl targets.
+- Global impl index is built from per-module `ImplMeta` (attached to `module_exports`) and method resolution now queries that index.
+- Cross-module method/impl driver tests live in `lang2/tests/driver/tests/test_method_resolution_multimodule.py` and are green.
+- Link-time duplicate inherent method check runs before typecheck and is covered by the cross-module ambiguity fixture.
+- Trait dot-call plumbing is now wired: `use trait` directives populate `trait_scope_by_module`, trait indexes are built from `trait_worlds` + `module_exports`, and the type checker resolves trait methods after inherent lookup.
+- T1 guardrails added: parser + driver tests now lock `use trait` parsing and resolution (alias, export gating, unknown trait).
+- T2 trait dot-call fallback is implemented and covered by driver tests in `lang2/tests/driver/tests/test_trait_method_resolution.py` (scope required, inherent beats trait, ambiguity, require blocks, private impl visibility).
+- Trait bounds now act as ambient assumptions inside a generic function body and are enforced at call sites (with `use trait` still controlling dot-call scope). Tests cover bound inference, bound failure, and dot-call inside bounded functions.
+- T3 diagnostics tightened: failed requirements now report the concrete `Type is Trait` obligation (with “required by …” context) instead of a generic “trait requirements not met”, and method-resolution falls back to trait matches only after inherent failure.
+- Added driver regression `lang2/tests/driver/tests/test_method_require_diagnostics.py` to ensure “candidates exist but require failed” yields a `requirement not satisfied` message.
+- Spec clarification added: inside a trait, an untyped `self` is implicitly `self: Self`.
+- Added a local-vs-cross-module coverage test (`test_local_impl_wins_over_unimported_impl`) in `lang2/tests/driver/tests/test_method_resolution_multimodule.py`.
+- Inference diagnostics refactor landed: centralized `InferContext/InferResult` formatting with new tests in `lang2/tests/type_checker/tests/test_type_checker_infer_diagnostics.py`.
+- Driver visibility helpers now use `module_ids.setdefault(...)` to avoid module-id collapse in multi-module tests.
+- Borrow checker NLL-lite cleanup complete: per-ref live-region tracking, target-use collection, and updated e2e case `borrow_nll_last_use_allows_write`.
+- Borrow checker diagnostics now include borrow-origin + live-use witness notes at join conflicts, and index disjointness recognizes const-folded expressions (e2e `borrow_array_const_expr_disjoint_write_ok`).
+- Added e2e coverage for borrow join witness notes (`borrow_nll_join_witness_notes`) and ref rebinding kills old loans (`borrow_reassign_kills_old_loan_allows_write_ok`).
+- Added symbolic index fact support for `i != j` inside branches (e2e `borrow_array_index_ineq_write_ok`), plus const-folded index disjointness.
+- Trait exports and reexports are serialized in package payloads, and package interface validation now checks `exports.traits`/`reexports.traits`.
+- Function call require enforcement now infers type args from arg types when explicit `<type ...>` is absent, substitutes TypeParamId subjects, and dedupes checks across identical arg+type-arg tuples.
+- Targeted driver suite (`just lang2-driver-suite`) is green after these changes.
+
+## Goal
+Enable method/impl matching across module boundaries using a workspace-wide impl index and call-site visibility, with deterministic ambiguity handling and production-grade diagnostics.
+
+## Non-goals (for this milestone)
+- Full trait solving / where-clause enforcement (only the plumbing needed for lookup).
+- Specialization / “most specific impl wins”.
+- Cross-package inherent impls for foreign types (defer; see coherence).
+
+## Production requirements to lock in now
+- **Workspace-wide impl index**: method resolution must not depend on “current module only” scans.
+- **Canonical type identity** across modules (`TypeId` must be globally stable within the compilation unit).
+- **Visibility correctness**: candidates are filtered by call-site visibility and method/impl visibility.
+- **Deterministic resolution**: stable ordering + explicit ambiguity errors; no “first one wins”.
+- **Coherence checks** at link time: catch duplicate/conflicting method definitions early with actionable errors.
+
+## Phase M0 — Rules and invariants
+- **Inherent impl orphan rule (recommended)**: an inherent `implement <Type> { ... }` is allowed only if the receiver type is defined in the same **package** (or same compilation unit, depending on your packaging model). This permits cross-module methods inside a package while preventing “impl foreign type” chaos across packages.
+- **Multiple impl blocks** are allowed, but enforce **no duplicate method signatures** for the same receiver type (after generics are instantiated, this becomes “no overlapping signatures”; for now, exact duplicates).
+- Define method lookup order:
+  1. inherent methods
+  2. trait methods only if/when trait methods are allowed via dot-call and the trait is in scope (UFCS can be added later)
+
+## Phase M1 — Driver exports a workspace view
+Driver must emit per module (in HIR export metadata):
+- exported types (type defs + canonical `TypeId`)
+- exported callable decls (free fns, ctors/qualified members if applicable)
+- impl blocks:
+  - impl header: `impl_id`, `def_module`, `visibility`, `type_params` (even if empty), `target_type`, optional `trait_ref`, optional `where_clause`
+  - methods: name, full signature (including receiver kind), visibility, span
+
+Implementation detail:
+- Build a **workspace module graph** and compute, per module, the set of **visible modules** from:
+  - current module
+  - its imports
+  - re-exports (if supported)
+  - (do not require tests to inject `visible_modules` manually; tests should build imports that drive visibility)
+
+## Phase M2 — Build the global impl index (link step)
+After all modules are lowered and type identities are canonical:
+- Build two indexes (even if traits are not fully implemented yet):
+  - **Inherent index**: `(canonical_target_type, method_name) -> [method_candidate]`
+  - **Trait index** (stub OK): `(trait_id, canonical_target_type) -> [impl]`, and `(trait_id, method_name) -> [decl]`
+- Store enough provenance on each candidate for diagnostics:
+  - defining module
+  - impl header span
+  - method span
+
+Add a link-time validation pass:
+- enforce the inherent orphan rule
+- detect duplicate inherent methods (same receiver type + same method name + same erased signature) across visible impls in the same package
+- emit errors that point to both definitions
+
+## Phase M3 — Method call resolution uses the workspace index
+Method lookup flow for `recv.m(args...)`:
+1. Resolve receiver expression type to a canonical `TypeId` (or best-known shape; generics can be placeholders).
+2. Query inherent index by `(recv_base_type, "m")`.
+3. Filter candidates by visibility relative to the call-site module:
+   - candidate is usable if `pub`, or defined in the same module, or (later) via explicit re-export rules.
+   - also apply method-level visibility, not just impl-level.
+4. Apply impl-template matching/unification (existing unification):
+   - match receiver type against impl target type
+   - compute substitutions
+5. Instantiate candidate method signature under substitution.
+6. Run overload resolution among remaining candidates.
+7. If exactly one best candidate: select it.
+8. If none: “no method named … for type …” and include near-misses (same name but not visible; same name but receiver mismatch) when available.
+9. If multiple tie for best: ambiguity error listing all tied candidates and their defining modules.
+
+Determinism:
+- Resolution must be independent of module iteration order. Enforce a stable sort key for candidates, e.g. `(def_module_id, impl_id, method_id)` before scoring, and tie-break only by explicit rules (never by discovery order).
+
+## Phase M4 — Diagnostics quality bar
+Ambiguity:
+- show each candidate as: `module::Type.method(sig)` with source spans
+- state why ambiguous (equal match score / same conversion cost)
+
+Not visible:
+- if a matching method exists but is not visible, emit: “method exists but is not visible here” and point to the definition span
+
+Coherence violation:
+- duplicate method signature detected at link time: point to both definitions and recommend disambiguation (rename or remove one, or stop importing both modules if that is a supported fix).
+
+## Tests (high signal)
+1. Cross-module success (basic)
+   - `m_box`: `struct Box<T>`, `implement<T> Box<T> { pub fn tag(self) ... }`
+   - `m_main`: `import m_box; Box<Int>{...}.tag()` resolves
+
+2. Impl in different module than type (same package)
+   - `m_types`: `struct S`
+   - `m_impls`: `import m_types; implement S { pub fn m(self) ... }`
+   - `m_main`: imports `m_types` and `m_impls`; `S{}.m()` resolves
+
+3. Import controls visibility
+   - `m_a`: `implement S { pub fn m(self) ... }`
+   - `m_b`: `implement S { pub fn m(self) ... }`
+   - `m_main`: imports only `m_a` → resolves
+   - `m_main2`: imports `m_a` and `m_b` → ambiguity error citing both modules
+
+4. Private method blocked
+   - `m_a`: `implement S { fn hidden(self) ... }`
+   - `m_main`: imports `m_a`; `S{}.hidden()` errors as “exists but not visible”
+
+5. Generic impl across modules (template matching)
+   - `m_a`: `implement<T> Box<Array<T>> { pub fn inner(self) returns T }`
+   - `m_main`: `Box<Array<Int>>.inner()` typechecks as `Int`
+
+## Exit criteria
+- Multi-module method calls resolve using the global workspace index (no per-module scans at call sites).
+- Visibility rules are enforced for methods and impls.
+- Ambiguity and coherence diagnostics cite contributing modules and point at source spans.
+- Existing single-module method/impl tests pass unchanged.
+
+## After this
+- Add trait method lookup (dot-call via in-scope traits) + where-clause enforcement on the same impl index.
+- Then proceed to borrow/lifetime upgrades (NLL-lite/place-model expansion).
+
+## Next plan: Trait method lookup for dot-calls
+
+### Lookup order and determinism
+- For `x.m(...)`: inherent methods first, then trait methods from explicitly in-scope traits only.
+- If multiple viable candidates remain at the chosen stage: hard ambiguity error, grouped by trait + defining module.
+
+### In-scope traits
+- New module-level directive: `use trait <QualifiedTraitName>`.
+- The trait must be importable and exported; alias must be declared via `import ... as ...`.
+- Track `used_traits: list[TraitRef]` per module (trait id + optional span).
+
+### Indexes to build
+- `GlobalTraitIndex`:
+  - `traits_by_id: TraitId -> TraitDecl`
+  - `trait_method_sigs: (TraitId, method_name) -> MethodSig`
+- `GlobalTraitImplIndex`:
+  - key: `(trait_id, receiver_base_type_id)`
+  - value: `TraitImplCandidate` entries with impl id, def module, target template, type params/args, per-method fn_id + visibility, spans.
+- `trait_scope_by_module[module_id] -> list[TraitId]` in source order.
+
+### Trait lookup flow (only when inherent yields none)
+- For each in-scope trait with method `m`:
+  - find impls for `(trait_id, receiver_base)`
+  - unify receiver with impl template
+  - apply impl substitution + method instantiation (`_instantiate_sig`)
+  - filter by visibility (`is_pub` or same module)
+  - enforce requires/where-clauses (provable only)
+- Choose best candidate or emit ambiguity (group by trait + module).
+
+### Require/where enforcement (phase 1)
+- Support `require T is Trait` bounds only.
+- Candidate is applicable only if requirements are provable after full substitution.
+
+### Tests (minimum)
+1. Trait dot-call succeeds when trait is in scope.
+2. Trait not in scope -> no matching method.
+3. Inherent beats trait.
+4. Two traits in scope define `m` -> ambiguity listing both traits + modules.
+5. Require blocks a candidate -> no matching method.

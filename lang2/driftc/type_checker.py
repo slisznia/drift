@@ -39,6 +39,18 @@ from lang2.driftc.borrow_checker import (
 )
 from lang2.driftc.method_registry import CallableDecl, CallableKind, CallableRegistry, CallableSignature, ModuleId, SelfMode, Visibility
 from lang2.driftc.impl_index import GlobalImplIndex
+from lang2.driftc.infer import (
+	InferConstraint,
+	InferConstraintOrigin,
+	InferBindingEvidence,
+	InferConflictEvidence,
+	InferContext,
+	InferError,
+	InferErrorKind,
+	InferResult,
+	InferTrace,
+	format_infer_failure,
+)
 from lang2.driftc.trait_index import GlobalTraitImplIndex, GlobalTraitIndex, TraitImplCandidate
 from lang2.driftc.traits.world import TraitKey, TraitWorld, TypeKey, trait_key_from_expr, type_key_from_typeid
 from lang2.driftc.method_resolver import MethodResolution, ResolutionError, resolve_method_call
@@ -463,59 +475,103 @@ class TypeChecker:
 				return False, 0
 			return False, 0
 
-		def _infer_from_types(
-			*,
-			sig: FnSignature,
-			param_types: list[TypeId],
-			actual_types: list[TypeId],
-			expected_type: TypeId | None,
-		) -> tuple[Subst | None, list[TypeId] | None, TypeId | None, str | None]:
-			type_params = list(getattr(sig, "type_params", []) or [])
-			if not type_params:
-				return None, None, None, None
-			type_param_ids = {p.id for p in type_params if hasattr(p, "id")}
+		def _label_typeid(tid: TypeId) -> str:
+			return _type_key_label(type_key_from_typeid(self.type_table, tid))
+
+		def _format_infer_failure(ctx: InferContext, res: InferResult) -> tuple[str, list[str]]:
+			return format_infer_failure(ctx, res, label_typeid=_label_typeid)
+
+		def _infer(ctx: InferContext) -> InferResult:
+			trace = InferTrace()
+			type_param_ids = list(ctx.type_param_ids)
 			if not type_param_ids:
-				return None, None, None, None
+				return InferResult(
+					ok=True,
+					subst=None,
+					inst_params=list(ctx.param_types),
+					inst_return=ctx.return_type,
+					trace=trace,
+					context=ctx,
+				)
+			type_param_set = set(type_param_ids)
+			if len(ctx.param_types) != len(ctx.arg_types):
+				return InferResult(
+					ok=False,
+					subst=None,
+					inst_params=None,
+					inst_return=None,
+					trace=trace,
+					error=InferError(kind=InferErrorKind.ARITY),
+					context=ctx,
+				)
+			constraints: list[InferConstraint] = []
+			for idx, (p, a) in enumerate(zip(ctx.param_types, ctx.arg_types)):
+				origin = None
+				if ctx.call_kind == "ctor" and ctx.param_names and idx < len(ctx.param_names):
+					origin = InferConstraintOrigin(kind="ctor_field", name=ctx.param_names[idx])
+				elif ctx.receiver_type is not None and idx == 0:
+					origin = InferConstraintOrigin(kind="receiver")
+				else:
+					name = ctx.param_names[idx] if ctx.param_names and idx < len(ctx.param_names) else None
+					origin = InferConstraintOrigin(kind="arg", index=idx, name=name)
+				constraints.append(
+					InferConstraint(lhs=p, rhs=a, origin=origin, span=ctx.span)
+				)
+			if ctx.expected_return is not None and ctx.return_type is not None:
+				constraints.append(
+					InferConstraint(
+						lhs=ctx.return_type,
+						rhs=ctx.expected_return,
+						origin=InferConstraintOrigin(kind="expected_return"),
+						span=ctx.span,
+					)
+				)
+
 			bindings: dict[TypeParamId, TypeId] = {}
-			constraints: list[tuple[TypeId, TypeId]] = []
-			if len(param_types) != len(actual_types):
-				return None, None, None, "arity"
-			constraints.extend(list(zip(param_types, actual_types)))
-			if expected_type is not None and sig.return_type_id is not None:
-				constraints.append((sig.return_type_id, expected_type))
 
-			changed = False
+			def _record_binding(tp_id: TypeParamId, actual: TypeId, origin: InferConstraintOrigin, span: Span) -> None:
+				trace.bindings.setdefault(tp_id, []).append(
+					InferBindingEvidence(param_id=tp_id, bound_to=actual, origin=origin, span=span)
+				)
 
-			def _bind_typevar(tp_id: TypeParamId, actual: TypeId) -> bool:
-				nonlocal changed
+			def _record_conflict(lhs: TypeId, rhs: TypeId, origin: InferConstraintOrigin, span: Span, param_id: TypeParamId | None = None) -> None:
+				trace.conflicts.append(
+					InferConflictEvidence(lhs=lhs, rhs=rhs, origin=origin, span=span, param_id=param_id)
+				)
+
+			def _bind_typevar(tp_id: TypeParamId, actual: TypeId, origin: InferConstraintOrigin, span: Span) -> bool:
 				prev = bindings.get(tp_id)
 				if prev is None:
 					bindings[tp_id] = actual
-					changed = True
+					_record_binding(tp_id, actual, origin, span)
 					return True
 				if prev == actual:
 					return True
-				return unify(prev, actual)
+				_record_conflict(prev, actual, origin, span, param_id=tp_id)
+				return False
 
-			def unify(param_ty: TypeId, actual_ty: TypeId) -> bool:
+			def unify(param_ty: TypeId, actual_ty: TypeId, origin: InferConstraintOrigin, span: Span) -> bool:
 				if param_ty == actual_ty:
 					return True
 				pd = self.type_table.get(param_ty)
 				ad = self.type_table.get(actual_ty)
-				if pd.kind is TypeKind.TYPEVAR and pd.type_param_id in type_param_ids:
-					return _bind_typevar(pd.type_param_id, actual_ty)
-				if ad.kind is TypeKind.TYPEVAR and ad.type_param_id in type_param_ids:
-					return _bind_typevar(ad.type_param_id, param_ty)
+				if pd.kind is TypeKind.TYPEVAR and pd.type_param_id in type_param_set:
+					return _bind_typevar(pd.type_param_id, actual_ty, origin, span)
+				if ad.kind is TypeKind.TYPEVAR and ad.type_param_id in type_param_set:
+					return _bind_typevar(ad.type_param_id, param_ty, origin, span)
 				if pd.kind != ad.kind:
+					_record_conflict(param_ty, actual_ty, origin, span)
 					return False
 				if pd.kind in (TypeKind.ARRAY, TypeKind.OPTIONAL, TypeKind.FNRESULT):
 					if len(pd.param_types) != len(ad.param_types):
+						_record_conflict(param_ty, actual_ty, origin, span)
 						return False
-					return all(unify(p, a) for p, a in zip(pd.param_types, ad.param_types))
+					return all(unify(p, a, origin, span) for p, a in zip(pd.param_types, ad.param_types))
 				if pd.kind is TypeKind.REF:
 					if pd.ref_mut != ad.ref_mut or not pd.param_types or not ad.param_types:
+						_record_conflict(param_ty, actual_ty, origin, span)
 						return False
-					return unify(pd.param_types[0], ad.param_types[0])
+					return unify(pd.param_types[0], ad.param_types[0], origin, span)
 				if pd.kind is TypeKind.STRUCT:
 					p_inst = self.type_table.get_struct_instance(param_ty)
 					a_inst = self.type_table.get_struct_instance(actual_ty)
@@ -523,13 +579,16 @@ class TypeChecker:
 						p_base = p_inst.base_id if p_inst is not None else param_ty
 						a_base = a_inst.base_id if a_inst is not None else actual_ty
 						if p_base != a_base:
+							_record_conflict(param_ty, actual_ty, origin, span)
 							return False
 						p_args = list(p_inst.type_args) if p_inst is not None else []
 						a_args = list(a_inst.type_args) if a_inst is not None else []
 						if len(p_args) != len(a_args):
+							_record_conflict(param_ty, actual_ty, origin, span)
 							return False
-						return all(unify(p, a) for p, a in zip(p_args, a_args))
+						return all(unify(p, a, origin, span) for p, a in zip(p_args, a_args))
 					if pd.name != ad.name or pd.module_id != ad.module_id:
+						_record_conflict(param_ty, actual_ty, origin, span)
 						return False
 					return True
 				if pd.kind is TypeKind.VARIANT:
@@ -540,61 +599,94 @@ class TypeChecker:
 							module_id=pd.module_id or "", name=pd.name
 						)
 						if base_id is None or base_id != a_inst.base_id:
+							_record_conflict(param_ty, actual_ty, origin, span)
 							return False
 						p_args = list(pd.param_types)
 						a_args = list(a_inst.type_args)
 						if len(p_args) != len(a_args):
+							_record_conflict(param_ty, actual_ty, origin, span)
 							return False
-						return all(unify(p, a) for p, a in zip(p_args, a_args))
+						return all(unify(p, a, origin, span) for p, a in zip(p_args, a_args))
 					if p_inst is not None and a_inst is None and ad.param_types:
 						base_id = self.type_table.get_variant_base(
 							module_id=ad.module_id or "", name=ad.name
 						)
 						if base_id is None or base_id != p_inst.base_id:
+							_record_conflict(param_ty, actual_ty, origin, span)
 							return False
 						p_args = list(p_inst.type_args)
 						a_args = list(ad.param_types)
 						if len(p_args) != len(a_args):
+							_record_conflict(param_ty, actual_ty, origin, span)
 							return False
-						return all(unify(p, a) for p, a in zip(p_args, a_args))
+						return all(unify(p, a, origin, span) for p, a in zip(p_args, a_args))
 					if p_inst is not None or a_inst is not None:
 						p_base = p_inst.base_id if p_inst is not None else param_ty
 						a_base = a_inst.base_id if a_inst is not None else actual_ty
 						if p_base != a_base:
+							_record_conflict(param_ty, actual_ty, origin, span)
 							return False
 						p_args = list(p_inst.type_args) if p_inst is not None else []
 						a_args = list(a_inst.type_args) if a_inst is not None else []
 						if len(p_args) != len(a_args):
+							_record_conflict(param_ty, actual_ty, origin, span)
 							return False
-						return all(unify(p, a) for p, a in zip(p_args, a_args))
+						return all(unify(p, a, origin, span) for p, a in zip(p_args, a_args))
 					if pd.name != ad.name or pd.module_id != ad.module_id:
+						_record_conflict(param_ty, actual_ty, origin, span)
 						return False
 					return True
 				if pd.kind is TypeKind.FUNCTION:
 					if len(pd.param_types) != len(ad.param_types):
+						_record_conflict(param_ty, actual_ty, origin, span)
 						return False
-					return all(unify(p, a) for p, a in zip(pd.param_types, ad.param_types))
+					return all(unify(p, a, origin, span) for p, a in zip(pd.param_types, ad.param_types))
+				_record_conflict(param_ty, actual_ty, origin, span)
 				return False
 
 			for _ in range(2):
-				changed = False
-				for p, a in constraints:
-					if not unify(p, a):
-						return None, None, None, "mismatch"
-				if not changed:
-					break
+				for constraint in constraints:
+					if not unify(constraint.lhs, constraint.rhs, constraint.origin, constraint.span):
+						return InferResult(
+							ok=False,
+							subst=None,
+							inst_params=None,
+							inst_return=None,
+							trace=trace,
+							error=InferError(kind=InferErrorKind.CONFLICT, conflicts=trace.conflicts),
+							context=ctx,
+						)
 
 			args: list[TypeId] = []
-			for tp in type_params:
-				bound = bindings.get(tp.id)
+			missing: list[TypeParamId] = []
+			for pid in type_param_ids:
+				bound = bindings.get(pid)
 				if bound is None:
-					return None, None, None, "incomplete"
+					missing.append(pid)
+					continue
 				args.append(bound)
+			if missing:
+				return InferResult(
+					ok=False,
+					subst=None,
+					inst_params=None,
+					inst_return=None,
+					trace=trace,
+					error=InferError(kind=InferErrorKind.CANNOT_INFER, missing_params=missing),
+					context=ctx,
+				)
 
-			subst = Subst(owner=type_params[0].id.owner, args=args)
-			inst_params = [apply_subst(p, subst, self.type_table) for p in param_types]
-			inst_return = apply_subst(sig.return_type_id, subst, self.type_table) if sig.return_type_id is not None else None
-			return subst, inst_params, inst_return, None
+			subst = Subst(owner=type_param_ids[0].owner, args=args)
+			inst_params = [apply_subst(p, subst, self.type_table) for p in ctx.param_types]
+			inst_return = apply_subst(ctx.return_type, subst, self.type_table) if ctx.return_type is not None else None
+			return InferResult(
+				ok=True,
+				subst=subst,
+				inst_params=inst_params,
+				inst_return=inst_return,
+				trace=trace,
+				context=ctx,
+			)
 
 		def _instantiate_sig_with_subst(
 			*,
@@ -604,37 +696,90 @@ class TypeChecker:
 			explicit_type_args: list[TypeId] | None,
 			allow_infer: bool,
 			diag_span: Span | None = None,
-		) -> tuple[list[TypeId] | None, TypeId | None, Subst | None, str | None]:
+			call_kind: str = "call",
+			call_name: str = "",
+			receiver_type: TypeId | None = None,
+		) -> InferResult:
 			if sig.param_type_ids is None or sig.return_type_id is None:
-				return None, None, None, "no_types"
+				return InferResult(
+					ok=False,
+					subst=None,
+					inst_params=None,
+					inst_return=None,
+					error=InferError(kind=InferErrorKind.NO_TYPES),
+				)
 			if explicit_type_args:
 				if not sig.type_params:
-					return None, None, None, "no_typeparams"
+					return InferResult(
+						ok=False,
+						subst=None,
+						inst_params=None,
+						inst_return=None,
+						error=InferError(kind=InferErrorKind.NO_TYPEPARAMS),
+					)
 				if len(explicit_type_args) != len(sig.type_params):
-					return None, None, None, "typearg_count"
+					return InferResult(
+						ok=False,
+						subst=None,
+						inst_params=None,
+						inst_return=None,
+						error=InferError(
+							kind=InferErrorKind.TYPEARG_COUNT,
+							expected_count=len(sig.type_params),
+						),
+					)
 				subst = Subst(owner=sig.type_params[0].id.owner, args=list(explicit_type_args))
 				for arg in subst.args:
 					_enforce_struct_requires(arg, diag_span or Span())
 				inst_params = [apply_subst(p, subst, self.type_table) for p in sig.param_type_ids]
 				inst_return = apply_subst(sig.return_type_id, subst, self.type_table)
-				return inst_params, inst_return, subst, None
+				return InferResult(
+					ok=True,
+					subst=subst,
+					inst_params=inst_params,
+					inst_return=inst_return,
+					context=None,
+				)
 			if sig.type_params:
 				if not allow_infer:
-					return None, None, None, "cannot_infer"
-				subst, inst_params, inst_return, infer_err = _infer_from_types(
-					sig=sig,
+					return InferResult(
+						ok=False,
+						subst=None,
+						inst_params=None,
+						inst_return=None,
+						error=InferError(kind=InferErrorKind.CANNOT_INFER),
+					)
+				type_param_names = {p.id: p.name for p in sig.type_params}
+				ctx = InferContext(
+					call_kind="method" if call_kind == "method" else call_kind,
+					call_name=call_name or sig.name,
+					span=diag_span or Span(),
+					type_param_ids=[p.id for p in sig.type_params],
+					type_param_names=type_param_names,
 					param_types=list(sig.param_type_ids),
-					actual_types=list(arg_types),
-					expected_type=expected_type,
+					param_names=list(sig.param_names) if sig.param_names else None,
+					return_type=sig.return_type_id,
+					arg_types=list(arg_types),
+					receiver_type=receiver_type,
+					expected_return=expected_type,
 				)
-				if subst is None or inst_params is None or inst_return is None:
-					if infer_err == "incomplete":
-						return None, None, None, "cannot_infer"
-					return None, None, None, "mismatch"
+				res = _infer(ctx)
+				if not res.ok or res.subst is None:
+					return res
+				subst = res.subst
+				inst_params = [apply_subst(p, subst, self.type_table) for p in sig.param_type_ids]
+				inst_return = apply_subst(sig.return_type_id, subst, self.type_table)
 				for arg in subst.args:
 					_enforce_struct_requires(arg, diag_span or Span())
-				return inst_params, inst_return, subst, None
-			return list(sig.param_type_ids), sig.return_type_id, None, None
+				res.inst_params = inst_params
+				res.inst_return = inst_return
+				return res
+			return InferResult(
+				ok=True,
+				subst=None,
+				inst_params=list(sig.param_type_ids),
+				inst_return=sig.return_type_id,
+			)
 
 		def _instantiate_sig(
 			*,
@@ -644,16 +789,22 @@ class TypeChecker:
 			explicit_type_args: list[TypeId] | None,
 			allow_infer: bool,
 			diag_span: Span | None = None,
-		) -> tuple[list[TypeId] | None, TypeId | None, str | None]:
-			inst_params, inst_return, _subst, err = _instantiate_sig_with_subst(
+			call_kind: str = "call",
+			call_name: str = "",
+			receiver_type: TypeId | None = None,
+		) -> InferResult:
+			res = _instantiate_sig_with_subst(
 				sig=sig,
 				arg_types=arg_types,
 				expected_type=expected_type,
 				explicit_type_args=explicit_type_args,
 				allow_infer=allow_infer,
 				diag_span=diag_span,
+				call_kind=call_kind,
+				call_name=call_name,
+				receiver_type=receiver_type,
 			)
-			return inst_params, inst_return, err
+			return res
 
 		def _receiver_compat(
 			receiver_type: TypeId,
@@ -854,6 +1005,7 @@ class TypeChecker:
 			saw_typed_nongeneric_with_type_args = False
 			saw_infer_incomplete = False
 			saw_require_failed = False
+			infer_failures: list[InferResult] = []
 			for decl in candidates:
 				sig = None
 				if decl.fn_id is not None and signatures_by_id is not None:
@@ -895,27 +1047,32 @@ class TypeChecker:
 				if sig.param_type_ids is None or sig.return_type_id is None:
 					continue
 
-				inst_params, inst_return, inst_subst, inst_err = _instantiate_sig_with_subst(
+				inst_res = _instantiate_sig_with_subst(
 					sig=sig,
 					arg_types=arg_types,
 					expected_type=expected_type,
 					explicit_type_args=call_type_args,
 					allow_infer=True,
 					diag_span=call_type_args_span,
+					call_kind="free",
+					call_name=name,
 				)
-				if inst_err == "no_typeparams" and call_type_args:
+				if inst_res.error and inst_res.error.kind is InferErrorKind.NO_TYPEPARAMS and call_type_args:
 					saw_typed_nongeneric_with_type_args = True
 					continue
-				if inst_err == "typearg_count" and call_type_args:
-					type_arg_counts.add(len(sig.type_params))
+				if inst_res.error and inst_res.error.kind is InferErrorKind.TYPEARG_COUNT and call_type_args:
+					if inst_res.error.expected_count is not None:
+						type_arg_counts.add(inst_res.error.expected_count)
 					continue
-				if inst_err == "cannot_infer":
+				if inst_res.error and inst_res.error.kind in {InferErrorKind.CANNOT_INFER, InferErrorKind.CONFLICT}:
 					saw_infer_incomplete = True
+					infer_failures.append(inst_res)
 					continue
-				if inst_err:
+				if inst_res.error:
 					continue
-				params = inst_params
-				result_type = inst_return
+				params = inst_res.inst_params
+				result_type = inst_res.inst_return
+				inst_subst = inst_res.subst
 
 				if len(params) != len(arg_types):
 					continue
@@ -946,11 +1103,43 @@ class TypeChecker:
 							span=call_type_args_span,
 						)
 					raise ResolutionError(f"no matching overload for function '{name}' with provided type arguments")
-				if saw_infer_incomplete:
-					raise ResolutionError(
-						f"cannot infer type arguments for '{name}'; add explicit '<type ...>'",
-						span=call_type_args_span,
+				if saw_infer_incomplete and infer_failures:
+					failure = infer_failures[0]
+					ctx = failure.context or InferContext(
+						call_kind="free",
+						call_name=name,
+						span=call_type_args_span or Span(),
+						type_param_ids=[],
+						type_param_names={},
+						param_types=[],
+						param_names=None,
+						return_type=None,
+						arg_types=[],
 					)
+					msg, notes = _format_infer_failure(ctx, failure)
+					raise ResolutionError(msg, span=call_type_args_span, notes=notes)
+				if saw_infer_incomplete:
+					ctx = InferContext(
+						call_kind="free",
+						call_name=name,
+						span=call_type_args_span or Span(),
+						type_param_ids=[],
+						type_param_names={},
+						param_types=[],
+						param_names=None,
+						return_type=None,
+						arg_types=[],
+					)
+					res = InferResult(
+						ok=False,
+						subst=None,
+						inst_params=None,
+						inst_return=None,
+						error=InferError(kind=InferErrorKind.CANNOT_INFER),
+						context=ctx,
+					)
+					msg, notes = _format_infer_failure(ctx, res)
+					raise ResolutionError(msg, span=call_type_args_span, notes=notes)
 				raise ResolutionError(f"no matching overload for function '{name}' with args {arg_types}")
 			world = None
 			applicable: List[tuple[CallableDecl, CallableSignature, Subst | None]] = []
@@ -1307,15 +1496,17 @@ class TypeChecker:
 				]
 				first_loc = getattr((base_te.args or [None])[0], "loc", None)
 				call_type_args_span = Span.from_loc(first_loc) if first_loc is not None else None
-				inst_params, inst_return, inst_err = _instantiate_sig(
+				inst_res = _instantiate_sig(
 					sig=ctor_sig,
 					arg_types=[],
 					expected_type=None,
 					explicit_type_args=explicit_type_args,
 					allow_infer=False,
 					diag_span=call_type_args_span or getattr(expr, "loc", Span()),
+					call_kind="ctor",
+					call_name=expr.member,
 				)
-				if inst_err == "typearg_count":
+				if inst_res.error and inst_res.error.kind is InferErrorKind.TYPEARG_COUNT:
 					diagnostics.append(
 						Diagnostic(
 							message=(
@@ -1326,7 +1517,7 @@ class TypeChecker:
 						)
 					)
 					return record_expr(expr, self._unknown)
-				if inst_err == "no_typeparams":
+				if inst_res.error and inst_res.error.kind is InferErrorKind.NO_TYPEPARAMS:
 					diagnostics.append(
 						Diagnostic(
 							message="constructor does not accept type arguments; use the non-generic form instead",
@@ -1335,13 +1526,14 @@ class TypeChecker:
 						)
 					)
 					return record_expr(expr, self._unknown)
-				if inst_err:
+				if inst_res.error:
 					return record_expr(expr, self._unknown)
-				if inst_params is None or inst_return is None:
+				if inst_res.inst_params is None or inst_res.inst_return is None:
 					return record_expr(expr, self._unknown)
+				inst_return = inst_res.inst_return
 
 				fn_name = f"{schema.name}::{expr.member}"
-				return record_expr(expr, self.type_table.new_function(fn_name, list(inst_params), inst_return))
+				return record_expr(expr, self.type_table.new_function(fn_name, list(inst_res.inst_params), inst_res.inst_return))
 
 			if hasattr(H, "HTypeApp") and isinstance(expr, getattr(H, "HTypeApp")):
 				call_type_args_span = None
@@ -1386,25 +1578,28 @@ class TypeChecker:
 								sig = replace(sig, return_type_id=ret_id)
 							if sig.param_type_ids is None or sig.return_type_id is None:
 								continue
-							inst_params, inst_return, inst_err = _instantiate_sig(
+							inst_res = _instantiate_sig(
 								sig=sig,
 								arg_types=[],
 								expected_type=None,
 								explicit_type_args=type_arg_ids,
 								allow_infer=False,
 								diag_span=call_type_args_span or getattr(expr, "loc", Span()),
+								call_kind="free",
+								call_name=decl.name,
 							)
-							if inst_err == "no_typeparams":
+							if inst_res.error and inst_res.error.kind is InferErrorKind.NO_TYPEPARAMS:
 								saw_typed_nongeneric = True
 								continue
-							if inst_err == "typearg_count":
-								type_arg_counts.add(len(sig.type_params))
+							if inst_res.error and inst_res.error.kind is InferErrorKind.TYPEARG_COUNT:
+								if inst_res.error.expected_count is not None:
+									type_arg_counts.add(inst_res.error.expected_count)
 								continue
-							if inst_err:
+							if inst_res.error:
 								continue
-							if inst_params is None or inst_return is None:
+							if inst_res.inst_params is None or inst_res.inst_return is None:
 								continue
-							viable.append((decl, list(inst_params), inst_return))
+							viable.append((decl, list(inst_res.inst_params), inst_res.inst_return))
 
 						if len(viable) == 1:
 							decl, params, ret = viable[0]
@@ -1461,15 +1656,17 @@ class TypeChecker:
 							)
 						)
 						return record_expr(expr, self._unknown)
-					inst_params, inst_return, inst_err = _instantiate_sig(
+					inst_res = _instantiate_sig(
 						sig=sig,
 						arg_types=[],
 						expected_type=None,
 						explicit_type_args=type_arg_ids,
 						allow_infer=False,
 						diag_span=call_type_args_span or getattr(expr, "loc", Span()),
+						call_kind="free",
+						call_name=expr.fn.name,
 					)
-					if inst_err == "typearg_count":
+					if inst_res.error and inst_res.error.kind is InferErrorKind.TYPEARG_COUNT:
 						diagnostics.append(
 							Diagnostic(
 								message=(
@@ -1480,7 +1677,7 @@ class TypeChecker:
 							)
 						)
 						return record_expr(expr, self._unknown)
-					if inst_err == "no_typeparams":
+					if inst_res.error and inst_res.error.kind is InferErrorKind.NO_TYPEPARAMS:
 						diagnostics.append(
 							Diagnostic(
 								message=f"type arguments require a generic signature for '{expr.fn.name}'",
@@ -1489,10 +1686,10 @@ class TypeChecker:
 							)
 						)
 						return record_expr(expr, self._unknown)
-					if inst_err:
+					if inst_res.error:
 						return record_expr(expr, self._unknown)
-					if inst_params is not None and inst_return is not None:
-						return record_expr(expr, self.type_table.new_function(expr.fn.name, list(inst_params), inst_return))
+					if inst_res.inst_params is not None and inst_res.inst_return is not None:
+						return record_expr(expr, self.type_table.new_function(expr.fn.name, list(inst_res.inst_params), inst_res.inst_return))
 					return record_expr(expr, self._unknown)
 
 				if hasattr(H, "HQualifiedMember") and isinstance(expr.fn, getattr(H, "HQualifiedMember")):
@@ -1638,15 +1835,17 @@ class TypeChecker:
 						module=current_module_name,
 					)
 
-					inst_params, inst_return, inst_err = _instantiate_sig(
+					inst_res = _instantiate_sig(
 						sig=ctor_sig,
 						arg_types=[],
 						expected_type=None,
 						explicit_type_args=type_arg_ids,
 						allow_infer=False,
 						diag_span=call_type_args_span or getattr(expr, "loc", Span()),
+						call_kind="ctor",
+						call_name=qm.member,
 					)
-					if inst_err == "typearg_count":
+					if inst_res.error and inst_res.error.kind is InferErrorKind.TYPEARG_COUNT:
 						diagnostics.append(
 							Diagnostic(
 								message=(
@@ -1657,7 +1856,7 @@ class TypeChecker:
 							)
 						)
 						return record_expr(expr, self._unknown)
-					if inst_err == "no_typeparams":
+					if inst_res.error and inst_res.error.kind is InferErrorKind.NO_TYPEPARAMS:
 						diagnostics.append(
 							Diagnostic(
 								message=(
@@ -1668,13 +1867,14 @@ class TypeChecker:
 							)
 						)
 						return record_expr(expr, self._unknown)
-					if inst_err:
+					if inst_res.error:
 						return record_expr(expr, self._unknown)
-					if inst_params is None or inst_return is None:
+					if inst_res.inst_params is None or inst_res.inst_return is None:
 						return record_expr(expr, self._unknown)
+					inst_return = inst_res.inst_return
 
 					fn_name = f"{schema.name}::{qm.member}"
-					return record_expr(expr, self.type_table.new_function(fn_name, list(inst_params), inst_return))
+					return record_expr(expr, self.type_table.new_function(fn_name, list(inst_res.inst_params), inst_res.inst_return))
 
 				diagnostics.append(
 					Diagnostic(
@@ -2097,7 +2297,11 @@ class TypeChecker:
 							_validate_mutable_derefs(node.index)
 
 					_validate_mutable_derefs(expr.subject)
-					if place in borrows_in_stmt:
+					conflict = False
+					for existing, kind in borrows_in_stmt.items():
+						if not places_overlap(place, existing):
+							continue
+						conflict = True
 						diagnostics.append(
 							Diagnostic(
 								message="conflicting borrows in the same statement: cannot take &mut while borrowed",
@@ -2105,16 +2309,23 @@ class TypeChecker:
 								span=getattr(expr, "loc", Span()),
 							)
 						)
+						break
 					borrows_in_stmt[place] = "mut"
 				else:
-					if borrows_in_stmt.get(place) == "mut":
-						diagnostics.append(
-							Diagnostic(
-								message="conflicting borrows in the same statement: cannot take & while mutably borrowed",
-								severity="error",
-								span=getattr(expr, "loc", Span()),
+					conflict = False
+					for existing, kind in borrows_in_stmt.items():
+						if not places_overlap(place, existing):
+							continue
+						if kind == "mut":
+							conflict = True
+							diagnostics.append(
+								Diagnostic(
+									message="conflicting borrows in the same statement: cannot take & while mutably borrowed",
+									severity="error",
+									span=getattr(expr, "loc", Span()),
+								)
 							)
-						)
+							break
 					borrows_in_stmt.setdefault(place, "shared")
 
 				ref_ty = self.type_table.ensure_ref_mut(inner_ty) if expr.is_mut else self.type_table.ensure_ref(inner_ty)
@@ -2257,6 +2468,7 @@ class TypeChecker:
 							trait_type_arg_counts: set[int] = set()
 							trait_saw_typed_nongeneric = False
 							trait_saw_infer_incomplete = False
+							trait_infer_failures: list[InferResult] = []
 							if trait_index.has_method(trait_key, qm.member):
 								if recv_type_param_id is not None:
 									if (
@@ -2318,21 +2530,26 @@ class TypeChecker:
 													],
 													module=trait_key.module or current_module_name,
 												)
-												inst_params, inst_return, inst_subst, inst_err = _instantiate_sig_with_subst(
+												inst_res = _instantiate_sig_with_subst(
 													sig=trait_sig,
 													arg_types=[recv_ty, *arg_types],
 													expected_type=expected_type,
 													explicit_type_args=type_arg_ids,
 													allow_infer=True,
 													diag_span=call_type_args_span or getattr(expr, "loc", Span()),
+													call_kind="method",
+													call_name=method_sig.name,
+													receiver_type=recv_ty,
 												)
-												if inst_err == "no_typeparams" and type_arg_ids:
+												if inst_res.error and inst_res.error.kind is InferErrorKind.NO_TYPEPARAMS and type_arg_ids:
 													trait_saw_typed_nongeneric = True
-												elif inst_err == "typearg_count" and type_arg_ids:
-													trait_type_arg_counts.add(len(trait_sig.type_params))
-												elif inst_err == "cannot_infer":
+												elif inst_res.error and inst_res.error.kind is InferErrorKind.TYPEARG_COUNT and type_arg_ids:
+													if inst_res.error.expected_count is not None:
+														trait_type_arg_counts.add(inst_res.error.expected_count)
+												elif inst_res.error and inst_res.error.kind in {InferErrorKind.CANNOT_INFER, InferErrorKind.CONFLICT}:
 													trait_saw_infer_incomplete = True
-												elif not inst_err and inst_params and inst_return is not None:
+													trait_infer_failures.append(inst_res)
+												elif not inst_res.error and inst_res.inst_params and inst_res.inst_return is not None:
 													trait_decl = CallableDecl(
 														callable_id=-1,
 														name=method_sig.name,
@@ -2351,14 +2568,14 @@ class TypeChecker:
 														impl_target_type_id=None,
 														self_mode=self_mode,
 													)
-													ok, autoborrow = _receiver_compat(recv_ty, inst_params[0], self_mode)
-													if ok and all(p == a for p, a in zip(inst_params[1:], arg_types)):
+													ok, autoborrow = _receiver_compat(recv_ty, inst_res.inst_params[0], self_mode)
+													if ok and all(p == a for p, a in zip(inst_res.inst_params[1:], arg_types)):
 														trait_candidates.append(
 															(
 																MethodResolution(
 																	decl=trait_decl,
 																	receiver_autoborrow=autoborrow,
-																	result_type=inst_return,
+																	result_type=inst_res.inst_return,
 																),
 																TraitImplCandidate(
 																	fn_id=trait_decl.fn_id,
@@ -2489,31 +2706,36 @@ class TypeChecker:
 													trait_require_failures.append(failure)
 												continue
 
-									inst_params: list[TypeId] | None = None
-									inst_return: TypeId | None = None
-									inst_subst: Subst | None = None
-									inst_params, inst_return, inst_subst, inst_err = _instantiate_sig_with_subst(
+									inst_res = _instantiate_sig_with_subst(
 										sig=sig,
 										arg_types=[recv_ty, *arg_types],
 										expected_type=expected_type,
 										explicit_type_args=type_arg_ids,
 										allow_infer=True,
 										diag_span=call_type_args_span or getattr(expr, "loc", Span()),
+										call_kind="method",
+										call_name=qm.member,
+										receiver_type=recv_ty,
 									)
-									if inst_err == "no_typeparams" and type_arg_ids:
+									if inst_res.error and inst_res.error.kind is InferErrorKind.NO_TYPEPARAMS and type_arg_ids:
 										trait_saw_typed_nongeneric = True
 										continue
-									if inst_err == "typearg_count" and type_arg_ids:
-										trait_type_arg_counts.add(len(sig.type_params))
+									if inst_res.error and inst_res.error.kind is InferErrorKind.TYPEARG_COUNT and type_arg_ids:
+										if inst_res.error.expected_count is not None:
+											trait_type_arg_counts.add(inst_res.error.expected_count)
 										continue
-									if inst_err == "cannot_infer":
+									if inst_res.error and inst_res.error.kind in {InferErrorKind.CANNOT_INFER, InferErrorKind.CONFLICT}:
 										trait_saw_infer_incomplete = True
+										trait_infer_failures.append(inst_res)
 										continue
-									if inst_err:
+									if inst_res.error:
 										continue
 
-									if inst_params is None or inst_return is None:
+									if inst_res.inst_params is None or inst_res.inst_return is None:
 										continue
+									inst_subst = inst_res.subst
+									inst_params = inst_res.inst_params
+									inst_return = inst_res.inst_return
 									if decl.fn_id is not None:
 										world = global_trait_world
 										req = world.requires_by_fn.get(decl.fn_id) if world is not None else None
@@ -2630,10 +2852,28 @@ class TypeChecker:
 									span=call_type_args_span,
 								)
 							if trait_saw_infer_incomplete:
-								raise ResolutionError(
-									f"cannot infer type arguments for method '{qm.member}'; add explicit '<type ...>'",
-									span=call_type_args_span,
+								failure = trait_infer_failures[0] if trait_infer_failures else None
+								ctx = failure.context if failure and failure.context is not None else InferContext(
+									call_kind="method",
+									call_name=qm.member,
+									span=call_type_args_span or getattr(expr, "loc", Span()),
+									type_param_ids=[],
+									type_param_names={},
+									param_types=[],
+									param_names=None,
+									return_type=None,
+									arg_types=[],
 								)
+								res = failure if failure is not None else InferResult(
+									ok=False,
+									subst=None,
+									inst_params=None,
+									inst_return=None,
+									error=InferError(kind=InferErrorKind.CANNOT_INFER),
+									context=ctx,
+								)
+								msg, notes = _format_infer_failure(ctx, res)
+								raise ResolutionError(msg, span=call_type_args_span, notes=notes)
 							if trait_require_failures:
 								failure = _pick_best_failure(trait_require_failures)
 								diagnostics.append(
@@ -2880,15 +3120,17 @@ class TypeChecker:
 							resolve_opaque_type(t, self.type_table, module_id=current_module_name)
 							for t in call_type_args
 						]
-					inst_params, inst_return, inst_err = _instantiate_sig(
+					inst_res = _instantiate_sig(
 						sig=ctor_sig,
 						arg_types=arg_types,
 						expected_type=expected_type,
 						explicit_type_args=explicit_type_args,
 						allow_infer=True,
 						diag_span=call_type_args_span or getattr(expr, "loc", Span()),
+						call_kind="ctor",
+						call_name=qm.member,
 					)
-					if inst_err == "typearg_count":
+					if inst_res.error and inst_res.error.kind is InferErrorKind.TYPEARG_COUNT:
 						span = call_type_args_span or getattr(expr, "loc", Span())
 						diagnostics.append(
 							Diagnostic(
@@ -2900,36 +3142,70 @@ class TypeChecker:
 							)
 						)
 						return record_expr(expr, self._unknown)
-					if inst_err == "cannot_infer":
+					if inst_res.error and inst_res.error.kind in {InferErrorKind.CANNOT_INFER, InferErrorKind.CONFLICT}:
+						msg, notes = _format_infer_failure(
+							inst_res.context
+							or InferContext(
+								call_kind="ctor",
+								call_name=qm.member,
+								span=getattr(expr, "loc", Span()),
+								type_param_ids=[],
+								type_param_names={},
+								param_types=[],
+								param_names=None,
+								return_type=None,
+								arg_types=[],
+							),
+							inst_res,
+						)
+						hint = (
+							"Hint: qualify the constructor (e.g., `Optional<T>::None()` or `Optional::None<type T>()`)."
+						)
+						notes = [*notes, hint, "underconstrained"]
 						diagnostics.append(
 							Diagnostic(
-								message=(
-									"E-QMEM-CANNOT-INFER: cannot infer type arguments for generic variant "
-									"(underconstrained; arguments do not determine all type parameters). "
-									"Fix: add an expected type (e.g., `val x: Optional<Int> = Optional::None()`) "
-									"or add explicit type arguments (e.g., `Optional<Int>::None()` or `Optional::None<type Int>()`)."
-								),
+								message=f"E-QMEM-CANNOT-INFER: {msg} (underconstrained). {hint}",
+								severity="error",
+								span=getattr(expr, "loc", Span()),
+								notes=notes,
+							)
+						)
+						return record_expr(expr, self._unknown)
+					if inst_res.error:
+						msg, notes = _format_infer_failure(
+							inst_res.context
+							or InferContext(
+								call_kind="ctor",
+								call_name=qm.member,
+								span=getattr(expr, "loc", Span()),
+								type_param_ids=[],
+								type_param_names={},
+								param_types=[],
+								param_names=None,
+								return_type=None,
+								arg_types=[],
+							),
+							inst_res,
+						)
+						diagnostics.append(
+							Diagnostic(message=msg, severity="error", span=getattr(expr, "loc", Span()), notes=notes)
+						)
+						return record_expr(expr, self._unknown)
+					if inst_res.inst_params is None or inst_res.inst_return is None:
+						return record_expr(expr, self._unknown)
+					inst_return = inst_res.inst_return
+
+					if len(inst_res.inst_params) != len(field_names):
+						diagnostics.append(
+							Diagnostic(
+								message=f"E-QMEM-ARITY: constructor '{qm.member}' expects {len(field_names)} arguments, got {len(inst_res.inst_params)}",
 								severity="error",
 								span=getattr(expr, "loc", Span()),
 							)
 						)
 						return record_expr(expr, self._unknown)
-					if inst_err:
-						return record_expr(expr, self._unknown)
-					if inst_params is None or inst_return is None:
-						return record_expr(expr, self._unknown)
 
-					if len(inst_params) != len(field_names):
-						diagnostics.append(
-							Diagnostic(
-								message=f"E-QMEM-ARITY: constructor '{qm.member}' expects {len(field_names)} arguments, got {len(inst_params)}",
-								severity="error",
-								span=getattr(expr, "loc", Span()),
-							)
-						)
-						return record_expr(expr, self._unknown)
-
-					for idx, want in enumerate(inst_params):
+					for idx, want in enumerate(inst_res.inst_params):
 						arg_expr: H.HExpr | None = None
 						if kw_pairs:
 							for kw in kw_pairs:
@@ -3492,11 +3768,13 @@ class TypeChecker:
 										field_idx = field_names.index(kw.name)
 										mapped_types[field_idx] = kw_ty
 								template_types: list[TypeId] = []
+								template_field_names: list[str] = []
 								actual_types: list[TypeId] = []
-								for tmpl, have in zip(field_types, mapped_types):
+								for field_name, tmpl, have in zip(field_names, field_types, mapped_types):
 									if have is None:
 										continue
 									template_types.append(tmpl)
+									template_field_names.append(field_name)
 									actual_types.append(have)
 								if template_types:
 									type_params: list[TypeParam] = []
@@ -3504,23 +3782,66 @@ class TypeChecker:
 										if idx < len(param_ids):
 											type_params.append(TypeParam(id=param_ids[idx], name=tp_name, span=None))
 									if type_params:
-										dummy_sig = FnSignature(name=f"__struct_ctor_{struct_name}", type_params=type_params)
-										subst, _inst_params, _inst_return, infer_err = _infer_from_types(
-											sig=dummy_sig,
+										ctx = InferContext(
+											call_kind="ctor",
+											call_name=struct_name or "<struct>",
+											span=call_type_args_span or getattr(expr, "loc", Span()),
+											type_param_ids=[p.id for p in type_params],
+											type_param_names={p.id: p.name for p in type_params},
 											param_types=template_types,
-											actual_types=actual_types,
-											expected_type=None,
+											param_names=template_field_names,
+											return_type=None,
+											arg_types=actual_types,
 										)
-										if subst is not None and infer_err is None:
-											inferred = list(subst.args)
+										res = _infer(ctx)
+										if res.ok and res.subst is not None:
+											inferred = list(res.subst.args)
+										elif res.error is not None:
+											msg, notes = _format_infer_failure(ctx, res)
+											diagnostics.append(
+												Diagnostic(
+													message=msg,
+													severity="error",
+													span=call_type_args_span or getattr(expr, "loc", Span()),
+													notes=notes,
+												)
+											)
+											return record_expr(expr, self._unknown)
 							if inferred:
 								type_arg_ids = inferred
 							else:
+								type_param_names = {
+									pid: name for pid, name in zip(param_ids, struct_schema.type_params)
+								}
+								ctx = InferContext(
+									call_kind="ctor",
+									call_name=struct_name or "<struct>",
+									span=call_type_args_span or getattr(expr, "loc", Span()),
+									type_param_ids=list(param_ids),
+									type_param_names=type_param_names,
+									param_types=[],
+									param_names=None,
+									return_type=None,
+									arg_types=[],
+								)
+								res = InferResult(
+									ok=False,
+									subst=None,
+									inst_params=None,
+									inst_return=None,
+									error=InferError(
+										kind=InferErrorKind.CANNOT_INFER,
+										missing_params=list(param_ids),
+									),
+									context=ctx,
+								)
+								msg, notes = _format_infer_failure(ctx, res)
 								diagnostics.append(
 									Diagnostic(
-										message=f"cannot infer type arguments for struct '{struct_name}'; add explicit '<type ...>'",
+										message=msg,
 										severity="error",
 										span=call_type_args_span or getattr(expr, "loc", Span()),
+										notes=notes,
 									)
 								)
 								return record_expr(expr, self._unknown)
@@ -3746,7 +4067,7 @@ class TypeChecker:
 												message=(
 													"E-CTOR-EXPECTED-TYPE: constructor call requires an expected variant type; "
 													"add a type annotation or call a function that expects this variant. "
-													"Hint: qualify the constructor (e.g., `Optional::None()` or `Optional<Int>::None()` or `Optional::None<type Int>()`)."
+													"Hint: qualify the constructor (e.g., `Optional::None()` or `Optional<T>::None()` or `Optional::None<type T>()`)."
 												),
 												severity="error",
 												span=getattr(expr, "loc", Span()),
@@ -3754,7 +4075,14 @@ class TypeChecker:
 								)
 								return record_expr(expr, self._unknown)
 						diag_span = getattr(err, "span", None) or getattr(expr, "loc", Span())
-						diagnostics.append(Diagnostic(message=str(err), severity="error", span=diag_span))
+						diagnostics.append(
+							Diagnostic(
+								message=str(err),
+								severity="error",
+								span=diag_span,
+								notes=list(getattr(err, "notes", []) or []),
+							)
+						)
 						return record_expr(expr, self._unknown)
 
 				# Fallback: signature map by name.
@@ -3772,15 +4100,17 @@ class TypeChecker:
 						]
 						first_loc = getattr((expr.type_args or [None])[0], "loc", None)
 						call_type_args_span = Span.from_loc(first_loc)
-					inst_params, inst_return, inst_err = _instantiate_sig(
+					inst_res = _instantiate_sig(
 						sig=sig,
 						arg_types=arg_types,
 						expected_type=expected_type,
 						explicit_type_args=type_arg_ids,
 						allow_infer=True,
 						diag_span=call_type_args_span or getattr(expr, "loc", Span()),
+						call_kind="free",
+						call_name=expr.fn.name,
 					)
-					if inst_err == "typearg_count" and type_arg_ids:
+					if inst_res.error and inst_res.error.kind is InferErrorKind.TYPEARG_COUNT and type_arg_ids:
 						diagnostics.append(
 							Diagnostic(
 								message=(
@@ -3791,7 +4121,7 @@ class TypeChecker:
 							)
 						)
 						return record_expr(expr, self._unknown)
-					if inst_err == "no_typeparams" and type_arg_ids:
+					if inst_res.error and inst_res.error.kind is InferErrorKind.NO_TYPEPARAMS and type_arg_ids:
 						diagnostics.append(
 							Diagnostic(
 								message=f"type arguments require a generic signature for '{expr.fn.name}'",
@@ -3800,17 +4130,30 @@ class TypeChecker:
 							)
 						)
 						return record_expr(expr, self._unknown)
-					if inst_err == "cannot_infer":
-						diagnostics.append(
-							Diagnostic(
-								message=f"cannot infer type arguments for '{expr.fn.name}'; add explicit '<type ...>'",
-								severity="error",
+					if inst_res.error and inst_res.error.kind is InferErrorKind.CANNOT_INFER:
+						msg, notes = _format_infer_failure(
+							inst_res.context
+							or InferContext(
+								call_kind="free",
+								call_name=expr.fn.name,
 								span=getattr(expr, "loc", Span()),
-							)
+								type_param_ids=[],
+								type_param_names={},
+								param_types=[],
+								param_names=None,
+								return_type=None,
+								arg_types=[],
+							),
+							inst_res,
+						)
+						diagnostics.append(
+							Diagnostic(message=msg, severity="error", span=getattr(expr, "loc", Span()), notes=notes)
 						)
 						return record_expr(expr, self._unknown)
-					if inst_return is not None:
-						return record_expr(expr, inst_return)
+					if inst_res.error:
+						return record_expr(expr, self._unknown)
+					if inst_res.inst_return is not None:
+						return record_expr(expr, inst_res.inst_return)
 					return record_expr(expr, sig.return_type_id)
 				# Constructor calls without an expected variant type are rejected in MVP.
 				if isinstance(expr.fn, H.HVar) and expected_type is None:
@@ -3820,7 +4163,7 @@ class TypeChecker:
 								message=(
 									"E-CTOR-EXPECTED-TYPE: constructor call requires an expected variant type; "
 									"add a type annotation or call a function that expects this variant. "
-									"Hint: qualify the constructor (e.g., `Optional::None()` or `Optional<Int>::None()` or `Optional::None<type Int>()`)."
+									"Hint: qualify the constructor (e.g., `Optional::None()` or `Optional<T>::None()` or `Optional::None<type T>()`)."
 								),
 								severity="error",
 								span=getattr(expr, "loc", Span()),
@@ -3966,6 +4309,7 @@ class TypeChecker:
 						saw_registry_only_with_type_args = False
 						saw_typed_nongeneric_with_type_args = False
 						saw_infer_incomplete = False
+						infer_failures: list[InferResult] = []
 						for decl in candidates:
 							sig = None
 							if decl.fn_id is not None and signatures_by_id is not None:
@@ -4021,31 +4365,36 @@ class TypeChecker:
 									inst_return_id = apply_subst(sig.return_type_id, impl_subst, self.type_table)
 									sig = replace(sig, param_type_ids=inst_param_ids, return_type_id=inst_return_id)
 
-							inst_params: list[TypeId] | None = None
-							inst_return: TypeId | None = None
-							inst_subst: Subst | None = None
-							inst_params, inst_return, inst_subst, inst_err = _instantiate_sig_with_subst(
+							inst_res = _instantiate_sig_with_subst(
 								sig=sig,
 								arg_types=[recv_ty, *arg_types],
 								expected_type=expected_type,
 								explicit_type_args=type_arg_ids,
 								allow_infer=True,
 								diag_span=call_type_args_span or getattr(expr, "loc", Span()),
+								call_kind="method",
+								call_name=expr.method_name,
+								receiver_type=recv_ty,
 							)
-							if inst_err == "no_typeparams" and type_arg_ids:
+							if inst_res.error and inst_res.error.kind is InferErrorKind.NO_TYPEPARAMS and type_arg_ids:
 								saw_typed_nongeneric_with_type_args = True
 								continue
-							if inst_err == "typearg_count" and type_arg_ids:
-								type_arg_counts.add(len(sig.type_params))
+							if inst_res.error and inst_res.error.kind is InferErrorKind.TYPEARG_COUNT and type_arg_ids:
+								if inst_res.error.expected_count is not None:
+									type_arg_counts.add(inst_res.error.expected_count)
 								continue
-							if inst_err == "cannot_infer":
+							if inst_res.error and inst_res.error.kind in {InferErrorKind.CANNOT_INFER, InferErrorKind.CONFLICT}:
 								saw_infer_incomplete = True
+								infer_failures.append(inst_res)
 								continue
-							if inst_err:
+							if inst_res.error:
 								continue
 
-							if inst_params is None or inst_return is None:
+							if inst_res.inst_params is None or inst_res.inst_return is None:
 								continue
+							inst_params = inst_res.inst_params
+							inst_return = inst_res.inst_return
+							inst_subst = inst_res.subst
 							# Enforce method-level requirements after instantiation.
 							if decl.fn_id is not None:
 								world = global_trait_world
@@ -4134,6 +4483,7 @@ class TypeChecker:
 							trait_type_arg_counts: set[int] = set()
 							trait_saw_typed_nongeneric = False
 							trait_saw_infer_incomplete = False
+							trait_infer_failures: list[InferResult] = []
 							traits_in_scope = trait_scope_by_module.get(current_module_name, [])
 							for trait_key in traits_in_scope:
 								if not trait_index.has_method(trait_key, expr.method_name):
@@ -4199,21 +4549,26 @@ class TypeChecker:
 												],
 												module=trait_key.module or current_module_name,
 											)
-											inst_params, inst_return, inst_subst, inst_err = _instantiate_sig_with_subst(
+											inst_res = _instantiate_sig_with_subst(
 												sig=trait_sig,
 												arg_types=[recv_ty, *arg_types],
 												expected_type=expected_type,
 												explicit_type_args=type_arg_ids,
 												allow_infer=True,
 												diag_span=call_type_args_span or getattr(expr, "loc", Span()),
+												call_kind="method",
+												call_name=method_sig.name,
+												receiver_type=recv_ty,
 											)
-											if inst_err == "no_typeparams" and type_arg_ids:
+											if inst_res.error and inst_res.error.kind is InferErrorKind.NO_TYPEPARAMS and type_arg_ids:
 												trait_saw_typed_nongeneric = True
-											elif inst_err == "typearg_count" and type_arg_ids:
-												trait_type_arg_counts.add(len(trait_sig.type_params))
-											elif inst_err == "cannot_infer":
+											elif inst_res.error and inst_res.error.kind is InferErrorKind.TYPEARG_COUNT and type_arg_ids:
+												if inst_res.error.expected_count is not None:
+													trait_type_arg_counts.add(inst_res.error.expected_count)
+											elif inst_res.error and inst_res.error.kind in {InferErrorKind.CANNOT_INFER, InferErrorKind.CONFLICT}:
 												trait_saw_infer_incomplete = True
-											elif not inst_err and inst_params and inst_return is not None:
+												trait_infer_failures.append(inst_res)
+											elif not inst_res.error and inst_res.inst_params and inst_res.inst_return is not None:
 												trait_decl = CallableDecl(
 													callable_id=-1,
 													name=method_sig.name,
@@ -4232,14 +4587,14 @@ class TypeChecker:
 													impl_target_type_id=None,
 													self_mode=self_mode,
 												)
-												ok, autoborrow = _receiver_compat(recv_ty, inst_params[0], self_mode)
-												if ok and all(p == a for p, a in zip(inst_params[1:], arg_types)):
+												ok, autoborrow = _receiver_compat(recv_ty, inst_res.inst_params[0], self_mode)
+												if ok and all(p == a for p, a in zip(inst_res.inst_params[1:], arg_types)):
 													trait_candidates.append(
 														(
 															MethodResolution(
 																decl=trait_decl,
 																receiver_autoborrow=autoborrow,
-																result_type=inst_return,
+																result_type=inst_res.inst_return,
 															),
 															TraitImplCandidate(
 																fn_id=trait_decl.fn_id,
@@ -4371,31 +4726,36 @@ class TypeChecker:
 													trait_require_failures.append(failure)
 												continue
 
-									inst_params: list[TypeId] | None = None
-									inst_return: TypeId | None = None
-									inst_subst: Subst | None = None
-									inst_params, inst_return, inst_subst, inst_err = _instantiate_sig_with_subst(
+									inst_res = _instantiate_sig_with_subst(
 										sig=sig,
 										arg_types=[recv_ty, *arg_types],
 										expected_type=expected_type,
 										explicit_type_args=type_arg_ids,
 										allow_infer=True,
 										diag_span=call_type_args_span or getattr(expr, "loc", Span()),
+										call_kind="method",
+										call_name=expr.method_name,
+										receiver_type=recv_ty,
 									)
-									if inst_err == "no_typeparams" and type_arg_ids:
+									if inst_res.error and inst_res.error.kind is InferErrorKind.NO_TYPEPARAMS and type_arg_ids:
 										trait_saw_typed_nongeneric = True
 										continue
-									if inst_err == "typearg_count" and type_arg_ids:
-										trait_type_arg_counts.add(len(sig.type_params))
+									if inst_res.error and inst_res.error.kind is InferErrorKind.TYPEARG_COUNT and type_arg_ids:
+										if inst_res.error.expected_count is not None:
+											trait_type_arg_counts.add(inst_res.error.expected_count)
 										continue
-									if inst_err == "cannot_infer":
+									if inst_res.error and inst_res.error.kind in {InferErrorKind.CANNOT_INFER, InferErrorKind.CONFLICT}:
 										trait_saw_infer_incomplete = True
+										trait_infer_failures.append(inst_res)
 										continue
-									if inst_err:
+									if inst_res.error:
 										continue
 
-									if inst_params is None or inst_return is None:
+									if inst_res.inst_params is None or inst_res.inst_return is None:
 										continue
+									inst_params = inst_res.inst_params
+									inst_return = inst_res.inst_return
+									inst_subst = inst_res.subst
 									# Enforce method-level requirements after instantiation.
 									if decl.fn_id is not None:
 										world = global_trait_world
@@ -4513,10 +4873,28 @@ class TypeChecker:
 									span=call_type_args_span,
 								)
 							if trait_saw_infer_incomplete:
-								raise ResolutionError(
-									f"cannot infer type arguments for method '{expr.method_name}'; add explicit '<type ...>'",
-									span=call_type_args_span,
+								failure = trait_infer_failures[0] if trait_infer_failures else None
+								ctx = failure.context if failure and failure.context is not None else InferContext(
+									call_kind="method",
+									call_name=expr.method_name,
+									span=call_type_args_span or getattr(expr, "loc", Span()),
+									type_param_ids=[],
+									type_param_names={},
+									param_types=[],
+									param_names=None,
+									return_type=None,
+									arg_types=[],
 								)
+								res = failure if failure is not None else InferResult(
+									ok=False,
+									subst=None,
+									inst_params=None,
+									inst_return=None,
+									error=InferError(kind=InferErrorKind.CANNOT_INFER),
+									context=ctx,
+								)
+								msg, notes = _format_infer_failure(ctx, res)
+								raise ResolutionError(msg, span=call_type_args_span, notes=notes)
 						if not viable:
 							if type_arg_ids and type_arg_counts:
 								exp = ", ".join(str(n) for n in sorted(type_arg_counts))
@@ -4535,10 +4913,28 @@ class TypeChecker:
 									span=call_type_args_span,
 								)
 							if saw_infer_incomplete:
-								raise ResolutionError(
-									f"cannot infer type arguments for method '{expr.method_name}'; add explicit '<type ...>'",
-									span=call_type_args_span,
+								failure = infer_failures[0] if infer_failures else None
+								ctx = failure.context if failure and failure.context is not None else InferContext(
+									call_kind="method",
+									call_name=expr.method_name,
+									span=call_type_args_span or getattr(expr, "loc", Span()),
+									type_param_ids=[],
+									type_param_names={},
+									param_types=[],
+									param_names=None,
+									return_type=None,
+									arg_types=[],
 								)
+								res = failure if failure is not None else InferResult(
+									ok=False,
+									subst=None,
+									inst_params=None,
+									inst_return=None,
+									error=InferError(kind=InferErrorKind.CANNOT_INFER),
+									context=ctx,
+								)
+								msg, notes = _format_infer_failure(ctx, res)
+								raise ResolutionError(msg, span=call_type_args_span, notes=notes)
 							if trait_require_failures:
 								failure = _pick_best_failure(trait_require_failures)
 								raise ResolutionError(
@@ -4576,7 +4972,12 @@ class TypeChecker:
 					except ResolutionError as err:
 						diag_span = getattr(err, "span", None) or getattr(expr, "loc", Span())
 						diagnostics.append(
-							Diagnostic(message=str(err), severity="error", span=diag_span)
+							Diagnostic(
+								message=str(err),
+								severity="error",
+								span=diag_span,
+								notes=list(getattr(err, "notes", []) or []),
+							)
 						)
 						return record_expr(expr, self._unknown)
 
