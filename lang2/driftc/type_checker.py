@@ -208,6 +208,8 @@ class TypeChecker:
 		trait_scope_by_module: Mapping[str, list[TraitKey]] | None = None,
 		visible_modules: Optional[Tuple[ModuleId, ...]] = None,
 		current_module: ModuleId = 0,
+		visibility_provenance: Mapping[ModuleId, tuple[str, ...]] | None = None,
+		visibility_imports: set[str] | None = None,
 	) -> TypeCheckResult:
 		# Best-effort current module id in canonical string form.
 		#
@@ -216,6 +218,35 @@ class TypeChecker:
 		# even if another module also defines `Point`).
 		current_module_name: str | None = None
 		current_module_name = fn_id.module or "main"
+		visibility_provenance = visibility_provenance or {}
+		visibility_imports = visibility_imports if visibility_imports is not None else None
+
+		def _format_visibility_chain(chain: tuple[str, ...], max_hops: int = 4) -> str:
+			if not chain:
+				return "<unknown>"
+			if len(chain) == 1:
+				return f"{chain[0]} (self)"
+			nodes = list(chain)
+			if len(nodes) - 1 > max_hops:
+				nodes = list(chain[: max_hops + 1])
+				nodes.append("...")
+			parts = [nodes[0]]
+			for idx in range(1, len(nodes)):
+				if idx == 1:
+					if visibility_imports is None:
+						label = "visible->"
+					else:
+						label = "import->" if nodes[idx] in visibility_imports else "reexport->"
+				else:
+					label = "reexport->"
+				parts.append(f"{label} {nodes[idx]}")
+			return " ".join(parts)
+
+		def _visibility_note(module_id: ModuleId) -> str | None:
+			chain = visibility_provenance.get(module_id)
+			if not chain:
+				return None
+			return f"visible via: {_format_visibility_chain(chain)}"
 
 		scope_env: List[Dict[str, TypeId]] = [dict()]
 		scope_bindings: List[Dict[str, int]] = [dict()]
@@ -2462,6 +2493,18 @@ class TypeChecker:
 									type_key_from_typeid(self.type_table, receiver_nominal)
 								)
 							visible_set = set(visible_modules or (current_module,))
+							missing_visible = set()
+							if trait_impl_index.missing_modules:
+								missing_visible = trait_impl_index.missing_modules & visible_set
+							if missing_visible:
+								mod_names = [
+									trait_impl_index.module_names_by_id.get(mid, str(mid))
+									for mid in sorted(missing_visible)
+								]
+								raise ResolutionError(
+									"missing impl metadata for visible modules: " + ", ".join(mod_names),
+									span=getattr(expr, "loc", Span()),
+								)
 							trait_candidates: list[tuple[MethodResolution, TraitImplCandidate]] = []
 							trait_hidden: list[tuple[CallableDecl, TraitImplCandidate, TraitKey]] = []
 							trait_require_failures: list[ProofFailure] = []
@@ -2469,6 +2512,11 @@ class TypeChecker:
 							trait_saw_typed_nongeneric = False
 							trait_saw_infer_incomplete = False
 							trait_infer_failures: list[InferResult] = []
+							if trait_index.is_missing(trait_key):
+								raise ResolutionError(
+									f"missing trait metadata for '{_trait_label(trait_key)}'",
+									span=getattr(expr, "loc", Span()),
+								)
 							if trait_index.has_method(trait_key, qm.member):
 								if recv_type_param_id is not None:
 									if (
@@ -2793,6 +2841,7 @@ class TypeChecker:
 							if trait_candidates:
 								if len(trait_candidates) > 1:
 									labels: list[str] = []
+									note_items: list[tuple[str, str]] = []
 									for res, cand in trait_candidates:
 										trait_label = f"{cand.trait.module}.{cand.trait.name}" if cand.trait.module else cand.trait.name
 										mod_label = (
@@ -2800,11 +2849,16 @@ class TypeChecker:
 											if res.decl.fn_id and res.decl.fn_id.module
 											else str(res.decl.module_id)
 										)
-										labels.append(f"{trait_label}@{mod_label}")
+										label = f"{trait_label}@{mod_label}"
+										labels.append(label)
+										chain_note = _visibility_note(cand.def_module_id)
+										if chain_note:
+											note_items.append((label, f"{label} {chain_note}"))
 									label_str = ", ".join(sorted(set(labels)))
 									raise ResolutionError(
 										f"ambiguous method '{qm.member}' for receiver {recv_ty} and args {arg_types}; candidates from traits: {label_str}",
 										span=getattr(expr, "loc", Span()),
+										notes=[note for _label, note in sorted(note_items)],
 									)
 								resolution = trait_candidates[0][0]
 								call_resolutions[id(expr)] = resolution
@@ -2822,11 +2876,15 @@ class TypeChecker:
 									trait_name = f"{trait_key.module}.{trait_key.name}" if trait_key.module else trait_key.name
 									mod_names.append(f"{trait_name}@{mod}")
 									span = cand.method_loc or cand.impl_loc
+									chain_note = _visibility_note(cand.def_module_id)
 									if span and span.line is not None:
 										loc = f"{span.file}:{span.line}:{span.column}" if span.file else f"line {span.line}"
-										notes.append(f"candidate in trait '{trait_name}' at {loc}")
+										note = f"candidate in trait '{trait_name}' at {loc}"
 									else:
-										notes.append(f"candidate in trait '{trait_name}'")
+										note = f"candidate in trait '{trait_name}'"
+									if chain_note:
+										note = f"{note}; {chain_note}"
+									notes.append(note)
 								mod_list = ", ".join(sorted(set(mod_names)))
 								diagnostics.append(
 									Diagnostic(
@@ -4459,11 +4517,15 @@ class TypeChecker:
 									)
 									mod_names.append(mod)
 									span = cand.method_loc or cand.impl_loc
+									chain_note = _visibility_note(cand.def_module_id)
 									if span and span.line is not None:
 										loc = f"{span.file}:{span.line}:{span.column}" if span.file else f"line {span.line}"
-										notes.append(f"candidate in module '{mod}' at {loc}")
+										note = f"candidate in module '{mod}' at {loc}"
 									else:
-										notes.append(f"candidate in module '{mod}'")
+										note = f"candidate in module '{mod}'"
+									if chain_note:
+										note = f"{note}; {chain_note}"
+									notes.append(note)
 								mod_list = ", ".join(sorted(set(mod_names)))
 								diagnostics.append(
 									Diagnostic(
@@ -4478,6 +4540,19 @@ class TypeChecker:
 								)
 								return record_expr(expr, self._unknown)
 						if not viable and trait_index and trait_impl_index and trait_scope_by_module:
+							visible_set = set(visible_modules or (current_module,))
+							missing_visible = set()
+							if trait_impl_index.missing_modules:
+								missing_visible = trait_impl_index.missing_modules & visible_set
+							if missing_visible:
+								mod_names = [
+									trait_impl_index.module_names_by_id.get(mid, str(mid))
+									for mid in sorted(missing_visible)
+								]
+								raise ResolutionError(
+									"missing impl metadata for visible modules: " + ", ".join(mod_names),
+									span=getattr(expr, "loc", Span()),
+								)
 							trait_candidates: list[tuple[MethodResolution, TraitImplCandidate]] = []
 							trait_hidden: list[tuple[CallableDecl, TraitImplCandidate, TraitKey]] = []
 							trait_type_arg_counts: set[int] = set()
@@ -4486,6 +4561,11 @@ class TypeChecker:
 							trait_infer_failures: list[InferResult] = []
 							traits_in_scope = trait_scope_by_module.get(current_module_name, [])
 							for trait_key in traits_in_scope:
+								if trait_index.is_missing(trait_key):
+									raise ResolutionError(
+										f"missing trait metadata for '{_trait_label(trait_key)}'",
+										span=getattr(expr, "loc", Span()),
+									)
 								if not trait_index.has_method(trait_key, expr.method_name):
 									continue
 								if recv_type_param_id is not None:
@@ -4814,6 +4894,7 @@ class TypeChecker:
 							if trait_candidates:
 								if len(trait_candidates) > 1:
 									labels: list[str] = []
+									note_items: list[tuple[str, str]] = []
 									for res, cand in trait_candidates:
 										trait_label = f"{cand.trait.module}.{cand.trait.name}" if cand.trait.module else cand.trait.name
 										mod_label = (
@@ -4821,11 +4902,16 @@ class TypeChecker:
 											if res.decl.fn_id and res.decl.fn_id.module
 											else str(res.decl.module_id)
 										)
-										labels.append(f"{trait_label}@{mod_label}")
+										label = f"{trait_label}@{mod_label}"
+										labels.append(label)
+										chain_note = _visibility_note(cand.def_module_id)
+										if chain_note:
+											note_items.append((label, f"{label} {chain_note}"))
 									label_str = ", ".join(sorted(set(labels)))
 									raise ResolutionError(
 										f"ambiguous method '{expr.method_name}' for receiver {recv_ty} and args {arg_types}; candidates from traits: {label_str}",
 										span=getattr(expr, "loc", Span()),
+										notes=[note for _label, note in sorted(note_items)],
 									)
 								resolution = trait_candidates[0][0]
 								call_resolutions[id(expr)] = resolution
@@ -4843,11 +4929,15 @@ class TypeChecker:
 									trait_name = f"{trait_key.module}.{trait_key.name}" if trait_key.module else trait_key.name
 									mod_names.append(f"{trait_name}@{mod}")
 									span = cand.method_loc or cand.impl_loc
+									chain_note = _visibility_note(cand.def_module_id)
 									if span and span.line is not None:
 										loc = f"{span.file}:{span.line}:{span.column}" if span.file else f"line {span.line}"
-										notes.append(f"candidate in trait '{trait_name}' at {loc}")
+										note = f"candidate in trait '{trait_name}' at {loc}"
 									else:
-										notes.append(f"candidate in trait '{trait_name}'")
+										note = f"candidate in trait '{trait_name}'"
+									if chain_note:
+										note = f"{note}; {chain_note}"
+									notes.append(note)
 								mod_list = ", ".join(sorted(set(mod_names)))
 								diagnostics.append(
 									Diagnostic(
@@ -4955,15 +5045,25 @@ class TypeChecker:
 							)
 						if len(viable) > 1:
 							mod_names: list[str] = []
+							note_items: list[tuple[str, str]] = []
 							for res in viable:
 								if res.decl.fn_id is not None and res.decl.fn_id.module:
 									mod_names.append(res.decl.fn_id.module)
 								else:
 									mod_names.append(str(res.decl.module_id))
+								chain_note = _visibility_note(res.decl.module_id)
+								if chain_note:
+									label = (
+										res.decl.fn_id.module
+										if res.decl.fn_id is not None and res.decl.fn_id.module
+										else str(res.decl.module_id)
+									)
+									note_items.append((label, f"{label} {chain_note}"))
 							mod_list = ", ".join(sorted(set(mod_names)))
 							raise ResolutionError(
 								f"ambiguous method '{expr.method_name}' for receiver {recv_ty} and args {arg_types}; candidates from modules: {mod_list}",
 								span=getattr(expr, "loc", Span()),
+								notes=[note for _label, note in sorted(note_items)],
 							)
 						resolution = viable[0]
 						call_resolutions[id(expr)] = resolution

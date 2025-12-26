@@ -1,0 +1,9 @@
+module m_box
+
+export { Box, make_box }
+
+pub struct Box { value: Int }
+
+pub fn make_box(value: Int) returns Box {
+	return Box(value = value);
+}

@@ -48,6 +48,61 @@ def load_package_v0(path: Path) -> LoadedPackage:
 	return load_dmir_pkg_v0(path)
 
 
+def _validate_type_expr_obj(obj: object, *, context: str) -> None:
+	def _err(msg: str) -> ValueError:
+		return ValueError(f"{context}: {msg}")
+
+	if obj is None:
+		return
+	if not isinstance(obj, dict):
+		raise _err("type expr must be an object")
+	if "param" in obj:
+		param = obj.get("param")
+		if not isinstance(param, str) or not param:
+			raise _err("type expr param must be a non-empty string")
+		return
+	name = obj.get("name")
+	if not isinstance(name, str) or not name:
+		raise _err("type expr name must be a non-empty string")
+	module_id = obj.get("module")
+	if module_id is not None and not isinstance(module_id, str):
+		raise _err("type expr module must be a string")
+	args = obj.get("args")
+	if args is None:
+		return
+	if not isinstance(args, list):
+		raise _err("type expr args must be a list")
+	for idx, arg in enumerate(args):
+		_validate_type_expr_obj(arg, context=f"{context}.args[{idx}]")
+
+
+def _validate_trait_expr_obj(obj: object, *, context: str) -> None:
+	def _err(msg: str) -> ValueError:
+		return ValueError(f"{context}: {msg}")
+
+	if obj is None:
+		return
+	if not isinstance(obj, dict):
+		raise _err("trait expr must be an object")
+	kind = obj.get("kind")
+	if not isinstance(kind, str):
+		raise _err("trait expr kind must be a string")
+	if kind == "is":
+		subject = obj.get("subject")
+		if not isinstance(subject, str) or not subject:
+			raise _err("trait expr subject must be a non-empty string")
+		_validate_type_expr_obj(obj.get("trait"), context=f"{context}.trait")
+		return
+	if kind in {"and", "or"}:
+		_validate_trait_expr_obj(obj.get("left"), context=f"{context}.left")
+		_validate_trait_expr_obj(obj.get("right"), context=f"{context}.right")
+		return
+	if kind == "not":
+		_validate_trait_expr_obj(obj.get("expr"), context=f"{context}.expr")
+		return
+	raise _err(f"unknown trait expr kind '{kind}'")
+
+
 def _validate_package_interfaces(pkg: LoadedPackage) -> None:
 	"""
 	Validate module interfaces against payload metadata.
@@ -229,6 +284,121 @@ def _validate_package_interfaces(pkg: LoadedPackage) -> None:
 		payload_sigs = mod.payload.get("signatures")
 		if not isinstance(payload_sigs, dict):
 			raise _err(f"module '{mid}' payload missing signatures table")
+
+		iface_trait_meta = mod.interface.get("trait_metadata")
+		payload_trait_meta = mod.payload.get("trait_metadata")
+		if iface_trait_meta is not None or payload_trait_meta is not None:
+			if not isinstance(iface_trait_meta, list):
+				raise _err(f"module '{mid}' interface trait_metadata must be a list")
+			if not isinstance(payload_trait_meta, list):
+				raise _err(f"module '{mid}' payload trait_metadata must be a list")
+			if iface_trait_meta != payload_trait_meta:
+				raise _err(f"module '{mid}' interface trait_metadata does not match payload")
+			seen_traits: set[str] = set()
+			seen_methods: set[tuple[str, str]] = set()
+			for idx, entry in enumerate(iface_trait_meta):
+				if not isinstance(entry, dict):
+					raise _err(f"module '{mid}' trait_metadata[{idx}] must be an object")
+				name = entry.get("name")
+				if not isinstance(name, str) or not name:
+					raise _err(f"module '{mid}' trait_metadata[{idx}] missing name")
+				if name not in traits:
+					raise _err(f"module '{mid}' trait_metadata[{idx}] refers to non-exported trait '{name}'")
+				if name in seen_traits:
+					raise _err(f"module '{mid}' trait_metadata contains duplicate trait '{name}'")
+				seen_traits.add(name)
+				methods = entry.get("methods")
+				if not isinstance(methods, list):
+					raise _err(f"module '{mid}' trait_metadata[{idx}] methods must be a list")
+				_validate_trait_expr_obj(entry.get("require"), context=f"trait_metadata[{idx}].require")
+				for midx, method in enumerate(methods):
+					if not isinstance(method, dict):
+						raise _err(f"module '{mid}' trait_metadata[{idx}].methods[{midx}] must be an object")
+					mname = method.get("name")
+					if not isinstance(mname, str) or not mname:
+						raise _err(f"module '{mid}' trait_metadata[{idx}].methods[{midx}] missing name")
+					key = (name, mname)
+					if key in seen_methods:
+						raise _err(f"module '{mid}' trait_metadata duplicate method '{mname}' in trait '{name}'")
+					seen_methods.add(key)
+					params = method.get("params")
+					if not isinstance(params, list):
+						raise _err(f"module '{mid}' trait_metadata[{idx}].methods[{midx}] params must be a list")
+					for pidx, param in enumerate(params):
+						if not isinstance(param, dict):
+							raise _err(
+								f"module '{mid}' trait_metadata[{idx}].methods[{midx}].params[{pidx}] must be an object"
+							)
+						pname = param.get("name")
+						if not isinstance(pname, str) or not pname:
+							raise _err(
+								f"module '{mid}' trait_metadata[{idx}].methods[{midx}].params[{pidx}] missing name"
+							)
+						_validate_type_expr_obj(
+							param.get("type"),
+							context=f"trait_metadata[{idx}].methods[{midx}].params[{pidx}].type",
+						)
+					_validate_type_expr_obj(
+						method.get("return_type"),
+						context=f"trait_metadata[{idx}].methods[{midx}].return_type",
+					)
+					_validate_trait_expr_obj(
+						method.get("require"),
+						context=f"trait_metadata[{idx}].methods[{midx}].require",
+					)
+
+		iface_impl_headers = mod.interface.get("impl_headers")
+		payload_impl_headers = mod.payload.get("impl_headers")
+		if iface_impl_headers is not None or payload_impl_headers is not None:
+			if not isinstance(iface_impl_headers, list):
+				raise _err(f"module '{mid}' interface impl_headers must be a list")
+			if not isinstance(payload_impl_headers, list):
+				raise _err(f"module '{mid}' payload impl_headers must be a list")
+			if iface_impl_headers != payload_impl_headers:
+				raise _err(f"module '{mid}' interface impl_headers does not match payload")
+			seen_impls: set[tuple[str, int]] = set()
+			for idx, impl in enumerate(iface_impl_headers):
+				if not isinstance(impl, dict):
+					raise _err(f"module '{mid}' impl_headers[{idx}] must be an object")
+				impl_id = impl.get("impl_id")
+				def_module = impl.get("def_module")
+				if not isinstance(impl_id, int):
+					raise _err(f"module '{mid}' impl_headers[{idx}] impl_id must be an int")
+				if not isinstance(def_module, str) or not def_module:
+					raise _err(f"module '{mid}' impl_headers[{idx}] def_module must be a string")
+				key = (def_module, impl_id)
+				if key in seen_impls:
+					raise _err(f"module '{mid}' impl_headers contains duplicate impl_id {impl_id} for '{def_module}'")
+				seen_impls.add(key)
+				trait_obj = impl.get("trait")
+				if trait_obj is not None:
+					if not isinstance(trait_obj, dict):
+						raise _err(f"module '{mid}' impl_headers[{idx}] trait must be an object")
+					tmod = trait_obj.get("module")
+					tname = trait_obj.get("name")
+					if not isinstance(tmod, str) or not tmod or not isinstance(tname, str) or not tname:
+						raise _err(f"module '{mid}' impl_headers[{idx}] trait must include module/name")
+				type_params = impl.get("type_params")
+				if type_params is not None and not isinstance(type_params, list):
+					raise _err(f"module '{mid}' impl_headers[{idx}] type_params must be a list")
+				_validate_type_expr_obj(impl.get("target"), context=f"impl_headers[{idx}].target")
+				_validate_trait_expr_obj(impl.get("require"), context=f"impl_headers[{idx}].require")
+				methods = impl.get("methods")
+				if not isinstance(methods, list):
+					raise _err(f"module '{mid}' impl_headers[{idx}] methods must be a list")
+				for midx, method in enumerate(methods):
+					if not isinstance(method, dict):
+						raise _err(f"module '{mid}' impl_headers[{idx}].methods[{midx}] must be an object")
+					mname = method.get("name")
+					if not isinstance(mname, str) or not mname:
+						raise _err(f"module '{mid}' impl_headers[{idx}].methods[{midx}] missing name")
+					fn_symbol = method.get("fn_symbol")
+					if not isinstance(fn_symbol, str) or not fn_symbol:
+						raise _err(f"module '{mid}' impl_headers[{idx}].methods[{midx}] missing fn_symbol")
+					if fn_symbol not in payload_sigs:
+						raise _err(
+							f"module '{mid}' impl_headers method '{mname}' missing signature entry '{fn_symbol}'"
+						)
 
 		# Tightened ABI boundary invariants.
 		for v in values:

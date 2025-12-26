@@ -180,6 +180,7 @@ lang2-borrow-test:
 stage-for-review:
 	#!/usr/bin/env bash
 	staged_dir=staged
+	COMBINED_NAME="combined_$(date +'%d%H%M%S').txt"
 	rm -rf "$staged_dir"
 	mkdir -p "$staged_dir"
 	rm -f combined_*
@@ -200,6 +201,6 @@ stage-for-review:
 				FNR==1 { print "\n[==== File: " FILENAME " =====]" }
 				{ print }
 			'
-	} > combined.txt
+	} > $COMBINED_NAME
 
 	# rm -f staged.zip && zip -r staged.zip "$staged_dir"

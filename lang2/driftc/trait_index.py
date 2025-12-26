@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Tuple
 
-from lang2.driftc.core.function_id import FunctionId
+from lang2.driftc.core.function_id import FunctionId, function_symbol
 from lang2.driftc.core.diagnostics import Diagnostic
 from lang2.driftc.core.span import Span
 from lang2.driftc.core.types_core import TypeId, TypeKind, TypeTable
@@ -27,6 +27,7 @@ class TraitImplCandidate:
 	def_module_id: ModuleId
 	is_pub: bool
 	impl_id: int
+	fn_symbol: str | None = None
 	impl_loc: Span | None = None
 	method_loc: Span | None = None
 	require_expr: object | None = None
@@ -36,6 +37,15 @@ class GlobalTraitIndex:
 	def __init__(self) -> None:
 		self.traits_by_id: Dict[TraitKey, TraitDef] = {}
 		self.trait_methods: Dict[Tuple[TraitKey, str], TraitMethodSig] = {}
+		self.missing_traits: set[TraitKey] = set()
+
+	def add_trait(self, trait_key: TraitKey, trait: TraitDef) -> None:
+		self.traits_by_id.setdefault(trait_key, trait)
+		for method in getattr(trait, "methods", []) or []:
+			self.trait_methods.setdefault(
+				(trait_key, method.name),
+				TraitMethodSig(trait=trait_key, name=method.name, loc=Span.from_loc(getattr(method, "loc", None))),
+			)
 
 	@classmethod
 	def from_trait_worlds(cls, trait_worlds: Dict[str, TraitWorld] | None) -> "GlobalTraitIndex":
@@ -44,21 +54,25 @@ class GlobalTraitIndex:
 			return index
 		for _mid, world in trait_worlds.items():
 			for trait_key, trait in getattr(world, "traits", {}).items():
-				index.traits_by_id.setdefault(trait_key, trait)
-				for method in getattr(trait, "methods", []) or []:
-					index.trait_methods.setdefault(
-						(trait_key, method.name),
-						TraitMethodSig(trait=trait_key, name=method.name, loc=Span.from_loc(getattr(method, "loc", None))),
-					)
+				index.add_trait(trait_key, trait)
 		return index
 
 	def has_method(self, trait_key: TraitKey, name: str) -> bool:
 		return (trait_key, name) in self.trait_methods
 
+	def mark_missing(self, trait_key: TraitKey) -> None:
+		self.missing_traits.add(trait_key)
+
+	def is_missing(self, trait_key: TraitKey) -> bool:
+		return trait_key in self.missing_traits
+
 
 class GlobalTraitImplIndex:
 	def __init__(self) -> None:
 		self._by_trait_target_method: Dict[Tuple[TraitKey, TypeId, str], List[TraitImplCandidate]] = {}
+		self._seen_impl_methods: set[tuple[TraitKey, TypeId, str, ModuleId, int, FunctionId]] = set()
+		self.missing_modules: set[ModuleId] = set()
+		self.module_names_by_id: Dict[ModuleId, str] = {}
 
 	@staticmethod
 	def _target_base_id(type_table: TypeTable, target_type_id: TypeId) -> TypeId | None:
@@ -84,6 +98,13 @@ class GlobalTraitImplIndex:
 			return
 		def_module_id = module_ids.setdefault(impl.def_module, len(module_ids))
 		for method in impl.methods:
+			seen_key = (impl.trait_key, base_id, method.name, def_module_id, impl.impl_id, method.fn_id)
+			if seen_key in self._seen_impl_methods:
+				continue
+			self._seen_impl_methods.add(seen_key)
+			fn_symbol = method.fn_symbol
+			if fn_symbol is None:
+				fn_symbol = function_symbol(method.fn_id)
 			cand = TraitImplCandidate(
 				fn_id=method.fn_id,
 				name=method.name,
@@ -91,6 +112,7 @@ class GlobalTraitImplIndex:
 				def_module_id=def_module_id,
 				is_pub=method.is_pub,
 				impl_id=impl.impl_id,
+				fn_symbol=fn_symbol,
 				impl_loc=impl.loc,
 				method_loc=method.loc,
 				require_expr=impl.require_expr,
@@ -122,6 +144,9 @@ class GlobalTraitImplIndex:
 	def get_candidates(self, trait_key: TraitKey, receiver_base: TypeId, name: str) -> List[TraitImplCandidate]:
 		return list(self._by_trait_target_method.get((trait_key, receiver_base, name), []))
 
+	def mark_missing_module(self, module_id: ModuleId) -> None:
+		self.missing_modules.add(module_id)
+
 
 def validate_trait_scopes(
 	*,
@@ -148,6 +173,8 @@ def validate_trait_scopes(
 		for trait_key in trait_keys:
 			if trait_key in trait_index.traits_by_id:
 				continue
+			if trait_index.is_missing(trait_key):
+				continue
 			if trait_key in seen_scope:
 				continue
 			seen_scope.add(trait_key)
@@ -165,6 +192,8 @@ def validate_trait_scopes(
 	seen_impl: set[TraitKey] = set()
 	for (trait_key, _base_id, _name), cands in getattr(trait_impl_index, "_by_trait_target_method", {}).items():
 		if trait_key in trait_index.traits_by_id:
+			continue
+		if trait_index.is_missing(trait_key):
 			continue
 		if trait_key in seen_impl:
 			continue

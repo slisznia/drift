@@ -3117,6 +3117,8 @@ def _lower_parsed_program_to_hir(
 			target_type_id=impl_target_type_id,
 			trait_key=impl_trait_key,
 			require_expr=require_expr,
+			target_expr=impl.target,
+			impl_type_params=list(impl_type_params),
 			loc=Span.from_loc(getattr(impl, "loc", None)),
 			methods=[],
 		)

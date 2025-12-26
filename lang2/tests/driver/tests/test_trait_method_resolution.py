@@ -5,11 +5,12 @@ from pathlib import Path
 
 from lang2.driftc import stage1 as H
 from lang2.driftc.core.function_id import FunctionId
-from lang2.driftc.impl_index import GlobalImplIndex
+from lang2.driftc.impl_index import GlobalImplIndex, ImplMeta
 from lang2.driftc.method_registry import CallableRegistry, CallableSignature, SelfMode, Visibility
 from lang2.driftc.parser import parse_drift_workspace_to_hir
 from lang2.driftc.trait_index import GlobalTraitImplIndex, GlobalTraitIndex
 from lang2.driftc.type_checker import TypeChecker
+from lang2.driftc.traits.world import TraitKey
 
 
 def _write_file(path: Path, content: str) -> None:
@@ -929,3 +930,134 @@ fn main() returns Int {
 	assert diagnostics
 	msgs = [d.message for d in diagnostics]
 	assert any("does not export trait 'Show'" in m for m in msgs)
+
+
+def test_trait_impl_index_dedupes_duplicate_impls(tmp_path: Path) -> None:
+	files = {
+		Path("m_box/lib.drift"): """
+module m_box
+
+export { Box }
+
+pub struct Box<T> { value: T }
+""",
+		Path("m_trait/lib.drift"): """
+module m_trait
+
+import m_box
+
+export { Show }
+
+pub trait Show { fn show(self: m_box.Box<Int>) returns Int }
+""",
+		Path("m_impl/lib.drift"): """
+module m_impl
+
+import m_box
+import m_trait as t
+
+implement t.Show for m_box.Box<Int> {
+	pub fn show(self: m_box.Box<Int>) returns Int { return 1; }
+}
+""",
+	}
+	mod_root = tmp_path / "mods"
+	for rel, content in files.items():
+		_write_file(mod_root / rel, content)
+	paths = sorted(mod_root.rglob("*.drift"))
+	_func_hirs, _sigs, _fn_ids_by_name, type_table, _exc_catalog, module_exports, _deps, diagnostics = (
+		parse_drift_workspace_to_hir(paths)
+	)
+	assert diagnostics == []
+	module_ids: dict[object, int] = {None: 0}
+	trait_impl_index = GlobalTraitImplIndex.from_module_exports(
+		module_exports=module_exports,
+		type_table=type_table,
+		module_ids=module_ids,
+	)
+	impls = module_exports.get("m_impl", {}).get("impls", [])
+	assert impls
+	impl = impls[0]
+	assert isinstance(impl, ImplMeta)
+	trait_impl_index.add_impl(impl=impl, type_table=type_table, module_ids=module_ids)
+	base_id = type_table.get_struct_base(module_id="m_box", name="Box")
+	assert base_id is not None
+	assert impl.trait_key is not None
+	cands = trait_impl_index.get_candidates(impl.trait_key, base_id, "show")
+	assert len(cands) == 1
+	assert len({cand.fn_id for cand in cands}) == 1
+
+
+def test_missing_trait_metadata_is_hard_error(tmp_path: Path) -> None:
+	files = {
+		Path("m_box/lib.drift"): """
+module m_box
+
+export { Box }
+
+pub struct Box<T> { value: T }
+""",
+		Path("m_traits/lib.drift"): """
+module m_traits
+
+import m_box
+
+export { Show }
+
+pub trait Show { fn show(self: m_box.Box<Int>) returns Int }
+""",
+		Path("m_main/main.drift"): """
+module m_main
+
+import m_box
+import m_traits as t
+
+use trait t.Show
+
+fn main() returns Int {
+	val b: m_box.Box<Int> = m_box.Box<type Int>(1);
+	return b.show();
+}
+""",
+	}
+	mod_root = tmp_path / "mods"
+	for rel, content in files.items():
+		_write_file(mod_root / rel, content)
+	paths = sorted(mod_root.rglob("*.drift"))
+	func_hirs, signatures, fn_ids_by_name, type_table, _exc_catalog, module_exports, module_deps, diagnostics = (
+		parse_drift_workspace_to_hir(paths)
+	)
+	assert diagnostics == []
+	registry, module_ids = _build_registry(signatures)
+	impl_index = GlobalImplIndex.from_module_exports(
+		module_exports=module_exports,
+		type_table=type_table,
+		module_ids=module_ids,
+	)
+	trait_scope_by_module: dict[str, list[object]] = {}
+	for mod, exp in module_exports.items():
+		if isinstance(exp, dict):
+			scope = exp.get("trait_scope", [])
+			trait_scope_by_module[mod] = list(scope) if isinstance(scope, list) else []
+	main_ids = fn_ids_by_name.get("m_main::main") or []
+	assert len(main_ids) == 1
+	main_id = main_ids[0]
+	main_block = func_hirs[main_id]
+	visible_modules = _visible_modules_for("m_main", module_deps, module_ids)
+	trait_index = GlobalTraitIndex()
+	trait_index.mark_missing(TraitKey(module="m_traits", name="Show"))
+	trait_impl_index = GlobalTraitImplIndex()
+	type_checker = TypeChecker(type_table=type_table)
+	result = type_checker.check_function(
+		main_id,
+		main_block,
+		callable_registry=registry,
+		signatures_by_id=signatures,
+		impl_index=impl_index,
+		trait_index=trait_index,
+		trait_impl_index=trait_impl_index,
+		trait_scope_by_module=trait_scope_by_module,
+		visible_modules=visible_modules,
+		current_module=module_ids.setdefault("m_main", len(module_ids)),
+	)
+	assert any("missing trait metadata" in d.message for d in result.diagnostics)

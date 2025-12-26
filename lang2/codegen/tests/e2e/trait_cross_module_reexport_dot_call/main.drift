@@ -1,0 +1,11 @@
+module main
+
+import m_api
+import m_box
+
+use trait m_api.Show
+
+fn main() returns Int {
+	val b: m_box.Box = m_box.make_box(5);
+	return b.show();
+}

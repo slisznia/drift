@@ -14,4 +14,4 @@ a.out
 staged.tar.gz
 build/
 combined.txt
-combined_v19.txt
+combined_*

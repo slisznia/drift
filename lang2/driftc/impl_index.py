@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from typing import Dict, Iterable, List, Tuple, TYPE_CHECKING
 
 from lang2.driftc.core.diagnostics import Diagnostic
-from lang2.driftc.core.function_id import FunctionId
+from lang2.driftc.core.function_id import FunctionId, function_symbol
 from lang2.driftc.core.span import Span
 from lang2.driftc.core.types_core import TypeId, TypeKind, TypeTable
 from lang2.driftc.method_registry import ModuleId
@@ -19,6 +19,7 @@ class ImplMethodMeta:
 	fn_id: FunctionId
 	name: str
 	is_pub: bool
+	fn_symbol: str | None = None
 	loc: Span | None = None
 
 
@@ -29,6 +30,8 @@ class ImplMeta:
 	target_type_id: TypeId
 	trait_key: TraitKey | None = None
 	require_expr: object | None = None
+	target_expr: object | None = None
+	impl_type_params: List[str] = field(default_factory=list)
 	methods: List[ImplMethodMeta] = field(default_factory=list)
 	loc: Span | None = None
 
@@ -40,6 +43,7 @@ class ImplMethodCandidate:
 	def_module_id: ModuleId
 	is_pub: bool
 	impl_id: int
+	fn_symbol: str | None = None
 	impl_loc: Span | None = None
 	method_loc: Span | None = None
 
@@ -47,6 +51,7 @@ class ImplMethodCandidate:
 class GlobalImplIndex:
 	def __init__(self) -> None:
 		self._by_target_method: Dict[Tuple[TypeId, str], List[ImplMethodCandidate]] = {}
+		self._seen_impl_methods: set[tuple[TypeId, str, ModuleId, int, FunctionId]] = set()
 
 	@staticmethod
 	def _target_base_id(type_table: TypeTable, target_type_id: TypeId) -> TypeId | None:
@@ -72,12 +77,20 @@ class GlobalImplIndex:
 			return
 		def_module_id = module_ids.setdefault(impl.def_module, len(module_ids))
 		for method in impl.methods:
+			seen_key = (base_id, method.name, def_module_id, impl.impl_id, method.fn_id)
+			if seen_key in self._seen_impl_methods:
+				continue
+			self._seen_impl_methods.add(seen_key)
+			fn_symbol = method.fn_symbol
+			if fn_symbol is None:
+				fn_symbol = function_symbol(method.fn_id)
 			cand = ImplMethodCandidate(
 				fn_id=method.fn_id,
 				name=method.name,
 				def_module_id=def_module_id,
 				is_pub=method.is_pub,
 				impl_id=impl.impl_id,
+				fn_symbol=fn_symbol,
 				impl_loc=impl.loc,
 				method_loc=method.loc,
 			)

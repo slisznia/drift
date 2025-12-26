@@ -1,0 +1,5 @@
+module m_api
+
+import m_impl
+
+export { m_impl.* }

@@ -1,0 +1,10 @@
+module main
+
+import m_box
+import m_impl
+import m_trait
+
+fn main() returns Int {
+	val b: m_box.Box = m_box.make_box(2);
+	return b.show();
+}

@@ -1,12 +1,14 @@
 # vim: set noexpandtab: -*- indent-tabs-mode: t -*-
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from lang2.driftc import stage1 as H
 from lang2.driftc.core.function_id import FunctionId
 from lang2.driftc.method_registry import CallableRegistry, CallableSignature, SelfMode, Visibility
 from lang2.driftc.impl_index import GlobalImplIndex, find_impl_method_conflicts
+from lang2.driftc.driftc import main as driftc_main
 from lang2.driftc.parser import parse_drift_workspace_to_hir
 from lang2.driftc.type_checker import TypeChecker
 
@@ -14,6 +16,13 @@ from lang2.driftc.type_checker import TypeChecker
 def _write_file(path: Path, content: str) -> None:
 	path.parent.mkdir(parents=True, exist_ok=True)
 	path.write_text(content)
+
+
+def _run_driftc_json(argv: list[str], capsys) -> tuple[int, dict]:
+	rc = driftc_main(argv + ["--json"])
+	out = capsys.readouterr().out
+	payload = json.loads(out) if out.strip() else {}
+	return rc, payload
 
 
 def _callable_name(fn_id: FunctionId) -> str:
@@ -549,3 +558,110 @@ implement Box<Int> {
 	msg = conflicts[0].message
 	assert "duplicate inherent method" in msg
 	assert "m_box" in msg
+
+
+def test_ambiguity_notes_include_visibility_chain(tmp_path: Path, capsys) -> None:
+	files = {
+		Path("m_types/lib.drift"): """
+module m_types
+
+export { Box }
+
+pub struct Box { value: Int }
+""",
+		Path("m_impl_a/lib.drift"): """
+module m_impl_a
+
+import m_types
+
+pub const MARK_A: Int = 1
+
+export { MARK_A }
+
+implement m_types.Box {
+	pub fn tag(self: m_types.Box) returns Int { return 1; }
+}
+""",
+		Path("m_impl_b/lib.drift"): """
+module m_impl_b
+
+import m_types
+
+pub const MARK_B: Int = 2
+
+export { MARK_B }
+
+implement m_types.Box {
+	pub fn tag(self: m_types.Box) returns Int { return 2; }
+}
+""",
+		Path("m_api/lib.drift"): """
+module m_api
+
+export { m_impl_a.*, m_impl_b.* }
+""",
+		Path("m_main/main.drift"): """
+module m_main
+
+import m_api
+import m_types
+
+fn main() returns Int {
+	val b: m_types.Box = m_types.Box(value = 1);
+	return b.tag();
+}
+""",
+	}
+	mod_root = tmp_path / "mods"
+	for rel, content in files.items():
+		_write_file(mod_root / rel, content)
+	paths = sorted(mod_root.rglob("*.drift"))
+	rc, payload = _run_driftc_json(["-M", str(mod_root), *[str(p) for p in paths]], capsys)
+	assert rc != 0
+	diags = payload.get("diagnostics", [])
+	ambiguous = [d for d in diags if "ambiguous method 'tag'" in d.get("message", "")]
+	assert ambiguous
+	notes = ambiguous[0].get("notes", [])
+	assert notes == [
+		"m_impl_a visible via: m_main import-> m_api reexport-> m_impl_a",
+		"m_impl_b visible via: m_main import-> m_api reexport-> m_impl_b",
+	]
+
+
+def test_impl_index_keeps_overloaded_methods(tmp_path: Path) -> None:
+	files = {
+		Path("m_box/lib.drift"): """
+module m_box
+
+export { Box }
+
+pub struct Box<T> { value: T }
+
+implement Box<Int> {
+	pub fn tag(self: Box<Int>) returns Int { return 1; }
+	pub fn tag(self: Box<Int>, label: String) returns Int { return 2; }
+}
+""",
+	}
+	mod_root = tmp_path / "mods"
+	for rel, content in files.items():
+		_write_file(mod_root / rel, content)
+	paths = sorted(mod_root.rglob("*.drift"))
+	_func_hirs, _sigs, _fn_ids_by_name, type_table, _exc_catalog, exports, _deps, diagnostics = (
+		parse_drift_workspace_to_hir(
+			paths,
+			module_paths=[mod_root],
+		)
+	)
+	assert diagnostics == []
+	module_ids: dict[object, int] = {None: 0}
+	impl_index = GlobalImplIndex.from_module_exports(
+		module_exports=exports,
+		type_table=type_table,
+		module_ids=module_ids,
+	)
+	base_id = type_table.get_struct_base(module_id="m_box", name="Box")
+	assert base_id is not None
+	cands = impl_index.get_candidates(base_id, "tag")
+	assert len(cands) == 2
+	assert len({cand.fn_id for cand in cands}) == 2

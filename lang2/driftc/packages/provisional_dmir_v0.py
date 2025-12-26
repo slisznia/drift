@@ -22,7 +22,9 @@ from typing import Any, Mapping
 
 from lang2.driftc.checker import FnSignature
 from lang2.driftc.core.generic_type_expr import GenericTypeExpr
-from lang2.driftc.core.types_core import TypeDef, TypeId, TypeTable
+from lang2.driftc.core.span import Span
+from lang2.driftc.core.types_core import TypeDef, TypeId, TypeParamId, TypeTable
+from lang2.driftc.parser import ast as parser_ast
 from lang2.driftc.packages.dmir_pkg_v0 import canonical_json_bytes, sha256_hex
 
 
@@ -123,6 +125,198 @@ def from_jsonable(obj: Any, *, dataclasses_by_name: Mapping[str, type], enums_by
 	return obj
 
 
+_BUILTIN_TYPE_NAMES = {
+	"Int",
+	"Uint",
+	"Bool",
+	"Float",
+	"String",
+	"Void",
+	"Error",
+	"DiagnosticValue",
+	"Array",
+	"Optional",
+	"FnResult",
+	"&",
+	"&mut",
+}
+
+
+def encode_span(span: Span | None) -> dict[str, Any] | None:
+	if span is None:
+		return None
+	if not isinstance(span, Span):
+		span = Span.from_loc(span)
+	if span.file is None and span.line is None and span.column is None and span.end_line is None and span.end_column is None:
+		return None
+	return {
+		"file": span.file,
+		"line": span.line,
+		"column": span.column,
+		"end_line": span.end_line,
+		"end_column": span.end_column,
+	}
+
+
+def decode_span(obj: Any) -> Span | None:
+	if not isinstance(obj, dict):
+		return None
+	file = obj.get("file")
+	line = obj.get("line")
+	column = obj.get("column")
+	end_line = obj.get("end_line")
+	end_column = obj.get("end_column")
+	if file is not None and not isinstance(file, str):
+		return None
+	if line is not None and not isinstance(line, int):
+		return None
+	if column is not None and not isinstance(column, int):
+		return None
+	if end_line is not None and not isinstance(end_line, int):
+		return None
+	if end_column is not None and not isinstance(end_column, int):
+		return None
+	return Span(file=file, line=line, column=column, end_line=end_line, end_column=end_column)
+
+
+def encode_type_expr(
+	expr: parser_ast.TypeExpr | None,
+	*,
+	default_module: str | None,
+	type_param_names: set[str] | None = None,
+) -> dict[str, Any] | None:
+	if expr is None:
+		return None
+	name = getattr(expr, "name", None)
+	if not isinstance(name, str) or not name:
+		return None
+	if name == "Self" or (type_param_names and name in type_param_names):
+		return {"param": name}
+	module_id = getattr(expr, "module_id", None)
+	if module_id is None and default_module and name not in _BUILTIN_TYPE_NAMES:
+		module_id = default_module
+	args_obj = []
+	for arg in list(getattr(expr, "args", []) or []):
+		args_obj.append(
+			encode_type_expr(
+				arg,
+				default_module=default_module,
+				type_param_names=type_param_names,
+			)
+		)
+	out: dict[str, Any] = {"name": name}
+	if module_id:
+		out["module"] = module_id
+	if args_obj:
+		out["args"] = args_obj
+	return out
+
+
+def decode_type_expr(obj: Any) -> parser_ast.TypeExpr | None:
+	if obj is None:
+		return None
+	if not isinstance(obj, dict):
+		return None
+	if "param" in obj:
+		name = obj.get("param")
+		if not isinstance(name, str) or not name:
+			return None
+		return parser_ast.TypeExpr(name=name, args=[], module_alias=None, module_id=None, loc=None)
+	name = obj.get("name")
+	if not isinstance(name, str) or not name:
+		return None
+	module_id = obj.get("module")
+	if module_id is not None and not isinstance(module_id, str):
+		return None
+	args: list[parser_ast.TypeExpr] = []
+	raw_args = obj.get("args")
+	if raw_args is not None:
+		if not isinstance(raw_args, list):
+			return None
+		for raw in raw_args:
+			arg = decode_type_expr(raw)
+			if arg is None:
+				return None
+			args.append(arg)
+	return parser_ast.TypeExpr(name=name, args=args, module_alias=None, module_id=module_id, loc=None)
+
+
+def encode_trait_expr(
+	expr: parser_ast.TraitExpr | None,
+	*,
+	default_module: str | None,
+	type_param_names: list[str] | None = None,
+) -> dict[str, Any] | None:
+	if expr is None:
+		return None
+	if isinstance(expr, parser_ast.TraitIs):
+		subject = expr.subject
+		if isinstance(subject, TypeParamId) and type_param_names is not None:
+			idx = int(subject.index)
+			if 0 <= idx < len(type_param_names):
+				subject = type_param_names[idx]
+		if not isinstance(subject, str):
+			subject = str(subject)
+		return {
+			"kind": "is",
+			"subject": subject,
+			"trait": encode_type_expr(expr.trait, default_module=default_module, type_param_names=set(type_param_names or [])),
+		}
+	if isinstance(expr, parser_ast.TraitAnd):
+		return {
+			"kind": "and",
+			"left": encode_trait_expr(expr.left, default_module=default_module, type_param_names=type_param_names),
+			"right": encode_trait_expr(expr.right, default_module=default_module, type_param_names=type_param_names),
+		}
+	if isinstance(expr, parser_ast.TraitOr):
+		return {
+			"kind": "or",
+			"left": encode_trait_expr(expr.left, default_module=default_module, type_param_names=type_param_names),
+			"right": encode_trait_expr(expr.right, default_module=default_module, type_param_names=type_param_names),
+		}
+	if isinstance(expr, parser_ast.TraitNot):
+		return {
+			"kind": "not",
+			"expr": encode_trait_expr(expr.expr, default_module=default_module, type_param_names=type_param_names),
+		}
+	return None
+
+
+def decode_trait_expr(obj: Any) -> parser_ast.TraitExpr | None:
+	if obj is None:
+		return None
+	if not isinstance(obj, dict):
+		return None
+	kind = obj.get("kind")
+	if kind == "is":
+		subject = obj.get("subject")
+		if not isinstance(subject, str) or not subject:
+			return None
+		trait_obj = obj.get("trait")
+		trait = decode_type_expr(trait_obj)
+		if trait is None:
+			return None
+		return parser_ast.TraitIs(loc=None, subject=subject, trait=trait)
+	if kind == "and":
+		left = decode_trait_expr(obj.get("left"))
+		right = decode_trait_expr(obj.get("right"))
+		if left is None or right is None:
+			return None
+		return parser_ast.TraitAnd(loc=None, left=left, right=right)
+	if kind == "or":
+		left = decode_trait_expr(obj.get("left"))
+		right = decode_trait_expr(obj.get("right"))
+		if left is None or right is None:
+			return None
+		return parser_ast.TraitOr(loc=None, left=left, right=right)
+	if kind == "not":
+		inner = decode_trait_expr(obj.get("expr"))
+		if inner is None:
+			return None
+		return parser_ast.TraitNot(loc=None, expr=inner)
+	return None
+
+
 def encode_type_table(table: TypeTable) -> dict[str, Any]:
 	"""Encode the TypeTable deterministically."""
 
@@ -204,6 +398,22 @@ def encode_signatures(signatures: Mapping[str, FnSignature], *, module_id: str) 
 		if getattr(sig, "module", None) not in (module_id, None):
 			continue
 		sig_module = getattr(sig, "module", None) or module_id
+		type_param_names = [p.name for p in getattr(sig, "type_params", []) or []]
+		impl_type_param_names = [p.name for p in getattr(sig, "impl_type_params", []) or []]
+		type_param_name_set = set(type_param_names) | set(impl_type_param_names)
+		param_types_obj = None
+		if sig.param_types is not None:
+			param_types_obj = [
+				encode_type_expr(p, default_module=sig_module, type_param_names=type_param_name_set)
+				for p in list(sig.param_types)
+			]
+		return_type_obj = None
+		if sig.return_type is not None:
+			return_type_obj = encode_type_expr(
+				sig.return_type,
+				default_module=sig_module,
+				type_param_names=type_param_name_set,
+			)
 		out[name] = {
 			"name": sig.name,
 			"module": sig_module,
@@ -216,6 +426,10 @@ def encode_signatures(signatures: Mapping[str, FnSignature], *, module_id: str) 
 			"param_type_ids": list(sig.param_type_ids or []) if sig.param_type_ids is not None else None,
 			"return_type_id": sig.return_type_id,
 			"is_exported_entrypoint": bool(getattr(sig, "is_exported_entrypoint", False)),
+			"type_params": type_param_names,
+			"impl_type_params": impl_type_param_names,
+			"param_types": param_types_obj,
+			"return_type": return_type_obj,
 		}
 	return out
 
@@ -231,6 +445,8 @@ def encode_module_payload_v0(
 	exported_traits: list[str] | None = None,
 	exported_consts: list[str] | None = None,
 	reexports: dict[str, Any] | None = None,
+	trait_metadata: list[dict[str, Any]] | None = None,
+	impl_headers: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
 	"""Build the provisional payload object (not yet canonical-JSON encoded)."""
 	tt_obj = encode_type_table(type_table)
@@ -259,6 +475,8 @@ def encode_module_payload_v0(
 		"exceptions": list(exported_types.get("exceptions", [])),
 	}
 	reexports_obj = reexports if isinstance(reexports, dict) else {}
+	trait_meta_obj = list(trait_metadata or [])
+	impl_headers_obj = list(impl_headers or [])
 	return {
 		"payload_kind": "provisional-dmir",
 		"payload_version": 0,
@@ -271,6 +489,8 @@ def encode_module_payload_v0(
 			"traits": list(exported_traits or []),
 		},
 		"reexports": _to_jsonable(reexports_obj),
+		"trait_metadata": _to_jsonable(trait_meta_obj),
+		"impl_headers": _to_jsonable(impl_headers_obj),
 		"consts": const_table,
 		"type_table": tt_obj,
 		"type_table_fingerprint": type_table_fingerprint(tt_obj),

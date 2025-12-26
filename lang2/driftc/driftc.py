@@ -20,6 +20,7 @@ handling and diagnostics. For now it exposes a single helper
 from __future__ import annotations
 
 import argparse
+import heapq
 import json
 import sys
 import shutil
@@ -41,11 +42,11 @@ from lang2.driftc.stage3.throw_summary import ThrowSummaryBuilder
 from lang2.driftc.stage4 import run_throw_checks
 from lang2.driftc.stage4 import MirToSSA
 from lang2.driftc.checker.type_env_builder import build_minimal_checker_type_env
-from lang2.driftc.checker import Checker, CheckedProgram, FnSignature, FnInfo
+from lang2.driftc.checker import Checker, CheckedProgram, FnSignature, FnInfo, TypeParam
 from lang2.driftc.borrow_checker_pass import BorrowChecker
 from lang2.driftc.borrow_checker import PlaceBase, PlaceKind
 from lang2.driftc.core.diagnostics import Diagnostic
-from lang2.driftc.core.types_core import TypeTable
+from lang2.driftc.core.types_core import TypeTable, TypeParamId
 from lang2.driftc.core.function_id import FunctionId, function_symbol
 from lang2.driftc.traits.enforce import collect_used_type_keys, enforce_struct_requires, enforce_fn_requires
 from lang2.codegen.llvm import lower_module_to_llvm
@@ -59,7 +60,15 @@ from lang2.driftc.impl_index import GlobalImplIndex, find_impl_method_conflicts
 from lang2.driftc.trait_index import GlobalTraitImplIndex, GlobalTraitIndex, validate_trait_scopes
 from lang2.driftc.fake_decl import FakeDecl
 from lang2.driftc.packages.dmir_pkg_v0 import canonical_json_bytes, sha256_hex, write_dmir_pkg_v0
-from lang2.driftc.packages.provisional_dmir_v0 import encode_module_payload_v0, decode_mir_funcs, type_table_fingerprint
+from lang2.driftc.packages.provisional_dmir_v0 import (
+	decode_mir_funcs,
+	decode_type_expr,
+	encode_module_payload_v0,
+	encode_span,
+	encode_trait_expr,
+	encode_type_expr,
+	type_table_fingerprint,
+)
 from lang2.driftc.packages.type_table_link_v0 import import_type_tables_and_build_typeid_maps
 from lang2.driftc.packages.provider_v0 import (
 	PackageTrustPolicy,
@@ -196,6 +205,307 @@ def _display_name_for_fn_id(fn_id: FunctionId) -> str:
 	if fn_id.module == "main":
 		return fn_id.name
 	return f"{fn_id.module}::{fn_id.name}"
+
+
+def _parse_function_symbol(symbol: str) -> FunctionId:
+	ordinal = 0
+	base = symbol
+	if "#" in symbol:
+		head, tail = symbol.rsplit("#", 1)
+		if tail.isdigit():
+			ordinal = int(tail)
+			base = head
+	if "::" in base:
+		module, name = base.split("::", 1)
+	else:
+		module, name = "main", base
+	return FunctionId(module=module, name=name, ordinal=ordinal)
+
+
+def _encode_trait_metadata_for_module(
+	*,
+	module_id: str,
+	exported_traits: list[str],
+	trait_world: object | None,
+) -> list[dict[str, object]]:
+	if not exported_traits or trait_world is None:
+		return []
+	traits = getattr(trait_world, "traits", None)
+	if not isinstance(traits, dict):
+		return []
+	exported = set(exported_traits)
+	out: list[dict[str, object]] = []
+	for trait_def in traits.values():
+		key = getattr(trait_def, "key", None)
+		if key is None or getattr(key, "module", None) != module_id:
+			continue
+		if getattr(trait_def, "name", None) not in exported:
+			continue
+		methods: list[dict[str, object]] = []
+		for method in getattr(trait_def, "methods", []) or []:
+			params: list[dict[str, object]] = []
+			for param in list(getattr(method, "params", []) or []):
+				params.append(
+					{
+						"name": param.name,
+						"type": encode_type_expr(
+							param.type_expr,
+							default_module=module_id,
+							type_param_names={"Self"},
+						),
+					}
+				)
+			methods.append(
+				{
+					"name": getattr(method, "name", ""),
+					"params": params,
+					"return_type": encode_type_expr(
+						getattr(method, "return_type", None),
+						default_module=module_id,
+						type_param_names={"Self"},
+					),
+					"require": encode_trait_expr(
+						getattr(method, "require", None),
+						default_module=module_id,
+						type_param_names=[],
+					),
+					"span": encode_span(getattr(method, "loc", None)),
+				}
+			)
+		out.append(
+			{
+				"name": getattr(trait_def, "name", ""),
+				"type_params": list(getattr(trait_def, "type_params", []) or []),
+				"methods": methods,
+				"require": encode_trait_expr(
+					getattr(trait_def, "require", None),
+					default_module=module_id,
+					type_param_names=[],
+				),
+				"span": encode_span(getattr(trait_def, "loc", None)),
+			}
+		)
+	return out
+
+
+def _encode_impl_headers_for_module(
+	*,
+	module_id: str,
+	impls: list[object] | None,
+) -> list[dict[str, object]]:
+	if not impls:
+		return []
+	out: list[dict[str, object]] = []
+	for impl in impls:
+		type_params = list(getattr(impl, "impl_type_params", []) or [])
+		target_obj = encode_type_expr(
+			getattr(impl, "target_expr", None),
+			default_module=module_id,
+			type_param_names=set(type_params),
+		)
+		if target_obj is None:
+			continue
+		trait_key = getattr(impl, "trait_key", None)
+		trait_obj = None
+		if trait_key is not None:
+			trait_mod = getattr(trait_key, "module", None) or module_id
+			trait_name = getattr(trait_key, "name", None)
+			if isinstance(trait_name, str):
+				trait_obj = {"module": trait_mod, "name": trait_name}
+		methods: list[dict[str, object]] = []
+		for method in list(getattr(impl, "methods", []) or []):
+			fn_id = getattr(method, "fn_id", None)
+			if not isinstance(fn_id, FunctionId):
+				continue
+			methods.append(
+				{
+					"name": getattr(method, "name", ""),
+					"fn_symbol": function_symbol(fn_id),
+					"is_pub": bool(getattr(method, "is_pub", False)),
+					"span": encode_span(getattr(method, "loc", None)),
+				}
+			)
+		out.append(
+			{
+				"impl_id": int(getattr(impl, "impl_id", -1)),
+				"def_module": getattr(impl, "def_module", module_id),
+				"trait": trait_obj,
+				"type_params": type_params,
+				"target": target_obj,
+				"require": encode_trait_expr(
+					getattr(impl, "require_expr", None),
+					default_module=module_id,
+					type_param_names=type_params,
+				),
+				"methods": methods,
+				"span": encode_span(getattr(impl, "loc", None)),
+			}
+		)
+	return out
+
+
+def _collect_external_trait_and_impl_metadata(
+	*,
+	loaded_pkgs: list[object],
+	type_table: TypeTable,
+	external_signatures_by_symbol: dict[str, FnSignature],
+) -> tuple[list[object], list[object], set[object], set[str]]:
+	from lang2.driftc.traits.world import TraitDef, TraitKey
+	from lang2.driftc.impl_index import ImplMeta, ImplMethodMeta
+	from lang2.driftc.packages.provisional_dmir_v0 import decode_span
+	from lang2.driftc.parser import ast as parser_ast
+
+	trait_defs: list[object] = []
+	impl_metas: list[object] = []
+	missing_traits: set[object] = set()
+	missing_impl_modules: set[str] = set()
+
+	for pkg in loaded_pkgs:
+		for mid, mod in getattr(pkg, "modules_by_id", {}).items():
+			if not isinstance(mid, str):
+				continue
+			iface = getattr(mod, "interface", None)
+			if not isinstance(iface, dict):
+				continue
+			exports = iface.get("exports")
+			exported_traits: set[str] = set()
+			if isinstance(exports, dict):
+				traits = exports.get("traits")
+				if isinstance(traits, list):
+					exported_traits = {t for t in traits if isinstance(t, str)}
+
+			trait_meta = iface.get("trait_metadata")
+			seen_trait_names: set[str] = set()
+			if isinstance(trait_meta, list):
+				for entry in trait_meta:
+					if not isinstance(entry, dict):
+						continue
+					name = entry.get("name")
+					if not isinstance(name, str) or not name:
+						continue
+					seen_trait_names.add(name)
+					methods: list[parser_ast.TraitMethodSig] = []
+					for method in entry.get("methods", []) if isinstance(entry.get("methods"), list) else []:
+						if not isinstance(method, dict):
+							continue
+						mname = method.get("name")
+						if not isinstance(mname, str) or not mname:
+							continue
+						params: list[parser_ast.Param] = []
+						for param in method.get("params", []) if isinstance(method.get("params"), list) else []:
+							if not isinstance(param, dict):
+								continue
+							pname = param.get("name")
+							if not isinstance(pname, str) or not pname:
+								continue
+							ptype = decode_type_expr(param.get("type"))
+							params.append(parser_ast.Param(name=pname, type_expr=ptype))
+						ret_type = decode_type_expr(method.get("return_type"))
+						if ret_type is None:
+							continue
+						methods.append(
+							parser_ast.TraitMethodSig(
+								name=mname,
+								params=params,
+								return_type=ret_type,
+								loc=decode_span(method.get("span")) or None,
+							)
+						)
+					require = decode_trait_expr(entry.get("require"))
+					trait_defs.append(
+						TraitDef(
+							key=TraitKey(module=mid, name=name),
+							name=name,
+							methods=methods,
+							require=require,
+							loc=decode_span(entry.get("span")) or None,
+						)
+					)
+			for name in exported_traits:
+				if name not in seen_trait_names:
+					missing_traits.add(TraitKey(module=mid, name=name))
+
+			impl_headers = iface.get("impl_headers")
+			if not isinstance(impl_headers, list):
+				missing_impl_modules.add(mid)
+				continue
+			for entry in impl_headers:
+				if not isinstance(entry, dict):
+					continue
+				impl_id = entry.get("impl_id")
+				def_module = entry.get("def_module") or mid
+				if not isinstance(impl_id, int) or not isinstance(def_module, str):
+					continue
+				target_expr = decode_type_expr(entry.get("target"))
+				if target_expr is None:
+					continue
+				type_params_raw = entry.get("type_params")
+				type_params = [p for p in type_params_raw if isinstance(p, str)] if isinstance(type_params_raw, list) else []
+				impl_owner = FunctionId(module="lang.__external", name=f"__impl_{def_module}:{impl_id}", ordinal=0)
+				impl_type_param_map = {name: TypeParamId(impl_owner, idx) for idx, name in enumerate(type_params)}
+				target_type_id = resolve_opaque_type(
+					target_expr,
+					type_table,
+					module_id=def_module,
+					type_params=impl_type_param_map,
+				)
+				trait_key = None
+				trait_obj = entry.get("trait")
+				if isinstance(trait_obj, dict):
+					tmod = trait_obj.get("module")
+					tname = trait_obj.get("name")
+					if isinstance(tmod, str) and isinstance(tname, str):
+						trait_key = TraitKey(module=tmod, name=tname)
+				methods: list[ImplMethodMeta] = []
+				for method in entry.get("methods", []) if isinstance(entry.get("methods"), list) else []:
+					if not isinstance(method, dict):
+						continue
+					mname = method.get("name")
+					fn_symbol = method.get("fn_symbol")
+					if not isinstance(mname, str) or not mname or not isinstance(fn_symbol, str) or not fn_symbol:
+						continue
+					fn_id = _parse_function_symbol(fn_symbol)
+					methods.append(
+						ImplMethodMeta(
+							fn_id=fn_id,
+							name=mname,
+							is_pub=bool(method.get("is_pub", False)),
+							fn_symbol=fn_symbol,
+							loc=decode_span(method.get("span")) or None,
+						)
+					)
+					sig = external_signatures_by_symbol.get(fn_symbol)
+					if sig is not None:
+						impl_param_map = {p.name: p.id for p in getattr(sig, "impl_type_params", []) or []}
+						if getattr(target_expr, "args", None):
+							impl_args = [
+								resolve_opaque_type(
+									arg,
+									type_table,
+									module_id=def_module,
+									type_params=impl_param_map,
+								)
+								for arg in list(getattr(target_expr, "args", []) or [])
+							]
+							sig.impl_target_type_args = impl_args
+						else:
+							sig.impl_target_type_args = []
+				require_expr = decode_trait_expr(entry.get("require"))
+				impl_metas.append(
+					ImplMeta(
+						impl_id=impl_id,
+						def_module=def_module,
+						target_type_id=target_type_id,
+						trait_key=trait_key,
+						require_expr=require_expr,
+						target_expr=target_expr,
+						impl_type_params=type_params,
+						methods=methods,
+						loc=decode_span(entry.get("span")) or None,
+					)
+				)
+
+	return trait_defs, impl_metas, missing_traits, missing_impl_modules
 
 
 def compile_stubbed_funcs(
@@ -568,6 +878,7 @@ def _diag_to_json(diag: Diagnostic, phase: str, source: Path) -> dict:
 	if file is None:
 		file = str(source)
 	phase = getattr(diag, "phase", None) or phase
+	notes = list(getattr(diag, "notes", []) or [])
 	return {
 		"phase": phase,
 		"message": diag.message,
@@ -575,6 +886,7 @@ def _diag_to_json(diag: Diagnostic, phase: str, source: Path) -> dict:
 		"file": file,
 		"line": line,
 		"column": column,
+		"notes": notes,
 	}
 
 
@@ -822,6 +1134,12 @@ def main(argv: list[str] | None = None) -> int:
 	func_hirs_by_id = func_hirs
 	signatures_by_id = signatures
 	external_signatures_by_name: dict[str, FnSignature] = {}
+	external_signatures_by_symbol: dict[str, FnSignature] = {}
+	external_signatures_by_id: dict[FunctionId, FnSignature] = {}
+	external_trait_defs: list[object] = []
+	external_impl_metas: list[object] = []
+	external_missing_traits: set[object] = set()
+	external_missing_impl_modules: set[str] = set()
 
 	if parse_diags:
 		if args.json:
@@ -1019,7 +1337,52 @@ def main(argv: list[str] | None = None) -> int:
 					impl_tid = sd.get("impl_target_type_id")
 					if isinstance(impl_tid, int):
 						impl_tid = tid_map.get(impl_tid, impl_tid)
-					external_signatures_by_name[name] = FnSignature(
+
+					symbol = str(sym)
+					fn_id = _parse_function_symbol(symbol)
+					type_param_names = sd.get("type_params")
+					if not isinstance(type_param_names, list):
+						type_param_names = []
+					impl_type_param_names = sd.get("impl_type_params")
+					if not isinstance(impl_type_param_names, list):
+						impl_type_param_names = []
+					type_params: list[TypeParam] = []
+					for idx, tp_name in enumerate(type_param_names):
+						if isinstance(tp_name, str):
+							type_params.append(TypeParam(id=TypeParamId(fn_id, idx), name=tp_name))
+					impl_owner = FunctionId(module="lang.__external", name=f"__impl_{symbol}", ordinal=0)
+					impl_type_params: list[TypeParam] = []
+					for idx, tp_name in enumerate(impl_type_param_names):
+						if isinstance(tp_name, str):
+							impl_type_params.append(TypeParam(id=TypeParamId(impl_owner, idx), name=tp_name))
+					type_param_map = {p.name: p.id for p in (impl_type_params + type_params)}
+
+					param_types_raw = sd.get("param_types")
+					param_types: list[object] | None = None
+					if isinstance(param_types_raw, list):
+						decoded: list[object] = []
+						ok = True
+						for entry in param_types_raw:
+							te = decode_type_expr(entry)
+							if te is None:
+								ok = False
+								break
+							decoded.append(te)
+						if ok:
+							param_types = decoded
+							param_type_ids = [
+								resolve_opaque_type(t, type_table, module_id=module_name, type_params=type_param_map)
+								for t in decoded
+							]
+
+					return_type = None
+					return_raw = sd.get("return_type")
+					if return_raw is not None:
+						return_type = decode_type_expr(return_raw)
+						if return_type is not None:
+							ret_tid = resolve_opaque_type(return_type, type_table, module_id=module_name, type_params=type_param_map)
+
+					sig = FnSignature(
 						name=name,
 						module=module_name,
 						method_name=sd.get("method_name"),
@@ -1031,7 +1394,27 @@ def main(argv: list[str] | None = None) -> int:
 						impl_target_type_id=impl_tid,
 						is_pub=bool(sd.get("is_pub")),
 						is_exported_entrypoint=bool(sd.get("is_exported_entrypoint", False)),
+						param_types=param_types,
+						return_type=return_type,
+						type_params=type_params,
+						impl_type_params=impl_type_params,
 					)
+					external_signatures_by_name[name] = sig
+					if symbol not in external_signatures_by_symbol:
+						external_signatures_by_symbol[symbol] = sig
+					if fn_id not in external_signatures_by_id:
+						external_signatures_by_id[fn_id] = sig
+
+		(
+			external_trait_defs,
+			external_impl_metas,
+			external_missing_traits,
+			external_missing_impl_modules,
+		) = _collect_external_trait_and_impl_metadata(
+			loaded_pkgs=loaded_pkgs,
+			type_table=type_table,
+			external_signatures_by_symbol=external_signatures_by_symbol,
+		)
 
 		# Import package constant tables into the host TypeTable so source code can
 		# reference imported consts as typed literals.
@@ -1264,7 +1647,9 @@ def main(argv: list[str] | None = None) -> int:
 			)
 			next_callable_id += 1
 
-	for sig_name, sig in external_signatures_by_name.items():
+	for symbol, sig in external_signatures_by_symbol.items():
+		fn_id = _parse_function_symbol(symbol)
+		sig_name = sig.name
 		if sig.param_type_ids is None or sig.return_type_id is None:
 			continue
 		param_types_tuple = tuple(sig.param_type_ids)
@@ -1299,7 +1684,7 @@ def main(argv: list[str] | None = None) -> int:
 				module_id=module_id,
 				visibility=Visibility.public() if sig.is_pub else Visibility.private(),
 				signature=CallableSignature(param_types=param_types_tuple, result_type=sig.return_type_id),
-				fn_id=None,
+				fn_id=fn_id,
 				impl_id=next_callable_id,
 				impl_target_type_id=sig.impl_target_type_id,
 				self_mode=self_mode,
@@ -1313,7 +1698,7 @@ def main(argv: list[str] | None = None) -> int:
 				module_id=module_id,
 				visibility=Visibility.public(),
 				signature=CallableSignature(param_types=param_types_tuple, result_type=sig.return_type_id),
-				fn_id=None,
+				fn_id=fn_id,
 				is_generic=bool(sig.type_params),
 			)
 			next_callable_id += 1
@@ -1331,9 +1716,11 @@ def main(argv: list[str] | None = None) -> int:
 		call_sigs_by_name.setdefault(sig_name, []).append(sig)
 
 	def _collect_reexport_targets(mod: str) -> set[str]:
-		if not isinstance(module_exports, dict):
+		exp = module_exports.get(mod) if isinstance(module_exports, dict) else None
+		if exp is None and isinstance(external_exports, dict):
+			exp = external_exports.get(mod)
+		if not isinstance(exp, dict):
 			return set()
-		exp = module_exports.get(mod) or {}
 		reexp = exp.get("reexports") if isinstance(exp, dict) else None
 		if not isinstance(reexp, dict):
 			return set()
@@ -1355,6 +1742,13 @@ def main(argv: list[str] | None = None) -> int:
 					tgt = info.get("module")
 					if isinstance(tgt, str):
 						targets.add(tgt)
+		trait_reexp = reexp.get("traits") if isinstance(reexp.get("traits"), dict) else {}
+		if isinstance(trait_reexp, dict):
+			for info in trait_reexp.values():
+				if isinstance(info, dict):
+					tgt = info.get("module")
+					if isinstance(tgt, str):
+						targets.add(tgt)
 		return targets
 
 	# Ensure module ids exist for any module mentioned in the workspace graph.
@@ -1365,18 +1759,37 @@ def main(argv: list[str] | None = None) -> int:
 		for mid in sorted(all_mods):
 			module_ids.setdefault(mid, len(module_ids))
 
+	def _better_chain(new_chain: tuple[str, ...], existing: tuple[str, ...] | None) -> bool:
+		if existing is None:
+			return True
+		if len(new_chain) != len(existing):
+			return len(new_chain) < len(existing)
+		return new_chain < existing
+
 	visible_modules_by_name: dict[str, tuple[int, ...]] = {}
+	visible_module_names_by_name: dict[str, set[str]] = {}
+	visibility_provenance_by_name: dict[str, dict[str, tuple[str, ...]]] = {}
 	if isinstance(module_deps, dict):
 		for mod_name in module_deps.keys():
-			visible: set[str] = {mod_name}
-			visible |= set(module_deps.get(mod_name, set()))
-			queue = list(visible)
+			imports = set(module_deps.get(mod_name, set()))
+			best: dict[str, tuple[str, ...]] = {mod_name: (mod_name,)}
+			queue: list[tuple[int, tuple[str, ...], str]] = []
+			heapq.heappush(queue, (1, (mod_name,), mod_name))
 			while queue:
-				cur = queue.pop()
-				for tgt in _collect_reexport_targets(cur):
-					if tgt not in visible:
-						visible.add(tgt)
-						queue.append(tgt)
+				_len, chain, cur = heapq.heappop(queue)
+				if best.get(cur) != chain:
+					continue
+				neighbors = set(_collect_reexport_targets(cur))
+				if cur == mod_name:
+					neighbors |= imports
+				for tgt in sorted(neighbors):
+					new_chain = chain + (tgt,)
+					if _better_chain(new_chain, best.get(tgt)):
+						best[tgt] = new_chain
+						heapq.heappush(queue, (len(new_chain), new_chain, tgt))
+			visible = set(best.keys())
+			visible_module_names_by_name[mod_name] = visible
+			visibility_provenance_by_name[mod_name] = best
 			visible_ids_list = []
 			for m in sorted(visible):
 				visible_ids_list.append(module_ids.setdefault(m, len(module_ids)))
@@ -1388,12 +1801,29 @@ def main(argv: list[str] | None = None) -> int:
 		type_table=type_table,
 		module_ids=module_ids,
 	)
+	for impl in external_impl_metas:
+		if getattr(impl, "trait_key", None) is None:
+			global_impl_index.add_impl(impl=impl, type_table=type_table, module_ids=module_ids)
 	global_trait_index = GlobalTraitIndex.from_trait_worlds(getattr(type_table, "trait_worlds", None))
+	for trait_def in external_trait_defs:
+		if hasattr(trait_def, "key"):
+			global_trait_index.add_trait(trait_def.key, trait_def)
+	for missing_trait in external_missing_traits:
+		if hasattr(missing_trait, "module") and hasattr(missing_trait, "name"):
+			global_trait_index.mark_missing(missing_trait)
 	global_trait_impl_index = GlobalTraitImplIndex.from_module_exports(
 		module_exports=module_exports,
 		type_table=type_table,
 		module_ids=module_ids,
 	)
+	for impl in external_impl_metas:
+		if getattr(impl, "trait_key", None) is not None:
+			global_trait_impl_index.add_impl(impl=impl, type_table=type_table, module_ids=module_ids)
+	for module_id in external_missing_impl_modules:
+		global_trait_impl_index.mark_missing_module(module_ids.setdefault(module_id, len(module_ids)))
+	global_trait_impl_index.module_names_by_id = {
+		mod_id: name for name, mod_id in module_ids.items() if name is not None
+	}
 	trait_scope_by_module: dict[str, list] = {}
 	if isinstance(module_exports, dict):
 		for mod_name, exp in module_exports.items():
@@ -1403,12 +1833,9 @@ def main(argv: list[str] | None = None) -> int:
 					trait_scope_by_module[mod_name] = list(scope)
 				else:
 					trait_scope_by_module[mod_name] = []
-	if isinstance(module_deps, dict):
-		visible_modules_by_name_set = {
-			mod: set(dep_set) | {mod} for mod, dep_set in module_deps.items()
-		}
-	else:
-		visible_modules_by_name_set = {}
+	visible_modules_by_name_set = {
+		mod: set(visible) for mod, visible in visible_module_names_by_name.items()
+	}
 
 	type_diags.extend(
 		validate_trait_scopes(
@@ -1427,6 +1854,9 @@ def main(argv: list[str] | None = None) -> int:
 		)
 	)
 
+	signatures_by_id_all = dict(signatures_by_id)
+	signatures_by_id_all.update(external_signatures_by_id)
+
 	typed_fns: dict[FunctionId, object] = {}
 	for fn_id, hir_block in normalized_hirs_by_id.items():
 		# Build param type map from signatures when available.
@@ -1437,6 +1867,11 @@ def main(argv: list[str] | None = None) -> int:
 		fn_module_name = sig.module if sig is not None and sig.module is not None else "main"
 		fn_module_id = module_ids.setdefault(fn_module_name, len(module_ids))
 		visible_modules = visible_modules_by_name.get(fn_module_name, (fn_module_id,))
+		visibility_by_id: dict[ModuleId, tuple[str, ...]] = {}
+		provenance_by_name = visibility_provenance_by_name.get(fn_module_name, {})
+		for mod_name, chain in provenance_by_name.items():
+			visibility_by_id[module_ids.setdefault(mod_name, len(module_ids))] = chain
+		direct_imports = set(module_deps.get(fn_module_name, set())) if isinstance(module_deps, dict) else None
 		result = type_checker.check_function(
 			fn_id,
 			hir_block,
@@ -1450,7 +1885,9 @@ def main(argv: list[str] | None = None) -> int:
 			trait_scope_by_module=trait_scope_by_module,
 			visible_modules=visible_modules,
 			current_module=fn_module_id,
-			signatures_by_id=signatures_by_id,
+			visibility_provenance=visibility_by_id,
+			visibility_imports=direct_imports,
+			signatures_by_id=signatures_by_id_all,
 		)
 		type_diags.extend(result.diagnostics)
 		typed_fns[fn_id] = result.typed_fn
@@ -1668,6 +2105,20 @@ def main(argv: list[str] | None = None) -> int:
 				list(module_exports.get(mid, {}).get("consts", [])) if isinstance(module_exports, dict) else []
 			)
 
+			trait_worlds = getattr(type_table, "trait_worlds", {}) if type_table is not None else {}
+			trait_world = trait_worlds.get(mid) if isinstance(trait_worlds, dict) else None
+			trait_metadata = _encode_trait_metadata_for_module(
+				module_id=mid,
+				exported_traits=exported_traits,
+				trait_world=trait_world,
+			)
+			impl_headers = _encode_impl_headers_for_module(
+				module_id=mid,
+				impls=list(module_exports.get(mid, {}).get("impls", []))
+				if isinstance(module_exports, dict)
+				else [],
+			)
+
 			payload_obj = encode_module_payload_v0(
 				module_id=mid,
 				type_table=checked_pkg.type_table or type_table,
@@ -1678,6 +2129,8 @@ def main(argv: list[str] | None = None) -> int:
 				exported_traits=exported_traits,
 				exported_consts=exported_consts,
 				reexports=reexports_obj,
+				trait_metadata=trait_metadata,
+				impl_headers=impl_headers,
 			)
 
 			# Module interface (package interface table v0).
@@ -1769,6 +2222,8 @@ def main(argv: list[str] | None = None) -> int:
 				"exception_schemas": iface_exc,
 				"variant_schemas": iface_var,
 				"consts": payload_obj.get("consts", {}) if isinstance(payload_obj, dict) else {},
+				"trait_metadata": payload_obj.get("trait_metadata", []) if isinstance(payload_obj, dict) else [],
+				"impl_headers": payload_obj.get("impl_headers", []) if isinstance(payload_obj, dict) else [],
 			}
 			iface_bytes = canonical_json_bytes(iface_obj)
 			iface_sha = sha256_hex(iface_bytes)

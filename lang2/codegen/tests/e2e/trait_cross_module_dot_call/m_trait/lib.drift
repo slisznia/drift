@@ -1,0 +1,11 @@
+module m_trait
+
+import m_box
+
+export { Show }
+
+pub trait Show { fn show(self: m_box.Box) returns Int }
+
+implement Show for m_box.Box {
+	pub fn show(self: m_box.Box) returns Int { return self.value + 3; }
+}
