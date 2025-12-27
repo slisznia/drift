@@ -3,6 +3,8 @@
 - Propagated loans across ref-to-ref `let`/assignment by cloning loans onto the destination ref with its own region cap.
 - Added regression tests for same-block last use, ref-copy liveness, and unused-borrow conservatism (including inner-scope release).
 - Borrow checker suite and targeted borrow codegen e2e cases passed.
+- Replaced `nonescaping` annotations with internal tri-state `param_nonretaining` metadata, added a conservative non-retaining analysis pass, and wired lambda validation + borrow checking to use it.
+- Added strict fallback resolution for direct free-function calls in non-retaining analysis and allowed immediate `.call(...)` invocation on lambda receivers.
 
 ## 2025-12-21 – Modules + packages + trust, plus core language additions
 - Landed multi-module workspace builds with explicit module roots (`-M/--module-path`) and deterministic module-id inference from directory paths, with strict module header validation (duplicate headers / not-first / mismatch / invalid ids / reserved prefixes).

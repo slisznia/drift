@@ -69,7 +69,7 @@ class FnSignature:
 	is_extern: bool = False
 	is_intrinsic: bool = False
 	param_names: Optional[list[str]] = None
-	param_nonescaping: Optional[list[bool]] = None
+	param_nonretaining: Optional[list[Optional[bool]]] = None
 	error_type_id: Optional[TypeId] = None  # resolved error TypeId
 	# Method metadata (set when the declaration comes from an `implement Type` block).
 	is_method: bool = False

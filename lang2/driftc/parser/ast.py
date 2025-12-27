@@ -77,7 +77,6 @@ class TypeExpr:
 class Param:
 	name: str
 	type_expr: TypeExpr | None
-	non_escaping: bool = False
 
 
 @dataclass

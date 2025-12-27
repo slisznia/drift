@@ -8,6 +8,7 @@ from lang2.driftc.checker import FnSignature
 from lang2.driftc.core.types_core import TypeTable
 from lang2.driftc.method_registry import CallableDecl, CallableKind, CallableSignature, SelfMode, Visibility
 from lang2.driftc.method_resolver import MethodResolution
+from lang2.driftc.stage1.non_retaining_analysis import analyze_non_retaining_params
 from lang2.driftc.type_checker import TypedFn
 
 
@@ -51,11 +52,33 @@ def _typed_fn_with_method_call(
 			method_name="for_each",
 			is_method=True,
 			impl_target_type_id=point_ty,
-			param_nonescaping=[False, True, False],
 			param_names=["self", "f", "y"],
 			param_type_ids=[recv_ty, unknown_ty, int_ty],
 		),
 	}
+
+	method_fn_id = FunctionId(module="main", name="Point::for_each", ordinal=0)
+	method_body = H.HBlock(
+		statements=[
+			H.HExprStmt(expr=H.HCall(fn=H.HVar(name="f", binding_id=2), args=[], kwargs=[])),
+		]
+	)
+	method_typed = TypedFn(
+		fn_id=method_fn_id,
+		name="Point::for_each",
+		params=[1, 2, 3],
+		param_bindings=[1, 2, 3],
+		locals=[],
+		body=method_body,
+		expr_types={},
+		binding_for_var={},
+		binding_types={1: recv_ty, 2: unknown_ty, 3: int_ty},
+		binding_names={1: "self", 2: "f", 3: "y"},
+		binding_mutable={1: False, 2: False, 3: False},
+		call_resolutions={},
+	)
+	signatures_by_id = {method_fn_id: signatures["Point::for_each"]}
+	analyze_non_retaining_params({method_fn_id: method_typed}, signatures_by_id, type_table=table)
 
 	decl = CallableDecl(
 		callable_id=1,
@@ -87,7 +110,7 @@ def _typed_fn_with_method_call(
 	return typed_fn, signatures, call_resolutions, table
 
 
-def test_method_nonescaping_lambda_capture_conflicts_with_mut_arg() -> None:
+def test_method_nonretaining_lambda_capture_conflicts_with_mut_arg() -> None:
 	lam = H.HLambda(params=[], body_expr=H.HVar(name="x", binding_id=1), body_block=None)
 	other = H.HBorrow(subject=H.HVar(name="x", binding_id=1), is_mut=True)
 	typed_fn, sigs, _res, table = _typed_fn_with_method_call(lambda_arg=lam, other_arg=other)
@@ -96,7 +119,7 @@ def test_method_nonescaping_lambda_capture_conflicts_with_mut_arg() -> None:
 	assert any("mutable borrow" in d.message for d in diags)
 
 
-def test_method_nonescaping_lambda_capture_allows_disjoint_mut_arg() -> None:
+def test_method_nonretaining_lambda_capture_allows_disjoint_mut_arg() -> None:
 	lam = H.HLambda(params=[], body_expr=H.HVar(name="x", binding_id=1), body_block=None)
 	other = H.HBorrow(subject=H.HVar(name="y", binding_id=3), is_mut=True)
 	typed_fn, sigs, _res, table = _typed_fn_with_method_call(lambda_arg=lam, other_arg=other)
@@ -105,7 +128,7 @@ def test_method_nonescaping_lambda_capture_allows_disjoint_mut_arg() -> None:
 	assert diags == []
 
 
-def test_method_nonescaping_lambda_capture_conflicts_with_mut_arg_autoborrow_receiver() -> None:
+def test_method_nonretaining_lambda_capture_conflicts_with_mut_arg_autoborrow_receiver() -> None:
 	lam = H.HLambda(params=[], body_expr=H.HVar(name="x", binding_id=1), body_block=None)
 	other = H.HBorrow(subject=H.HVar(name="x", binding_id=1), is_mut=True)
 	typed_fn, sigs, _res, table = _typed_fn_with_method_call(

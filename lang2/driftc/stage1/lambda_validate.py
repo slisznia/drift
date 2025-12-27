@@ -19,18 +19,18 @@ class LambdaValidationResult:
 	diagnostics: list[Diagnostic]
 
 
-def validate_lambdas_non_escaping(
+def validate_lambdas_non_retaining(
 	node: H.HNode,
 	*,
 	signatures: Mapping[str, FnSignature] | None = None,
 	call_resolutions: Mapping[int, object] | None = None,
 ) -> LambdaValidationResult:
 	"""
-	Validate that lambdas are non-escaping in v0.
+	Validate that borrowed-capture lambdas are non-escaping in v0.
 
 	Allowed forms:
 	- immediate invocation: (|...| => ...)(...)
-	- passing to a callee param annotated `nonescaping`
+	- passing to a callee param proven non-retaining
 	"""
 	diags: list[Diagnostic] = []
 	signatures = signatures or {}
@@ -43,7 +43,7 @@ def validate_lambdas_non_escaping(
 	def _emit_error(span: Span) -> None:
 		diags.append(
 			Diagnostic(
-				message="closures with borrowed captures are non-escaping in v0; only immediate invocation or non-escaping params are supported",
+				message="closures with borrowed captures are non-escaping in v0; only immediate invocation or proven non-retaining params are supported",
 				severity="error",
 				span=span,
 				notes=["wrap it like: (|...| => ...)(...)"],
@@ -105,14 +105,14 @@ def validate_lambdas_non_escaping(
 
 	def _allow_lambda_arg(call: H.HExpr, *, arg_index: int | None = None, kw_name: str | None = None) -> bool:
 		sig = _resolve_sig_for_call(call)
-		if sig is None or not sig.param_nonescaping:
+		if sig is None or not sig.param_nonretaining:
 			return False
 		param_index = _param_index_for_call(sig, arg_index=arg_index, kw_name=kw_name)
 		if param_index is None:
 			return False
-		if param_index >= len(sig.param_nonescaping):
+		if param_index >= len(sig.param_nonretaining):
 			return False
-		return bool(sig.param_nonescaping[param_index])
+		return sig.param_nonretaining[param_index] is True
 
 	def _walk_expr(e: H.HExpr, allow_lambda: bool) -> None:
 		if isinstance(e, H.HLambda):
@@ -144,7 +144,8 @@ def validate_lambdas_non_escaping(
 				_walk_expr(kw.value, allow_lambda=_allow_lambda_arg(e, kw_name=kw.name))
 			return
 		if isinstance(e, H.HMethodCall):
-			_walk_expr(e.receiver, allow_lambda=False)
+			allow_receiver_lambda = e.method_name == "call" and isinstance(e.receiver, H.HLambda)
+			_walk_expr(e.receiver, allow_lambda=allow_receiver_lambda)
 			for idx, arg in enumerate(e.args):
 				_walk_expr(arg, allow_lambda=_allow_lambda_arg(e, arg_index=idx))
 			for kw in e.kwargs:

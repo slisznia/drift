@@ -1307,7 +1307,6 @@ def _build_value_block(tree: Tree) -> Block:
 
 
 def _build_param(tree: Tree) -> Param:
-	non_escaping = False
 	ident_node = next(
 		child
 		for child in tree.children
@@ -1317,7 +1316,7 @@ def _build_param(tree: Tree) -> Param:
 	name_token = _unwrap_ident(ident_node)
 	type_node = next((child for child in tree.children if isinstance(child, Tree) and _name(child) == "type_expr"), None)
 	type_expr = _build_type_expr(type_node) if type_node is not None else None
-	return Param(name=name_token.value, type_expr=type_expr, non_escaping=non_escaping)
+	return Param(name=name_token.value, type_expr=type_expr)
 
 
 def _build_lambda(tree: Tree) -> Lambda:

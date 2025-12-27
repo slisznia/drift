@@ -260,7 +260,6 @@ def _convert_expr(expr: parser_ast.Expr) -> s0.Expr:
 			s0.Param(
 				name=p.name,
 				type_expr=p.type_expr,
-				non_escaping=getattr(p, "non_escaping", False),
 				loc=Span.from_loc(getattr(p, "loc", None)),
 			)
 			for p in expr.params
@@ -546,14 +545,11 @@ class _FrontendParam:
 		name: str,
 		type_expr: parser_ast.TypeExpr | None,
 		loc: Optional[parser_ast.Located],
-		*,
-		non_escaping: bool = False,
 	) -> None:
 		self.name = name
 		# Preserve the parsed type expression so the resolver can build real TypeIds.
 		self.type = type_expr
 		self.loc = loc
-		self.non_escaping = non_escaping
 
 
 class _FrontendDecl:
@@ -610,7 +606,6 @@ def _decl_from_parser_fn(
 			p.name,
 			p.type_expr,
 			getattr(p, "loc", None),
-			non_escaping=getattr(p, "non_escaping", False),
 		)
 		for p in fn.params
 	]
@@ -652,14 +647,6 @@ def _typeexpr_uses_internal_fnresult(typ: parser_ast.TypeExpr) -> bool:
 		if _typeexpr_uses_internal_fnresult(arg):
 			return True
 	return False
-
-
-def _typeexpr_is_callable(typ: parser_ast.TypeExpr | None) -> bool:
-	if typ is None:
-		return False
-	if typ.name in {"&", "&mut"} and getattr(typ, "args", None):
-		return _typeexpr_is_callable(typ.args[0])
-	return typ.name in {"Fn", "Callable"}
 
 
 def _report_internal_fnresult_in_surface_type(
@@ -3074,13 +3061,6 @@ def _lower_parsed_program_to_hir(
 					loc=getattr(p.type_expr, "loc", getattr(p, "loc", None)),
 					diagnostics=diagnostics,
 				)
-			if getattr(p, "non_escaping", False) and not _typeexpr_is_callable(p.type_expr):
-				diagnostics.append(
-					_diagnostic(
-						f"nonescaping parameter '{fn.name}({p.name})' must have a callable type",
-						getattr(p.type_expr, "loc", getattr(p, "loc", None)),
-					)
-				)
 		decls.append(decl_decl)
 		stmt_block = _convert_block(fn.body)
 		param_names = [p.name for p in getattr(fn, "params", []) or []]
@@ -3162,7 +3142,6 @@ def _lower_parsed_program_to_hir(
 					p.name,
 					p.type_expr,
 					getattr(p, "loc", None),
-					non_escaping=getattr(p, "non_escaping", False),
 				)
 				for p in fn.params
 			]
@@ -3181,13 +3160,6 @@ def _lower_parsed_program_to_hir(
 						symbol=f"{symbol_name}({p.name})",
 						loc=getattr(p.type_expr, "loc", getattr(p, "loc", None)),
 						diagnostics=diagnostics,
-					)
-				if getattr(p, "non_escaping", False) and not _typeexpr_is_callable(p.type_expr):
-					diagnostics.append(
-						_diagnostic(
-							f"nonescaping parameter '{symbol_name}({p.name})' must have a callable type",
-							getattr(p.type_expr, "loc", getattr(p, "loc", None)),
-						)
 					)
 			if fn.name in module_function_names:
 				diagnostics.append(

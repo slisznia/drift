@@ -7,6 +7,35 @@ Completed (2025-12-26).
 - Added driver JSON diagnostics coverage for explicit captures and codegen e2e cases for copy/mut/move behaviors.
 - Updated callable/closure spec text (new §22.0.1, non-retaining rule, callable traits semantics) and aligned the grammar doc with the parser.
 - Removed the `nonescaping` parameter keyword from the grammar; parser now treats it as a syntax error.
+- Implemented non-retaining analysis (direct call/forward fixpoint) and rewired lambda validation + borrow checking to use `param_nonretaining`.
+- Added strict fallback resolution for direct free-function calls in non-retaining analysis and allowed immediate `.call(...)` invocation on lambda receivers.
+
+## Pinned decisions (callables / non-retaining analysis)
+### Definitions
+- Direct call use: only `cb(...)` (direct callee) or `cb.call(...)` (method call) where `cb` is the parameter identifier.
+- Forwarding use: passing `cb` as an argument to another function call.
+- Retaining/aliasing use: any assignment/store/return/capture or unresolved forwarding.
+
+### Non-retaining analysis (conservative MVP)
+- `param_nonretaining` is internal-only metadata (tri-state):
+  - `True` = proven non-retaining
+  - `False` = retaining
+  - `None` = unknown (treated as retaining at call sites)
+- Proven non-retaining only when every use is:
+  - direct call, or
+  - forwarding to a target param already proven non-retaining under strict resolution.
+- Forwarding requires fixpoint + strict resolution:
+  - callee must resolve to a concrete signature,
+  - signature is internal/verified or has imported metadata,
+  - target param is already `True`.
+  Otherwise treat as `None` (unknown).
+- Aliasing is retaining by design:
+  - `val tmp = cb`, `arr[k] = cb`, `return cb`, capturing `cb` into another closure all count as retaining/unknown.
+
+### Call-site enforcement
+- Borrowed-capture closures may cross a call boundary only if target param is `True`.
+- Unknown (`None`) or retaining (`False`) rejects borrowed-capture closures.
+- Immediate invocation is always allowed.
 
 
 ## Goal

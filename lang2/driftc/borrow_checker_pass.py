@@ -1091,20 +1091,20 @@ class BorrowChecker:
 			pre_loans = set(state.loans)
 			self._visit_expr(state, expr.fn, as_value=True)
 			sig = self._resolve_sig_for_call(expr)
-			if sig and sig.param_nonescaping:
+			if sig and sig.param_nonretaining:
 				for idx, arg in enumerate(expr.args):
 					param_index = self._param_index_for_call(sig, arg_index=idx)
-					if param_index is None or param_index >= len(sig.param_nonescaping):
+					if param_index is None or param_index >= len(sig.param_nonretaining):
 						continue
-					if not sig.param_nonescaping[param_index]:
+					if sig.param_nonretaining[param_index] is not True:
 						continue
 					if isinstance(arg, H.HLambda):
 						self._add_lambda_capture_loans(state, arg)
 				for kw in expr.kwargs:
 					param_index = self._param_index_for_call(sig, kw_name=kw.name)
-					if param_index is None or param_index >= len(sig.param_nonescaping):
+					if param_index is None or param_index >= len(sig.param_nonretaining):
 						continue
-					if not sig.param_nonescaping[param_index]:
+					if sig.param_nonretaining[param_index] is not True:
 						continue
 					if isinstance(kw.value, H.HLambda):
 						self._add_lambda_capture_loans(state, kw.value)
@@ -1144,20 +1144,20 @@ class BorrowChecker:
 		if isinstance(expr, H.HMethodCall):
 			pre_loans = set(state.loans)
 			sig = self._resolve_sig_for_call(expr)
-			if sig and sig.param_nonescaping:
+			if sig and sig.param_nonretaining:
 				for idx, arg in enumerate(expr.args):
 					param_index = self._param_index_for_call(sig, arg_index=idx)
-					if param_index is None or param_index >= len(sig.param_nonescaping):
+					if param_index is None or param_index >= len(sig.param_nonretaining):
 						continue
-					if not sig.param_nonescaping[param_index]:
+					if sig.param_nonretaining[param_index] is not True:
 						continue
 					if isinstance(arg, H.HLambda):
 						self._add_lambda_capture_loans(state, arg)
 				for kw in expr.kwargs:
 					param_index = self._param_index_for_call(sig, kw_name=kw.name)
-					if param_index is None or param_index >= len(sig.param_nonescaping):
+					if param_index is None or param_index >= len(sig.param_nonretaining):
 						continue
-					if not sig.param_nonescaping[param_index]:
+					if sig.param_nonretaining[param_index] is not True:
 						continue
 					if isinstance(kw.value, H.HLambda):
 						self._add_lambda_capture_loans(state, kw.value)

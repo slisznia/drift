@@ -36,7 +36,8 @@ if str(ROOT) not in sys.path:
 
 from lang2.driftc import stage1 as H
 from lang2.driftc.stage1 import normalize_hir
-from lang2.driftc.stage1.lambda_validate import validate_lambdas_non_escaping
+from lang2.driftc.stage1.lambda_validate import validate_lambdas_non_retaining
+from lang2.driftc.stage1.non_retaining_analysis import analyze_non_retaining_params
 from lang2.driftc.stage2 import HIRToMIR, MirBuilder, mir_nodes as M
 from lang2.driftc.stage3.throw_summary import ThrowSummaryBuilder
 from lang2.driftc.stage4 import run_throw_checks
@@ -1906,6 +1907,13 @@ def main(argv: list[str] | None = None) -> int:
 				print(f"{source_path}:{loc}: {d.severity}: {d.message}", file=sys.stderr)
 			return 1
 
+	# Compute non-retaining metadata for callable parameters before lambda validation.
+	analyze_non_retaining_params(
+		typed_fns,
+		signatures_by_id_all,
+		type_table=type_table,
+	)
+
 	# Enforce non-escaping lambda rule after type resolution so method calls are visible.
 	signatures_by_display = {display_name_by_id[fn_id]: sig for fn_id, sig in signatures_by_id.items()}
 	signatures_for_validation = dict(signatures_by_display)
@@ -1913,7 +1921,7 @@ def main(argv: list[str] | None = None) -> int:
 	signatures_for_validation.update(external_signatures_by_name)
 	lambda_diags: list[Diagnostic] = []
 	for _fn_id, typed_fn in typed_fns.items():
-		res = validate_lambdas_non_escaping(
+		res = validate_lambdas_non_retaining(
 			typed_fn.body,
 			signatures=signatures_for_validation,
 			call_resolutions=getattr(typed_fn, "call_resolutions", None),

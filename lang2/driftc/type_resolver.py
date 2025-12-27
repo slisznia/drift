@@ -103,7 +103,7 @@ def resolve_program_signatures(
 		raw_params = []
 		param_names: list[str] = []
 		param_type_ids: list[TypeId] = []
-		param_nonescaping: list[bool] = []
+		param_nonretaining: list[Optional[bool]] = []
 		local_type_params = dict(impl_type_param_map)
 		local_type_params.update(type_param_map)
 		for p in getattr(decl, "params", []):
@@ -113,7 +113,7 @@ def resolve_program_signatures(
 			param_type_ids.append(
 				resolve_opaque_type(raw_ty, table, module_id=module_name, type_params=local_type_params)
 			)
-			param_nonescaping.append(bool(getattr(p, "non_escaping", False)))
+			param_nonretaining.append(None)
 
 		# Return
 		raw_ret = getattr(decl, "return_type", None)
@@ -165,7 +165,7 @@ def resolve_program_signatures(
 			return_type=raw_ret,
 			throws_events=throws,
 			param_names=param_names if param_names else None,
-			param_nonescaping=param_nonescaping if param_nonescaping else None,
+			param_nonretaining=param_nonretaining if param_nonretaining else None,
 			is_method=is_method,
 			self_mode=self_mode,
 			impl_target_type_id=impl_target_type_id,

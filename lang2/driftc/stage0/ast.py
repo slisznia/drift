@@ -179,7 +179,6 @@ class Param:
 	"""Function/lambda parameter (name + optional parsed type)."""
 	name: str
 	type_expr: object | None = None
-	non_escaping: bool = False
 	loc: Optional[object] = None
 
 
