@@ -1,0 +1,12 @@
+module m
+
+fn bump(p: &mut Int, by: Int) returns Int {
+	*p += by;
+	return *p;
+}
+
+fn main() returns Int {
+	var x = 5;
+	val i = 2;
+	return (| | captures(copy i, &mut x) => { return bump(x, i); })();
+}

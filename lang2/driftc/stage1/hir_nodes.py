@@ -267,12 +267,22 @@ class HParam(HNode):
 
 
 @dataclass
+class HExplicitCapture(HNode):
+	"""Explicit capture list entry (v0: root identifiers only)."""
+	name: str
+	kind: str  # "ref", "ref_mut", "copy", "move"
+	binding_id: Optional[BindingId] = None
+	span: Span = field(default_factory=Span)
+
+
+@dataclass
 class HLambda(HExpr):
 	"""Lambda expression prior to capture inference/lowering."""
 	params: list[HParam]
 	ret_type: Optional["HTypeExpr"] = None
 	body_expr: Optional[HExpr] = None
 	body_block: Optional["HBlock"] = None
+	explicit_captures: Optional[list[HExplicitCapture]] = None
 	captures: list["HCapture"] = field(default_factory=list)
 	span: Span = field(default_factory=Span)
 

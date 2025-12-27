@@ -1,0 +1,7 @@
+module m
+
+fn main() returns Int {
+	val x = 1;
+	val y = 2;
+	return (| | captures(copy x) => { return y; })();
+}

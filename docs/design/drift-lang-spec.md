@@ -3436,12 +3436,25 @@ This pattern keeps the OS plugin ABI small and stable while preserving Drift’s
 
 Drift treats callables as **traits first**, with an optional dynamic wrapper when you explicitly want type erasure. Capture modes are ownership-based and include borrows (`&`, `&mut`) in this revision (non-escaping closures only).
 
+### 22.0.1 Callable kinds
+
+Drift distinguishes two callable worlds:
+
+- **Non-capturing callables**: function pointers (`fn(Args...) returns R`) and interface references (dynamic dispatch). These do not capture environment and may be stored/returned freely.
+- **Capturing closures**: lambda literals produce compiler-synthesized closure values (code + environment). Closures may capture by `copy`/`move` (escaping) or by borrow (non-escaping).
+
+Parameter choice follows this split:
+
+- Use `fn(Args...) returns R` when only non-capturing callables are allowed.
+- Use a generic type with `require F is Callable<Args, R>` to accept capturing or non-capturing callables.
+
 ### 22.1. Surface syntax
 
 - Expression-bodied closures: `|params| => expr` (the expression value is returned).
 - Block-bodied closures: `|params| => { ... }` follow normal function rules with explicit `return`.
 - Pipe-style lambdas use `=>` by design; Rust-style `|params| expr` (without `=>`) is **not** a Drift form (avoids conflicts with the pipeline operator `|>`).
-- Non-escaping parameters are marked explicitly: `fn apply(nonescaping f: Fn, ...) returns ...`. Lambdas may be passed only to parameters annotated `nonescaping` (or used in immediate-call position).
+- Optional explicit captures: `|params| captures (capture_list) => ...` selects explicit capture mode (no implicit captures).
+- Passing a borrowed-capture closure across a call boundary is allowed only when the callee is proven non-retaining for that parameter; otherwise it is rejected. Immediate call is always allowed.
 
 #### 22.1.1. Optional lambda return types
 
@@ -3451,21 +3464,95 @@ Drift treats callables as **traits first**, with an optional dynamic wrapper whe
 
 ### 22.2. Capture modes (current revision)
 
-Captures are **inferred** from free variables; there is no explicit capture list syntax.
+Closures support two capture modes: implicit capture (default) and explicit capture
+via `captures(...)`.
 
-- `x` — **move** capture. Consumes the binding when the closure is created and stores it in the closure environment. Mutating the captured value mutates only the environment copy.
-- `copy x` — **copy** capture. Requires `x` to implement `Copy`; duplicates the value into the environment and leaves the original usable.
-- `&x`, `&mut x` — **borrow** captures. Borrow the captured place with the usual aliasing rules. Borrowed captures participate in the borrow checker (see §4.12) and are valid only while the closure is non-escaping (current revision).
-- Current implementation note: read-only captures are treated as shared borrows until typed capture kinds (Copy vs Move) are inferred from TypeIds/traits.
+#### 22.2.1. Implicit capture mode
 
-Current revision constraint: closures are **non-escaping**; they may only be used in immediate call position or passed to known synchronous callees. Storing/returning closures (and sending them across async/concurrency boundaries) will be specified in a later revision once the lifetime model is expanded.
+If a closure has no `captures(...)` clause, free roots used in the body are
+captured implicitly. A free root is a value identifier that resolves to an
+outer binding (not a parameter or local).
+
+Capture kind is inferred from usage:
+
+- Read-only use captures a shared borrow (`&x`).
+- Writes capture a mutable borrow (`&mut x`).
+- Move/consume use captures by value (move into the environment).
+
+The compiler does not switch to by-value captures just because a type is `Copy`;
+read-only uses still borrow.
+
+#### 22.2.2. Explicit capture mode (`captures(...)`)
+
+If a closure has a `captures(...)` clause, the capture list is exhaustive: every
+free root used in the body must be listed, and no implicit captures are allowed.
+
+Capture items:
+
+- `x` (shorthand for `&x`)
+- `&x`
+- `&mut x`
+- `copy x`
+- `move x`
+
+Rules:
+
+- Each capture item names a root identifier in the enclosing value scope.
+- Root identifiers may appear at most once in the capture list.
+- Projections (`x.field`, `x[i]`, `*p`) are not allowed in the capture list.
+- The captured name is bound in the closure body and shadows the outer binding.
+- If a parameter or local reuses a captured name, it is a hard error.
+
+Captured name types:
+
+- `x` or `&x` binds `x: &T`
+- `&mut x` binds `x: &mut T`
+- `copy x` or `move x` binds `x: T`
+
+There is no implicit auto-deref rewrite of captured names. If `x` is captured as
+`&T`, any body operation that requires mutation through `x` is an error; capture
+`&mut x` instead.
+
+Capture items are evaluated once at closure creation time, left-to-right. The
+items are type-checked and borrow-checked as if they are a sequence of
+statements executed at closure creation; earlier moves/borrows affect later
+items.
+
+The body may use projections (`x.field`, `x[i]`, `*x`) as long as the root `x` is
+captured, subject to existing place model limits.
+
+`copy x` requires the type to implement `Copy`; otherwise it is an error.
+
+#### 22.2.3. Escaping closures and borrowed captures
+
+Borrowed captures (`&x`, `&mut x`) are non-escaping. A closure with any borrowed
+captures:
+
+1. **Immediate call is allowed.**
+2. **Argument passing is allowed only if the callee is proven non-retaining** for that parameter.
+3. **Return/store is rejected** for borrowed-capture closures.
+4. **Unknown call sites are treated as retaining** and therefore rejected.
+
+“Proven non-retaining” may come from body inspection (when the callee body is
+available) or compiler-emitted metadata for separately compiled units. Closures
+with only `copy`/`move` captures may escape.
 
 ### 22.3. Lowering model
 
 - **Non-capturing** closures/functions lower to **thin function pointers** and are `Copy`.
 - **Capturing** closures lower to an **environment + code pair** `{ env_ptr, call_ptr }`. The environment holds captured values/borrows under their capture modes; dropping the closure drops the environment exactly once. This ABI is internal-only in the current revision.
+- When a closure literal is evaluated, capture items (if any) are evaluated
+  left-to-right and stored into the environment. Borrow captures create
+  closure-owned loans. `move` captures invalidate the source binding at closure
+  creation time.
 
 ### 22.4. Callable traits (static dispatch)
+
+Callable traits are compiler-provided and not user-implementable. The compiler
+synthesizes closure types for lambdas and provides appropriate callable impls.
+Every `fn(Args...) returns R` is implicitly `Callable<Args, R>` (and may also
+implement `CallableMut`/`CallableOnce`). The reverse coercion is not automatic;
+capturing closures do not coerce to `fn(...)` unless proven non-capturing.
 
 Closures automatically implement one or more callable traits based on how they use their environment:
 
@@ -3486,7 +3573,7 @@ trait CallableOnce<Args, R> {
 - Pure/non-mutating closures implement `Callable` and `CallableOnce`.
 - Mutating closures implement `CallableMut` and `CallableOnce`.
 - Closures that move out of their captures implement **only** `CallableOnce`.
-- Non-capturing functions implement all three traits.
+- Non-capturing `fn(...)` functions may implement all three traits.
 
 Generics use these traits for zero-cost, monomorphized dispatch:
 
@@ -3508,7 +3595,7 @@ fn run_once<F>(f: F) returns Int
 }
 ```
 
-For multi-argument callables, `Args` is typically a tuple (e.g., `(Int, String)`); for zero-argument callables, use `Void` as the parameter type and call with `f.call()`.
+For multi-argument callables, `Args` is a tuple (e.g., `(Int, String)`); for zero-argument callables, use `Void` as the parameter type and call with `f.call()`.
 
 ### 22.5. Dynamic callable interface (opt-in erasure)
 

@@ -216,6 +216,7 @@ class HIRToMIR:
 		self._lambda_env_field_types: list[TypeId] | None = None
 		self._lambda_capture_slots: dict[C.HCaptureKey, int] | None = None
 		self._lambda_capture_kinds: list[C.HCaptureKind] | None = None
+		self._lambda_capture_ref_is_value: bool = True
 		self._lambda_counter = 0
 		# Names reserved for this function (params + locals).
 		self._reserved_names: set[str] = set(self.b.func.params)
@@ -303,7 +304,7 @@ class HIRToMIR:
 		kind = None
 		if self._lambda_capture_kinds is not None and slot < len(self._lambda_capture_kinds):
 			kind = self._lambda_capture_kinds[slot]
-		if kind in (C.HCaptureKind.REF, C.HCaptureKind.REF_MUT):
+		if kind in (C.HCaptureKind.REF, C.HCaptureKind.REF_MUT) and self._lambda_capture_ref_is_value:
 			inner_ty = field_ty
 			td = self._type_table.get(field_ty)
 			if td.kind is TypeKind.REF and td.param_types:
@@ -1267,6 +1268,7 @@ class HIRToMIR:
 			can_throw_by_name={**self._can_throw_by_name, hidden_name: can_throw},
 			return_type=declared_ret_type or self._type_table.ensure_unknown(),
 		)
+		hidden_lower._lambda_capture_ref_is_value = getattr(lam, "explicit_captures", None) is None
 		hidden_env_local = "__env"
 		param_type_ids: list[TypeId] = []
 		param_names: list[str] = []
@@ -2833,6 +2835,8 @@ class HIRToMIR:
 					if self._lambda_capture_kinds is not None and slot < len(self._lambda_capture_kinds):
 						kind = self._lambda_capture_kinds[slot]
 						if kind in (C.HCaptureKind.REF, C.HCaptureKind.REF_MUT):
+							if not self._lambda_capture_ref_is_value:
+								return field_ty
 							td = self._type_table.get(field_ty)
 							if td.kind is TypeKind.REF and td.param_types:
 								return td.param_types[0]
@@ -2848,6 +2852,8 @@ class HIRToMIR:
 					if self._lambda_capture_kinds is not None and slot < len(self._lambda_capture_kinds):
 						kind = self._lambda_capture_kinds[slot]
 						if kind in (C.HCaptureKind.REF, C.HCaptureKind.REF_MUT):
+							if not self._lambda_capture_ref_is_value:
+								return field_ty
 							td = self._type_table.get(field_ty)
 							if td.kind is TypeKind.REF and td.param_types:
 								return td.param_types[0]

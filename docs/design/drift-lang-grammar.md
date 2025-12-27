@@ -6,10 +6,10 @@ This file defines the lexical rules, precedence, and productions for Drift. It i
 ## 1. Lexical structure
 
 - **Identifiers:** `Ident ::= [A-Za-z_][A-Za-z0-9_]*`  
-  Keywords (see reserved list in the main spec) are not identifiers.
-- **Literals:** `IntLiteral`, `FloatLiteral`, `StringLiteral` (UTF-8), `BoolLiteral` (`true` / `false`).
-- **Operators/punctuation:** `+ - * / % == != < <= > >= & | ^ ~ << >> and or not ! ? : += -= *= /= %= &= |= ^= <<= >>= . , : ; = -> => [ ] { } ( )`.
-- **`mut` token:** `mut` is not reserved; it is treated as an identifier token and is meaningful after `&` in types/expressions.
+  Keywords are not identifiers, except `move` and `copy`, which are permitted where `Ident` appears. Double-underscore names are reserved for the compiler.
+- **Literals:** `IntLiteral`, `FloatLiteral`, `StringLiteral` (UTF-8), `FStringLiteral`, `BoolLiteral` (`true` / `false`).
+- **Operators/punctuation:** `+ - * / % == != < <= > >= & | ^ ~ << >> and or not ! ? : += -= *= /= %= &= |= ^= <<= >>= . , : ; = -> => [ ] { } ( ) |> <|`.
+- **`mut` token:** `mut` is a keyword token and is meaningful after `&` in types/expressions.
 - **Newlines / terminators:** The lexer may emit a `TERMINATOR` token on newline (`\n`) when **all** hold:
   1. Parenthesis/brace/bracket depth is zero.
   2. The previous token is “terminable” (identifiers, literals, `)`, `]`, `}`, `return`, `break`, etc.).
@@ -19,7 +19,7 @@ This file defines the lexical rules, precedence, and productions for Drift. It i
 ## 2. Precedence and associativity (high → low)
 
 1. Postfix: call `()`, index `[]`, member `.`, member-through-ref `->`
-2. Unary: `move`, `copy`, `-`, `~`, `!`, `not`, `&`, `*` (deref)
+2. Unary: `move`, `-`, `~`, `!`, `not`, `&`, `*` (deref)
 3. Multiplicative: `*`, `/`, `%`
 4. Additive: `+`, `-`
 5. Comparisons: `<`, `<=`, `>`, `>=`, `==`, `!=`
@@ -35,168 +35,202 @@ This file defines the lexical rules, precedence, and productions for Drift. It i
 
 Top-level:
 ```
-Program      ::= ModuleDecl? ExportDecl* ImportDecl* TopDecl*
-ModuleDecl   ::= "module" ModulePath TERMINATOR?
+Program      ::= (ModuleDecl | Item | TERMINATOR)*
+ModuleDecl   ::= "module" ModulePath
 ModulePath   ::= Ident ("." Ident)*
-ExportDecl   ::= "export" "{" ExportItems? "}" TERMINATOR
-ExportItems  ::= ExportItem ("," ExportItem)*
-ExportItem   ::= Ident | ModulePath "." "*"
-ImportDecl   ::= "import" ImportItem ("," ImportItem)* TERMINATOR
-ImportItem   ::= ModulePath ("as" Ident)?
+Ident        ::= NAME | "move" | "copy"
 ```
 
-Declarations:
+Declarations and items:
 ```
-TopDecl      ::= Pub? (FnDef | StructDef | TraitDef | Implement | VariantDef
-               | ExceptionDef | InterfaceDef | TypeDef | ConstDef)
-Pub          ::= "pub"
+Item         ::= PubItem | FnDef | ConstDef | StructDef | ExceptionDef | VariantDef
+              | TraitDef | ImplementDef | UseTraitStmt | ImportStmt | ExportStmt | Stmt
+PubItem      ::= "pub" (FnDef | ConstDef | StructDef | ExceptionDef | VariantDef | TraitDef | ImplementDef)
 
-FnDef        ::= "fn" Ident FnTypeParams? "(" Params? ")" Returns? TraitReq? Block
-FnTypeParams ::= "<" Ident ("," Ident)* ">"
+ConstDef     ::= "const" NAME ":" Ty "=" Expr TERMINATOR
+FnDef        ::= "fn" Ident TypeParams? "(" Params? ")" ReturnSig RequireClause? Block
+ReturnSig    ::= "returns" Ty
 Params       ::= Param ("," Param)*
-Param        ::= ("^")? Ident ":" Ty
-Returns      ::= "returns" Ty | ":" Ty
+Param        ::= Ident ":" Ty
 
-StructDef    ::= "struct" Ident StructParams? StructBody
-StructParams ::= "<" Ident ("," Ident)* ">"
-StructBody   ::= "(" Fields? ")" | "{" Fields? "}"
-Fields       ::= Field ("," Field)*
-Field        ::= Ident ":" Ty
+StructDef    ::= "struct" NAME TypeParams? RequireClause? StructBody
+StructBody   ::= TupleStruct | BlockStruct
+TupleStruct  ::= "(" StructFieldList? ")"
+StructFieldList ::= StructField ("," StructField)*
+StructField  ::= NAME ":" Ty
+BlockStruct  ::= "{" TERMINATOR* (StructField ","? TERMINATOR*)* "}"
 
-TraitDef     ::= "trait" Ident TraitParams? TraitReq? TraitBody
-TraitParams  ::= "<" Ident ("," Ident)* ">"
-TraitReq     ::= "require" TraitReqClause ("," TraitReqClause)*
-TraitReqClause ::= ("Self" | Ident) "is" TraitExpr
-TraitExpr    ::= TraitTerm (("and" | "or") TraitTerm)*
-TraitTerm    ::= "not"? Ident | "(" TraitExpr ")"
-TraitBody    ::= "{" TraitMember* "}"
-TraitMember  ::= FnSig TERMINATOR?
+ExceptionDef ::= "exception" NAME "(" ExceptionParams? ")"
+ExceptionParams ::= ExceptionParam ("," ExceptionParam)*
+ExceptionParam ::= NAME ":" Ty | "domain" "=" STRING
 
-Implement    ::= "implement" Ty ("for" Ty)? TraitReq? TraitBody
+VariantDef   ::= "variant" NAME TypeParams? VariantBody
+VariantBody  ::= "{" (VariantArm ("," | TERMINATOR)*)+ "}"
+VariantArm   ::= NAME VariantFields?
+VariantFields ::= "(" VariantFieldList? ")"
+VariantFieldList ::= VariantField ("," VariantField)*
+VariantField ::= NAME ":" Ty
 
-VariantDef   ::= "variant" Ident TraitParams? "{" VariantItem+ "}"
-VariantItem  ::= Ident ("(" Fields? ")")?
+TraitDef     ::= "trait" NAME RequireClause? TraitBody
+TraitBody    ::= "{" (TraitItem | TERMINATOR)* "}"
+TraitItem    ::= TraitMethodSig TERMINATOR*
+TraitMethodSig ::= "fn" Ident "(" Params? ")" ReturnSig
 
-ExceptionDef ::= "exception" Ident TraitParams? "{" Fields? "}" TraitReq?
+ImplementDef ::= "implement" TypeParams? Ty ("for" Ty)? RequireClause? ImplementBody
+ImplementBody ::= "{" (ImplementItem | TERMINATOR)* "}"
+ImplementItem ::= "pub" FnDef | FnDef
 
-InterfaceDef ::= "interface" Ident TraitParams? "{" InterfaceMember+ "}"
-InterfaceMember ::= FnSig TERMINATOR?
+RequireClause ::= "require" TraitExpr ("," TraitExpr)*
 
-TypeDef      ::= "type" Ident "=" Ty TERMINATOR?
-
-ConstDef     ::= "const" Ident ":" Ty "=" Expr TERMINATOR
+UseTraitStmt ::= "use" "trait" ModulePath
+ImportStmt   ::= "import" ModulePath ("as" NAME)?
+ExportStmt   ::= "export" "{" ExportItems? "}"
+ExportItems  ::= ExportItem ("," ExportItem)*
+ExportItem   ::= NAME | ModulePath "." "*"
 ```
 
-Functions and types:
+Types:
 ```
-FnSig        ::= "fn" Ident "(" Params? ")" Returns? TraitReq?
-Ty           ::= "&" "mut"? Ty
-              | Ident TraitParams?
-              | Ty "[" "]"                // array type
-              | "(" Ty ("," Ty)+ ")"      // tuple type (n >= 2)
-              | VariantType | InterfaceType | TraitType
-
-VariantType  ::= Ident TraitParams?
-InterfaceType::= Ident TraitParams?
-TraitType    ::= Ident TraitParams?
+Ty           ::= RefType | BaseType
+RefType      ::= "&" "mut"? Ty
+BaseType     ::= NAME "." NAME TypeArgs? | NAME TypeArgs?
+TypeArgs     ::= "[" Ty ("," Ty)* "]" | "<" Ty ("," Ty)* ">"
+TypeParams   ::= "<" NAME ("," NAME)* ">"
 ```
 
 Statements and blocks:
 ```
-Block        ::= "{" Stmt* "}"
-Stmt         ::= ValDecl | VarDecl | ExprStmt | IfStmt | WhileStmt | ForStmt
-               | ReturnStmt | BreakStmt | ContinueStmt | TryStmt | ThrowStmt
+Block        ::= "{" (Stmt | TERMINATOR)* "}"
+ValueBlock   ::= "{" (Stmt | TERMINATOR)* Expr "}"
 
-ValDecl      ::= "val" Ident (":" Ty)? "=" Expr TERMINATOR
-VarDecl      ::= "var" Ident (":" Ty)? "=" Expr TERMINATOR
-ExprStmt     ::= Expr TERMINATOR
+Stmt         ::= IfStmt | TryStmt | SimpleStmt TERMINATOR
+SimpleStmt   ::= LetStmt | ReturnStmt | RethrowStmt | RaiseStmt | BreakStmt
+              | ContinueStmt | WhileStmt | ForStmt | AugAssignStmt
+              | AssignStmt | ExprStmt
 
-IfStmt       ::= "if" Expr Block ("else" (Block | IfStmt))?
-WhileStmt    ::= "while" Expr Block
-ForStmt      ::= "for" "(" (ValDecl | VarDecl | ExprStmt)? Expr? TERMINATOR Expr? ")" Block
-ReturnStmt   ::= "return" Expr? TERMINATOR
-BreakStmt    ::= "break" TERMINATOR
-ContinueStmt ::= "continue" TERMINATOR
-TryStmt      ::= "try" Block (TryElse | TryCatch)?
-TryElse      ::= "else" Block
-TryCatch     ::= "catch" (Ident)? Block
-ThrowStmt    ::= "throw" ExceptionCtor TERMINATOR
-ExceptionCtor::= Ident "(" CallArgs? ")"
+LetStmt      ::= ("val" | "var") BindingName TypeSpec? AliasClause? "=" Expr
+BindingName  ::= "^"? Ident
+AliasClause  ::= "as" STRING
+TypeSpec     ::= ":" Ty
+
+ReturnStmt   ::= "return" Expr?
+RethrowStmt  ::= "rethrow"
+RaiseStmt    ::= "raise" DomainClause? Expr | "throw" ExceptionCtor | "throw" Expr
+DomainClause ::= "domain" NAME
+BreakStmt    ::= "break"
+ContinueStmt ::= "continue"
+WhileStmt    ::= "while" Expr TerminatorOpt Block
+ForStmt      ::= "for" Ident "in" Expr TerminatorOpt Block
+
+IfStmt       ::= "if" IfCond TerminatorOpt Block ElseClause? TerminatorOpt
+IfCond       ::= TraitExpr | Expr
+ElseClause   ::= TerminatorOpt "else" TerminatorOpt Block
+TryStmt      ::= "try" (Block | Expr) TerminatorOpt CatchClause (TerminatorOpt CatchClause)* TerminatorOpt
+CatchClause  ::= "catch" CatchPattern Block
+CatchPattern ::= EventFqn "(" Ident ")" | Ident | (empty)
+TerminatorOpt ::= TERMINATOR*
+
+AssignStmt   ::= AssignTarget "=" Expr
+AugAssignStmt ::= AssignTarget ("+=" | "-=" | "*=" | "/=" | "%=" | "&=" | "|=" | "^=" | "<<=" | ">>=") Expr
+AssignTarget ::= PostfixExpr | "*" AssignTarget
+ExprStmt     ::= PostfixExpr
 ```
 
 Expressions:
 ```
-Expr         ::= TernaryExpr
-TernaryExpr  ::= PipelineExpr ("?" Expr ":" Expr)?
-PipelineExpr ::= OrExpr ("|>" OrExpr)*
+Expr         ::= TryCatchExpr | MatchExpr | Ternary | Pipeline
+MatchExpr    ::= "match" Expr "{" (MatchArm (TERMINATOR | ",")*)+ "}"
+MatchArm     ::= MatchPat "=>" MatchArmBody
+MatchPat     ::= "default"
+              | NAME "(" ")"
+              | NAME "(" MatchNamedBinders ")"
+              | NAME "(" MatchBinders ")"
+              | NAME
+MatchBinders ::= NAME ("," NAME)*
+MatchNamedBinders ::= NAME "=" NAME ("," NAME "=" NAME)*
+MatchArmBody ::= ValueBlock | Block
+
+TryCatchExpr ::= "try" Expr ("catch" CatchExprArm)+
+CatchExprArm ::= EventFqn "(" Ident ")" ValueBlock
+              | Ident ValueBlock
+              | ValueBlock
+
+Ternary      ::= Pipeline "?" Expr ":" Expr
+Pipeline     ::= OrExpr ("|>" OrExpr)*
 
 OrExpr       ::= AndExpr ("or" AndExpr)*
-AndExpr      ::= CmpExpr ("and" CmpExpr)*
-CmpExpr      ::= AddExpr (CmpOp AddExpr)*
-CmpOp        ::= "<" | "<=" | ">" | ">=" | "==" | "!="
-AddExpr      ::= MulExpr (AddOp MulExpr)*
-AddOp        ::= "+" | "-"
-MulExpr      ::= UnaryExpr (MulOp UnaryExpr)*
-MulOp        ::= "*" | "/" | "%"
-UnaryExpr    ::= BorrowExpr | NormalUnary
-BorrowExpr   ::= "&" "mut"? PostfixExpr
-NormalUnary  ::= ("move" | "copy" | "-" | "!" | "not")* PostfixExpr
-UnaryOp      ::= "-" | "!" | "not" | "&"
+AndExpr      ::= BitOrExpr ("and" BitOrExpr)*
+BitOrExpr    ::= BitXorExpr ("|" BitXorExpr)*
+BitXorExpr   ::= BitAndExpr ("^" BitAndExpr)*
+BitAndExpr   ::= EqExpr ("&" EqExpr)*
+EqExpr       ::= CmpExpr (("==" | "!=") CmpExpr)*
+CmpExpr      ::= ShiftExpr (("<" | "<=" | ">" | ">=") ShiftExpr)*
+ShiftExpr    ::= AddExpr (("<<" | ">>") AddExpr)*
+AddExpr      ::= MulExpr (("+" | "-") MulExpr)*
+MulExpr      ::= UnaryExpr (("*" | "/" | "%") UnaryExpr)*
 
-PostfixExpr  ::= PrimaryExpr PostfixTail*
-PostfixTail  ::= "." Ident
-              | "::" Ident
-              | "[" ExprOrLeadingDot "]"
-              | "->" Ident
-              | CallSuffix
-CallSuffix   ::= CallTypeArgs? "(" ArgsOrLeadingDot? ")"
+UnaryExpr    ::= PostfixExpr
+              | "*" UnaryExpr
+              | "move" UnaryExpr
+              | "+" UnaryExpr
+              | "-" UnaryExpr
+              | "not" UnaryExpr
+              | "!" UnaryExpr
+              | "~" UnaryExpr
+              | "&" "mut"? UnaryExpr
+
+PostfixExpr  ::= PrimaryExpr PostfixSuffix*
+PostfixSuffix ::= CallSuffix | AttrSuffix | ArrowSuffix | IndexSuffix | TypeAppSuffix | QualifiedSuffix
+CallSuffix   ::= CallTypeArgs? "(" CallArgs? ")"
 CallTypeArgs ::= "<" "type" Ty ("," Ty)* ">"
+QualifiedSuffix ::= QualifiedPreTypeArgs? "::" NAME
+QualifiedPreTypeArgs ::= "<" Ty ("," Ty)* ">"
+AttrSuffix   ::= "." NAME
+ArrowSuffix  ::= "->" NAME
+IndexSuffix  ::= "[" (LeadingDotExpr | Expr) "]"
+TypeAppSuffix ::= CallTypeArgs
 
-CallExpr     ::= PostfixExpr  // for pipeline staging clarity
-
-Args         ::= Expr ("," Expr)*
-ArgsOrLeadingDot ::= ExprOrLeadingDot ("," ExprOrLeadingDot)*
-ExprOrLeadingDot ::= Expr | LeadingDotExpr
-LeadingDotExpr ::= "." Ident ("(" Args? ")")?
+EventFqn     ::= ModulePath ":" NAME
 
 PrimaryExpr  ::= Literal
               | Ident
               | "(" Expr ")"
-              | TupleExpr
-              | ArrayLiteral
-              | MapLiteral
-              | TypeInitExpr
-              | MatchExpr
-              | TryCatchExpr
               | LambdaExpr
+              | ArrayLiteral
+              | LeadingDotExpr
 
-TupleExpr    ::= "(" Expr ("," Expr)+ ")"
-ArrayLiteral ::= "[" (Expr ("," Expr)*)? "]"
-MapLiteral   ::= "{" (MapEntry ("," MapEntry)*)? "}"
-MapEntry     ::= Expr ":" Expr
-TypeInitExpr ::= Ident "{" FieldAssignList? "}"
-FieldAssignList ::= FieldAssign ("," FieldAssign)* (",")?
-FieldAssign     ::= Ident "=" Expr
-MatchExpr    ::= "match" Expr "{" MatchArm+ "}"
-MatchArm     ::= Pattern "=>" Expr TERMINATOR?
-Pattern      ::= Ident | Literal | "(" Pattern ("," Pattern)+ ")"
-TryCatchExpr ::= "try" Expr ("catch" CatchExprArm)+
-CatchExprArm ::= Ident "(" Ident ")" Block    // event-specific
-               | Ident Block                  // catch-all with binder
-               | Block                        // catch-all
-LambdaExpr   ::= "|" LambdaParams? "|" "=>" (Expr | Block)
+LeadingDotExpr ::= "." NAME (CallSuffix | AttrSuffix | ArrowSuffix | IndexSuffix | TypeAppSuffix)*
+
+ArrayLiteral ::= "[" ExprList? "]"
+ExprList     ::= Expr ("," Expr)*
+
+LambdaExpr   ::= "|" LambdaParams? "|" LambdaCaptures? LambdaReturns? "=>" LambdaBody
+LambdaReturns ::= "returns" Ty
 LambdaParams ::= LambdaParam ("," LambdaParam)*
+LambdaParam  ::= NAME (":" Ty)?
+LambdaCaptures ::= "captures" "(" (LambdaCaptureItem ("," LambdaCaptureItem)*)? ")"
+LambdaCaptureItem ::= "copy" NAME | "move" NAME | "&" "mut"? NAME | NAME
+LambdaBody   ::= Expr | ValueBlock | Block
 
-LambdaParam  ::= Ident (":" Ty)?
-Literal      ::= IntLiteral | FloatLiteral | StringLiteral | BoolLiteral
+TraitExpr    ::= TraitOr
+TraitOr      ::= TraitAnd ("or" TraitAnd)*
+TraitAnd     ::= TraitNot ("and" TraitNot)*
+TraitNot     ::= "not" TraitNot | TraitAtom
+TraitAtom    ::= TraitSubject "is" TraitName | "(" TraitExpr ")"
+TraitSubject ::= NAME
+TraitName    ::= BaseType
+
+ExceptionCtor ::= NAME "(" CallArgs? ")"
+CallArgs     ::= CallArg ("," CallArg)*
+CallArg      ::= NAME "=" Expr | Expr
+
+Literal      ::= IntLiteral | FloatLiteral | StringLiteral | BoolLiteral | FStringLiteral
 ```
 
 ### Notes
 
-- Tuple types require at least two elements; `(T)` is just `T`.
 - Pipelines use `|>` and are left-associative; `<|` is reserved for a future reverse-pipeline form.
-- Lambda captures are **inferred**; there is no explicit capture list syntax in the parameter list.
-- Zero-argument callables use `Void` as their argument type and are called with `f.call()`.
+- Lambda captures are inferred by default; `captures(...)` opts into explicit capture mode.
 - This grammar is a reference for parsers; semantic rules (ownership, moves, errors) are defined in `drift-lang-spec.md`.
 - In general blocks, a bare expression must appear as a statement (`ExprStmt`) with a terminator (`;` or newline), e.g., `catch { 0; }` or `catch { return 0; }`. Expression-only forms that explicitly use `value_block` (e.g., lambda bodies, match arms) may allow `{ expr }` as a value-producing block.
 - Leading-dot expressions (`.foo`, `.foo(...)`) are only valid inside indexing brackets or argument lists; they desugar to member access on the receiver value (see §2.x “Receiver placeholder” in `drift-lang-spec.md` for semantics).

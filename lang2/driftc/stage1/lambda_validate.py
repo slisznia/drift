@@ -9,6 +9,8 @@ from lang2.driftc.core.span import Span
 from lang2.driftc.checker import FnSignature
 from lang2.driftc.method_registry import CallableDecl
 from lang2.driftc.method_resolver import MethodResolution
+from lang2.driftc.stage1 import closures as C
+from lang2.driftc.stage1.capture_discovery import discover_captures
 from lang2.driftc.stage1 import hir_nodes as H
 
 
@@ -41,7 +43,7 @@ def validate_lambdas_non_escaping(
 	def _emit_error(span: Span) -> None:
 		diags.append(
 			Diagnostic(
-				message="closures are non-escaping in v0; only immediate invocation or non-escaping params are supported",
+				message="closures with borrowed captures are non-escaping in v0; only immediate invocation or non-escaping params are supported",
 				severity="error",
 				span=span,
 				notes=["wrap it like: (|...| => ...)(...)"],
@@ -114,7 +116,13 @@ def validate_lambdas_non_escaping(
 
 	def _walk_expr(e: H.HExpr, allow_lambda: bool) -> None:
 		if isinstance(e, H.HLambda):
-			if not allow_lambda:
+			res = discover_captures(e)
+			diags.extend(res.diagnostics)
+			has_borrow = any(
+				cap.kind in (C.HCaptureKind.REF, C.HCaptureKind.REF_MUT)
+				for cap in res.captures
+			)
+			if not allow_lambda and has_borrow:
 				_emit_error(e.span)
 			if e.body_expr is not None:
 				_walk_expr(e.body_expr, allow_lambda=False)

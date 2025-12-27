@@ -1,0 +1,6 @@
+{
+  "exit_code": 1,
+  "diagnostics": [
+    { "phase": "typecheck", "message_contains": "value used in closure body is not listed in captures(...)" }
+  ]
+}

@@ -189,8 +189,7 @@ class BorrowChecker:
 		return arg_index
 
 	def _add_lambda_capture_loans(self, state: _FlowState, lam: H.HLambda) -> None:
-		if not lam.captures:
-			discover_captures(lam)
+		self._check_lambda_captures(lam)
 		for cap in lam.captures:
 			if cap.kind not in (C.HCaptureKind.REF, C.HCaptureKind.REF_MUT):
 				continue
@@ -205,6 +204,33 @@ class BorrowChecker:
 				temporary=True,
 				span=cap.span,
 			)
+
+	def _apply_lambda_capture_moves(self, state: _FlowState, lam: H.HLambda) -> None:
+		self._check_lambda_captures(lam)
+		for cap in lam.captures:
+			if cap.kind is not C.HCaptureKind.MOVE:
+				continue
+			place = self._place_from_capture_key(cap.key)
+			if place is None:
+				continue
+			self._force_move_place_use(state, place, cap.span)
+
+	def _check_lambda_captures(self, lam: H.HLambda) -> None:
+		if not lam.captures:
+			discover_captures(lam)
+		if self.binding_types is None:
+			return
+		for cap in lam.captures:
+			if cap.kind is not C.HCaptureKind.COPY:
+				continue
+			ty = self.binding_types.get(cap.key.root_local)
+			if ty is None or not self._is_copy(ty):
+				base = self._base_for_binding(int(cap.key.root_local))
+				name = base.name if base is not None else str(cap.key.root_local)
+				self._diagnostic(
+					f"cannot copy '{name}': type is not Copy",
+					cap.span,
+				)
 
 	@classmethod
 	def from_typed_fn(
@@ -975,6 +1001,9 @@ class BorrowChecker:
 				if place is not None:
 					self._consume_place_use(state, place, getattr(expr, "loc", Span()))
 			return
+		if isinstance(expr, H.HLambda):
+			self._apply_lambda_capture_moves(state, expr)
+			return
 		if isinstance(expr, H.HBorrow):
 			place = place_from_expr(expr.subject, base_lookup=self.base_lookup)
 			if place is None:
@@ -1000,6 +1029,7 @@ class BorrowChecker:
 			return
 		if isinstance(expr, H.HCall):
 			if isinstance(expr.fn, H.HLambda):
+				self._apply_lambda_capture_moves(state, expr.fn)
 				pre_loans = set(state.loans)
 				self._add_lambda_capture_loans(state, expr.fn)
 				for arg in expr.args:

@@ -303,8 +303,16 @@ class Lambda(Expr):
     loc: Located
     params: List[Param]
     ret_type: TypeExpr | None
+    captures: List["LambdaCapture"] | None
     body_expr: Expr | None
     body_block: Block | None
+
+
+@dataclass
+class LambdaCapture:
+    loc: Located
+    name: str
+    kind: str  # "ref", "ref_mut", "copy", "move"
 
 
 @dataclass

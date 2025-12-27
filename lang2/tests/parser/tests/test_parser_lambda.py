@@ -51,3 +51,11 @@ fn main() returns Int {
 	assert expr.ret_type.name == "Int"
 	assert expr.body_expr is None
 	assert expr.body_block is not None
+
+
+def test_parse_lambda_with_captures_list() -> None:
+	expr = p._parse_expr_fragment("|x: Int| captures (copy i, &mut y, z) => x")
+	assert isinstance(expr, Lambda)
+	assert expr.captures is not None
+	assert [cap.name for cap in expr.captures] == ["i", "y", "z"]
+	assert [cap.kind for cap in expr.captures] == ["copy", "ref_mut", "ref"]

@@ -2,6 +2,12 @@
 ## Status
 Completed (2025-12-26).
 
+## Additional completed work (branch)
+- Added explicit `captures(...)` parsing, HIR lowering, and capture discovery rules (including shared-vs-mutable capture diagnostics).
+- Added driver JSON diagnostics coverage for explicit captures and codegen e2e cases for copy/mut/move behaviors.
+- Updated callable/closure spec text (new §22.0.1, non-retaining rule, callable traits semantics) and aligned the grammar doc with the parser.
+- Removed the `nonescaping` parameter keyword from the grammar; parser now treats it as a syntax error.
+
 
 ## Goal
 Fix NLL-lite false positives where a borrow is last-used earlier in the same block but still blocks later writes.

@@ -11,6 +11,19 @@
   - DiagnosticValue payloads: design/implement a stable ownership/handle model for opaque/object/array payload kinds so they can be stored in `Error.attrs` without ABI/lifetime churn.
   - Try-expression restriction: decide whether to relax “attempt must be a call” beyond call/method-call in v1 (spec + checker + lowering).
 
+[Closures]
+- Capture discovery is field-projection only; index/deref projections still error. Example:
+  ```
+  let a = [1, 2];
+  let f = || a[0];
+  ```
+- Explicit capture list follow-ups:
+  - Allow projections in `captures(...)` with renaming (e.g., `p = &x.field`).
+  - Support explicit/implicit mixing or capture-list overrides (if desired).
+  - Gate `copy` via a real `Copy` trait post-typecheck.
+  - Add lifetime-tracked closure types so borrowed-capture closures can escape.
+  - Refine escape analysis beyond conservative "unknown call site" handling.
+
 [Borrow / references]
 - Deferred follow-ups:
   - Escape sink #3 (closures/unknown contexts): once closures exist, enforce “borrowing closures are non-escaping only” and reject passing `&`/`&mut` captures (or ref-typed params) to unknown call sites; add e2e negatives.

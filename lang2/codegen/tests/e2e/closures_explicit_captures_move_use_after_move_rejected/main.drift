@@ -1,0 +1,7 @@
+module m
+
+fn main() returns Int {
+	var x = 1;
+	val f = | | captures(move x) => { return x; };
+	return x;
+}

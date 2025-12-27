@@ -265,11 +265,22 @@ def _convert_expr(expr: parser_ast.Expr) -> s0.Expr:
 			)
 			for p in expr.params
 		]
+		captures = None
+		if getattr(expr, "captures", None) is not None:
+			captures = [
+				s0.CaptureItem(
+					name=cap.name,
+					kind=cap.kind,
+					loc=Span.from_loc(getattr(cap, "loc", None)),
+				)
+				for cap in expr.captures
+			]
 		body_expr = _convert_expr(expr.body_expr) if expr.body_expr is not None else None
 		body_block = s0.Block(statements=_convert_block(expr.body_block)) if expr.body_block is not None else None
 		return s0.Lambda(
 			params=params,
 			ret_type=getattr(expr, "ret_type", None),
+			captures=captures,
 			body_expr=body_expr,
 			body_block=body_block,
 			loc=Span.from_loc(getattr(expr, "loc", None)),

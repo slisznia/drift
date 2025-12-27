@@ -36,15 +36,20 @@ def discover_captures(lambda_expr: H.HLambda) -> CaptureDiscoveryResult:
 	"""
 	usage: dict[C.HCaptureKey, _CaptureUsage] = {}
 	diags: list[Diagnostic] = []
+	used_roots: Set[int] = set()
+	used_root_spans: dict[int, Span] = {}
 
 	lambda_local_ids: Set[H.BindingId] = set()
+	lambda_local_names: Set[str] = set()
 	for p in lambda_expr.params:
 		if p.binding_id is not None:
 			lambda_local_ids.add(p.binding_id)
+		lambda_local_names.add(p.name)
 
 	def _record_local_from_stmt(stmt: H.HStmt) -> None:
 		if isinstance(stmt, H.HLet) and stmt.binding_id is not None:
 			lambda_local_ids.add(stmt.binding_id)
+			lambda_local_names.add(stmt.name)
 
 	def _add_usage(
 		root: H.BindingId | None,
@@ -59,6 +64,9 @@ def discover_captures(lambda_expr: H.HLambda) -> CaptureDiscoveryResult:
 	) -> None:
 		if root is None or root in lambda_local_ids:
 			return
+		used_roots.add(int(root))
+		if int(root) not in used_root_spans:
+			used_root_spans[int(root)] = span
 		key = C.HCaptureKey(root_local=root, proj=tuple(C.HCaptureProj(field=f) for f in fields))
 		entry = usage.setdefault(key, _CaptureUsage())
 		if entry.span == Span():
@@ -225,6 +233,26 @@ def discover_captures(lambda_expr: H.HLambda) -> CaptureDiscoveryResult:
 						children.append(item)
 		return children
 
+	def _kind_from_explicit(kind: str, span: Span) -> C.HCaptureKind | None:
+		if kind == "ref":
+			return C.HCaptureKind.REF
+		if kind == "ref_mut":
+			return C.HCaptureKind.REF_MUT
+		if kind == "copy":
+			return C.HCaptureKind.COPY
+		if kind == "move":
+			return C.HCaptureKind.MOVE
+		diags.append(
+			Diagnostic(
+				message="unsupported explicit capture kind",
+				severity="error",
+				span=span,
+			)
+		)
+		return None
+
+	explicit_caps = getattr(lambda_expr, "explicit_captures", None)
+
 	# Seed locals from body statements (params already collected).
 	if lambda_expr.body_block is not None:
 		for stmt in lambda_expr.body_block.statements:
@@ -232,6 +260,96 @@ def discover_captures(lambda_expr: H.HLambda) -> CaptureDiscoveryResult:
 			_walk_stmt(stmt)
 	if lambda_expr.body_expr is not None:
 		_walk_expr(lambda_expr.body_expr)
+
+	if explicit_caps is not None:
+		seen_names: set[str] = set()
+		explicit_roots: set[int] = set()
+		explicit_names: dict[int, str] = {}
+		explicit_list: list[C.HCapture] = []
+		for cap in explicit_caps:
+			if cap.name in seen_names:
+				diags.append(
+					Diagnostic(
+						message="duplicate capture in captures(...) list",
+						severity="error",
+						span=cap.span,
+					)
+				)
+				continue
+			seen_names.add(cap.name)
+			if cap.binding_id is None:
+				diags.append(
+					Diagnostic(
+						message="explicit captures require a root identifier from the enclosing scope",
+						severity="error",
+						span=cap.span,
+					)
+				)
+				continue
+			kind = _kind_from_explicit(cap.kind, cap.span)
+			if kind is None:
+				continue
+			explicit_roots.add(int(cap.binding_id))
+			explicit_names[int(cap.binding_id)] = cap.name
+			explicit_list.append(
+				C.HCapture(
+					kind=kind,
+					key=C.HCaptureKey(root_local=cap.binding_id, proj=()),
+					span=cap.span,
+				)
+			)
+		for name in lambda_local_names:
+			if name in seen_names:
+				diags.append(
+					Diagnostic(
+						message="capture name collides with lambda param/local",
+						severity="error",
+						span=getattr(lambda_expr, "span", Span()),
+					)
+				)
+		for root_id in used_roots:
+			if root_id in explicit_roots:
+				continue
+			span = used_root_spans.get(root_id, Span())
+			diags.append(
+				Diagnostic(
+					message="value used in closure body is not listed in captures(...)",
+					severity="error",
+					span=span,
+				)
+			)
+		root_usage: dict[int, _CaptureUsage] = {}
+		for key, use in usage.items():
+			root = key.root_local
+			if root is None:
+				continue
+			entry = root_usage.setdefault(int(root), _CaptureUsage())
+			entry.read = entry.read or use.read
+			entry.borrow_shared = entry.borrow_shared or use.borrow_shared
+			entry.borrow_mut = entry.borrow_mut or use.borrow_mut
+			entry.move = entry.move or use.move
+			entry.write = entry.write or use.write
+			if entry.span == Span():
+				entry.span = use.span
+		for cap in explicit_list:
+			if cap.kind is not C.HCaptureKind.REF:
+				continue
+			root_id = int(cap.key.root_local)
+			use = root_usage.get(root_id)
+			if use is None:
+				continue
+			if use.write or use.borrow_mut:
+				name = explicit_names.get(root_id, "value")
+				span = use.span if use.span != Span() else cap.span
+				diags.append(
+					Diagnostic(
+						message=f"capture '{name}' is shared; capture &mut {name} to mutate",
+						severity="error",
+						span=span,
+					)
+				)
+		lambda_expr.captures = explicit_list
+		return CaptureDiscoveryResult(captures=explicit_list, diagnostics=diags)
 
 	captures: list[C.HCapture] = []
 	for key, use in usage.items():

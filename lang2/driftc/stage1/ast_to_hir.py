@@ -532,6 +532,18 @@ class AstToHIR:
 		return H.HArrayLiteral(elements=[self.lower_expr(e) for e in expr.elements])
 
 	def _visit_expr_Lambda(self, expr: ast.Lambda) -> H.HExpr:
+		explicit_captures: list[H.HExplicitCapture] | None = None
+		if getattr(expr, "captures", None) is not None:
+			explicit_captures = []
+			for cap in expr.captures:
+				explicit_captures.append(
+					H.HExplicitCapture(
+						name=cap.name,
+						kind=cap.kind,
+						binding_id=self._lookup_binding(cap.name),
+						span=Span.from_loc(getattr(cap, "loc", None)),
+					)
+				)
 		self._push_scope()
 		try:
 			params: list[H.HParam] = []
@@ -554,6 +566,7 @@ class AstToHIR:
 				ret_type=getattr(expr, "ret_type", None),
 				body_expr=body_expr,
 				body_block=body_block,
+				explicit_captures=explicit_captures,
 				span=Span.from_loc(getattr(expr, "loc", None)),
 			)
 		finally:

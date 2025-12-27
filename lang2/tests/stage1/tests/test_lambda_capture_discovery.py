@@ -78,3 +78,35 @@ def test_capture_discovery_rejects_overlapping_mutable_captures() -> None:
 	lam = H.HLambda(params=[], body_expr=None, body_block=block)
 	res = discover_captures(lam)
 	assert any("overlapping lambda captures" in d.message for d in res.diagnostics)
+
+
+def test_capture_discovery_explicit_list_missing_capture_rejected() -> None:
+	lam = H.HLambda(
+		params=[],
+		explicit_captures=[
+			H.HExplicitCapture(name="a", kind="copy", binding_id=1, span=Span()),
+		],
+		body_expr=H.HBinary(
+			op=H.BinaryOp.ADD,
+			left=H.HVar(name="a", binding_id=1),
+			right=H.HVar(name="b", binding_id=2),
+		),
+		body_block=None,
+	)
+	res = discover_captures(lam)
+	assert any("not listed in captures" in d.message for d in res.diagnostics)
+	assert [c.kind for c in res.captures] == [C.HCaptureKind.COPY]
+
+
+def test_capture_discovery_explicit_list_duplicate_rejected() -> None:
+	lam = H.HLambda(
+		params=[],
+		explicit_captures=[
+			H.HExplicitCapture(name="a", kind="ref", binding_id=1, span=Span()),
+			H.HExplicitCapture(name="a", kind="ref_mut", binding_id=1, span=Span()),
+		],
+		body_expr=H.HVar(name="a", binding_id=1),
+		body_block=None,
+	)
+	res = discover_captures(lam)
+	assert any("duplicate capture" in d.message for d in res.diagnostics)

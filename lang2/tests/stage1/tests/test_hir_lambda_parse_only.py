@@ -34,3 +34,21 @@ def test_hir_lower_lambda_standalone_structural() -> None:
 	hir = AstToHIR().lower_expr(lam)
 	assert isinstance(hir, HLambda)
 	assert hir.body_expr is not None
+
+
+def test_hir_lower_lambda_explicit_captures() -> None:
+	lam = s0.Lambda(
+		params=[],
+		captures=[
+			s0.CaptureItem(name="a", kind="copy", loc=None),
+			s0.CaptureItem(name="b", kind="ref_mut", loc=None),
+		],
+		body_expr=s0.Name(ident="a"),
+		body_block=None,
+		loc=None,
+	)
+	hir = AstToHIR().lower_expr(lam)
+	assert isinstance(hir, HLambda)
+	assert hir.explicit_captures is not None
+	assert [cap.name for cap in hir.explicit_captures] == ["a", "b"]
+	assert [cap.kind for cap in hir.explicit_captures] == ["copy", "ref_mut"]

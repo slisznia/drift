@@ -38,6 +38,7 @@ from .ast import (
     LetStmt,
     Literal,
     Lambda,
+    LambdaCapture,
     Located,
     Move,
     Name,
@@ -111,20 +112,20 @@ def _unwrap_ident(node: object) -> Token:
 	"""
 	Extract an identifier token from a grammar `ident` node.
 
-	The grammar defines `ident: NAME | MOVE` so callers may receive:
-	- a `Token` (`NAME` or `MOVE`) directly, or
+	The grammar defines `ident: NAME | MOVE | COPY` so callers may receive:
+	- a `Token` (`NAME`, `MOVE`, or `COPY`) directly, or
 	- a `Tree('ident', [Token(...)])` wrapper.
 	"""
 	if isinstance(node, Token):
-		if node.type in {"NAME", "MOVE"}:
+		if node.type in {"NAME", "MOVE", "COPY"}:
 			return node
 		raise TypeError(f"Expected identifier token, got {node.type}")
 	if isinstance(node, Tree) and _name(node) == "ident":
 		tok = next((c for c in node.children if isinstance(c, Token)), None)
 		if tok is None:
 			raise TypeError("ident node missing token child")
-		if tok.type not in {"NAME", "MOVE"}:
-			raise TypeError(f"Expected NAME/MOVE token in ident, got {tok.type}")
+		if tok.type not in {"NAME", "MOVE", "COPY"}:
+			raise TypeError(f"Expected NAME/MOVE/COPY token in ident, got {tok.type}")
 		return tok
 	raise TypeError(f"Expected ident node, got {type(node)}")
 
@@ -1306,7 +1307,7 @@ def _build_value_block(tree: Tree) -> Block:
 
 
 def _build_param(tree: Tree) -> Param:
-	non_escaping = any(isinstance(child, Token) and child.type == "NONESCAPING" for child in tree.children)
+	non_escaping = False
 	ident_node = next(
 		child
 		for child in tree.children
@@ -1324,6 +1325,29 @@ def _build_lambda(tree: Tree) -> Lambda:
 	body_expr: Expr | None = None
 	body_block: Block | None = None
 	ret_type: TypeExpr | None = None
+	captures: list[LambdaCapture] | None = None
+
+	def _build_lambda_capture(node: Tree) -> LambdaCapture:
+		kind = "ref"
+		name_tok: Token | None = None
+		for child in node.children:
+			if isinstance(child, Token):
+				if child.type == "COPY":
+					kind = "copy"
+				elif child.type == "MOVE":
+					kind = "move"
+				elif child.type == "AMP":
+					kind = "ref"
+				elif child.type == "MUT":
+					kind = "ref_mut"
+				elif child.type == "NAME":
+					name_tok = child
+			elif isinstance(child, Tree) and _name(child) == "lambda_capture_item":
+				return _build_lambda_capture(child)
+		if name_tok is None:
+			raise ValueError("lambda capture item missing name")
+		return LambdaCapture(loc=_loc(node), name=name_tok.value, kind=kind)
+
 	for child in tree.children:
 		if isinstance(child, Tree) and _name(child) == "lambda_params":
 			for param_node in child.children:
@@ -1338,6 +1362,17 @@ def _build_lambda(tree: Tree) -> Lambda:
 							type_expr=_build_type_expr(type_node) if type_node is not None else None,
 						)
 					)
+		elif isinstance(child, Tree) and _name(child) == "lambda_captures":
+			captures = []
+			for cap_node in child.children:
+				if not isinstance(cap_node, Tree):
+					continue
+				if _name(cap_node) == "lambda_capture_list":
+					for item in cap_node.children:
+						if isinstance(item, Tree) and _name(item) == "lambda_capture_item":
+							captures.append(_build_lambda_capture(item))
+				elif _name(cap_node) == "lambda_capture_item":
+					captures.append(_build_lambda_capture(cap_node))
 		elif isinstance(child, Tree) and _name(child) == "lambda_returns":
 			type_node = next((c for c in child.children if isinstance(c, Tree) and _name(c) == "type_expr"), None)
 			ret_type = _build_type_expr(type_node) if type_node is not None else None
@@ -1352,7 +1387,14 @@ def _build_lambda(tree: Tree) -> Lambda:
 				body_block = _build_value_block(target)
 			else:
 				body_expr = _build_expr(target)
-	return Lambda(loc=_loc(tree), params=params, ret_type=ret_type, body_expr=body_expr, body_block=body_block)
+	return Lambda(
+		loc=_loc(tree),
+		params=params,
+		ret_type=ret_type,
+		captures=captures,
+		body_expr=body_expr,
+		body_block=body_block,
+	)
 
 
 def _build_type_expr(tree: Tree) -> TypeExpr:

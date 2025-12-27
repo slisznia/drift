@@ -140,8 +140,17 @@ class Lambda(Expr):
 	"""Lambda expression: params + body (expr or block)."""
 	params: List["Param"]
 	ret_type: object | None = None
+	captures: Optional[List["CaptureItem"]] = None
 	body_expr: Expr | None = None
 	body_block: "Block" | None = None
+	loc: Optional[object] = None
+
+
+@dataclass
+class CaptureItem:
+	"""Explicit capture list item for a lambda."""
+	name: str
+	kind: str  # "ref", "ref_mut", "copy", "move"
 	loc: Optional[object] = None
 
 

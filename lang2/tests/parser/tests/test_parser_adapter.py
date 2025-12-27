@@ -217,7 +217,7 @@ fn drift_main() returns Int {
 	assert type_table.get(sig.return_type_id).name == "Int"
 
 
-def test_nonescaping_param_annotation_rejects_non_callable_param(tmp_path: Path):
+def test_nonescaping_param_annotation_is_syntax_error(tmp_path: Path):
 	src = tmp_path / "main.drift"
 	src.write_text(
 		"""
@@ -226,29 +226,8 @@ fn apply(nonescaping f: Int, x: Int) returns Int {
 }
 """
 	)
-	_func_hirs, sigs, fn_ids_by_name, _type_table, _exc_catalog, diagnostics = parse_drift_to_hir(src)
-	assert any("nonescaping parameter" in d.message for d in diagnostics)
-	apply_ids = fn_ids_by_name.get("main::apply") or fn_ids_by_name.get("apply") or []
-	assert len(apply_ids) == 1
-	sig = sigs[apply_ids[0]]
-	assert sig.param_nonescaping == [True, False]
-
-
-def test_nonescaping_param_annotation_accepts_callable_param(tmp_path: Path):
-	src = tmp_path / "main.drift"
-	src.write_text(
-		"""
-fn apply(nonescaping f: Fn, x: Int) returns Int {
-    return x;
-}
-"""
-	)
-	_func_hirs, sigs, fn_ids_by_name, _type_table, _exc_catalog, diagnostics = parse_drift_to_hir(src)
-	assert diagnostics == []
-	apply_ids = fn_ids_by_name.get("main::apply") or fn_ids_by_name.get("apply") or []
-	assert len(apply_ids) == 1
-	sig = sigs[apply_ids[0]]
-	assert sig.param_nonescaping == [True, False]
+	_func_hirs, _sigs, _fn_ids_by_name, _type_table, _exc_catalog, diagnostics = parse_drift_to_hir(src)
+	assert diagnostics
 
 
 def test_duplicate_function_definition_reports_diagnostic(tmp_path: Path) -> None:
