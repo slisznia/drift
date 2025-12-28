@@ -1,19 +1,24 @@
-module m
+module main
 
 exception A()
 exception B()
 
-fn main() returns Int {
+fn run() returns Int {
     try {
         try {
             throw A();
-        } catch m:A(a) {
+        } catch A(a) {
             print("inner");
             throw B();
         }
         print("UNREACHABLE");
-    } catch m:B(b) {
+    } catch B(b) {
         print("outer");
     }
+    return 0;
+}
+
+fn main() returns Int  nothrow{
+    try run() catch { return 0; }
     return 0;
 }

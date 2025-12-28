@@ -5,7 +5,7 @@ fn pick(a: &Int, b: &Int, c: Bool) returns &Int {
 	return b;
 }
 
-fn main() returns Int {
+fn main() returns Int  nothrow{
 	var x = 1;
 	var y = 2;
 	return *pick(&x, &y, true);

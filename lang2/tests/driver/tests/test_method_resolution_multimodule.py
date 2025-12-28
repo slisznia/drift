@@ -201,7 +201,7 @@ module m_main
 
 import m_box
 
-fn main() returns Int {
+fn main() returns Int  nothrow{
 	val b: m_box.Box<Int> = m_box.Box<type Int>(1);
 	return b.tag();
 }
@@ -252,7 +252,7 @@ import m_types
 import m_a
 import m_b
 
-fn main() returns Int {
+fn main() returns Int  nothrow{
 	val b: m_types.Box<Int> = m_types.Box<type Int>(1);
 	return b.tag();
 }
@@ -344,7 +344,7 @@ module m_main
 import m_types
 import m_a
 
-fn main() returns Int {
+fn main() returns Int  nothrow{
 	val b: m_types.Box<Int> = m_types.Box<type Int>(1);
 	return b.tag();
 }
@@ -388,7 +388,7 @@ implement m_box.Box<Int> {
 	pub fn tag(self: m_box.Box<Int>) returns Int { return 1; }
 }
 
-fn main() returns Int {
+fn main() returns Int  nothrow{
 	val b: m_box.Box<Int> = m_box.Box<type Int>(1);
 	return b.tag();
 }
@@ -429,7 +429,7 @@ module m_main
 import m_types
 import m_impl
 
-fn main() returns Int {
+fn main() returns Int  nothrow{
 	val b: m_types.Box<Int> = m_types.Box<type Int>(1);
 	return b.tag();
 }
@@ -502,7 +502,7 @@ module m_main
 import m_box
 import m_impl
 
-fn main() returns Int {
+fn main() returns Int  nothrow{
 	val b: m_box.Box<Array<Int>> = m_box.Box<type Array<Int>>([1, 2]);
 	return b.inner();
 }
@@ -606,7 +606,7 @@ module m_main
 import m_api
 import m_types
 
-fn main() returns Int {
+fn main() returns Int  nothrow{
 	val b: m_types.Box = m_types.Box(value = 1);
 	return b.tag();
 }

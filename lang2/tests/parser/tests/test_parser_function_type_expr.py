@@ -23,7 +23,7 @@ fn takes(f: fn(Int, String) returns Bool, g: fn(Int) returns Int nothrow) return
 	assert isinstance(g_ty, parser_ast.TypeExpr)
 	assert f_ty.name == "fn"
 	assert [a.name for a in f_ty.args] == ["Int", "String", "Bool"]
-	assert f_ty.fn_throws is None
+	assert f_ty.fn_throws is True
 	assert g_ty.name == "fn"
 	assert [a.name for a in g_ty.args] == ["Int", "Int"]
 	assert g_ty.fn_throws is False

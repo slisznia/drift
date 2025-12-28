@@ -1,0 +1,9 @@
+module main
+
+pub fn add(x: Int) returns Int nothrow {
+	return x + 1
+}
+
+fn main() returns Int nothrow {
+	return add(2)
+}

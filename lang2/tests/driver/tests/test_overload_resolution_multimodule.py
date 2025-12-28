@@ -127,7 +127,7 @@ module b
 
 import a
 
-fn main() returns Int {
+fn main() returns Int  nothrow{
     val r1: Int = a.f(1);
     val r2: Int = a.f("hi");
     return r1 + r2;

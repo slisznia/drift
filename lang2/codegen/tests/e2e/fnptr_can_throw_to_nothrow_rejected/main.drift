@@ -1,0 +1,12 @@
+module main
+
+exception Boom()
+
+fn boom(x: Int) returns Int {
+	throw Boom()
+}
+
+fn main() returns Int nothrow {
+	val fp: fn(Int) returns Int nothrow = boom
+	return 0
+}

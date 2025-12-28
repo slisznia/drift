@@ -11,6 +11,15 @@ stay in sync as the language evolves.
 from lang2.driftc.core.types_core import TypeId, TypeKind, TypeParamId, TypeTable
 
 
+def _raw_can_throw(raw: object) -> bool:
+	if hasattr(raw, "can_throw") and callable(getattr(raw, "can_throw")):
+		return bool(raw.can_throw())
+	val = getattr(raw, "fn_throws", True)
+	if val is None:
+		raise TypeError("fn_throws must be bool when provided")
+	return bool(val)
+
+
 def resolve_opaque_type(
 	raw: object,
 	table: TypeTable,
@@ -90,9 +99,7 @@ def resolve_opaque_type(
 				for a in list(args[:-1])
 			]
 			ret_id = resolve_opaque_type(args[-1], table, module_id=origin_mod, type_params=type_params)
-			can_throw = True
-			if getattr(raw, "fn_throws", None) is False:
-				can_throw = False
+			can_throw = _raw_can_throw(raw)
 			return table.ensure_function("fn", param_ids, ret_id, can_throw=can_throw)
 		if name == "Array":
 			elem = resolve_opaque_type(args[0] if args else None, table, module_id=origin_mod, type_params=type_params)

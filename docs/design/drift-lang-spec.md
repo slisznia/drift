@@ -57,9 +57,10 @@ Drift expressions largely follow a C-style surface with explicit ownership rules
 - String concatenation uses `+`
 - String byte length is exposed via `byte_length(s: String) -> Uint` (UTF‑8 code units, not characters); a future `char_length` may count user-visible characters.
 - Empty strings may be written as `""` or `String.EMPTY`. A convenience helper `is_empty(s: String) -> Bool` checks `byte_length(s) == 0`.
-- Program entry (v1): exactly one `main` function, returning `Int`, with one of two signatures:
-  - `fn main() returns Int`
-  - `fn main(argv: Array<String>) returns Int` (argv includes the program name at index 0). The runtime builds `argv` and calls this `main`; no drift_main indirection in user code.
+- Program entry (v1): exactly one `main` function, returning `Int`, **declared `nothrow`**, with one of two signatures:
+  - `fn main() returns Int nothrow`
+  - `fn main(argv: Array<String>) returns Int nothrow` (argv includes the program name at index 0). The runtime builds `argv` and calls this `main`; no drift_main indirection in user code.
+  - `main` is only allowed in the **root package**; dependency packages must not define a `main`.
 
 ### 2.x. Receiver placeholder (`.foo`, `.foo(...)`)
 
@@ -212,7 +213,7 @@ val greeting = "hello"
 
 /* Multi-line
    block comment */
-fn main() returns Void { ... }
+fn example() returns Void { ... }
 ```
 
 Block comments may span multiple lines but do not nest. Comments are ignored by the parser, so indentation/terminator rules treat them as whitespace.
@@ -610,7 +611,7 @@ fn open(name: String) returns File {
     return move f        // move to caller
 }
 
-fn main() returns Void {
+fn example() returns Void {
     var f = open("log.txt")
 }
 ```
@@ -1706,7 +1707,9 @@ val routed = try parse(input) catch BadFormat(e) { 0 } catch { 1 }
 - Catch forms:
   - `catch { block }` — catch-all, no binder.
   - `catch e { block }` — catch-all, binder `e: Error`.
-  - `catch EventName(e) { block }` — match specific event, binder `e: Error`.
+  - `catch EventName(e) { block }` — match a specific event in the **current module**, binder `e: Error`.
+  - `catch mod:EventName(e) { block }` — match a specific event from module `mod`, binder `e: Error`.
+  - Unqualified event names resolve **only** to the current module (imports are not searched).
 - Multiple catch arms are allowed; event arms are tested in source order, then catch-all; if no arm matches and there is no catch-all, the error is rethrown.
 - Catch blocks in expression form may **not** contain `return`, `break`, `continue`, or `rethrow`; they must evaluate to a value whose type matches the attempt. Violation diagnostic: **E-TRYEXPR-CONTROLFLOW** (“control-flow statement not allowed in try-expression catch block; use statement try { ... } catch { ... } instead”).
 - Event identity is by event name in source; lowering compares deterministic `event_code` constants derived from the fully-qualified event name (§14.1.1). The runtime never matches on strings.
@@ -1726,13 +1729,14 @@ try {
 - Executes the body; on error, transfers control to the first matching catch (event match or catch-all).
 - Catch binder (if present) has type `Error`.
 - Matching is by exception/event name only; omitting the name makes the clause a catch-all. Domains/attributes are not matched (yet).
+- Event names may be unqualified (`EventName`) for the current module or module-qualified (`mod:EventName`). Unqualified names do not search imports.
 - Multiple catches are allowed; event-specific arms are evaluated in source order, then catch-all. If no arm matches and there is no catch-all, the error is rethrown to the caller.
 - Control falls through after the try/catch unless all branches return/raise.
 
 ## 9. Reserved keywords and operators
 
 Keywords and literals are reserved and cannot be used as identifiers (functions, variables, modules, structs, exceptions, etc.):  
-`fn`, `val`, `var`, `returns`, `if`, `else`, `while`, `break`, `continue`, `try`, `catch`, `throw`, `raise`, `return`, `exception`, `import`, `module`, `implement`, `pub`, `type`, `cast`, `true`, `false`, `not`, `and`, `or`, plus language/FFI/legacy keywords (`auto`, `pragma`, `bool`, `int`, `float`, `string`, `void`, `abstract`, `assert`, `boolean`, `byte`, `case`, `char`, `class`, `const`, `default`, `do`, `double`, `enum`, `extends`, `final`, `finally`, `for`, `goto`, `instanceof`, `interface`, `long`, `native`, `new`, `package`, `private`, `protected`, `public`, `short`, `static`, `strictfp`, `super`, `switch`, `synchronized`, `this`, `throws`, `transient`, `volatile`).
+`fn`, `val`, `var`, `returns`, `nothrow`, `if`, `else`, `while`, `break`, `continue`, `try`, `catch`, `throw`, `raise`, `return`, `exception`, `import`, `module`, `implement`, `pub`, `type`, `cast`, `true`, `false`, `not`, `and`, `or`, plus language/FFI/legacy keywords (`auto`, `pragma`, `bool`, `int`, `float`, `string`, `void`, `abstract`, `assert`, `boolean`, `byte`, `case`, `char`, `class`, `const`, `default`, `do`, `double`, `enum`, `extends`, `final`, `finally`, `for`, `goto`, `instanceof`, `interface`, `long`, `native`, `new`, `package`, `private`, `protected`, `public`, `short`, `static`, `strictfp`, `super`, `switch`, `synchronized`, `this`, `throws`, `transient`, `volatile`).
 
 **Operator tokens (reserved):** `+`, `-`, `*`, `/`, `%`, `==`, `!=`, `<`, `<=`, `>`, `>=`, `and`, `or`, `not`, `? :`, `|>` (pipeline), `<<`, `>>`, indexing brackets `[]`, and member access `.`. These participate in precedence/associativity rules; identifiers cannot reuse them.
 
@@ -2005,7 +2009,7 @@ fn ship(o: Order) returns Void {
     println("shipping " + o.sku + " id=" + o.id)
 }
 
-fn main() returns Void {
+fn example() returns Void {
     val maybe_order = find_order(42)
 
     match maybe_order {
@@ -2024,7 +2028,7 @@ Helper methods/combinators on `Optional<T>` (e.g. `is_some`, `unwrap_or`) are ex
 `lang.array` is the standard module for homogeneous sequences. It exposes the generic type `Array<T>` plus builder helpers and the binary-centric `ByteBuffer`. `Array` is always in scope for type annotations, so you can write:
 
 ```drift
-fn main() returns Void {
+fn example() returns Void {
     val names: Array<String> = ["Bob", "Alice", "Ada"]
     println("names ready")
 }
@@ -2257,7 +2261,7 @@ implement<K, V> FromMapLiteral<K, V> for Map<K, V> {
 This keeps “hello world” code terse:
 
 ```drift
-fn main() returns Int {
+fn main() returns Int nothrow {
     println("hello, world")
     return 0
 }
@@ -2548,7 +2552,7 @@ Unwinding, when used, is an **implementation strategy only** and must preserve t
 
 Drift distinguishes **can-throw** functions from **non-throwing** ones and enforces the contract statically:
 
-- **Can-throw is an effect, not a type.** Surface signatures remain `fn f(...) returns T`. A function is considered can-throw when its body may throw (via `throw`/`rethrow` or uncaught calls to other can-throw functions). Future annotations (e.g. `nothrow`) may constrain this.
+- **Can-throw is an effect, not a type.** Surface signatures remain `fn f(...) returns T`. A function is considered can-throw when its body may throw (via `throw`/`rethrow` or uncaught calls to other can-throw functions). A function may be declared **nothrow** with `fn f(...) returns T nothrow { ... }`; this is a compile-time constraint that forbids escaping throws.
 - **Non-throwing invariants.** A non-throwing function must not use `throw`/`raise`/`rethrow`, must not construct an `Error`, and must not allow an exception to escape. It may call can-throw functions only if it handles failures locally (e.g., via `try/catch`) and still returns a plain `T`. Violations are compile-time errors tied to the source span of the offending statement/expression.
 - **Can-throw invariants.** A can-throw function may throw and may call other can-throw functions without local handling; exceptions propagate to the nearest enclosing `try/catch` or to the caller.
 - **ABI clarity.** The compiler lowers can-throw functions to the internal `Result<T, Error>` calling convention for codegen/ABI purposes (not a surface-level type). Non-throwing functions use plain returns internally; exported functions always use the `Result<T, Error>` ABI at module boundaries. Mixing conventions within a single call boundary is rejected rather than silently coerced.

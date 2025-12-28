@@ -1,0 +1,6 @@
+{
+  "phase": "parser",
+  "exit_code": 1,
+  "stdout": "",
+  "stderr": "entrypoint main has invalid signature; expected main() or main(argv: Array<String>)"
+}

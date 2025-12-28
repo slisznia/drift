@@ -644,7 +644,9 @@ class AstToHIR:
 		for arm in expr.catch_arms:
 			event_fqn = arm.event
 			if event_fqn is not None and ":" not in event_fqn:
-				raise NotImplementedError("catch event must be a fully-qualified name (<module>:<Event>)")
+				if not self._module_name:
+					raise NotImplementedError("catch event requires a module name to build an event FQN")
+				event_fqn = f"{self._module_name}:{event_fqn}"
 			# Split arm body: all but last statement into the block, last expr (if any)
 			# becomes the arm result.
 			arm_result: Optional[H.HExpr] = None
@@ -922,9 +924,9 @@ class AstToHIR:
 			event_name = arm.event
 			event_fqn = event_name if event_name is not None else None
 			if event_fqn is not None and ":" not in event_fqn:
-				raise NotImplementedError(
-					"catch event must be a fully-qualified name (<module>:<Event>)"
-				)
+				if not self._module_name:
+					raise NotImplementedError("catch event requires a module name to build an event FQN")
+				event_fqn = f"{self._module_name}:{event_fqn}"
 			binder = arm.binder
 			handler_block = self.lower_block(arm.block)
 			catch_loc = Span.from_loc(arm.loc)
@@ -947,7 +949,9 @@ class AstToHIR:
 		for arm in expr.catch_arms:
 			event_fqn = arm.event
 			if event_fqn is not None and ":" not in event_fqn:
-				raise NotImplementedError("catch event must be a fully-qualified name (<module>:<Event>)")
+				if not self._module_name:
+					raise NotImplementedError("catch event requires a module name to build an event FQN")
+				event_fqn = f"{self._module_name}:{event_fqn}"
 			binder = arm.binder
 			handler_block = self.lower_block(arm.block)
 			catch_loc = Span.from_loc(arm.loc)

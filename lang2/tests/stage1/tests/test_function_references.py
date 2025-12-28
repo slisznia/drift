@@ -12,7 +12,7 @@ from lang2.driftc.type_checker import TypeChecker
 def _fn_type_expr(param_names: list[str], ret_name: str, *, nothrow: bool | None = None) -> TypeExpr:
 	args = [TypeExpr(name=p) for p in param_names]
 	args.append(TypeExpr(name=ret_name))
-	return TypeExpr(name="fn", args=args, fn_throws=(False if nothrow else None))
+	return TypeExpr(name="fn", args=args, fn_throws=(not bool(nothrow)))
 
 
 def test_typed_function_reference_emits_fnptr_const() -> None:

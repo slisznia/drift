@@ -48,7 +48,7 @@ Item         ::= PubItem | FnDef | ConstDef | StructDef | ExceptionDef | Variant
 PubItem      ::= "pub" (FnDef | ConstDef | StructDef | ExceptionDef | VariantDef | TraitDef | ImplementDef)
 
 ConstDef     ::= "const" NAME ":" Ty "=" Expr TERMINATOR
-FnDef        ::= "fn" Ident TypeParams? "(" Params? ")" ReturnSig RequireClause? Block
+FnDef        ::= "fn" Ident TypeParams? "(" Params? ")" ReturnSig "nothrow"? RequireClause? Block
 ReturnSig    ::= "returns" Ty
 Params       ::= Param ("," Param)*
 Param        ::= Ident ":" Ty

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from lang2.driftc.core.type_resolve_common import resolve_opaque_type
 from lang2.driftc.core.generic_type_expr import GenericTypeExpr
 from lang2.driftc.core.types_core import (
@@ -96,3 +98,14 @@ def test_resolve_function_type_interning_and_throw_mode():
 	assert t1 != t3
 	assert table.get(t1).fn_throws is False
 	assert table.get(t3).fn_throws is True
+
+
+def test_resolve_opaque_type_rejects_none_fn_throws():
+	class _RawFn:
+		def __init__(self):
+			self.name = "fn"
+			self.args = [TypeExpr(name="Int")]
+			self.fn_throws = None
+
+	with pytest.raises(TypeError):
+		resolve_opaque_type(_RawFn(), TypeTable())

@@ -62,8 +62,7 @@ def apply_subst(type_id: TypeId, subst: Subst, table: TypeTable) -> TypeId:
 	if td.kind is TypeKind.FUNCTION:
 		if not new_params:
 			return type_id
-		can_throw = td.fn_throws if td.fn_throws is not None else True
-		return table.ensure_function(td.name, new_params[:-1], new_params[-1], can_throw=bool(can_throw))
+		return table.ensure_function(td.name, new_params[:-1], new_params[-1], can_throw=td.can_throw())
 	if td.kind is TypeKind.VARIANT:
 		if td.param_types:
 			base = table.get_variant_base(module_id=td.module_id or "", name=td.name)

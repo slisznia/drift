@@ -135,7 +135,7 @@ implement Show for Int {
 
 pub struct Box<T> require T is main.Show { value: T }
 
-fn main() returns Int {
+fn main() returns Int  nothrow{
 	val b: Box<Int> = Box<type Int>(1);
 	return 0;
 }
@@ -158,7 +158,7 @@ implement Show for Int {
 
 pub struct Box<T> require T is main.Show { value: T }
 
-fn main() returns Int {
+fn main() returns Int  nothrow{
 	val b: Box<String> = Box<type String>("s");
 	return 0;
 }
@@ -186,7 +186,7 @@ implement<T> Hashable for Box<T> require T is Hashable {
 	pub fn hash(self: Box<T>) returns Int { return 1; }
 }
 
-fn main() returns Int {
+fn main() returns Int  nothrow{
 	val b: Box<String> = Box<type String>("s");
 	return Hashable::hash(b);
 }

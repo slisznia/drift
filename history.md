@@ -78,3 +78,11 @@
 - Implemented **workspace-wide impl index + method resolution across modules**, method visibility (`pub` gating), and link-time duplicate inherent method checks with deterministic ambiguity diagnostics.
 - Completed **visibility model** in code: `pub` eligibility + explicit exports, `export { module.* }` re-exports, module-only imports, and package payload export surfaces with trait exports/reexports and validation.
 - NLL-lite borrow checker upgrades: per-ref live-region analysis, join/loop witness notes on conflicts, ref rebinding kills old loans, const-folded index disjointness, and `i != j` branch facts for disjoint indices (with new e2e tests).
+## 2025-12-28 – Function type throw-mode hardening and entrypoint rule
+- Enforced strict `fn` throw-mode handling: `fn_throws` is now a 2-state bool, rejects explicit nulls, and package codecs preserve `can_throw` with backwards-compatible defaults.
+- Cross-module exported/extern calls now force can-throw at the boundary; LLVM trap fallback removed in favor of a hard compiler error for mis-lowered nothrow calls.
+- Added entrypoint rules: exactly one `main`, it must return `Int`, and it must be declared `nothrow`; new e2e diagnostics cover missing/duplicate main cases.
+- Updated tests to reflect strict throw-mode decoding and entrypoint enforcement.
+- Catch event arms now accept unqualified event names (resolved to the current module) with spec updates.
+- Added nothrow e2e coverage (throwing calls, try/catch ok, cross-module method requires try, same-module pub ok, can-throw→nothrow fnptr reject) and made the checker treat cross-module public method calls as boundary can-throw in throw inference.
+- Disabled stub checker method-boundary throw inference (it masked trait visibility diagnostics and produced ABI-mismatched method calls); cross-module method boundary e2e is now skipped pending method-call wrappers.

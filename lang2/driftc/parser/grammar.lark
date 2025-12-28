@@ -136,7 +136,7 @@ pub_item: PUB (func_def | const_def | struct_def | exception_def | variant_def |
 # - consts are values (not types) and may be exported/imported like functions.
 const_def: CONST NAME COLON type_expr EQUAL expr TERMINATOR
 
-func_def: "fn" ident type_params? "(" [params] ")" return_sig require_clause? block
+func_def: "fn" ident type_params? "(" [params] ")" return_sig NOTHROW? require_clause? block
 return_sig: RETURNS type_expr
 
 params: param (COMMA param)*
@@ -208,6 +208,7 @@ simple_stmt: let_stmt
 try_stmt.2: TRY (block | expr) terminator_opt catch_clause (terminator_opt catch_clause)* terminator_opt
 catch_clause: CATCH catch_pattern block
 catch_pattern: event_fqn "(" ident ")"   -> catch_event
+             | ident "(" ident ")"      -> catch_event_unqualified
              | ident                     -> catch_all
              |                          -> catch_all_empty
 
@@ -335,6 +336,7 @@ match_arm_body: value_block
 
 try_catch_expr.1: TRY expr (CATCH catch_expr_arm)+
 catch_expr_arm: event_fqn "(" ident ")" value_block   -> catch_expr_event
+              | ident "(" ident ")" value_block       -> catch_expr_event_unqualified
               | ident value_block                     -> catch_expr_binder
               | value_block                          -> catch_expr_block
 ternary: pipeline QMARK expr COLON expr

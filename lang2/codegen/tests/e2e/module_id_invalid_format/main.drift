@@ -1,2 +1,2 @@
 module foo__bar
-fn main() returns Int { return 0; }
+fn main() returns Int  nothrow{ return 0; }

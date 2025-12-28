@@ -125,7 +125,9 @@ def resolve_program_signatures(
 
 		throws = _throws_from_decl(decl)
 		declared_can_throw = True if throws else None
-		if declared_can_throw is None and ret_def.kind is TypeKind.FNRESULT:
+		if bool(getattr(decl, "declared_nothrow", False)):
+			declared_can_throw = False
+		elif declared_can_throw is None and ret_def.kind is TypeKind.FNRESULT:
 			declared_can_throw = True
 
 		is_method = bool(getattr(decl, "is_method", False))

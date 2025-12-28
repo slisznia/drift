@@ -1,11 +1,13 @@
-module m
+module main
 
 exception E(n: Int, s: String, b: Bool)
 
-fn main() returns Int {
-    try {
-        throw E(n = 1, s = "x", b = false);
-    } catch err {
+fn fail() returns Int {
+	throw E(n = 1, s = "x", b = false);
+}
+
+fn main() returns Int  nothrow{
+    try fail() catch err {
         print("ok");
     }
     return 0;

@@ -1,5 +1,9 @@
-module m
+module main
 
-fn main() returns Int {
+fn bad() returns Int {
     rethrow
+}
+
+fn main() returns Int nothrow {
+    return 0;
 }

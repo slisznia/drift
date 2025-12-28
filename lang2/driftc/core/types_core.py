@@ -9,7 +9,7 @@ small and extensible; TypeDef carries kind/name/params for inspection.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum, auto
 from typing import Dict, List
 
@@ -76,8 +76,26 @@ class TypeDef:
 	# named types). Builtins use module_id=None.
 	module_id: str | None = None
 	ref_mut: bool | None = None  # only meaningful for TypeKind.REF
-	fn_throws: bool | None = None  # only meaningful for TypeKind.FUNCTION
+	fn_throws: bool = True  # only meaningful for TypeKind.FUNCTION
 	field_names: List[str] | None = None  # only meaningful for TypeKind.STRUCT
+
+	def fn_throws_raw(self) -> bool | None:
+		"""Return the raw throw marker for serialization/debugging."""
+		if self.kind is not TypeKind.FUNCTION:
+			return None
+		return bool(self.fn_throws)
+
+	def can_throw(self) -> bool:
+		"""Return True if the function type can throw."""
+		if self.kind is not TypeKind.FUNCTION:
+			return False
+		return bool(self.fn_throws)
+
+	def with_can_throw(self, can_throw: bool) -> "TypeDef":
+		"""Return a copy with the function throw-mode updated."""
+		if self.kind is not TypeKind.FUNCTION:
+			return self
+		return replace(self, fn_throws=bool(can_throw))
 
 
 @dataclass(frozen=True)
@@ -897,7 +915,7 @@ class TypeTable:
 		name: str,
 		params: List[TypeId],
 		ref_mut: bool | None = None,
-		fn_throws: bool | None = None,
+		fn_throws: bool = True,
 		field_names: List[str] | None = None,
 		type_param_id: TypeParamId | None = None,
 		*,
@@ -913,7 +931,7 @@ class TypeTable:
 			type_param_id=type_param_id if kind is TypeKind.TYPEVAR else None,
 			module_id=module_id,
 			ref_mut=ref_mut if kind is TypeKind.REF else None,
-			fn_throws=fn_throws if kind is TypeKind.FUNCTION else None,
+			fn_throws=bool(fn_throws) if kind is TypeKind.FUNCTION else False,
 			field_names=list(field_names) if field_names is not None else None,
 		)
 		if register_named is None:

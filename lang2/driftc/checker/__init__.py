@@ -346,6 +346,7 @@ class Checker:
 		# function non-throwing and emit a diagnostic when inference finds an
 		# escaping throw.
 		first_throw_span_by_fn: dict[str, Span] = {}
+		first_throw_note_by_fn: dict[str, str] = {}
 		changed = True
 		while changed:
 			changed = False
@@ -353,8 +354,10 @@ class Checker:
 				info = fn_infos.get(fn_name)
 				if info is None:
 					continue
-				may_throw, throw_span = self._function_may_throw(hir_block, fn_infos)
+				may_throw, throw_span, throw_note = self._function_may_throw(hir_block, fn_infos, fn_name)
 				first_throw_span_by_fn.setdefault(fn_name, throw_span)
+				if throw_note:
+					first_throw_note_by_fn.setdefault(fn_name, throw_note)
 				info.inferred_may_throw = may_throw
 				explicit = info.signature.declared_can_throw if info.signature is not None else None
 				# Legacy test shim: `declared_can_throw` map is treated as an explicit
@@ -376,11 +379,16 @@ class Checker:
 			if fn_name in self._declared_map:
 				explicit = bool(self._declared_map[fn_name])
 			if explicit is False and info.inferred_may_throw:
+				notes: list[str] | None = None
+				note = first_throw_note_by_fn.get(fn_name)
+				if note:
+					notes = [note]
 				diagnostics.append(
 					Diagnostic(
 						message=f"function {fn_name} is declared nothrow but may throw",
 						severity="error",
 						span=first_throw_span_by_fn.get(fn_name, Span()),
+						notes=notes,
 					)
 				)
 
@@ -442,7 +450,23 @@ class Checker:
 			return True
 		return info.inferred_may_throw
 
-	def _function_may_throw(self, block: "H.HBlock", fn_infos: Mapping[str, FnInfo]) -> tuple[bool, Span]:  # type: ignore[name-defined]
+	def _module_for_symbol(self, name: str) -> str:
+		base = name
+		if "#" in base:
+			base = base.split("#", 1)[0]
+		if "::" in base:
+			return base.split("::", 1)[0]
+		return "main"
+
+	def _is_boundary_call(self, callee_name: str, caller_name: str, fn_infos: Mapping[str, FnInfo]) -> bool:
+		info = fn_infos.get(callee_name)
+		if info is None or info.signature is None:
+			return False
+		if not (info.signature.is_exported_entrypoint or info.signature.is_extern):
+			return False
+		return self._module_for_symbol(callee_name) != self._module_for_symbol(caller_name)
+
+	def _function_may_throw(self, block: "H.HBlock", fn_infos: Mapping[str, FnInfo], current_fn: str) -> tuple[bool, Span, str | None]:  # type: ignore[name-defined]
 		"""
 		Walk a HIR block and conservatively decide if it may throw.
 
@@ -453,15 +477,23 @@ class Checker:
 		from lang2.driftc import stage1 as H
 		may_throw = False
 		first_span: Span | None = None
+		first_note: str | None = None
 
 		def walk_expr(expr: H.HExpr, caught_events: set[str] | None, catch_all: bool) -> None:
 			nonlocal may_throw
 			nonlocal first_span
+			nonlocal first_note
 			if isinstance(expr, H.HCall):
 				if isinstance(expr.fn, H.HVar):
 					if catch_all:
 						# Catch-all in scope handles any propagated throw from this call.
 						pass
+					elif self._is_boundary_call(expr.fn.name, current_fn, fn_infos):
+						may_throw = True
+						if first_span is None:
+							first_span = Span.from_loc(getattr(expr, "loc", None))
+						if first_note is None:
+							first_note = "cross-module call to exported/extern requires can-throw calling convention"
 					elif self._call_may_throw(expr.fn.name, fn_infos):
 						may_throw = True
 						if first_span is None:
@@ -475,12 +507,8 @@ class Checker:
 				# callee identity for throw inference. This is conservative but keeps
 				# try-expr and try-stmt effect inference coherent even before method
 				# resolution is fully wired.
-				if catch_all:
-					pass
-				elif self._call_may_throw(expr.method_name, fn_infos):
-					may_throw = True
-					if first_span is None:
-						first_span = Span.from_loc(getattr(expr, "loc", None))
+				# NOTE: The stub checker cannot resolve method targets yet. Avoid
+				# name-based throw inference to prevent false positives/negatives.
 				walk_expr(expr.receiver, caught_events, catch_all)
 				for arg in expr.args:
 					walk_expr(arg, caught_events, catch_all)
@@ -584,7 +612,7 @@ class Checker:
 			# other statements: continue
 
 		walk_block(block)
-		return may_throw, (first_span or Span())
+		return may_throw, (first_span or Span()), first_note
 
 	@dataclass
 	class _TypingContext:
@@ -2093,6 +2121,7 @@ class Checker:
 			ResultOk,
 			ResultErr,
 			Call,
+			CallIndirect,
 			ConstInt,
 			ConstBool,
 			ConstString,
@@ -2335,6 +2364,18 @@ class Checker:
 											continue
 								else:
 									dest_ty = self._unknown_type
+								if value_types.get((fn_name, dest)) != dest_ty:
+									value_types[(fn_name, dest)] = dest_ty
+									changed = True
+							elif isinstance(instr, CallIndirect) and dest is not None:
+								if instr.can_throw:
+									ok_ty = instr.user_ret_type or self._unknown_type
+									err_ty = self._error_type
+									dest_ty = self._type_table.ensure_fnresult(ok_ty, err_ty)
+								else:
+									dest_ty = instr.user_ret_type or self._unknown_type
+									if is_void_tid(dest_ty):
+										continue
 								if value_types.get((fn_name, dest)) != dest_ty:
 									value_types[(fn_name, dest)] = dest_ty
 									changed = True

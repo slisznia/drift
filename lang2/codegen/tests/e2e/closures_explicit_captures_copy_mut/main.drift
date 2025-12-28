@@ -5,7 +5,7 @@ fn bump(p: &mut Int, by: Int) returns Int {
 	return *p;
 }
 
-fn main() returns Int {
+fn main() returns Int  nothrow{
 	var x = 5;
 	val i = 2;
 	return (| | captures(copy i, &mut x) => { return bump(x, i); })();

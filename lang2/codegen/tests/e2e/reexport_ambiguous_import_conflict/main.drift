@@ -2,4 +2,4 @@ module main
 import b as b
 
 
-fn main() returns Int { return b.foo(); }
+fn main() returns Int  nothrow{ return b.foo(); }

@@ -1,0 +1,5 @@
+module main
+
+fn main() returns Int nothrow {
+	return 1;
+}

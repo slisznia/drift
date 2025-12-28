@@ -1,0 +1,7 @@
+{
+  "exit_code": 1,
+  "module_paths": ["."],
+  "diagnostics": [
+    { "phase": "typecheck", "message_contains": "declared nothrow but may throw" }
+  ]
+}

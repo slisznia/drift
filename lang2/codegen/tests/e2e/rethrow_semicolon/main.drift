@@ -1,8 +1,8 @@
-module m
+module main
 
 exception E()
 
-fn main() returns Int {
+fn run() returns Int {
     try {
         try {
             throw E();
@@ -12,5 +12,10 @@ fn main() returns Int {
     } catch err {
         print("ok");
     }
+    return 0;
+}
+
+fn main() returns Int  nothrow{
+    try run() catch { return 0; }
     return 0;
 }

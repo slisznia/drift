@@ -1,6 +1,6 @@
 module m
 
-fn main() returns Int {
+fn main() returns Int  nothrow{
 	var x = 1;
 	return (| | captures(x) => { x += 1; return 0; })();
 }

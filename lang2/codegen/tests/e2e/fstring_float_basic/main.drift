@@ -1,6 +1,6 @@
 module m
 
-fn main() returns Int {
+fn main() returns Int  nothrow{
 	val i = 10
 	val b = true
 	val s = "x"

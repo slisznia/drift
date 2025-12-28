@@ -1,6 +1,6 @@
 module m
 
-fn main() returns Int {
+fn main() returns Int  nothrow{
 	// Uint can be introduced via a type annotation; the literal initializer is
 	// accepted in MVP to make Uint usable without casts.
 	var x: Uint = 6

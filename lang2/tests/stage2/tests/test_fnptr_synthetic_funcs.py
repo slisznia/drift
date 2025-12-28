@@ -12,7 +12,7 @@ from lang2.driftc.parser.ast import TypeExpr
 def _fn_type_expr(param_names: list[str], ret_name: str, *, nothrow: bool | None = None) -> TypeExpr:
 	args = [TypeExpr(name=p) for p in param_names]
 	args.append(TypeExpr(name=ret_name))
-	return TypeExpr(name="fn", args=args, fn_throws=(False if nothrow else None))
+	return TypeExpr(name="fn", args=args, fn_throws=(not bool(nothrow)))
 
 
 def test_thunk_ok_wrap_function_is_emitted() -> None:

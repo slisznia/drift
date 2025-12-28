@@ -1,11 +1,13 @@
-module m
+module main
 
 exception E()
 
-fn main() returns Int {
-    try {
-        throw E();
-    } catch {
+fn fail() returns Int {
+	throw E();
+}
+
+fn main() returns Int  nothrow{
+    try fail() catch {
         print("handled");
     }
     return 0;

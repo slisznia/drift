@@ -1,0 +1,25 @@
+module main
+
+exception Boom()
+
+fn pick(f: fn(Int) returns Int nothrow) returns Int nothrow {
+	return 1
+}
+
+fn pick(f: fn(Int) returns Int) returns Int nothrow {
+	return 2
+}
+
+fn add1(x: Int) returns Int nothrow {
+	return x + 1
+}
+
+fn boom(x: Int) returns Int {
+	throw Boom()
+}
+
+fn main() returns Int nothrow {
+	val a = pick(cast<fn(Int) returns Int nothrow>(add1))
+	val b = pick(cast<fn(Int) returns Int>(boom))
+	return a + b
+}

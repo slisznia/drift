@@ -207,6 +207,8 @@ def encode_type_expr(
 	out: dict[str, Any] = {"name": name}
 	if module_id:
 		out["module"] = module_id
+	if name == "fn":
+		out["can_throw"] = bool(expr.can_throw())
 	if args_obj:
 		out["args"] = args_obj
 	return out
@@ -238,7 +240,23 @@ def decode_type_expr(obj: Any) -> parser_ast.TypeExpr | None:
 			if arg is None:
 				return None
 			args.append(arg)
-	return parser_ast.TypeExpr(name=name, args=args, module_alias=None, module_id=module_id, loc=None)
+	fn_throws = False
+	if name == "fn":
+		if "can_throw" in obj:
+			can_throw = obj.get("can_throw")
+			if can_throw is None or not isinstance(can_throw, bool):
+				return None
+			fn_throws = bool(can_throw)
+		else:
+			fn_throws = True
+	return parser_ast.TypeExpr(
+		name=name,
+		args=args,
+		fn_throws=fn_throws,
+		module_alias=None,
+		module_id=module_id,
+		loc=None,
+	)
 
 
 def encode_trait_expr(
@@ -327,7 +345,7 @@ def encode_type_table(table: TypeTable) -> dict[str, Any]:
 			"param_types": list(td.param_types),
 			"module_id": td.module_id,
 			"ref_mut": td.ref_mut,
-			"fn_throws": td.fn_throws,
+			"fn_throws": td.fn_throws_raw(),
 			"field_names": list(td.field_names) if td.field_names is not None else None,
 		}
 
@@ -337,7 +355,7 @@ def encode_type_table(table: TypeTable) -> dict[str, Any]:
 			"args": [_encode_generic_type_expr(a) for a in expr.args],
 			"param_index": expr.param_index,
 			"module_id": expr.module_id,
-			"fn_throws": expr.fn_throws,
+			"fn_throws": expr.fn_throws_raw(),
 		}
 
 	def _encode_variant_schema(schema: Any) -> dict[str, Any]:

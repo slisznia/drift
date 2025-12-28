@@ -4,4 +4,4 @@ import lib as lib
 fn lib.add() returns Int { return 0; }
 
 
-fn main() returns Int { return lib.add(); }
+fn main() returns Int  nothrow{ return lib.add(); }

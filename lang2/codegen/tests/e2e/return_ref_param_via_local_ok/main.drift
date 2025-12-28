@@ -3,7 +3,7 @@ fn id(p: &Int) returns &Int {
 	return r;
 }
 
-fn main() returns Int {
+fn main() returns Int  nothrow{
 	var x = 9;
 	return *id(&x);
 }

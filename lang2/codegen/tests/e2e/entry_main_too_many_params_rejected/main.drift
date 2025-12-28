@@ -1,0 +1,5 @@
+module main
+
+fn main(a: Int, b: Int) returns Int nothrow {
+	return a + b;
+}

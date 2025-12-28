@@ -1,0 +1,5 @@
+module main
+
+fn helper() returns Int nothrow {
+	return 0;
+}

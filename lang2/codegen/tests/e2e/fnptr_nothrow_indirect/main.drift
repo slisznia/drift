@@ -1,0 +1,11 @@
+module main
+
+fn add1(x: Int) returns Int nothrow {
+	return x + 1;
+}
+
+fn main() returns Int  nothrow{
+	val fp: fn(Int) returns Int nothrow = add1;
+	val y = fp(3);
+	return y;
+}

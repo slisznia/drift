@@ -5,7 +5,7 @@ fn bad(p: &Point) returns Void {
 	*rx = *rx + 1;
 }
 
-fn main() returns Int {
+fn main() returns Int  nothrow{
 	var p = Point(0, 0);
 	bad(&p);
 	return 0;

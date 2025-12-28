@@ -1,0 +1,7 @@
+module a
+
+export { id }
+
+pub fn id(x: Int) returns Int nothrow {
+	return x;
+}

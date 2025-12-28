@@ -15,7 +15,7 @@ implement Point {
 	}
 }
 
-fn main() returns Int {
+fn main() returns Int  nothrow{
 	var p: Point = Point(1)
 	return p.bump_and_sum()
 }

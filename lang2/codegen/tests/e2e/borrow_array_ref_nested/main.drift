@@ -3,7 +3,7 @@ fn bump_first(a: &mut Array<Int>) returns Void {
 	*p = *p + 1;
 }
 
-fn main() returns Int {
+fn main() returns Int  nothrow{
 	var arr = [1, 2];
 	bump_first(&mut arr);
 	return arr[0];

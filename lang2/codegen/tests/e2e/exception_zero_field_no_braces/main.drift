@@ -1,11 +1,13 @@
-module m
+module main
 
 exception Timeout()
 
-fn main() returns Int {
-    try {
-        throw Timeout();
-    } catch err {
+fn fail() returns Int {
+	throw Timeout();
+}
+
+fn main() returns Int  nothrow{
+    try fail() catch err {
         // handled
     }
     return 0;

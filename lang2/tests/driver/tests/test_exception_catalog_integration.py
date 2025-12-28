@@ -25,14 +25,18 @@ def _compile_source(src: str, tmp_path: Path):
 def test_catch_unknown_event_reports_diagnostic(tmp_path: Path) -> None:
 	_, checked, _fn_ids_by_name = _compile_source(
 		"""
-module m
+module main
 
 exception Boom()
 
+fn boom() returns Int {
+    throw Boom();
+}
+
 fn main() returns Int {
     try {
-        throw Boom();
-    } catch m:Unknown(e) {
+        boom();
+    } catch Unknown(e) {
     }
     return 1;
 }
@@ -46,14 +50,18 @@ fn main() returns Int {
 def test_declared_exception_enables_catch(tmp_path: Path) -> None:
 	mir_funcs, checked, fn_ids_by_name = _compile_source(
 		"""
-module m
+module main
 
 exception Boom(msg: String)
 
+fn boom() returns Int {
+    throw Boom(msg = "boom");
+}
+
 fn main() returns Int {
     try {
-        throw Boom(msg = "boom");
-    } catch m:Boom(e) {
+        boom();
+    } catch Boom(e) {
         return 0;
     }
     return 1;

@@ -1,0 +1,9 @@
+module main
+
+import a as a
+
+fn main() returns Int nothrow {
+	var p: a.Point = a.Point(x = 1)
+	p.bump(1)
+	return p.x
+}

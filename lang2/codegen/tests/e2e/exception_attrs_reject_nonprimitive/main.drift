@@ -4,6 +4,6 @@ exception E(code: Int)
 
 fn mk() returns Int { return 5; }
 
-fn main() returns Int {
+fn main() returns Int  nothrow{
     throw E(code = mk());
 }

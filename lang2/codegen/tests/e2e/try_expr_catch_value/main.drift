@@ -6,7 +6,7 @@ fn foo() returns Int {
 	throw Boom();
 }
 
-fn main() returns Int {
+fn main() returns Int  nothrow{
 	val k = try foo() catch { 0 };
 	return k;
 }

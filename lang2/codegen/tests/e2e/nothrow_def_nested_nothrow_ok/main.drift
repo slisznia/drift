@@ -1,0 +1,13 @@
+module main
+
+fn inner() returns Int nothrow {
+	return 2;
+}
+
+fn outer() returns Int nothrow {
+	return inner();
+}
+
+fn main() returns Int nothrow {
+	return outer();
+}

@@ -1,12 +1,14 @@
-module m
+module main
 
 exception A()
 exception B()
 
-fn main() returns Int {
-    try {
-        throw A();
-    } catch m:A(e) {
+fn fail() returns Int {
+	throw A();
+}
+
+fn main() returns Int  nothrow{
+    try fail() catch A(e) {
         print("a");
     } catch {
         print("all");

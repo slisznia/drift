@@ -1,0 +1,15 @@
+module main
+
+exception Boom()
+
+fn boom() returns Int {
+	throw Boom();
+}
+
+fn bad() returns Int nothrow {
+	return boom();
+}
+
+fn main() returns Int nothrow {
+	return 0;
+}

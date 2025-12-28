@@ -1,0 +1,6 @@
+{
+  "phase": "parser",
+  "exit_code": 1,
+  "stdout": "",
+  "stderr": "entrypoint main must be declared nothrow (uncaught exceptions are not supported yet)"
+}

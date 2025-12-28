@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from cryptography.hazmat.primitives import serialization
 
 from lang2.drift.crypto import compute_ed25519_kid
 
@@ -16,6 +17,12 @@ from lang2.drift.crypto import compute_ed25519_kid
 def _write_file(path: Path, text: str) -> None:
 	path.parent.mkdir(parents=True, exist_ok=True)
 	path.write_text(text, encoding="utf-8")
+
+
+def _public_key_bytes(pub) -> bytes:
+	if hasattr(pub, "public_bytes_raw"):
+		return pub.public_bytes_raw()
+	return pub.public_bytes(encoding=serialization.Encoding.Raw, format=serialization.PublicFormat.Raw)
 
 
 def test_driftc_accepts_sidecar_when_any_signature_valid_and_allowed(tmp_path: Path) -> None:
@@ -77,8 +84,8 @@ pub fn add(a: Int, b: Int) returns Int {
 	# Compute kids/public keys (for trust store).
 	priv1 = Ed25519PrivateKey.from_private_bytes(seed1)
 	priv2 = Ed25519PrivateKey.from_private_bytes(seed2)
-	pub1_raw = priv1.public_key().public_bytes_raw()
-	pub2_raw = priv2.public_key().public_bytes_raw()
+	pub1_raw = _public_key_bytes(priv1.public_key())
+	pub2_raw = _public_key_bytes(priv2.public_key())
 	kid1 = compute_ed25519_kid(pub1_raw)
 	kid2 = compute_ed25519_kid(pub2_raw)
 
@@ -122,8 +129,8 @@ module main
 
 import lib as lib
 
-fn main() returns Int {
-	return lib.add(40, 2)
+fn main() returns Int  nothrow{
+	return try lib.add(40, 2) catch { 0 }
 }
 """.lstrip(),
 	)

@@ -1,20 +1,21 @@
-module m
+module main
 
 exception Boom()
 
-fn main() returns Int {
+fn maybe_boom(x: Int) returns Int {
+	if x == 2 {
+		throw Boom();
+	}
+	return x;
+}
+
+fn main() returns Int  nothrow{
 	val xs = [1, 2, 3]
 	var sum: Int = 0
 
 	for x in xs {
-		try {
-			if x == 2 {
-				throw Boom();
-			}
-			sum = sum + x
-		} catch err {
-			sum = sum + 100
-		}
+		val v: Int = try maybe_boom(x) catch { 100 };
+		sum = sum + v
 	}
 
 	return sum

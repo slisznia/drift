@@ -63,6 +63,7 @@ from lang2.driftc.fake_decl import FakeDecl
 from lang2.driftc.packages.dmir_pkg_v0 import canonical_json_bytes, sha256_hex, write_dmir_pkg_v0
 from lang2.driftc.packages.provisional_dmir_v0 import (
 	decode_mir_funcs,
+	decode_trait_expr,
 	decode_type_expr,
 	encode_module_payload_v0,
 	encode_span,
@@ -222,6 +223,35 @@ def _parse_function_symbol(symbol: str) -> FunctionId:
 	else:
 		module, name = "main", base
 	return FunctionId(module=module, name=name, ordinal=ordinal)
+
+
+def _find_dependency_main(loaded_pkgs: list["LoadedPackage"]) -> tuple[str, Path, str] | None:
+	"""
+	Detect a dependency package that defines a function named `main`.
+
+	Returns (package_id, package_path, symbol_name) for diagnostics.
+	"""
+	for pkg in loaded_pkgs:
+		man = pkg.manifest
+		pkg_id = man.get("package_id") if isinstance(man, dict) else None
+		pkg_id_str = pkg_id if isinstance(pkg_id, str) else str(pkg.path)
+		for _mid, mod in pkg.modules_by_id.items():
+			payload = mod.payload
+			if not isinstance(payload, dict):
+				continue
+			sigs_obj = payload.get("signatures")
+			if not isinstance(sigs_obj, dict):
+				continue
+			for sym, sd in sigs_obj.items():
+				if not isinstance(sd, dict):
+					continue
+				if sd.get("is_method", False):
+					continue
+				name = str(sd.get("name") or sym)
+				local = name.rsplit("::", 1)[-1]
+				if local == "main":
+					return pkg_id_str, pkg.path, name
+	return None
 
 
 def _encode_trait_metadata_for_module(
@@ -1301,12 +1331,23 @@ def main(argv: list[str] | None = None) -> int:
 					else:
 						print(f"{source_path}:?:?: error: {msg}", file=sys.stderr)
 					return 1
+		if args.output or args.emit_ir:
+			dep_main = _find_dependency_main(loaded_pkgs)
+			if dep_main is not None:
+				pkg_id, pkg_path, _sym_name = dep_main
+				msg = f"illegal entrypoint 'main' in dependency package {pkg_id}; entrypoints are only allowed in the root package"
+				if args.json:
+					print(json.dumps({"exit_code": 1, "diagnostics": [{"phase": "package", "message": msg, "severity": "error", "file": str(pkg_path), "line": None, "column": None}]}))
+				else:
+					print(f"{pkg_path}:?:?: error: {msg}", file=sys.stderr)
+				return 1
 		external_exports = collect_external_exports(loaded_pkgs)
 
 	func_hirs, signatures, fn_ids_by_name, type_table, exception_catalog, module_exports, module_deps, parse_diags = parse_drift_workspace_to_hir(
 		source_paths,
 		module_paths=module_paths,
 		external_module_exports=external_exports,
+		enforce_entrypoint=bool(args.output or args.emit_ir),
 	)
 	_inject_prelude(signatures, fn_ids_by_name, type_table)
 	func_hirs_by_id = func_hirs

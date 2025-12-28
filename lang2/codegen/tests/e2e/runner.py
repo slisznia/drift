@@ -153,6 +153,7 @@ def _run_case(case_dir: Path) -> str:
 	func_hirs, signatures, fn_ids_by_name, type_table, exception_catalog, _module_exports, _module_deps, parse_diags = parse_drift_workspace_to_hir(
 		drift_files,
 		module_paths=[case_dir / mp for mp in module_paths] or None,
+		enforce_entrypoint=True,
 	)
 	expected_phase = expected.get("phase")
 

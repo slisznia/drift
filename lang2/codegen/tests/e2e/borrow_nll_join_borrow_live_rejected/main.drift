@@ -1,6 +1,6 @@
 struct S(a: Int, b: Int)
 
-fn main() returns Int {
+fn main() returns Int  nothrow{
 	var s = S(0, 0)
 	var r: &Int = &s.a
 	if true {

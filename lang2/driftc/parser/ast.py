@@ -46,7 +46,7 @@ class Located:
 class TypeExpr:
 	name: str
 	args: List["TypeExpr"] = field(default_factory=list)
-	fn_throws: Optional[bool] = None
+	fn_throws: bool = True
 	# Optional module alias qualifier for type names in surface annotations.
 	#
 	# Example:
@@ -72,6 +72,36 @@ class TypeExpr:
 	# This enables source-anchored diagnostics for type-level module qualifiers
 	# (e.g. `x.Point`) and internal-only type usage rejections.
 	loc: Optional[Located] = None
+
+	def __post_init__(self) -> None:
+		if self.name != "fn":
+			self.fn_throws = False
+		elif not isinstance(self.fn_throws, bool):
+			raise TypeError("TypeExpr.fn_throws must be bool for fn types")
+
+	def fn_throws_raw(self) -> Optional[bool]:
+		"""Return the raw throw marker for serialization/debugging."""
+		if self.name != "fn":
+			return None
+		return bool(self.fn_throws)
+
+	def can_throw(self) -> bool:
+		"""Return True if this function type can throw."""
+		if self.name != "fn":
+			return False
+		return bool(self.fn_throws)
+
+	def with_can_throw(self, can_throw: bool) -> "TypeExpr":
+		"""Return a copy with the function throw-mode updated."""
+		fn_throws = bool(can_throw) if self.name == "fn" else False
+		return TypeExpr(
+			name=self.name,
+			args=list(self.args),
+			fn_throws=fn_throws,
+			module_alias=self.module_alias,
+			module_id=self.module_id,
+			loc=self.loc,
+		)
 
 
 @dataclass
@@ -169,6 +199,7 @@ class FunctionDef:
 	return_type: TypeExpr
 	body: Block
 	loc: Located
+	declared_nothrow: bool = False
 	is_pub: bool = False
 	type_param_locs: List[Located] = field(default_factory=list)
 	require: Optional["RequireClause"] = None

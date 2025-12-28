@@ -1,6 +1,6 @@
 import lib as x
 
-fn main() returns Int {
-	val p: x.Point = x.make(40, 2);
+fn main() returns Int  nothrow{
+	val p: x.Point = try x.make(40, 2) catch { x.Point(x = 0, y = 0) };
 	return p.x + p.y;
 }

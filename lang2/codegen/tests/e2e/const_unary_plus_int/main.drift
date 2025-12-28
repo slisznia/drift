@@ -2,6 +2,6 @@ module main
 
 const THREE: Int = +3;
 
-fn main() returns Int {
+fn main() returns Int  nothrow{
 	return THREE;
 }

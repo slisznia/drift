@@ -20,7 +20,7 @@ module main
 
 import lib as lib
 
-fn main() returns Int {
+fn main() returns Int  nothrow{
 	return lib.add(40, 2)
 }
 """.lstrip(),

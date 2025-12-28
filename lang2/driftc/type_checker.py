@@ -181,7 +181,7 @@ class TypeChecker:
 			ret_type = td.param_types[-1] if td.param_types else self._unknown
 			params = ", ".join(self._pretty_type_name(t, current_module=current_module) for t in param_types)
 			ret = self._pretty_type_name(ret_type, current_module=current_module)
-			suffix = "" if td.fn_throws is not False else " nothrow"
+			suffix = "" if td.can_throw() else " nothrow"
 			return f"fn({params}) returns {ret}{suffix}"
 		if td.param_types:
 			args = ", ".join(self._pretty_type_name(t, current_module=current_module) for t in td.param_types)
@@ -635,8 +635,21 @@ class TypeChecker:
 				return None
 			params = list(td.param_types[:-1])
 			ret = td.param_types[-1]
-			can_throw = td.fn_throws is not False
+			can_throw = td.can_throw()
 			return params, ret, can_throw
+
+		def _force_boundary_can_throw(sig: FnSignature | None, fn_id: FunctionId | None) -> bool:
+			if sig is None:
+				return False
+			if getattr(sig, "is_method", False):
+				return False
+			else:
+				if not (getattr(sig, "is_exported_entrypoint", False) or getattr(sig, "is_extern", False)):
+					return False
+			callee_mod = fn_id.module if fn_id and fn_id.module else getattr(sig, "module", None)
+			if callee_mod is None:
+				return False
+			return callee_mod != current_module_name
 
 		def _call_sig_for_fn_ref(sig: FnSignature) -> tuple[list[TypeId], TypeId, bool] | None:
 			if getattr(sig, "type_params", None):
@@ -1196,8 +1209,8 @@ class TypeChecker:
 						return False
 					return True
 				if pd.kind is TypeKind.FUNCTION:
-					p_throw = pd.fn_throws is not False
-					a_throw = ad.fn_throws is not False
+					p_throw = pd.can_throw()
+					a_throw = ad.can_throw()
 					if p_throw != a_throw:
 						_record_conflict(param_ty, actual_ty, origin, span)
 						return False
@@ -1503,8 +1516,8 @@ class TypeChecker:
 					return _match_type(tdef.param_types[0], rdef.param_types[0])
 				if tdef.kind in {TypeKind.ARRAY, TypeKind.OPTIONAL, TypeKind.FNRESULT, TypeKind.FUNCTION}:
 					if tdef.kind is TypeKind.FUNCTION:
-						t_throw = tdef.fn_throws is not False
-						r_throw = rdef.fn_throws is not False
+						t_throw = tdef.can_throw()
+						r_throw = rdef.can_throw()
 						if t_throw != r_throw:
 							return False
 					if len(tdef.param_types) != len(rdef.param_types):
@@ -3744,11 +3757,14 @@ class TypeChecker:
 										span=getattr(expr, "loc", Span()),
 									)
 								sig_for_throw = signatures_by_id.get(target_fn_id) if signatures_by_id is not None else None
+								call_can_throw = sig_can_throw(sig_for_throw) if sig_for_throw is not None else True
+								if _force_boundary_can_throw(sig_for_throw, target_fn_id):
+									call_can_throw = True
 								record_method_call_info(
 									expr,
 									param_types=[recv_ty, *arg_types],
 									return_type=result_type or self._unknown,
-									can_throw=sig_can_throw(sig_for_throw) if sig_for_throw is not None else True,
+									can_throw=call_can_throw,
 									target=target_fn_id,
 								)
 								return record_expr(expr, result_type)
@@ -5026,7 +5042,7 @@ class TypeChecker:
 							expr,
 							param_types=fn_params,
 							return_type=fn_ret,
-							can_throw=(td_fn.fn_throws is not False),
+							can_throw=td_fn.can_throw(),
 							target=CallTarget.indirect(expr.fn.node_id),
 						)
 						return record_expr(expr, fn_ret)
@@ -5065,11 +5081,14 @@ class TypeChecker:
 						call_resolutions[expr.node_id] = decl
 						sig_for_throw = signatures_by_id.get(decl.fn_id) if decl.fn_id and signatures_by_id else None
 						target_fn_id = decl.fn_id or _fn_id_from_symbol(expr.fn.name)
+						call_can_throw = sig_can_throw(sig_for_throw)
+						if _force_boundary_can_throw(sig_for_throw, target_fn_id):
+							call_can_throw = True
 						record_call_info(
 							expr,
 							param_types=list(inst_sig.param_types),
 							return_type=inst_sig.result_type,
-							can_throw=sig_can_throw(sig_for_throw),
+							can_throw=call_can_throw,
 							target=CallTarget.direct(target_fn_id),
 						)
 						return record_expr(expr, inst_sig.result_type)
@@ -5118,11 +5137,14 @@ class TypeChecker:
 									else list(arg_types)
 								)
 								target_fn_id = sig_ids_by_obj.get(id(fallback_sig)) or _fn_id_from_symbol(expr.fn.name)
+								call_can_throw = sig_can_throw(fallback_sig)
+								if _force_boundary_can_throw(fallback_sig, target_fn_id):
+									call_can_throw = True
 								record_call_info(
 									expr,
 									param_types=fallback_params,
 									return_type=fallback_sig.return_type_id,
-									can_throw=sig_can_throw(fallback_sig),
+									can_throw=call_can_throw,
 									target=CallTarget.direct(target_fn_id),
 								)
 						return record_expr(expr, self._unknown)
@@ -5202,7 +5224,10 @@ class TypeChecker:
 							expr,
 							param_types=list(param_ids),
 							return_type=ret_id,
-							can_throw=sig_can_throw(sig),
+							can_throw=(
+								sig_can_throw(sig)
+								or _force_boundary_can_throw(sig, target_fn_id)
+							),
 							target=CallTarget.direct(target_fn_id),
 						)
 					if inst_res.inst_return is not None:
@@ -5277,7 +5302,7 @@ class TypeChecker:
 						expr,
 						param_types=fn_params,
 						return_type=fn_ret,
-						can_throw=(callee_def.fn_throws is not False),
+						can_throw=callee_def.can_throw(),
 					)
 					return record_expr(expr, fn_ret)
 				if callee_def.kind in (TypeKind.CALLABLE, TypeKind.CALLABLE_DYN):
@@ -6174,11 +6199,14 @@ class TypeChecker:
 								span=getattr(expr, "loc", Span()),
 							)
 						sig_for_throw = signatures_by_id.get(target_fn_id) if signatures_by_id is not None else None
+						call_can_throw = sig_can_throw(sig_for_throw) if sig_for_throw is not None else True
+						if _force_boundary_can_throw(sig_for_throw, target_fn_id):
+							call_can_throw = True
 						record_method_call_info(
 							expr,
 							param_types=[recv_ty, *arg_types],
 							return_type=result_type or self._unknown,
-							can_throw=sig_can_throw(sig_for_throw) if sig_for_throw is not None else True,
+							can_throw=call_can_throw,
 							target=target_fn_id,
 						)
 						return record_expr(expr, result_type)

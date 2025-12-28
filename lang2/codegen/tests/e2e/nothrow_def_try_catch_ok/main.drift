@@ -1,0 +1,16 @@
+module main
+
+exception Boom()
+
+fn boom() returns Int {
+	throw Boom();
+}
+
+fn safe() returns Int nothrow {
+	val x: Int = try boom() catch { 0 };
+	return x;
+}
+
+fn main() returns Int nothrow {
+	return safe();
+}

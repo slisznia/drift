@@ -2,8 +2,7 @@ module main
 import b as b
 
 
-fn main() returns Int {
-	val p: b.Point = b.make();
+fn main() returns Int  nothrow{
+	val p: b.Point = try b.make() catch { b.Point(x = 0, y = 0) };
 	return p.x + p.y;
 }
-

@@ -21,7 +21,7 @@ implement Point {
     fn m(self: &Point) returns Int { return 1; }
 }
 
-fn main() returns Int {
+fn main() returns Int  nothrow{
     val x = 1;
     return x.m(); // no such method on Int
 }
@@ -69,7 +69,7 @@ import m_trait as t
 
 use trait t.Show
 
-fn main() returns Int {
+fn main() returns Int  nothrow{
 	val b: m_box.Box = m_box.Box(value = 1);
 	return b.show();
 }
@@ -116,7 +116,7 @@ module m_main
 import m_box
 import m_trait
 
-fn main() returns Int {
+fn main() returns Int  nothrow{
 	val b: m_box.Box = m_box.Box(value = 1);
 	return m_trait.Show::show(b);
 }

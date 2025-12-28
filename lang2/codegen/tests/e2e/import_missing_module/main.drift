@@ -2,5 +2,5 @@ module main
 import does_not_exist as does_not_exist
 
 
-fn main() returns Int { return 0; }
+fn main() returns Int  nothrow{ return 0; }
 

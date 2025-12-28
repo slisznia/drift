@@ -1,12 +1,13 @@
-module m
+module main
 
 exception E(msg: String)
 
-fn main() returns Int {
-    try {
-        throw E(msg = "boom");
-        print("UNREACHABLE");
-    } catch err {
+fn fail() returns Int {
+	throw E(msg = "boom");
+}
+
+fn main() returns Int  nothrow{
+    try fail() catch err {
         print("caught");
     }
     return 0;

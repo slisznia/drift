@@ -263,7 +263,7 @@ module m_main
 import m_box as box
 use trait box.Show
 
-fn main() returns Int {
+fn main() returns Int  nothrow{
 	val b: box.Box<Int> = box.Box<type Int>(1);
 	return b.show();
 }
@@ -302,7 +302,7 @@ module m_main
 
 import m_box as box
 
-	fn main() returns Int {
+	fn main() returns Int  nothrow{
 		val b: box.Box<Int> = box.Box<type Int>(1);
 		return b.show();
 	}
@@ -351,7 +351,7 @@ import m_box
 import m_trait
 use trait m_trait.Tag
 
-fn main() returns Int {
+fn main() returns Int  nothrow{
 	val b: m_box.Box<Int> = m_box.Box<type Int>(1);
 	return b.tag();
 }
@@ -415,7 +415,7 @@ import m_b
 use trait m_a.Show
 use trait m_b.Show
 
-fn main() returns Int {
+fn main() returns Int  nothrow{
 	val b: m_box.Box<Int> = m_box.Box<type Int>(1);
 	return b.show();
 }
@@ -468,7 +468,7 @@ import m_box
 import m_trait
 use trait m_trait.Show
 
-fn main() returns Int {
+fn main() returns Int  nothrow{
 	val b: m_box.Box<String> = m_box.Box<type String>("s");
 	return b.show();
 }
@@ -521,7 +521,7 @@ import m_trait
 import m_impl
 use trait m_trait.Show
 
-fn main() returns Int {
+fn main() returns Int  nothrow{
 	val b: m_box.Box<Int> = m_box.Box<type Int>(1);
 	return b.show();
 }
@@ -585,7 +585,7 @@ import m_a
 import m_b
 use trait m_trait.Show
 
-fn main() returns Int {
+fn main() returns Int  nothrow{
 	val b: m_box.Box<Int> = m_box.Box<type Int>(1);
 	return b.show();
 }
@@ -621,7 +621,7 @@ import m_trait
 
 fn f<T>(x: T) returns Int require T is m_trait.Show { return x.show(); }
 
-fn main() returns Int { return f<type Int>(1); }
+fn main() returns Int  nothrow{ return f<type Int>(1); }
 """,
 	}
 	result = _typecheck_named_fn(
@@ -655,7 +655,7 @@ use trait m_trait.Show
 
 fn f<T>(x: T) returns Int require T is m_trait.Show { return x.show(); }
 
-fn main() returns Int { return f<type Int>(1); }
+fn main() returns Int  nothrow{ return f<type Int>(1); }
 """,
 	}
 	result = _typecheck_named_fn(
@@ -687,7 +687,7 @@ use trait m_trait.Show
 
 fn f<T>(x: T) returns Int require T is m_trait.Show { return x.show(); }
 
-fn main() returns Int { return f<type String>("s"); }
+fn main() returns Int  nothrow{ return f<type String>("s"); }
 """,
 	}
 	_, result, _sigs, _deps, _ids, _types, _trait_scope = _resolve_main_block(
@@ -729,7 +729,7 @@ module m_main
 import m_box
 import m_trait
 
-fn main() returns Int {
+fn main() returns Int  nothrow{
 	val b: m_box.Box<Int> = m_box.Box<type Int>(1);
 	return m_trait.Show::show(b);
 }
@@ -787,7 +787,7 @@ import m_box
 import m_a
 import m_b
 
-fn main() returns Int {
+fn main() returns Int  nothrow{
 	val b: m_box.Box<Int> = m_box.Box<type Int>(1);
 	return m_a.Show::show(b);
 }
@@ -836,7 +836,7 @@ import m_box
 import m_trait
 import m_impl
 
-fn main() returns Int {
+fn main() returns Int  nothrow{
 	val b: m_box.Box<Int> = m_box.Box<type Int>(1);
 	return m_trait.Show::show(b);
 }
@@ -888,7 +888,7 @@ module m_main
 import m_box
 import m_trait
 
-fn main() returns Int {
+fn main() returns Int  nothrow{
 	val b: m_box.Box<String> = m_box.Box<type String>("s");
 	return m_trait.Show::show(b);
 }
@@ -917,7 +917,7 @@ module m_main
 
 import m_trait
 
-fn main() returns Int {
+fn main() returns Int  nothrow{
 	return m_trait.Show::show(1);
 }
 """,
@@ -1014,7 +1014,7 @@ import m_traits as t
 
 use trait t.Show
 
-fn main() returns Int {
+fn main() returns Int  nothrow{
 	val b: m_box.Box<Int> = m_box.Box<type Int>(1);
 	return b.show();
 }

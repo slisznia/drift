@@ -6,7 +6,7 @@ import m_impl
 
 use trait m_trait.Show
 
-fn main() returns Int {
-	val b: m_box.Box = m_box.make_box(6);
-	return b.show();
+fn main() returns Int  nothrow{
+	val b: m_box.Box = try m_box.make_box(6) catch { m_box.Box(value = 0) };
+	return try b.show() catch { 0 };
 }

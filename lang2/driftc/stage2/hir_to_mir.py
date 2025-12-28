@@ -601,14 +601,20 @@ class HIRToMIR:
 			name = getattr(te, "name", None)
 			args = list(getattr(te, "args", []) or [])
 			module_id = getattr(te, "module_id", None)
-			fn_throws = getattr(te, "fn_throws", None)
+			if hasattr(te, "can_throw") and callable(getattr(te, "can_throw")):
+				can_throw = bool(te.can_throw())
+			else:
+				raw = getattr(te, "fn_throws", True)
+				if raw is None:
+					raw = True
+				can_throw = bool(raw)
 			if isinstance(name, str) and name == "fn" and args:
 				params = args[:-1]
 				ret = args[-1]
 				params_s = ", ".join(_format_type_expr(a) for a in params)
 				ret_s = _format_type_expr(ret)
 				s = f"fn({params_s}) returns {ret_s}"
-				if fn_throws is False:
+				if not can_throw:
 					s = f"{s} nothrow"
 				return s
 			base = name if isinstance(name, str) else "<type>"

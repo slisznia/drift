@@ -21,7 +21,7 @@ is instantiated with concrete type arguments.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import List, Optional
 
 
@@ -45,7 +45,7 @@ class GenericTypeExpr:
 	name: str = ""
 	args: List["GenericTypeExpr"] = field(default_factory=list)
 	param_index: Optional[int] = None
-	fn_throws: Optional[bool] = None
+	fn_throws: bool = True
 	# Optional canonical module id for nominal (named) types.
 	#
 	# This is required for production correctness once nominal type identity is
@@ -54,6 +54,28 @@ class GenericTypeExpr:
 	#
 	# Builtins use `module_id=None`.
 	module_id: Optional[str] = None
+
+	def __post_init__(self) -> None:
+		if self.name != "fn":
+			object.__setattr__(self, "fn_throws", False)
+		elif not isinstance(self.fn_throws, bool):
+			raise TypeError("GenericTypeExpr.fn_throws must be bool for fn types")
+
+	def fn_throws_raw(self) -> Optional[bool]:
+		"""Return the raw throw marker for serialization/debugging."""
+		if self.name != "fn":
+			return None
+		return bool(self.fn_throws)
+
+	def can_throw(self) -> bool:
+		"""Return True if this function type can throw."""
+		if self.name != "fn":
+			return False
+		return bool(self.fn_throws)
+
+	def with_can_throw(self, can_throw: bool) -> "GenericTypeExpr":
+		"""Return a copy with the function throw-mode updated."""
+		return replace(self, fn_throws=bool(can_throw) if self.name == "fn" else False)
 
 	@staticmethod
 	def param(idx: int) -> "GenericTypeExpr":
@@ -66,7 +88,7 @@ class GenericTypeExpr:
 		args: List["GenericTypeExpr"] | None = None,
 		*,
 		module_id: Optional[str] = None,
-		fn_throws: Optional[bool] = None,
+		fn_throws: bool = True,
 	) -> "GenericTypeExpr":
 		"""Construct a named type node (possibly with type arguments)."""
 		return GenericTypeExpr(

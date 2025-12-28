@@ -1,0 +1,5 @@
+module main
+
+fn main(argv: Array<Int>) returns Int nothrow {
+	return 0;
+}

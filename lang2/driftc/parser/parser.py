@@ -1177,6 +1177,10 @@ def _build_function(tree: Tree) -> FunctionDef:
 	type_child = next(child for child in return_sig.children if isinstance(child, Tree))
 	return_type = _build_type_expr(type_child)
 	idx += 1
+	declared_nothrow = False
+	if idx < len(children) and isinstance(children[idx], Token) and children[idx].type == "NOTHROW":
+		declared_nothrow = True
+		idx += 1
 	require = None
 	if idx < len(children) and isinstance(children[idx], Tree) and _name(children[idx]) == "require_clause":
 		require = _build_require_clause(children[idx])
@@ -1189,6 +1193,7 @@ def _build_function(tree: Tree) -> FunctionDef:
 		type_param_locs=type_param_locs,
 		params=params,
 		return_type=return_type,
+		declared_nothrow=declared_nothrow,
 		body=body,
 		loc=loc,
 		require=require,
@@ -1408,7 +1413,7 @@ def _build_type_expr(tree: Tree) -> TypeExpr:
 		params = [_build_type_expr(t) for t in param_nodes]
 		ret = _build_type_expr(ret_type_node) if ret_type_node is not None else TypeExpr(name="<unknown>")
 		is_nothrow = any(isinstance(child, Token) and child.type == "NOTHROW" for child in tree.children)
-		fn_throws = False if is_nothrow else None
+		fn_throws = not is_nothrow
 		return TypeExpr(name="fn", args=[*params, ret], fn_throws=fn_throws)
 	if name == "ref_type":
 		# '&' ['mut'] type_expr
@@ -1974,21 +1979,45 @@ def _build_catch_clause(tree: Tree) -> CatchClause:
 	for child in tree.children:
 		if isinstance(child, Tree):
 			name = _name(child)
-			if name in {"catch_pattern", "catch_event", "catch_all", "catch_all_empty"}:
-				event_node = next((c for c in child.children if isinstance(c, Tree) and _name(c) == "event_fqn"), None)
-				if event_node is not None:
-					event = _fqn_from_tree(event_node)
-				ident_node = next(
-					(
-						c
-						for c in child.children
-						if (isinstance(c, Token) and c.type in {"NAME", "MOVE"})
-						or (isinstance(c, Tree) and _name(c) == "ident")
-					),
-					None,
-				)
-				if ident_node is not None:
-					binder = _unwrap_ident(ident_node).value
+			if name in {"catch_pattern", "catch_event", "catch_event_unqualified", "catch_all", "catch_all_empty"}:
+				if name in {"catch_event", "catch_event_unqualified"}:
+					if name == "catch_event":
+						event_node = next(
+							(c for c in child.children if isinstance(c, Tree) and _name(c) == "event_fqn"),
+							None,
+						)
+						if event_node is not None:
+							event = _fqn_from_tree(event_node)
+						ident_nodes = [
+							c
+							for c in child.children
+							if (isinstance(c, Token) and c.type in {"NAME", "MOVE"})
+							or (isinstance(c, Tree) and _name(c) == "ident")
+						]
+						if ident_nodes:
+							binder = _unwrap_ident(ident_nodes[0]).value
+					else:
+						ident_nodes = [
+							c
+							for c in child.children
+							if (isinstance(c, Token) and c.type in {"NAME", "MOVE"})
+							or (isinstance(c, Tree) and _name(c) == "ident")
+						]
+						if len(ident_nodes) >= 2:
+							event = _unwrap_ident(ident_nodes[0]).value
+							binder = _unwrap_ident(ident_nodes[1]).value
+				elif name == "catch_all":
+					ident_node = next(
+						(
+							c
+							for c in child.children
+							if (isinstance(c, Token) and c.type in {"NAME", "MOVE"})
+							or (isinstance(c, Tree) and _name(c) == "ident")
+						),
+						None,
+					)
+					if ident_node is not None:
+						binder = _unwrap_ident(ident_node).value
 			elif name == "block":
 				block_node = child
 	if block_node is None:
@@ -2277,28 +2306,41 @@ def _build_try_catch_expr(tree: Tree) -> TryCatchExpr:
     arms: List[CatchExprArm] = []
     for arm_node in arm_nodes:
         arm_name = _name(arm_node)
-        if arm_name == "catch_expr_event":
-            event_node = next((c for c in arm_node.children if isinstance(c, Tree) and _name(c) == "event_fqn"), None)
-            if event_node is None:
-                raise ValueError("event catch arm requires event")
-            binder_node = next(
-                (
+        if arm_name in {"catch_expr_event", "catch_expr_event_unqualified"}:
+            if arm_name == "catch_expr_event":
+                event_node = next(
+                    (c for c in arm_node.children if isinstance(c, Tree) and _name(c) == "event_fqn"),
+                    None,
+                )
+                if event_node is None:
+                    raise ValueError("event catch arm requires event")
+                ident_nodes = [
                     c
                     for c in arm_node.children
                     if (isinstance(c, Token) and c.type in {"NAME", "MOVE"})
                     or (isinstance(c, Tree) and _name(c) == "ident")
-                ),
-                None,
-            )
-            if binder_node is None:
-                raise ValueError("event catch arm requires binder")
-            binder_token = _unwrap_ident(binder_node)
+                ]
+                if not ident_nodes:
+                    raise ValueError("event catch arm requires binder")
+                event = _fqn_from_tree(event_node)
+                binder_token = _unwrap_ident(ident_nodes[0])
+            else:
+                ident_nodes = [
+                    c
+                    for c in arm_node.children
+                    if (isinstance(c, Token) and c.type in {"NAME", "MOVE"})
+                    or (isinstance(c, Tree) and _name(c) == "ident")
+                ]
+                if len(ident_nodes) < 2:
+                    raise ValueError("event catch arm requires event and binder")
+                event = _unwrap_ident(ident_nodes[0]).value
+                binder_token = _unwrap_ident(ident_nodes[1])
             block_node = next(
                 child for child in arm_node.children if isinstance(child, Tree) and _name(child) == "value_block"
             )
             arms.append(
                 CatchExprArm(
-                    event=_fqn_from_tree(event_node),
+                    event=event,
                     binder=binder_token.value,
                     block=_build_value_block(block_node),
                 )

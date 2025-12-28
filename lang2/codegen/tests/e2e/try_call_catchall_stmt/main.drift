@@ -1,4 +1,4 @@
-module m
+module main
 
 exception Boom()
 
@@ -6,10 +6,14 @@ fn foo() returns Int {
 	throw Boom();
 }
 
-fn main() returns Int {
+fn bar() returns Int {
+	throw Boom();
+}
+
+fn main() returns Int  nothrow{
 	try {
 		foo();
-		throw Boom();
+		bar();
 	} catch {
 		print("caught");
 	}

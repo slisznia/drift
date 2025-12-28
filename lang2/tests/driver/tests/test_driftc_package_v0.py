@@ -17,6 +17,7 @@ from lang2.driftc.packages.dmir_pkg_v0 import canonical_json_bytes, sha256_hex, 
 from lang2.driftc.packages.signature_v0 import compute_ed25519_kid
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from cryptography.hazmat.primitives import serialization
 
 
 def _emit_pkg_args(package_id: str) -> list[str]:
@@ -33,6 +34,12 @@ def _emit_pkg_args(package_id: str) -> list[str]:
 def _write_file(path: Path, text: str) -> None:
 	path.parent.mkdir(parents=True, exist_ok=True)
 	path.write_text(text, encoding="utf-8")
+
+
+def _public_key_bytes(pub) -> bytes:
+	if hasattr(pub, "public_bytes_raw"):
+		return pub.public_bytes_raw()
+	return pub.public_bytes(encoding=serialization.Encoding.Raw, format=serialization.PublicFormat.Raw)
 
 
 def _patch_file_bytes(path: Path, offset: int, patch: bytes) -> None:
@@ -144,6 +151,72 @@ pub fn add(a: Int, b: Int) returns Int {{
 				str(tmp_path),
 				str(module_dir / "lib.drift"),
 				*_emit_pkg_args(module_id),
+				"--emit-package",
+				str(pkg_path),
+			]
+		)
+		== 0
+	)
+	return pkg_path
+
+
+def _emit_main_pkg(tmp_path: Path, *, module_id: str = "dep", package_id: str = "dep.main") -> Path:
+	module_dir = tmp_path.joinpath(*module_id.split("."))
+	_write_file(
+		module_dir / "main.drift",
+		f"""
+module {module_id}
+
+export {{ main }}
+
+pub fn main() returns Int nothrow {{
+	return 0
+}}
+""".lstrip(),
+	)
+	pkg_path = tmp_path / "dep_main.dmp"
+	assert (
+		driftc_main(
+			[
+				"-M",
+				str(tmp_path),
+				str(module_dir / "main.drift"),
+				*_emit_pkg_args(package_id),
+				"--emit-package",
+				str(pkg_path),
+			]
+		)
+		== 0
+	)
+	return pkg_path
+
+
+def _emit_main_method_pkg(tmp_path: Path, *, module_id: str = "dep", package_id: str = "dep.method") -> Path:
+	module_dir = tmp_path.joinpath(*module_id.split("."))
+	_write_file(
+		module_dir / "lib.drift",
+		f"""
+module {module_id}
+
+export {{ S }}
+
+pub struct S(x: Int)
+
+implement S {{
+	pub fn main(self: &S) returns Int nothrow {{
+		return 0
+	}}
+}}
+""".lstrip(),
+	)
+	pkg_path = tmp_path / "dep_method.dmp"
+	assert (
+		driftc_main(
+			[
+				"-M",
+				str(tmp_path),
+				str(module_dir / "lib.drift"),
+				*_emit_pkg_args(package_id),
 				"--emit-package",
 				str(pkg_path),
 			]
@@ -516,7 +589,7 @@ def _write_sig_sidecar(
 
 def _make_signed_package(tmp_path: Path) -> _SignedPkg:
 	priv = Ed25519PrivateKey.generate()
-	pub_raw = priv.public_key().public_bytes_raw()
+	pub_raw = _public_key_bytes(priv.public_key())
 	kid = compute_ed25519_kid(pub_raw)
 	pub_b64 = _b64(pub_raw)
 
@@ -545,8 +618,8 @@ module main
 
 import lib as lib
 
-fn main() returns Int {
-	return lib.add(40, 2)
+fn main() returns Int  nothrow{
+	return try lib.add(40, 2) catch { 0 }
 }
 """.lstrip(),
 	)
@@ -611,14 +684,18 @@ module main
 import acme.liba as liba
 import acme.optb as optb
 
-fn main() returns Int {
-	val x = liba.add(40, 2)
-	val y: optb.Optional<Int> = optb.foo()
-	val z = match y {
-		Some(v) => { v }
-		default => { 0 }
+fn main() returns Int  nothrow{
+	try {
+		val x = liba.add(40, 2)
+		val y: optb.Optional<Int> = optb.foo()
+		val z = match y {
+			Some(v) => { v }
+			default => { 0 }
+		}
+		return x + z
+	} catch {
+		return 0;
 	}
-	return x + z
 }
 """.lstrip(),
 	)
@@ -674,14 +751,18 @@ module main
 import acme.liba as liba
 import acme.optb as optb
 
-fn main() returns Int {
-	val x = liba.add(40, 2)
-	val y: optb.Optional<Int> = optb.foo()
-	val z = match y {
-		Some(v) => { v }
-		default => { 0 }
+fn main() returns Int  nothrow{
+	try {
+		val x = liba.add(40, 2)
+		val y: optb.Optional<Int> = optb.foo()
+		val z = match y {
+			Some(v) => { v }
+			default => { 0 }
+		}
+		return x + z
+	} catch {
+		return 0;
 	}
-	return x + z
 }
 """.lstrip(),
 	)
@@ -740,14 +821,14 @@ import acme.geom as g
 import acme.liba as liba
 import acme.opt as opt
 
-fn main() returns Int {
+fn main() returns Int  nothrow{
 	val p: g.Point = g.make()
 	val o: opt.Optional<g.Point> = Some(p)
 	val x = match o {
 		Some(v) => { v.x }
 		default => { 0 }
 	}
-	return liba.add(40, 2) + x
+	return (try liba.add(40, 2) catch { 0 }) + x
 }
 """.lstrip(),
 	)
@@ -789,8 +870,8 @@ module main
 
 import lib as lib
 
-fn main() returns Int {
-	return lib.add(40, 2)
+fn main() returns Int  nothrow{
+	return try lib.add(40, 2) catch { 0 }
 }
 """.lstrip(),
 	)
@@ -1030,8 +1111,8 @@ module main
 
 import lib as lib
 
-fn main() returns Int {
-	return lib.add(40, 2)
+fn main() returns Int  nothrow{
+	return try lib.add(40, 2) catch { 0 }
 }
 """.lstrip(),
 	)
@@ -1091,9 +1172,68 @@ module main
 
 import lib as lib
 
-fn main() returns Int {
+fn main() returns Int  nothrow{
 	val s: lib.S = lib.make()
 	return s.x
+}
+""".lstrip(),
+	)
+	rc = driftc_main(
+		[
+			"-M",
+			str(tmp_path),
+			"--package-root",
+			str(tmp_path),
+			"--allow-unsigned-from",
+			str(tmp_path),
+			str(tmp_path / "main.drift"),
+			"--emit-ir",
+			str(tmp_path / "out.ll"),
+		]
+	)
+	assert rc == 0
+
+
+def test_driftc_rejects_dependency_main_entrypoint(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+	_emit_main_pkg(tmp_path)
+	_write_file(
+		tmp_path / "main.drift",
+		"""
+module main
+
+fn main() returns Int nothrow {
+	return 0
+}
+""".lstrip(),
+	)
+	rc, payload = _run_driftc_json(
+		[
+			"-M",
+			str(tmp_path),
+			"--package-root",
+			str(tmp_path),
+			"--allow-unsigned-from",
+			str(tmp_path),
+			str(tmp_path / "main.drift"),
+			"--emit-ir",
+			str(tmp_path / "out.ll"),
+		],
+		capsys,
+	)
+	assert rc != 0
+	diags = payload.get("diagnostics", [])
+	assert any("illegal entrypoint 'main' in dependency package" in d.get("message", "") for d in diags)
+
+
+def test_driftc_allows_dependency_method_named_main(tmp_path: Path) -> None:
+	_emit_main_method_pkg(tmp_path)
+	_write_file(
+		tmp_path / "main.drift",
+		"""
+module main
+
+fn main() returns Int nothrow {
+	return 0
 }
 """.lstrip(),
 	)
@@ -1152,8 +1292,8 @@ module main
 
 import lib as lib
 
-fn main() returns Int {
-	return lib.add(40, 2)
+fn main() returns Int  nothrow{
+	return try lib.add(40, 2) catch { 0 }
 }
 """.lstrip(),
 	)
@@ -1227,8 +1367,8 @@ module main
 
 import lib as lib
 
-fn main() returns Int {
-	return lib.add(40, 2)
+fn main() returns Int  nothrow{
+	return try lib.add(40, 2) catch { 0 }
 }
 """.lstrip(),
 	)
@@ -1253,7 +1393,7 @@ def test_driftc_missing_explicit_trust_store_is_reported_as_diagnostic(tmp_path:
 		"""
 module main
 
-fn main() returns Int {
+fn main() returns Int  nothrow{
 	return 0
 }
 """.lstrip(),
@@ -1291,8 +1431,8 @@ module main
 
 import acme.lib as lib
 
-fn main() returns Int {
-	return lib.add(40, 2)
+fn main() returns Int  nothrow{
+	return try lib.add(40, 2) catch { 0 }
 }
 """.lstrip(),
 	)
@@ -1379,7 +1519,7 @@ def test_driftc_rejects_signature_missing_module_in_strict_mode(tmp_path: Path, 
 	)
 
 	priv = Ed25519PrivateKey.generate()
-	pub_raw = priv.public_key().public_bytes_raw()
+	pub_raw = _public_key_bytes(priv.public_key())
 	kid = compute_ed25519_kid(pub_raw)
 	pub_b64 = _b64(pub_raw)
 	pkg_bytes = pkg_path.read_bytes()
@@ -1396,7 +1536,7 @@ module main
 
 import acme.badmod as badmod
 
-fn main() returns Int {
+fn main() returns Int  nothrow{
 	return 0
 }
 """.lstrip(),
@@ -1436,8 +1576,8 @@ module main
 
 import acme.lib as lib
 
-fn main() returns Int {
-	return lib.add(40, 2)
+fn main() returns Int  nothrow{
+	return try lib.add(40, 2) catch { 0 }
 }
 """.lstrip(),
 	)
@@ -1473,8 +1613,8 @@ module main
 
 import acme.lib as lib
 
-fn main() returns Int {
-	return lib.add(40, 2)
+fn main() returns Int  nothrow{
+	return try lib.add(40, 2) catch { 0 }
 }
 """.lstrip(),
 	)
@@ -1511,8 +1651,8 @@ module main
 
 import acme.lib as lib
 
-fn main() returns Int {
-	return lib.add(40, 2)
+fn main() returns Int  nothrow{
+	return try lib.add(40, 2) catch { 0 }
 }
 """.lstrip(),
 	)
@@ -1556,8 +1696,8 @@ module main
 
 import acme.lib as lib
 
-fn main() returns Int {
-	return lib.add(40, 2)
+fn main() returns Int  nothrow{
+	return try lib.add(40, 2) catch { 0 }
 }
 """.lstrip(),
 	)
@@ -1595,8 +1735,8 @@ module main
 
 import acme.lib as lib
 
-fn main() returns Int {
-	return lib.add(40, 2)
+fn main() returns Int  nothrow{
+	return try lib.add(40, 2) catch { 0 }
 }
 """.lstrip(),
 	)
@@ -1634,8 +1774,8 @@ module main
 
 import acme.lib as lib
 
-fn main() returns Int {
-	return lib.add(40, 2)
+fn main() returns Int  nothrow{
+	return try lib.add(40, 2) catch { 0 }
 }
 """.lstrip(),
 	)
@@ -1661,7 +1801,7 @@ fn main() returns Int {
 
 def test_driftc_rejects_signed_package_when_kid_revoked(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
 	priv = Ed25519PrivateKey.generate()
-	pub_raw = priv.public_key().public_bytes_raw()
+	pub_raw = _public_key_bytes(priv.public_key())
 	kid = compute_ed25519_kid(pub_raw)
 	pub_b64 = _b64(pub_raw)
 	pkg_path = _emit_lib_pkg(tmp_path)
@@ -1679,8 +1819,8 @@ module main
 
 import acme.lib as lib
 
-fn main() returns Int {
-	return lib.add(40, 2)
+fn main() returns Int  nothrow{
+	return try lib.add(40, 2) catch { 0 }
 }
 """.lstrip(),
 	)
@@ -1711,10 +1851,10 @@ def test_driftc_accepts_if_any_signature_entry_is_valid(tmp_path: Path, capsys: 
 
 	# Two keys: first signature is invalid, second is valid. Both are trusted.
 	priv1 = Ed25519PrivateKey.generate()
-	pub1 = priv1.public_key().public_bytes_raw()
+	pub1 = _public_key_bytes(priv1.public_key())
 	kid1 = compute_ed25519_kid(pub1)
 	priv2 = Ed25519PrivateKey.generate()
-	pub2 = priv2.public_key().public_bytes_raw()
+	pub2 = _public_key_bytes(priv2.public_key())
 	kid2 = compute_ed25519_kid(pub2)
 
 	invalid_sig = b"\0" * 64
@@ -1751,8 +1891,8 @@ module main
 
 import acme.lib as lib
 
-fn main() returns Int {
-	return lib.add(40, 2)
+fn main() returns Int  nothrow{
+	return try lib.add(40, 2) catch { 0 }
 }
 """.lstrip(),
 	)
@@ -1780,7 +1920,7 @@ def test_driftc_rejects_valid_signature_when_kid_not_trusted(tmp_path: Path, cap
 	# Signed package exists, but the trust store does not contain the kid/pubkey.
 	# driftc must not TOFU from sidecar pubkey bytes.
 	priv = Ed25519PrivateKey.generate()
-	pub_raw = priv.public_key().public_bytes_raw()
+	pub_raw = _public_key_bytes(priv.public_key())
 	kid = compute_ed25519_kid(pub_raw)
 	pub_b64 = _b64(pub_raw)
 
@@ -1808,8 +1948,8 @@ module main
 
 import acme.lib as lib
 
-fn main() returns Int {
-	return lib.add(40, 2)
+fn main() returns Int  nothrow{
+	return try lib.add(40, 2) catch { 0 }
 }
 """.lstrip(),
 	)
@@ -1837,12 +1977,12 @@ def test_driftc_rejects_valid_signature_when_namespace_disallows_kid(tmp_path: P
 	# Signed package exists and kid is in trust store, but namespace allowlist
 	# does not include the kid.
 	priv = Ed25519PrivateKey.generate()
-	pub_raw = priv.public_key().public_bytes_raw()
+	pub_raw = _public_key_bytes(priv.public_key())
 	kid = compute_ed25519_kid(pub_raw)
 	pub_b64 = _b64(pub_raw)
 
 	other_priv = Ed25519PrivateKey.generate()
-	other_pub = other_priv.public_key().public_bytes_raw()
+	other_pub = _public_key_bytes(other_priv.public_key())
 	other_kid = compute_ed25519_kid(other_pub)
 
 	pkg_path = _emit_lib_pkg(tmp_path)
@@ -1871,8 +2011,8 @@ module main
 
 import acme.lib as lib
 
-fn main() returns Int {
-	return lib.add(40, 2)
+fn main() returns Int  nothrow{
+	return try lib.add(40, 2) catch { 0 }
 }
 """.lstrip(),
 	)
@@ -1910,8 +2050,8 @@ module main
 
 import acme.lib as lib
 
-fn main() returns Int {
-	return lib.add(40, 2)
+fn main() returns Int  nothrow{
+	return try lib.add(40, 2) catch { 0 }
 }
 """.lstrip(),
 	)
@@ -1949,8 +2089,8 @@ module main
 
 import acme.lib as lib
 
-fn main() returns Int {
-	return lib.add(40, 2)
+fn main() returns Int  nothrow{
+	return try lib.add(40, 2) catch { 0 }
 }
 """.lstrip(),
 	)
@@ -2020,8 +2160,8 @@ module main
 
 import lib as lib
 
-fn main() returns Int {
-	return lib.add(40, 2)
+fn main() returns Int  nothrow{
+	return try lib.add(40, 2) catch { 0 }
 }
 """.lstrip(),
 	)
@@ -2052,7 +2192,7 @@ module main
 
 import acme.opt as opt
 
-fn main() returns Int {
+fn main() returns Int  nothrow{
 	val x: opt.Optional<Int> = opt.foo()
 	val y = match x {
 		Some(v) => { v + 1 }
@@ -2098,7 +2238,7 @@ variant Optional<T> {
 	Extra
 }
 
-fn main() returns Int {
+fn main() returns Int  nothrow{
 	return 0
 }
 """.lstrip(),
@@ -2135,7 +2275,7 @@ def test_driftc_rejects_variant_schema_collision_between_packages(tmp_path: Path
 		"""
 module main
 
-fn main() returns Int {
+fn main() returns Int  nothrow{
 	return 0
 }
 """.lstrip(),
@@ -2172,7 +2312,7 @@ module main
 
 import acme.hidden as hidden
 
-fn main() returns Int {
+fn main() returns Int  nothrow{
 	return hidden.hidden()
 }
 """.lstrip(),
@@ -2208,7 +2348,7 @@ module main
 
 import acme.hiddenpub as hidden
 
-fn main() returns Int {
+fn main() returns Int  nothrow{
 	return hidden.hidden()
 }
 """.lstrip(),
@@ -2245,8 +2385,8 @@ module main
 
 import acme.api as api
 
-fn main() returns Int {
-	return api.add(40, 2)
+fn main() returns Int  nothrow{
+	return try api.add(40, 2) catch { 0 }
 }
 """.lstrip(),
 	)
@@ -2278,7 +2418,7 @@ module main
 
 import acme.consts as consts
 
-fn main() returns Int {
+fn main() returns Int  nothrow{
 	return consts.ANSWER
 }
 """.lstrip(),
@@ -2315,7 +2455,7 @@ module main
 
 import acme.point as point
 
-fn main() returns Int {
+fn main() returns Int  nothrow{
 	val p: point.Point = point.make()
 	return p.x
 }
@@ -2354,7 +2494,7 @@ module main
 import a.geom as ag
 import b.geom as bg
 
-fn main() returns Int {
+fn main() returns Int  nothrow{
 	val p1: ag.Point = ag.make()
 	val p2: bg.Point = bg.make()
 	return p1.x + p2.x
@@ -2450,8 +2590,8 @@ module main
 
 import acme.badiface as badiface
 
-fn main() returns Int {
-	return badiface.add(40, 2)
+fn main() returns Int  nothrow{
+	return try badiface.add(40, 2) catch { 0 }
 }
 """.lstrip(),
 	)
@@ -2534,8 +2674,8 @@ module main
 
 import acme.badiface2 as badiface2
 
-fn main() returns Int {
-	return badiface2.add(40, 2)
+fn main() returns Int  nothrow{
+	return try badiface2.add(40, 2) catch { 0 }
 }
 """.lstrip(),
 	)
@@ -2623,8 +2763,8 @@ module main
 
 import acme.badiface3 as badiface3
 
-fn main() returns Int {
-	return badiface3.add(40, 2)
+fn main() returns Int  nothrow{
+	return try badiface3.add(40, 2) catch { 0 }
 }
 """.lstrip(),
 	)
@@ -2705,7 +2845,7 @@ module main
 
 import acme.badexc as badexc
 
-fn main() returns Int {
+fn main() returns Int  nothrow{
 	return 0
 }
 """.lstrip(),
@@ -2786,7 +2926,7 @@ module main
 
 import acme.badvar as badvar
 
-fn main() returns Int {
+fn main() returns Int  nothrow{
 	val o: badvar.Optional<Int> = None
 	return 0
 }
@@ -2928,7 +3068,7 @@ fn dummy() returns Int { return 0; }
 		"""
 module main
 
-fn main() returns Int { return 0 }
+fn main() returns Int  nothrow{ return 0 }
 """.lstrip(),
 	)
 	rc, payload = _run_driftc_json(
@@ -2987,8 +3127,8 @@ module main
 
 import lib as lib
 
-fn main() returns Int {
-	return lib.add(40, 2)
+fn main() returns Int  nothrow{
+	return try lib.add(40, 2) catch { 0 }
 }
 """.lstrip(),
 	)

@@ -60,7 +60,7 @@ class DecodedTypeDef:
 	param_types: list[TypeId]
 	module_id: str | None
 	ref_mut: bool | None
-	fn_throws: bool | None
+	fn_throws: bool
 	field_names: list[str] | None
 
 
@@ -100,9 +100,15 @@ def _decode_generic_type_expr(obj: Any) -> GenericTypeExpr:
 	param_index = obj.get("param_index")
 	if param_index is not None and not isinstance(param_index, int):
 		raise ValueError("invalid GenericTypeExpr.param_index")
-	fn_throws = obj.get("fn_throws")
-	if fn_throws is not None and not isinstance(fn_throws, bool):
-		raise ValueError("invalid GenericTypeExpr.fn_throws")
+	if name != "fn":
+		fn_throws = False
+	else:
+		if "fn_throws" in obj:
+			fn_throws = obj.get("fn_throws")
+			if fn_throws is None or not isinstance(fn_throws, bool):
+				raise ValueError("invalid GenericTypeExpr.fn_throws")
+		else:
+			fn_throws = True
 	return GenericTypeExpr(name=name, args=args, param_index=param_index, module_id=module_id, fn_throws=fn_throws)
 
 
@@ -126,7 +132,7 @@ def decode_type_table_obj(obj: Mapping[str, Any]) -> DecodedTypeTable:
 		param_types = td_obj.get("param_types")
 		module_id = td_obj.get("module_id")
 		ref_mut = td_obj.get("ref_mut")
-		fn_throws = td_obj.get("fn_throws")
+		fn_throws = td_obj.get("fn_throws", True)
 		field_names = td_obj.get("field_names")
 		if not isinstance(kind_s, str) or not isinstance(name, str) or not isinstance(param_types, list):
 			raise ValueError("invalid type_table.defs entry fields")
@@ -134,12 +140,17 @@ def decode_type_table_obj(obj: Mapping[str, Any]) -> DecodedTypeTable:
 			raise ValueError("invalid type_table.defs module_id")
 		if ref_mut is not None and not isinstance(ref_mut, bool):
 			raise ValueError("invalid type_table.defs ref_mut")
-		if fn_throws is not None and not isinstance(fn_throws, bool):
-			raise ValueError("invalid type_table.defs fn_throws")
+		if kind_s == "FUNCTION":
+			if "fn_throws" in td_obj:
+				fn_throws = td_obj.get("fn_throws")
+				if fn_throws is None or not isinstance(fn_throws, bool):
+					raise ValueError("invalid type_table.defs fn_throws")
+			else:
+				fn_throws = True
+		else:
+			fn_throws = False
 		if field_names is not None and not isinstance(field_names, list):
 			raise ValueError("invalid type_table.defs field_names")
-		if fn_throws is None and kind_s == "FUNCTION":
-			fn_throws = True
 		defs[tid] = DecodedTypeDef(
 			kind=_decode_kind(kind_s),
 			name=name,
@@ -331,8 +342,7 @@ def import_type_tables_and_build_typeid_maps(pkg_tt_objs: list[Mapping[str, Any]
 			elif td.kind is TypeKind.FNRESULT:
 				k = ("fnresult", sub_keys[0], sub_keys[1])
 			elif td.kind is TypeKind.FUNCTION:
-				fn_throws = td.fn_throws if td.fn_throws is not None else True
-				k = ("function", bool(fn_throws), sub_keys)
+				k = ("function", td.can_throw(), sub_keys)
 			else:
 				k = ("kind", td.kind.name, td.name, sub_keys, bool(td.ref_mut))
 			memo[tid] = k

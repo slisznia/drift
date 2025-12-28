@@ -1,4 +1,4 @@
-fn main() returns Int {
+fn main() returns Int  nothrow{
 	if "a" < "b" {
 		return 0;
 	}

@@ -184,7 +184,7 @@ def _type_expr_to_str(typ: parser_ast.TypeExpr) -> str:
 		params = args[:-1] if args else []
 		params_s = ", ".join(_type_expr_to_str(a) for a in params)
 		ret_s = _type_expr_to_str(ret) if ret is not None else "<unknown>"
-		suffix = "" if getattr(typ, "fn_throws", None) is not False else " nothrow"
+		suffix = "" if typ.can_throw() else " nothrow"
 		return f"fn({params_s}) returns {ret_s}{suffix}"
 	if not typ.args:
 		return typ.name
@@ -195,7 +195,7 @@ def _type_expr_to_str(typ: parser_ast.TypeExpr) -> str:
 def _type_expr_key(typ: parser_ast.TypeExpr) -> tuple[object | None, str, tuple]:
 	qual = getattr(typ, "module_id", None) or getattr(typ, "module_alias", None)
 	if typ.name == "fn":
-		throws_key = getattr(typ, "fn_throws", None)
+		throws_key = typ.fn_throws_raw()
 		return (qual, typ.name, throws_key, tuple(_type_expr_key(a) for a in getattr(typ, "args", []) or []))
 	return (qual, typ.name, tuple(_type_expr_key(a) for a in getattr(typ, "args", []) or []))
 
@@ -209,7 +209,7 @@ def _type_expr_key_str(typ: parser_ast.TypeExpr) -> str:
 		params = args[:-1] if args else []
 		params_s = ", ".join(_type_expr_key_str(a) for a in params)
 		ret_s = _type_expr_key_str(ret) if ret is not None else "<unknown>"
-		suffix = "" if getattr(typ, "fn_throws", None) is not False else " nothrow"
+		suffix = "" if typ.can_throw() else " nothrow"
 		return f"fn({params_s}) returns {ret_s}{suffix}"
 	if not (getattr(typ, "args", []) or []):
 		return base
@@ -243,7 +243,7 @@ def _generic_type_expr_from_parser(
 			typ.name,
 			[_generic_type_expr_from_parser(a, type_params=type_params) for a in getattr(typ, "args", [])],
 			module_id=getattr(typ, "module_id", None),
-			fn_throws=getattr(typ, "fn_throws", None),
+			fn_throws=typ.fn_throws_raw(),
 		)
 	return GenericTypeExpr.named(
 		typ.name,
@@ -595,6 +595,7 @@ class _FrontendDecl:
 		params: list[_FrontendParam],
 		return_type: parser_ast.TypeExpr,
 		loc: Optional[parser_ast.Located],
+		declared_nothrow: bool = False,
 		is_pub: bool = False,
 		is_method: bool = False,
 		self_mode: Optional[str] = None,
@@ -611,6 +612,7 @@ class _FrontendDecl:
 		self.type_param_locs = type_param_locs
 		self.params = params
 		self.return_type = return_type
+		self.declared_nothrow = declared_nothrow
 		self.throws = ()
 		self.loc = loc
 		self.is_pub = is_pub
@@ -650,6 +652,7 @@ def _decl_from_parser_fn(
 		params,
 		fn.return_type,
 		getattr(fn, "loc", None),
+		bool(getattr(fn, "declared_nothrow", False)),
 		fn.is_pub,
 		fn.is_method,
 		fn.self_mode,
@@ -782,8 +785,107 @@ def _diag_duplicate(
 	]
 
 
+def _check_entrypoint_main(
+	programs: list[tuple[Path, parser_ast.Program]],
+	diagnostics: list[Diagnostic],
+) -> None:
+	"""
+	Enforce MVP entrypoint rules:
+	- exactly one `main` across the workspace,
+	- entrypoint `main` must be declared `nothrow`.
+	"""
+	main_defs: list[tuple[Path, parser_ast.FunctionDef]] = []
+	for path, prog in programs:
+		for fn in getattr(prog, "functions", []) or []:
+			if getattr(fn, "name", None) == "main":
+				main_defs.append((path, fn))
+
+	if len(main_defs) == 0:
+		diagnostics.append(
+			Diagnostic(
+				message="missing entry point 'main' for code generation",
+				severity="error",
+				span=Span(),
+			)
+		)
+		return
+
+	if len(main_defs) > 1:
+		first_path, first_fn = main_defs[0]
+		for path, fn in main_defs[1:]:
+			diagnostics.extend(
+				_diag_duplicate(
+					kind="entry point",
+					name="main",
+					first_path=first_path,
+					first_loc=getattr(first_fn, "loc", None),
+					second_path=path,
+					second_loc=getattr(fn, "loc", None),
+				)
+			)
+		return
+
+	if len(main_defs) == 1:
+		path, fn = main_defs[0]
+		ret = getattr(fn, "return_type", None)
+		if (
+			ret is None
+			or getattr(ret, "name", None) != "Int"
+			or getattr(ret, "args", None)
+			or getattr(ret, "module_alias", None)
+		):
+			diagnostics.append(
+				Diagnostic(
+					message="entrypoint main must return Int",
+					severity="error",
+					span=_span_in_file(path, getattr(fn, "loc", None)),
+				)
+			)
+		params = list(getattr(fn, "params", []) or [])
+		if params:
+			valid = False
+			if len(params) == 1:
+				param = params[0]
+				typ = getattr(param, "type_expr", None)
+				if (
+					getattr(param, "name", None) == "argv"
+					and typ is not None
+					and getattr(typ, "name", None) == "Array"
+					and not getattr(typ, "module_alias", None)
+					and not getattr(typ, "module_id", None)
+					and len(getattr(typ, "args", []) or []) == 1
+				):
+					elem = (getattr(typ, "args", None) or [None])[0]
+					if (
+						getattr(elem, "name", None) == "String"
+						and not getattr(elem, "args", None)
+						and not getattr(elem, "module_alias", None)
+						and not getattr(elem, "module_id", None)
+					):
+						valid = True
+			if not valid:
+				diagnostics.append(
+					Diagnostic(
+						message="entrypoint main has invalid signature; expected main() or main(argv: Array<String>)",
+						severity="error",
+						span=_span_in_file(path, getattr(fn, "loc", None)),
+					)
+				)
+		if not getattr(fn, "declared_nothrow", False):
+			diagnostics.append(
+				Diagnostic(
+					message="entrypoint main must be declared nothrow (uncaught exceptions are not supported yet)",
+					severity="error",
+					span=_span_in_file(path, getattr(fn, "loc", None)),
+					notes=["add 'nothrow' to main or handle failures explicitly"],
+				)
+			)
+
+
 def parse_drift_files_to_hir(
 	paths: list[Path],
+	*,
+	enforce_entrypoint: bool = False,
 ) -> Tuple[Dict[FunctionId, H.HBlock], Dict[FunctionId, FnSignature], Dict[str, List[FunctionId]], "TypeTable", Dict[str, int], List[Diagnostic]]:
 	"""
 	Parse and lower a set of Drift source files into a single module unit.
@@ -829,6 +931,11 @@ def parse_drift_files_to_hir(
 
 	if any(d.severity == "error" for d in diagnostics):
 		return {}, {}, {}, TypeTable(), {}, diagnostics
+
+	if enforce_entrypoint:
+		_check_entrypoint_main(programs, diagnostics)
+		if any(d.severity == "error" for d in diagnostics):
+			return {}, {}, {}, TypeTable(), {}, diagnostics
 
 	# Enforce single-module membership across the file set.
 	def _effective_module_id(p: parser_ast.Program) -> str:
@@ -1085,6 +1192,7 @@ def parse_drift_workspace_to_hir(
 	*,
 	module_paths: list[Path] | None = None,
 	external_module_exports: dict[str, dict[str, object]] | None = None,
+	enforce_entrypoint: bool = False,
 ) -> Tuple[
 	Dict[FunctionId, H.HBlock],
 	Dict[FunctionId, FnSignature],
@@ -1278,6 +1386,15 @@ def parse_drift_workspace_to_hir(
 				)
 	if any(d.severity == "error" for d in diagnostics):
 		return {}, {}, {}, TypeTable(), {}, {}, {}, diagnostics
+
+	if enforce_entrypoint:
+		# Enforce entrypoint constraints before lowering.
+		prog_list: list[tuple[Path, parser_ast.Program]] = []
+		for files in by_module.values():
+			prog_list.extend(files)
+		_check_entrypoint_main(prog_list, diagnostics)
+		if any(d.severity == "error" for d in diagnostics):
+			return {}, {}, {}, TypeTable(), {}, {}, {}, diagnostics
 	# Merge each module (Milestone 1 rules) and retain callable provenance per file.
 	merged_programs: dict[str, parser_ast.Program] = {}
 	origin_by_module: dict[str, dict[FunctionId, Path]] = {}
@@ -3282,6 +3399,7 @@ def _lower_parsed_program_to_hir(
 					params,
 					fn.return_type,
 					getattr(fn, "loc", None),
+					bool(getattr(fn, "declared_nothrow", False)),
 					fn.is_pub,
 					is_method=True,
 					self_mode=self_mode,

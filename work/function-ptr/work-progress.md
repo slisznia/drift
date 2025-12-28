@@ -76,6 +76,11 @@ effect-based throw ABI.
      - `call_abi_ret_type` uses canonical core `Error` TypeId (FnResult uses core error).
      - Trait impl matching respects function throw-mode.
    - Later-stage: MIR/SSA/LLVM indirect calls for NOTHROW vs CAN_THROW.
+10) **`nothrow` on function definitions**
+   - Parse `fn ... returns T nothrow` on definitions (incl. impl methods).
+   - Thread `declared_nothrow` into signatures as `declared_can_throw=False`.
+   - Enforce: explicit nothrow rejects bodies that may throw.
+   - Update spec/grammar + add parser and integration tests.
 
 ## Status
 - Step 1: **done** (type/core + parser changes landed).
@@ -93,7 +98,7 @@ effect-based throw ABI.
   - ✅ MIR `Call` includes `can_throw`; LLVM lowering uses it instead of `FnInfo.declared_can_throw`.
   - ✅ Method calls now record CallInfo in stage1; Stage2 method lowering uses CallInfo (no name-based can-throw).
   - ✅ HInvoke + indirect call lowering (CallIndirect in MIR + LLVM).
-- Step 5: **pending**
+- Step 5: **done**
   - ✅ NOTHROW → CAN_THROW thunk generation for function values (Ok-wrap thunks).
 - Step 6: **done**
   - ✅ Captureless lambda → function pointer coercion; capturing lambda rejection.
@@ -110,6 +115,17 @@ effect-based throw ABI.
   - ✅ Wrapper/impl selection test for cross-module exported function references.
   - ✅ Stage1 tests: nothrow→can-throw thunk selection + captureless/capturing lambda coercion.
   - ✅ Stage2 tests: synthetic thunk + captureless lambda functions emitted in MIR.
+  - ✅ Codegen e2e tests for fnptr refs/cast/thunks/lambdas/cross-module wrappers (runtime + diagnostics).
+  - ✅ Codegen e2e tests for nothrow defs + boundary-call handling (direct throw, throwing call, try/catch ok, same-module pub ok, can-throw→nothrow fnptr reject).
+  - ⏸️ Cross-module method boundary enforcement e2e is skipped pending method-call wrappers for can-throw ABI.
+  - ⏸️ Codegen e2e for fnptr parameter overload/instantiation moved to `__pending_*` (LLVM lacks function-type params in signatures).
+- Step 10: **done**
+  - ✅ Parse `nothrow` on function definitions and propagate to signatures.
+  - ✅ Enforce explicit nothrow on throwing bodies.
+  - ✅ Parser + integration tests for nothrow definitions.
+- Tri-state `fn_throws` refactor:
+  - ✅ Phase 1: added `can_throw()` helpers and migrated logic to use them (raw tri-state preserved for serialization).
+  - ✅ Phase 2: switched storage to 2-state (`fn_throws: bool`), updated constructors/decoders, and refreshed tests.
 
 ## Recent fixes (test stabilization)
 - Prelude call resolution: register unqualified `lang.core` aliases in `CallableRegistry` for `print/println/eprintln`.
@@ -119,6 +135,15 @@ effect-based throw ABI.
 - Builtin string calls: `string_eq` / `string_concat` now typecheck as builtins.
 - Emit-package pipeline: include external signatures when lowering so package calls record CallInfo (fixes missing CallInfo for external `mod::fn` calls).
 - Captureless lambda function ids include the enclosing function symbol to avoid cross-function collisions; added regression test.
+- Package TypeExpr codec now preserves function type `can_throw` (nothrow) across encode/decode.
+- Non-`fn` TypeExpr/GenericTypeExpr now normalize `fn_throws` to `False` (invariant), with decode enforcing the same rule.
+- `fn` TypeExpr/GenericTypeExpr now require `fn_throws` to be a bool (invalid values raise).
+- `resolve_opaque_type` now rejects `fn_throws=None` when explicitly provided.
+- Package decoders now reject explicit null throw-mode (`can_throw: null` / `fn_throws: null`) for `fn` types.
+- Entry point validation now requires exactly one `main` and enforces `main` be declared `nothrow` when codegen/emit is requested.
+- Entry point validation now rejects missing `main` and enforces `main` return type `Int`.
+- Entry point restriction now applies only to free functions in dependencies; methods named `main` are allowed.
+- Catch event arms now accept unqualified event names (resolved to the current module); grammar + spec updated.
 
 ## Out of scope (this branch)
 - Method references / bound `self` function values.

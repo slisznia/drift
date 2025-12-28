@@ -3,8 +3,8 @@ module main
 import a.geom as ag
 import b.geom as bg
 
-fn main() returns Int {
-	val p1: ag.Point = ag.make()
-	val p2: bg.Point = bg.make()
+fn main() returns Int  nothrow{
+	val p1: ag.Point = try ag.make() catch { ag.Point(x = 0, y = 0) }
+	val p2: bg.Point = try bg.make() catch { bg.Point(x = 0, y = 0) }
 	return p1.x + p2.x
 }

@@ -1,0 +1,10 @@
+module main
+
+fn add1(x: Int) returns Int nothrow {
+	return x + 1;
+}
+
+fn main() returns Int  nothrow{
+	val fp = cast<fn(Int) returns Int>(add1);
+	return 0;
+}

@@ -1704,34 +1704,10 @@ class _FuncBuilder:
 		call_can_throw = instr.can_throw
 
 		if is_exported_entry and is_cross_module and not call_can_throw:
-			# ABI boundary wrapper returns FnResult even for nothrow entrypoints.
-			# The surface language expects a plain `T`. We must not silently treat an
-			# error as a `T`, so unwrap via a helper that traps on `is_err = true`.
-			ret_tid = None
-			if callee_info.signature and callee_info.signature.return_type_id is not None:
-				ret_tid = callee_info.signature.return_type_id
-			# Void-returning exported entrypoints still return FnResult<Void, Error*>
-			# at the boundary, but the call result must not be captured in MIR.
-			is_void_ret = ret_tid is not None and self._is_void_typeid(ret_tid)
-			if is_void_ret and dest is not None:
-				raise NotImplementedError("LLVM codegen v1: cannot capture result of a void call")
-			if self.type_table is None or ret_tid is None:
-				raise NotImplementedError(
-					f"LLVM codegen v1: exported entrypoint call requires TypeTable and return type (callee {instr.fn})"
-				)
-			ok_llty, ok_key = self._llvm_ok_type_for_typeid(ret_tid)
-			fnres_llty = self.module.fnresult_type(ok_key, ok_llty)
-			tmp = self._fresh("entryres")
-			self.lines.append(f"  {tmp} = call {fnres_llty} {_llvm_fn_sym(target_sym)}({args})")
-			unwrap_fn = self.module.fnresult_unwrap_ok_or_trap(ok_key, fnres_llty, ok_llty)
-			if dest is None:
-				# Statement position: still validate the carrier (trap on error),
-				# then discard the Ok payload.
-				self.lines.append(f"  call {ok_llty} {unwrap_fn}({fnres_llty} {tmp})")
-				return
-			self.lines.append(f"  {dest} = call {ok_llty} {unwrap_fn}({fnres_llty} {tmp})")
-			self.value_types[dest] = ok_llty
-			return
+			raise AssertionError(
+				"LLVM codegen v1: cross-module exported call lowered as nothrow; "
+				"checker must force can-throw at boundary"
+			)
 
 		if call_can_throw:
 			_, fnres_llty = self._fnresult_types_for_fn(callee_info)
@@ -2112,6 +2088,15 @@ class _FuncBuilder:
 				return DRIFT_DV_TYPE
 			if td.kind is TypeKind.ERROR:
 				return DRIFT_ERROR_PTR
+			if td.kind is TypeKind.FNRESULT and td.param_types and len(td.param_types) >= 2:
+				ok_tid, err_tid = td.param_types[0], td.param_types[1]
+				err_def = self.type_table.get(err_tid)
+				if err_def.kind is not TypeKind.ERROR:
+					raise NotImplementedError(
+						f"LLVM codegen v1: FnResult error type for {self.func.name} is {err_def.name}, expected Error"
+					)
+				ok_llty, ok_key = self._llvm_ok_type_for_typeid(ok_tid)
+				return self.module.fnresult_type(ok_key, ok_llty)
 			if td.kind is TypeKind.OPTIONAL and td.param_types:
 				inner = td.param_types[0]
 				inner_def = self.type_table.get(inner)
