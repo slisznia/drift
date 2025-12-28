@@ -152,6 +152,7 @@ def _inject_prelude(
 			param_names=["text"],
 			param_type_ids=[string_id],
 			return_type_id=void_id,
+			declared_can_throw=False,
 			is_method=False,
 			module="lang.core",
 		)
@@ -592,6 +593,8 @@ def compile_stubbed_funcs(
 				sig.return_type_id = resolve_opaque_type(sig.return_type, shared_type_table, module_id=getattr(sig, "module", None))
 			if sig.param_type_ids is None and sig.param_types is not None:
 				sig.param_type_ids = [resolve_opaque_type(p, shared_type_table, module_id=getattr(sig, "module", None)) for p in sig.param_types]
+			if sig.param_type_ids is None and sig.param_types is None:
+				sig.param_type_ids = []
 
 	func_hirs_by_symbol: dict[str, H.HBlock] = {}
 	signatures_by_symbol: dict[str, FnSignature] = {}
@@ -635,6 +638,90 @@ def compile_stubbed_funcs(
 	# Normalize after typecheck so lowering sees canonical HIR and preserves any
 	# checker-produced annotations needed by stage2 (e.g., match binder indices).
 	normalized_hirs: Dict[str, H.HBlock] = {name: normalize_hir(hir_block) for name, hir_block in func_hirs_by_symbol.items()}
+	call_sigs_by_name: dict[str, list[FnSignature]] = {}
+	for fn_id, sig in signatures_by_id.items():
+		if sig.is_method:
+			continue
+		call_sigs_by_name.setdefault(_display_name_for_fn_id(fn_id), []).append(sig)
+		if fn_id.module == "lang.core":
+			# Prelude functions are available unqualified (e.g., `println(...)`).
+			call_sigs_by_name.setdefault(fn_id.name, []).append(sig)
+	type_checker = TypeChecker(type_table=shared_type_table)
+	callable_registry = CallableRegistry()
+	next_callable_id = 1
+	for fn_id, sig in signatures_by_id.items():
+		if sig.return_type_id is None:
+			continue
+		param_types_tuple = tuple(sig.param_type_ids or [])
+		if sig.is_method:
+			if sig.impl_target_type_id is None or sig.self_mode is None:
+				continue
+			self_mode = {
+				"value": SelfMode.SELF_BY_VALUE,
+				"ref": SelfMode.SELF_BY_REF,
+				"ref_mut": SelfMode.SELF_BY_REF_MUT,
+			}.get(sig.self_mode)
+			if self_mode is None:
+				continue
+			callable_registry.register_inherent_method(
+				callable_id=next_callable_id,
+				name=sig.method_name or sig.name,
+				module_id=0,
+				visibility=Visibility.public() if sig.is_pub else Visibility.private(),
+				signature=CallableSignature(param_types=param_types_tuple, result_type=sig.return_type_id),
+				fn_id=fn_id,
+				impl_id=next_callable_id,
+				impl_target_type_id=sig.impl_target_type_id,
+				self_mode=self_mode,
+				is_generic=bool(sig.type_params or getattr(sig, "impl_type_params", [])),
+			)
+			next_callable_id += 1
+		else:
+			disp_name = _display_name_for_fn_id(fn_id)
+			callable_registry.register_free_function(
+				callable_id=next_callable_id,
+				name=disp_name,
+				module_id=0,
+				visibility=Visibility.public(),
+				signature=CallableSignature(param_types=param_types_tuple, result_type=sig.return_type_id),
+				fn_id=fn_id,
+				is_generic=bool(sig.type_params),
+			)
+			next_callable_id += 1
+			if fn_id.module == "lang.core" and disp_name != fn_id.name:
+				# Prelude functions are visible unqualified (e.g., `println(...)`).
+				callable_registry.register_free_function(
+					callable_id=next_callable_id,
+					name=fn_id.name,
+					module_id=0,
+					visibility=Visibility.public(),
+					signature=CallableSignature(param_types=param_types_tuple, result_type=sig.return_type_id),
+					fn_id=fn_id,
+					is_generic=bool(sig.type_params),
+				)
+				next_callable_id += 1
+	typed_fns_by_symbol: dict[str, object] = {}
+	type_diags: list[Diagnostic] = []
+	for name, hir_norm in normalized_hirs.items():
+		fn_id = _parse_function_symbol(name)
+		sig = signatures_by_symbol.get(name)
+		param_types: dict[str, "TypeId"] = {}
+		if sig is not None and sig.param_names is not None and sig.param_type_ids is not None:
+			param_types = {pname: pty for pname, pty in zip(sig.param_names, sig.param_type_ids)}
+		result = type_checker.check_function(
+			fn_id,
+			hir_norm,
+			param_types=param_types,
+			return_type=sig.return_type_id if sig is not None else None,
+			call_signatures=call_sigs_by_name,
+			signatures_by_id=signatures_by_id,
+			can_throw_by_name=declared,
+			callable_registry=callable_registry,
+		)
+		type_diags.extend(result.diagnostics)
+		typed_fns_by_symbol[name] = result.typed_fn
+	if type_diags:
+		checked.diagnostics.extend(type_diags)
 
 	for name, hir_norm in normalized_hirs.items():
 		builder = MirBuilder(name=name)
@@ -650,6 +737,7 @@ def compile_stubbed_funcs(
 			exc_env=exc_env,
 			param_types=param_types,
 			signatures=signatures_by_symbol,
+			call_info_by_node_id=getattr(typed_fns_by_symbol.get(name), "call_info_by_node_id", {}),
 			can_throw_by_name=declared,
 			return_type=sig.return_type_id if sig is not None else None,
 		).lower_function_body(hir_norm)
@@ -667,6 +755,95 @@ def compile_stubbed_funcs(
 					)
 					checked.fn_infos[extra.name] = info
 					declared[extra.name] = info.declared_can_throw
+
+	# Synthesize Ok-wrap thunks and captureless lambda functions (pre-LLVM).
+	def _register_synth_signature(fn_id: FunctionId, sig: FnSignature) -> str:
+		sym = function_symbol(fn_id)
+		signatures_by_id[fn_id] = sig
+		signatures_by_symbol[sym] = sig
+		info = FnInfo(name=sym, declared_can_throw=bool(sig.declared_can_throw), signature=sig)
+		checked.fn_infos[sym] = info
+		declared[sym] = info.declared_can_throw
+		return sym
+
+	for spec in type_checker.thunk_specs():
+		thunk_sym = function_symbol(spec.thunk_fn_id)
+		if thunk_sym in mir_funcs:
+			continue
+		param_names = [f"p{i}" for i in range(len(spec.param_types))]
+		sig = FnSignature(
+			name=thunk_sym,
+			param_type_ids=list(spec.param_types),
+			param_names=param_names,
+			return_type_id=spec.return_type,
+			declared_can_throw=True,
+			module=spec.thunk_fn_id.module,
+		)
+		_register_synth_signature(spec.thunk_fn_id, sig)
+		builder = MirBuilder(name=thunk_sym)
+		builder.func.params = list(param_names)
+		call_dest: M.ValueId | None
+		if shared_type_table is not None and shared_type_table.is_void(spec.return_type):
+			call_dest = None
+		else:
+			call_dest = builder.new_temp()
+		builder.emit(M.Call(dest=call_dest, fn=function_symbol(spec.target_fn_id), args=param_names, can_throw=False))
+		ok_dest = builder.new_temp()
+		builder.emit(M.ConstructResultOk(dest=ok_dest, value=call_dest))
+		builder.set_terminator(M.Return(value=ok_dest))
+		mir_funcs[thunk_sym] = builder.func
+
+	for spec in type_checker.lambda_fn_specs():
+		lambda_sym = function_symbol(spec.fn_id)
+		if lambda_sym in mir_funcs:
+			continue
+		param_names = [p.name for p in spec.lambda_expr.params]
+		param_types = {name: ty for name, ty in zip(param_names, spec.param_types)}
+		sig = FnSignature(
+			name=lambda_sym,
+			param_type_ids=list(spec.param_types),
+			param_names=list(param_names),
+			return_type_id=spec.return_type,
+			declared_can_throw=bool(spec.can_throw),
+			module=spec.fn_id.module,
+		)
+		_register_synth_signature(spec.fn_id, sig)
+		builder = MirBuilder(name=lambda_sym)
+		builder.func.params = list(param_names)
+		lower = HIRToMIR(
+			builder,
+			type_table=shared_type_table,
+			exc_env=exc_env,
+			param_types=param_types,
+			signatures=signatures_by_symbol,
+			call_info_by_node_id=spec.call_info_by_node_id,
+			can_throw_by_name={**declared, lambda_sym: bool(spec.can_throw)},
+			return_type=spec.return_type,
+		)
+		for param in spec.lambda_expr.params:
+			if getattr(param, "binding_id", None) is not None:
+				lower._binding_names[int(param.binding_id)] = param.name
+		if spec.lambda_expr.body_expr is not None:
+			ret_val = lower.lower_expr(spec.lambda_expr.body_expr, expected_type=spec.return_type)
+			if spec.can_throw:
+				ok_dest = builder.new_temp()
+				builder.emit(M.ConstructResultOk(dest=ok_dest, value=ret_val))
+				ret_val = ok_dest
+			builder.set_terminator(M.Return(value=ret_val))
+		elif spec.lambda_expr.body_block is not None:
+			lower._seed_lambda_locals_for_inference(lower, spec.lambda_expr.body_block)
+			ret_val = lower._lower_lambda_block(lower, spec.lambda_expr.body_block)
+			if builder.block.terminator is None:
+				if ret_val is None:
+					raise AssertionError("captureless lambda block must end with a value or return")
+				if spec.can_throw:
+					ok_dest = builder.new_temp()
+					builder.emit(M.ConstructResultOk(dest=ok_dest, value=ret_val))
+					ret_val = ok_dest
+				builder.set_terminator(M.Return(value=ret_val))
+		else:
+			raise AssertionError("captureless lambda missing body (checker bug)")
+		mir_funcs[lambda_sym] = builder.func
 
 	# Stage3: summaries
 	code_to_exc = {code: name for name, code in (exc_env or {}).items()}
@@ -1588,6 +1765,7 @@ def main(argv: list[str] | None = None) -> int:
 	next_callable_id = 1
 	type_diags: list[Diagnostic] = []
 	module_ids: dict[object, int] = {None: 0}
+	can_throw_by_name = {name: info.declared_can_throw for name, info in checked.fn_infos.items()}
 
 	display_name_by_id = {fn_id: _display_name_for_fn_id(fn_id) for fn_id in signatures_by_id.keys()}
 
@@ -1634,12 +1812,13 @@ def main(argv: list[str] | None = None) -> int:
 			)
 			next_callable_id += 1
 		else:
+			disp_name = display_name_by_id.get(fn_id, sig.name)
 			callable_registry.register_free_function(
 				callable_id=next_callable_id,
 				# Workspace builds qualify call sites (`mod::fn`). Keep the callable
 				# registry aligned with that identity to avoid string-rewrite
 				# mismatches during resolution.
-				name=display_name_by_id.get(fn_id, sig.name),
+				name=disp_name,
 				module_id=module_id,
 				visibility=Visibility.public(),
 				signature=CallableSignature(param_types=param_types_tuple, result_type=sig.return_type_id),
@@ -1647,6 +1826,17 @@ def main(argv: list[str] | None = None) -> int:
 				is_generic=bool(sig.type_params),
 			)
 			next_callable_id += 1
+			if fn_id.module == "lang.core" and disp_name != fn_id.name:
+				callable_registry.register_free_function(
+					callable_id=next_callable_id,
+					name=fn_id.name,
+					module_id=module_id,
+					visibility=Visibility.public(),
+					signature=CallableSignature(param_types=param_types_tuple, result_type=sig.return_type_id),
+					fn_id=fn_id,
+					is_generic=bool(sig.type_params),
+				)
+				next_callable_id += 1
 
 	for symbol, sig in external_signatures_by_symbol.items():
 		fn_id = _parse_function_symbol(symbol)
@@ -1889,6 +2079,7 @@ def main(argv: list[str] | None = None) -> int:
 			visibility_provenance=visibility_by_id,
 			visibility_imports=direct_imports,
 			signatures_by_id=signatures_by_id_all,
+			can_throw_by_name=can_throw_by_name,
 		)
 		type_diags.extend(result.diagnostics)
 		typed_fns[fn_id] = result.typed_fn
@@ -2027,9 +2218,10 @@ def main(argv: list[str] | None = None) -> int:
 				print(f"{source_path}:?:?: error: {msg}", file=sys.stderr)
 			return 1
 
+		signatures_for_pkg = signatures_by_id_all if loaded_pkgs else signatures_by_id
 		mir_funcs, checked_pkg = compile_stubbed_funcs(
 			func_hirs=func_hirs_by_id,
-			signatures=signatures_by_id,
+			signatures=signatures_for_pkg,
 			exc_env=exception_catalog,
 			type_table=type_table,
 			return_checked=True,
@@ -2307,7 +2499,7 @@ def main(argv: list[str] | None = None) -> int:
 		# Compile source functions through the normal pipeline to get MIR+SSA.
 		src_mir, checked_src, ssa_src = compile_stubbed_funcs(
 			func_hirs=func_hirs_by_id,
-			signatures=signatures_by_id,
+			signatures=signatures_by_id_all,
 			exc_env=exception_catalog,
 			return_checked=True,
 			build_ssa=True,

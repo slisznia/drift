@@ -141,18 +141,18 @@ def test_infer_method_missing_param(tmp_path: Path) -> None:
 struct Box<T> { value: T }
 
 implement<T> Box<T> {
-	pub fn cast<U>(self: Box<T>) returns Box<U> { return self; }
+	pub fn convert<U>(self: Box<T>) returns Box<U> { return self; }
 }
 
 fn main() returns Int {
 	val b: Box<Int> = Box<type Int>(1);
-	b.cast();
+	b.convert();
 	return 0;
 }
 """,
 		tmp_path,
 	)
-	assert any("cannot infer type arguments for method 'cast'" in d.message for d in result.diagnostics)
+	assert any("cannot infer type arguments for method 'convert'" in d.message for d in result.diagnostics)
 
 
 def test_infer_ctor_field_conflict_notes(tmp_path: Path) -> None:

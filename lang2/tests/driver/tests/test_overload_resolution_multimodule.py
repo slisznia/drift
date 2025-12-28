@@ -172,7 +172,7 @@ fn main() returns Int {
 	seen_int = False
 	seen_str = False
 	for call in calls:
-		decl = result.typed_fn.call_resolutions.get(id(call))
+		decl = result.typed_fn.call_resolutions.get(call.node_id)
 		if decl is None or decl.fn_id is None:
 			continue
 		arg = call.args[0] if call.args else None

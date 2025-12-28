@@ -45,6 +45,7 @@ class GenericTypeExpr:
 	name: str = ""
 	args: List["GenericTypeExpr"] = field(default_factory=list)
 	param_index: Optional[int] = None
+	fn_throws: Optional[bool] = None
 	# Optional canonical module id for nominal (named) types.
 	#
 	# This is required for production correctness once nominal type identity is
@@ -65,9 +66,16 @@ class GenericTypeExpr:
 		args: List["GenericTypeExpr"] | None = None,
 		*,
 		module_id: Optional[str] = None,
+		fn_throws: Optional[bool] = None,
 	) -> "GenericTypeExpr":
 		"""Construct a named type node (possibly with type arguments)."""
-		return GenericTypeExpr(name=str(name), args=list(args or []), param_index=None, module_id=module_id)
+		return GenericTypeExpr(
+			name=str(name),
+			args=list(args or []),
+			param_index=None,
+			module_id=module_id,
+			fn_throws=fn_throws,
+		)
 
 
 __all__ = ["GenericTypeExpr"]

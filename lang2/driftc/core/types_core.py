@@ -76,6 +76,7 @@ class TypeDef:
 	# named types). Builtins use module_id=None.
 	module_id: str | None = None
 	ref_mut: bool | None = None  # only meaningful for TypeKind.REF
+	fn_throws: bool | None = None  # only meaningful for TypeKind.FUNCTION
 	field_names: List[str] | None = None  # only meaningful for TypeKind.STRUCT
 
 
@@ -802,7 +803,7 @@ class TypeTable:
 
 	def new_fnresult(self, ok: TypeId, err: TypeId) -> TypeId:
 		"""Register a FnResult<ok, err> type."""
-		return self._add(TypeKind.FNRESULT, "FnResult", [ok, err])
+		return self.ensure_fnresult(ok, err)
 
 	def ensure_fnresult(self, ok: TypeId, err: TypeId) -> TypeId:
 		"""
@@ -817,12 +818,43 @@ class TypeTable:
 		key = (ok, err)
 		cache = getattr(self, "_fnresult_cache")  # type: ignore[attr-defined]
 		if key not in cache:
-			cache[key] = self.new_fnresult(ok, err)
+			cache[key] = self._add(TypeKind.FNRESULT, "FnResult", [ok, err])
 		return cache[key]
 
-	def new_function(self, name: str, param_types: List[TypeId], return_type: TypeId) -> TypeId:
-		"""Register a function type (name + params + return)."""
-		return self._add(TypeKind.FUNCTION, name, [*param_types, return_type])
+	def ensure_function(
+		self,
+		name: str,
+		param_types: List[TypeId],
+		return_type: TypeId,
+		*,
+		can_throw: bool,
+	) -> TypeId:
+		"""Return a stable shared function TypeId, creating it once."""
+		if name != "fn":
+			raise ValueError("function type name must be 'fn'")
+		if not hasattr(self, "_function_cache"):
+			self._function_cache = {}  # type: ignore[attr-defined]
+		key = (bool(can_throw), tuple(param_types), return_type)
+		cache = getattr(self, "_function_cache")  # type: ignore[attr-defined]
+		if key not in cache:
+			cache[key] = self._add(
+				TypeKind.FUNCTION,
+				"fn",
+				[*param_types, return_type],
+				fn_throws=bool(can_throw),
+			)
+		return cache[key]
+
+	def new_function(
+		self,
+		name: str,
+		param_types: List[TypeId],
+		return_type: TypeId,
+		*,
+		can_throw: bool = True,
+	) -> TypeId:
+		"""Register a function type (name + params + return + throw mode)."""
+		return self.ensure_function(name, param_types, return_type, can_throw=can_throw)
 
 	def new_array(self, elem: TypeId) -> TypeId:
 		"""Register an Array<elem> type."""
@@ -865,6 +897,7 @@ class TypeTable:
 		name: str,
 		params: List[TypeId],
 		ref_mut: bool | None = None,
+		fn_throws: bool | None = None,
 		field_names: List[str] | None = None,
 		type_param_id: TypeParamId | None = None,
 		*,
@@ -880,6 +913,7 @@ class TypeTable:
 			type_param_id=type_param_id if kind is TypeKind.TYPEVAR else None,
 			module_id=module_id,
 			ref_mut=ref_mut if kind is TypeKind.REF else None,
+			fn_throws=fn_throws if kind is TypeKind.FUNCTION else None,
 			field_names=list(field_names) if field_names is not None else None,
 		)
 		if register_named is None:

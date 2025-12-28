@@ -68,12 +68,12 @@ def validate_lambdas_non_retaining(
 				sig = signatures.get(call.fn.name)
 				if sig is not None:
 					return sig
-			res = call_resolutions.get(id(call))
+			res = call_resolutions.get(call.node_id)
 			if isinstance(res, CallableDecl):
 				return signatures.get(res.name)
 			return None
 		if isinstance(call, H.HMethodCall):
-			res = call_resolutions.get(id(call))
+			res = call_resolutions.get(call.node_id)
 			if isinstance(res, MethodResolution):
 				impl_target = res.decl.impl_target_type_id
 				if impl_target is None:
@@ -142,6 +142,13 @@ def validate_lambdas_non_retaining(
 				_walk_expr(arg, allow_lambda=_allow_lambda_arg(e, arg_index=idx))
 			for kw in e.kwargs:
 				_walk_expr(kw.value, allow_lambda=_allow_lambda_arg(e, kw_name=kw.name))
+			return
+		if isinstance(e, getattr(H, "HInvoke", ())):
+			_walk_expr(e.callee, allow_lambda=True)
+			for arg in e.args:
+				_walk_expr(arg, allow_lambda=False)
+			for kw in e.kwargs:
+				_walk_expr(kw.value, allow_lambda=False)
 			return
 		if isinstance(e, H.HMethodCall):
 			allow_receiver_lambda = e.method_name == "call" and isinstance(e.receiver, H.HLambda)

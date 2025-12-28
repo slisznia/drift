@@ -37,6 +37,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Mapping, Optional
 
 from lang2.driftc.checker import FnInfo
+from lang2.driftc.core.function_id import function_symbol, function_ref_symbol
 from lang2.driftc.stage1 import BinaryOp, UnaryOp
 from lang2.driftc.stage2 import (
 	ArrayCap,
@@ -47,6 +48,7 @@ from lang2.driftc.stage2 import (
 	AssignSSA,
 	BinaryOpInstr,
 	Call,
+	CallIndirect,
 	ConstructStruct,
 	ConstructVariant,
 	VariantTag,
@@ -56,6 +58,7 @@ from lang2.driftc.stage2 import (
 	ConstBool,
 	ConstInt,
 	ConstString,
+	FnPtrConst,
 	ZeroValue,
 	ConstructError,
 	ErrorAddAttrDV,
@@ -1376,8 +1379,12 @@ class _FuncBuilder:
 			self.lines.append(f"  store {llty} {val}, {ptr_ty} {ptr}")
 		elif isinstance(instr, BinaryOpInstr):
 			self._lower_binary(instr)
+		elif isinstance(instr, FnPtrConst):
+			self._lower_fnptr_const(instr)
 		elif isinstance(instr, Call):
 			self._lower_call(instr)
+		elif isinstance(instr, CallIndirect):
+			self._lower_call_indirect(instr)
 		elif isinstance(instr, ResultIsErr):
 			dest = self._map_value(instr.dest)
 			res = self._map_value(instr.result)
@@ -1694,7 +1701,9 @@ class _FuncBuilder:
 		)
 		target_sym, is_cross_module = self._resolve_call_target_symbol(instr.fn, callee_info)
 
-		if is_exported_entry and is_cross_module and not callee_info.declared_can_throw:
+		call_can_throw = instr.can_throw
+
+		if is_exported_entry and is_cross_module and not call_can_throw:
 			# ABI boundary wrapper returns FnResult even for nothrow entrypoints.
 			# The surface language expects a plain `T`. We must not silently treat an
 			# error as a `T`, so unwrap via a helper that traps on `is_err = true`.
@@ -1724,7 +1733,7 @@ class _FuncBuilder:
 			self.value_types[dest] = ok_llty
 			return
 
-		if callee_info.declared_can_throw:
+		if call_can_throw:
 			_, fnres_llty = self._fnresult_types_for_fn(callee_info)
 			if dest is None:
 				raise AssertionError("can-throw calls must preserve their FnResult value (MIR bug)")
@@ -1745,6 +1754,72 @@ class _FuncBuilder:
 					raise NotImplementedError("LLVM codegen v1: cannot capture result of a void call")
 				self.lines.append(f"  {dest} = call {ret_ty} {_llvm_fn_sym(target_sym)}({args})")
 				self.value_types[dest] = ret_ty
+
+	def _lower_call_indirect(self, instr: CallIndirect) -> None:
+		if self.type_table is None:
+			raise NotImplementedError("LLVM codegen v1: indirect calls require a TypeTable")
+		if instr.can_throw and instr.dest is None:
+			raise NotImplementedError("LLVM codegen v1: can-throw indirect call requires a destination")
+		if not instr.can_throw and instr.dest is None and not self.type_table.is_void(instr.user_ret_type):
+			raise NotImplementedError("LLVM codegen v1: indirect call missing destination for non-void return")
+		if len(instr.param_types) != len(instr.args):
+			raise NotImplementedError(
+				"LLVM codegen v1: indirect call arg count mismatch "
+				f"(have {len(instr.args)}, expected {len(instr.param_types)})"
+			)
+
+		arg_parts: list[str] = []
+		for ty_id, arg in zip(instr.param_types, instr.args):
+			llty = self._llvm_type_for_typeid(ty_id)
+			arg_parts.append(f"{llty} {self._map_value(arg)}")
+		args = ", ".join(arg_parts)
+
+		ret_tid = instr.user_ret_type
+		if instr.can_throw:
+			err_tid = self.type_table.ensure_error()
+			ret_tid = self.type_table.ensure_fnresult(instr.user_ret_type, err_tid)
+		ret_llty = self._llvm_type_for_typeid(ret_tid)
+		fn_ptr_ty = self._fn_ptr_lltype(instr.param_types, instr.user_ret_type, instr.can_throw)
+
+		callee_val = self._map_value(instr.callee)
+		have_ty = self.value_types.get(callee_val)
+		if have_ty != fn_ptr_ty:
+			src_ty = have_ty or "i8*"
+			cast_val = self._fresh("fnptr")
+			self.lines.append(f"  {cast_val} = bitcast {src_ty} {callee_val} to {fn_ptr_ty}")
+			callee_val = cast_val
+			self.value_types[callee_val] = fn_ptr_ty
+
+		if instr.dest:
+			dest = self._map_value(instr.dest)
+			self.lines.append(f"  {dest} = call {ret_llty} {callee_val}({args})")
+			self.value_types[dest] = ret_llty
+		else:
+			self.lines.append(f"  call {ret_llty} {callee_val}({args})")
+
+	def _fn_ptr_lltype(self, param_types: list[TypeId], user_ret_type: TypeId, can_throw: bool) -> str:
+		if self.type_table is None:
+			raise NotImplementedError("LLVM codegen v1: function pointer types require a TypeTable")
+		ret_tid = user_ret_type
+		if can_throw:
+			err_tid = self.type_table.ensure_error()
+			ret_tid = self.type_table.ensure_fnresult(user_ret_type, err_tid)
+		ret_llty = self._llvm_type_for_typeid(ret_tid)
+		arg_lltys = ", ".join(self._llvm_type_for_typeid(t) for t in param_types)
+		return f"{ret_llty} ({arg_lltys})*"
+
+	def _lower_fnptr_const(self, instr: FnPtrConst) -> None:
+		if self.type_table is None:
+			raise NotImplementedError("LLVM codegen v1: function pointer constants require a TypeTable")
+		dest = self._map_value(instr.dest)
+		fn_ptr_ty = self._fn_ptr_lltype(
+			list(instr.call_sig.param_types),
+			instr.call_sig.user_ret_type,
+			instr.call_sig.can_throw,
+		)
+		sym = function_ref_symbol(instr.fn_ref)
+		self.lines.append(f"  {dest} = bitcast {fn_ptr_ty} {_llvm_fn_sym(sym)} to {fn_ptr_ty}")
+		self.value_types[dest] = fn_ptr_ty
 
 	def _resolve_call_target_symbol(self, symbol: str, callee_info: FnInfo) -> tuple[str, bool]:
 		"""

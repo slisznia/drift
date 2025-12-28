@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import lang2.driftc.stage1.hir_nodes as H
+from lang2.driftc.stage1.node_ids import assign_node_ids
 from lang2.driftc.checker import FnSignature
 from lang2.driftc.core.function_id import FunctionId
 from lang2.driftc.method_registry import CallableDecl, CallableKind, CallableSignature, Visibility
@@ -213,7 +214,8 @@ def test_lambda_in_method_call_arg_allowed_for_nonretaining_param() -> None:
 	}
 	typed_fns = {fn_id: _typed_method_with_direct_call(fn_id, self_name="self", param_name="f")}
 	signatures = _analyze_signatures(signatures_by_id, typed_fns)
-	call_resolutions = {id(call): _method_resolution("for_each", impl_target_type_id=1)}
+	assign_node_ids(call)
+	call_resolutions = {call.node_id: _method_resolution("for_each", impl_target_type_id=1)}
 	res = validate_lambdas_non_retaining(call, signatures=signatures, call_resolutions=call_resolutions)
 	assert res.diagnostics == []
 
@@ -233,7 +235,8 @@ def test_lambda_in_method_call_arg_rejected_when_retaining() -> None:
 	}
 	typed_fns = {fn_id: _typed_method_with_retain(fn_id, self_name="self", param_name="f")}
 	signatures = _analyze_signatures(signatures_by_id, typed_fns)
-	call_resolutions = {id(call): _method_resolution("for_each", impl_target_type_id=1)}
+	assign_node_ids(call)
+	call_resolutions = {call.node_id: _method_resolution("for_each", impl_target_type_id=1)}
 	res = validate_lambdas_non_retaining(call, signatures=signatures, call_resolutions=call_resolutions)
 	assert any("only immediate invocation" in d.message for d in res.diagnostics)
 

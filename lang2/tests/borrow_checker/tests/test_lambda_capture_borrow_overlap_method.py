@@ -9,6 +9,7 @@ from lang2.driftc.core.types_core import TypeTable
 from lang2.driftc.method_registry import CallableDecl, CallableKind, CallableSignature, SelfMode, Visibility
 from lang2.driftc.method_resolver import MethodResolution
 from lang2.driftc.stage1.non_retaining_analysis import analyze_non_retaining_params
+from lang2.driftc.stage1.node_ids import assign_node_ids
 from lang2.driftc.type_checker import TypedFn
 
 
@@ -91,7 +92,8 @@ def _typed_fn_with_method_call(
 		impl_target_type_id=point_ty,
 		self_mode=SelfMode.SELF_BY_REF,
 	)
-	call_resolutions = {id(call): MethodResolution(decl=decl, receiver_autoborrow=receiver_autoborrow)}
+	assign_node_ids(body)
+	call_resolutions = {call.node_id: MethodResolution(decl=decl, receiver_autoborrow=receiver_autoborrow)}
 
 	typed_fn = TypedFn(
 		fn_id=FunctionId(module="main", name="main", ordinal=0),

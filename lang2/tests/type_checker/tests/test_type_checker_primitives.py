@@ -35,7 +35,7 @@ def test_literal_and_var_types():
 	# binding_for_var should map this HVar to the same binding id as its let.
 	let_binding = block2.statements[0].binding_id
 	assert let_binding is not None
-	assert result2.typed_fn.binding_for_var[id(var_expr)] == let_binding
+	assert result2.typed_fn.binding_for_var[var_expr.node_id] == let_binding
 
 
 def test_borrow_types():
@@ -78,7 +78,7 @@ def test_shadowing_respects_lexical_scope():
 	assert isinstance(var_expr, H.HVar)
 	outer_bid = outer_let.binding_id
 	assert outer_bid is not None
-	assert res.typed_fn.binding_for_var[id(var_expr)] == outer_bid
+	assert res.typed_fn.binding_for_var[var_expr.node_id] == outer_bid
 	assert tc.type_table.ensure_int() in res.typed_fn.expr_types.values()
 
 
@@ -92,7 +92,7 @@ def test_param_binding_and_type_tracked():
 	assert res.typed_fn.param_bindings
 	var_expr = fn_body.statements[0].expr
 	assert isinstance(var_expr, H.HVar)
-	p_binding = res.typed_fn.binding_for_var[id(var_expr)]
+	p_binding = res.typed_fn.binding_for_var[var_expr.node_id]
 	assert p_binding in res.typed_fn.param_bindings
 	assert res.typed_fn.binding_types[p_binding] == int_ty
 

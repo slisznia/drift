@@ -327,6 +327,7 @@ def encode_type_table(table: TypeTable) -> dict[str, Any]:
 			"param_types": list(td.param_types),
 			"module_id": td.module_id,
 			"ref_mut": td.ref_mut,
+			"fn_throws": td.fn_throws,
 			"field_names": list(td.field_names) if td.field_names is not None else None,
 		}
 
@@ -336,6 +337,7 @@ def encode_type_table(table: TypeTable) -> dict[str, Any]:
 			"args": [_encode_generic_type_expr(a) for a in expr.args],
 			"param_index": expr.param_index,
 			"module_id": expr.module_id,
+			"fn_throws": expr.fn_throws,
 		}
 
 	def _encode_variant_schema(schema: Any) -> dict[str, Any]:

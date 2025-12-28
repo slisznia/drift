@@ -31,6 +31,7 @@ MUT.2: /mut\b/
 TYPE.2: /type\b/
 CALL_TYPE_LT.2: /<\s*type\b/
 THROW.2: /throw\b/
+NOTHROW.2: /nothrow\b/
 VARIANT.2: /variant\b/
 MATCH.2: /match\b/
 DEFAULT.2: /default\b/
@@ -84,6 +85,7 @@ ELSE.2: /else\b/
 WHILE.2: /while\b/
 MOVE.2: /move\b/
 COPY.2: /copy\b/
+CAST.2: /cast\b/
 CAPTURES.2: /captures\b/
 BREAK.2: /break\b/
 CONTINUE.2: /continue\b/
@@ -152,7 +154,10 @@ trait_item: trait_method_sig TERMINATOR*
 trait_method_sig: "fn" ident "(" [params] ")" return_sig
 
 type_expr: ref_type
+         | fn_type
          | base_type
+
+fn_type: "fn" "(" [type_expr (COMMA type_expr)*] ")" return_sig NOTHROW?
 
 ref_type: AMP MUT? type_expr
 // Base (nominal) type reference.
@@ -397,9 +402,12 @@ event_fqn: module_path COLON NAME
 primary: literal
        | ident -> var
        | leading_dot
+       | cast_expr
        | "(" expr ")"
        | lambda_expr
        | array_literal
+
+cast_expr: CAST LT type_expr GT "(" expr ")"
 
 lambda_expr: BAR lambda_params? BAR lambda_captures? lambda_returns? FATARROW lambda_body
 lambda_returns: RETURNS type_expr

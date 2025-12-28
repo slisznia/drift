@@ -2324,11 +2324,7 @@ class Checker:
 										rt_id, err_id = self._resolve_signature_types(callee_sig)
 										callee_sig.return_type_id = rt_id
 										callee_sig.error_type_id = err_id
-									callee_can_throw = (
-										can_throw_by_name.get(instr.fn, False)
-										if can_throw_by_name is not None
-										else bool(callee_sig.declared_can_throw)
-									)
+									callee_can_throw = bool(getattr(instr, "can_throw", False))
 									if callee_can_throw:
 										ok_ty = callee_sig.return_type_id or self._unknown_type
 										err_ty = callee_sig.error_type_id or self._error_type

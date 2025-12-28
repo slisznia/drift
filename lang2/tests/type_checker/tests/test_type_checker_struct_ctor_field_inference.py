@@ -62,7 +62,7 @@ fn main() returns Int {
 	box_base = type_table.get_struct_base(module_id="main", name="Box")
 	assert box_base is not None
 	expected = type_table.ensure_struct_instantiated(box_base, [type_table.ensure_int()])
-	call_ty = result.typed_fn.expr_types.get(id(calls[0]))
+	call_ty = result.typed_fn.expr_types.get(calls[0].node_id)
 	assert call_ty == expected
 
 

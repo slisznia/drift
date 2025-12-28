@@ -212,7 +212,7 @@ fn main() returns Int {
 	)
 	calls = _collect_method_calls(main_block)
 	assert len(calls) == 1
-	res = call_resolutions.get(id(calls[0]))
+	res = call_resolutions.get(calls[0].node_id)
 	assert res is not None and res.decl.fn_id is not None
 	assert res.decl.fn_id.module == "m_box"
 	assert signatures[res.decl.fn_id].is_method
@@ -355,7 +355,7 @@ fn main() returns Int {
 	)
 	calls = _collect_method_calls(main_block)
 	assert len(calls) == 1
-	res = call_resolutions.get(id(calls[0]))
+	res = call_resolutions.get(calls[0].node_id)
 	assert res is not None and res.decl.fn_id is not None
 	assert res.decl.fn_id.module == "m_a"
 	assert signatures[res.decl.fn_id].is_method
@@ -399,7 +399,7 @@ fn main() returns Int {
 	)
 	calls = _collect_method_calls(main_block)
 	assert len(calls) == 1
-	res = call_resolutions.get(id(calls[0]))
+	res = call_resolutions.get(calls[0].node_id)
 	assert res is not None and res.decl.fn_id is not None
 	assert res.decl.fn_id.module == "m_main"
 	assert signatures[res.decl.fn_id].is_method
@@ -513,7 +513,7 @@ fn main() returns Int {
 	)
 	calls = _collect_method_calls(main_block)
 	assert len(calls) == 1
-	res = call_resolutions.get(id(calls[0]))
+	res = call_resolutions.get(calls[0].node_id)
 	assert res is not None and res.decl.fn_id is not None
 	assert res.decl.fn_id.module == "m_impl"
 	assert signatures[res.decl.fn_id].is_method

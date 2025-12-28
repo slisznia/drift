@@ -23,18 +23,21 @@ from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import List, Optional
 
+from lang2.driftc.core.function_id import FunctionRefId
 from lang2.driftc.core.span import Span
 
 # Stable identifiers for bindings (locals/params). Populated by the typed
 # checker; optional today to preserve existing HIR construction.
 BindingId = int
+# Stable identifiers for HIR nodes (used by typed side tables).
+NodeId = int
 
 
 # Base node kinds
 
 class HNode:
 	"""Base class for all HIR nodes."""
-	pass
+	node_id: NodeId = 0
 
 
 class HExpr(HNode):
@@ -297,10 +300,44 @@ class HCall(HExpr):
 
 
 @dataclass
+class HInvoke(HExpr):
+	"""
+	Call through a value expression: callee(args...).
+
+	This represents invocation of a computed callable value (e.g., function
+	pointer), as distinct from a direct named call (`HCall`).
+	"""
+	callee: HExpr
+	args: List[HExpr]
+	kwargs: List["HKwArg"] = field(default_factory=list)
+	type_args: Optional[list["HTypeExpr"]] = None
+
+
+@dataclass
+class HFnPtrConst(HExpr):
+	"""
+	Function pointer constant (resolved symbol + call signature).
+
+	This node is introduced by the type checker when a name expression is used
+	as a function value (e.g., `val f: fn(...) = abs`).
+	"""
+	fn_ref: FunctionRefId
+	call_sig: "CallSig"
+
+
+@dataclass
 class HTypeApp(HExpr):
 	"""Explicit type application on a callable reference (no call)."""
 	fn: HExpr
 	type_args: list["HTypeExpr"]
+
+
+@dataclass
+class HCast(HExpr):
+	"""Explicit cast: cast<T>(expr)."""
+	target_type_expr: "HTypeExpr"
+	value: HExpr
+	loc: Span = field(default_factory=Span)
 
 
 @dataclass
@@ -691,8 +728,8 @@ __all__ = [
 	"HLiteralInt", "HLiteralString", "HLiteralBool", "HLiteralFloat",
 	"HFString", "HFStringHole",
 	"HParam", "HLambda",
-	"HCall", "HMethodCall", "HTernary", "HResultOk",
-	"HTypeApp",
+	"HCall", "HInvoke", "HFnPtrConst", "HMethodCall", "HTernary", "HResultOk",
+	"HTypeApp", "HCast",
 	"HPlaceExpr", "HPlaceProj", "HPlaceField", "HPlaceIndex", "HPlaceDeref",
 	"HField", "HQualifiedMember", "HIndex", "HBorrow", "HDVInit",
 	"HMove",

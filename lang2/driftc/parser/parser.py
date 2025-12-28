@@ -20,6 +20,7 @@ from .ast import (
     CatchClause,
     ExceptionArg,
     ExceptionDef,
+    Cast,
     Expr,
     ExprStmt,
     ForStmt,
@@ -1398,6 +1399,17 @@ def _build_lambda(tree: Tree) -> Lambda:
 
 def _build_type_expr(tree: Tree) -> TypeExpr:
 	name = _name(tree)
+	if name == "fn_type":
+		param_nodes = [child for child in tree.children if isinstance(child, Tree) and _name(child) == "type_expr"]
+		ret_node = next((child for child in tree.children if isinstance(child, Tree) and _name(child) == "return_sig"), None)
+		ret_type_node = None
+		if ret_node is not None:
+			ret_type_node = next((c for c in ret_node.children if isinstance(c, Tree)), None)
+		params = [_build_type_expr(t) for t in param_nodes]
+		ret = _build_type_expr(ret_type_node) if ret_type_node is not None else TypeExpr(name="<unknown>")
+		is_nothrow = any(isinstance(child, Token) and child.type == "NOTHROW" for child in tree.children)
+		fn_throws = False if is_nothrow else None
+		return TypeExpr(name="fn", args=[*params, ret], fn_throws=fn_throws)
 	if name == "ref_type":
 		# '&' ['mut'] type_expr
 		inner = _build_type_expr(next(child for child in tree.children if isinstance(child, Tree)))
@@ -1406,7 +1418,7 @@ def _build_type_expr(tree: Tree) -> TypeExpr:
 		return TypeExpr(name=ref_name, args=[inner])
 	if name == "type_expr":
 		for child in tree.children:
-			if isinstance(child, Tree) and _name(child) in {"base_type", "qualified_base_type", "type_expr", "ref_type"}:
+			if isinstance(child, Tree) and _name(child) in {"base_type", "qualified_base_type", "type_expr", "ref_type", "fn_type"}:
 				return _build_type_expr(child)
 		return TypeExpr(name="<unknown>")
 	if name == "base_type":
@@ -2028,6 +2040,10 @@ def _build_expr(node) -> Expr:
         return _fold_chain(node, "pipeline_tail")
     if name == "lambda_expr":
         return _build_lambda(node)
+    if name == "cast_expr":
+        type_node = next(child for child in node.children if isinstance(child, Tree) and _name(child) == "type_expr")
+        expr_node = next(child for child in node.children if isinstance(child, Tree) and _name(child) != "type_expr")
+        return Cast(loc=_loc(node), target_type=_build_type_expr(type_node), expr=_build_expr(expr_node))
     if name == "exception_ctor":
         return _build_exception_ctor(node)
     if name == "logic_and":

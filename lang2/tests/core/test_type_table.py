@@ -9,7 +9,7 @@ def test_type_table_registers_basic_kinds():
 	bool_ty = table.new_scalar("Bool")
 	err_ty = table.new_error("Error")
 	fnres_ty = table.new_fnresult(int_ty, err_ty)
-	fn_ty = table.new_function("foo", [int_ty], bool_ty)
+	fn_ty = table.new_function("fn", [int_ty], bool_ty)
 	unknown_ty = table.new_unknown()
 
 	assert table.get(int_ty).kind is TypeKind.SCALAR

@@ -306,6 +306,13 @@ class AstToHIR:
 			loc=self._as_span(getattr(expr, "loc", None)),
 		)
 
+	def _visit_expr_Cast(self, expr: ast.Cast) -> H.HExpr:
+		return H.HCast(
+			target_type_expr=expr.target_type,
+			value=self.lower_expr(expr.expr),
+			loc=self._as_span(getattr(expr, "loc", None)),
+		)
+
 	def _visit_stmt_LetStmt(self, stmt: ast.LetStmt) -> H.HStmt:
 		"""
 		Binding introduction (`val` / `var`).
@@ -396,10 +403,16 @@ class AstToHIR:
 							type_args=type_args,
 						)
 
-		# Plain function call (or call through an expression value).
+		# Plain function call or call through a computed value.
 		fn_expr = self.lower_expr(expr.func)
 		args = [self.lower_expr(a) for a in expr.args]
-		return H.HCall(fn=fn_expr, args=args, kwargs=h_kwargs, type_args=type_args)
+		# Keep direct name/qualified/lambda calls as HCall; lower everything else
+		# to HInvoke so stage2 can treat value calls uniformly.
+		if isinstance(fn_expr, (H.HVar, H.HLambda)) or (
+			hasattr(H, "HQualifiedMember") and isinstance(fn_expr, getattr(H, "HQualifiedMember"))
+		):
+			return H.HCall(fn=fn_expr, args=args, kwargs=h_kwargs, type_args=type_args)
+		return H.HInvoke(callee=fn_expr, args=args, kwargs=h_kwargs, type_args=type_args)
 
 	def _visit_expr_TypeApp(self, expr: ast.TypeApp) -> H.HExpr:
 		fn_expr = self.lower_expr(expr.func)
@@ -481,6 +494,14 @@ class AstToHIR:
 		# without requiring dedicated MIR/LLVM support.
 		if expr.op == "|>":
 			left = self.lower_expr(expr.left)
+			def _call_expr(fn_expr: H.HExpr, args: list[H.HExpr], kwargs: list[H.HKwArg]) -> H.HExpr:
+				if isinstance(fn_expr, H.HVar):
+					return H.HCall(fn=fn_expr, args=args, kwargs=kwargs)
+				if hasattr(H, "HQualifiedMember") and isinstance(fn_expr, getattr(H, "HQualifiedMember")):
+					return H.HCall(fn=fn_expr, args=args, kwargs=kwargs)
+				if isinstance(fn_expr, H.HLambda):
+					return H.HCall(fn=fn_expr, args=args, kwargs=kwargs)
+				return H.HInvoke(callee=fn_expr, args=args, kwargs=kwargs)
 			# `lhs |> f(...)` becomes `f(lhs, ...)`.
 			if isinstance(expr.right, ast.Call):
 				fn = self.lower_expr(expr.right.func)
@@ -492,12 +513,12 @@ class AstToHIR:
 						value=self.lower_expr(kw.value),
 						loc=Span.from_loc(getattr(kw, "loc", None)),
 					)
-					for kw in kw_pairs
+						for kw in kw_pairs
 				]
-				return H.HCall(fn=fn, args=args, kwargs=kwargs)
+				return _call_expr(fn, args, kwargs)
 			# `lhs |> f` becomes `f(lhs)`.
 			fn = self.lower_expr(expr.right)
-			return H.HCall(fn=fn, args=[left], kwargs=[])
+			return _call_expr(fn, [left], [])
 
 		op_map = {
 			"+": H.BinaryOp.ADD,
@@ -689,6 +710,12 @@ class AstToHIR:
 			if isinstance(e, H.HCall):
 				return H.HCall(
 					fn=_rename_expr(e.fn, mapping),
+					args=[_rename_expr(a, mapping) for a in e.args],
+					kwargs=[H.HKwArg(name=kw.name, value=_rename_expr(kw.value, mapping), loc=kw.loc) for kw in e.kwargs],
+				)
+			if isinstance(e, getattr(H, "HInvoke", ())):
+				return H.HInvoke(
+					callee=_rename_expr(e.callee, mapping),
 					args=[_rename_expr(a, mapping) for a in e.args],
 					kwargs=[H.HKwArg(name=kw.name, value=_rename_expr(kw.value, mapping), loc=kw.loc) for kw in e.kwargs],
 				)

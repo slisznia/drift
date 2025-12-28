@@ -15,15 +15,18 @@ checker integration will consume TypedFn once this matures.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field, replace, fields, is_dataclass
 from typing import Dict, List, Optional, Mapping, Tuple
 
 from lang2.driftc import stage1 as H
+from lang2.driftc.stage1.call_info import CallInfo, CallSig, CallTarget
+from lang2.driftc.stage1.node_ids import assign_node_ids
+from lang2.driftc.stage1.capture_discovery import discover_captures
 from lang2.driftc.checker import FnSignature, TypeParam
 from lang2.driftc.core.diagnostics import Diagnostic
 from lang2.driftc.core.span import Span
 from lang2.driftc.core.types_core import TypeId, TypeTable, TypeKind, VariantInstance, VariantSchema, TypeParamId
-from lang2.driftc.core.function_id import FunctionId, function_symbol
+from lang2.driftc.core.function_id import FunctionId, FunctionRefId, FunctionRefKind, function_symbol
 from lang2.driftc.core.type_resolve_common import resolve_opaque_type
 from lang2.driftc.core.type_subst import Subst, apply_subst
 from lang2.driftc.core.generic_type_expr import GenericTypeExpr
@@ -83,12 +86,13 @@ class TypedFn:
 	param_bindings: List[int]
 	locals: List[LocalId]
 	body: H.HBlock
-	expr_types: Dict[int, TypeId]  # keyed by id(expr)
-	binding_for_var: Dict[int, int]  # keyed by id(HVar)
+	expr_types: Dict[int, TypeId]  # keyed by node_id
+	binding_for_var: Dict[int, int]  # keyed by node_id
 	binding_types: Dict[int, TypeId]  # binding_id -> TypeId
 	binding_names: Dict[int, str]  # binding_id -> name
 	binding_mutable: Dict[int, bool]  # binding_id -> declared var?
 	call_resolutions: Dict[int, CallableDecl | MethodResolution] = field(default_factory=dict)
+	call_info_by_node_id: Dict[int, "CallInfo"] = field(default_factory=dict)
 
 
 @dataclass
@@ -97,6 +101,28 @@ class TypeCheckResult:
 
 	typed_fn: TypedFn
 	diagnostics: List[Diagnostic] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class ThunkSpec:
+	"""Synthetic Ok-wrap thunk for NOTHROW -> CAN_THROW function values."""
+
+	thunk_fn_id: FunctionId
+	target_fn_id: FunctionId
+	param_types: tuple[TypeId, ...]
+	return_type: TypeId
+
+
+@dataclass(frozen=True)
+class LambdaFnSpec:
+	"""Synthetic function for a captureless lambda coerced to a fn pointer."""
+
+	fn_id: FunctionId
+	lambda_expr: "H.HLambda"
+	param_types: tuple[TypeId, ...]
+	return_type: TypeId
+	can_throw: bool
+	call_info_by_node_id: dict[int, "CallInfo"]
 
 
 class TypeChecker:
@@ -122,6 +148,14 @@ class TypeChecker:
 		self._opt_bool = self.type_table.new_optional(self._bool)
 		self._opt_string = self.type_table.new_optional(self._string)
 		self._unknown = self.type_table.ensure_unknown()
+		self._thunk_specs: dict[tuple[FunctionId, tuple[TypeId, ...], TypeId], ThunkSpec] = {}
+		self._lambda_fn_specs: dict[FunctionId, LambdaFnSpec] = {}
+
+	def thunk_specs(self) -> list[ThunkSpec]:
+		return list(self._thunk_specs.values())
+
+	def lambda_fn_specs(self) -> list[LambdaFnSpec]:
+		return list(self._lambda_fn_specs.values())
 		# Binding ids (params and locals) share a single id-space.
 		#
 		# This is critical for correctness: many downstream passes (including the
@@ -142,10 +176,177 @@ class TypeChecker:
 		name = td.name
 		if td.module_id and current_module and td.module_id not in {current_module, "lang.core"}:
 			name = f"{td.module_id}.{name}"
+		if td.kind is TypeKind.FUNCTION:
+			param_types = list(td.param_types[:-1]) if td.param_types else []
+			ret_type = td.param_types[-1] if td.param_types else self._unknown
+			params = ", ".join(self._pretty_type_name(t, current_module=current_module) for t in param_types)
+			ret = self._pretty_type_name(ret_type, current_module=current_module)
+			suffix = "" if td.fn_throws is not False else " nothrow"
+			return f"fn({params}) returns {ret}{suffix}"
 		if td.param_types:
 			args = ", ".join(self._pretty_type_name(t, current_module=current_module) for t in td.param_types)
 			return f"{name}<{args}>"
 		return name
+
+	def _seed_binding_id_counter(self, body: H.HBlock) -> None:
+		"""
+		Ensure new binding ids won't collide with ids already present in HIR.
+
+		Stage1 may assign binding ids during parsing/normalization. The type
+		checker also allocates ids for temps introduced in later rewrites (e.g.
+		borrow materialization). We must avoid reusing ids that already appear in
+		the input HIR.
+		"""
+		max_id = 0
+
+		def bump(obj: object) -> None:
+			nonlocal max_id
+			bid = getattr(obj, "binding_id", None)
+			if isinstance(bid, int) and bid > max_id:
+				max_id = bid
+
+		def walk_expr(expr: H.HExpr) -> None:
+			bump(expr)
+			if isinstance(expr, H.HVar):
+				return
+			if isinstance(expr, H.HUnary):
+				walk_expr(expr.expr)
+				return
+			if isinstance(expr, H.HBinary):
+				walk_expr(expr.left)
+				walk_expr(expr.right)
+				return
+			if isinstance(expr, H.HTernary):
+				walk_expr(expr.cond)
+				walk_expr(expr.then_expr)
+				walk_expr(expr.else_expr)
+				return
+			if isinstance(expr, H.HBorrow):
+				walk_expr(expr.subject)
+				return
+			if isinstance(expr, getattr(H, "HMove", ())):
+				walk_expr(expr.subject)
+				return
+			if isinstance(expr, H.HCall):
+				walk_expr(expr.fn)
+				for arg in expr.args:
+					walk_expr(arg)
+				for kw in getattr(expr, "kwargs", []) or []:
+					walk_expr(kw.value)
+				return
+			if isinstance(expr, getattr(H, "HInvoke", ())):
+				walk_expr(expr.callee)
+				for arg in expr.args:
+					walk_expr(arg)
+				for kw in getattr(expr, "kwargs", []) or []:
+					walk_expr(kw.value)
+				return
+			if isinstance(expr, getattr(H, "HTypeApp", ())):
+				walk_expr(expr.fn)
+				return
+			if isinstance(expr, H.HMethodCall):
+				walk_expr(expr.receiver)
+				for arg in expr.args:
+					walk_expr(arg)
+				for kw in getattr(expr, "kwargs", []) or []:
+					walk_expr(kw.value)
+				return
+			if isinstance(expr, H.HField):
+				walk_expr(expr.subject)
+				return
+			if isinstance(expr, H.HIndex):
+				walk_expr(expr.subject)
+				walk_expr(expr.index)
+				return
+			if isinstance(expr, getattr(H, "HPlaceExpr", ())):
+				bump(expr.base)
+				for proj in expr.projections:
+					if isinstance(proj, H.HPlaceIndex):
+						walk_expr(proj.index)
+				return
+			if isinstance(expr, H.HArrayLiteral):
+				for elem in expr.elements:
+					walk_expr(elem)
+				return
+			if isinstance(expr, H.HFString):
+				for hole in expr.holes:
+					walk_expr(hole.expr)
+				return
+			if isinstance(expr, H.HLambda):
+				for param in expr.params:
+					bump(param)
+				for cap in expr.explicit_captures or []:
+					bump(cap)
+				if expr.body_expr is not None:
+					walk_expr(expr.body_expr)
+				if expr.body_block is not None:
+					walk_block(expr.body_block)
+				return
+			if isinstance(expr, H.HResultOk):
+				walk_expr(expr.value)
+				return
+			if isinstance(expr, H.HTryExpr):
+				walk_expr(expr.attempt)
+				for arm in expr.arms:
+					walk_block(arm.block)
+					if arm.result is not None:
+						walk_expr(arm.result)
+				return
+			if isinstance(expr, H.HMatchExpr):
+				walk_expr(expr.scrutinee)
+				for arm in expr.arms:
+					walk_block(arm.block)
+					if arm.result is not None:
+						walk_expr(arm.result)
+				return
+
+		def walk_stmt(stmt: H.HStmt) -> None:
+			bump(stmt)
+			if isinstance(stmt, H.HLet):
+				walk_expr(stmt.value)
+				return
+			if isinstance(stmt, H.HAssign):
+				walk_expr(stmt.target)
+				walk_expr(stmt.value)
+				return
+			if hasattr(H, "HAugAssign") and isinstance(stmt, getattr(H, "HAugAssign")):
+				walk_expr(stmt.target)
+				walk_expr(stmt.value)
+				return
+			if isinstance(stmt, H.HExprStmt):
+				walk_expr(stmt.expr)
+				return
+			if isinstance(stmt, H.HReturn):
+				if stmt.value is not None:
+					walk_expr(stmt.value)
+				return
+			if isinstance(stmt, H.HIf):
+				walk_expr(stmt.cond)
+				walk_block(stmt.then_block)
+				if stmt.else_block is not None:
+					walk_block(stmt.else_block)
+				return
+			if isinstance(stmt, H.HLoop):
+				walk_block(stmt.body)
+				return
+			if isinstance(stmt, H.HBlock):
+				walk_block(stmt)
+				return
+			if isinstance(stmt, H.HTry):
+				walk_block(stmt.body)
+				for arm in stmt.catches:
+					walk_block(arm.block)
+				return
+			if isinstance(stmt, H.HThrow):
+				walk_expr(stmt.value)
+				return
+
+		def walk_block(block: H.HBlock) -> None:
+			for stmt in block.statements:
+				walk_stmt(stmt)
+
+		walk_block(body)
+		self._next_binding_id = max_id + 1
 
 	def _format_ctor_signature_list(
 		self,
@@ -201,6 +402,7 @@ class TypeChecker:
 		return_type: TypeId | None = None,
 		call_signatures: Mapping[str, list[FnSignature]] | None = None,
 		signatures_by_id: Mapping[FunctionId, FnSignature] | None = None,
+		can_throw_by_name: Mapping[str, bool] | None = None,
 		callable_registry: CallableRegistry | None = None,
 		impl_index: GlobalImplIndex | None = None,
 		trait_index: GlobalTraitIndex | None = None,
@@ -220,6 +422,7 @@ class TypeChecker:
 		current_module_name = fn_id.module or "main"
 		visibility_provenance = visibility_provenance or {}
 		visibility_imports = visibility_imports if visibility_imports is not None else None
+		self._seed_binding_id_counter(body)
 
 		def _format_visibility_chain(chain: tuple[str, ...], max_hops: int = 4) -> str:
 			if not chain:
@@ -248,6 +451,7 @@ class TypeChecker:
 				return None
 			return f"visible via: {_format_visibility_chain(chain)}"
 
+		assign_node_ids(body)
 		scope_env: List[Dict[str, TypeId]] = [dict()]
 		scope_bindings: List[Dict[str, int]] = [dict()]
 		expr_types: Dict[int, TypeId] = {}
@@ -282,8 +486,19 @@ class TypeChecker:
 		# Value is the binding_id of the originating ref param, or None when the
 		# reference points at local/temporary storage.
 		ref_origin_param: Dict[int, Optional[int]] = {}
+		explicit_capture_stack: list[dict[int, str]] = []
+		def _explicit_capture_kind(binding_id: int | None) -> str | None:
+			if binding_id is None:
+				return None
+			for scope in reversed(explicit_capture_stack):
+				kind = scope.get(binding_id)
+				if kind is not None:
+					return kind
+			return None
 		diagnostics: List[Diagnostic] = []
 		call_resolutions: Dict[int, CallableDecl | MethodResolution] = {}
+		call_info_by_node_id: Dict[int, CallInfo] = {}
+		fnptr_consts_by_node_id: Dict[int, tuple[FunctionRefId, CallSig]] = {}
 		trait_worlds = getattr(self.type_table, "trait_worlds", {}) or {}
 		global_trait_world: TraitWorld | None = None
 		if isinstance(trait_worlds, dict) and trait_worlds:
@@ -401,6 +616,319 @@ class TypeChecker:
 			if len(sigs) == 1:
 				return sigs[0]
 			return None
+
+		def _function_ref_candidates(name: str) -> list[FnSignature]:
+			if not call_signatures:
+				return []
+			sigs = call_signatures.get(name)
+			if sigs is None:
+				return []
+			if isinstance(sigs, FnSignature):
+				sigs = [sigs]
+			return [sig for sig in sigs if not getattr(sig, "is_method", False)]
+
+		def _expected_function_shape(expected_type: TypeId | None) -> tuple[list[TypeId], TypeId, bool] | None:
+			if expected_type is None:
+				return None
+			td = self.type_table.get(expected_type)
+			if td.kind is not TypeKind.FUNCTION or not td.param_types:
+				return None
+			params = list(td.param_types[:-1])
+			ret = td.param_types[-1]
+			can_throw = td.fn_throws is not False
+			return params, ret, can_throw
+
+		def _call_sig_for_fn_ref(sig: FnSignature) -> tuple[list[TypeId], TypeId, bool] | None:
+			if getattr(sig, "type_params", None):
+				return None
+			if sig.param_type_ids is None or sig.return_type_id is None:
+				return None
+			can_throw = sig_can_throw(sig)
+			if getattr(sig, "is_exported_entrypoint", False) or getattr(sig, "is_extern", False):
+				can_throw = True
+			return list(sig.param_type_ids), sig.return_type_id, can_throw
+
+		def _ensure_ok_wrap_thunk(
+			target_fn_id: FunctionId,
+			params: list[TypeId],
+			ret: TypeId,
+		) -> FunctionRefId:
+			key = (target_fn_id, tuple(params), ret)
+			spec = self._thunk_specs.get(key)
+			if spec is not None:
+				return FunctionRefId(fn_id=spec.thunk_fn_id, kind=FunctionRefKind.THUNK_OK_WRAP)
+			thunk_fn_id = FunctionId(
+				module="lang.__internal",
+				name=f"__thunk_ok_wrap::{function_symbol(target_fn_id)}",
+				ordinal=0,
+			)
+			spec = ThunkSpec(
+				thunk_fn_id=thunk_fn_id,
+				target_fn_id=target_fn_id,
+				param_types=tuple(params),
+				return_type=ret,
+			)
+			self._thunk_specs[key] = spec
+			return FunctionRefId(fn_id=thunk_fn_id, kind=FunctionRefKind.THUNK_OK_WRAP)
+
+		@dataclass
+		class _FnRefResolution:
+			fn_ref: FunctionRefId | None
+			call_sig: CallSig | None
+			fn_type: TypeId | None
+
+		def _resolve_function_reference_value(
+			*,
+			name: str,
+			expected_type: TypeId | None,
+			span: Span,
+			diag_mode: str,
+			allow_thunk: bool,
+		) -> _FnRefResolution | None:
+			fn_candidates = _function_ref_candidates(name)
+			if not fn_candidates:
+				return None
+			expected_fn = _expected_function_shape(expected_type)
+			candidate_labels: list[str] = []
+			matches: list[tuple[FnSignature, tuple[list[TypeId], TypeId, bool]]] = []
+			thunk_candidates: list[tuple[FnSignature, tuple[list[TypeId], TypeId, bool]]] = []
+			throw_mismatch_only = False
+
+			def _build_resolution(
+				sig: FnSignature,
+				call_sig_tuple: tuple[list[TypeId], TypeId, bool],
+			) -> _FnRefResolution:
+				params, ret, can_throw = call_sig_tuple
+				fn_id = sig_ids_by_obj.get(id(sig)) or _fn_id_from_symbol(name)
+				call_sig = CallSig(param_types=tuple(params), user_ret_type=ret, can_throw=bool(can_throw))
+				is_exported = bool(getattr(sig, "is_exported_entrypoint", False))
+				is_extern = bool(getattr(sig, "is_extern", False))
+				kind = FunctionRefKind.WRAPPER if (is_exported or is_extern) else FunctionRefKind.IMPL
+				fn_ref = FunctionRefId(fn_id=fn_id, kind=kind, has_wrapper=is_exported)
+				fn_ty = self.type_table.ensure_function("fn", params, ret, can_throw=bool(can_throw))
+				return _FnRefResolution(fn_ref=fn_ref, call_sig=call_sig, fn_type=fn_ty)
+
+			for sig in fn_candidates:
+				cs = _call_sig_for_fn_ref(sig)
+				if cs is None:
+					continue
+				params, ret, can_throw = cs
+				cand_ty = self.type_table.ensure_function("fn", params, ret, can_throw=bool(can_throw))
+				candidate_labels.append(self._pretty_type_name(cand_ty, current_module=current_module_name))
+				if expected_fn is None:
+					continue
+				exp_params, exp_ret, exp_throw = expected_fn
+				if params == exp_params and ret == exp_ret:
+					if can_throw != exp_throw:
+						throw_mismatch_only = True
+						if exp_throw and not can_throw:
+							thunk_candidates.append((sig, cs))
+					else:
+						matches.append((sig, cs))
+
+			if expected_fn is None:
+				if len(fn_candidates) > 1:
+					diagnostics.append(
+						Diagnostic(
+							message=f"ambiguous function reference '{name}'; add a type annotation",
+							severity="error",
+							span=span,
+						)
+					)
+					return _FnRefResolution(fn_ref=None, call_sig=None, fn_type=None)
+				chosen_sig = fn_candidates[0]
+				call_sig_tuple = _call_sig_for_fn_ref(chosen_sig)
+				if call_sig_tuple is None:
+					diag = (
+						f"function reference '{name}' requires explicit type arguments"
+						if getattr(chosen_sig, "type_params", None)
+						else "function reference lacks resolved parameter types (compiler bug)"
+					)
+					diagnostics.append(
+						Diagnostic(
+							message=diag,
+							severity="error",
+							span=span,
+						)
+					)
+					return _FnRefResolution(fn_ref=None, call_sig=None, fn_type=None)
+				return _build_resolution(chosen_sig, call_sig_tuple)
+
+			if not matches:
+				if allow_thunk and expected_fn is not None and len(thunk_candidates) == 1:
+					chosen_sig, cs = thunk_candidates[0]
+					params, ret, _can_throw = cs
+					target_fn_id = sig_ids_by_obj.get(id(chosen_sig)) or _fn_id_from_symbol(name)
+					thunk_ref = _ensure_ok_wrap_thunk(target_fn_id, params, ret)
+					call_sig = CallSig(param_types=tuple(params), user_ret_type=ret, can_throw=True)
+					fn_ty = self.type_table.ensure_function("fn", params, ret, can_throw=True)
+					return _FnRefResolution(fn_ref=thunk_ref, call_sig=call_sig, fn_type=fn_ty)
+				if diag_mode == "cast":
+					pretty = self._pretty_type_name(expected_type, current_module=current_module_name)
+					exp_params, exp_ret, exp_throw = expected_fn
+					params_s = ", ".join(self._pretty_type_name(p, current_module=current_module_name) for p in exp_params)
+					if not params_s:
+						params_s = "()"
+					ret_s = self._pretty_type_name(exp_ret, current_module=current_module_name)
+					throw_label = "nothrow" if not exp_throw else "can-throw"
+					notes: list[str] = []
+					if candidate_labels:
+						notes.append(f"candidates: {'; '.join(candidate_labels)}")
+					if throw_mismatch_only:
+						notes.append("note: throw-mode differs; thunking (nothrow -> can-throw) is not supported yet")
+					diagnostics.append(
+						Diagnostic(
+							message=(
+								f"cannot cast function '{name}' to {pretty}: no overload matches "
+								f"(expected params: {params_s}, returns: {ret_s}, {throw_label})"
+							),
+							severity="error",
+							span=span,
+							notes=notes,
+						)
+					)
+				else:
+					pretty = self._pretty_type_name(expected_type, current_module=current_module_name)
+					diagnostics.append(
+						Diagnostic(
+							message=f"no overload of '{name}' matches function type {pretty}",
+							severity="error",
+							span=span,
+						)
+					)
+				return _FnRefResolution(fn_ref=None, call_sig=None, fn_type=None)
+
+			if len(matches) > 1:
+				if diag_mode == "cast":
+					pretty = self._pretty_type_name(expected_type, current_module=current_module_name)
+					notes = [f"candidates: {'; '.join(candidate_labels)}"] if candidate_labels else []
+					diagnostics.append(
+						Diagnostic(
+							message=f"cannot cast function '{name}' to {pretty}: ambiguous overload resolution",
+							severity="error",
+							span=span,
+							notes=notes,
+						)
+					)
+				else:
+					diagnostics.append(
+						Diagnostic(
+							message=f"ambiguous function reference '{name}'; add a type annotation to disambiguate",
+							severity="error",
+							span=span,
+						)
+					)
+				return _FnRefResolution(fn_ref=None, call_sig=None, fn_type=None)
+
+			chosen_sig, call_sig_tuple = matches[0]
+			return _build_resolution(chosen_sig, call_sig_tuple)
+
+		def _lambda_can_throw(lam: H.HLambda, call_info: Mapping[int, CallInfo]) -> bool:
+			def expr_can_throw(expr: H.HExpr) -> bool:
+				if isinstance(expr, H.HCall):
+					info = call_info.get(expr.node_id)
+					if info is None:
+						return True
+					if info.sig.can_throw:
+						return True
+					if isinstance(expr.fn, H.HLambda):
+						return _lambda_can_throw(expr.fn, call_info)
+					return any(expr_can_throw(a) for a in expr.args)
+				if isinstance(expr, H.HMethodCall):
+					info = call_info.get(expr.node_id)
+					if info is None:
+						return True
+					if info.sig.can_throw:
+						return True
+					if expr_can_throw(expr.receiver):
+						return True
+					return any(expr_can_throw(a) for a in expr.args)
+				if isinstance(expr, H.HInvoke):
+					info = call_info.get(expr.node_id)
+					if info is None:
+						return True
+					if info.sig.can_throw:
+						return True
+					if isinstance(expr.callee, H.HLambda):
+						return _lambda_can_throw(expr.callee, call_info)
+					if expr_can_throw(expr.callee):
+						return True
+					return any(expr_can_throw(a) for a in expr.args)
+				if isinstance(expr, H.HTryExpr):
+					if expr_can_throw(expr.attempt):
+						return True
+					for arm in expr.arms:
+						if block_can_throw(arm.block):
+							return True
+						if arm.result is not None and expr_can_throw(arm.result):
+							return True
+					return False
+				if isinstance(expr, H.HLambda):
+					return _lambda_can_throw(expr, call_info)
+				if isinstance(expr, H.HResultOk):
+					return expr_can_throw(expr.value)
+				if isinstance(expr, H.HTernary):
+					return (
+						expr_can_throw(expr.cond)
+						or expr_can_throw(expr.then_expr)
+						or expr_can_throw(expr.else_expr)
+					)
+				if isinstance(expr, H.HUnary):
+					return expr_can_throw(expr.expr)
+				if isinstance(expr, H.HBinary):
+					return expr_can_throw(expr.left) or expr_can_throw(expr.right)
+				if isinstance(expr, H.HField):
+					return expr_can_throw(expr.subject)
+				if isinstance(expr, H.HIndex):
+					return expr_can_throw(expr.subject) or expr_can_throw(expr.index)
+				if isinstance(expr, H.HPlaceExpr):
+					for proj in expr.projections:
+						if isinstance(proj, H.HPlaceIndex) and expr_can_throw(proj.index):
+							return True
+					return False
+				if isinstance(expr, H.HArrayLiteral):
+					return any(expr_can_throw(el) for el in expr.elements)
+				if isinstance(expr, H.HDVInit):
+					return any(expr_can_throw(a) for a in expr.args)
+				return False
+
+			def stmt_can_throw(stmt: H.HStmt) -> bool:
+				if isinstance(stmt, (H.HThrow, H.HRethrow)):
+					return True
+				if isinstance(stmt, H.HExprStmt):
+					return expr_can_throw(stmt.expr)
+				if isinstance(stmt, H.HLet):
+					return expr_can_throw(stmt.value)
+				if isinstance(stmt, H.HAssign):
+					return expr_can_throw(stmt.value)
+				if isinstance(stmt, H.HAugAssign):
+					return expr_can_throw(stmt.value) or expr_can_throw(stmt.target)
+				if isinstance(stmt, H.HReturn):
+					return expr_can_throw(stmt.value) if stmt.value is not None else False
+				if isinstance(stmt, H.HIf):
+					if expr_can_throw(stmt.cond):
+						return True
+					if block_can_throw(stmt.then_block):
+						return True
+					return block_can_throw(stmt.else_block) if stmt.else_block is not None else False
+				if isinstance(stmt, H.HLoop):
+					return block_can_throw(stmt.body)
+				if isinstance(stmt, H.HTry):
+					if block_can_throw(stmt.body):
+						return True
+					return any(block_can_throw(arm.block) for arm in stmt.catches)
+				return False
+
+			def block_can_throw(block: H.HBlock | None) -> bool:
+				if block is None:
+					return False
+				return any(stmt_can_throw(stmt) for stmt in block.statements)
+
+			if lam.body_expr is not None:
+				return expr_can_throw(lam.body_expr)
+			if lam.body_block is not None:
+				return block_can_throw(lam.body_block)
+			return False
 
 		def _loc_from_span(span: Span) -> parser_ast.Located:
 			return parser_ast.Located(line=span.line or 0, column=span.column or 0)
@@ -668,6 +1196,11 @@ class TypeChecker:
 						return False
 					return True
 				if pd.kind is TypeKind.FUNCTION:
+					p_throw = pd.fn_throws is not False
+					a_throw = ad.fn_throws is not False
+					if p_throw != a_throw:
+						_record_conflict(param_ty, actual_ty, origin, span)
+						return False
 					if len(pd.param_types) != len(ad.param_types):
 						_record_conflict(param_ty, actual_ty, origin, span)
 						return False
@@ -969,6 +1502,11 @@ class TypeChecker:
 						return False
 					return _match_type(tdef.param_types[0], rdef.param_types[0])
 				if tdef.kind in {TypeKind.ARRAY, TypeKind.OPTIONAL, TypeKind.FNRESULT, TypeKind.FUNCTION}:
+					if tdef.kind is TypeKind.FUNCTION:
+						t_throw = tdef.fn_throws is not False
+						r_throw = rdef.fn_throws is not False
+						if t_throw != r_throw:
+							return False
 					if len(tdef.param_types) != len(rdef.param_types):
 						return False
 					for sub_t, sub_r in zip(tdef.param_types, rdef.param_types):
@@ -1253,10 +1791,30 @@ class TypeChecker:
 		params: List[ParamId] = []
 		param_bindings: List[int] = []
 		locals: List[LocalId] = []
+		param_binding_ids: dict[str, int] = {}
+		if param_types:
+			wanted = set(param_types.keys())
+
+			def _scan_param_binds(obj: object) -> None:
+				if isinstance(obj, H.HVar) and obj.binding_id is not None and obj.name in wanted:
+					prev = param_binding_ids.get(obj.name)
+					if prev is None or obj.binding_id < prev:
+						param_binding_ids[obj.name] = obj.binding_id
+				if isinstance(obj, H.HNode):
+					for v in obj.__dict__.values():
+						_scan_param_binds(v)
+				elif isinstance(obj, list):
+					for v in obj:
+						_scan_param_binds(v)
+				elif isinstance(obj, dict):
+					for v in obj.values():
+						_scan_param_binds(v)
+
+			_scan_param_binds(body)
 
 		# Seed parameters if provided.
 		for pname, pty in (param_types or {}).items():
-			pid = self._alloc_param_id()
+			pid = param_binding_ids.get(pname) or self._alloc_param_id()
 			params.append(pid)
 			param_bindings.append(pid)
 			scope_env[-1][pname] = pty
@@ -1265,11 +1823,84 @@ class TypeChecker:
 			binding_names[pid] = pname
 			binding_mutable[pid] = False
 			binding_place_kind[pid] = PlaceKind.PARAM
+			if pty is not None and self.type_table.get(pty).kind is TypeKind.REF:
+				ref_origin_param[pid] = pid
 
 		def record_expr(expr: H.HExpr, ty: TypeId) -> TypeId:
-			expr_id = id(expr)
-			expr_types[expr_id] = ty
+			expr_types[expr.node_id] = ty
 			return ty
+
+		def record_call_info(
+			expr: H.HCall,
+			*,
+			param_types: List[TypeId],
+			return_type: TypeId,
+			can_throw: bool,
+			target: CallTarget,
+		) -> None:
+			call_info_by_node_id[expr.node_id] = CallInfo(
+				target=target,
+				sig=CallSig(param_types=tuple(param_types), user_ret_type=return_type, can_throw=bool(can_throw)),
+			)
+
+		def record_invoke_call_info(
+			expr: "H.HInvoke",
+			*,
+			param_types: List[TypeId],
+			return_type: TypeId,
+			can_throw: bool,
+		) -> None:
+			call_info_by_node_id[expr.node_id] = CallInfo(
+				target=CallTarget.indirect(expr.callee.node_id),
+				sig=CallSig(param_types=tuple(param_types), user_ret_type=return_type, can_throw=bool(can_throw)),
+			)
+
+		def record_method_call_info(
+			expr: H.HMethodCall,
+			*,
+			param_types: List[TypeId],
+			return_type: TypeId,
+			can_throw: bool,
+			target: FunctionId,
+		) -> None:
+			call_info_by_node_id[expr.node_id] = CallInfo(
+				target=CallTarget.direct(target),
+				sig=CallSig(param_types=tuple(param_types), user_ret_type=return_type, can_throw=bool(can_throw)),
+			)
+
+		sig_ids_by_obj: dict[int, FunctionId] = {}
+		if signatures_by_id is not None:
+			for sig_id, sig in signatures_by_id.items():
+				sig_ids_by_obj[id(sig)] = sig_id
+
+		def sig_can_throw(sig: FnSignature | None) -> bool:
+			if sig is None:
+				return True
+			if can_throw_by_name is not None:
+				sig_id = sig_ids_by_obj.get(id(sig))
+				if sig_id is not None:
+					sym = function_symbol(sig_id)
+					if sym in can_throw_by_name:
+						return bool(can_throw_by_name[sym])
+				if sig.name in can_throw_by_name:
+					return bool(can_throw_by_name[sig.name])
+			if sig.declared_can_throw is None:
+				return True
+			return bool(sig.declared_can_throw)
+
+		def _fn_id_from_symbol(name: str) -> FunctionId:
+			ordinal = 0
+			base = name
+			if "#" in base:
+				head, tail = base.rsplit("#", 1)
+				if tail.isdigit():
+					ordinal = int(tail)
+					base = head
+			if "::" in base:
+				module, sym_name = base.split("::", 1)
+			else:
+				module, sym_name = current_module_name, base
+			return FunctionId(module=module or "main", name=sym_name, ordinal=ordinal)
 
 		# Precompute constructor-name visibility for diagnostics.
 		#
@@ -1289,6 +1920,8 @@ class TypeChecker:
 			used_as_value: bool = True,
 			expected_type: TypeId | None = None,
 		) -> TypeId:
+			nonlocal return_type
+			nonlocal catch_depth
 			# Literals.
 			if isinstance(expr, H.HLiteralInt):
 				return record_expr(expr, self._int)
@@ -1329,6 +1962,74 @@ class TypeChecker:
 						)
 				return record_expr(expr, self._string)
 
+			if isinstance(expr, H.HCast):
+				target_ty: TypeId | None = None
+				try:
+					target_ty = resolve_opaque_type(expr.target_type_expr, self.type_table, module_id=current_module_name)
+				except Exception:
+					target_ty = None
+				if target_ty is None:
+					diagnostics.append(
+						Diagnostic(
+							message="cast<T>(...) has an invalid target type",
+							severity="error",
+							span=getattr(expr, "loc", Span()),
+						)
+					)
+					return record_expr(expr, self._unknown)
+				target_def = self.type_table.get(target_ty)
+				if target_def.kind is not TypeKind.FUNCTION:
+					pretty = self._pretty_type_name(target_ty, current_module=current_module_name)
+					diagnostics.append(
+						Diagnostic(
+							message=(
+								"cast<T>(...) is only supported for function types in this build "
+								f"(requested T = {pretty})"
+							),
+							severity="error",
+							span=getattr(expr, "loc", Span()),
+						)
+					)
+					return record_expr(expr, self._unknown)
+				expected_fn = _expected_function_shape(target_ty)
+				if expected_fn is None:
+					return record_expr(expr, self._unknown)
+				if isinstance(expr.value, H.HVar) and expr.value.binding_id is None:
+					name = expr.value.name
+					is_bound = any(name in scope for scope in scope_env)
+					is_const = False
+					if not is_bound:
+						if "::" in name:
+							is_const = self.type_table.lookup_const(name) is not None
+						else:
+							is_const = self.type_table.lookup_const(f"{current_module_name}::{name}") is not None
+					if not is_bound and not is_const:
+						resolution = _resolve_function_reference_value(
+							name=name,
+							expected_type=target_ty,
+							span=getattr(expr, "loc", Span()),
+							diag_mode="cast",
+							allow_thunk=False,
+						)
+						if resolution is not None:
+							if resolution.fn_ref is None:
+								return record_expr(expr, self._unknown)
+							fnptr_consts_by_node_id[expr.node_id] = (resolution.fn_ref, resolution.call_sig)
+							return record_expr(expr, target_ty)
+				inner_ty = type_expr(expr.value, expected_type=None)
+				if inner_ty != target_ty:
+					inner_pretty = self._pretty_type_name(inner_ty, current_module=current_module_name) if inner_ty is not None else "Unknown"
+					target_pretty = self._pretty_type_name(target_ty, current_module=current_module_name)
+					diagnostics.append(
+						Diagnostic(
+							message=f"cannot cast expression of type {inner_pretty} to {target_pretty}",
+							severity="error",
+							span=getattr(expr, "loc", Span()),
+						)
+					)
+					return record_expr(expr, self._unknown)
+				return record_expr(expr, target_ty)
+
 			# Names and bindings.
 			if isinstance(expr, H.HVar):
 				# Module-scoped compile-time constants.
@@ -1363,8 +2064,21 @@ class TypeChecker:
 				for scope in reversed(scope_env):
 					if expr.name in scope:
 						if expr.binding_id is not None:
-							binding_for_var[id(expr)] = expr.binding_id
+							binding_for_var[expr.node_id] = expr.binding_id
 						return record_expr(expr, scope[expr.name])
+				# Function reference in value position (typed context preferred).
+				resolution = _resolve_function_reference_value(
+					name=expr.name,
+					expected_type=expected_type,
+					span=getattr(expr, "loc", Span()),
+					diag_mode="value",
+					allow_thunk=True,
+				)
+				if resolution is not None:
+					if resolution.fn_ref is None:
+						return record_expr(expr, self._unknown)
+					fnptr_consts_by_node_id[expr.node_id] = (resolution.fn_ref, resolution.call_sig)
+					return record_expr(expr, resolution.fn_type)
 				diagnostics.append(
 					Diagnostic(
 						message=f"unknown variable '{expr.name}'",
@@ -1372,6 +2086,168 @@ class TypeChecker:
 						span=getattr(expr, "loc", Span()),
 					)
 				)
+				return record_expr(expr, self._unknown)
+
+			if isinstance(expr, H.HLambda):
+				expected_fn = _expected_function_shape(expected_type) if expected_type is not None else None
+				lambda_type_error = False
+				if expected_fn is not None and len(expr.params) != len(expected_fn[0]):
+					pretty = self._pretty_type_name(expected_type, current_module=current_module_name)
+					diagnostics.append(
+						Diagnostic(
+							message=(
+								f"lambda parameter count does not match expected function type {pretty} "
+								f"(expected {len(expected_fn[0])}, got {len(expr.params)})"
+							),
+							severity="error",
+							span=getattr(expr, "loc", Span()),
+						)
+					)
+					return record_expr(expr, self._unknown)
+				lambda_ret_type: TypeId | None = None
+				if getattr(expr, "ret_type", None) is not None:
+					try:
+						lambda_ret_type = resolve_opaque_type(expr.ret_type, self.type_table, module_id=current_module_name)
+					except Exception:
+						lambda_ret_type = None
+				if expected_fn is not None:
+					exp_params, exp_ret, _exp_throw = expected_fn
+					if lambda_ret_type is None:
+						lambda_ret_type = exp_ret
+					elif lambda_ret_type != exp_ret:
+						ret_pretty = self._pretty_type_name(lambda_ret_type, current_module=current_module_name)
+						exp_pretty = self._pretty_type_name(exp_ret, current_module=current_module_name)
+						diagnostics.append(
+							Diagnostic(
+								message=f"lambda return type {ret_pretty} does not match expected {exp_pretty}",
+								severity="error",
+								span=getattr(expr, "loc", Span()),
+							)
+						)
+						lambda_type_error = True
+				scope_env.append({})
+				scope_bindings.append({})
+				lambda_param_types: list[TypeId] = []
+				for param in expr.params:
+					if getattr(param, "binding_id", None) is None:
+						param.binding_id = self._alloc_param_id()
+					param_type: TypeId = self._unknown
+					if getattr(param, "type", None) is not None:
+						try:
+							param_type = resolve_opaque_type(param.type, self.type_table, module_id=current_module_name)
+						except Exception:
+							param_type = self._unknown
+					if expected_fn is not None:
+						exp_params, _exp_ret, _exp_throw = expected_fn
+						exp_param = exp_params[len(lambda_param_types)]
+						if getattr(param, "type", None) is None:
+							param_type = exp_param
+						elif param_type != exp_param:
+							param_pretty = self._pretty_type_name(param_type, current_module=current_module_name)
+							exp_pretty = self._pretty_type_name(exp_param, current_module=current_module_name)
+							diagnostics.append(
+								Diagnostic(
+									message=(
+										f"lambda parameter '{param.name}' has type {param_pretty} "
+										f"but expected {exp_pretty}"
+									),
+									severity="error",
+									span=getattr(param, "loc", Span()),
+								)
+							)
+							lambda_type_error = True
+					scope_env[-1][param.name] = param_type
+					scope_bindings[-1][param.name] = param.binding_id
+					binding_types[param.binding_id] = param_type
+					binding_names[param.binding_id] = param.name
+					binding_mutable[param.binding_id] = False
+					binding_place_kind[param.binding_id] = PlaceKind.PARAM
+					lambda_param_types.append(param_type)
+				capture_kinds: dict[int, str] = {}
+				if expr.explicit_captures is not None:
+					for cap in expr.explicit_captures:
+						root_id = getattr(cap, "binding_id", None)
+						if root_id is None:
+							continue
+						capture_kinds[int(root_id)] = cap.kind
+						root_ty = binding_types.get(root_id, self._unknown)
+						if cap.kind == "ref_mut":
+							cap_ty = self.type_table.ensure_ref_mut(root_ty)
+						elif cap.kind == "ref":
+							cap_ty = self.type_table.ensure_ref(root_ty)
+						else:
+							cap_ty = root_ty
+						scope_env[-1][cap.name] = cap_ty
+						scope_bindings[-1][cap.name] = root_id
+				if capture_kinds:
+					explicit_capture_stack.append(capture_kinds)
+				saved_return_type = return_type
+				return_type = lambda_ret_type
+				if expr.body_expr is not None:
+					type_expr(expr.body_expr, expected_type=lambda_ret_type)
+				if expr.body_block is not None:
+					type_block(expr.body_block)
+				return_type = saved_return_type
+				if capture_kinds:
+					explicit_capture_stack.pop()
+				scope_env.pop()
+				scope_bindings.pop()
+				if expected_fn is not None:
+					# Captureless lambda -> function pointer coercion.
+					if lambda_type_error:
+						return record_expr(expr, self._unknown)
+					captures = list(getattr(expr, "captures", []) or [])
+					if expr.explicit_captures:
+						diagnostics.append(
+							Diagnostic(
+								message="capturing lambdas cannot be coerced to function pointers",
+								severity="error",
+								span=getattr(expr, "loc", Span()),
+							)
+						)
+						return record_expr(expr, self._unknown)
+					if not captures:
+						res = discover_captures(expr)
+						diagnostics.extend(res.diagnostics)
+						captures = res.captures
+						expr.captures = res.captures
+					if captures:
+						diagnostics.append(
+							Diagnostic(
+								message="capturing lambdas cannot be coerced to function pointers",
+								severity="error",
+								span=getattr(expr, "loc", Span()),
+							)
+						)
+						return record_expr(expr, self._unknown)
+					exp_params, exp_ret, exp_throw = expected_fn
+					actual_can_throw = _lambda_can_throw(expr, call_info_by_node_id)
+					if not exp_throw and actual_can_throw:
+						pretty = self._pretty_type_name(expected_type, current_module=current_module_name)
+						diagnostics.append(
+							Diagnostic(
+								message=f"lambda can throw but is expected to be nothrow for {pretty}",
+								severity="error",
+								span=getattr(expr, "loc", Span()),
+							)
+						)
+						return record_expr(expr, self._unknown)
+					enclosing = function_symbol(fn_id).replace("::", "_").replace("#", "_")
+					name = f"__lambda_fn_{enclosing}_{expr.node_id}"
+					lambda_fn_id = FunctionId(module=current_module_name, name=name, ordinal=0)
+					if lambda_fn_id not in self._lambda_fn_specs:
+						self._lambda_fn_specs[lambda_fn_id] = LambdaFnSpec(
+							fn_id=lambda_fn_id,
+							lambda_expr=expr,
+							param_types=tuple(lambda_param_types),
+							return_type=exp_ret,
+							can_throw=exp_throw,
+							call_info_by_node_id=call_info_by_node_id,
+						)
+					fn_ref = FunctionRefId(fn_id=lambda_fn_id, kind=FunctionRefKind.IMPL, has_wrapper=False)
+					call_sig = CallSig(param_types=tuple(exp_params), user_ret_type=exp_ret, can_throw=bool(exp_throw))
+					fnptr_consts_by_node_id[expr.node_id] = (fn_ref, call_sig)
+					return record_expr(expr, expected_type)
 				return record_expr(expr, self._unknown)
 
 			if hasattr(H, "HQualifiedMember") and isinstance(expr, getattr(H, "HQualifiedMember")):
@@ -1563,8 +2439,7 @@ class TypeChecker:
 					return record_expr(expr, self._unknown)
 				inst_return = inst_res.inst_return
 
-				fn_name = f"{schema.name}::{expr.member}"
-				return record_expr(expr, self.type_table.new_function(fn_name, list(inst_res.inst_params), inst_res.inst_return))
+				return record_expr(expr, self.type_table.new_function("fn", list(inst_res.inst_params), inst_res.inst_return))
 
 			if hasattr(H, "HTypeApp") and isinstance(expr, getattr(H, "HTypeApp")):
 				call_type_args_span = None
@@ -1634,10 +2509,7 @@ class TypeChecker:
 
 						if len(viable) == 1:
 							decl, params, ret = viable[0]
-							fn_name = decl.name
-							if decl.fn_id is not None:
-								fn_name = function_symbol(decl.fn_id)
-							return record_expr(expr, self.type_table.new_function(fn_name, params, ret))
+							return record_expr(expr, self.type_table.new_function("fn", params, ret))
 						if saw_registry_only:
 							diagnostics.append(
 								Diagnostic(
@@ -1720,7 +2592,7 @@ class TypeChecker:
 					if inst_res.error:
 						return record_expr(expr, self._unknown)
 					if inst_res.inst_params is not None and inst_res.inst_return is not None:
-						return record_expr(expr, self.type_table.new_function(expr.fn.name, list(inst_res.inst_params), inst_res.inst_return))
+						return record_expr(expr, self.type_table.new_function("fn", list(inst_res.inst_params), inst_res.inst_return))
 					return record_expr(expr, self._unknown)
 
 				if hasattr(H, "HQualifiedMember") and isinstance(expr.fn, getattr(H, "HQualifiedMember")):
@@ -1904,8 +2776,7 @@ class TypeChecker:
 						return record_expr(expr, self._unknown)
 					inst_return = inst_res.inst_return
 
-					fn_name = f"{schema.name}::{qm.member}"
-					return record_expr(expr, self.type_table.new_function(fn_name, list(inst_res.inst_params), inst_res.inst_return))
+					return record_expr(expr, self.type_table.new_function("fn", list(inst_res.inst_params), inst_res.inst_return))
 
 				diagnostics.append(
 					Diagnostic(
@@ -2093,7 +2964,7 @@ class TypeChecker:
 									binding_mutable[bid] = False
 									binding_place_kind[bid] = PlaceKind.LOCAL
 
-						type_block(arm.block)
+						type_block_in_scope(arm.block)
 
 						arm_value_ty: TypeId | None = None
 						if arm.result is not None:
@@ -2426,7 +3297,10 @@ class TypeChecker:
 
 			# Calls.
 			if isinstance(expr, H.HCall):
-				if not isinstance(expr.fn, H.HVar) and getattr(expr, "type_args", None):
+				if getattr(expr, "type_args", None) and not (
+					isinstance(expr.fn, H.HVar)
+					or (hasattr(H, "HQualifiedMember") and isinstance(expr.fn, getattr(H, "HQualifiedMember")))
+				):
 					diagnostics.append(
 						Diagnostic(
 							message="E-TYPEARGS-NOT-ALLOWED: type arguments are only supported on named call targets",
@@ -2861,8 +3735,22 @@ class TypeChecker:
 										notes=[note for _label, note in sorted(note_items)],
 									)
 								resolution = trait_candidates[0][0]
-								call_resolutions[id(expr)] = resolution
+								call_resolutions[expr.node_id] = resolution
 								result_type = resolution.result_type or resolution.decl.signature.result_type
+								target_fn_id = resolution.decl.fn_id
+								if target_fn_id is None:
+									raise ResolutionError(
+										f"missing function id for method '{expr.method_name}' (compiler bug)",
+										span=getattr(expr, "loc", Span()),
+									)
+								sig_for_throw = signatures_by_id.get(target_fn_id) if signatures_by_id is not None else None
+								record_method_call_info(
+									expr,
+									param_types=[recv_ty, *arg_types],
+									return_type=result_type or self._unknown,
+									can_throw=sig_can_throw(sig_for_throw) if sig_for_throw is not None else True,
+									target=target_fn_id,
+								)
 								return record_expr(expr, result_type)
 							if trait_hidden:
 								mod_names: list[str] = []
@@ -3292,7 +4180,9 @@ class TypeChecker:
 					if td_ret.kind is TypeKind.VARIANT and schema.type_params:
 						args = list(td_ret.param_types)
 						if all(self.type_table.get(a).kind is not TypeKind.TYPEVAR for a in args):
-							inst_tid = self.type_table.ensure_instantiated(base_tid, args)
+							base_inst = self.type_table.variant_instances.get(base_tid)
+							base_id = base_inst.base_id if base_inst is not None else base_tid
+							inst_tid = self.type_table.ensure_instantiated(base_id, args)
 					inst = self.type_table.get_variant_instance(inst_tid)
 					if inst is None:
 						diagnostics.append(
@@ -3475,7 +4365,7 @@ class TypeChecker:
 					# We must not type-check `expr.fn` as a variable, otherwise we'd emit
 					# misleading "unknown variable" diagnostics before the builtin path
 					# fires.
-					if expr.fn.name in ("swap", "replace"):
+					if expr.fn.name in ("swap", "replace", "len", "byte_length"):
 						should_type_fn = False
 					struct_ctor_tid: TypeId | None = None
 					if "::" in expr.fn.name:
@@ -3518,6 +4408,68 @@ class TypeChecker:
 				else:
 					arg_types = [type_expr(a) for a in expr.args]
 				kw_types = [type_expr(k.value) for k in kw_pairs]
+
+				if isinstance(expr.fn, H.HVar) and expr.fn.name in ("len", "byte_length") and len(expr.args) == 1:
+					if kw_pairs:
+						diagnostics.append(
+							Diagnostic(
+								message=f"{expr.fn.name} does not support keyword arguments",
+								severity="error",
+								span=kw_pairs[0].loc if hasattr(kw_pairs[0], "loc") else getattr(expr, "loc", Span()),
+							)
+						)
+						return record_expr(expr, self._unknown)
+					arg_ty = arg_types[0] if arg_types else None
+					if arg_ty is None:
+						return record_expr(expr, self._unknown)
+					td_arg = self.type_table.get(arg_ty)
+					if td_arg.kind is TypeKind.REF and td_arg.param_types:
+						arg_ty = td_arg.param_types[0]
+						td_arg = self.type_table.get(arg_ty)
+					if not (td_arg.kind is TypeKind.ARRAY or arg_ty == self._string):
+						pretty = td_arg.name if arg_ty is not None else "Unknown"
+						diagnostics.append(
+							Diagnostic(
+								message=f"{expr.fn.name}(x) requires String or Array operands (have '{pretty}')",
+								severity="error",
+								span=getattr(expr, "loc", Span()),
+							)
+						)
+						return record_expr(expr, self._unknown)
+					if expected_type in (self._int, self._uint):
+						return record_expr(expr, expected_type)
+					return record_expr(expr, self._uint)
+
+				if isinstance(expr.fn, H.HVar) and expr.fn.name in ("string_eq", "string_concat") and len(expr.args) == 2:
+					if kw_pairs:
+						diagnostics.append(
+							Diagnostic(
+								message=f"{expr.fn.name} does not support keyword arguments",
+								severity="error",
+								span=kw_pairs[0].loc if hasattr(kw_pairs[0], "loc") else getattr(expr, "loc", Span()),
+							)
+						)
+						return record_expr(expr, self._unknown)
+					if len(arg_types) != 2:
+						diagnostics.append(
+							Diagnostic(
+								message=f"{expr.fn.name} expects 2 arguments, got {len(arg_types)}",
+								severity="error",
+								span=getattr(expr, "loc", Span()),
+							)
+						)
+						return record_expr(expr, self._unknown)
+					if any(t is None or t != self._string for t in arg_types):
+						diagnostics.append(
+							Diagnostic(
+								message=f"{expr.fn.name} requires String operands",
+								severity="error",
+								span=getattr(expr, "loc", Span()),
+							)
+						)
+						return record_expr(expr, self._unknown)
+					ret_ty = self._bool if expr.fn.name == "string_eq" else self._string
+					return record_expr(expr, ret_ty)
 
 				# Builtins: swap/replace operate on *places*.
 				#
@@ -4068,8 +5020,15 @@ class TypeChecker:
 										),
 										severity="error",
 										span=getattr(expr, "loc", Span()),
-									)
 								)
+							)
+						record_call_info(
+							expr,
+							param_types=fn_params,
+							return_type=fn_ret,
+							can_throw=(td_fn.fn_throws is not False),
+							target=CallTarget.indirect(expr.fn.node_id),
+						)
 						return record_expr(expr, fn_ret)
 
 				if kw_pairs:
@@ -4103,7 +5062,16 @@ class TypeChecker:
 						)
 						if decl.fn_id is not None:
 							expr.fn.name = function_symbol(decl.fn_id)
-						call_resolutions[id(expr)] = decl
+						call_resolutions[expr.node_id] = decl
+						sig_for_throw = signatures_by_id.get(decl.fn_id) if decl.fn_id and signatures_by_id else None
+						target_fn_id = decl.fn_id or _fn_id_from_symbol(expr.fn.name)
+						record_call_info(
+							expr,
+							param_types=list(inst_sig.param_types),
+							return_type=inst_sig.result_type,
+							can_throw=sig_can_throw(sig_for_throw),
+							target=CallTarget.direct(target_fn_id),
+						)
 						return record_expr(expr, inst_sig.result_type)
 					except ResolutionError as err:
 						# If this call looks like a variant constructor invocation (unqualified
@@ -4141,6 +5109,22 @@ class TypeChecker:
 								notes=list(getattr(err, "notes", []) or []),
 							)
 						)
+						if isinstance(expr.fn, H.HVar):
+							fallback_sig = _single_sig(expr.fn.name)
+							if fallback_sig is not None and fallback_sig.return_type_id is not None:
+								fallback_params = (
+									list(fallback_sig.param_type_ids)
+									if fallback_sig.param_type_ids is not None
+									else list(arg_types)
+								)
+								target_fn_id = sig_ids_by_obj.get(id(fallback_sig)) or _fn_id_from_symbol(expr.fn.name)
+								record_call_info(
+									expr,
+									param_types=fallback_params,
+									return_type=fallback_sig.return_type_id,
+									can_throw=sig_can_throw(fallback_sig),
+									target=CallTarget.direct(target_fn_id),
+								)
 						return record_expr(expr, self._unknown)
 
 				# Fallback: signature map by name.
@@ -4210,6 +5194,17 @@ class TypeChecker:
 						return record_expr(expr, self._unknown)
 					if inst_res.error:
 						return record_expr(expr, self._unknown)
+					param_ids = inst_res.inst_params or sig.param_type_ids
+					ret_id = inst_res.inst_return or sig.return_type_id
+					if param_ids is not None and ret_id is not None:
+						target_fn_id = sig_ids_by_obj.get(id(sig)) or _fn_id_from_symbol(expr.fn.name)
+						record_call_info(
+							expr,
+							param_types=list(param_ids),
+							return_type=ret_id,
+							can_throw=sig_can_throw(sig),
+							target=CallTarget.direct(target_fn_id),
+						)
 					if inst_res.inst_return is not None:
 						return record_expr(expr, inst_res.inst_return)
 					return record_expr(expr, sig.return_type_id)
@@ -4228,6 +5223,110 @@ class TypeChecker:
 							)
 						)
 				return record_expr(expr, self._unknown)
+
+			if isinstance(expr, getattr(H, "HInvoke", ())):
+				callee_ty = type_expr(expr.callee)
+				arg_types = [type_expr(a) for a in expr.args]
+				kw_pairs = list(getattr(expr, "kwargs", []) or [])
+				if getattr(expr, "type_args", None):
+					diagnostics.append(
+						Diagnostic(
+							message="type arguments are not supported on function values; apply them on the named function",
+							severity="error",
+							span=getattr(expr, "loc", Span()),
+						)
+					)
+					return record_expr(expr, self._unknown)
+				if kw_pairs:
+					diagnostics.append(
+						Diagnostic(
+							message="keyword arguments are not supported on function values in MVP",
+							severity="error",
+							span=getattr(expr, "loc", Span()),
+						)
+					)
+					return record_expr(expr, self._unknown)
+				if callee_ty is None:
+					return record_expr(expr, self._unknown)
+				callee_def = self.type_table.get(callee_ty)
+				if callee_def.kind is TypeKind.FUNCTION:
+					fn_params = list(callee_def.param_types[:-1]) if callee_def.param_types else []
+					fn_ret = callee_def.param_types[-1] if callee_def.param_types else self._unknown
+					if len(fn_params) != len(arg_types):
+						diagnostics.append(
+							Diagnostic(
+								message=f"function value expects {len(fn_params)} arguments, got {len(arg_types)}",
+								severity="error",
+								span=getattr(expr, "loc", Span()),
+							)
+						)
+						return record_expr(expr, fn_ret)
+					for want, have in zip(fn_params, arg_types):
+						if have is not None and want != have:
+							diagnostics.append(
+								Diagnostic(
+									message=(
+										f"function value argument type mismatch (have {self.type_table.get(have).name}, "
+										f"expected {self.type_table.get(want).name})"
+									),
+									severity="error",
+									span=getattr(expr, "loc", Span()),
+								)
+							)
+					record_invoke_call_info(
+						expr,
+						param_types=fn_params,
+						return_type=fn_ret,
+						can_throw=(callee_def.fn_throws is not False),
+					)
+					return record_expr(expr, fn_ret)
+				if callee_def.kind in (TypeKind.CALLABLE, TypeKind.CALLABLE_DYN):
+					diagnostics.append(
+						Diagnostic(
+							message="calling Callable values is not supported yet; use fn(...) values in MVP",
+							severity="error",
+							span=getattr(expr, "loc", Span()),
+						)
+					)
+					return record_expr(expr, self._unknown)
+				diagnostics.append(
+					Diagnostic(
+						message="call target is not a function value",
+						severity="error",
+						span=getattr(expr, "loc", Span()),
+					)
+				)
+				return record_expr(expr, self._unknown)
+
+			if isinstance(expr, H.HTryExpr):
+				attempt_ty = type_expr(expr.attempt)
+				result_ty = attempt_ty
+				if attempt_ty is not None:
+					td_attempt = self.type_table.get(attempt_ty)
+					if td_attempt.kind is TypeKind.FNRESULT and td_attempt.param_types:
+						result_ty = td_attempt.param_types[0]
+				for arm in expr.arms:
+					catch_depth += 1
+					scope_env.append(dict())
+					scope_bindings.append(dict())
+					try:
+						if arm.binder:
+							bid = self._alloc_local_id()
+							locals.append(bid)
+							scope_env[-1][arm.binder] = self._error
+							scope_bindings[-1][arm.binder] = bid
+							binding_types[bid] = self._error
+							binding_names[bid] = arm.binder
+							binding_mutable[bid] = False
+							binding_place_kind[bid] = PlaceKind.LOCAL
+						type_block_in_scope(arm.block)
+						if arm.result is not None:
+							type_expr(arm.result, expected_type=result_ty)
+					finally:
+						scope_env.pop()
+						scope_bindings.pop()
+						catch_depth -= 1
+				return record_expr(expr, result_ty or self._unknown)
 
 			if isinstance(expr, H.HMethodCall):
 				# Built-in DiagnosticValue helpers are reserved method names and take precedence.
@@ -4914,7 +6013,7 @@ class TypeChecker:
 										notes=[note for _label, note in sorted(note_items)],
 									)
 								resolution = trait_candidates[0][0]
-								call_resolutions[id(expr)] = resolution
+								call_resolutions[expr.node_id] = resolution
 								result_type = resolution.result_type or resolution.decl.signature.result_type
 								return record_expr(expr, result_type)
 							if trait_hidden:
@@ -5066,8 +6165,22 @@ class TypeChecker:
 								notes=[note for _label, note in sorted(note_items)],
 							)
 						resolution = viable[0]
-						call_resolutions[id(expr)] = resolution
+						call_resolutions[expr.node_id] = resolution
 						result_type = resolution.result_type or resolution.decl.signature.result_type
+						target_fn_id = resolution.decl.fn_id
+						if target_fn_id is None:
+							raise ResolutionError(
+								f"missing function id for method '{expr.method_name}' (compiler bug)",
+								span=getattr(expr, "loc", Span()),
+							)
+						sig_for_throw = signatures_by_id.get(target_fn_id) if signatures_by_id is not None else None
+						record_method_call_info(
+							expr,
+							param_types=[recv_ty, *arg_types],
+							return_type=result_type or self._unknown,
+							can_throw=sig_can_throw(sig_for_throw) if sig_for_throw is not None else True,
+							target=target_fn_id,
+						)
 						return record_expr(expr, result_type)
 					except ResolutionError as err:
 						diag_span = getattr(err, "span", None) or getattr(expr, "loc", Span())
@@ -5503,6 +6616,26 @@ class TypeChecker:
 					scope_env.pop()
 					scope_bindings.pop()
 			elif isinstance(stmt, H.HAssign):
+				cap_bid = None
+				cap_name = None
+				if hasattr(H, "HPlaceExpr") and isinstance(stmt.target, getattr(H, "HPlaceExpr")) and not stmt.target.projections:
+					if isinstance(stmt.target.base, H.HVar):
+						cap_bid = getattr(stmt.target.base, "binding_id", None)
+						cap_name = stmt.target.base.name
+				elif isinstance(stmt.target, H.HVar):
+					cap_bid = getattr(stmt.target, "binding_id", None)
+					cap_name = stmt.target.name
+				if cap_bid is not None and cap_name is not None:
+					cap_kind = _explicit_capture_kind(cap_bid)
+					if cap_kind == "ref":
+						diagnostics.append(
+							Diagnostic(
+								message=f"capture '{cap_name}' is shared; capture &mut {cap_name} to mutate",
+								severity="error",
+								span=getattr(stmt, "loc", Span()),
+							)
+						)
+						return
 				type_expr(stmt.value)
 				type_expr(stmt.target)
 				# Assignment target must be an addressable place.
@@ -5543,6 +6676,26 @@ class TypeChecker:
 				- Writes to owned storage require a `var` base binding.
 				- Writes through deref require a mutable reference (`&mut`) at each deref.
 				"""
+				cap_bid = None
+				cap_name = None
+				if hasattr(H, "HPlaceExpr") and isinstance(stmt.target, getattr(H, "HPlaceExpr")) and not stmt.target.projections:
+					if isinstance(stmt.target.base, H.HVar):
+						cap_bid = getattr(stmt.target.base, "binding_id", None)
+						cap_name = stmt.target.base.name
+				elif isinstance(stmt.target, H.HVar):
+					cap_bid = getattr(stmt.target, "binding_id", None)
+					cap_name = stmt.target.name
+				if cap_bid is not None and cap_name is not None:
+					cap_kind = _explicit_capture_kind(cap_bid)
+					if cap_kind == "ref":
+						diagnostics.append(
+							Diagnostic(
+								message=f"capture '{cap_name}' is shared; capture &mut {cap_name} to mutate",
+								severity="error",
+								span=getattr(stmt, "loc", Span()),
+							)
+						)
+						return
 				tgt_ty = type_expr(stmt.target)
 				val_ty = type_expr(stmt.value)
 
@@ -5714,8 +6867,23 @@ class TypeChecker:
 				type_block(stmt.body)
 				for arm in stmt.catches:
 					catch_depth += 1
-					type_block(arm.block)
-					catch_depth -= 1
+					scope_env.append(dict())
+					scope_bindings.append(dict())
+					try:
+						if arm.binder:
+							bid = self._alloc_local_id()
+							locals.append(bid)
+							scope_env[-1][arm.binder] = self._error
+							scope_bindings[-1][arm.binder] = bid
+							binding_types[bid] = self._error
+							binding_names[bid] = arm.binder
+							binding_mutable[bid] = False
+							binding_place_kind[bid] = PlaceKind.LOCAL
+						type_block(arm.block)
+					finally:
+						scope_env.pop()
+						scope_bindings.pop()
+						catch_depth -= 1
 			elif isinstance(stmt, H.HThrow):
 				if isinstance(stmt.value, H.HMethodCall) and stmt.value.method_name == "unwrap_err":
 					type_expr(stmt.value)
@@ -5752,7 +6920,52 @@ class TypeChecker:
 				scope_env.pop()
 				scope_bindings.pop()
 
+		def type_block_in_scope(block: H.HBlock) -> None:
+			for s in block.statements:
+				type_stmt(s)
+
 		type_block(body)
+
+		def _apply_fnptr_consts(obj: object) -> object:
+			if isinstance(obj, H.HNode):
+				entry = fnptr_consts_by_node_id.get(obj.node_id)
+				if entry is not None and not isinstance(obj, H.HFnPtrConst):
+					fn_ref, call_sig = entry
+					repl = H.HFnPtrConst(fn_ref=fn_ref, call_sig=call_sig)
+					repl.node_id = obj.node_id
+					return repl
+			if is_dataclass(obj):
+				updates: dict[str, object] = {}
+				for f in fields(obj):
+					val = getattr(obj, f.name)
+					new_val = _apply_fnptr_consts(val)
+					if new_val is not val:
+						updates[f.name] = new_val
+				if updates:
+					if getattr(obj, "__dataclass_params__", None) and obj.__dataclass_params__.frozen:
+						new_obj = replace(obj, **updates)
+						if isinstance(obj, H.HNode):
+							object.__setattr__(new_obj, "node_id", obj.node_id)
+						return new_obj
+					for name, val in updates.items():
+						setattr(obj, name, val)
+				return obj
+			if isinstance(obj, list):
+				for idx, val in enumerate(obj):
+					new_val = _apply_fnptr_consts(val)
+					if new_val is not val:
+						obj[idx] = new_val
+				return obj
+			if isinstance(obj, dict):
+				for key, val in list(obj.items()):
+					new_val = _apply_fnptr_consts(val)
+					if new_val is not val:
+						obj[key] = new_val
+				return obj
+			return obj
+
+		if fnptr_consts_by_node_id:
+			_apply_fnptr_consts(body)
 
 		typed = TypedFn(
 			fn_id=fn_id,
@@ -5767,6 +6980,7 @@ class TypeChecker:
 			binding_names=binding_names,
 			binding_mutable=binding_mutable,
 			call_resolutions=call_resolutions,
+			call_info_by_node_id=call_info_by_node_id,
 		)
 
 		# MVP escape policy: reference returns must be derived from a single

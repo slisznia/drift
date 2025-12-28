@@ -6,7 +6,7 @@ from typing import Mapping, Optional, Set, Tuple
 
 from lang2.driftc.checker import FnSignature
 from lang2.driftc.core.function_id import FunctionId
-from lang2.driftc.core.types_core import TypeTable
+from lang2.driftc.core.types_core import TypeKind, TypeTable
 from lang2.driftc.method_registry import CallableDecl
 from lang2.driftc.method_resolver import MethodResolution
 from lang2.driftc.stage1 import hir_nodes as H
@@ -48,13 +48,13 @@ def analyze_non_retaining_params(
 		if raw is None:
 			return False
 		if isinstance(raw, str):
-			return raw in {"Callable", "CallableDyn"}
+			return raw in {"Callable", "CallableDyn", "fn"}
 		if hasattr(raw, "name"):
 			name = getattr(raw, "name")
 			args = getattr(raw, "args", None)
 			if name in {"&", "&mut"} and args:
 				return _raw_type_is_callable(args[0])
-			return name in {"Callable", "CallableDyn"}
+			return name in {"Callable", "CallableDyn", "fn"}
 		return False
 
 	def _param_is_callable(sig: FnSignature, idx: int) -> bool:
@@ -65,7 +65,7 @@ def analyze_non_retaining_params(
 			return False
 		if sig.param_type_ids and idx < len(sig.param_type_ids):
 			td = type_table.get(sig.param_type_ids[idx])
-			return td.name in {"Callable", "CallableDyn"}
+			return td.kind is TypeKind.FUNCTION or td.name in {"Callable", "CallableDyn"}
 		return False
 
 	def _param_count(sig: FnSignature) -> int:
@@ -85,7 +85,7 @@ def analyze_non_retaining_params(
 			sig.param_nonretaining.extend([None] * (count - len(sig.param_nonretaining)))
 
 	def _resolve_sig_for_call(call: H.HExpr, call_resolutions: Mapping[int, object]) -> tuple[FunctionId | None, FnSignature | None]:
-		res = call_resolutions.get(id(call))
+		res = call_resolutions.get(call.node_id)
 		if isinstance(res, CallableDecl):
 			if res.fn_id is not None:
 				return res.fn_id, signatures_by_id.get(res.fn_id)
@@ -175,7 +175,7 @@ def analyze_non_retaining_params(
 			if var.binding_id is not None:
 				return var.binding_id
 			if hasattr(typed_fn, "binding_for_var"):
-				return typed_fn.binding_for_var.get(id(var))
+				return typed_fn.binding_for_var.get(var.node_id)
 			return None
 
 		def _plain_param_index(expr: H.HExpr) -> int | None:
@@ -223,6 +223,26 @@ def analyze_non_retaining_params(
 					eligible.add(callee_idx)
 				else:
 					_walk_expr(expr.fn)
+				for arg_index, arg in enumerate(expr.args):
+					idx = _plain_param_index(arg)
+					if idx is not None:
+						_handle_forward(idx, expr, arg_index=arg_index)
+						continue
+					_walk_expr(arg)
+				for kw in expr.kwargs:
+					idx = _plain_param_index(kw.value)
+					if idx is not None:
+						_handle_forward(idx, expr, kw_name=kw.name)
+						continue
+					_walk_expr(kw.value)
+				return
+			if isinstance(expr, getattr(H, "HInvoke", ())):
+				callee_idx = _plain_param_index(expr.callee)
+				if callee_idx is not None:
+					usages[callee_idx].has_direct_call = True
+					eligible.add(callee_idx)
+				else:
+					_walk_expr(expr.callee)
 				for arg_index, arg in enumerate(expr.args):
 					idx = _plain_param_index(arg)
 					if idx is not None:

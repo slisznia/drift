@@ -10,6 +10,7 @@ from lang2.driftc.checker import FnSignature
 from lang2.driftc.core.types_core import TypeTable, TypeId
 from lang2.driftc.method_registry import CallableDecl, CallableSignature, CallableKind, Visibility, SelfMode
 from lang2.driftc.method_resolver import MethodResolution
+from lang2.driftc.stage1.node_ids import assign_node_ids
 
 
 def _bc_with_sig(table: TypeTable, sig: FnSignature, call_resolutions=None):
@@ -69,7 +70,8 @@ def test_hmethod_signature_driven_auto_borrow_prevents_move():
 		impl_target_type_id=table.ensure_unknown(),
 		self_mode=SelfMode.SELF_BY_REF,
 	)
-	call_resolutions = {id(call_expr): MethodResolution(decl=decl, receiver_autoborrow=SelfMode.SELF_BY_REF)}
+	assign_node_ids(block)
+	call_resolutions = {call_expr.node_id: MethodResolution(decl=decl, receiver_autoborrow=SelfMode.SELF_BY_REF)}
 	diags = _bc_with_sig(table, ref_sig, call_resolutions=call_resolutions).check_block(block)
 	assert diags == []
 
@@ -96,7 +98,8 @@ def test_method_value_receiver_moves_and_later_use_errors():
 		impl_target_type_id=int_ty,
 		self_mode=SelfMode.SELF_BY_VALUE,
 	)
-	call_resolutions = {id(call_expr): MethodResolution(decl=decl, receiver_autoborrow=None)}
+	assign_node_ids(block)
+	call_resolutions = {call_expr.node_id: MethodResolution(decl=decl, receiver_autoborrow=None)}
 	ref_sig = FnSignature(name="m", param_type_ids=[int_ty])
 	diags = _bc_with_sig(table, ref_sig, call_resolutions=call_resolutions).check_block(block)
 	assert diags

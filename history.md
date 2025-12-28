@@ -1,3 +1,9 @@
+## 2025-12-28 – Function pointers: thunks + captureless lambdas
+- Added NOTHROW→CAN_THROW Ok-wrap thunking for function values with a dedicated FunctionRefKind and a thunk cache; typed-context assignment can insert thunks while `cast<T>` stays strict.
+- Added captureless lambda coercion to `fn(...)` pointers with capture rejection and can-throw validation.
+- Materialized thunk and lambda synthetic functions in the driver pipeline pre-LLVM (MIR emission is now explicit and stable).
+- Added tests for thunk selection, captureless/capturing lambda coercion, and synthetic MIR emission (including unique lambda ids per enclosing function).
+
 ## 2025-12-26 – Borrow checker statement-level liveness + ref-copy loans
 - Refined NLL-lite borrow tracking with per-statement ref liveness inside blocks, while preserving conservative “unused borrow stays live” behavior via lexical-scope caps.
 - Propagated loans across ref-to-ref `let`/assignment by cloning loans onto the destination ref with its own region cap.

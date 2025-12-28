@@ -143,8 +143,8 @@ fn main() returns String {
 	str_ty = type_table.ensure_string()
 	expected_int = _find_impl_method_id(sigs, method_name="tag", impl_args=[int_ty])
 	expected_str = _find_impl_method_id(sigs, method_name="tag", impl_args=[str_ty])
-	res_a = result.typed_fn.call_resolutions.get(id(calls[0]))
-	res_b = result.typed_fn.call_resolutions.get(id(calls[1]))
+	res_a = result.typed_fn.call_resolutions.get(calls[0].node_id)
+	res_b = result.typed_fn.call_resolutions.get(calls[1].node_id)
 	assert res_a is not None and res_b is not None
 	assert res_a.decl.fn_id == expected_int
 	assert res_b.decl.fn_id == expected_str
@@ -238,7 +238,7 @@ fn main() returns Int {
 	box_base = type_table.get_struct_base(module_id="main", name="Box")
 	assert box_base is not None
 	expected = type_table.ensure_struct_instantiated(box_base, [type_table.ensure_int()])
-	call_ty = result.typed_fn.expr_types.get(id(calls[0]))
+	call_ty = result.typed_fn.expr_types.get(calls[0].node_id)
 	assert call_ty == expected
 
 
@@ -261,7 +261,7 @@ fn main() returns Int {
 	assert result.diagnostics == []
 	calls = _find_method_calls(main_block)
 	assert len(calls) == 1
-	call_ty = result.typed_fn.expr_types.get(id(calls[0]))
+	call_ty = result.typed_fn.expr_types.get(calls[0].node_id)
 	assert call_ty == type_table.ensure_int()
 
 

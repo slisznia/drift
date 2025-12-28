@@ -96,7 +96,7 @@ def _resolve_main_call(
 		current_module=current_mod,
 	)
 	assert result.diagnostics == []
-	decl = result.typed_fn.call_resolutions.get(id(call_expr))
+	decl = result.typed_fn.call_resolutions.get(call_expr.node_id)
 	assert decl is not None
 	assert getattr(decl, "fn_id", None) is not None
 	return decl.fn_id, sigs, type_table

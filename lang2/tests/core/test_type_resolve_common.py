@@ -79,3 +79,20 @@ def test_resolve_optional_and_diagnostic_value():
 
 	dv_ty = resolve_opaque_type("DiagnosticValue", table)
 	assert table.get(dv_ty).kind is TypeKind.DIAGNOSTICVALUE
+
+
+def test_resolve_function_type_interning_and_throw_mode():
+	table = TypeTable()
+	int_expr = TypeExpr(name="Int")
+	fn_nothrow_a = TypeExpr(name="fn", args=[int_expr, int_expr], fn_throws=False)
+	fn_nothrow_b = TypeExpr(name="fn", args=[TypeExpr(name="Int"), TypeExpr(name="Int")], fn_throws=False)
+	fn_can_throw = TypeExpr(name="fn", args=[TypeExpr(name="Int"), TypeExpr(name="Int")])
+
+	t1 = resolve_opaque_type(fn_nothrow_a, table)
+	t2 = resolve_opaque_type(fn_nothrow_b, table)
+	t3 = resolve_opaque_type(fn_can_throw, table)
+
+	assert t1 == t2
+	assert t1 != t3
+	assert table.get(t1).fn_throws is False
+	assert table.get(t3).fn_throws is True

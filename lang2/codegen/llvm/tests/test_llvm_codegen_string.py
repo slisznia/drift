@@ -89,7 +89,7 @@ def test_string_pass_through_call_ir():
 		name="entry",
 		instructions=[
 			ConstString(dest="t0", value="abc"),
-			Call(dest="t1", fn="id", args=["t0"]),
+			Call(dest="t1", fn="id", args=["t0"], can_throw=False),
 		],
 		terminator=Return(value="t1"),
 	)

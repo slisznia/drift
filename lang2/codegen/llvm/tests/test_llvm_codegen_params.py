@@ -33,7 +33,11 @@ def test_int_param_header_and_call():
     # main() returns Int { return add(1, 2) }
     main_block = BasicBlock(
         name="entry",
-        instructions=[ConstInt(dest="t0", value=1), ConstInt(dest="t1", value=2), Call(dest="t2", fn="add", args=["t0", "t1"])],
+        instructions=[
+            ConstInt(dest="t0", value=1),
+            ConstInt(dest="t1", value=2),
+            Call(dest="t2", fn="add", args=["t0", "t1"], can_throw=False),
+        ],
         terminator=Return(value="t2"),
     )
     main = MirFunc(name="main", params=[], locals=["t0", "t1", "t2"], blocks={"entry": main_block}, entry="entry")
@@ -70,7 +74,7 @@ def test_mixed_int_string_params_and_return():
         instructions=[
             ConstInt(dest="t0", value=1),
             ConstString(dest="t1", value="abc"),
-            Call(dest="t2", fn="combine", args=["t0", "t1"]),
+            Call(dest="t2", fn="combine", args=["t0", "t1"], can_throw=False),
         ],
         terminator=Return(value="t2"),
     )

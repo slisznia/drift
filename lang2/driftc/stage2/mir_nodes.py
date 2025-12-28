@@ -83,6 +83,14 @@ class ConstFloat(MInstr):
 
 
 @dataclass
+class FnPtrConst(MInstr):
+	"""dest = function pointer constant."""
+	dest: ValueId
+	fn_ref: "FunctionRefId"
+	call_sig: "CallSig"
+
+
+@dataclass
 class ZeroValue(MInstr):
 	"""
 	dest = 0-value of a type (zero / null / zero-initialized aggregate).
@@ -470,6 +478,20 @@ class Call(MInstr):
 	dest: Optional[ValueId]  # None for void calls
 	fn: str
 	args: List[ValueId]
+	can_throw: bool
+
+
+@dataclass
+class CallIndirect(MInstr):
+	"""
+	dest = callee(args...) via a function value (dest may be None for void returns).
+	"""
+	dest: Optional[ValueId]  # None for void calls
+	callee: ValueId
+	args: List[ValueId]
+	param_types: List[TypeId]
+	user_ret_type: TypeId
+	can_throw: bool
 
 
 @dataclass
@@ -728,6 +750,7 @@ __all__ = [
 	"ConstBool",
 	"ConstString",
 	"ConstFloat",
+	"FnPtrConst",
 	"ZeroValue",
 	"StringFromInt",
 	"StringFromBool",
@@ -759,6 +782,7 @@ __all__ = [
 	"ArrayLen",
 	"ArrayCap",
 	"Call",
+	"CallIndirect",
 	"ConstructDV",
 	"ConstructError",
 	"ErrorAddAttrDV",

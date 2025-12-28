@@ -31,7 +31,9 @@ from typing import List, Set, Mapping, Optional
 
 from lang2.driftc import stage1 as H
 from lang2.driftc.stage1 import closures as C
+from lang2.driftc.stage1.call_info import CallInfo, CallTargetKind, call_abi_ret_type
 from lang2.driftc.checker import FnSignature
+from lang2.driftc.core.function_id import function_symbol
 from lang2.driftc.core.span import Span
 from lang2.driftc.core.types_core import TypeKind, TypeTable, TypeId
 from lang2.driftc.core.type_resolve_common import resolve_opaque_type
@@ -145,6 +147,7 @@ class HIRToMIR:
 		exc_env: Mapping[str, int] | None = None,
 		param_types: Mapping[str, TypeId] | None = None,
 		signatures: Mapping[str, FnSignature] | None = None,
+		call_info_by_node_id: Mapping[int, CallInfo] | None = None,
 		can_throw_by_name: Mapping[str, bool] | None = None,
 		return_type: TypeId | None = None,
 	):
@@ -185,6 +188,7 @@ class HIRToMIR:
 		self._opt_bool = self._type_table.new_optional(self._bool_type)
 		self._opt_string = self._type_table.new_optional(self._string_type)
 		self._signatures = signatures or {}
+		self._call_info_by_node_id: dict[int, CallInfo] = dict(call_info_by_node_id) if call_info_by_node_id else {}
 		# Best-effort can-throw classification for functions. This is intentionally
 		# separate from signatures: the surface language does not expose FnResult,
 		# and "can-throw" is an effect inferred from the body (or declared by a
@@ -584,6 +588,42 @@ class HIRToMIR:
 		dest = self.b.new_temp()
 		self.b.emit(M.ConstString(dest=dest, value=expr.value))
 		return dest
+
+	def _visit_expr_HFnPtrConst(self, expr: H.HFnPtrConst) -> M.ValueId:
+		dest = self.b.new_temp()
+		self.b.emit(M.FnPtrConst(dest=dest, fn_ref=expr.fn_ref, call_sig=expr.call_sig))
+		return dest
+
+	def _visit_expr_HCast(self, expr: H.HCast) -> M.ValueId:
+		def _format_type_expr(te: object | None) -> str:
+			if te is None:
+				return "<unknown>"
+			name = getattr(te, "name", None)
+			args = list(getattr(te, "args", []) or [])
+			module_id = getattr(te, "module_id", None)
+			fn_throws = getattr(te, "fn_throws", None)
+			if isinstance(name, str) and name == "fn" and args:
+				params = args[:-1]
+				ret = args[-1]
+				params_s = ", ".join(_format_type_expr(a) for a in params)
+				ret_s = _format_type_expr(ret)
+				s = f"fn({params_s}) returns {ret_s}"
+				if fn_throws is False:
+					s = f"{s} nothrow"
+				return s
+			base = name if isinstance(name, str) else "<type>"
+			if isinstance(module_id, str) and module_id:
+				base = f"{module_id}.{base}"
+			if args:
+				base = f"{base}<{', '.join(_format_type_expr(a) for a in args)}>"
+			return base
+
+		target = _format_type_expr(getattr(expr, "target_type_expr", None))
+		raise AssertionError(
+			"internal compiler error: HCast must be eliminated during typecheck "
+			f"(node_id={expr.node_id}, target={target}); "
+			"rewrite to HFnPtrConst or emit a diagnostic"
+		)
 
 	def _visit_expr_HFString(self, expr: H.HFString) -> M.ValueId:
 		"""
@@ -1086,16 +1126,29 @@ class HIRToMIR:
 			raise NotImplementedError("Only direct function-name calls are supported in MIR lowering")
 		if getattr(expr, "kwargs", None):
 			raise AssertionError("keyword arguments reached MIR lowering for a normal call (checker bug)")
+		info = self._call_info_for(expr)
 		result = self._lower_call(expr)
 		if result is None:
 			raise AssertionError("Void-returning call used in expression context (checker bug)")
 		# Calls to can-throw functions are always "checked": they either produce the
 		# ok payload value or propagate an Error into the nearest try (or out of the
 		# current function).
-		if self._callee_is_can_throw(expr.fn.name):
-			ok_tid = self._return_typeid_for_callee(expr.fn.name)
-			if ok_tid is None:
-				raise AssertionError("can-throw callee must have a declared return type")
+		if info.sig.can_throw:
+			ok_tid = info.sig.user_ret_type
+			def emit_call() -> M.ValueId:
+				return result
+			return self._lower_can_throw_call_value(emit_call=emit_call, ok_ty=ok_tid)
+		return result
+
+	def _visit_expr_HInvoke(self, expr: H.HInvoke) -> M.ValueId:
+		if getattr(expr, "kwargs", None):
+			raise AssertionError("keyword arguments are not supported for value calls in MIR lowering (checker bug)")
+		info = self._call_info_for_invoke(expr)
+		result = self._lower_invoke(expr)
+		if result is None:
+			raise AssertionError("Void-returning call used in expression context (checker bug)")
+		if info.sig.can_throw:
+			ok_tid = info.sig.user_ret_type
 			def emit_call() -> M.ValueId:
 				return result
 			return self._lower_can_throw_call_value(emit_call=emit_call, ok_ty=ok_tid)
@@ -1111,15 +1164,32 @@ class HIRToMIR:
 		"""
 		def expr_can_throw(expr: H.HExpr) -> bool:
 			if isinstance(expr, H.HCall):
-				if isinstance(expr.fn, H.HVar) and self._callee_is_can_throw(expr.fn.name):
+				info = self._call_info_by_node_id.get(expr.node_id)
+				if info is not None and info.sig.can_throw:
 					return True
 				if isinstance(expr.fn, H.HLambda):
 					return self._lambda_can_throw(expr.fn)
 				return any(expr_can_throw(a) for a in expr.args)
 			if isinstance(expr, H.HMethodCall):
-				if self._callee_is_can_throw(expr.method_name):
-					return True
+				info = self._call_info_by_node_id.get(expr.node_id)
+				if info is not None:
+					if info.sig.can_throw:
+						return True
+				else:
+					# Conservatively assume unknown method calls can throw, except for
+					# built-in, non-throwing intrinsics handled directly in lowering.
+					if expr.method_name not in {"as_int", "as_bool", "as_string", "iter", "next", "unwrap_ok", "unwrap_err"}:
+						return True
 				if expr_can_throw(expr.receiver):
+					return True
+				return any(expr_can_throw(a) for a in expr.args)
+			if isinstance(expr, H.HInvoke):
+				info = self._call_info_by_node_id.get(expr.node_id)
+				if info is not None and info.sig.can_throw:
+					return True
+				if isinstance(expr.callee, H.HLambda):
+					return self._lambda_can_throw(expr.callee)
+				if expr_can_throw(expr.callee):
 					return True
 				return any(expr_can_throw(a) for a in expr.args)
 			if isinstance(expr, H.HTryExpr):
@@ -1265,6 +1335,7 @@ class HIRToMIR:
 			hidden_builder,
 			type_table=self._type_table,
 			signatures=self._signatures,
+			call_info_by_node_id=self._call_info_by_node_id,
 			can_throw_by_name={**self._can_throw_by_name, hidden_name: can_throw},
 			return_type=declared_ret_type or self._type_table.ensure_unknown(),
 		)
@@ -1341,11 +1412,11 @@ class HIRToMIR:
 			ok_ty = ret_type or unknown
 			def emit_call() -> M.ValueId:
 				dest = self.b.new_temp()
-				self.b.emit(M.Call(dest=dest, fn=hidden_name, args=call_args))
+				self.b.emit(M.Call(dest=dest, fn=hidden_name, args=call_args, can_throw=True))
 				return dest
 			return self._lower_can_throw_call_value(emit_call=emit_call, ok_ty=ok_ty)
 		dest = self.b.new_temp()
-		self.b.emit(M.Call(dest=dest, fn=hidden_name, args=call_args))
+		self.b.emit(M.Call(dest=dest, fn=hidden_name, args=call_args, can_throw=False))
 		return dest
 
 	def _lower_lambda_block(self, lower: "HIRToMIR", block: H.HBlock) -> M.ValueId | None:
@@ -1446,13 +1517,11 @@ class HIRToMIR:
 				self.b.emit(M.DVAsString(dest=dest, dv=dv_val))
 				self._local_types[dest] = self._opt_string
 				return dest
-		result, callee = self._lower_method_call(expr)
+		result, info = self._lower_method_call(expr)
 		if result is None:
 			raise AssertionError("Void-returning method call used in expression context (checker bug)")
-		if self._callee_is_can_throw(callee):
-			ok_tid = self._return_typeid_for_callee(callee)
-			if ok_tid is None:
-				raise AssertionError("can-throw callee must have a declared return type")
+		if info.sig.can_throw:
+			ok_tid = info.sig.user_ret_type
 			def emit_call() -> M.ValueId:
 				return result
 			return self._lower_can_throw_call_value(emit_call=emit_call, ok_ty=ok_tid)
@@ -1849,30 +1918,11 @@ class HIRToMIR:
 				self.b.emit(M.StoreRef(ptr=a_ptr, value=b_val, inner_ty=a_ty))
 				self.b.emit(M.StoreRef(ptr=b_ptr, value=a_val, inner_ty=b_ty))
 				return
-		if isinstance(stmt.expr, H.HCall) and isinstance(stmt.expr.fn, H.HVar):
-			if self._callee_is_can_throw(stmt.expr.fn.name):
-				fnres_val = self._lower_call(expr=stmt.expr)
-				assert fnres_val is not None
-
-				def emit_call() -> M.ValueId:
-					return fnres_val
-
-				self._lower_can_throw_call_stmt(emit_call=emit_call)
-				return
-			if self._call_returns_void(stmt.expr):
-				self._lower_call(expr=stmt.expr)
-				return
-		if isinstance(stmt.expr, H.HMethodCall):
-			# Only special-case method calls when statement semantics differ from
-			# expression semantics:
-			# - can-throw calls in statement position must be "checked" and propagate,
-			# - Void-returning calls in statement position should not produce a value.
-			recv_ty = self._infer_expr_type(stmt.expr.receiver)
-			resolved = self._resolve_method_symbol(recv_ty, stmt.expr.method_name) if recv_ty is not None else None
-			if resolved is not None:
-				symbol_name, _mode = resolved
-				if self._callee_is_can_throw(symbol_name):
-					fnres_val, _ = self._lower_method_call(expr=stmt.expr)
+		if isinstance(stmt.expr, H.HCall):
+			info = self._call_info_by_node_id.get(stmt.expr.node_id)
+			if info is not None:
+				if info.sig.can_throw:
+					fnres_val = self._lower_call(expr=stmt.expr)
 					assert fnres_val is not None
 
 					def emit_call() -> M.ValueId:
@@ -1880,10 +1930,45 @@ class HIRToMIR:
 
 					self._lower_can_throw_call_stmt(emit_call=emit_call)
 					return
-				ret_tid = self._return_type_for_name(symbol_name)
-				if ret_tid is not None and self._type_table.is_void(ret_tid):
-					self._lower_method_call(expr=stmt.expr)
+				if self._type_table.is_void(info.sig.user_ret_type):
+					self._lower_call(expr=stmt.expr)
 					return
+		if isinstance(stmt.expr, H.HInvoke):
+			info = self._call_info_by_node_id.get(stmt.expr.node_id)
+			if info is not None:
+				if info.sig.can_throw:
+					fnres_val = self._lower_invoke(expr=stmt.expr)
+					assert fnres_val is not None
+
+					def emit_call() -> M.ValueId:
+						return fnres_val
+
+					self._lower_can_throw_call_stmt(emit_call=emit_call)
+					return
+				if self._type_table.is_void(info.sig.user_ret_type):
+					self._lower_invoke(expr=stmt.expr)
+					return
+		if isinstance(stmt.expr, H.HMethodCall):
+			# Only special-case method calls when statement semantics differ from
+			# expression semantics:
+			# - can-throw calls in statement position must be "checked" and propagate,
+			# - Void-returning calls in statement position should not produce a value.
+			info = self._call_info_by_node_id.get(stmt.expr.node_id)
+			if info is None:
+				self.lower_expr(stmt.expr)
+				return
+			if info.sig.can_throw:
+				fnres_val, _ = self._lower_method_call(expr=stmt.expr)
+				assert fnres_val is not None
+
+				def emit_call() -> M.ValueId:
+					return fnres_val
+
+				self._lower_can_throw_call_stmt(emit_call=emit_call)
+				return
+			if self._type_table.is_void(info.sig.user_ret_type):
+				self._lower_method_call(expr=stmt.expr)
+				return
 		if hasattr(H, "HMatchExpr") and isinstance(stmt.expr, getattr(H, "HMatchExpr")):
 			self._lower_match(stmt.expr, want_value=False)
 			return
@@ -2455,19 +2540,45 @@ class HIRToMIR:
 				return cand.return_type_id
 		return None
 
+	def _call_info_for(self, expr: H.HCall) -> CallInfo:
+		info = self._call_info_by_node_id.get(expr.node_id)
+		if info is None:
+			raise AssertionError(f"missing call info for HCall node_id={expr.node_id} (typecheck/call-info bug)")
+		return info
+
+	def _call_info_for_method(self, expr: H.HMethodCall) -> CallInfo:
+		info = self._call_info_by_node_id.get(expr.node_id)
+		if info is None:
+			raise AssertionError(f"missing call info for HMethodCall node_id={expr.node_id} (typecheck/call-info bug)")
+		return info
+
+	def _call_info_for_invoke(self, expr: H.HInvoke) -> CallInfo:
+		info = self._call_info_by_node_id.get(expr.node_id)
+		if info is None:
+			raise AssertionError(f"missing call info for HInvoke node_id={expr.node_id} (typecheck/call-info bug)")
+		return info
+
 	def _call_returns_void(self, expr: H.HExpr) -> bool:
-		if isinstance(expr, H.HCall) and isinstance(expr.fn, H.HVar):
-			if self._callee_is_can_throw(expr.fn.name):
-				# Can-throw calls return an internal FnResult value, even when the
-				# surface ok type is Void.
-				return False
-			ret = self._return_type_for_name(expr.fn.name)
-			return ret is not None and self._type_table.is_void(ret)
+		if isinstance(expr, H.HCall):
+			info = self._call_info_by_node_id.get(expr.node_id)
+			if info is not None:
+				if info.sig.can_throw:
+					# Can-throw calls return an internal FnResult value, even when the
+					# surface ok type is Void.
+					return False
+				return self._type_table.is_void(info.sig.user_ret_type)
 		if isinstance(expr, H.HMethodCall):
-			if self._callee_is_can_throw(expr.method_name):
-				return False
-			ret = self._return_type_for_name(expr.method_name)
-			return ret is not None and self._type_table.is_void(ret)
+			info = self._call_info_by_node_id.get(expr.node_id)
+			if info is not None:
+				if info.sig.can_throw:
+					return False
+				return self._type_table.is_void(info.sig.user_ret_type)
+		if isinstance(expr, H.HInvoke):
+			info = self._call_info_by_node_id.get(expr.node_id)
+			if info is not None:
+				if info.sig.can_throw:
+					return False
+				return self._type_table.is_void(info.sig.user_ret_type)
 		return False
 
 	def _resolve_method_symbol(self, receiver_ty: TypeId, method_name: str) -> tuple[str, str] | None:
@@ -2518,24 +2629,84 @@ class HIRToMIR:
 		return candidates[0]
 
 	def _lower_call(self, expr: H.HCall) -> M.ValueId | None:
+		info = self._call_info_for(expr)
+		if info.target.kind is CallTargetKind.INDIRECT:
+			return self._lower_indirect_call(expr.fn, expr.args, info)
+		if info.target.kind is not CallTargetKind.DIRECT or not info.target.symbol:
+			raise AssertionError("call missing direct CallTarget (typecheck/call-info bug)")
+		target_sym = function_symbol(info.target.symbol)
 		if not isinstance(expr.fn, H.HVar):
 			raise NotImplementedError("Only direct function-name calls are supported in MIR lowering")
 		arg_vals = [self.lower_expr(a) for a in expr.args]
 		# Can-throw calls always return an internal FnResult value, even when the
 		# surface ok type is Void.
-		if self._callee_is_can_throw(expr.fn.name):
+		if info.sig.can_throw:
 			dest = self.b.new_temp()
-			self.b.emit(M.Call(dest=dest, fn=expr.fn.name, args=arg_vals))
+			self.b.emit(M.Call(dest=dest, fn=target_sym, args=arg_vals, can_throw=True))
+			self._local_types[dest] = call_abi_ret_type(info.sig, self._type_table)
 			return dest
-		ret_tid = self._return_type_for_name(expr.fn.name)
-		if ret_tid is not None and self._type_table.is_void(ret_tid):
-			self.b.emit(M.Call(dest=None, fn=expr.fn.name, args=arg_vals))
+		if self._type_table.is_void(info.sig.user_ret_type):
+			self.b.emit(M.Call(dest=None, fn=target_sym, args=arg_vals, can_throw=False))
 			return None
 		dest = self.b.new_temp()
-		self.b.emit(M.Call(dest=dest, fn=expr.fn.name, args=arg_vals))
+		self.b.emit(M.Call(dest=dest, fn=target_sym, args=arg_vals, can_throw=False))
+		self._local_types[dest] = info.sig.user_ret_type
 		return dest
 
-	def _lower_method_call(self, expr: H.HMethodCall) -> tuple[M.ValueId | None, str]:
+	def _lower_invoke(self, expr: H.HInvoke) -> M.ValueId | None:
+		info = self._call_info_for_invoke(expr)
+		return self._lower_indirect_call(expr.callee, expr.args, info)
+
+	def _lower_indirect_call(
+		self,
+		callee_expr: H.HExpr,
+		args: list[H.HExpr],
+		info: CallInfo,
+	) -> M.ValueId | None:
+		callee_val = self.lower_expr(callee_expr)
+		arg_vals = [self.lower_expr(a) for a in args]
+		param_types = list(info.sig.param_types)
+		if info.sig.can_throw:
+			dest = self.b.new_temp()
+			self.b.emit(
+				M.CallIndirect(
+					dest=dest,
+					callee=callee_val,
+					args=arg_vals,
+					param_types=param_types,
+					user_ret_type=info.sig.user_ret_type,
+					can_throw=True,
+				)
+			)
+			self._local_types[dest] = call_abi_ret_type(info.sig, self._type_table)
+			return dest
+		if self._type_table.is_void(info.sig.user_ret_type):
+			self.b.emit(
+				M.CallIndirect(
+					dest=None,
+					callee=callee_val,
+					args=arg_vals,
+					param_types=param_types,
+					user_ret_type=info.sig.user_ret_type,
+					can_throw=False,
+				)
+			)
+			return None
+		dest = self.b.new_temp()
+		self.b.emit(
+			M.CallIndirect(
+				dest=dest,
+				callee=callee_val,
+				args=arg_vals,
+				param_types=param_types,
+				user_ret_type=info.sig.user_ret_type,
+				can_throw=False,
+			)
+		)
+		self._local_types[dest] = info.sig.user_ret_type
+		return dest
+
+	def _lower_method_call(self, expr: H.HMethodCall) -> tuple[M.ValueId | None, CallInfo]:
 		"""
 		Lower a method call to a plain function call.
 
@@ -2543,24 +2714,27 @@ class HIRToMIR:
 		it complicates codegen and duplicates resolution logic. Instead we resolve
 		the method to a concrete symbol (e.g. `m.geom::Point::move_by`) and call it
 		with the receiver as the first argument.
+
+		Method calls are resolved using CallInfo (typed HIR); we do not re-resolve
+		or guess can-throw in stage2.
 		"""
 		if getattr(expr, "kwargs", None):
 			raise AssertionError("keyword arguments for method calls are not supported in MIR lowering (checker bug)")
 
+		info = self._call_info_for_method(expr)
+		if info.target.kind is not CallTargetKind.DIRECT or not info.target.symbol:
+			raise AssertionError("method call missing direct CallTarget (typecheck/call-info bug)")
+		symbol_name = function_symbol(info.target.symbol)
+		sig = self._signatures.get(symbol_name)
+		if sig is None or sig.self_mode is None:
+			raise AssertionError(f"missing method signature/self_mode for '{symbol_name}' (typecheck bug)")
+		self_mode = sig.self_mode
 		recv_ty = self._infer_expr_type(expr.receiver)
 		if recv_ty is None:
 			raise AssertionError(
 				"method receiver type unknown in MIR lowering (typecheck/inference bug): "
 				f"{expr.method_name}(...)"
 			)
-
-		resolved = self._resolve_method_symbol(recv_ty, expr.method_name)
-		if resolved is None:
-			raise AssertionError(
-				"unresolved method call reached MIR lowering (typecheck/resolution bug): "
-				f"{expr.method_name}(...)"
-			)
-		symbol_name, self_mode = resolved
 
 		# Compute the receiver argument according to the method's receiver mode.
 		#
@@ -2591,19 +2765,18 @@ class HIRToMIR:
 		arg_vals = [receiver_arg] + [self.lower_expr(a) for a in expr.args]
 
 		# Can-throw calls always return an internal FnResult carrier value.
-		if self._callee_is_can_throw(symbol_name):
+		if info.sig.can_throw:
 			dest = self.b.new_temp()
-			self.b.emit(M.Call(dest=dest, fn=symbol_name, args=arg_vals))
-			return dest, symbol_name
+			self.b.emit(M.Call(dest=dest, fn=symbol_name, args=arg_vals, can_throw=True))
+			return dest, info
 
-		ret_tid = self._return_type_for_name(symbol_name)
-		if ret_tid is not None and self._type_table.is_void(ret_tid):
-			self.b.emit(M.Call(dest=None, fn=symbol_name, args=arg_vals))
-			return None, symbol_name
+		if self._type_table.is_void(info.sig.user_ret_type):
+			self.b.emit(M.Call(dest=None, fn=symbol_name, args=arg_vals, can_throw=False))
+			return None, info
 
 		dest = self.b.new_temp()
-		self.b.emit(M.Call(dest=dest, fn=symbol_name, args=arg_vals))
-		return dest, symbol_name
+		self.b.emit(M.Call(dest=dest, fn=symbol_name, args=arg_vals, can_throw=False))
+		return dest, info
 
 	def _return_typeid_for_callee(self, name: str) -> TypeId | None:
 		"""
@@ -2803,6 +2976,17 @@ class HIRToMIR:
 					td = self._type_table.get(arg_ty)
 					if td.kind is TypeKind.ARRAY or (td.kind is TypeKind.SCALAR and td.name == "String"):
 						return self._uint_type
+		if isinstance(expr, H.HInvoke):
+			info = self._call_info_by_node_id.get(expr.node_id)
+			if info is not None:
+				return info.sig.user_ret_type
+		if isinstance(expr, H.HFnPtrConst):
+			return self._type_table.ensure_function(
+				"fn",
+				list(expr.call_sig.param_types),
+				expr.call_sig.user_ret_type,
+				can_throw=bool(expr.call_sig.can_throw),
+			)
 		if isinstance(expr, H.HField) and expr.name in ("len", "cap", "capacity"):
 			subj_ty = self._infer_expr_type(expr.subject)
 			if subj_ty is None:

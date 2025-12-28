@@ -95,7 +95,7 @@ def test_e2e_fnresult_callee_ok_path():
 	# drift_main: call callee, extract ok part, and return it.
 	main_entry = BasicBlock(
 		name="entry",
-		instructions=[Call(dest="mres", fn="callee", args=[]), ResultOk(dest="m0", result="mres")],
+		instructions=[Call(dest="mres", fn="callee", args=[], can_throw=True), ResultOk(dest="m0", result="mres")],
 		terminator=Return(value="m0"),
 	)
 	main_mir = MirFunc(name="drift_main", params=[], locals=[], blocks={"entry": main_entry}, entry="entry")

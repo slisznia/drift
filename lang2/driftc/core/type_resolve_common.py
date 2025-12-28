@@ -4,7 +4,7 @@ from __future__ import annotations
 Shared helpers for resolving raw/builtin type shapes into TypeIds.
 
 This centralizes the knowledge of builtin names (`Int`, `Bool`, `String`,
-`Uint`, `Float`, `Void`, `Error`, `DiagnosticValue`, `Array`, `Optional`, `FnResult`) so resolver and checker code
+`Uint`, `Float`, `Void`, `Error`, `DiagnosticValue`, `Array`, `Optional`, `FnResult`, `fn`) so resolver and checker code
 stay in sync as the language evolves.
 """
 
@@ -81,7 +81,19 @@ def resolve_opaque_type(
 				module_id=origin_mod,
 				type_params=type_params,
 			)
-			return table.new_fnresult(ok, err)
+			return table.ensure_fnresult(ok, err)
+		if name == "fn":
+			if not args:
+				return table.ensure_unknown()
+			param_ids = [
+				resolve_opaque_type(a, table, module_id=origin_mod, type_params=type_params)
+				for a in list(args[:-1])
+			]
+			ret_id = resolve_opaque_type(args[-1], table, module_id=origin_mod, type_params=type_params)
+			can_throw = True
+			if getattr(raw, "fn_throws", None) is False:
+				can_throw = False
+			return table.ensure_function("fn", param_ids, ret_id, can_throw=can_throw)
 		if name == "Array":
 			elem = resolve_opaque_type(args[0] if args else None, table, module_id=origin_mod, type_params=type_params)
 			return table.new_array(elem)
@@ -147,7 +159,7 @@ def resolve_opaque_type(
 				ok_raw, err_raw = parts[0].strip(), parts[1].strip()
 				ok_ty = resolve_opaque_type(ok_raw, table, module_id=module_id)
 				err_ty = resolve_opaque_type(err_raw, table, module_id=module_id)
-				return table.new_fnresult(ok_ty, err_ty)
+				return table.ensure_fnresult(ok_ty, err_ty)
 			return table.ensure_unknown()
 		if raw == "FnResult":
 			return table.ensure_unknown()
@@ -170,11 +182,11 @@ def resolve_opaque_type(
 		if len(raw) >= 3 and raw[0] == "FnResult":
 			ok = resolve_opaque_type(raw[1], table, module_id=module_id)
 			err = resolve_opaque_type(raw[2], table, module_id=module_id)
-			return table.new_fnresult(ok, err)
+			return table.ensure_fnresult(ok, err)
 		if len(raw) == 2:
 			ok = resolve_opaque_type(raw[0], table, module_id=module_id)
 			err = resolve_opaque_type(raw[1], table, module_id=module_id)
-			return table.new_fnresult(ok, err)
+			return table.ensure_fnresult(ok, err)
 		return table.ensure_unknown()
 
 	return table.ensure_unknown()

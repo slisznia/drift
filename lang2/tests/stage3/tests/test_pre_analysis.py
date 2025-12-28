@@ -55,7 +55,7 @@ def test_calls_tracked_separately_from_may_fail():
 	entry = BasicBlock(
 		name="entry",
 		instructions=[
-			Call(dest="t0", fn="foo", args=[]),
+			Call(dest="t0", fn="foo", args=[], can_throw=False),
 			ConstructDV(dest="t2", dv_type_name="Err", args=[]),
 			ConstInt(dest="c0", value=1234),
 			ConstString(dest="ename", value="Err"),

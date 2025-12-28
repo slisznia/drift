@@ -103,8 +103,8 @@ fn main() returns Int {
 	assert result.diagnostics == []
 	type_app = _find_type_app(main_block)
 	call_expr = _find_return_call(main_block)
-	type_app_ty = result.typed_fn.expr_types.get(id(type_app))
-	call_ty = result.typed_fn.expr_types.get(id(call_expr))
+	type_app_ty = result.typed_fn.expr_types.get(type_app.node_id)
+	call_ty = result.typed_fn.expr_types.get(call_expr.node_id)
 	assert type_app_ty is not None
 	assert call_ty is not None
 	td_fn = type_table.get(type_app_ty)
@@ -142,7 +142,7 @@ fn main() returns Int {
 	)
 	assert result.diagnostics == []
 	type_app = _find_type_app(main_block)
-	type_app_ty = result.typed_fn.expr_types.get(id(type_app))
+	type_app_ty = result.typed_fn.expr_types.get(type_app.node_id)
 	assert type_app_ty is not None
 	td_fn = type_table.get(type_app_ty)
 	assert td_fn.kind is TypeKind.FUNCTION
@@ -182,8 +182,8 @@ fn main() returns Int {
 	assert result.diagnostics == []
 	type_app = _find_qualified_member(main_block)
 	call_expr = _find_call_in_let(main_block)
-	type_app_ty = result.typed_fn.expr_types.get(id(type_app))
-	call_ty = result.typed_fn.expr_types.get(id(call_expr))
+	type_app_ty = result.typed_fn.expr_types.get(type_app.node_id)
+	call_ty = result.typed_fn.expr_types.get(call_expr.node_id)
 	assert type_app_ty is not None
 	assert call_ty is not None
 	td_fn = type_table.get(type_app_ty)

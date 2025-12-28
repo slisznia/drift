@@ -120,7 +120,7 @@ fn main() returns String {
 	assert result.diagnostics == []
 	calls = _find_method_calls(main_block)
 	assert len(calls) == 1
-	call_ty = result.typed_fn.expr_types.get(id(calls[0]))
+	call_ty = result.typed_fn.expr_types.get(calls[0].node_id)
 	assert call_ty == type_table.ensure_string()
 
 
@@ -144,7 +144,7 @@ fn main() returns Optional<Int> {
 	assert result.diagnostics == []
 	calls = _find_method_calls(main_block)
 	assert len(calls) == 1
-	call_ty = result.typed_fn.expr_types.get(id(calls[0]))
+	call_ty = result.typed_fn.expr_types.get(calls[0].node_id)
 	optional_base = type_table.get_variant_base(module_id="lang.core", name="Optional")
 	assert optional_base is not None
 	expected = type_table.ensure_instantiated(optional_base, [type_table.ensure_int()])

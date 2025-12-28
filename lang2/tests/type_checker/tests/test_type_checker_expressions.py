@@ -339,7 +339,7 @@ def test_method_call_with_explicit_type_args_instantiates_signature():
 		current_module=0,
 	)
 	assert res.diagnostics == []
-	assert res.typed_fn.expr_types.get(id(call)) == table.ensure_int()
+	assert res.typed_fn.expr_types.get(call.node_id) == table.ensure_int()
 
 
 def test_method_type_args_skip_nongeneric_candidate():
@@ -424,7 +424,7 @@ def test_method_type_args_skip_nongeneric_candidate():
 		current_module=0,
 	)
 	assert res.diagnostics == []
-	assert res.typed_fn.expr_types.get(id(call)) == table.ensure_int()
+	assert res.typed_fn.expr_types.get(call.node_id) == table.ensure_int()
 
 def test_method_resolution_uses_registry_and_types():
 	table = TypeTable()
@@ -439,6 +439,7 @@ def test_method_resolution_uses_registry_and_types():
 		module_id=0,
 		visibility=Visibility.public(),
 		signature=CallableSignature(param_types=(recv_ty,), result_type=str_ty),
+		fn_id=_fn_id("m"),
 		impl_id=1,
 		impl_target_type_id=int_ty,
 		self_mode=SelfMode.SELF_BY_REF,
@@ -461,7 +462,7 @@ def test_method_resolution_uses_registry_and_types():
 	assert str_ty in res.typed_fn.expr_types.values()
 	# Verify resolved callee metadata is recorded on the call.
 	call_expr = block.statements[1].expr
-	resolution = res.typed_fn.call_resolutions.get(id(call_expr))
+	resolution = res.typed_fn.call_resolutions.get(call_expr.node_id)
 	assert isinstance(resolution, MethodResolution)
 	assert resolution.decl.callable_id == 1
 	assert resolution.decl.signature.result_type == str_ty

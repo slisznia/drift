@@ -176,6 +176,22 @@ class PlaceCanonicalizeRewriter:
 				kwargs=new_kwargs,
 				type_args=getattr(expr, "type_args", None),
 			)
+		if isinstance(expr, getattr(H, "HInvoke", ())):
+			_, callee = self._rewrite_expr(expr.callee)
+			new_args: List[H.HExpr] = []
+			for a in expr.args:
+				_, av = self._rewrite_expr(a)
+				new_args.append(av)
+			new_kwargs: list[H.HKwArg] = []
+			for kw in getattr(expr, "kwargs", []) or []:
+				_, kv = self._rewrite_expr(kw.value)
+				new_kwargs.append(H.HKwArg(name=kw.name, value=kv, loc=kw.loc))
+			return [], H.HInvoke(
+				callee=callee,
+				args=new_args,
+				kwargs=new_kwargs,
+				type_args=getattr(expr, "type_args", None),
+			)
 		if isinstance(expr, H.HMethodCall):
 			_, recv = self._rewrite_expr(expr.receiver)
 			new_args: List[H.HExpr] = []

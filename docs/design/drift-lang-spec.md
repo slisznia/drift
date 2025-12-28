@@ -52,6 +52,7 @@ Drift expressions largely follow a C-style surface with explicit ownership rules
 - Ternary conditional: `cond ? then_expr : else_expr` (lower precedence than `or`; `cond` must be `Bool`, and both arms must have the same type)
 - Pipeline: `lhs |> stage` (left-associative; lower precedence than `or` and higher than ternary; stages are calls/idents)
 - Move expression: `move x` transfers ownership
+- Explicit cast: `cast<T>(expr)` (strict; function-type casts only in v1)
 - Array literals: `[1, 2, 3]`
 - String concatenation uses `+`
 - String byte length is exposed via `byte_length(s: String) -> Uint` (UTF‑8 code units, not characters); a future `char_length` may count user-visible characters.
@@ -77,6 +78,16 @@ Semantics:
   ```drift
   R.method(.a(), .b)
   ```
+
+### 2.y. Explicit cast expression
+
+`cast<T>(expr)` is an explicit, compile-time checked cast. In v1, `cast` is **strict** and supported only for function types; it is primarily used to disambiguate overloads when taking a function reference:
+
+```drift
+val f = cast<fn(Int) returns Int nothrow>(abs)
+```
+
+No thunking or adapter insertion occurs in this build; other cast targets are rejected.
 
   behaves like:
 
@@ -1721,7 +1732,7 @@ try {
 ## 9. Reserved keywords and operators
 
 Keywords and literals are reserved and cannot be used as identifiers (functions, variables, modules, structs, exceptions, etc.):  
-`fn`, `val`, `var`, `returns`, `if`, `else`, `while`, `break`, `continue`, `try`, `catch`, `throw`, `raise`, `return`, `exception`, `import`, `module`, `implement`, `pub`, `type`, `true`, `false`, `not`, `and`, `or`, plus language/FFI/legacy keywords (`auto`, `pragma`, `bool`, `int`, `float`, `string`, `void`, `abstract`, `assert`, `boolean`, `byte`, `case`, `char`, `class`, `const`, `default`, `do`, `double`, `enum`, `extends`, `final`, `finally`, `for`, `goto`, `instanceof`, `interface`, `long`, `native`, `new`, `package`, `private`, `protected`, `public`, `short`, `static`, `strictfp`, `super`, `switch`, `synchronized`, `this`, `throws`, `transient`, `volatile`).
+`fn`, `val`, `var`, `returns`, `if`, `else`, `while`, `break`, `continue`, `try`, `catch`, `throw`, `raise`, `return`, `exception`, `import`, `module`, `implement`, `pub`, `type`, `cast`, `true`, `false`, `not`, `and`, `or`, plus language/FFI/legacy keywords (`auto`, `pragma`, `bool`, `int`, `float`, `string`, `void`, `abstract`, `assert`, `boolean`, `byte`, `case`, `char`, `class`, `const`, `default`, `do`, `double`, `enum`, `extends`, `final`, `finally`, `for`, `goto`, `instanceof`, `interface`, `long`, `native`, `new`, `package`, `private`, `protected`, `public`, `short`, `static`, `strictfp`, `super`, `switch`, `synchronized`, `this`, `throws`, `transient`, `volatile`).
 
 **Operator tokens (reserved):** `+`, `-`, `*`, `/`, `%`, `==`, `!=`, `<`, `<=`, `>`, `>=`, `and`, `or`, `not`, `? :`, `|>` (pipeline), `<<`, `>>`, indexing brackets `[]`, and member access `.`. These participate in precedence/associativity rules; identifiers cannot reuse them.
 

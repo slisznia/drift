@@ -275,7 +275,7 @@ fn main() returns Int {
 	assert result.diagnostics == []
 	calls = _collect_method_calls(main_block)
 	assert calls
-	res = result.typed_fn.call_resolutions[id(calls[0])]
+	res = result.typed_fn.call_resolutions[calls[0].node_id]
 	assert res.decl.fn_id in sigs
 	assert res.decl.fn_id.module == "m_box"
 
@@ -362,7 +362,7 @@ fn main() returns Int {
 	)
 	assert result.diagnostics == []
 	calls = _collect_method_calls(main_block)
-	res = result.typed_fn.call_resolutions[id(calls[0])]
+	res = result.typed_fn.call_resolutions[calls[0].node_id]
 	assert res.decl.fn_id in sigs
 	assert res.decl.fn_id.module == "m_box"
 

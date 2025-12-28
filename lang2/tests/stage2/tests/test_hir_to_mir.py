@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import pytest
 
+from lang2.driftc.core.function_id import FunctionId
 from lang2.driftc.stage1 import (
 	HBlock,
 	HLet,
@@ -36,7 +37,10 @@ from lang2.driftc.stage1 import (
 	HFStringHole,
 	HExprStmt,
 	BinaryOp,
+	assign_node_ids,
 )
+from lang2.driftc.stage1.call_info import CallInfo, CallSig, CallTarget
+from lang2.driftc.core.types_core import TypeTable
 from lang2.driftc.stage1.normalize import normalize_hir
 from lang2.driftc.stage2 import (
 	MirBuilder,
@@ -55,10 +59,26 @@ from lang2.driftc.stage2 import (
 )
 
 
+def _fn_id(name: str) -> FunctionId:
+	return FunctionId(module="main", name=name, ordinal=0)
+
+
 def _build_and_lower(block: HBlock):
 	builder = MirBuilder("test_func")
-	lowerer = HIRToMIR(builder)
-	lowerer.lower_block(normalize_hir(block))
+	type_table = TypeTable()
+	hir_norm = normalize_hir(block)
+	assign_node_ids(hir_norm)
+	call_info_by_node_id: dict[int, CallInfo] = {}
+	for stmt in hir_norm.statements:
+		if isinstance(stmt, HExprStmt) and isinstance(stmt.expr, HCall) and isinstance(stmt.expr.fn, HVar):
+			int_ty = type_table.ensure_int()
+			param_types = tuple(int_ty for _ in stmt.expr.args)
+			call_info_by_node_id[stmt.expr.node_id] = CallInfo(
+				target=CallTarget.direct(_fn_id(stmt.expr.fn.name)),
+				sig=CallSig(param_types=param_types, user_ret_type=int_ty, can_throw=False),
+			)
+	lowerer = HIRToMIR(builder, type_table=type_table, call_info_by_node_id=call_info_by_node_id)
+	lowerer.lower_block(hir_norm)
 	return builder.func
 
 

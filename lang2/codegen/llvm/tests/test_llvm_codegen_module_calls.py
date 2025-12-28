@@ -27,7 +27,7 @@ def test_module_lowering_non_throwing_call():
 	# drift_main: calls callee, returns its result
 	main_entry = BasicBlock(
 		name="entry",
-		instructions=[Call(dest="m0", fn="callee", args=[])],
+		instructions=[Call(dest="m0", fn="callee", args=[], can_throw=False)],
 		terminator=Return(value="m0"),
 	)
 	main_mir = MirFunc(name="drift_main", params=[], locals=[], blocks={"entry": main_entry}, entry="entry")
@@ -68,7 +68,7 @@ def test_module_lowering_can_throw_callee_call():
 	# drift_main: call callee, extract ok part, and return it
 	main_entry = BasicBlock(
 		name="entry",
-		instructions=[Call(dest="mres", fn="callee", args=[]), ResultOk(dest="m0", result="mres")],
+		instructions=[Call(dest="mres", fn="callee", args=[], can_throw=True), ResultOk(dest="m0", result="mres")],
 		terminator=Return(value="m0"),
 	)
 	main_mir = MirFunc(name="drift_main", params=[], locals=[], blocks={"entry": main_entry}, entry="entry")

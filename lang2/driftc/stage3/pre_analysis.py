@@ -29,6 +29,7 @@ from lang2.driftc.stage2 import (
 	MTerminator,
 	AddrOfLocal,
 	Call,
+	CallIndirect,
 	ConstructDV,
 	ConstructError,
 	ConstInt,
@@ -120,6 +121,8 @@ class MirPreAnalysis:
 		if isinstance(instr, Call):
 			# Track call sites separately; v1 does not treat calls alone as hard
 			# may-fail for invariants.
+			call_sites.add((block_name, idx))
+		if isinstance(instr, CallIndirect):
 			call_sites.add((block_name, idx))
 		if isinstance(instr, (ConstructDV, ConstructError)):
 			# ConstructError (and DV ctor used by throw) is a hard may-fail site.

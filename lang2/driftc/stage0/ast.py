@@ -136,6 +136,14 @@ class TypeApp(Expr):
 
 
 @dataclass
+class Cast(Expr):
+	"""Explicit cast: cast<T>(expr)."""
+	target_type: object
+	expr: Expr
+	loc: Optional[object] = None
+
+
+@dataclass
 class Lambda(Expr):
 	"""Lambda expression: params + body (expr or block)."""
 	params: List["Param"]

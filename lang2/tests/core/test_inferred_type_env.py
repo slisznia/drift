@@ -72,7 +72,7 @@ def test_inferred_type_env_uses_signatures_for_call_results():
 	entry = BasicBlock(
 		name="entry",
 		instructions=[
-			Call(dest="call_res", fn="foo", args=[]),
+			Call(dest="call_res", fn="foo", args=[], can_throw=True),
 		],
 		terminator=Return(value="call_res"),
 	)

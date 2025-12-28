@@ -178,6 +178,14 @@ def _prime_builtins(table: TypeTable) -> None:
 
 def _type_expr_to_str(typ: parser_ast.TypeExpr) -> str:
 	"""Render a TypeExpr into a string (e.g., Array<Int>, Result<Int, Error>)."""
+	if typ.name == "fn":
+		args = list(getattr(typ, "args", []) or [])
+		ret = args[-1] if args else None
+		params = args[:-1] if args else []
+		params_s = ", ".join(_type_expr_to_str(a) for a in params)
+		ret_s = _type_expr_to_str(ret) if ret is not None else "<unknown>"
+		suffix = "" if getattr(typ, "fn_throws", None) is not False else " nothrow"
+		return f"fn({params_s}) returns {ret_s}{suffix}"
 	if not typ.args:
 		return typ.name
 	args = ", ".join(_type_expr_to_str(a) for a in typ.args)
@@ -186,12 +194,23 @@ def _type_expr_to_str(typ: parser_ast.TypeExpr) -> str:
 
 def _type_expr_key(typ: parser_ast.TypeExpr) -> tuple[object | None, str, tuple]:
 	qual = getattr(typ, "module_id", None) or getattr(typ, "module_alias", None)
+	if typ.name == "fn":
+		throws_key = getattr(typ, "fn_throws", None)
+		return (qual, typ.name, throws_key, tuple(_type_expr_key(a) for a in getattr(typ, "args", []) or []))
 	return (qual, typ.name, tuple(_type_expr_key(a) for a in getattr(typ, "args", []) or []))
 
 
 def _type_expr_key_str(typ: parser_ast.TypeExpr) -> str:
 	qual = getattr(typ, "module_id", None) or getattr(typ, "module_alias", None)
 	base = f"{qual}.{typ.name}" if qual else typ.name
+	if typ.name == "fn":
+		args = list(getattr(typ, "args", []) or [])
+		ret = args[-1] if args else None
+		params = args[:-1] if args else []
+		params_s = ", ".join(_type_expr_key_str(a) for a in params)
+		ret_s = _type_expr_key_str(ret) if ret is not None else "<unknown>"
+		suffix = "" if getattr(typ, "fn_throws", None) is not False else " nothrow"
+		return f"fn({params_s}) returns {ret_s}{suffix}"
 	if not (getattr(typ, "args", []) or []):
 		return base
 	args = ", ".join(_type_expr_key_str(a) for a in getattr(typ, "args", []) or [])
@@ -219,6 +238,13 @@ def _generic_type_expr_from_parser(
 	"""
 	if typ.name in type_params and not typ.args:
 		return GenericTypeExpr.param(type_params.index(typ.name))
+	if typ.name == "fn":
+		return GenericTypeExpr.named(
+			typ.name,
+			[_generic_type_expr_from_parser(a, type_params=type_params) for a in getattr(typ, "args", [])],
+			module_id=getattr(typ, "module_id", None),
+			fn_throws=getattr(typ, "fn_throws", None),
+		)
 	return GenericTypeExpr.named(
 		typ.name,
 		[_generic_type_expr_from_parser(a, type_params=type_params) for a in getattr(typ, "args", [])],
@@ -303,6 +329,12 @@ def _convert_expr(expr: parser_ast.Expr) -> s0.Expr:
 		return s0.TypeApp(
 			func=_convert_expr(expr.func),
 			type_args=list(expr.type_args),
+			loc=Span.from_loc(getattr(expr, "loc", None)),
+		)
+	if isinstance(expr, parser_ast.Cast):
+		return s0.Cast(
+			target_type=expr.target_type,
+			expr=_convert_expr(expr.expr),
 			loc=Span.from_loc(getattr(expr, "loc", None)),
 		)
 	if isinstance(expr, parser_ast.Attr):
@@ -2049,6 +2081,10 @@ def parse_drift_workspace_to_hir(
 					for h in getattr(expr, "holes", []) or []:
 						_resolve_types_in_expr(h.expr)
 					return
+				if isinstance(expr, parser_ast.Cast):
+					_resolve_type_expr_in_file(path, file_aliases, expr.target_type)
+					_resolve_types_in_expr(expr.expr)
+					return
 				# literals/names/placeholders are leaf nodes
 
 			if isinstance(st, parser_ast.LetStmt) and getattr(st, "type_expr", None) is not None:
@@ -2587,6 +2623,49 @@ def parse_drift_workspace_to_hir(
 			)
 			return None
 
+		def _rewrite_module_qualified_value(
+			*,
+			receiver: H.HExpr,
+			member: str,
+			bound: set[str],
+		) -> H.HExpr | None:
+			"""
+			Rewrite a module-qualified value reference `x.member` when `x` is a module alias.
+
+			MVP supports exported values (functions/consts) in value position so
+			function references can be formed via `x.member`.
+			"""
+			if not isinstance(receiver, H.HVar):
+				return None
+			if receiver.binding_id is not None or receiver.name in bound:
+				return None
+			alias = receiver.name
+			mod = file_module_aliases.get(alias)
+			if mod is None:
+				return None
+			vals = exported_value_names(mod)
+			consts = exported_const_names(mod)
+			types = exported_type_names(mod)
+			if member in vals:
+				return H.HVar(name=_qualify_fn_name(mod, member))
+			if member in consts:
+				return H.HVar(name=f"{mod}::{member}")
+			available = ", ".join(sorted(vals | types | consts))
+			notes = (
+				[f"available exports: {available}"]
+				if available
+				else [f"module '{mod}' exports nothing (private by default)"]
+			)
+			diagnostics.append(
+				Diagnostic(
+					message=f"module '{mod}' does not export symbol '{member}'",
+					severity="error",
+					span=getattr(receiver, "loc", Span()),
+					notes=notes,
+				)
+			)
+			return None
+
 		def walk_block(b: H.HBlock, *, bound: set[str]) -> None:
 			scope_bound = set(bound)
 			for st in b.statements:
@@ -2610,6 +2689,17 @@ def parse_drift_workspace_to_hir(
 					args=expr.args,
 					kwargs=getattr(expr, "kwargs", []) or [],
 					type_args=getattr(expr, "type_args", None),
+				)
+				if rewritten is not None:
+					return rewritten
+				return expr
+
+			if isinstance(expr, H.HField):
+				expr.subject = walk_expr(expr.subject, bound=bound)
+				rewritten = _rewrite_module_qualified_value(
+					receiver=expr.subject,
+					member=expr.name,
+					bound=bound,
 				)
 				if rewritten is not None:
 					return rewritten

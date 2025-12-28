@@ -215,7 +215,7 @@ def enforce_fn_requires(
 		if not isinstance(expr, H.HCall) or not isinstance(expr.fn, H.HVar):
 			continue
 		decl_name = expr.fn.name
-		resolution = call_resolutions.get(id(expr))
+		resolution = call_resolutions.get(expr.node_id)
 		if isinstance(resolution, MethodResolution):
 			# Trait requires are currently declared on free functions only.
 			continue
@@ -235,7 +235,7 @@ def enforce_fn_requires(
 		type_arg_keys: List[TypeKey] = []
 		arg_type_ids: List[object] = []
 		for arg in expr.args:
-			tid = expr_types.get(id(arg))
+			tid = expr_types.get(arg.node_id)
 			if tid is None:
 				continue
 			arg_type_ids.append(tid)

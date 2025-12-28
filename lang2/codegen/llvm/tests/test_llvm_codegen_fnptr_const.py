@@ -1,0 +1,65 @@
+"""
+LLVM lowering for function pointer constants.
+"""
+
+from __future__ import annotations
+
+from lang2.codegen.llvm import lower_module_to_llvm
+from lang2.driftc.checker import FnInfo, FnSignature
+from lang2.driftc.core.function_id import FunctionId, FunctionRefId, FunctionRefKind
+from lang2.driftc.core.types_core import TypeTable
+from lang2.driftc.stage1.call_info import CallSig
+from lang2.driftc.stage2 import BasicBlock, MirFunc, ConstInt, Return, FnPtrConst, CallIndirect
+from lang2.driftc.stage4 import MirToSSA
+
+
+def test_fnptr_const_emits_bitcast() -> None:
+	table = TypeTable()
+	int_ty = table.ensure_int()
+	fn_id = FunctionId(module="main", name="add1", ordinal=0)
+	call_sig = CallSig(param_types=(int_ty,), user_ret_type=int_ty, can_throw=False)
+	fn_ref = FunctionRefId(fn_id=fn_id, kind=FunctionRefKind.IMPL, has_wrapper=False)
+
+	add1_block = BasicBlock(
+		name="entry",
+		instructions=[],
+		terminator=Return(value="x"),
+	)
+	add1_mir = MirFunc(name="add1", params=["x"], locals=[], blocks={"entry": add1_block}, entry="entry")
+	add1_ssa = MirToSSA().run(add1_mir)
+
+	main_block = BasicBlock(
+		name="entry",
+		instructions=[
+			FnPtrConst(dest="fp", fn_ref=fn_ref, call_sig=call_sig),
+			ConstInt(dest="arg0", value=3),
+			CallIndirect(
+				dest="res",
+				callee="fp",
+				args=["arg0"],
+				param_types=[int_ty],
+				user_ret_type=int_ty,
+				can_throw=False,
+			),
+		],
+		terminator=Return(value="res"),
+	)
+	main_mir = MirFunc(name="drift_main", params=[], locals=[], blocks={"entry": main_block}, entry="entry")
+	main_ssa = MirToSSA().run(main_mir)
+
+	add1_sig = FnSignature(name="add1", param_type_ids=[int_ty], return_type_id=int_ty, declared_can_throw=False)
+	main_sig = FnSignature(name="drift_main", return_type_id=int_ty, declared_can_throw=False)
+	fn_infos = {
+		"add1": FnInfo(name="add1", declared_can_throw=False, return_type_id=int_ty, signature=add1_sig),
+		"drift_main": FnInfo(name="drift_main", declared_can_throw=False, return_type_id=int_ty, signature=main_sig),
+	}
+
+	mod = lower_module_to_llvm(
+		funcs={"add1": add1_mir, "drift_main": main_mir},
+		ssa_funcs={"add1": add1_ssa, "drift_main": main_ssa},
+		fn_infos=fn_infos,
+		type_table=table,
+	)
+	ir = mod.render()
+
+	assert "bitcast i64 (i64)* @add1 to i64 (i64)*" in ir

@@ -16,6 +16,7 @@ from .hir_nodes import (
 	HExpr,
 	HStmt,
 	BindingId,
+	NodeId,
 	HVar,
 	HTraitExpr,
 	HTraitIs,
@@ -32,7 +33,10 @@ from .hir_nodes import (
 	HExplicitCapture,
 	HLambda,
 	HCall,
+	HInvoke,
+	HFnPtrConst,
 	HTypeApp,
+	HCast,
 	HMethodCall,
 	HTernary,
 	HThrow,
@@ -82,12 +86,15 @@ from .closures import (
 )
 from .ast_to_hir import AstToHIR
 from .normalize import normalize_hir
+from .node_ids import assign_node_ids
 
 __all__ = [
 	"HNode",
 	"HExpr",
 	"HStmt",
 	"HVar",
+	"BindingId",
+	"NodeId",
 	"HTraitExpr",
 	"HTraitIs",
 	"HTraitAnd",
@@ -103,7 +110,10 @@ __all__ = [
 	"HExplicitCapture",
 	"HLambda",
 	"HCall",
+	"HInvoke",
+	"HFnPtrConst",
 	"HTypeApp",
+	"HCast",
 	"HMethodCall",
 	"HTernary",
 	"HThrow",
@@ -145,6 +155,7 @@ __all__ = [
 	"BinaryOp",
 	"AstToHIR",
 	"normalize_hir",
+	"assign_node_ids",
 	"HCaptureKind",
 	"HCaptureProj",
 	"HCaptureKey",

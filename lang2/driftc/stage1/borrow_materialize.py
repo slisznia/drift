@@ -156,6 +156,12 @@ class BorrowMaterializeRewriter:
 				or any(self._contains_move(a) for a in expr.args)
 				or any(self._contains_move(k.value) for k in getattr(expr, "kwargs", []) or [])
 			)
+		if isinstance(expr, getattr(H, "HInvoke", ())):
+			return (
+				self._contains_move(expr.callee)
+				or any(self._contains_move(a) for a in expr.args)
+				or any(self._contains_move(k.value) for k in getattr(expr, "kwargs", []) or [])
+			)
 		if isinstance(expr, H.HMethodCall):
 			return (
 				self._contains_move(expr.receiver)
@@ -212,6 +218,26 @@ class BorrowMaterializeRewriter:
 				new_kwargs.append(H.HKwArg(name=kw.name, value=kv, loc=kw.loc))
 			return pfx_fn + pfx_args + pfx_kwargs, H.HCall(
 				fn=fn,
+				args=new_args,
+				kwargs=new_kwargs,
+				type_args=getattr(expr, "type_args", None),
+			)
+		if isinstance(expr, getattr(H, "HInvoke", ())):
+			pfx_callee, callee = self._rewrite_expr(expr.callee)
+			pfx_args: List[H.HStmt] = []
+			new_args: List[H.HExpr] = []
+			for a in expr.args:
+				apfx, av = self._rewrite_expr(a)
+				pfx_args.extend(apfx)
+				new_args.append(av)
+			pfx_kwargs: List[H.HStmt] = []
+			new_kwargs: list[H.HKwArg] = []
+			for kw in getattr(expr, "kwargs", []) or []:
+				kpfx, kv = self._rewrite_expr(kw.value)
+				pfx_kwargs.extend(kpfx)
+				new_kwargs.append(H.HKwArg(name=kw.name, value=kv, loc=kw.loc))
+			return pfx_callee + pfx_args + pfx_kwargs, H.HInvoke(
+				callee=callee,
 				args=new_args,
 				kwargs=new_kwargs,
 				type_args=getattr(expr, "type_args", None),

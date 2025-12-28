@@ -152,12 +152,12 @@ class BorrowChecker:
 				sig = self.signatures.get(expr.fn.name)
 				if sig is not None:
 					return sig
-			resolution = self.call_resolutions.get(id(expr)) if self.call_resolutions is not None else None
+			resolution = self.call_resolutions.get(expr.node_id) if self.call_resolutions is not None else None
 			if isinstance(resolution, CallableDecl):
 				return self.signatures.get(resolution.name)
 			return None
 		if isinstance(expr, H.HMethodCall):
-			resolution = self.call_resolutions.get(id(expr)) if self.call_resolutions is not None else None
+			resolution = self.call_resolutions.get(expr.node_id) if self.call_resolutions is not None else None
 			if isinstance(resolution, MethodResolution):
 				impl_target = resolution.decl.impl_target_type_id
 				if impl_target is None:
@@ -257,7 +257,7 @@ class BorrowChecker:
 			name = hv.name if hasattr(hv, "name") else str(hv)
 			bid = getattr(hv, "binding_id", None)
 			if bid is None and hasattr(typed_fn, "binding_for_var"):
-				bid = typed_fn.binding_for_var.get(id(hv))
+				bid = typed_fn.binding_for_var.get(hv.node_id)
 			local_id = bid if isinstance(bid, int) else -1
 			kind = PlaceKind.PARAM if local_id in param_ids else PlaceKind.LOCAL
 			return PlaceBase(kind, local_id, name)
@@ -1108,7 +1108,7 @@ class BorrowChecker:
 						continue
 					if isinstance(kw.value, H.HLambda):
 						self._add_lambda_capture_loans(state, kw.value)
-			resolution = self.call_resolutions.get(id(expr)) if self.call_resolutions is not None else None
+			resolution = self.call_resolutions.get(expr.node_id) if self.call_resolutions is not None else None
 			param_types = None
 			if isinstance(resolution, CallableDecl):
 				param_types = list(resolution.signature.param_types)
@@ -1161,7 +1161,7 @@ class BorrowChecker:
 						continue
 					if isinstance(kw.value, H.HLambda):
 						self._add_lambda_capture_loans(state, kw.value)
-			resolution = self.call_resolutions.get(id(expr)) if self.call_resolutions is not None else None
+			resolution = self.call_resolutions.get(expr.node_id) if self.call_resolutions is not None else None
 			param_types = None
 			receiver_autoborrow: Optional[SelfMode] = None
 			if isinstance(resolution, MethodResolution):

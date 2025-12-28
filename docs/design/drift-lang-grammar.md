@@ -91,8 +91,9 @@ ExportItem   ::= NAME | ModulePath "." "*"
 
 Types:
 ```
-Ty           ::= RefType | BaseType
+Ty           ::= RefType | FnType | BaseType
 RefType      ::= "&" "mut"? Ty
+FnType       ::= "fn" "(" (Ty ("," Ty)*)? ")" "returns" Ty "nothrow"?
 BaseType     ::= NAME "." NAME TypeArgs? | NAME TypeArgs?
 TypeArgs     ::= "[" Ty ("," Ty)* "]" | "<" Ty ("," Ty)* ">"
 TypeParams   ::= "<" NAME ("," NAME)* ">"
@@ -194,6 +195,7 @@ EventFqn     ::= ModulePath ":" NAME
 
 PrimaryExpr  ::= Literal
               | Ident
+              | CastExpr
               | "(" Expr ")"
               | LambdaExpr
               | ArrayLiteral
@@ -203,6 +205,8 @@ LeadingDotExpr ::= "." NAME (CallSuffix | AttrSuffix | ArrowSuffix | IndexSuffix
 
 ArrayLiteral ::= "[" ExprList? "]"
 ExprList     ::= Expr ("," Expr)*
+
+CastExpr     ::= "cast" "<" Ty ">" "(" Expr ")"
 
 LambdaExpr   ::= "|" LambdaParams? "|" LambdaCaptures? LambdaReturns? "=>" LambdaBody
 LambdaReturns ::= "returns" Ty
