@@ -23,12 +23,14 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Optional, Callable, FrozenSet, Mapping, Sequence, Set, Tuple, TYPE_CHECKING
 
 from lang2.driftc.core.diagnostics import Diagnostic
+from lang2.driftc.core.function_id import FunctionId, function_symbol
 from lang2.driftc.core.span import Span
 from lang2.driftc.core.types_protocol import TypeEnv
 from lang2.driftc.checker.catch_arms import CatchArmInfo, validate_catch_arms
 from lang2.driftc.core.type_resolve_common import resolve_opaque_type
 from lang2.driftc.core.types_core import TypeTable, TypeId, TypeKind, TypeParamId
 from lang2.driftc.stage1.hir_utils import collect_catch_arms_from_block
+from lang2.driftc.stage1.call_info import CallInfo, CallTargetKind
 from lang2.driftc.stage1.normalize import normalize_hir
 
 if TYPE_CHECKING:
@@ -79,6 +81,9 @@ class FnSignature:
 	impl_type_params: list[TypeParam] = field(default_factory=list)
 	# Visibility marker (currently only `pub` vs private for method calls).
 	is_pub: bool = False
+	# Wrapper metadata (boundary Ok-wrap, not user-facing).
+	is_wrapper: bool = False
+	wraps_target_fn_id: Optional[FunctionId] = None
 
 	# Legacy/raw fields (to be removed once real type checker is wired).
 	return_type: Any = None
@@ -153,6 +158,7 @@ class Checker:
 		exception_catalog: Mapping[str, int] | None = None,
 		hir_blocks: Mapping[str, "H.HBlock"] | None = None,  # type: ignore[name-defined]
 		type_table: "TypeTable" | None = None,
+		call_info_by_name: Mapping[str, Mapping[int, CallInfo]] | None = None,
 	) -> None:
 		# Until a real type checker exists we support two testing shims:
 		# 1) an explicit name -> bool map, or
@@ -163,6 +169,7 @@ class Checker:
 		self._catch_arms = self._normalize_and_collect_catch_arms(hir_blocks or {})
 		self._exception_catalog = dict(exception_catalog) if exception_catalog else None
 		self._hir_blocks = hir_blocks or {}
+		self._call_info_by_name = {k: dict(v) for k, v in (call_info_by_name or {}).items()}
 		# Use shared TypeTable when supplied; otherwise create a local one.
 		self._type_table = type_table or TypeTable()
 		# Index signatures by display name for approximate method lookups.
@@ -347,6 +354,7 @@ class Checker:
 		# escaping throw.
 		first_throw_span_by_fn: dict[str, Span] = {}
 		first_throw_note_by_fn: dict[str, str] = {}
+		call_info_by_node_id: Mapping[int, CallInfo] | None = None
 		changed = True
 		while changed:
 			changed = False
@@ -354,7 +362,13 @@ class Checker:
 				info = fn_infos.get(fn_name)
 				if info is None:
 					continue
-				may_throw, throw_span, throw_note = self._function_may_throw(hir_block, fn_infos, fn_name)
+				call_info_by_node_id = self._call_info_by_name.get(fn_name)
+				may_throw, throw_span, throw_note = self._function_may_throw(
+					hir_block,
+					fn_infos,
+					fn_name,
+					call_info_by_node_id,
+				)
 				first_throw_span_by_fn.setdefault(fn_name, throw_span)
 				if throw_note:
 					first_throw_note_by_fn.setdefault(fn_name, throw_note)
@@ -466,7 +480,13 @@ class Checker:
 			return False
 		return self._module_for_symbol(callee_name) != self._module_for_symbol(caller_name)
 
-	def _function_may_throw(self, block: "H.HBlock", fn_infos: Mapping[str, FnInfo], current_fn: str) -> tuple[bool, Span, str | None]:  # type: ignore[name-defined]
+	def _function_may_throw(
+		self,
+		block: "H.HBlock",
+		fn_infos: Mapping[str, FnInfo],
+		current_fn: str,
+		call_info_by_node_id: Mapping[int, CallInfo] | None,
+	) -> tuple[bool, Span, str | None]:  # type: ignore[name-defined]
 		"""
 		Walk a HIR block and conservatively decide if it may throw.
 
@@ -503,12 +523,23 @@ class Checker:
 				for kw in getattr(expr, "kwargs", []) or []:
 					walk_expr(kw.value, caught_events, catch_all)
 			elif isinstance(expr, H.HMethodCall):
-				# Best-effort method call classification: treat `method_name` as the
-				# callee identity for throw inference. This is conservative but keeps
-				# try-expr and try-stmt effect inference coherent even before method
-				# resolution is fully wired.
-				# NOTE: The stub checker cannot resolve method targets yet. Avoid
-				# name-based throw inference to prevent false positives/negatives.
+				if call_info_by_node_id is not None:
+					info = call_info_by_node_id.get(expr.node_id)
+					if info is None:
+						raise AssertionError(
+							f"BUG: missing CallInfo for method call during nothrow analysis (node_id={expr.node_id})"
+						)
+					call_can_throw = info.sig.can_throw
+					if info.target.kind is CallTargetKind.DIRECT and info.target.symbol is not None:
+						fn_info = fn_infos.get(function_symbol(info.target.symbol))
+						if fn_info is not None:
+							call_can_throw = bool(fn_info.declared_can_throw)
+					if call_can_throw and not catch_all:
+						may_throw = True
+						if first_span is None:
+							first_span = Span.from_loc(getattr(expr, "loc", None))
+						if first_note is None:
+							first_note = "method call may throw"
 				walk_expr(expr.receiver, caught_events, catch_all)
 				for arg in expr.args:
 					walk_expr(arg, caught_events, catch_all)
@@ -952,17 +983,6 @@ class Checker:
 						self._append_diag(
 							Diagnostic(
 								message="string binary ops require String operands and support only +, ==, !=, <, <=, >, >=",
-								severity="error",
-								span=getattr(expr, "loc", Span()),
-							)
-						)
-					return None
-					if expr.op in bitwise_ops:
-						if left_ty == checker._uint_type and right_ty == checker._uint_type:
-							return checker._uint_type
-						self._append_diag(
-							Diagnostic(
-								message="bitwise operators require Uint operands",
 								severity="error",
 								span=getattr(expr, "loc", Span()),
 							)

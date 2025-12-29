@@ -26,7 +26,7 @@ import sys
 import shutil
 import subprocess
 from pathlib import Path
-from dataclasses import replace
+from dataclasses import replace, dataclass
 from typing import Any, Dict, Mapping, List, Tuple
 
 # Repository root (lang2 lives under this).
@@ -36,6 +36,7 @@ if str(ROOT) not in sys.path:
 
 from lang2.driftc import stage1 as H
 from lang2.driftc.stage1 import normalize_hir
+from lang2.driftc.stage1.call_info import CallInfo, CallSig, CallTargetKind
 from lang2.driftc.stage1.lambda_validate import validate_lambdas_non_retaining
 from lang2.driftc.stage1.non_retaining_analysis import analyze_non_retaining_params
 from lang2.driftc.stage2 import HIRToMIR, MirBuilder, mir_nodes as M
@@ -47,8 +48,8 @@ from lang2.driftc.checker import Checker, CheckedProgram, FnSignature, FnInfo, T
 from lang2.driftc.borrow_checker_pass import BorrowChecker
 from lang2.driftc.borrow_checker import PlaceBase, PlaceKind
 from lang2.driftc.core.diagnostics import Diagnostic
-from lang2.driftc.core.types_core import TypeTable, TypeParamId
-from lang2.driftc.core.function_id import FunctionId, function_symbol
+from lang2.driftc.core.types_core import TypeTable, TypeParamId, TypeKind
+from lang2.driftc.core.function_id import FunctionId, function_symbol, method_wrapper_id
 from lang2.driftc.traits.enforce import collect_used_type_keys, enforce_struct_requires, enforce_fn_requires
 from lang2.codegen.llvm import lower_module_to_llvm
 from lang2.drift_core.runtime import get_runtime_sources
@@ -141,12 +142,14 @@ def _inject_prelude(
 	string_id = type_table.ensure_string()
 	void_id = type_table.ensure_void()
 	for name in ("print", "println", "eprintln"):
+		fn_id = FunctionId(module="lang.core", name=name, ordinal=0)
+		if fn_id in signatures:
+			continue
 		sym_name = name
 		# Keyed by short name; module carries qualification.
-		if fn_ids_by_name.get(sym_name):
-			continue
-		fn_id = FunctionId(module="lang.core", name=name, ordinal=0)
-		fn_ids_by_name.setdefault(sym_name, []).append(fn_id)
+		name_list = fn_ids_by_name.setdefault(sym_name, [])
+		if fn_id not in name_list:
+			name_list.append(fn_id)
 		signatures[fn_id] = FnSignature(
 			name=name,
 			method_name=name,
@@ -157,6 +160,115 @@ def _inject_prelude(
 			is_method=False,
 			module="lang.core",
 		)
+
+
+def _prelude_exports() -> dict[str, object]:
+	"""
+	Return the external export surface for the built-in prelude module.
+
+	This is used to allow explicit imports (e.g. `import lang.core as core`)
+	even when implicit prelude injection is disabled.
+	"""
+	return {
+		"values": ["print", "println", "eprintln"],
+		"types": {"structs": [], "variants": [], "exceptions": []},
+		"consts": [],
+		"traits": [],
+		"reexports": {"types": {"structs": {}, "variants": {}, "exceptions": {}}, "consts": {}, "traits": {}},
+	}
+
+
+def _should_inject_prelude(
+	prelude_enabled: bool,
+	module_deps: Mapping[str, set[str]] | None,
+) -> bool:
+	"""
+	Decide whether prelude signatures should be injected.
+
+	- If implicit prelude is enabled, always inject.
+	- If disabled, inject only when a module explicitly imports lang.core.
+	"""
+	if prelude_enabled:
+		return True
+	if module_deps:
+		return any("lang.core" in deps for deps in module_deps.values())
+	return False
+
+
+@dataclass(frozen=True)
+class MethodWrapperSpec:
+	wrapper_fn_id: FunctionId
+	target_fn_id: FunctionId
+
+
+def _type_contains_fn(table: TypeTable, ty_id: int) -> bool:
+	td = table.get(ty_id)
+	if td.kind is TypeKind.FUNCTION:
+		return True
+	for param in list(td.param_types or []):
+		if _type_contains_fn(table, int(param)):
+			return True
+	return False
+
+
+def _inject_method_boundary_wrappers(
+	*,
+	signatures_by_id: dict[FunctionId, FnSignature],
+	type_table: TypeTable,
+) -> tuple[list[MethodWrapperSpec], list[str]]:
+	"""
+	Predeclare Ok-wrap wrappers for public NOTHROW methods.
+
+	Wrappers are provider-emitted and recorded in signatures for package export.
+	"""
+	specs: list[MethodWrapperSpec] = []
+	errors: list[str] = []
+	for fn_id, sig in list(signatures_by_id.items()):
+		if not getattr(sig, "is_method", False):
+			continue
+		if getattr(sig, "is_wrapper", False):
+			continue
+		if not getattr(sig, "is_pub", False):
+			continue
+		if getattr(sig, "declared_can_throw", None) is not False:
+			continue
+		if sig.param_type_ids is None or sig.return_type_id is None:
+			errors.append(f"internal: missing param/return types for method '{sig.name}'")
+			continue
+		if _type_contains_fn(type_table, sig.return_type_id) or any(
+			_type_contains_fn(type_table, tid) for tid in sig.param_type_ids
+		):
+			errors.append(
+				f"public method '{sig.name}' requires a boundary wrapper but uses function-typed params; "
+				"method boundary wrappers for function-typed params are not supported yet"
+			)
+			continue
+		wrapper_id = method_wrapper_id(fn_id)
+		if wrapper_id in signatures_by_id:
+			continue
+		wrap_sig = FnSignature(
+			name=function_symbol(wrapper_id),
+			module=fn_id.module,
+			method_name=getattr(sig, "method_name", None) or sig.name,
+			param_names=list(sig.param_names or []),
+			param_type_ids=list(sig.param_type_ids or []),
+			return_type_id=sig.return_type_id,
+			is_method=True,
+			self_mode=getattr(sig, "self_mode", None),
+			impl_target_type_id=getattr(sig, "impl_target_type_id", None),
+			impl_target_type_args=getattr(sig, "impl_target_type_args", None),
+			is_pub=True,
+			is_wrapper=True,
+			wraps_target_fn_id=fn_id,
+			type_params=list(getattr(sig, "type_params", []) or []),
+			impl_type_params=list(getattr(sig, "impl_type_params", []) or []),
+			param_types=list(getattr(sig, "param_types", []) or []) if getattr(sig, "param_types", None) else None,
+			return_type=getattr(sig, "return_type", None),
+			declared_can_throw=True,
+		)
+		signatures_by_id[wrapper_id] = wrap_sig
+		specs.append(MethodWrapperSpec(wrapper_fn_id=wrapper_id, target_fn_id=fn_id))
+	return specs, errors
 
 
 def _normalize_func_maps(
@@ -545,11 +657,14 @@ def compile_stubbed_funcs(
 	declared_can_throw: Mapping[str, bool] | None = None,
 	signatures: Mapping[FunctionId | str, FnSignature] | None = None,
 	exc_env: Mapping[str, int] | None = None,
+	module_exports: Mapping[str, dict[str, object]] | None = None,
+	module_deps: Mapping[str, set[str]] | None = None,
 	return_checked: bool = False,
 	build_ssa: bool = False,
 	return_ssa: bool = False,
 	type_table: "TypeTable | None" = None,
 	run_borrow_check: bool = False,
+	prelude_enabled: bool = True,
 ) -> (
 	Dict[str, M.MirFunc]
 	| tuple[Dict[str, M.MirFunc], CheckedProgram]
@@ -626,6 +741,13 @@ def compile_stubbed_funcs(
 			if sig.param_type_ids is None and sig.param_types is None:
 				sig.param_type_ids = []
 
+	method_wrapper_specs, wrapper_errors = _inject_method_boundary_wrappers(
+		signatures_by_id=signatures_by_id,
+		type_table=shared_type_table,
+	)
+	if wrapper_errors:
+		raise ValueError(wrapper_errors[0])
+
 	func_hirs_by_symbol: dict[str, H.HBlock] = {}
 	signatures_by_symbol: dict[str, FnSignature] = {}
 	for fid, block in func_hirs_by_id.items():
@@ -635,36 +757,6 @@ def compile_stubbed_funcs(
 		sym = function_symbol(fid)
 		signatures_by_symbol[sym] = replace(sig, name=sym)
 
-	# Stage “checker”: obtain declared_can_throw from the checker stub so the
-	# driver path mirrors the real compiler layering once a proper checker exists.
-	checker = Checker(
-		declared_can_throw=declared_can_throw,
-		signatures=signatures_by_symbol,
-		exception_catalog=exc_env,
-		hir_blocks=func_hirs_by_symbol,
-		type_table=shared_type_table,
-	)
-	# Important: the checker needs metadata for both:
-	# - functions we are compiling (have HIR bodies), and
-	# - functions we only know by signature (callees, intrinsics, externs).
-	#
-	# Several downstream phases (HIR→MIR lowering and SSA typing) consult the
-	# checker's `FnInfo` map to decide whether a callee is can-throw.
-	decl_names: set[str] = set(func_hirs_by_symbol.keys())
-	decl_names.update(signatures_by_symbol.keys())
-	checked = checker.check(sorted(decl_names))
-	# Ensure declared_can_throw is a bool for downstream stages; guard against
-	# accidental truthy objects sneaking in from legacy shims.
-	for info in checked.fn_infos.values():
-		if not isinstance(info.declared_can_throw, bool):
-			info.declared_can_throw = bool(info.declared_can_throw)
-	declared = {name: info.declared_can_throw for name, info in checked.fn_infos.items()}
-	# Prefer the checker's table when the caller did not supply one so TypeIds
-	# stay coherent across lowering/codegen.
-	if shared_type_table is None and checked.type_table is not None:
-		shared_type_table = checked.type_table
-	mir_funcs: Dict[str, M.MirFunc] = {}
-
 	# Normalize after typecheck so lowering sees canonical HIR and preserves any
 	# checker-produced annotations needed by stage2 (e.g., match binder indices).
 	normalized_hirs: Dict[str, H.HBlock] = {name: normalize_hir(hir_block) for name, hir_block in func_hirs_by_symbol.items()}
@@ -673,15 +765,28 @@ def compile_stubbed_funcs(
 		if sig.is_method:
 			continue
 		call_sigs_by_name.setdefault(_display_name_for_fn_id(fn_id), []).append(sig)
-		if fn_id.module == "lang.core":
+		if prelude_enabled and fn_id.module == "lang.core":
 			# Prelude functions are available unqualified (e.g., `println(...)`).
 			call_sigs_by_name.setdefault(fn_id.name, []).append(sig)
 	type_checker = TypeChecker(type_table=shared_type_table)
 	callable_registry = CallableRegistry()
+	module_ids: dict[object, int] = {None: 0}
+	if module_deps:
+		all_mods = set(module_deps.keys())
+		for deps in module_deps.values():
+			all_mods |= set(deps)
+		for mid in sorted(all_mods):
+			module_ids.setdefault(mid, len(module_ids))
+	else:
+		for fn_id in signatures_by_id.keys():
+			module_ids.setdefault(getattr(fn_id, "module", None), len(module_ids))
 	next_callable_id = 1
 	for fn_id, sig in signatures_by_id.items():
 		if sig.return_type_id is None:
 			continue
+		if getattr(sig, "is_wrapper", False):
+			continue
+		module_id = module_ids.setdefault(getattr(sig, "module", None), len(module_ids))
 		param_types_tuple = tuple(sig.param_type_ids or [])
 		if sig.is_method:
 			if sig.impl_target_type_id is None or sig.self_mode is None:
@@ -696,7 +801,7 @@ def compile_stubbed_funcs(
 			callable_registry.register_inherent_method(
 				callable_id=next_callable_id,
 				name=sig.method_name or sig.name,
-				module_id=0,
+				module_id=module_id,
 				visibility=Visibility.public() if sig.is_pub else Visibility.private(),
 				signature=CallableSignature(param_types=param_types_tuple, result_type=sig.return_type_id),
 				fn_id=fn_id,
@@ -711,33 +816,139 @@ def compile_stubbed_funcs(
 			callable_registry.register_free_function(
 				callable_id=next_callable_id,
 				name=disp_name,
-				module_id=0,
+				module_id=module_id,
 				visibility=Visibility.public(),
 				signature=CallableSignature(param_types=param_types_tuple, result_type=sig.return_type_id),
 				fn_id=fn_id,
 				is_generic=bool(sig.type_params),
 			)
 			next_callable_id += 1
-			if fn_id.module == "lang.core" and disp_name != fn_id.name:
+			if prelude_enabled and fn_id.module == "lang.core" and disp_name != fn_id.name:
 				# Prelude functions are visible unqualified (e.g., `println(...)`).
 				callable_registry.register_free_function(
 					callable_id=next_callable_id,
 					name=fn_id.name,
-					module_id=0,
+					module_id=module_id,
 					visibility=Visibility.public(),
 					signature=CallableSignature(param_types=param_types_tuple, result_type=sig.return_type_id),
 					fn_id=fn_id,
 					is_generic=bool(sig.type_params),
 				)
 				next_callable_id += 1
+	# Optional method/trait resolution support when module exports/deps are available.
+	impl_index = None
+	trait_index = None
+	trait_impl_index = None
+	trait_scope_by_module: dict[str, list] | None = None
+	if module_exports is not None:
+		impl_index = GlobalImplIndex.from_module_exports(
+			module_exports=dict(module_exports),
+			type_table=shared_type_table,
+			module_ids=module_ids,
+		)
+		trait_index = GlobalTraitIndex.from_trait_worlds(getattr(shared_type_table, "trait_worlds", None))
+		trait_impl_index = GlobalTraitImplIndex.from_module_exports(
+			module_exports=dict(module_exports),
+			type_table=shared_type_table,
+			module_ids=module_ids,
+		)
+		trait_scope_by_module = {}
+		for mod, exp in module_exports.items():
+			if isinstance(exp, dict):
+				scope = exp.get("trait_scope", [])
+				if isinstance(scope, list):
+					trait_scope_by_module[mod] = scope
+	# Build explicit throw overrides from signatures before typechecking so
+	# call info can enforce declared nothrow behavior deterministically.
+	sig_throw_by_name: dict[str, bool] = {}
+	# Lowering should treat unspecified throw mode as CAN_THROW to avoid ABI mismatch
+	# between call sites and callee bodies in the stubbed pipeline.
+	lowering_can_throw_by_name: dict[str, bool] = {}
+	for fn_id, sig in signatures_by_id.items():
+		can_throw = sig.declared_can_throw if sig.declared_can_throw is not None else True
+		sym = function_symbol(fn_id)
+		lowering_can_throw_by_name[sym] = bool(can_throw)
+		if sig.name:
+			lowering_can_throw_by_name[sig.name] = bool(can_throw)
+		if sig.declared_can_throw is None:
+			continue
+		sig_throw_by_name[sym] = bool(sig.declared_can_throw)
+		if sig.name:
+			sig_throw_by_name[sig.name] = bool(sig.declared_can_throw)
+
 	typed_fns_by_symbol: dict[str, object] = {}
 	type_diags: list[Diagnostic] = []
+	visible_module_names_by_name: dict[str, set[str]] = {}
+	prelude_modules: set[str] = set()
+	if prelude_enabled:
+		for fn_id in signatures_by_id.keys():
+			if fn_id.module == "lang.core":
+				prelude_modules.add("lang.core")
+				break
+	if module_deps is not None:
+		def _collect_reexport_targets(mod: str) -> set[str]:
+			exp = module_exports.get(mod) if isinstance(module_exports, dict) else None
+			if not isinstance(exp, dict):
+				return set()
+			reexp = exp.get("reexports")
+			if not isinstance(reexp, dict):
+				return set()
+			targets: set[str] = set()
+			type_reexp = reexp.get("types") if isinstance(reexp.get("types"), dict) else {}
+			for kind in ("structs", "variants", "exceptions"):
+				entries = type_reexp.get(kind) if isinstance(type_reexp, dict) else None
+				if not isinstance(entries, dict):
+					continue
+				for info in entries.values():
+					if isinstance(info, dict):
+						tgt = info.get("module")
+						if isinstance(tgt, str):
+							targets.add(tgt)
+			const_reexp = reexp.get("consts") if isinstance(reexp.get("consts"), dict) else {}
+			if isinstance(const_reexp, dict):
+				for info in const_reexp.values():
+					if isinstance(info, dict):
+						tgt = info.get("module")
+						if isinstance(tgt, str):
+							targets.add(tgt)
+			trait_reexp = reexp.get("traits") if isinstance(reexp.get("traits"), dict) else {}
+			if isinstance(trait_reexp, dict):
+				for info in trait_reexp.values():
+					if isinstance(info, dict):
+						tgt = info.get("module")
+						if isinstance(tgt, str):
+							targets.add(tgt)
+			return targets
+
+		for mod_name in module_deps.keys():
+			imports = set(module_deps.get(mod_name, set()))
+			visible = {mod_name}
+			if prelude_modules:
+				visible |= prelude_modules
+			queue = [mod_name]
+			while queue:
+				cur = queue.pop(0)
+				neighbors = set(_collect_reexport_targets(cur))
+				if cur == mod_name:
+					neighbors |= imports
+				for tgt in sorted(neighbors):
+					if tgt in visible:
+						continue
+					visible.add(tgt)
+					queue.append(tgt)
+			visible_module_names_by_name[mod_name] = visible
 	for name, hir_norm in normalized_hirs.items():
 		fn_id = _parse_function_symbol(name)
 		sig = signatures_by_symbol.get(name)
 		param_types: dict[str, "TypeId"] = {}
 		if sig is not None and sig.param_names is not None and sig.param_type_ids is not None:
 			param_types = {pname: pty for pname, pty in zip(sig.param_names, sig.param_type_ids)}
+		mod_name = getattr(fn_id, "module", None) or "main"
+		current_mod = module_ids.setdefault(mod_name, len(module_ids))
+		visible_mods = None
+		if module_deps is not None:
+			visible = visible_module_names_by_name.get(mod_name, {mod_name})
+			visible_mods = tuple(sorted(module_ids.setdefault(m, len(module_ids)) for m in visible))
 		result = type_checker.check_function(
 			fn_id,
 			hir_norm,
@@ -745,34 +956,86 @@ def compile_stubbed_funcs(
 			return_type=sig.return_type_id if sig is not None else None,
 			call_signatures=call_sigs_by_name,
 			signatures_by_id=signatures_by_id,
-			can_throw_by_name=declared,
+			can_throw_by_name=sig_throw_by_name or None,
 			callable_registry=callable_registry,
+			impl_index=impl_index,
+			trait_index=trait_index,
+			trait_impl_index=trait_impl_index,
+			trait_scope_by_module=trait_scope_by_module,
+			visible_modules=visible_mods,
+			current_module=current_mod,
 		)
 		type_diags.extend(result.diagnostics)
 		typed_fns_by_symbol[name] = result.typed_fn
+
+	# Stage “checker”: obtain declared_can_throw from the checker stub so the
+	# driver path mirrors the real compiler layering once a proper checker exists.
+	call_info_by_name: dict[str, dict[int, CallInfo]] = {}
+	for name, typed_fn in typed_fns_by_symbol.items():
+		call_info = getattr(typed_fn, "call_info_by_node_id", None)
+		if isinstance(call_info, dict):
+			call_info_by_name[name] = dict(call_info)
+	checker = Checker(
+		declared_can_throw=declared_can_throw,
+		signatures=signatures_by_symbol,
+		exception_catalog=exc_env,
+		hir_blocks=normalized_hirs,
+		type_table=shared_type_table,
+		call_info_by_name=call_info_by_name,
+	)
+	# Important: the checker needs metadata for both:
+	# - functions we are compiling (have HIR bodies), and
+	# - functions we only know by signature (callees, intrinsics, externs).
+	#
+	# Several downstream phases (HIR→MIR lowering and SSA typing) consult the
+	# checker's `FnInfo` map to decide whether a callee is can-throw.
+	decl_names: set[str] = set(func_hirs_by_symbol.keys())
+	decl_names.update(signatures_by_symbol.keys())
+	checked = checker.check(sorted(decl_names))
 	if type_diags:
 		checked.diagnostics.extend(type_diags)
+	# Ensure declared_can_throw is a bool for downstream stages; guard against
+	# accidental truthy objects sneaking in from legacy shims.
+	for info in checked.fn_infos.values():
+		if info.declared_can_throw is None:
+			info.declared_can_throw = True
+		elif not isinstance(info.declared_can_throw, bool):
+			info.declared_can_throw = bool(info.declared_can_throw)
+	declared = {name: info.declared_can_throw for name, info in checked.fn_infos.items()}
+	# Use the lowering map as the canonical declared-can-throw view for the
+	# stubbed pipeline to avoid ABI mismatches when signatures omit nothrow.
+	declared = dict(lowering_can_throw_by_name)
+	for name, can_throw in lowering_can_throw_by_name.items():
+		info = checked.fn_infos.get(name)
+		if info is not None:
+			info.declared_can_throw = bool(can_throw)
+	# Prefer the checker's table when the caller did not supply one so TypeIds
+	# stay coherent across lowering/codegen.
+	if shared_type_table is None and checked.type_table is not None:
+		shared_type_table = checked.type_table
+	mir_funcs: Dict[str, M.MirFunc] = {}
 
 	for name, hir_norm in normalized_hirs.items():
 		builder = MirBuilder(name=name)
 		sig = signatures_by_symbol.get(name)
 		param_types: dict[str, "TypeId"] = {}
+		param_names: list[str] = []
 		if sig is not None and sig.param_names is not None:
-			builder.func.params = list(sig.param_names)
-		if sig is not None and sig.param_names is not None and sig.param_type_ids is not None:
-			param_types = {pname: pty for pname, pty in zip(sig.param_names, sig.param_type_ids)}
-		HIRToMIR(
-			builder,
-			type_table=shared_type_table,
-			exc_env=exc_env,
-			param_types=param_types,
-			signatures=signatures_by_symbol,
-			call_info_by_node_id=getattr(typed_fns_by_symbol.get(name), "call_info_by_node_id", {}),
-			can_throw_by_name=declared,
-			return_type=sig.return_type_id if sig is not None else None,
-		).lower_function_body(hir_norm)
-		if sig is not None and sig.param_names is not None:
-			builder.func.params = list(sig.param_names)
+			param_names = list(sig.param_names)
+		if sig is not None and sig.param_type_ids is not None and param_names:
+			param_types = {pname: pty for pname, pty in zip(param_names, sig.param_type_ids)}
+		builder.func.params = list(param_names)
+		if sig is not None and sig.param_type_ids is not None:
+			HIRToMIR(
+				builder,
+				type_table=shared_type_table,
+				exc_env=exc_env,
+				param_types=param_types,
+				signatures=signatures_by_symbol,
+				call_info_by_node_id=getattr(typed_fns_by_symbol.get(name), "call_info_by_node_id", {}),
+				can_throw_by_name=lowering_can_throw_by_name,
+				return_type=sig.return_type_id if sig is not None else None,
+			).lower_function_body(hir_norm)
 		mir_funcs[name] = builder.func
 		if getattr(builder, "extra_funcs", None):
 			for extra in builder.extra_funcs:
@@ -875,6 +1138,37 @@ def compile_stubbed_funcs(
 			raise AssertionError("captureless lambda missing body (checker bug)")
 		mir_funcs[lambda_sym] = builder.func
 
+	for spec in method_wrapper_specs:
+		wrap_sym = function_symbol(spec.wrapper_fn_id)
+		if wrap_sym in mir_funcs:
+			continue
+		wrap_sig = signatures_by_symbol.get(wrap_sym)
+		if wrap_sig is None or wrap_sig.param_type_ids is None:
+			continue
+		param_names = list(wrap_sig.param_names or [])
+		if len(param_names) != len(wrap_sig.param_type_ids):
+			param_names = [f"p{i}" for i in range(len(wrap_sig.param_type_ids))]
+		_register_synth_signature(spec.wrapper_fn_id, wrap_sig)
+		builder = MirBuilder(name=wrap_sym)
+		builder.func.params = list(param_names)
+		call_dest: M.ValueId | None
+		if shared_type_table is not None and shared_type_table.is_void(wrap_sig.return_type_id):
+			call_dest = None
+		else:
+			call_dest = builder.new_temp()
+		builder.emit(
+			M.Call(
+				dest=call_dest,
+				fn=function_symbol(spec.target_fn_id),
+				args=param_names,
+				can_throw=False,
+			)
+		)
+		ok_dest = builder.new_temp()
+		builder.emit(M.ConstructResultOk(dest=ok_dest, value=call_dest))
+		builder.set_terminator(M.Return(value=ok_dest))
+		mir_funcs[wrap_sym] = builder.func
+
 	# Stage3: summaries
 	code_to_exc = {code: name for name, code in (exc_env or {}).items()}
 	summaries = ThrowSummaryBuilder().build(mir_funcs, code_to_exc=code_to_exc)
@@ -919,6 +1213,9 @@ def compile_to_llvm_ir_for_tests(
 	exc_env: Mapping[str, int] | None = None,
 	entry: str = "main",
 	type_table: "TypeTable | None" = None,
+	module_exports: Mapping[str, dict[str, object]] | None = None,
+	module_deps: Mapping[str, set[str]] | None = None,
+	prelude_enabled: bool = True,
 ) -> tuple[str, CheckedProgram]:
 	"""
 	End-to-end helper: HIR -> MIR -> throw checks -> SSA -> LLVM IR for tests.
@@ -933,7 +1230,9 @@ def compile_to_llvm_ir_for_tests(
 
 	# Ensure prelude signatures are present for tests that bypass the CLI.
 	shared_type_table = type_table or TypeTable()
-	_inject_prelude(signatures_by_id, fn_ids_by_name, shared_type_table)
+	prelude_injected = _should_inject_prelude(prelude_enabled, module_deps)
+	if prelude_injected:
+		_inject_prelude(signatures_by_id, fn_ids_by_name, shared_type_table)
 
 	func_hirs_by_symbol: dict[str, H.HBlock] = {}
 	signatures_by_symbol: dict[str, FnSignature] = {}
@@ -965,10 +1264,13 @@ def compile_to_llvm_ir_for_tests(
 		func_hirs=func_hirs_by_id,
 		signatures=signatures_by_id,
 		exc_env=exc_env,
+		module_exports=module_exports,
+		module_deps=module_deps,
 		return_checked=True,
 		build_ssa=True,
 		return_ssa=True,
 		type_table=shared_type_table,
+		prelude_enabled=prelude_enabled,
 	)
 	if any(d.severity == "error" for d in checked.diagnostics):
 		return "", checked
@@ -999,12 +1301,13 @@ def compile_to_llvm_ir_for_tests(
 
 	# Add prelude FnInfos so codegen can recognize console intrinsics by module/name.
 	fn_infos = dict(checked.fn_infos)
-	for name in ("print", "println", "eprintln"):
-		ids = fn_ids_by_name.get(name, [])
-		if ids:
-			sym = function_symbol(ids[0])
-			if sym not in fn_infos and sym in signatures_by_symbol:
-				fn_infos[sym] = FnInfo(name=sym, declared_can_throw=False, signature=signatures_by_symbol[sym])
+	if prelude_injected:
+		for name in ("print", "println", "eprintln"):
+			ids = fn_ids_by_name.get(name, [])
+			if ids:
+				sym = function_symbol(ids[0])
+				if sym not in fn_infos and sym in signatures_by_symbol:
+					fn_infos[sym] = FnInfo(name=sym, declared_can_throw=False, signature=signatures_by_symbol[sym])
 
 	module = lower_module_to_llvm(
 		mir_funcs,
@@ -1156,6 +1459,19 @@ def main(argv: list[str] | None = None) -> int:
 		"--json",
 		action="store_true",
 		help="Emit diagnostics as JSON (phase/message/severity/file/line/column)",
+	)
+	parser.add_argument(
+		"--prelude",
+		dest="prelude",
+		action="store_true",
+		default=True,
+		help="Enable implicit import of lang.core (default)",
+	)
+	parser.add_argument(
+		"--no-prelude",
+		dest="prelude",
+		action="store_false",
+		help="Disable the implicit import of lang.core (e.g. println); import/qualify explicitly",
 	)
 	args = parser.parse_args(argv)
 
@@ -1343,13 +1659,20 @@ def main(argv: list[str] | None = None) -> int:
 				return 1
 		external_exports = collect_external_exports(loaded_pkgs)
 
+	if external_exports is None:
+		external_exports = {}
+	if "lang.core" not in external_exports:
+		external_exports["lang.core"] = _prelude_exports()
+
 	func_hirs, signatures, fn_ids_by_name, type_table, exception_catalog, module_exports, module_deps, parse_diags = parse_drift_workspace_to_hir(
 		source_paths,
 		module_paths=module_paths,
 		external_module_exports=external_exports,
 		enforce_entrypoint=bool(args.output or args.emit_ir),
 	)
-	_inject_prelude(signatures, fn_ids_by_name, type_table)
+	prelude_injected = _should_inject_prelude(bool(args.prelude), module_deps)
+	if prelude_injected:
+		_inject_prelude(signatures, fn_ids_by_name, type_table)
 	func_hirs_by_id = func_hirs
 	signatures_by_id = signatures
 	external_signatures_by_name: dict[str, FnSignature] = {}
@@ -1372,6 +1695,29 @@ def main(argv: list[str] | None = None) -> int:
 				loc = f"{getattr(d.span, 'line', '?')}:{getattr(d.span, 'column', '?')}" if d.span else "?:?"
 				print(f"{source_path}:{loc}: {d.severity}: {d.message}", file=sys.stderr)
 		return 1
+
+	method_wrapper_specs: list[MethodWrapperSpec] = []
+	wrapper_errors: list[str] = []
+	method_wrapper_specs, wrapper_errors = _inject_method_boundary_wrappers(
+		signatures_by_id=signatures_by_id,
+		type_table=type_table,
+	)
+	if wrapper_errors:
+		for msg in wrapper_errors:
+			if args.json:
+				print(
+					json.dumps(
+						{
+							"exit_code": 1,
+							"diagnostics": [
+								{"phase": "package", "message": msg, "severity": "error", "file": str(source_path), "line": None, "column": None}
+							],
+						}
+					)
+				)
+			else:
+				print(f"{source_path}:?:?: error: {msg}", file=sys.stderr)
+			return 1
 
 	# Prime builtins so TypeTable IDs are stable for package compatibility checks.
 	# This must be done before comparing against package payload fingerprints.
@@ -1556,6 +1902,33 @@ def main(argv: list[str] | None = None) -> int:
 					impl_tid = sd.get("impl_target_type_id")
 					if isinstance(impl_tid, int):
 						impl_tid = tid_map.get(impl_tid, impl_tid)
+					wraps_symbol = sd.get("wraps_target_symbol")
+					wraps_fn_id = None
+					if isinstance(wraps_symbol, str) and wraps_symbol:
+						wraps_fn_id = _parse_function_symbol(wraps_symbol)
+					if bool(sd.get("is_wrapper", False)) and wraps_fn_id is None:
+						msg = f"package signature '{name}' is marked wrapper but missing wraps_target_symbol"
+						if args.json:
+							print(
+								json.dumps(
+									{
+										"exit_code": 1,
+										"diagnostics": [
+											{
+												"phase": "package",
+												"message": msg,
+												"severity": "error",
+												"file": str(source_path),
+												"line": None,
+												"column": None,
+											}
+										],
+									}
+								)
+							)
+						else:
+							print(f"{source_path}:?:?: error: {msg}", file=sys.stderr)
+						return 1
 
 					symbol = str(sym)
 					fn_id = _parse_function_symbol(symbol)
@@ -1612,6 +1985,8 @@ def main(argv: list[str] | None = None) -> int:
 						self_mode=sd.get("self_mode"),
 						impl_target_type_id=impl_tid,
 						is_pub=bool(sd.get("is_pub")),
+						is_wrapper=bool(sd.get("is_wrapper", False)),
+						wraps_target_fn_id=wraps_fn_id,
 						is_exported_entrypoint=bool(sd.get("is_exported_entrypoint", False)),
 						param_types=param_types,
 						return_type=return_type,
@@ -1765,8 +2140,6 @@ def main(argv: list[str] | None = None) -> int:
 				continue
 			type_table.define_const(module_id=exporting_mid, name=local_name, type_id=origin_tid, value=origin_val)
 
-	# Checker (stub) enforces language-level rules (e.g., Void returns) before the
-	# lower-level TypeChecker/BorrowChecker run.
 	# Normalize HIR before any further analysis so:
 	# - sugar does not leak into later stages, and
 	# - borrow materialization runs before borrow checking.
@@ -1775,30 +2148,6 @@ def main(argv: list[str] | None = None) -> int:
 	signatures_by_symbol = {function_symbol(fn_id): sig for fn_id, sig in signatures_by_id.items()}
 	signatures_for_checker = dict(signatures_by_symbol)
 	signatures_for_checker.update(external_signatures_by_name)
-	checker = Checker(
-		declared_can_throw=None,
-		signatures=signatures_for_checker,
-		exception_catalog=exception_catalog,
-		hir_blocks=func_hirs_by_symbol,
-		type_table=type_table,
-	)
-	decl_names: set[str] = set(func_hirs_by_symbol.keys())
-	decl_names.update(signatures_for_checker.keys())
-	checked = checker.check(sorted(decl_names))
-	if checked.type_table is not None:
-		type_table = checked.type_table
-	if checked.diagnostics:
-		if args.json:
-			payload = {
-				"exit_code": 1,
-				"diagnostics": [_diag_to_json(d, "typecheck", source_path) for d in checked.diagnostics],
-			}
-			print(json.dumps(payload))
-		else:
-			for d in checked.diagnostics:
-				loc = f"{getattr(d.span, 'line', '?')}:{getattr(d.span, 'column', '?')}" if d.span else "?:?"
-				print(f"{source_path}:{loc}: {d.severity}: {d.message}", file=sys.stderr)
-		return 1
 
 	# Type check each function with the shared TypeTable/signatures.
 	type_checker = TypeChecker(type_table=type_table)
@@ -1806,12 +2155,24 @@ def main(argv: list[str] | None = None) -> int:
 	next_callable_id = 1
 	type_diags: list[Diagnostic] = []
 	module_ids: dict[object, int] = {None: 0}
-	can_throw_by_name = {name: info.declared_can_throw for name, info in checked.fn_infos.items()}
+	signatures_by_id_all = dict(signatures_by_id)
+	signatures_by_id_all.update(external_signatures_by_id)
+	# Use explicit throw annotations only; unspecified stays unknown to the checker.
+	can_throw_by_name: dict[str, bool] = {}
+	for fn_id, sig in signatures_by_id_all.items():
+		if sig.declared_can_throw is None:
+			continue
+		sym = function_symbol(fn_id)
+		can_throw_by_name[sym] = bool(sig.declared_can_throw)
+		if sig.name:
+			can_throw_by_name[sig.name] = bool(sig.declared_can_throw)
 
 	display_name_by_id = {fn_id: _display_name_for_fn_id(fn_id) for fn_id in signatures_by_id.keys()}
 
 	for fn_id, sig in signatures_by_id.items():
 		if sig.param_type_ids is None or sig.return_type_id is None:
+			continue
+		if getattr(sig, "is_wrapper", False):
 			continue
 		param_types_tuple = tuple(sig.param_type_ids)
 		module_id = module_ids.setdefault(sig.module, len(module_ids))
@@ -1867,7 +2228,7 @@ def main(argv: list[str] | None = None) -> int:
 				is_generic=bool(sig.type_params),
 			)
 			next_callable_id += 1
-			if fn_id.module == "lang.core" and disp_name != fn_id.name:
+			if args.prelude and fn_id.module == "lang.core" and disp_name != fn_id.name:
 				callable_registry.register_free_function(
 					callable_id=next_callable_id,
 					name=fn_id.name,
@@ -1942,6 +2303,8 @@ def main(argv: list[str] | None = None) -> int:
 			continue
 		name = display_name_by_id.get(fn_id, sig.name)
 		call_sigs_by_name.setdefault(name, []).append(sig)
+		if args.prelude and fn_id.module == "lang.core" and name != fn_id.name:
+			call_sigs_by_name.setdefault(fn_id.name, []).append(sig)
 	for sig_name, sig in external_signatures_by_name.items():
 		if sig.is_method:
 			continue
@@ -2002,6 +2365,12 @@ def main(argv: list[str] | None = None) -> int:
 	visible_module_names_by_name: dict[str, set[str]] = {}
 	visibility_provenance_by_name: dict[str, dict[str, tuple[str, ...]]] = {}
 	if isinstance(module_deps, dict):
+		prelude_modules: set[str] = set()
+		if args.prelude:
+			for fn_id in signatures_by_id.keys():
+				if fn_id.module == "lang.core":
+					prelude_modules.add("lang.core")
+					break
 		for mod_name in module_deps.keys():
 			imports = set(module_deps.get(mod_name, set()))
 			best: dict[str, tuple[str, ...]] = {mod_name: (mod_name,)}
@@ -2020,6 +2389,8 @@ def main(argv: list[str] | None = None) -> int:
 						best[tgt] = new_chain
 						heapq.heappush(queue, (len(new_chain), new_chain, tgt))
 			visible = set(best.keys())
+			if prelude_modules:
+				visible |= prelude_modules
 			visible_module_names_by_name[mod_name] = visible
 			visibility_provenance_by_name[mod_name] = best
 			visible_ids_list = []
@@ -2172,6 +2543,73 @@ def main(argv: list[str] | None = None) -> int:
 				print(f"{source_path}:{loc}: {d.severity}: {d.message}", file=sys.stderr)
 		return 1
 
+	# Checker (stub) enforces language-level rules (e.g., nothrow) after typecheck
+	# so we can use CallInfo for method-call throw analysis.
+	call_info_by_name: dict[str, dict[int, CallInfo]] = {}
+	for fn_id, typed_fn in typed_fns.items():
+		call_info = getattr(typed_fn, "call_info_by_node_id", None)
+		if isinstance(call_info, dict):
+			call_info_by_name[function_symbol(fn_id)] = dict(call_info)
+	checker = Checker(
+		declared_can_throw=None,
+		signatures=signatures_for_checker,
+		exception_catalog=exception_catalog,
+		hir_blocks=func_hirs_by_symbol,
+		type_table=type_table,
+		call_info_by_name=call_info_by_name,
+	)
+	decl_names: set[str] = set(func_hirs_by_symbol.keys())
+	decl_names.update(signatures_for_checker.keys())
+	checked = checker.check(sorted(decl_names))
+	if checked.type_table is not None:
+		type_table = checked.type_table
+	if checked.diagnostics:
+		if args.json:
+			payload = {
+				"exit_code": 1,
+				"diagnostics": [_diag_to_json(d, "typecheck", source_path) for d in checked.diagnostics],
+			}
+			print(json.dumps(payload))
+		else:
+			for d in checked.diagnostics:
+				loc = f"{getattr(d.span, 'line', '?')}:{getattr(d.span, 'column', '?')}" if d.span else "?:?"
+				print(f"{source_path}:{loc}: {d.severity}: {d.message}", file=sys.stderr)
+		return 1
+
+	# Reconcile method call CallInfo with checker-inferred throw behavior.
+	#
+	# For method calls, CallInfo is authored during typecheck before the stub
+	# checker infers can-throw. When signatures omit `nothrow`, the checker may
+	# infer nothrow for methods that never throw; update the call-site metadata
+	# accordingly so nothrow enforcement matches inference.
+	for typed_fn in typed_fns.values():
+		call_info = getattr(typed_fn, "call_info_by_node_id", None)
+		if not isinstance(call_info, dict):
+			continue
+		for node_id, info in list(call_info.items()):
+			if info.target.kind is not CallTargetKind.DIRECT or info.target.symbol is None:
+				continue
+			target_id = info.target.symbol
+			sig = signatures_by_id.get(target_id)
+			if sig is None or not sig.is_method:
+				continue
+			if getattr(sig, "is_wrapper", False):
+				continue
+			if sig.declared_can_throw is not None:
+				continue
+			fn_info = checked.fn_infos.get(function_symbol(target_id))
+			if fn_info is None:
+				continue
+			inferred = bool(fn_info.declared_can_throw)
+			if inferred == info.sig.can_throw:
+				continue
+			new_sig = CallSig(
+				param_types=info.sig.param_types,
+				user_ret_type=info.sig.user_ret_type,
+				can_throw=inferred,
+			)
+			call_info[node_id] = CallInfo(target=info.target, sig=new_sig)
+
 	# Enforce trait requirements (struct + function requires) before borrow checking.
 	trait_diags: list[Diagnostic] = []
 	trait_worlds = getattr(type_table, "trait_worlds", {}) if type_table is not None else {}
@@ -2266,6 +2704,7 @@ def main(argv: list[str] | None = None) -> int:
 			exc_env=exception_catalog,
 			type_table=type_table,
 			return_checked=True,
+			prelude_enabled=bool(args.prelude),
 		)
 		if any(d.severity == "error" for d in checked_pkg.diagnostics):
 			if args.json:
@@ -2546,6 +2985,7 @@ def main(argv: list[str] | None = None) -> int:
 			build_ssa=True,
 			return_ssa=True,
 			type_table=type_table,
+			prelude_enabled=bool(args.prelude),
 		)
 		ssa_src = ssa_src or {}
 

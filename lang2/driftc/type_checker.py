@@ -150,20 +150,14 @@ class TypeChecker:
 		self._unknown = self.type_table.ensure_unknown()
 		self._thunk_specs: dict[tuple[FunctionId, tuple[TypeId, ...], TypeId], ThunkSpec] = {}
 		self._lambda_fn_specs: dict[FunctionId, LambdaFnSpec] = {}
+		# Binding ids (params and locals) share a single id-space.
+		self._next_binding_id: int = 1
 
 	def thunk_specs(self) -> list[ThunkSpec]:
 		return list(self._thunk_specs.values())
 
 	def lambda_fn_specs(self) -> list[LambdaFnSpec]:
 		return list(self._lambda_fn_specs.values())
-		# Binding ids (params and locals) share a single id-space.
-		#
-		# This is critical for correctness: many downstream passes (including the
-		# borrow checker) treat `binding_id` as a stable identity. If ParamId and
-		# LocalId were allocated from separate counters, their numeric ids could
-		# collide (e.g. param 1 and local 1), silently corrupting identity-based
-		# maps like `binding_types`.
-		self._next_binding_id: int = 1
 
 	def _pretty_type_name(self, ty: TypeId, *, current_module: str | None) -> str:
 		"""
@@ -609,6 +603,8 @@ class TypeChecker:
 			if not call_signatures:
 				return None
 			sigs = call_signatures.get(name)
+			if sigs is None and current_module_name and "::" not in name:
+				sigs = call_signatures.get(f"{current_module_name}::{name}")
 			if sigs is None:
 				return None
 			if isinstance(sigs, FnSignature):
@@ -621,6 +617,8 @@ class TypeChecker:
 			if not call_signatures:
 				return []
 			sigs = call_signatures.get(name)
+			if sigs is None and current_module_name and "::" not in name:
+				sigs = call_signatures.get(f"{current_module_name}::{name}")
 			if sigs is None:
 				return []
 			if isinstance(sigs, FnSignature):
@@ -650,6 +648,41 @@ class TypeChecker:
 			if callee_mod is None:
 				return False
 			return callee_mod != current_module_name
+
+		def _method_boundary_visible(sig: FnSignature | None, fn_id: FunctionId | None) -> bool:
+			if sig is None or not getattr(sig, "is_method", False):
+				return False
+			if not getattr(sig, "is_pub", False):
+				return False
+			callee_mod = fn_id.module if fn_id and fn_id.module else getattr(sig, "module", None)
+			if callee_mod is None:
+				return False
+			return callee_mod != current_module_name
+
+		def _apply_method_boundary(
+			expr: H.HMethodCall,
+			*,
+			target_fn_id: FunctionId,
+			sig_for_throw: FnSignature | None,
+			call_can_throw: bool,
+		) -> tuple[FunctionId, bool] | None:
+			if not _method_boundary_visible(sig_for_throw, target_fn_id):
+				return target_fn_id, call_can_throw
+			wrapper_id = method_wrapper_by_target.get(target_fn_id)
+			if wrapper_id is not None:
+				return wrapper_id, True
+			if call_can_throw:
+				return target_fn_id, True
+			if wrapper_id is None:
+				diagnostics.append(
+					Diagnostic(
+						message=f"missing boundary wrapper for method '{expr.method_name}' (compiler bug)",
+						severity="error",
+						span=getattr(expr, "loc", Span()),
+					)
+				)
+				return None
+			return wrapper_id, True
 
 		def _call_sig_for_fn_ref(sig: FnSignature) -> tuple[list[TypeId], TypeId, bool] | None:
 			if getattr(sig, "type_params", None):
@@ -1576,11 +1609,21 @@ class TypeChecker:
 			call_type_args_span: Span | None = None,
 			expected_type: TypeId | None = None,
 		) -> tuple[CallableDecl, CallableSignature]:
+			lookup_name = name
 			candidates = callable_registry.get_free_candidates(
-				name=name,
+				name=lookup_name,
 				visible_modules=visible_modules or (current_module,),
 				include_private_in=current_module,
 			)
+			if not candidates and current_module_name and "::" not in lookup_name:
+				qualified = f"{current_module_name}::{lookup_name}"
+				candidates = callable_registry.get_free_candidates(
+					name=qualified,
+					visible_modules=visible_modules or (current_module,),
+					include_private_in=current_module,
+				)
+				if candidates:
+					lookup_name = qualified
 			viable: List[tuple[CallableDecl, CallableSignature, Subst | None]] = []
 			type_arg_counts: set[int] = set()
 			saw_registry_only_with_type_args = False
@@ -1881,10 +1924,24 @@ class TypeChecker:
 				sig=CallSig(param_types=tuple(param_types), user_ret_type=return_type, can_throw=bool(can_throw)),
 			)
 
+		_intrinsic_method_fn_ids: dict[str, FunctionId] = {}
+
+		def _intrinsic_method_fn_id(method_name: str) -> FunctionId:
+			fn_id = _intrinsic_method_fn_ids.get(method_name)
+			if fn_id is None:
+				fn_id = FunctionId(module="lang.__intrinsic", name=f"__method::{method_name}", ordinal=0)
+				_intrinsic_method_fn_ids[method_name] = fn_id
+			return fn_id
+
 		sig_ids_by_obj: dict[int, FunctionId] = {}
 		if signatures_by_id is not None:
 			for sig_id, sig in signatures_by_id.items():
 				sig_ids_by_obj[id(sig)] = sig_id
+		method_wrapper_by_target: dict[FunctionId, FunctionId] = {}
+		if signatures_by_id is not None:
+			for sig_id, sig in signatures_by_id.items():
+				if getattr(sig, "is_wrapper", False) and getattr(sig, "wraps_target_fn_id", None) is not None:
+					method_wrapper_by_target[sig.wraps_target_fn_id] = sig_id
 
 		def sig_can_throw(sig: FnSignature | None) -> bool:
 			if sig is None:
@@ -3758,8 +3815,15 @@ class TypeChecker:
 									)
 								sig_for_throw = signatures_by_id.get(target_fn_id) if signatures_by_id is not None else None
 								call_can_throw = sig_can_throw(sig_for_throw) if sig_for_throw is not None else True
-								if _force_boundary_can_throw(sig_for_throw, target_fn_id):
-									call_can_throw = True
+								applied = _apply_method_boundary(
+									expr,
+									target_fn_id=target_fn_id,
+									sig_for_throw=sig_for_throw,
+									call_can_throw=call_can_throw,
+								)
+								if applied is None:
+									return record_expr(expr, self._unknown)
+								target_fn_id, call_can_throw = applied
 								record_method_call_info(
 									expr,
 									param_types=[recv_ty, *arg_types],
@@ -5366,13 +5430,49 @@ class TypeChecker:
 								span=getattr(expr, "loc", Span()),
 							)
 						)
+						# Record a non-throwing intrinsic call so nothrow analysis can proceed.
+						record_method_call_info(
+							expr,
+							param_types=[recv_ty],
+							return_type=self._unknown,
+							can_throw=False,
+							target=_intrinsic_method_fn_id(expr.method_name),
+						)
 						return record_expr(expr, self._unknown)
 					if expr.method_name == "as_int":
+						record_method_call_info(
+							expr,
+							param_types=[recv_ty],
+							return_type=self._opt_int,
+							can_throw=False,
+							target=_intrinsic_method_fn_id(expr.method_name),
+						)
 						return record_expr(expr, self._opt_int)
 					if expr.method_name == "as_bool":
+						record_method_call_info(
+							expr,
+							param_types=[recv_ty],
+							return_type=self._opt_bool,
+							can_throw=False,
+							target=_intrinsic_method_fn_id(expr.method_name),
+						)
 						return record_expr(expr, self._opt_bool)
 					if expr.method_name == "as_string":
+						record_method_call_info(
+							expr,
+							param_types=[recv_ty],
+							return_type=self._opt_string,
+							can_throw=False,
+							target=_intrinsic_method_fn_id(expr.method_name),
+						)
 						return record_expr(expr, self._opt_string)
+					record_method_call_info(
+						expr,
+						param_types=[recv_ty],
+						return_type=self._unknown,
+						can_throw=False,
+						target=_intrinsic_method_fn_id(expr.method_name),
+					)
 					return record_expr(expr, self._unknown)
 
 				if getattr(expr, "kwargs", None):
@@ -5403,6 +5503,13 @@ class TypeChecker:
 					recv_def = self.type_table.get(recv_ty)
 					if recv_def.kind is TypeKind.ARRAY:
 						iter_ty = ensure_array_iter_struct(recv_ty, self.type_table)
+						record_method_call_info(
+							expr,
+							param_types=[recv_ty],
+							return_type=iter_ty,
+							can_throw=False,
+							target=_intrinsic_method_fn_id(expr.method_name),
+						)
 						return record_expr(expr, iter_ty)
 				if expr.method_name == "next" and not expr.args:
 					if is_array_iter_struct(recv_ty, self.type_table):
@@ -5415,6 +5522,13 @@ class TypeChecker:
 									span=getattr(expr, "loc", Span()),
 								)
 							)
+							record_method_call_info(
+								expr,
+								param_types=[recv_ty],
+								return_type=self._unknown,
+								can_throw=False,
+								target=_intrinsic_method_fn_id(expr.method_name),
+							)
 							return record_expr(expr, self._unknown)
 						arr_ty = iter_def.param_types[0]
 						arr_def = self.type_table.get(arr_ty)
@@ -5425,6 +5539,13 @@ class TypeChecker:
 									severity="error",
 									span=getattr(expr, "loc", Span()),
 								)
+							)
+							record_method_call_info(
+								expr,
+								param_types=[recv_ty],
+								return_type=self._unknown,
+								can_throw=False,
+								target=_intrinsic_method_fn_id(expr.method_name),
 							)
 							return record_expr(expr, self._unknown)
 						elem_ty = arr_def.param_types[0]
@@ -5437,8 +5558,44 @@ class TypeChecker:
 									span=getattr(expr, "loc", Span()),
 								)
 							)
+							record_method_call_info(
+								expr,
+								param_types=[recv_ty],
+								return_type=self._unknown,
+								can_throw=False,
+								target=_intrinsic_method_fn_id(expr.method_name),
+							)
 							return record_expr(expr, self._unknown)
-						return record_expr(expr, self.type_table.ensure_instantiated(opt_base, [elem_ty]))
+						opt_ty = self.type_table.ensure_instantiated(opt_base, [elem_ty])
+						record_method_call_info(
+							expr,
+							param_types=[recv_ty],
+							return_type=opt_ty,
+							can_throw=False,
+							target=_intrinsic_method_fn_id(expr.method_name),
+						)
+						return record_expr(expr, opt_ty)
+
+				# FnResult intrinsic methods.
+				if expr.method_name in ("is_err", "unwrap", "unwrap_err") and not expr.args:
+					recv_def = self.type_table.get(recv_ty)
+					if recv_def.kind is TypeKind.FNRESULT and recv_def.param_types:
+						ok_ty = recv_def.param_types[0] if len(recv_def.param_types) > 0 else self._unknown
+						err_ty = recv_def.param_types[1] if len(recv_def.param_types) > 1 else self._error
+						if expr.method_name == "is_err":
+							ret_ty = self._bool
+						elif expr.method_name == "unwrap":
+							ret_ty = ok_ty
+						else:
+							ret_ty = err_ty
+						record_method_call_info(
+							expr,
+							param_types=[recv_ty],
+							return_type=ret_ty,
+							can_throw=False,
+							target=_intrinsic_method_fn_id(expr.method_name),
+						)
+						return record_expr(expr, ret_ty)
 
 				if callable_registry:
 					try:
@@ -6040,6 +6197,30 @@ class TypeChecker:
 								resolution = trait_candidates[0][0]
 								call_resolutions[expr.node_id] = resolution
 								result_type = resolution.result_type or resolution.decl.signature.result_type
+								target_fn_id = resolution.decl.fn_id
+								if target_fn_id is None:
+									raise ResolutionError(
+										f"missing function id for method '{expr.method_name}' (compiler bug)",
+										span=getattr(expr, "loc", Span()),
+									)
+								sig_for_throw = signatures_by_id.get(target_fn_id) if signatures_by_id is not None else None
+								call_can_throw = sig_can_throw(sig_for_throw) if sig_for_throw is not None else True
+								applied = _apply_method_boundary(
+									expr,
+									target_fn_id=target_fn_id,
+									sig_for_throw=sig_for_throw,
+									call_can_throw=call_can_throw,
+								)
+								if applied is None:
+									return record_expr(expr, self._unknown)
+								target_fn_id, call_can_throw = applied
+								record_method_call_info(
+									expr,
+									param_types=[recv_ty, *arg_types],
+									return_type=result_type or self._unknown,
+									can_throw=call_can_throw,
+									target=target_fn_id,
+								)
 								return record_expr(expr, result_type)
 							if trait_hidden:
 								mod_names: list[str] = []
@@ -6200,8 +6381,15 @@ class TypeChecker:
 							)
 						sig_for_throw = signatures_by_id.get(target_fn_id) if signatures_by_id is not None else None
 						call_can_throw = sig_can_throw(sig_for_throw) if sig_for_throw is not None else True
-						if _force_boundary_can_throw(sig_for_throw, target_fn_id):
-							call_can_throw = True
+						applied = _apply_method_boundary(
+							expr,
+							target_fn_id=target_fn_id,
+							sig_for_throw=sig_for_throw,
+							call_can_throw=call_can_throw,
+						)
+						if applied is None:
+							return record_expr(expr, self._unknown)
+						target_fn_id, call_can_throw = applied
 						record_method_call_info(
 							expr,
 							param_types=[recv_ty, *arg_types],

@@ -52,4 +52,16 @@ def function_ref_symbol(ref: FunctionRefId) -> str:
 	return base
 
 
-__all__ = ["FunctionId", "function_symbol", "FunctionRefId", "FunctionRefKind", "function_ref_symbol"]
+def method_wrapper_id(target: FunctionId) -> FunctionId:
+	"""Return a stable wrapper FunctionId for a method boundary Ok-wrap."""
+	return FunctionId(module=target.module, name=f"__wrap_method::{target.name}", ordinal=target.ordinal)
+
+
+__all__ = [
+	"FunctionId",
+	"function_symbol",
+	"FunctionRefId",
+	"FunctionRefKind",
+	"function_ref_symbol",
+	"method_wrapper_id",
+]

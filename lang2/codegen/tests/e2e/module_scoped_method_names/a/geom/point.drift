@@ -5,7 +5,7 @@ export { Point, make }
 pub struct Point { x: Int, y: Int }
 
 implement Point {
-	fn move_by(self: &mut Point, dx: Int, dy: Int) returns Void {
+	pub fn move_by(self: &mut Point, dx: Int, dy: Int) returns Void {
 		self->x += dx
 		self->y += dy
 	}

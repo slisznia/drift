@@ -150,7 +150,7 @@ def _run_case(case_dir: Path) -> str:
 	# import resolution behavior is consistent:
 	# - missing module imports are diagnosed,
 	# - multi-file modules and multi-module cases share the same entry path.
-	func_hirs, signatures, fn_ids_by_name, type_table, exception_catalog, _module_exports, _module_deps, parse_diags = parse_drift_workspace_to_hir(
+	func_hirs, signatures, fn_ids_by_name, type_table, exception_catalog, module_exports, module_deps, parse_diags = parse_drift_workspace_to_hir(
 		drift_files,
 		module_paths=[case_dir / mp for mp in module_paths] or None,
 		enforce_entrypoint=True,
@@ -199,6 +199,8 @@ def _run_case(case_dir: Path) -> str:
 			exc_env=exception_catalog,
 			entry=entry,
 			type_table=type_table,
+			module_exports=module_exports,
+			module_deps=module_deps,
 		)
 	except Exception as err:  # pragma: no cover - defensive for negative e2e cases
 		expected_diags = expected.get("diagnostics", [])

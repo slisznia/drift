@@ -1434,10 +1434,16 @@ class _FuncBuilder:
 				val = self._map_value(instr.value)
 				val_ty = self.value_types.get(val)
 				if val_ty is not None and val_ty != ok_llty:
-					raise NotImplementedError(
-						f"LLVM codegen v1: ok payload type mismatch for ConstructResultOk in {self.fn_info.name}: "
-						f"have {val_ty}, expected {ok_llty}"
-					)
+					if {val_ty, ok_llty} == {DRIFT_SIZE_TYPE, "i64"}:
+						# Size/Int share ABI width; allow a bitcast between the two.
+						tmp_cast = self._fresh("okcast")
+						self.lines.append(f"  {tmp_cast} = bitcast {val_ty} {val} to {ok_llty}")
+						val = tmp_cast
+					else:
+						raise NotImplementedError(
+							f"LLVM codegen v1: ok payload type mismatch for ConstructResultOk in {self.fn_info.name}: "
+							f"have {val_ty}, expected {ok_llty}"
+						)
 			tmp0 = self._fresh("ok0")
 			tmp1 = self._fresh("ok1")
 			err_zero = f"{DRIFT_ERROR_PTR} null"

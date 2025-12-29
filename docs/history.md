@@ -1,5 +1,12 @@
 # Drift development history
 
+## 2025-12-28
+- Added explicit prelude controls: `--no-prelude` disables implicit `lang.core` import, while explicit `import lang.core` still works via injected prelude exports; tests cover default/prelude-disabled behavior.
+- Updated prelude injection to be conditional on explicit imports when disabled, and wired prelude exports into the external export surface so module-qualified calls resolve deterministically.
+- Clarified exception matching: unqualified `catch EventName` resolves to the current module’s event, while `catch mod:EventName` targets other modules; spec updated.
+- Driver ABI boundary test now passes module exports/deps into the LLVM test helper to preserve cross-module visibility.
+- Removed `source_location()` and `SourceLocation` from the `lang.core` prelude spec until an intrinsic implementation exists.
+
 ## 2025-12-07
 - Cleaned up the lang2 front-end slice: parser copy lives in `lang2/parser/` with a table-driven adapter (`parse_drift_to_hir`); RaiseStmt for `throw` maps to ThrowStmt, unsupported stmts fail loudly; AstToHIR ThrowStmt uses the canonical `value` field. Adapter tests cover Ok sugar, attr-call non-rewrite, raise→throw, and unsupported constructs.
 - LLVM backend tests relocated to `lang2/codegen/llvm/tests/`; `just lang2-codegen-test` now runs them there, still cleaning `build/tests/lang2` and running IR/e2e runners.

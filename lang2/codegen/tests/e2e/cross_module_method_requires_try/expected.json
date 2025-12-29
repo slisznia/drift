@@ -1,1 +1,6 @@
-{ "skip": true }
+{
+  "exit_code": 1,
+  "diagnostics": [
+    { "message_contains": "declared nothrow but may throw" }
+  ]
+}

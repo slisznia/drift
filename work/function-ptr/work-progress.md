@@ -112,12 +112,14 @@ effect-based throw ABI.
   - ✅ Stage2 tests: missing CallInfo hard-fails; direct call ABI return types verified.
   - ✅ Tests for HInvoke/CallIndirect (stage1 + stage2).
   - ✅ Stage1 tests for function references (typed-context, ambiguity, exported can-throw).
-  - ✅ Wrapper/impl selection test for cross-module exported function references.
+- ✅ Wrapper/impl selection test for cross-module exported function references.
+- ✅ Wrapper selection test for cross-module method calls (CallInfo targets wrapper FunctionId).
+- ✅ Wrapper selection test for cross-package method calls (driver test uses package signatures + impl headers).
   - ✅ Stage1 tests: nothrow→can-throw thunk selection + captureless/capturing lambda coercion.
   - ✅ Stage2 tests: synthetic thunk + captureless lambda functions emitted in MIR.
   - ✅ Codegen e2e tests for fnptr refs/cast/thunks/lambdas/cross-module wrappers (runtime + diagnostics).
   - ✅ Codegen e2e tests for nothrow defs + boundary-call handling (direct throw, throwing call, try/catch ok, same-module pub ok, can-throw→nothrow fnptr reject).
-  - ⏸️ Cross-module method boundary enforcement e2e is skipped pending method-call wrappers for can-throw ABI.
+  - ✅ Cross-module method boundary enforcement e2e re-enabled (stub checker now uses CallInfo from typecheck).
   - ⏸️ Codegen e2e for fnptr parameter overload/instantiation moved to `__pending_*` (LLVM lacks function-type params in signatures).
 - Step 10: **done**
   - ✅ Parse `nothrow` on function definitions and propagate to signatures.
@@ -129,6 +131,7 @@ effect-based throw ABI.
 
 ## Recent fixes (test stabilization)
 - Prelude call resolution: register unqualified `lang.core` aliases in `CallableRegistry` for `print/println/eprintln`.
+- Prelude injection now keys on `FunctionId` instead of short-name collisions, so explicit `import lang.core` works even if user code defines `println`.
 - Try/catch + match scoping: bind catch/try-expr binders and type arm results in the same scope as arm blocks.
 - Qualified ctor instantiation: use variant base id when re-instantiating generic variant returns.
 - Ref-return provenance: reuse HIR param binding ids and seed ref-origin for ref params before body typing.
@@ -144,9 +147,32 @@ effect-based throw ABI.
 - Entry point validation now rejects missing `main` and enforces `main` return type `Int`.
 - Entry point restriction now applies only to free functions in dependencies; methods named `main` are allowed.
 - Catch event arms now accept unqualified event names (resolved to the current module); grammar + spec updated.
+- Prelude flag support: `--no-prelude` disables implicit `lang.core` import but explicit `import lang.core` still works (prelude exports injected for import resolution, auto-visibility remains gated).
+- CLI now runs stub checker **after** typecheck with CallInfo so nothrow method-boundary violations are enforced (no name-based inference); stubbed pipeline checks normalized HIR for CallInfo alignment.
 
 ## Out of scope (this branch)
 - Method references / bound `self` function values.
 - Implicit CallableDyn wrapping for function pointers.
 - Full function-type inference without typed context.
 - Keyword args for function values.
+
+## Method boundary enforcement (completed)
+- Provider-emitted Ok-wrap wrappers are injected at package build time for
+  public/visible NOTHROW methods and recorded in exported signatures
+  (`is_wrapper` + `wraps_target_symbol`).
+- Wrapper signature preserves receiver ABI and generic params/constraints; the
+  wrapper returns `FnResult<Ret, Error>` and `Ok(impl(...))`.
+- Cross-module visible method calls select the wrapper FunctionId and force
+  `CallSig.can_throw = True`; CAN_THROW methods force can-throw at the call site.
+- Stub checker uses CallInfo for HMethodCall; missing entries hard-error during
+  nothrow analysis.
+- Stage2/LLVM continue using MIR `Call.can_throw` (no name-based inference).
+- Tests:
+  - `cross_module_method_requires_try` re-enabled and `cross_module_method_try_catch_ok`
+    added.
+  - `same_module_method_no_try_ok` guards same-module calls.
+  - Driver tests assert wrapper selection for cross-module and cross-package
+    method calls.
+- Limitation: if a public/visible method signature contains function-typed
+  params, package build hard-errors until LLVM supports function types in
+  function signatures (no partial boundary feature).

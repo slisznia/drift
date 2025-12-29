@@ -238,14 +238,6 @@ fn println(text: String) returns Void
 /// Writes UTF-8 text to the process standard error,
 /// then appends a single '\n'.
 fn eprintln(text: String) returns Void
-
-/// Intrinsic: captures the current source location at the callsite.
-fn source_location() returns SourceLocation
-
-struct SourceLocation {
-    file: String,
-    line: Int64
-}
 ```
 
 Notes:
@@ -256,24 +248,14 @@ Notes:
 - In v1 these functions do not throw; if a write fails, behavior is
   implementation-defined (abort or silent failure).
 - They perform no formatting beyond what you compose yourself.
-- `source_location()` is a pure, zero-cost intrinsic lowered to the current
-  file/line at the callsite.
+- The compiler flag `--no-prelude` disables the implicit import; users must
+  explicitly import or qualify `lang.core` symbols. `--prelude` re-enables it.
 
 Typical usage:
 
 ```drift
 println("hello, world")
-
-val ^log_site: SourceLocation as "log.site" = source_location()
-logger.warn("slow write", site = log_site)
-
-throw InvalidOrder(site = source_location(), order_id = order.id)
 ```
-
-Because the helper returns a regular struct, you can store it in locals, pass it
-to `^` captures, or include it in exception arguments. Future logging APIs can
-accept `SourceLocation` explicitly, keeping site metadata opt-in instead of
-hard-wired into the runtime.
 
 ### 3.4. Struct syntax variants
 
@@ -2333,7 +2315,10 @@ Drift’s exception system is designed to:
 
 ### 14.1.1. Source identity vs. runtime identity
 
-- **Source identity** of an exception event is its fully-qualified name `"<module_name>.<submodule...>:<event>"` (canonical, no aliases). Catch clauses must spell this FQN explicitly; the compiler does not add an implicit module prefix. Non-canonical/ambiguous names are rejected.
+- **Source identity** of an exception event is its fully-qualified name `"<module_name>.<submodule...>:<event>"` (canonical, no aliases). Catch clauses resolve to this FQN:
+  - `catch EventName(...)` resolves to the current module’s event `"<current_module>:EventName"`.
+  - `catch mod:EventName(...)` resolves to the named module’s event `"<mod>:EventName"`.
+  Non-canonical/ambiguous names are rejected.
 - **Runtime identity** is a deterministic 64-bit `event_code = hash_v1(fqn_utf8_bytes)` (UTF-8 of the canonical FQN); users never type or see codes.
 - `catch m:Evt` lowers to `if err.event_code == hash_v1(fqn)`; matching is by code, derived from the resolved FQN with the `:` delimiter.
 - `event_code == 0` is reserved for **unknown/unmapped** events (e.g., absent catalog entry); user-defined events must never deliberately use code 0.

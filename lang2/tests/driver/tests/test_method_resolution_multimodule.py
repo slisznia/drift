@@ -5,11 +5,13 @@ import json
 from pathlib import Path
 
 from lang2.driftc import stage1 as H
-from lang2.driftc.core.function_id import FunctionId
+from lang2.driftc.core.function_id import FunctionId, method_wrapper_id
+from lang2.driftc.driftc import _inject_method_boundary_wrappers
 from lang2.driftc.method_registry import CallableRegistry, CallableSignature, SelfMode, Visibility
 from lang2.driftc.impl_index import GlobalImplIndex, find_impl_method_conflicts
 from lang2.driftc.driftc import main as driftc_main
 from lang2.driftc.parser import parse_drift_workspace_to_hir
+from lang2.driftc.stage1.call_info import CallTargetKind
 from lang2.driftc.type_checker import TypeChecker
 
 
@@ -34,6 +36,8 @@ def _build_registry(signatures: dict[FunctionId, object]) -> tuple[CallableRegis
 	module_ids: dict[object, int] = {None: 0}
 	next_id = 1
 	for fn_id, sig in signatures.items():
+		if getattr(sig, "is_wrapper", False):
+			continue
 		if sig.param_type_ids is None or sig.return_type_id is None:
 			continue
 		module_id = module_ids.setdefault(sig.module, len(module_ids))
@@ -626,6 +630,99 @@ fn main() returns Int  nothrow{
 		"m_impl_a visible via: m_main import-> m_api reexport-> m_impl_a",
 		"m_impl_b visible via: m_main import-> m_api reexport-> m_impl_b",
 	]
+
+
+def test_cross_module_method_call_uses_boundary_wrapper(tmp_path: Path) -> None:
+	files = {
+		Path("mod_a/lib.drift"): """
+module mod_a
+
+export { Point }
+
+pub struct Point { x: Int }
+
+implement Point {
+\tpub fn bump(self: Point) returns Int nothrow { return self.x + 1; }
+}
+""",
+		Path("mod_b/main.drift"): """
+module mod_b
+
+import mod_a as A
+
+fn main() returns Int  nothrow{
+\tval p = A.Point(x = 1)
+\treturn try p.bump() catch { 0 }
+}
+""",
+	}
+	mod_root = tmp_path / "mods"
+	for rel, content in files.items():
+		_write_file(mod_root / rel, content)
+	paths = sorted(mod_root.rglob("*.drift"))
+	func_hirs, signatures, fn_ids_by_name, type_table, _exc_catalog, module_exports, module_deps, diagnostics = (
+		parse_drift_workspace_to_hir(paths, module_paths=[mod_root])
+	)
+	assert diagnostics == []
+
+	_, wrap_errors = _inject_method_boundary_wrappers(
+		signatures_by_id=signatures,
+		type_table=type_table,
+	)
+	assert wrap_errors == []
+
+	registry, module_ids = _build_registry(signatures)
+	impl_index = GlobalImplIndex.from_module_exports(
+		module_exports=module_exports,
+		type_table=type_table,
+		module_ids=module_ids,
+	)
+	conflicts = find_impl_method_conflicts(
+		module_exports=module_exports,
+		signatures_by_id=signatures,
+		type_table=type_table,
+		visible_modules_by_name=_visible_modules_by_name(module_deps),
+	)
+	assert conflicts == []
+
+	main_ids = fn_ids_by_name.get("mod_b::main") or []
+	assert len(main_ids) == 1
+	main_id = main_ids[0]
+	main_block = func_hirs[main_id]
+	main_sig = signatures[main_id]
+	param_types = {}
+	if main_sig.param_names and main_sig.param_type_ids:
+		param_types = {pname: pty for pname, pty in zip(main_sig.param_names, main_sig.param_type_ids)}
+	current_mod = module_ids.setdefault(main_sig.module, len(module_ids))
+	visible_mods = _visible_modules_for("mod_b", module_deps, module_ids)
+	tc = TypeChecker(type_table=type_table)
+	result = tc.check_function(
+		main_id,
+		main_block,
+		param_types=param_types,
+		return_type=main_sig.return_type_id,
+		signatures_by_id=signatures,
+		callable_registry=registry,
+		impl_index=impl_index,
+		visible_modules=visible_mods,
+		current_module=current_mod,
+	)
+	assert not result.diagnostics
+
+	calls = _collect_method_calls(result.typed_fn.body)
+	assert len(calls) == 1
+	call = calls[0]
+	info = result.typed_fn.call_info_by_node_id.get(call.node_id)
+	assert info is not None
+	assert info.target.kind is CallTargetKind.DIRECT
+
+	impl_id = next(
+		fn_id
+		for fn_id, sig in signatures.items()
+		if sig.is_method and sig.method_name == "bump" and not getattr(sig, "is_wrapper", False)
+	)
+	assert info.target.symbol == method_wrapper_id(impl_id)
+	assert info.sig.can_throw is True
 
 
 def test_impl_index_keeps_overloaded_methods(tmp_path: Path) -> None:

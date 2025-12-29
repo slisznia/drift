@@ -21,6 +21,7 @@ from enum import Enum
 from typing import Any, Mapping
 
 from lang2.driftc.checker import FnSignature
+from lang2.driftc.core.function_id import function_symbol
 from lang2.driftc.core.generic_type_expr import GenericTypeExpr
 from lang2.driftc.core.span import Span
 from lang2.driftc.core.types_core import TypeDef, TypeId, TypeParamId, TypeTable
@@ -442,6 +443,12 @@ def encode_signatures(signatures: Mapping[str, FnSignature], *, module_id: str) 
 			"impl_target_type_id": getattr(sig, "impl_target_type_id", None),
 			"self_mode": getattr(sig, "self_mode", None),
 			"is_pub": bool(getattr(sig, "is_pub", False)),
+			"is_wrapper": bool(getattr(sig, "is_wrapper", False)),
+			"wraps_target_symbol": (
+				function_symbol(sig.wraps_target_fn_id)
+				if getattr(sig, "wraps_target_fn_id", None) is not None
+				else None
+			),
 			"param_names": list(sig.param_names or []),
 			"param_type_ids": list(sig.param_type_ids or []) if sig.param_type_ids is not None else None,
 			"return_type_id": sig.return_type_id,

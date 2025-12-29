@@ -1,0 +1,11 @@
+module a
+
+export { Other }
+
+pub struct Other { x: Int }
+
+implement Other {
+	pub fn bump(self: &mut Other, dx: Int) returns Void nothrow {
+		x += dx
+	}
+}

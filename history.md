@@ -3,6 +3,7 @@
 - Added captureless lambda coercion to `fn(...)` pointers with capture rejection and can-throw validation.
 - Materialized thunk and lambda synthetic functions in the driver pipeline pre-LLVM (MIR emission is now explicit and stable).
 - Added tests for thunk selection, captureless/capturing lambda coercion, and synthetic MIR emission (including unique lambda ids per enclosing function).
+- Moved CLI stub-checker enforcement after typecheck with CallInfo so nothrow method-boundary violations are enforced deterministically (no name-based inference); normalized HIR is used for CallInfo alignment.
 
 ## 2025-12-26 – Borrow checker statement-level liveness + ref-copy loans
 - Refined NLL-lite borrow tracking with per-statement ref liveness inside blocks, while preserving conservative “unused borrow stays live” behavior via lexical-scope caps.
@@ -84,5 +85,5 @@
 - Added entrypoint rules: exactly one `main`, it must return `Int`, and it must be declared `nothrow`; new e2e diagnostics cover missing/duplicate main cases.
 - Updated tests to reflect strict throw-mode decoding and entrypoint enforcement.
 - Catch event arms now accept unqualified event names (resolved to the current module) with spec updates.
-- Added nothrow e2e coverage (throwing calls, try/catch ok, cross-module method requires try, same-module pub ok, can-throw→nothrow fnptr reject) and made the checker treat cross-module public method calls as boundary can-throw in throw inference.
-- Disabled stub checker method-boundary throw inference (it masked trait visibility diagnostics and produced ABI-mismatched method calls); cross-module method boundary e2e is now skipped pending method-call wrappers.
+- Added nothrow e2e coverage (throwing calls, try/catch ok, cross-module method requires try, same-module pub ok, can-throw→nothrow fnptr reject).
+- Provider-emitted method boundary wrappers now exist for public NOTHROW methods, exported in package signatures and selected at cross-module call sites; cross-module method boundary e2e re-enabled with new try/catch and same-module guard cases.

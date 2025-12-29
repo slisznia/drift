@@ -2,7 +2,7 @@
   "exit_code": 1,
   "diagnostics": [
     {
-      "message_contains": "must be a DiagnosticValue or primitive literal"
+      "message_contains": "exception field value must be a DiagnosticValue"
     }
   ]
 }

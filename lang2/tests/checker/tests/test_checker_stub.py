@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from lang2.driftc.checker import Checker, FnSignature
 from lang2.driftc.checker.catch_arms import CatchArmInfo
+import pytest
 
 
 def test_checker_infers_fnresult_and_declared_events_from_signature():
@@ -50,3 +51,18 @@ def test_checker_validates_catch_arms_and_accumulates_diagnostics():
 	msgs = [diag.message for diag in checked.diagnostics]
 	assert any("multiple catch-all" in msg for msg in msgs)
 	assert any("catch-all must be the last" in msg for msg in msgs)
+
+
+def test_checker_method_call_missing_callinfo_is_bug():
+	"""Method calls require CallInfo when provided to the checker."""
+	from lang2.driftc import stage1 as H
+
+	hir = H.HBlock(
+		statements=[
+			H.HExprStmt(expr=H.HMethodCall(receiver=H.HVar("p"), method_name="bump", args=[])),
+		]
+	)
+	signatures = {"main": FnSignature(name="main", return_type="Int")}
+	checker = Checker(signatures=signatures, hir_blocks={"main": hir}, call_info_by_name={"main": {}})
+	with pytest.raises(AssertionError, match=r"missing CallInfo for method call"):
+		checker.check(["main"])
