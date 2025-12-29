@@ -53,7 +53,7 @@ def test_driftc_codegen_scalar_main():
 	func_hirs = {
 		"drift_main": H.HBlock(statements=[H.HReturn(value=H.HLiteralInt(value=42))])
 	}
-	signatures = {"drift_main": FnSignature(name="drift_main", return_type="Int")}
+	signatures = {"drift_main": FnSignature(name="drift_main", return_type="Int", declared_can_throw=False)}
 
 	ir, _ = compile_to_llvm_ir_for_tests(func_hirs=func_hirs, signatures=signatures, entry="drift_main")
 	exit_code = _run_ir_with_clang(ir)
@@ -93,7 +93,7 @@ def test_driftc_codegen_can_throw_callee_ok():
 	}
 	signatures = {
 		"callee": FnSignature(name="callee", return_type="Int", declared_can_throw=True),
-		"drift_main": FnSignature(name="drift_main", return_type="Int"),
+		"drift_main": FnSignature(name="drift_main", return_type="Int", declared_can_throw=False),
 	}
 
 	ir, _ = compile_to_llvm_ir_for_tests(func_hirs=func_hirs, signatures=signatures, entry="drift_main")

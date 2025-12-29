@@ -1786,7 +1786,10 @@ class _FuncBuilder:
 		if can_throw:
 			err_tid = self.type_table.ensure_error()
 			ret_tid = self.type_table.ensure_fnresult(user_ret_type, err_tid)
-		ret_llty = self._llvm_type_for_typeid(ret_tid)
+		if not can_throw and self.type_table.is_void(ret_tid):
+			ret_llty = "void"
+		else:
+			ret_llty = self._llvm_type_for_typeid(ret_tid)
 		arg_lltys = ", ".join(self._llvm_type_for_typeid(t) for t in param_types)
 		return f"{ret_llty} ({arg_lltys})*"
 
@@ -2084,6 +2087,14 @@ class _FuncBuilder:
 				if td.param_types:
 					inner_llty = self._llvm_type_for_typeid(td.param_types[0])
 				return f"{inner_llty}*"
+			if td.kind is TypeKind.FUNCTION:
+				if not td.param_types:
+					raise NotImplementedError(
+						f"LLVM codegen v1: function type missing param/return types for {self.func.name}"
+					)
+				params = list(td.param_types[:-1])
+				ret_tid = td.param_types[-1]
+				return self._fn_ptr_lltype(params, ret_tid, td.fn_throws)
 			if td.kind is TypeKind.STRUCT:
 				return self.module.ensure_struct_type(ty_id, type_table=self.type_table, map_type=self._llvm_type_for_typeid)
 			if td.kind is TypeKind.VARIANT:

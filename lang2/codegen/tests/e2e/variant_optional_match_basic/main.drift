@@ -5,7 +5,7 @@ variant Optional<T> {
 	None,
 }
 
-fn foo() returns Optional<Int> {
+fn foo() returns Optional<Int> nothrow {
 	// Constructor calls require an expected type; return type provides it.
 	return Some(41)
 }
@@ -18,4 +18,3 @@ fn main() returns Int  nothrow{
 	}
 	return y
 }
-

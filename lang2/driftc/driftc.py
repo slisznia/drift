@@ -36,7 +36,7 @@ if str(ROOT) not in sys.path:
 
 from lang2.driftc import stage1 as H
 from lang2.driftc.stage1 import normalize_hir
-from lang2.driftc.stage1.call_info import CallInfo, CallSig, CallTargetKind
+from lang2.driftc.stage1.call_info import CallInfo, CallSig, CallTarget, CallTargetKind
 from lang2.driftc.stage1.lambda_validate import validate_lambdas_non_retaining
 from lang2.driftc.stage1.non_retaining_analysis import analyze_non_retaining_params
 from lang2.driftc.stage2 import HIRToMIR, MirBuilder, mir_nodes as M
@@ -64,8 +64,10 @@ from lang2.driftc.fake_decl import FakeDecl
 from lang2.driftc.packages.dmir_pkg_v0 import canonical_json_bytes, sha256_hex, write_dmir_pkg_v0
 from lang2.driftc.packages.provisional_dmir_v0 import (
 	decode_mir_funcs,
+	decode_generic_templates,
 	decode_trait_expr,
 	decode_type_expr,
+	encode_generic_templates,
 	encode_module_payload_v0,
 	encode_span,
 	encode_trait_expr,
@@ -235,12 +237,10 @@ def _inject_method_boundary_wrappers(
 		if sig.param_type_ids is None or sig.return_type_id is None:
 			errors.append(f"internal: missing param/return types for method '{sig.name}'")
 			continue
-		if _type_contains_fn(type_table, sig.return_type_id) or any(
-			_type_contains_fn(type_table, tid) for tid in sig.param_type_ids
-		):
+		if _type_contains_fn(type_table, sig.return_type_id):
 			errors.append(
-				f"public method '{sig.name}' requires a boundary wrapper but uses function-typed params; "
-				"method boundary wrappers for function-typed params are not supported yet"
+				f"public method '{sig.name}' requires a boundary wrapper but returns a function type; "
+				"method boundary wrappers for function-typed returns are not supported yet"
 			)
 			continue
 		wrapper_id = method_wrapper_id(fn_id)
@@ -335,6 +335,11 @@ def _parse_function_symbol(symbol: str) -> FunctionId:
 	else:
 		module, name = "main", base
 	return FunctionId(module=module, name=name, ordinal=ordinal)
+
+
+def _sig_declared_can_throw(sig: FnSignature) -> bool:
+	"""Treat unspecified throw-mode as can-throw."""
+	return True if sig.declared_can_throw is None else bool(sig.declared_can_throw)
 
 
 def _find_dependency_main(loaded_pkgs: list["LoadedPackage"]) -> tuple[str, Path, str] | None:
@@ -659,6 +664,7 @@ def compile_stubbed_funcs(
 	exc_env: Mapping[str, int] | None = None,
 	module_exports: Mapping[str, dict[str, object]] | None = None,
 	module_deps: Mapping[str, set[str]] | None = None,
+	generic_templates_by_id: Mapping[FunctionId, H.HBlock] | None = None,
 	return_checked: bool = False,
 	build_ssa: bool = False,
 	return_ssa: bool = False,
@@ -681,6 +687,7 @@ def compile_stubbed_funcs(
 	    use parsed/type-checked signatures to derive throw intent; this parameter
 	    lets tests mimic that shape without a full parser/type checker.
 	  exc_env: optional exception environment (event name -> code) passed to HIRToMIR.
+	  generic_templates_by_id: optional map of FunctionId -> TemplateHIR (from packages).
 	  return_checked: when True, also return the CheckedProgram produced by the
 	    checker so diagnostics/fn_infos can be asserted in integration tests.
 	  build_ssa: when True, also run MIR→SSA and derive a TypeEnv from SSA +
@@ -759,7 +766,12 @@ def compile_stubbed_funcs(
 
 	# Normalize after typecheck so lowering sees canonical HIR and preserves any
 	# checker-produced annotations needed by stage2 (e.g., match binder indices).
-	normalized_hirs: Dict[str, H.HBlock] = {name: normalize_hir(hir_block) for name, hir_block in func_hirs_by_symbol.items()}
+	normalized_hirs_by_id: Dict[FunctionId, H.HBlock] = {
+		fn_id: normalize_hir(hir_block) for fn_id, hir_block in func_hirs_by_id.items()
+	}
+	normalized_hirs: Dict[str, H.HBlock] = {
+		function_symbol(fn_id): block for fn_id, block in normalized_hirs_by_id.items()
+	}
 	call_sigs_by_name: dict[str, list[FnSignature]] = {}
 	for fn_id, sig in signatures_by_id.items():
 		if sig.is_method:
@@ -786,7 +798,8 @@ def compile_stubbed_funcs(
 			continue
 		if getattr(sig, "is_wrapper", False):
 			continue
-		module_id = module_ids.setdefault(getattr(sig, "module", None), len(module_ids))
+		module_name = getattr(fn_id, "module", None) or getattr(sig, "module", None)
+		module_id = module_ids.setdefault(module_name, len(module_ids))
 		param_types_tuple = tuple(sig.param_type_ids or [])
 		if sig.is_method:
 			if sig.impl_target_type_id is None or sig.self_mode is None:
@@ -858,23 +871,15 @@ def compile_stubbed_funcs(
 				scope = exp.get("trait_scope", [])
 				if isinstance(scope, list):
 					trait_scope_by_module[mod] = scope
-	# Build explicit throw overrides from signatures before typechecking so
-	# call info can enforce declared nothrow behavior deterministically.
+	# Build a throw-mode map for the stubbed pipeline so call info uses a
+	# deterministic can-throw flag for every known signature.
 	sig_throw_by_name: dict[str, bool] = {}
-	# Lowering should treat unspecified throw mode as CAN_THROW to avoid ABI mismatch
-	# between call sites and callee bodies in the stubbed pipeline.
-	lowering_can_throw_by_name: dict[str, bool] = {}
 	for fn_id, sig in signatures_by_id.items():
 		can_throw = sig.declared_can_throw if sig.declared_can_throw is not None else True
 		sym = function_symbol(fn_id)
-		lowering_can_throw_by_name[sym] = bool(can_throw)
+		sig_throw_by_name[sym] = bool(can_throw)
 		if sig.name:
-			lowering_can_throw_by_name[sig.name] = bool(can_throw)
-		if sig.declared_can_throw is None:
-			continue
-		sig_throw_by_name[sym] = bool(sig.declared_can_throw)
-		if sig.name:
-			sig_throw_by_name[sig.name] = bool(sig.declared_can_throw)
+			sig_throw_by_name[sig.name] = bool(can_throw)
 
 	typed_fns_by_symbol: dict[str, object] = {}
 	type_diags: list[Diagnostic] = []
@@ -968,6 +973,358 @@ def compile_stubbed_funcs(
 		type_diags.extend(result.diagnostics)
 		typed_fns_by_symbol[name] = result.typed_fn
 
+	# Instantiation phase (explicit type args only): clone generic templates into
+	# concrete instantiations and rewrite call targets.
+	from lang2.driftc import stage1 as H
+	from lang2.driftc.core.type_subst import Subst, apply_subst
+	from lang2.driftc.core.xxhash64 import hash64
+	from lang2.driftc.traits.world import type_key_from_typeid
+	from lang2.driftc.method_resolver import MethodResolution
+	from lang2.driftc.method_registry import CallableDecl
+	from collections import deque
+
+	def _type_key_str(key) -> str:
+		base = f"{key.module}::{key.name}" if getattr(key, "module", None) else key.name
+		if getattr(key, "args", None):
+			args = ",".join(_type_key_str(a) for a in key.args)
+			return f"{base}<{args}>"
+		return base
+
+	def _inst_can_throw(fn_id: FunctionId) -> bool:
+		sig = signatures_by_id.get(fn_id)
+		if sig is None or sig.declared_can_throw is None:
+			return True
+		return bool(sig.declared_can_throw)
+
+	def _inst_key(fn_id: FunctionId, type_args: tuple[TypeId, ...]) -> tuple[FunctionId, tuple[object, ...], bool]:
+		type_keys = tuple(type_key_from_typeid(shared_type_table, tid) for tid in type_args)
+		return (fn_id, type_keys, _inst_can_throw(fn_id))
+
+	def _inst_key_str(key: tuple[FunctionId, tuple[object, ...], bool]) -> str:
+		fn_id, type_keys, can_throw = key
+		base = f"{fn_id.module}::{fn_id.name}#{fn_id.ordinal}"
+		args = ",".join(_type_key_str(k) for k in type_keys)
+		return f"{base}|{args}|can_throw={int(can_throw)}"
+
+	def _inst_hash(key: tuple[FunctionId, tuple[object, ...], bool]) -> str:
+		key_str = _inst_key_str(key)
+		h = hash64(key_str.encode("utf-8"))
+		return f"{h:016x}"
+
+	def _collect_typearg_calls(block: H.HBlock) -> list[H.HExpr]:
+		out: list[H.HExpr] = []
+
+		def _walk_expr(expr: H.HExpr) -> None:
+			if isinstance(expr, (H.HCall, H.HMethodCall)) and getattr(expr, "type_args", None):
+				out.append(expr)
+			for v in expr.__dict__.values():
+				if isinstance(v, H.HExpr):
+					_walk_expr(v)
+				elif isinstance(v, list):
+					for item in v:
+						if isinstance(item, H.HExpr):
+							_walk_expr(item)
+
+		def _walk_block(b: H.HBlock) -> None:
+			for stmt in b.statements:
+				if isinstance(stmt, H.HReturn) and stmt.value is not None:
+					_walk_expr(stmt.value)
+				elif isinstance(stmt, H.HLet):
+					_walk_expr(stmt.value)
+				elif isinstance(stmt, H.HAssign):
+					_walk_expr(stmt.value)
+				elif isinstance(stmt, H.HIf):
+					_walk_expr(stmt.cond)
+					_walk_block(stmt.then_block)
+					if stmt.else_block:
+						_walk_block(stmt.else_block)
+				elif isinstance(stmt, H.HLoop):
+					_walk_block(stmt.body)
+				elif isinstance(stmt, H.HTry):
+					_walk_block(stmt.body)
+					for arm in stmt.catches:
+						_walk_block(arm.block)
+				elif isinstance(stmt, H.HExprStmt):
+					_walk_expr(stmt.expr)
+
+		_walk_block(block)
+		return out
+
+	def _resolved_fn_id(resolution: object) -> FunctionId | None:
+		if isinstance(resolution, MethodResolution):
+			return resolution.decl.fn_id
+		if isinstance(resolution, CallableDecl):
+			return resolution.fn_id
+		return None
+
+	template_hirs_by_id: dict[FunctionId, H.HBlock] = {}
+	if isinstance(generic_templates_by_id, dict):
+		template_hirs_by_id.update(generic_templates_by_id)
+	for fn_id, block in normalized_hirs_by_id.items():
+		sig = signatures_by_id.get(fn_id)
+		if sig and (sig.type_params or getattr(sig, "impl_type_params", [])):
+			template_hirs_by_id.setdefault(fn_id, block)
+
+	inst_cache: dict[tuple[FunctionId, tuple[object, ...], bool], FunctionId] = {}
+	inst_queue: deque[tuple[FunctionId, tuple[TypeId, ...], tuple[FunctionId, tuple[object, ...], bool]]] = deque()
+	instantiated_targets: set[FunctionId] = set()
+
+	def _enqueue_inst(target_fn_id: FunctionId, type_args: list[TypeId]) -> None:
+		key = _inst_key(target_fn_id, tuple(type_args))
+		if key in inst_cache:
+			return
+		if not any(k == key for _, _, k in inst_queue):
+			inst_queue.append((target_fn_id, tuple(type_args), key))
+
+	for typed_fn in typed_fns_by_symbol.values():
+		block = getattr(typed_fn, "body", None)
+		if not isinstance(block, H.HBlock):
+			continue
+		for call in _collect_typearg_calls(block):
+			decl = getattr(typed_fn, "call_resolutions", {}).get(call.node_id)
+			target_fn_id = _resolved_fn_id(decl)
+			if target_fn_id is None:
+				continue
+			sig = signatures_by_id.get(target_fn_id)
+			if sig is None or not getattr(sig, "type_params", None):
+				continue
+			type_arg_ids = [
+				resolve_opaque_type(t, shared_type_table, module_id=getattr(target_fn_id, "module", None))
+				for t in (call.type_args or [])
+			]
+			_enqueue_inst(target_fn_id, type_arg_ids)
+
+	while inst_queue:
+		target_fn_id, type_args, key = inst_queue.popleft()
+		if key in inst_cache:
+			continue
+		sig = signatures_by_id.get(target_fn_id)
+		if sig is None or not getattr(sig, "type_params", None):
+			continue
+		if sig.param_type_ids is None and sig.param_types is not None:
+			type_params = {p.name: p.id for p in getattr(sig, "type_params", [])}
+			sig.param_type_ids = [
+				resolve_opaque_type(p, shared_type_table, module_id=getattr(sig, "module", None), type_params=type_params)
+				for p in sig.param_types
+			]
+		if sig.return_type_id is None and sig.return_type is not None:
+			type_params = {p.name: p.id for p in getattr(sig, "type_params", [])}
+			sig.return_type_id = resolve_opaque_type(
+				sig.return_type, shared_type_table, module_id=getattr(sig, "module", None), type_params=type_params
+			)
+		if sig.param_type_ids is None or sig.return_type_id is None:
+			continue
+		can_throw_val = True if sig.declared_can_throw is None else bool(sig.declared_can_throw)
+		inst_name = f"{target_fn_id.name}__inst__{_inst_hash(key)}"
+		inst_fn_id = FunctionId(module=target_fn_id.module, name=inst_name, ordinal=target_fn_id.ordinal)
+		inst_cache[key] = inst_fn_id
+		instantiated_targets.add(target_fn_id)
+		subst = Subst(owner=target_fn_id, args=list(type_args))
+		inst_params = [apply_subst(t, subst, shared_type_table) for t in sig.param_type_ids]
+		inst_ret = apply_subst(sig.return_type_id, subst, shared_type_table)
+		inst_sig = replace(
+			sig,
+			name=function_symbol(inst_fn_id),
+			param_type_ids=inst_params,
+			return_type_id=inst_ret,
+			type_params=[],
+			impl_type_params=[],
+		)
+		signatures_by_id[inst_fn_id] = inst_sig
+		signatures_by_symbol[function_symbol(inst_fn_id)] = inst_sig
+		template_hir = template_hirs_by_id.get(target_fn_id)
+		if template_hir is None:
+			type_diags.append(
+				Diagnostic(
+					message=f"generic instantiation requires a template body for '{function_symbol(target_fn_id)}'",
+					severity="error",
+					span=getattr(sig, "loc", None),
+				)
+			)
+			continue
+		inst_hir = normalize_hir(template_hir)
+		normalized_hirs[function_symbol(inst_fn_id)] = inst_hir
+		func_hirs_by_symbol[function_symbol(inst_fn_id)] = inst_hir
+		mod_name = getattr(inst_fn_id, "module", None) or "main"
+		current_mod = module_ids.setdefault(mod_name, len(module_ids))
+		visible_mods = None
+		if module_deps is not None:
+			visible = visible_module_names_by_name.get(mod_name, {mod_name})
+			visible_mods = tuple(sorted(module_ids.setdefault(m, len(module_ids)) for m in visible))
+		inst_result = type_checker.check_function(
+			inst_fn_id,
+			inst_hir,
+			param_types={pname: pty for pname, pty in zip(sig.param_names or [], inst_params)},
+			return_type=inst_ret,
+			call_signatures=call_sigs_by_name,
+			signatures_by_id=signatures_by_id,
+			can_throw_by_name=sig_throw_by_name or None,
+			callable_registry=callable_registry,
+			impl_index=impl_index,
+			trait_index=trait_index,
+			trait_impl_index=trait_impl_index,
+			trait_scope_by_module=trait_scope_by_module,
+			visible_modules=visible_mods,
+			current_module=current_mod,
+		)
+		type_diags.extend(inst_result.diagnostics)
+		typed_fns_by_symbol[function_symbol(inst_fn_id)] = inst_result.typed_fn
+		for call in _collect_typearg_calls(inst_hir):
+			decl = getattr(inst_result.typed_fn, "call_resolutions", {}).get(call.node_id)
+			target = _resolved_fn_id(decl)
+			if target is None:
+				continue
+			t_sig = signatures_by_id.get(target)
+			if t_sig is None or not getattr(t_sig, "type_params", None):
+				continue
+			arg_ids = [
+				resolve_opaque_type(t, shared_type_table, module_id=getattr(target, "module", None))
+				for t in (call.type_args or [])
+			]
+			_enqueue_inst(target, arg_ids)
+
+	def _rewrite_call_targets(typed_fn: object, block: H.HBlock) -> None:
+		call_info_map = getattr(typed_fn, "call_info_by_node_id", None)
+		if not isinstance(call_info_map, dict):
+			return
+		for call in _collect_typearg_calls(block):
+			decl = getattr(typed_fn, "call_resolutions", {}).get(call.node_id)
+			target_fn_id = _resolved_fn_id(decl)
+			if target_fn_id is None:
+				continue
+			sig = signatures_by_id.get(target_fn_id)
+			if sig is None or not getattr(sig, "type_params", None):
+				continue
+			type_arg_ids = [
+				resolve_opaque_type(t, shared_type_table, module_id=getattr(target_fn_id, "module", None))
+				for t in (call.type_args or [])
+			]
+			inst_fn_id = inst_cache.get(_inst_key(target_fn_id, tuple(type_arg_ids)))
+			if inst_fn_id is None:
+				continue
+			info = call_info_map.get(call.node_id)
+			if info is None:
+				continue
+			inst_sig = signatures_by_id.get(inst_fn_id)
+			if inst_sig is None or inst_sig.param_type_ids is None or inst_sig.return_type_id is None:
+				continue
+			call_info_map[call.node_id] = CallInfo(
+				target=CallTarget.direct(inst_fn_id),
+				sig=CallSig(
+					param_types=tuple(inst_sig.param_type_ids),
+					user_ret_type=inst_sig.return_type_id,
+					can_throw=_inst_can_throw(inst_fn_id),
+				),
+			)
+
+	for name, typed_fn in typed_fns_by_symbol.items():
+		block = getattr(typed_fn, "body", None)
+		if isinstance(block, H.HBlock):
+			_rewrite_call_targets(typed_fn, block)
+
+	method_wrapper_by_target: dict[FunctionId, FunctionId] = {}
+	for sig_id, sig in signatures_by_id.items():
+		if getattr(sig, "is_wrapper", False) and getattr(sig, "wraps_target_fn_id", None) is not None:
+			method_wrapper_by_target[sig.wraps_target_fn_id] = sig_id
+
+	def _ensure_method_call_info() -> None:
+		for name, typed_fn in typed_fns_by_symbol.items():
+			call_info_map = getattr(typed_fn, "call_info_by_node_id", None)
+			if not isinstance(call_info_map, dict):
+				continue
+			call_resolutions = getattr(typed_fn, "call_resolutions", None)
+			if not isinstance(call_resolutions, dict):
+				continue
+			caller_mod = _parse_function_symbol(name).module
+			for node_id, res in call_resolutions.items():
+				if node_id in call_info_map:
+					continue
+				if isinstance(res, MethodResolution):
+					decl = res.decl
+					target_fn_id = decl.fn_id
+					if target_fn_id is None:
+						continue
+					params = list(decl.signature.param_types)
+					ret = res.result_type or decl.signature.result_type
+					sig_for_throw = signatures_by_id.get(target_fn_id)
+					call_can_throw = True
+					if sig_for_throw is not None and sig_for_throw.declared_can_throw is not None:
+						call_can_throw = bool(sig_for_throw.declared_can_throw)
+					if sig_for_throw is not None and sig_for_throw.is_pub and target_fn_id.module != caller_mod:
+						wrapper_id = method_wrapper_by_target.get(target_fn_id)
+						if wrapper_id is not None:
+							target_fn_id = wrapper_id
+							call_can_throw = True
+						elif not call_can_throw:
+							call_can_throw = True
+					call_info_map[node_id] = CallInfo(
+						target=CallTarget.direct(target_fn_id),
+						sig=CallSig(
+							param_types=tuple(params),
+							user_ret_type=ret,
+							can_throw=bool(call_can_throw),
+						),
+					)
+
+	_ensure_method_call_info()
+
+	for fn_id, sig in signatures_by_id.items():
+		if not (sig.type_params or getattr(sig, "impl_type_params", [])):
+			continue
+		# Templates are never lowered to MIR/SSA/LLVM.
+		sym = function_symbol(fn_id)
+		normalized_hirs.pop(sym, None)
+		func_hirs_by_symbol.pop(sym, None)
+
+	def _has_typevar(tid: TypeId, seen: set[TypeId] | None = None) -> bool:
+		td = shared_type_table.get(tid)
+		if td.kind is TypeKind.TYPEVAR:
+			return True
+		if seen is None:
+			seen = set()
+		if tid in seen:
+			return False
+		seen.add(tid)
+		for child in getattr(td, "param_types", []) or []:
+			if _has_typevar(child, seen):
+				return True
+		return False
+
+	for name in sorted(normalized_hirs.keys()):
+		sig = signatures_by_symbol.get(name)
+		if sig is not None:
+			for tid in sig.param_type_ids or []:
+				if _has_typevar(tid):
+					type_diags.append(
+						Diagnostic(
+							message=f"generic instantiation required: function '{name}' has an unresolved type parameter in its signature",
+							severity="error",
+							span=getattr(sig, "loc", None),
+						)
+					)
+					break
+			if sig.return_type_id is not None and _has_typevar(sig.return_type_id):
+				type_diags.append(
+					Diagnostic(
+						message=f"generic instantiation required: function '{name}' has an unresolved type parameter in its return type",
+						severity="error",
+						span=getattr(sig, "loc", None),
+					)
+				)
+		typed_fn = typed_fns_by_symbol.get(name)
+		call_info = getattr(typed_fn, "call_info_by_node_id", None) if typed_fn is not None else None
+		if isinstance(call_info, dict):
+			for info in call_info.values():
+				if any(_has_typevar(t) for t in info.sig.param_types) or _has_typevar(info.sig.user_ret_type):
+					type_diags.append(
+						Diagnostic(
+							message=f"generic instantiation required: call in '{name}' has unresolved type parameters",
+							severity="error",
+							span=None,
+						)
+					)
+					break
+
 	# Stage “checker”: obtain declared_can_throw from the checker stub so the
 	# driver path mirrors the real compiler layering once a proper checker exists.
 	call_info_by_name: dict[str, dict[int, CallInfo]] = {}
@@ -994,6 +1351,9 @@ def compile_stubbed_funcs(
 	checked = checker.check(sorted(decl_names))
 	if type_diags:
 		checked.diagnostics.extend(type_diags)
+	had_errors = any(d.severity == "error" for d in checked.diagnostics)
+	if had_errors and not return_checked:
+		raise ValueError("compile_stubbed_funcs aborted due to errors")
 	# Ensure declared_can_throw is a bool for downstream stages; guard against
 	# accidental truthy objects sneaking in from legacy shims.
 	for info in checked.fn_infos.values():
@@ -1002,13 +1362,31 @@ def compile_stubbed_funcs(
 		elif not isinstance(info.declared_can_throw, bool):
 			info.declared_can_throw = bool(info.declared_can_throw)
 	declared = {name: info.declared_can_throw for name, info in checked.fn_infos.items()}
-	# Use the lowering map as the canonical declared-can-throw view for the
-	# stubbed pipeline to avoid ABI mismatches when signatures omit nothrow.
-	declared = dict(lowering_can_throw_by_name)
-	for name, can_throw in lowering_can_throw_by_name.items():
-		info = checked.fn_infos.get(name)
-		if info is not None:
-			info.declared_can_throw = bool(can_throw)
+	# Align call info can-throw flags with inferred callee throw modes so MIR
+	# lowering uses a consistent ABI for direct calls.
+	for typed_fn in typed_fns_by_symbol.values():
+		call_info = getattr(typed_fn, "call_info_by_node_id", None)
+		if not isinstance(call_info, dict):
+			continue
+		updated: dict[int, CallInfo] = {}
+		for node_id, info in call_info.items():
+			call_can_throw = info.sig.can_throw
+			if info.target.kind is CallTargetKind.DIRECT and info.target.symbol is not None:
+				target_name = function_symbol(info.target.symbol)
+				target_info = checked.fn_infos.get(target_name)
+				if target_info is not None:
+					call_can_throw = call_can_throw or bool(target_info.declared_can_throw)
+			if call_can_throw != info.sig.can_throw:
+				info = CallInfo(
+					target=info.target,
+					sig=CallSig(
+						param_types=info.sig.param_types,
+						user_ret_type=info.sig.user_ret_type,
+						can_throw=bool(call_can_throw),
+					),
+				)
+			updated[node_id] = info
+		typed_fn.call_info_by_node_id = updated
 	# Prefer the checker's table when the caller did not supply one so TypeIds
 	# stay coherent across lowering/codegen.
 	if shared_type_table is None and checked.type_table is not None:
@@ -1033,7 +1411,7 @@ def compile_stubbed_funcs(
 				param_types=param_types,
 				signatures=signatures_by_symbol,
 				call_info_by_node_id=getattr(typed_fns_by_symbol.get(name), "call_info_by_node_id", {}),
-				can_throw_by_name=lowering_can_throw_by_name,
+				can_throw_by_name=declared,
 				return_type=sig.return_type_id if sig is not None else None,
 			).lower_function_body(hir_norm)
 		mir_funcs[name] = builder.func
@@ -1043,7 +1421,7 @@ def compile_stubbed_funcs(
 				if extra.name not in checked.fn_infos and extra.name in signatures_by_symbol:
 					info = FnInfo(
 						name=extra.name,
-						declared_can_throw=bool(getattr(signatures_by_symbol[extra.name], "declared_can_throw", False)),
+						declared_can_throw=_sig_declared_can_throw(signatures_by_symbol[extra.name]),
 						signature=signatures_by_symbol[extra.name],
 					)
 					checked.fn_infos[extra.name] = info
@@ -1054,7 +1432,7 @@ def compile_stubbed_funcs(
 		sym = function_symbol(fn_id)
 		signatures_by_id[fn_id] = sig
 		signatures_by_symbol[sym] = sig
-		info = FnInfo(name=sym, declared_can_throw=bool(sig.declared_can_throw), signature=sig)
+		info = FnInfo(name=sym, declared_can_throw=_sig_declared_can_throw(sig), signature=sig)
 		checked.fn_infos[sym] = info
 		declared[sym] = info.declared_can_throw
 		return sym
@@ -1682,6 +2060,7 @@ def main(argv: list[str] | None = None) -> int:
 	external_impl_metas: list[object] = []
 	external_missing_traits: set[object] = set()
 	external_missing_impl_modules: set[str] = set()
+	external_template_hirs_by_id: dict[FunctionId, H.HBlock] = {}
 
 	if parse_diags:
 		if args.json:
@@ -1981,6 +2360,7 @@ def main(argv: list[str] | None = None) -> int:
 						param_names=sd.get("param_names"),
 						param_type_ids=param_type_ids,
 						return_type_id=ret_tid,
+						declared_can_throw=sd.get("declared_can_throw"),
 						is_method=bool(sd.get("is_method", False)),
 						self_mode=sd.get("self_mode"),
 						impl_target_type_id=impl_tid,
@@ -2009,6 +2389,31 @@ def main(argv: list[str] | None = None) -> int:
 			type_table=type_table,
 			external_signatures_by_symbol=external_signatures_by_symbol,
 		)
+
+		for pkg in loaded_pkgs:
+			for mid, mod in pkg.modules_by_id.items():
+				payload = mod.payload
+				if not isinstance(payload, dict):
+					continue
+				templates_obj = payload.get("generic_templates")
+				templates = decode_generic_templates(templates_obj)
+				for entry in templates:
+					if not isinstance(entry, dict):
+						continue
+					if entry.get("ir_kind") != "TemplateHIR-v0":
+						continue
+					template_id = entry.get("template_id")
+					if not isinstance(template_id, dict):
+						continue
+					mod_name = template_id.get("module")
+					fn_name = template_id.get("name")
+					ord_val = template_id.get("ordinal", 0)
+					if not isinstance(mod_name, str) or not isinstance(fn_name, str) or not isinstance(ord_val, int):
+						continue
+					fn_id = FunctionId(module=mod_name, name=fn_name, ordinal=int(ord_val))
+					hir = entry.get("ir")
+					if isinstance(hir, H.HBlock):
+						external_template_hirs_by_id[fn_id] = normalize_hir(hir)
 
 		# Import package constant tables into the host TypeTable so source code can
 		# reference imported consts as typed literals.
@@ -2175,7 +2580,8 @@ def main(argv: list[str] | None = None) -> int:
 		if getattr(sig, "is_wrapper", False):
 			continue
 		param_types_tuple = tuple(sig.param_type_ids)
-		module_id = module_ids.setdefault(sig.module, len(module_ids))
+		module_name = getattr(fn_id, "module", None) or sig.module
+		module_id = module_ids.setdefault(module_name, len(module_ids))
 		if sig.is_method:
 			if sig.impl_target_type_id is None or sig.self_mode is None:
 				type_diags.append(
@@ -2246,7 +2652,8 @@ def main(argv: list[str] | None = None) -> int:
 		if sig.param_type_ids is None or sig.return_type_id is None:
 			continue
 		param_types_tuple = tuple(sig.param_type_ids)
-		module_id = module_ids.setdefault(sig.module, len(module_ids))
+		module_name = getattr(fn_id, "module", None) or sig.module
+		module_id = module_ids.setdefault(module_name, len(module_ids))
 		if sig.is_method:
 			if sig.impl_target_type_id is None or sig.self_mode is None:
 				type_diags.append(
@@ -2705,6 +3112,7 @@ def main(argv: list[str] | None = None) -> int:
 			type_table=type_table,
 			return_checked=True,
 			prelude_enabled=bool(args.prelude),
+			generic_templates_by_id=external_template_hirs_by_id,
 		)
 		if any(d.severity == "error" for d in checked_pkg.diagnostics):
 			if args.json:
@@ -2731,6 +3139,10 @@ def main(argv: list[str] | None = None) -> int:
 			mid = getattr(sig, "module", None) if sig is not None else None
 			mid = mid or "main"
 			per_module_mir.setdefault(mid, {})[name] = fn
+		per_module_hir: dict[str, dict[str, H.HBlock]] = {}
+		for fn_id, block in normalized_hirs_by_id.items():
+			mid = getattr(fn_id, "module", None) or "main"
+			per_module_hir.setdefault(mid, {})[function_symbol(fn_id)] = block
 
 		blobs_by_sha: dict[str, bytes] = {}
 		blob_types: dict[str, int] = {}
@@ -2751,24 +3163,29 @@ def main(argv: list[str] | None = None) -> int:
 			# Export surface uses module-local names (unqualified). Global names
 			# inside the compiler are qualified (`mid::name`).
 			exported_values: list[str] = []
-			for sym_name, sig in per_module_sigs.get(mid, {}).items():
-				if not getattr(sig, "is_exported_entrypoint", False):
-					continue
-				if sig.is_method:
-					continue
-				prefix = f"{mid}::"
-				exported_values.append(sym_name[len(prefix) :] if sym_name.startswith(prefix) else sym_name)
-			exported_values.sort()
-
 			exported_types_obj: object = {}
 			exported_traits_obj: object = {}
 			reexports_obj: object = {}
+			mexp: dict[str, object] = {}
 			if isinstance(module_exports, dict):
-				mexp = module_exports.get(mid, {})
-				if isinstance(mexp, dict):
+				mexp_obj = module_exports.get(mid, {})
+				if isinstance(mexp_obj, dict):
+					mexp = mexp_obj
 					exported_types_obj = mexp.get("types", {})
 					exported_traits_obj = mexp.get("traits", [])
 					reexports_obj = mexp.get("reexports", {})
+					vals_obj = mexp.get("values")
+					if isinstance(vals_obj, list):
+						exported_values = list(vals_obj)
+			if not exported_values:
+				for sym_name, sig in per_module_sigs.get(mid, {}).items():
+					if not getattr(sig, "is_exported_entrypoint", False):
+						continue
+					if sig.is_method:
+						continue
+					prefix = f"{mid}::"
+					exported_values.append(sym_name[len(prefix) :] if sym_name.startswith(prefix) else sym_name)
+			exported_values.sort()
 			if not isinstance(exported_types_obj, dict):
 				exported_types_obj = {}
 			if not isinstance(reexports_obj, dict):
@@ -2787,6 +3204,10 @@ def main(argv: list[str] | None = None) -> int:
 
 			trait_worlds = getattr(type_table, "trait_worlds", {}) if type_table is not None else {}
 			trait_world = trait_worlds.get(mid) if isinstance(trait_worlds, dict) else None
+			requires_by_symbol: dict[str, object] = {}
+			if trait_world is not None and hasattr(trait_world, "requires_by_fn"):
+				for fn_id, req_expr in getattr(trait_world, "requires_by_fn", {}).items():
+					requires_by_symbol[function_symbol(fn_id)] = req_expr
 			trait_metadata = _encode_trait_metadata_for_module(
 				module_id=mid,
 				exported_traits=exported_traits,
@@ -2799,11 +3220,75 @@ def main(argv: list[str] | None = None) -> int:
 				else [],
 			)
 
+			# Synthesize signatures for value re-exports so package consumers can
+			# reference them without requiring trampolines.
+			sig_env: dict[str, FnSignature] = dict(per_module_sigs.get(mid, {}))
+			if isinstance(reexports_obj, dict):
+				reexp_vals = reexports_obj.get("values")
+				if isinstance(reexp_vals, dict):
+					for local_name, entry in reexp_vals.items():
+						if not isinstance(entry, dict):
+							continue
+						origin_mod = entry.get("module")
+						origin_name = entry.get("name")
+						if not isinstance(origin_mod, str) or not isinstance(origin_name, str):
+							continue
+						local_sym = f"{mid}::{local_name}"
+						if local_sym in sig_env:
+							continue
+						origin_sym = f"{origin_mod}::{origin_name}"
+						origin_sig = signatures_by_symbol.get(origin_sym)
+						if origin_sig is None:
+							msg = f"internal: missing signature metadata for re-export target '{origin_sym}'"
+							if args.json:
+								print(
+									json.dumps(
+										{
+											"exit_code": 1,
+											"diagnostics": [
+												{
+													"phase": "package",
+													"message": msg,
+													"severity": "error",
+													"file": str(source_path),
+													"line": None,
+													"column": None,
+												}
+											],
+										}
+									)
+								)
+							else:
+								print(f"{source_path}:?:?: error: {msg}", file=sys.stderr)
+							return 1
+						sig_env[local_sym] = replace(
+							origin_sig,
+							name=local_sym,
+							module=mid,
+							is_exported_entrypoint=True,
+						)
+			# Ensure exported values are marked as entrypoints in the package
+			# signature table, including `main`, so provider validation matches
+			# the exported surface.
+			for local_name in exported_values:
+				sym = f"{mid}::{local_name}"
+				sig = sig_env.get(sym)
+				if sig is None:
+					continue
+				if not getattr(sig, "is_exported_entrypoint", False):
+					sig_env[sym] = replace(sig, is_exported_entrypoint=True)
+
 			payload_obj = encode_module_payload_v0(
 				module_id=mid,
 				type_table=checked_pkg.type_table or type_table,
-				signatures=per_module_sigs.get(mid, {}),
+				signatures=sig_env,
 				mir_funcs=per_module_mir.get(mid, {}),
+				generic_templates=encode_generic_templates(
+					module_id=mid,
+					signatures=sig_env,
+					hir_blocks=per_module_hir.get(mid, {}),
+					requires_by_symbol=requires_by_symbol,
+				),
 				exported_values=exported_values,
 				exported_types=exported_types,
 				exported_traits=exported_traits,
@@ -3035,12 +3520,13 @@ def main(argv: list[str] | None = None) -> int:
 							module=sd.get("module"),
 							method_name=sd.get("method_name"),
 							param_names=sd.get("param_names"),
-							param_type_ids=param_type_ids,
-							return_type_id=ret_tid,
-							is_method=bool(sd.get("is_method", False)),
-							self_mode=sd.get("self_mode"),
-							impl_target_type_id=impl_tid,
-							is_exported_entrypoint=bool(sd.get("is_exported_entrypoint", False)),
+						param_type_ids=param_type_ids,
+						return_type_id=ret_tid,
+						declared_can_throw=sd.get("declared_can_throw"),
+						is_method=bool(sd.get("is_method", False)),
+						self_mode=sd.get("self_mode"),
+						impl_target_type_id=impl_tid,
+						is_exported_entrypoint=bool(sd.get("is_exported_entrypoint", False)),
 						)
 
 		# SSA for package functions (required for LLVM lowering v1).
@@ -3090,7 +3576,7 @@ def main(argv: list[str] | None = None) -> int:
 		for name, sig in all_sig_env.items():
 			if name in fn_infos:
 				continue
-			fn_infos[name] = FnInfo(name=name, declared_can_throw=bool(getattr(sig, "declared_can_throw", False)), signature=sig)
+			fn_infos[name] = FnInfo(name=name, declared_can_throw=_sig_declared_can_throw(sig), signature=sig)
 
 		module = lower_module_to_llvm(
 			mir_all,

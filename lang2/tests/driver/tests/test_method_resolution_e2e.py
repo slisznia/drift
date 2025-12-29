@@ -71,7 +71,11 @@ use trait t.Show
 
 fn main() returns Int  nothrow{
 	val b: m_box.Box = m_box.Box(value = 1);
-	return b.show();
+	try {
+		return b.show();
+	} catch {
+		return 0;
+	}
 }
 """,
 	)

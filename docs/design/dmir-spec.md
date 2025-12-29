@@ -30,7 +30,7 @@ and dependencies by id; it does not prescribe how the toolchain locates modules.
 - Primitives: `Bool`, `Int`, `Uint`, `Float`, `String`, `Void`, `Error`, plus resolved user-defined structs/exceptions. (`ConsoleOut` is a temporary runtime-provided builtin for `cout`; it is not a language primitive.)
 - Arrays: `Array[T]` (element type resolved, no empty-literal inference in DMIR).
 - References/mutability: explicit `ref T` / `ref mut T` per the typechecker output.
-- Generics: monomorphized per concrete instantiation (no shared reified bodies); DMIR only carries specialized instances produced by the typechecker.
+- Generics: monomorphized per concrete instantiation (no shared reified bodies); DMIR only carries specialized instances produced by the typechecker. Generic templates are shipped separately in package payloads under `generic_templates` (TemplateHIR), not in DMIR.
 - Result values: failures are represented explicitly as values via `Result<T, Error>`. DMIR is **canonical value-based** for error semantics (see “Errors & exceptions”).
 
 ## Terms & statements (ANF-ish)
@@ -82,7 +82,7 @@ Backends are free to lower this value-based semantic model to error edges intern
 - `copy` is only permitted for types marked copyable (primitives and structs implementing `Copy`); otherwise moves are required.
 
 ## SSA MIR value/ownership model
-- Monomorphized types only: all generics are specialized before MIR (like C++/Rust template/monomorphization; no shared generic bodies at MIR time).
+- Monomorphized types only: all generics are specialized before MIR (like C++/Rust template/monomorphization; no shared generic bodies at MIR time). TemplateHIR may exist in package payloads, but it must be instantiated into concrete DMIR/MIR before SSA or LLVM lowering.
 - Move-only by default; `move` consumes the value. MIR verifier enforces no use-after-move.
 - Drops are explicit MIR instructions; inserted post-liveness; verifier enforces at-most-once drop per owned value.
 - Error propagation remains value-based: can-throw operations produce `Result<T, Error>` values. Implementations may lower this to dedicated error edges internally, but that is not part of canonical DMIR semantics.

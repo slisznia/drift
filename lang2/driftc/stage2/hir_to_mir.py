@@ -2427,11 +2427,13 @@ class HIRToMIR:
 			)
 		)
 
+		cont_reachable = False
 		# Lower try body.
 		self.b.set_block(body_block)
 		self.lower_block(stmt.body)
 		if self.b.block.terminator is None:
 			self.b.set_terminator(M.Goto(target=cont_block.name))
+			cont_reachable = True
 
 		# Pop context before lowering dispatch so throws in catch bodies route to the outer try.
 		# Rethrow reads the caught error from `_current_catch_error` (set while lowering each catch body).
@@ -2493,9 +2495,12 @@ class HIRToMIR:
 			self._current_catch_error = prev_catch_err
 			if self.b.block.terminator is None:
 				self.b.set_terminator(M.Goto(target=cont_block.name))
+				cont_reachable = True
 
 		# Continue in cont.
 		self.b.set_block(cont_block)
+		if not cont_reachable and self.b.block.terminator is None:
+			self.b.set_terminator(M.Unreachable())
 
 	# --- Helpers ---
 

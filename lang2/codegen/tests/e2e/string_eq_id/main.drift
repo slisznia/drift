@@ -1,4 +1,4 @@
-fn id(s: String) returns String { return s; }
+fn id(s: String) returns String nothrow { return s; }
 
 fn main() returns Int  nothrow{
     if id("x") == id("x") {

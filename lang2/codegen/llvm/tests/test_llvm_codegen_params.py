@@ -20,6 +20,10 @@ def _int_and_string_types():
     return table, int_ty, str_ty
 
 
+def _fn_type(table: TypeTable, int_ty: int, *, can_throw: bool) -> int:
+    return table.ensure_function("fn", [int_ty], int_ty, can_throw=can_throw)
+
+
 def test_int_param_header_and_call():
     table, int_ty, _ = _int_and_string_types()
 
@@ -94,3 +98,34 @@ def test_mixed_int_string_params_and_return():
     assert "define %DriftString @combine(i64 %x, %DriftString %s)" in ir
     assert "define %DriftString @main()" in ir
     assert "call %DriftString @combine(i64 %t0, %DriftString %t1)" in ir
+
+
+def test_fnptr_param_headers():
+    table, int_ty, _ = _int_and_string_types()
+    fnptr_nothrow = _fn_type(table, int_ty, can_throw=False)
+    fnptr_throwing = _fn_type(table, int_ty, can_throw=True)
+
+    # apply(f: fn(Int) returns Int nothrow, x: Int) returns Int { return x }
+    apply_block = BasicBlock(name="entry", instructions=[], terminator=Return(value="x"))
+    apply = MirFunc(name="apply", params=["f", "x"], locals=[], blocks={"entry": apply_block}, entry="entry")
+    apply_ssa = MirToSSA().run(apply)
+    apply_sig = FnSignature(name="apply", param_type_ids=[fnptr_nothrow, int_ty], return_type_id=int_ty)
+    apply_info = FnInfo(name="apply", declared_can_throw=False, signature=apply_sig, return_type_id=int_ty)
+
+    # apply_ct(f: fn(Int) returns Int, x: Int) returns Int { return x }
+    apply_ct_block = BasicBlock(name="entry", instructions=[], terminator=Return(value="x"))
+    apply_ct = MirFunc(name="apply_ct", params=["f", "x"], locals=[], blocks={"entry": apply_ct_block}, entry="entry")
+    apply_ct_ssa = MirToSSA().run(apply_ct)
+    apply_ct_sig = FnSignature(name="apply_ct", param_type_ids=[fnptr_throwing, int_ty], return_type_id=int_ty)
+    apply_ct_info = FnInfo(name="apply_ct", declared_can_throw=False, signature=apply_ct_sig, return_type_id=int_ty)
+
+    mod = lower_module_to_llvm(
+        {"apply": apply, "apply_ct": apply_ct},
+        {"apply": apply_ssa, "apply_ct": apply_ct_ssa},
+        {"apply": apply_info, "apply_ct": apply_ct_info},
+        type_table=table,
+    )
+    ir = mod.render()
+
+    assert "define i64 @apply(i64 (i64)* %f, i64 %x)" in ir
+    assert "define i64 @apply_ct(%FnResult_Int_Error (i64)* %f, i64 %x)" in ir

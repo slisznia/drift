@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from . import hir_nodes as H
 from .borrow_materialize import BorrowMaterializeRewriter
+from .node_ids import assign_node_ids
 from .place_canonicalize import PlaceCanonicalizeRewriter
 
 
@@ -27,4 +28,6 @@ def normalize_hir(block: H.HBlock) -> H.HBlock:
 	#    re-deriving place-ness from arbitrary expression trees.
 	block = BorrowMaterializeRewriter().rewrite_block(block)
 	block = PlaceCanonicalizeRewriter().rewrite_block(block)
+	# Ensure stable per-function NodeIds for typed side tables.
+	assign_node_ids(block, start=1)
 	return block

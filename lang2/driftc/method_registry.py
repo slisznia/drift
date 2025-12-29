@@ -231,6 +231,14 @@ class CallableRegistry:
 				result.append(decl)
 		return result
 
+	def get_free_candidates_unscoped(
+		self,
+		*,
+		name: str,
+	) -> List[CallableDecl]:
+		"""Return all free-function candidates by name without visibility filtering."""
+		return list(self._free_by_name.get(name, []))
+
 	def get_method_candidates(
 		self,
 		*,

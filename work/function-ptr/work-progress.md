@@ -149,6 +149,7 @@ effect-based throw ABI.
 - Catch event arms now accept unqualified event names (resolved to the current module); grammar + spec updated.
 - Prelude flag support: `--no-prelude` disables implicit `lang.core` import but explicit `import lang.core` still works (prelude exports injected for import resolution, auto-visibility remains gated).
 - CLI now runs stub checker **after** typecheck with CallInfo so nothrow method-boundary violations are enforced (no name-based inference); stubbed pipeline checks normalized HIR for CallInfo alignment.
+- Driver package test verifies fn-typed method params survive package encode/decode and resolve in a consumer.
 
 ## Out of scope (this branch)
 - Method references / bound `self` function values.
@@ -173,6 +174,79 @@ effect-based throw ABI.
   - `same_module_method_no_try_ok` guards same-module calls.
   - Driver tests assert wrapper selection for cross-module and cross-package
     method calls.
-- Limitation: if a public/visible method signature contains function-typed
-  params, package build hard-errors until LLVM supports function types in
-  function signatures (no partial boundary feature).
+## Fn-typed params in signatures (completed)
+Goal: support function-typed params end-to-end so method boundary wrappers can
+cover methods with fnptr params.
+
+Pinned requirements:
+- Package/type-table plumbing must already support `TypeKind.FUNCTION` in
+  param/return positions before lifting wrapper hard errors (prove with a
+  driver test).
+- ABI lowering for function types in signatures must be **pointer-only** (raw
+  function pointers), not by-value function types.
+- By-value function types in signatures are forbidden; lower as fn-ptr and
+  keep calling convention consistent with existing fnptr values.
+- Wrapper identity stays `method_wrapper_id(target_fn_id)`; overloads are
+  disambiguated by `FunctionId` ordinal (no extra wrapper keying).
+
+Deliverable order:
+1) ✅ Driver test: emit a package exporting a method with a `fn(...)` param,
+   import it, and resolve the signature (proves encode/decode/link + keys).
+2) ✅ LLVM lowering: support fn-typed params in function headers (pointer ABI).
+3) ✅ IR/header tests: nothrow + can-throw fnptr params lower to correct LLVM
+4) ✅ Unquarantined `fnptr_overload_throwmode` and
+   `fnptr_generic_throwmode_instantiation`.
+
+## Plan: generic instantiation phase (TemplateHIR + monomorphic DMIR)
+Goal: keep DMIR/MIR strictly monomorphic while enabling cross-package generics
+using TemplateHIR shipped in package payloads.
+
+Pinned invariants:
+- No `TypeKind.TYPEVAR` may reach DMIR/MIR/SSA/LLVM.
+- Generic templates live in package payload `generic_templates` and are not DMIR.
+- Instantiation is per compilation unit; emitted symbols are linkonce/ODR-foldable
+  and named by `InstantiationKey` (package/module/def id + canonical args + ABI flags).
+
+Package payload shape:
+- Top-level key: `generic_templates`.
+- Each entry includes `ir_kind: "TemplateHIR-v0"` and an `ir` object, plus:
+  - generic params + constraints
+  - signature template (TypeVars allowed)
+  - template identity (`GenericDefId` / FunctionId)
+
+Instantiation phase (new):
+- Discover required instantiations from typed call sites (explicit args first).
+- Load TemplateHIR from local sources or imported packages.
+- Substitute TypeVars -> concrete types in signature + template body.
+
+### Status (generic instantiation)
+- ✅ Step 1 payload: `generic_templates` now includes `template_id` and `require`
+  (nullable) and round-trips non-null require clauses.
+- ✅ Step 2 skeleton: instantiation identity is keyed by canonical type keys +
+  throw-mode, CallInfo is rewritten to instantiated CallSig, and the
+  “no TypeVar in codegen” guard is recursive (nested param types).
+- Emit concrete MIR only; reject if any TypeVar remains.
+- Rewrite call targets to instantiated FunctionIds.
+
+Docs alignment:
+- `docs/design/dmir-spec.md` remains strict: DMIR/MIR monomorphic only.
+- `docs/design/spec-change-requests/drift-monomorphization-odr.md` documents
+  per-CU instantiation + linkonce/ODR folding with TemplateHIR payload.
+
+Status:
+- ✅ Step 1: `generic_templates` payload emitted per module (TemplateHIR-v0)
+  with `template_id` (module/name/ordinal), signature templates, and an explicit
+  `require` field (nullable). Package test added
+  (`lang2/tests/packages/test_package_generic_templates.py`).
+- ✅ Step 2: instantiation skeleton for explicit type args:
+  - TemplateHIR lookup from local + package templates.
+  - Concrete signatures emitted + call targets rewritten to instantiated FunctionIds.
+  - Template bodies dropped from MIR lowering.
+  - Hard “no TypeVar in codegen” invariant enforced before MIR/SSA/LLVM.
+  - TypeVar bypass removed from stage4 throw checks.
+
+## Current backend limitation (tracked)
+- Function-typed *returns* (including `FnResult` ok payloads that are fn-typed)
+  are still rejected until LLVM lowering supports them. Enforcement is guarded
+  at package build for public/visible exports; local codegen paths are expected
+  to error if such signatures slip through.

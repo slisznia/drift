@@ -265,13 +265,9 @@ class Checker:
 					declared_can_throw = sig.declared_can_throw
 
 			if declared_can_throw is None:
-				# Unspecified throw effect: default to non-throwing here and let the
-				# inference pass below compute the actual can-throw ABI based on HIR.
-				#
-				# Note: `FnResult` is not a surface-level type in lang2; it is an
-				# internal ABI carrier. Therefore, the signature return type does not
-				# imply can-throw.
-				declared_can_throw = False
+				# Unspecified throw effect: default to can-throw. The `nothrow` marker
+				# is the only way to force a non-throwing ABI at the surface.
+				declared_can_throw = True
 
 			# Method receiver validation (spec §3.8).
 			#
@@ -1324,6 +1320,11 @@ class Checker:
 					span=loc,
 				)
 			)
+			return sig.return_type_id
+
+		# Generic signatures may still carry uninstantiated type params in the
+		# stubbed pipeline, so avoid mismatched TypeId checks here.
+		if getattr(sig, "type_params", None) or getattr(sig, "impl_type_params", None):
 			return sig.return_type_id
 
 		for idx, (arg_ty, param_ty) in enumerate(zip(arg_type_ids, sig.param_type_ids)):

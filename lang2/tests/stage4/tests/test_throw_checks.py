@@ -83,7 +83,14 @@ def test_enforce_can_throw_invariants_raises_for_explicit_nothrow_thrower():
 	func_infos = build_func_throw_info(
 		summaries,
 		declared_can_throw={"g": False},
-		fn_infos={"g": FnInfo(name="g", declared_can_throw=False, signature=FnSignature(name="g", return_type="Int", declared_can_throw=False))},
+		fn_infos={
+			"g": FnInfo(
+				name="g",
+				declared_can_throw=False,
+				signature=FnSignature(name="g", return_type="Int", declared_can_throw=False),
+				inferred_may_throw=True,
+			)
+		},
 	)
 	with pytest.raises(RuntimeError):
 		enforce_can_throw_invariants(func_infos)

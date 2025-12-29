@@ -2,7 +2,7 @@ module m
 
 exception Boom(a: Int, b: String)
 
-fn handle() returns Int {
+fn handle() returns Int nothrow {
     try {
         throw Boom(a = 7, b = "hi");
     } catch Boom(e) {

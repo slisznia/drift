@@ -139,7 +139,11 @@ use trait m_api.Show
 
 fn main() returns Int  nothrow{
 	val b: m_types.Box = m_types.Box(value = 1);
-	return b.show();
+	try {
+		return b.show();
+	} catch {
+		return 0;
+	}
 }
 """,
 	)

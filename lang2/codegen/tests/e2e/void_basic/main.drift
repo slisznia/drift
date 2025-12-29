@@ -1,4 +1,4 @@
-fn log() returns Void {
+fn log() returns Void nothrow {
 	println("hello");
 	return;
 }

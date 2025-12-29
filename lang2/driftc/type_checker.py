@@ -1615,6 +1615,8 @@ class TypeChecker:
 				visible_modules=visible_modules or (current_module,),
 				include_private_in=current_module,
 			)
+			if not candidates and "::" in lookup_name:
+				candidates = callable_registry.get_free_candidates_unscoped(name=lookup_name)
 			if not candidates and current_module_name and "::" not in lookup_name:
 				qualified = f"{current_module_name}::{lookup_name}"
 				candidates = callable_registry.get_free_candidates(
@@ -3379,6 +3381,124 @@ class TypeChecker:
 						)
 					)
 					return record_expr(expr, self._unknown)
+				# Immediate-call lambda: typecheck the lambda body against the
+				# argument types and any expected return type.
+				if isinstance(expr.fn, H.HLambda):
+					lam = expr.fn
+					if getattr(expr, "kwargs", None):
+						diagnostics.append(
+							Diagnostic(
+								message="keyword arguments are only supported for struct constructors in MVP",
+								severity="error",
+								span=getattr(expr, "loc", Span()),
+							)
+						)
+						return record_expr(expr, self._unknown)
+					arg_types = [type_expr(a) for a in expr.args]
+					if len(arg_types) != len(lam.params):
+						diagnostics.append(
+							Diagnostic(
+								message=f"lambda expects {len(lam.params)} arguments, got {len(arg_types)}",
+								severity="error",
+								span=getattr(expr, "loc", Span()),
+							)
+						)
+						return record_expr(expr, self._unknown)
+					lambda_ret_type: TypeId | None = None
+					if getattr(lam, "ret_type", None) is not None:
+						try:
+							lambda_ret_type = resolve_opaque_type(lam.ret_type, self.type_table, module_id=current_module_name)
+						except Exception:
+							lambda_ret_type = None
+					if expected_type is not None:
+						lambda_ret_type = expected_type
+					scope_env.append({})
+					scope_bindings.append({})
+					lambda_param_types: list[TypeId] = []
+					for idx, param in enumerate(lam.params):
+						if getattr(param, "binding_id", None) is None:
+							param.binding_id = self._alloc_param_id()
+						param_type: TypeId = self._unknown
+						if getattr(param, "type", None) is not None:
+							try:
+								param_type = resolve_opaque_type(param.type, self.type_table, module_id=current_module_name)
+							except Exception:
+								param_type = self._unknown
+							arg_ty = arg_types[idx]
+							if arg_ty is not None and param_type != arg_ty:
+								param_pretty = self._pretty_type_name(param_type, current_module=current_module_name)
+								arg_pretty = self._pretty_type_name(arg_ty, current_module=current_module_name)
+								diagnostics.append(
+									Diagnostic(
+										message=(
+											f"lambda parameter '{param.name}' has type {param_pretty} "
+											f"but argument is {arg_pretty}"
+										),
+										severity="error",
+										span=getattr(param, "loc", Span()),
+									)
+								)
+						else:
+							arg_ty = arg_types[idx]
+							if arg_ty is not None:
+								param_type = arg_ty
+						scope_env[-1][param.name] = param_type
+						scope_bindings[-1][param.name] = param.binding_id
+						binding_types[param.binding_id] = param_type
+						binding_names[param.binding_id] = param.name
+						binding_mutable[param.binding_id] = False
+						binding_place_kind[param.binding_id] = PlaceKind.PARAM
+						lambda_param_types.append(param_type)
+					capture_kinds: dict[int, str] = {}
+					if lam.explicit_captures is not None:
+						for cap in lam.explicit_captures:
+							root_id = getattr(cap, "binding_id", None)
+							if root_id is None:
+								continue
+							capture_kinds[int(root_id)] = cap.kind
+							root_ty = binding_types.get(root_id, self._unknown)
+							if cap.kind == "ref_mut":
+								cap_ty = self.type_table.ensure_ref_mut(root_ty)
+							elif cap.kind == "ref":
+								cap_ty = self.type_table.ensure_ref(root_ty)
+							else:
+								cap_ty = root_ty
+							scope_env[-1][cap.name] = cap_ty
+							scope_bindings[-1][cap.name] = root_id
+					if capture_kinds:
+						explicit_capture_stack.append(capture_kinds)
+					saved_return_type = return_type
+					return_type = lambda_ret_type
+					if lam.body_expr is not None:
+						type_expr(lam.body_expr, expected_type=lambda_ret_type)
+					if lam.body_block is not None:
+						type_block(lam.body_block)
+					return_type = saved_return_type
+					if capture_kinds:
+						explicit_capture_stack.pop()
+					if not lam.captures:
+						res = discover_captures(lam)
+						diagnostics.extend(res.diagnostics)
+						lam.captures = res.captures
+					scope_env.pop()
+					scope_bindings.pop()
+					call_ret = lambda_ret_type or self._unknown
+					can_throw = _lambda_can_throw(lam, call_info_by_node_id)
+					fn_ty = self.type_table.ensure_function(
+						"fn",
+						lambda_param_types,
+						call_ret,
+						can_throw=bool(can_throw),
+					)
+					expr_types[lam.node_id] = fn_ty
+					record_call_info(
+						expr,
+						param_types=lambda_param_types,
+						return_type=call_ret,
+						can_throw=can_throw,
+						target=CallTarget.indirect(lam.node_id),
+					)
+					return record_expr(expr, call_ret)
 				# Qualified type member call: `TypeRef::member(args...)`.
 				#
 				# MVP: only variant constructors are supported, and the qualified

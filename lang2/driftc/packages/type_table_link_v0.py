@@ -342,7 +342,7 @@ def import_type_tables_and_build_typeid_maps(pkg_tt_objs: list[Mapping[str, Any]
 			elif td.kind is TypeKind.FNRESULT:
 				k = ("fnresult", sub_keys[0], sub_keys[1])
 			elif td.kind is TypeKind.FUNCTION:
-				k = ("function", td.can_throw(), sub_keys)
+				k = ("function", bool(td.fn_throws), sub_keys)
 			else:
 				k = ("kind", td.kind.name, td.name, sub_keys, bool(td.ref_mut))
 			memo[tid] = k

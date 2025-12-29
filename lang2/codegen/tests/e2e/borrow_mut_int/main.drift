@@ -1,4 +1,4 @@
-fn inc(p: &mut Int) returns Void {
+fn inc(p: &mut Int) returns Void nothrow {
 	*p = *p + 1;
 }
 

@@ -1,10 +1,10 @@
 module m
 
-fn bump(x: &mut Int) returns Void {
+fn bump(x: &mut Int) returns Void nothrow {
 	*x = *x + 1;
 }
 
-fn bump_if(cond: Bool, x: &mut Int) returns Void {
+fn bump_if(cond: Bool, x: &mut Int) returns Void nothrow {
 	if cond {
 		*x = *x + 1;
 	}
@@ -30,4 +30,3 @@ fn main() returns Int  nothrow{
 
 	return c; // expect 6
 }
-

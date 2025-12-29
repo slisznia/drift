@@ -75,8 +75,8 @@ def test_driftc_codegen_void_call_in_main():
 		),
 	}
 	signatures = {
-		"log": FnSignature(name="log", return_type_id=void_ty),
-		"drift_main": FnSignature(name="drift_main", return_type_id=int_ty),
+		"log": FnSignature(name="log", return_type_id=void_ty, declared_can_throw=False),
+		"drift_main": FnSignature(name="drift_main", return_type_id=int_ty, declared_can_throw=False),
 	}
 
 	ir, _ = compile_to_llvm_ir_for_tests(
@@ -124,7 +124,7 @@ def test_driftc_codegen_nonvoid_negative_bare_return_raises():
 		"drift_main": H.HBlock(statements=[H.HReturn(value=None)]),
 	}
 	signatures = {
-		"drift_main": FnSignature(name="drift_main", return_type_id=int_ty),
+		"drift_main": FnSignature(name="drift_main", return_type_id=int_ty, declared_can_throw=False),
 	}
 
 	ir, checked = compile_to_llvm_ir_for_tests(

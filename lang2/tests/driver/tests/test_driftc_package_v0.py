@@ -138,7 +138,7 @@ module {module_id}
 
 export {{ add }}
 
-pub fn add(a: Int, b: Int) returns Int {{
+pub fn add(a: Int, b: Int) returns Int nothrow {{
 	return a + b
 }}
 """.lstrip(),
@@ -235,7 +235,7 @@ module {module_id}
 
 export {{ add }}
 
-pub fn add(a: Int, b: Int) returns Int {{
+pub fn add(a: Int, b: Int) returns Int nothrow {{
 	return a + b
 }}
 
@@ -270,7 +270,7 @@ module {module_id}
 
 export {{ add }}
 
-pub fn add(a: Int, b: Int) returns Int {{
+pub fn add(a: Int, b: Int) returns Int nothrow {{
 	return a + b
 }}
 
@@ -312,7 +312,7 @@ module {core_id}
 
 export {{ add }}
 
-pub fn add(a: Int, b: Int) returns Int {{
+pub fn add(a: Int, b: Int) returns Int nothrow {{
 	return a + b
 }}
 """.lstrip(),
@@ -422,7 +422,7 @@ export {{ Point, make }}
 
 pub struct Point {{ x: Int, y: Int }}
 
-pub fn make() returns Point {{
+pub fn make() returns Point nothrow {{
 	return Point(x = 1, y = 0)
 }}
 """.lstrip(),
@@ -482,7 +482,7 @@ pub variant Optional<T> {{
 {arms}
 }}
 
-pub fn foo() returns Optional<Int> {{
+pub fn foo() returns Optional<Int> nothrow {{
 	return Some(41)
 }}
 """.lstrip(),
@@ -521,7 +521,7 @@ export {{ Boom }}
 
 pub exception Boom(a: Int, b: String)
 
-fn dummy() returns Int {{
+fn dummy() returns Int nothrow {{
 	return 0
 }}
 """.lstrip(),
@@ -630,7 +630,7 @@ module lib
 
 export { add }
 
-pub fn add(a: Int, b: Int) returns Int {
+pub fn add(a: Int, b: Int) returns Int nothrow {
 	return a + b
 }
 """.lstrip(),
@@ -822,13 +822,17 @@ import acme.liba as liba
 import acme.opt as opt
 
 fn main() returns Int  nothrow{
-	val p: g.Point = g.make()
-	val o: opt.Optional<g.Point> = Some(p)
-	val x = match o {
-		Some(v) => { v.x }
-		default => { 0 }
+	try {
+		val p: g.Point = g.make()
+		val o: opt.Optional<g.Point> = Some(p)
+		val x = match o {
+			Some(v) => { v.x }
+			default => { 0 }
+		}
+		return (try liba.add(40, 2) catch { 0 }) + x
+	} catch {
+		return 0;
 	}
-	return (try liba.add(40, 2) catch { 0 }) + x
 }
 """.lstrip(),
 	)
@@ -882,7 +886,7 @@ module lib
 
 export { add }
 
-pub fn add(a: Int, b: Int) returns Int {
+pub fn add(a: Int, b: Int) returns Int nothrow {
 	return a + b
 }
 """.lstrip(),
@@ -918,7 +922,7 @@ module lib
 
 export { add }
 
-pub fn add(a: Int, b: Int) returns Int {
+pub fn add(a: Int, b: Int) returns Int nothrow {
 	return a + b
 }
 """.lstrip(),
@@ -958,7 +962,7 @@ module lib
 
 export { add }
 
-pub fn add(a: Int, b: Int) returns Int {
+pub fn add(a: Int, b: Int) returns Int nothrow {
 	return a + b
 }
 """.lstrip(),
@@ -991,7 +995,7 @@ module lib
 
 export { add }
 
-pub fn add(a: Int, b: Int) returns Int {
+pub fn add(a: Int, b: Int) returns Int nothrow {
 	return a + b
 }
 """.lstrip(),
@@ -1024,7 +1028,7 @@ module lib
 
 export { add }
 
-pub fn add(a: Int, b: Int) returns Int {
+pub fn add(a: Int, b: Int) returns Int nothrow {
 	return a + b
 }
 """.lstrip(),
@@ -1084,7 +1088,7 @@ module lib
 
 export {{ add }}
 
-pub fn add(a: Int, b: Int) returns Int {{
+pub fn add(a: Int, b: Int) returns Int nothrow {{
 	return a + b + {n}
 }}
 """.lstrip(),
@@ -1145,7 +1149,7 @@ export { S, make }
 
 pub struct S(x: Int)
 
-pub fn make() returns S {
+pub fn make() returns S nothrow {
 	return S(x = 42)
 }
 """.lstrip(),
@@ -1173,8 +1177,12 @@ module main
 import lib as lib
 
 fn main() returns Int  nothrow{
-	val s: lib.S = lib.make()
-	return s.x
+	try {
+		val s: lib.S = lib.make()
+		return s.x
+	} catch {
+		return 0;
+	}
 }
 """.lstrip(),
 	)
@@ -1261,11 +1269,11 @@ module lib
 
 export { add }
 
-pub fn add(a: Int, b: Int) returns Int {
+pub fn add(a: Int, b: Int) returns Int nothrow {
 	return a + b
 }
 
-fn unused() returns Int {
+fn unused() returns Int nothrow {
 	return 999
 }
 """.lstrip(),
@@ -1338,7 +1346,7 @@ module lib
 
 export { add }
 
-pub fn add(a: Int, b: Int) returns Int {
+pub fn add(a: Int, b: Int) returns Int nothrow {
 	return a + b
 }
 """.lstrip(),
@@ -2122,7 +2130,7 @@ module lib
 
 export { add }
 
-pub fn add(a: Int, b: Int) returns Int {
+pub fn add(a: Int, b: Int) returns Int nothrow {
 	return a + b
 }
 """.lstrip(),
@@ -2193,12 +2201,16 @@ module main
 import acme.opt as opt
 
 fn main() returns Int  nothrow{
-	val x: opt.Optional<Int> = opt.foo()
-	val y = match x {
-		Some(v) => { v + 1 }
-		None => { 0 }
+	try {
+		val x: opt.Optional<Int> = opt.foo()
+		val y = match x {
+			Some(v) => { v + 1 }
+			None => { 0 }
+		}
+		return y
+	} catch {
+		return 0;
 	}
-	return y
 }
 """.lstrip(),
 	)
@@ -2495,9 +2507,13 @@ import a.geom as ag
 import b.geom as bg
 
 fn main() returns Int  nothrow{
-	val p1: ag.Point = ag.make()
-	val p2: bg.Point = bg.make()
-	return p1.x + p2.x
+	try {
+		val p1: ag.Point = ag.make()
+		val p2: bg.Point = bg.make()
+		return p1.x + p2.x
+	} catch {
+		return 0;
+	}
 }
 """.lstrip(),
 	)
@@ -2971,7 +2987,7 @@ pub implement Point {
 	}
 }
 
-fn dummy() returns Int { return 0; }
+fn dummy() returns Int nothrow { return 0; }
 """.lstrip(),
 	)
 	pkg_path = tmp_path / "m.dmp"
@@ -3098,7 +3114,7 @@ module lib
 
 export { add }
 
-pub fn add(a: Int, b: Int) returns Int {
+pub fn add(a: Int, b: Int) returns Int nothrow {
 	return a + b
 }
 """.lstrip(),

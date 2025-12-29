@@ -68,7 +68,8 @@ def test_driver_accepts_decl_based_signatures_and_catalog():
 	assert f_info.return_type_id is not None
 
 	g_info = checked.fn_infos["g_plain"]
-	assert g_info.declared_can_throw is False
+	# Unannotated functions default to can-throw; nothrow must be explicit.
+	assert g_info.declared_can_throw is True
 	assert g_info.declared_events is None
 	assert g_info.return_type_id is not None
 

@@ -14,7 +14,7 @@ from lang2.driftc.parser import parse_drift_workspace_to_hir
 from lang2.driftc.stage1.call_info import CallTargetKind
 from lang2.driftc.type_checker import TypeChecker
 from lang2.driftc.checker import FnSignature, TypeParam
-from lang2.driftc.core.types_core import TypeParamId
+from lang2.driftc.core.types_core import TypeKind, TypeParamId
 
 
 def _write_file(path: Path, content: str) -> None:
@@ -44,6 +44,49 @@ implement S {{
 }}
 
 pub fn make() returns S nothrow {{
+\treturn S(x = 1);
+}}
+""".lstrip(),
+	)
+	pkg_path = tmp_path / f"{module_id.replace('.', '_')}.dmp"
+	assert (
+		driftc_main(
+			[
+				"-M",
+				str(tmp_path),
+				str(module_dir / "lib.drift"),
+				*_emit_pkg_args(package_id),
+				"--emit-package",
+				str(pkg_path),
+			]
+		)
+		== 0
+	)
+	return pkg_path
+
+
+def _display_name_for_fn_id(module: str, name: str) -> str:
+	return name if module == "main" else f"{module}::{name}"
+
+
+def _emit_method_fnparam_pkg(tmp_path: Path, *, module_id: str, package_id: str) -> Path:
+	module_dir = tmp_path.joinpath(*module_id.split("."))
+	_write_file(
+		module_dir / "lib.drift",
+		f"""
+module {module_id}
+
+export {{ S, make }}
+
+pub struct S {{ x: Int }}
+
+implement S {{
+\tpub fn apply(self: S, f: fn(Int) returns Int nothrow) returns Int {{
+\t\treturn f(self.x);
+\t}}
+}}
+
+pub fn make() returns S {{
 \treturn S(x = 1);
 }}
 """.lstrip(),
@@ -324,11 +367,20 @@ fn main() returns Int  nothrow{
 	current_mod = module_ids.setdefault(main_sig.module, len(module_ids))
 	visible_mods = _visible_modules_for("main", module_deps, module_ids)
 	tc = TypeChecker(type_table=type_table)
+	call_sigs_by_name: dict[str, list[FnSignature]] = {}
+	for fn_id, sig in signatures.items():
+		if getattr(sig, "is_method", False):
+			continue
+		name = _display_name_for_fn_id(fn_id.module or "main", fn_id.name)
+		call_sigs_by_name.setdefault(name, []).append(sig)
+		if fn_id.module == "lang.core":
+			call_sigs_by_name.setdefault(fn_id.name, []).append(sig)
 	result = tc.check_function(
 		main_id,
 		main_block,
 		param_types=param_types,
 		return_type=main_sig.return_type_id,
+		call_signatures=call_sigs_by_name,
 		signatures_by_id=signatures,
 		callable_registry=registry,
 		impl_index=impl_index,
@@ -351,3 +403,117 @@ fn main() returns Int  nothrow{
 	)
 	assert info.target.symbol == method_wrapper_id(impl_id)
 	assert info.sig.can_throw is True
+
+
+def test_package_method_fn_param_signature_roundtrip(tmp_path: Path) -> None:
+	pkgs_root = tmp_path / "pkgs"
+	pkgs_root.mkdir(parents=True, exist_ok=True)
+	pkg_path = _emit_method_fnparam_pkg(
+		pkgs_root,
+		module_id="acme.fnparam",
+		package_id="acme.fnparam",
+	)
+	pkg = load_package_v0(pkg_path)
+	external_exports = collect_external_exports([pkg])
+
+	src_root = tmp_path / "src"
+	_write_file(
+		src_root / "main.drift",
+		"""
+module main
+
+import acme.fnparam as P
+
+fn add1(x: Int) returns Int nothrow { return x + 1; }
+
+fn main() returns Int {
+\tval s = P.make()
+\treturn s.apply(add1)
+}
+""".lstrip(),
+	)
+	paths = sorted(src_root.rglob("*.drift"))
+	func_hirs, signatures, fn_ids_by_name, type_table, _exc_catalog, module_exports, module_deps, diagnostics = (
+		parse_drift_workspace_to_hir(
+			paths,
+			module_paths=[src_root],
+			external_module_exports=external_exports,
+		)
+	)
+	assert diagnostics == []
+
+	external_sigs_by_id = _decode_package_signatures(pkg_path, type_table=type_table)
+	signatures.update(external_sigs_by_id)
+
+	fnparam_sig = next(
+		sig
+		for sig in external_sigs_by_id.values()
+		if sig.is_method and sig.method_name == "apply" and not getattr(sig, "is_wrapper", False)
+	)
+	assert fnparam_sig.param_type_ids is not None
+	fnparam_tid = next(
+		tid for tid in fnparam_sig.param_type_ids if type_table.get(tid).kind is TypeKind.FUNCTION
+	)
+	fnparam_def = type_table.get(fnparam_tid)
+	assert fnparam_def.fn_throws is False
+
+	external_sigs_by_symbol = {function_symbol(fn_id): sig for fn_id, sig in external_sigs_by_id.items()}
+	_external_trait_defs, external_impl_metas, _missing_traits, _missing_impl_modules = _collect_external_trait_and_impl_metadata(
+		loaded_pkgs=[pkg],
+		type_table=type_table,
+		external_signatures_by_symbol=external_sigs_by_symbol,
+	)
+	registry, module_ids = _build_registry(signatures)
+	impl_index = GlobalImplIndex.from_module_exports(
+		module_exports=module_exports,
+		type_table=type_table,
+		module_ids=module_ids,
+	)
+	for impl in external_impl_metas:
+		if getattr(impl, "trait_key", None) is None:
+			impl_index.add_impl(impl=impl, type_table=type_table, module_ids=module_ids)
+	conflicts = find_impl_method_conflicts(
+		module_exports=module_exports,
+		signatures_by_id=signatures,
+		type_table=type_table,
+		visible_modules_by_name={mod: set(deps) | {mod} for mod, deps in module_deps.items()},
+	)
+	assert conflicts == []
+
+	main_ids = fn_ids_by_name.get("main") or []
+	assert len(main_ids) == 1
+	main_id = main_ids[0]
+	main_block = func_hirs[main_id]
+	main_sig = signatures[main_id]
+	param_types = {}
+	if main_sig.param_names and main_sig.param_type_ids:
+		param_types = {pname: pty for pname, pty in zip(main_sig.param_names, main_sig.param_type_ids)}
+	current_mod = module_ids.setdefault(main_sig.module, len(module_ids))
+	visible_mods = _visible_modules_for("main", module_deps, module_ids)
+	tc = TypeChecker(type_table=type_table)
+	call_sigs_by_name: dict[str, list[FnSignature]] = {}
+	for fn_id, sig in signatures.items():
+		if getattr(sig, "is_method", False):
+			continue
+		name = _display_name_for_fn_id(fn_id.module or "main", fn_id.name)
+		call_sigs_by_name.setdefault(name, []).append(sig)
+		if fn_id.module == "lang.core":
+			call_sigs_by_name.setdefault(fn_id.name, []).append(sig)
+	result = tc.check_function(
+		main_id,
+		main_block,
+		param_types=param_types,
+		return_type=main_sig.return_type_id,
+		call_signatures=call_sigs_by_name,
+		signatures_by_id=signatures,
+		callable_registry=registry,
+		impl_index=impl_index,
+		visible_modules=visible_mods,
+		current_module=current_mod,
+	)
+	assert not result.diagnostics
+
+	calls = _collect_method_calls(result.typed_fn.body)
+	assert len(calls) == 1
+	info = result.typed_fn.call_info_by_node_id.get(calls[0].node_id)
+	assert info is not None

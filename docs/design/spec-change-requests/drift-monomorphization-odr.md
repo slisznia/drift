@@ -46,6 +46,10 @@ This applies not only to the primary function/struct code, but to all **associat
 * thunks/adapters generated for ABI or trait dispatch
 * any compiler-synthesized helpers tied to the instantiation
 
+#### Package templates (TemplateHIR payload)
+
+For cross-package generics, provider packages ship **generic templates** in a separate payload (`generic_templates`). These templates are **not** DMIR; they may contain TypeVars and constraints. Each consumer instantiates the template per compilation unit into concrete DMIR/MIR, then emits linkonce/ODR-foldable symbols keyed by the InstantiationKey.
+
 #### Naming/mangling
 
 Monomorphized symbols must be named deterministically from the InstantiationKey (e.g., a mangled name containing a stable hash of the key plus a readable prefix for debugging). All CUs must compute identical symbol names for identical InstantiationKeys.
@@ -69,4 +73,3 @@ This rule is for producing a **single final executable** from multiple CUs. For 
 * If a target environment lacks reliable COMDAT/weak folding, Drift must fall back to a different strategy (not part of MVP).
 
 This is the MVP definition of how Drift resolves multiple definitions arising from generic instantiation across compilation units.
-

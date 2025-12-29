@@ -80,13 +80,22 @@ def build_func_throw_info(
 			fn_info = fn_infos.get(fname)
 			if fn_info is not None:
 				return_ty = fn_info.return_type_id
-				# Checker inference is best-effort metadata; stage3 summaries are the
-				# structural ground truth for "may throw" because they reflect the
-				# lowered MIR (ConstructError, may-fail sites, etc.).
-				#
-				# Therefore, never let an unset/default `inferred_may_throw=False`
-				# override a positive summary.
-				inferred = bool(getattr(fn_info, "inferred_may_throw", False)) or inferred
+				# Checker inference understands try/catch structure. For explicit
+				# nothrow signatures, prefer the checker result to avoid false
+				# positives from MIR summaries that don't account for catches.
+				declared = None
+				if getattr(fn_info, "signature", None) is not None:
+					declared = getattr(fn_info.signature, "declared_can_throw", None)
+				if declared is False:
+					inferred_flag = getattr(fn_info, "inferred_may_throw", None)
+					if inferred_flag is None:
+						raise RuntimeError(
+							f"BUG: missing inferred_may_throw for explicit nothrow function {fname}"
+						)
+					inferred = bool(inferred_flag)
+				else:
+					# For non-explicit cases, keep MIR summary as conservative signal.
+					inferred = bool(getattr(fn_info, "inferred_may_throw", False)) or inferred
 				if getattr(fn_info, "signature", None) is not None:
 					sig = fn_info.signature
 					explicit_decl = bool(getattr(sig, "throws_events", ())) or getattr(sig, "declared_can_throw", None) is not None
@@ -316,8 +325,8 @@ def enforce_fnresult_returns_typeaware(
 					if info.return_type_id is not None and ty != info.return_type_id:
 						table = getattr(type_env, "_table", None)
 						if table is not None:
-							ret_def = table.get(info.return_type_id)
 							ty_def = table.get(ty)
+							ret_def = table.get(info.return_type_id)
 							if (
 								ret_def.kind is TypeKind.SCALAR
 								and ty_def.kind is TypeKind.SCALAR

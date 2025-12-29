@@ -452,6 +452,7 @@ def encode_signatures(signatures: Mapping[str, FnSignature], *, module_id: str) 
 			"param_names": list(sig.param_names or []),
 			"param_type_ids": list(sig.param_type_ids or []) if sig.param_type_ids is not None else None,
 			"return_type_id": sig.return_type_id,
+			"declared_can_throw": sig.declared_can_throw,
 			"is_exported_entrypoint": bool(getattr(sig, "is_exported_entrypoint", False)),
 			"type_params": type_param_names,
 			"impl_type_params": impl_type_param_names,
@@ -461,12 +462,77 @@ def encode_signatures(signatures: Mapping[str, FnSignature], *, module_id: str) 
 	return out
 
 
+def encode_generic_templates(
+	*,
+	module_id: str,
+	signatures: Mapping[str, FnSignature],
+	hir_blocks: Mapping[str, Any],
+	requires_by_symbol: Mapping[str, parser_ast.TraitExpr] | None = None,
+) -> list[dict[str, Any]]:
+	"""
+	Encode generic TemplateHIR payload entries for a module.
+
+	Each entry includes:
+	- fn_symbol (fully-qualified symbol name),
+	- signature template (TypeExpr-based),
+	- optional require clause,
+	- TemplateHIR body (`ir_kind` + `ir`).
+	"""
+	reqs = dict(requires_by_symbol or {})
+	sig_entries = encode_signatures(signatures, module_id=module_id)
+	out: list[dict[str, Any]] = []
+	for sym in sorted(signatures.keys()):
+		sig = signatures[sym]
+		if getattr(sig, "module", None) not in (module_id, None):
+			continue
+		if getattr(sig, "is_wrapper", False):
+			continue
+		if not (getattr(sig, "type_params", []) or getattr(sig, "impl_type_params", [])):
+			continue
+		hir = hir_blocks.get(sym)
+		if hir is None:
+			continue
+		sig_entry = sig_entries.get(sym)
+		if not isinstance(sig_entry, dict):
+			continue
+		name = sym
+		ordinal = 0
+		if sym.startswith(f"{module_id}::"):
+			name = sym[len(f"{module_id}::") :]
+		if "#" in name:
+			base, ord_text = name.rsplit("#", 1)
+			if ord_text.isdigit():
+				name = base
+				ordinal = int(ord_text)
+		template_id = {"module": module_id, "name": name, "ordinal": ordinal}
+		entry: dict[str, Any] = {
+			"fn_symbol": sym,
+			"template_id": template_id,
+			"signature": sig_entry,
+			"ir_kind": "TemplateHIR-v0",
+			"ir": _to_jsonable(hir),
+		}
+		req_expr = reqs.get(sym)
+		if req_expr is not None:
+			type_param_names = list(sig_entry.get("type_params") or []) + list(sig_entry.get("impl_type_params") or [])
+			entry["require"] = encode_trait_expr(
+				req_expr,
+				default_module=module_id,
+				type_param_names=type_param_names,
+			)
+		else:
+			entry["require"] = None
+		out.append(entry)
+	return out
+
+
 def encode_module_payload_v0(
 	*,
 	module_id: str,
 	type_table: TypeTable,
 	signatures: Mapping[str, FnSignature],
 	mir_funcs: Mapping[str, Any],
+	generic_templates: list[dict[str, Any]] | None = None,
 	exported_values: list[str],
 	exported_types: dict[str, list[str]],
 	exported_traits: list[str] | None = None,
@@ -522,6 +588,7 @@ def encode_module_payload_v0(
 		"type_table": tt_obj,
 		"type_table_fingerprint": type_table_fingerprint(tt_obj),
 		"signatures": encode_signatures(signatures, module_id=module_id),
+		"generic_templates": _to_jsonable(list(generic_templates or [])),
 		"mir_funcs": {name: _to_jsonable(mir_funcs[name]) for name in sorted(mir_funcs.keys())},
 	}
 
@@ -539,4 +606,29 @@ def decode_mir_funcs(mir_funcs_obj: Mapping[str, Any]) -> dict[str, Any]:
 	out: dict[str, Any] = {}
 	for name, obj in mir_funcs_obj.items():
 		out[str(name)] = from_jsonable(obj, dataclasses_by_name=dc, enums_by_name=enums)
+	return out
+
+
+def decode_generic_templates(generic_templates_obj: Any) -> list[dict[str, Any]]:
+	"""
+	Decode `generic_templates` entries (TemplateHIR) from a payload.
+	"""
+	if not isinstance(generic_templates_obj, list):
+		return []
+	from lang2.driftc.stage1 import hir_nodes as H  # local import
+	from lang2.driftc.parser import ast as parser_ast  # local import
+	from lang2.driftc.core import function_id as fn_id_mod  # local import
+	from lang2.driftc.core import span as span_mod  # local import
+
+	dc = build_dataclass_registry(H, parser_ast, fn_id_mod, span_mod)
+	enums = build_enum_registry(H, fn_id_mod)
+	out: list[dict[str, Any]] = []
+	for entry in generic_templates_obj:
+		if not isinstance(entry, dict):
+			continue
+		decoded = dict(entry)
+		ir = entry.get("ir")
+		if ir is not None:
+			decoded["ir"] = from_jsonable(ir, dataclasses_by_name=dc, enums_by_name=enums)
+		out.append(decoded)
 	return out

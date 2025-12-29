@@ -1,4 +1,4 @@
-fn id(s: String) returns String {
+fn id(s: String) returns String nothrow {
     return s;
 }
 

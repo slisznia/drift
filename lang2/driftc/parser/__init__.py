@@ -1659,7 +1659,8 @@ def parse_drift_workspace_to_hir(
 	exported_type_origins_by_module: dict[str, dict[str, dict[str, tuple[str, str]]]] = {}
 	exported_trait_origins_by_module: dict[str, dict[str, tuple[str, str]]] = {}
 	# Re-export target maps (for types/consts). Values are materialized as
-	# trampolines, so consumers always reference the exporting module id.
+	# metadata-only aliases so consumers can resolve origin symbols.
+	reexported_value_targets_by_module: dict[str, dict[str, tuple[str, str]]] = {}
 	reexported_type_targets_by_module: dict[str, dict[str, dict[str, tuple[str, str]]]] = {}
 	reexported_const_targets_by_module: dict[str, dict[str, tuple[str, str]]] = {}
 	reexported_trait_targets_by_module: dict[str, dict[str, tuple[str, str]]] = {}
@@ -1687,6 +1688,7 @@ def parse_drift_workspace_to_hir(
 			"exceptions": {n: (mid, n) for n in exported_types.get("exceptions") or set()},
 		}
 		exported_trait_origins_by_module[mid] = {n: (mid, n) for n in exported_traits}
+		reexported_value_targets_by_module[mid] = {}
 		reexported_type_targets_by_module[mid] = {"structs": {}, "variants": {}, "exceptions": {}}
 		reexported_const_targets_by_module[mid] = {}
 		reexported_trait_targets_by_module[mid] = {}
@@ -1721,9 +1723,17 @@ def parse_drift_workspace_to_hir(
 						types_obj[kind][name] = (mod, name)
 			ext_reexp = ext.get("reexports")
 			if isinstance(ext_reexp, dict):
+				ext_reexp_vals = ext_reexp.get("values")
 				ext_reexp_types = ext_reexp.get("types")
 				ext_reexp_consts = ext_reexp.get("consts")
 				ext_reexp_traits = ext_reexp.get("traits")
+				if isinstance(ext_reexp_vals, dict):
+					for name, v in ext_reexp_vals.items():
+						if isinstance(v, dict):
+							tm = v.get("module")
+							tn = v.get("name")
+							if isinstance(tm, str) and isinstance(tn, str):
+								values_obj[name] = (tm, tn)
 				if isinstance(ext_reexp_consts, dict):
 					for name, v in ext_reexp_consts.items():
 						if isinstance(v, dict):
@@ -1843,6 +1853,12 @@ def parse_drift_workspace_to_hir(
 		if not progress:
 			break
 
+	# Record value re-exports as metadata-only aliases (no trampolines).
+	for mid, exported_values in exports_values_by_module.items():
+		for name, origin in exported_values.items():
+			if origin[0] != mid:
+				reexported_value_targets_by_module[mid][name] = origin
+
 	def _union_exported_types(types_obj: dict[str, set[str]] | None) -> set[str]:
 		if not types_obj:
 			return set()
@@ -1864,6 +1880,7 @@ def parse_drift_workspace_to_hir(
 		reexp_types = reexported_type_targets_by_module.get(mid, {"structs": {}, "variants": {}, "exceptions": {}})
 		reexp_consts = reexported_const_targets_by_module.get(mid, {})
 		reexp_traits = reexported_trait_targets_by_module.get(mid, {})
+		reexp_values = reexported_value_targets_by_module.get(mid, {})
 		module_exports[mid] = {
 			"values": sorted(list(vals.keys())),
 			"types": {
@@ -1874,6 +1891,7 @@ def parse_drift_workspace_to_hir(
 			"consts": sorted(list(consts)),
 			"traits": sorted(list(traits)),
 			"reexports": {
+				"values": {n: {"module": m, "name": s} for n, (m, s) in sorted(reexp_values.items())},
 				"types": {
 					"structs": {n: {"module": m, "name": s} for n, (m, s) in sorted(reexp_types.get("structs", {}).items())},
 					"variants": {n: {"module": m, "name": s} for n, (m, s) in sorted(reexp_types.get("variants", {}).items())},
@@ -2463,85 +2481,8 @@ def parse_drift_workspace_to_hir(
 		if mid in module_exports:
 			module_exports[mid]["impls"] = impls
 
-	# Materialize re-exported functions as trampoline entry points.
-	#
-	# Even though `export { foo }` can refer to an imported binding (re-export),
-	# module interfaces must remain self-contained: importing a symbol from a module
-	# binds to `module::symbol`, not to some hidden downstream module.
-	#
-	# MVP implementation strategy:
-	# - if module `a` exports `foo` that maps to an underlying target `(b, foo)`,
-	#   synthesize `a::foo` as a trivial trampoline calling `b::foo`.
-	# - this ensures exported entrypoints exist in the exporting module and keeps
-	#   future package/interface metadata straightforward.
-	for mid, exported_values in exports_values_by_module.items():
-		for export_name, (target_mod, target_sym) in exported_values.items():
-			if export_name == "main":
-				continue
-			if (target_mod, target_sym) == (mid, export_name):
-				continue
-			trampoline_name = _qualify_fn_name(mid, export_name)
-			if fn_ids_by_name.get(trampoline_name):
-				continue
-			target_name = _qualify_fn_name(target_mod, target_sym)
-			target_ids = fn_ids_by_name.get(target_name) or []
-			if not target_ids:
-				diagnostics.append(
-					Diagnostic(
-						message=f"internal: missing signature for re-export target '{target_mod}::{target_sym}'",
-						severity="error",
-						span=Span(),
-					)
-				)
-				continue
-			if len(target_ids) > 1:
-				diagnostics.append(
-					Diagnostic(
-						message=f"ambiguous re-export target '{target_mod}::{target_sym}' (overloaded)",
-						severity="error",
-						span=Span(),
-					)
-				)
-				continue
-			target_id = target_ids[0]
-			target_sig = all_sigs.get(target_id)
-			if target_sig is None:
-				diagnostics.append(
-					Diagnostic(
-						message=f"internal: missing signature for re-export target '{target_mod}::{target_sym}'",
-						severity="error",
-						span=Span(),
-					)
-				)
-				continue
-			ordinal = len(fn_ids_by_name.get(trampoline_name, []))
-			trampoline_id = FunctionId(module=mid, name=export_name, ordinal=ordinal)
-			all_sigs[trampoline_id] = replace(
-				target_sig,
-				name=trampoline_name,
-				module=mid,
-				is_exported_entrypoint=True,
-			)
-			fn_owner_module[trampoline_id] = mid
-			fn_symbol_by_id[trampoline_id] = trampoline_name
-			fn_ids_by_name.setdefault(trampoline_name, []).append(trampoline_id)
-
-			# Build a minimal HIR body that forwards to the underlying target.
-			arg_exprs: list[H.HExpr] = []
-			for p in getattr(target_sig, "param_names", None) or []:
-				if p:
-					arg_exprs.append(H.HVar(name=p))
-			callee = H.HVar(name=target_name)
-			call_expr = H.HCall(fn=callee, args=arg_exprs)
-			if target_sig.return_type_id is not None and shared_type_table.is_void(target_sig.return_type_id):
-				all_func_hirs[trampoline_id] = H.HBlock(
-					statements=[
-						H.HExprStmt(expr=call_expr),
-						H.HReturn(value=None),
-					]
-				)
-			else:
-				all_func_hirs[trampoline_id] = H.HBlock(statements=[H.HReturn(value=call_expr)])
+	# Re-exported values are metadata-only aliases; call sites are rewritten to
+	# the origin module/value during lowering (no trampolines).
 
 		if any(d.severity == "error" for d in diagnostics):
 			return {}, {}, {}, TypeTable(), {}, {}, {}, diagnostics
@@ -2658,6 +2599,27 @@ def parse_drift_workspace_to_hir(
 				return set()
 			return set()
 
+		def exported_value_origin(mod: str, name: str) -> tuple[str, str] | None:
+			if mod in exports_values_by_module:
+				origin = (exports_values_by_module.get(mod) or {}).get(name)
+				if origin is not None:
+					return origin
+			if external_module_exports is not None and mod in external_module_exports:
+				ext = external_module_exports.get(mod) or {}
+				ext_reexp = ext.get("reexports")
+				if isinstance(ext_reexp, dict):
+					vals = ext_reexp.get("values")
+					if isinstance(vals, dict):
+						entry = vals.get(name)
+						if isinstance(entry, dict):
+							tm = entry.get("module")
+							tn = entry.get("name")
+							if isinstance(tm, str) and isinstance(tn, str):
+								return (tm, tn)
+				if name in (ext.get("values") or set()):
+					return (mod, name)
+			return None
+
 		def _rewrite_module_qualified_call(
 			*,
 			receiver: H.HExpr,
@@ -2696,8 +2658,9 @@ def parse_drift_workspace_to_hir(
 			types = exported_type_names(mod)
 			structs = exported_struct_names(mod)
 			if member in vals:
+				origin = exported_value_origin(mod, member) or (mod, member)
 				return H.HCall(
-					fn=H.HVar(name=_qualify_fn_name(mod, member)),
+					fn=H.HVar(name=_qualify_fn_name(origin[0], origin[1])),
 					args=args,
 					kwargs=kwargs,
 					type_args=type_args,
