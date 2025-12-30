@@ -11,7 +11,7 @@ effect-based throw ABI.
   - **Function pointers**: **no captures**, safe to store/return.
 - `TypeKind.FUNCTION` carries **throw mode**:
   - `CAN_THROW` vs `NOTHROW` (effect qualifier, not return type).
-  - `fn(...) returns T` defaults to `CAN_THROW`.
+  - `fn(...) [nothrow] returns T` defaults to `CAN_THROW` when `nothrow` is omitted.
   - `fn(...) nothrow returns T` is `NOTHROW`.
 - Function type syntax places `nothrow` before `returns`:
   - `fn(P...) [nothrow] returns R`.
@@ -43,11 +43,11 @@ effect-based throw ABI.
    - Ensure function types compare by `(params, ret, throw_mode)`.
    - Update any TypeKey or trait/type-id keys to include `throw_mode`.
 3) **Function references (values)**
-   - Allow `val f: fn(...) returns T = name` with typed-context resolution.
+   - Allow `val f: fn(...) [nothrow] returns T = name` with typed-context resolution.
    - Ambiguous overload set without expected type → hard error.
-   - Support explicit cast: `cast<T>(expr)` (e.g., `cast<fn(...) returns T>(name)`).
+   - Support explicit cast: `cast<T>(expr)` (e.g., `cast<fn(...) [nothrow] returns T>(name)`).
 4) **Function value calls**
-   - Support call-by-value (HIR/MIR): `f(...)` where `f: fn(...) returns T`.
+   - Support call-by-value (HIR/MIR): `f(...)` where `f: fn(...) [nothrow] returns T`.
    - Enforce positional-only args (kwargs error).
    - Validate throw-mode in call lowering and result typing.
    - Lower using `CallTarget` + `CallSig` (no name-based fallback).
@@ -57,7 +57,7 @@ effect-based throw ABI.
    - `NOTHROW` function values lower to indirect calls returning `T`.
    - Generate wrappers when coercing `NOTHROW` → `CAN_THROW`.
 6) **Closures → function pointer coercion**
-   - If lambda captures nothing, allow coercion to `fn(...) returns T`.
+   - If lambda captures nothing, allow coercion to `fn(...) [nothrow] returns T`.
    - If lambda captures anything, reject.
 7) **Non-retaining analysis + borrow validation**
    - Include `TypeKind.FUNCTION` in callback-like detection.

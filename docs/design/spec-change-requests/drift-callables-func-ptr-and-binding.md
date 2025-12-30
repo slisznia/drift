@@ -11,7 +11,7 @@ This document captures the decisions around **function values**, **static vs dyn
 * Provide **ergonomic callbacks** (functions, methods, bound methods, partial application).
 * Preserve the **two worlds rule**:
 
-  * `fn(...) returns ...` = **function pointers** (no captures, always safe to retain).
+  * `fn(...) [nothrow] returns ...` = **function pointers** (no captures, always safe to retain).
   * `Callable` / `CallableDyn` = **may capture** (subject to retaining/non-retaining analysis).
 * Keep **ABI correctness** for can-throw calls (FnResult-style ABI).
 * Avoid dual truths: the compiler must keep a **single authoritative source** for:

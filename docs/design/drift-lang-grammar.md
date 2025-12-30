@@ -44,23 +44,23 @@ Item         ::= PubItem | FnDef | ConstDef | StructDef | ExceptionDef | Variant
 PubItem      ::= "pub" (FnDef | ConstDef | StructDef | ExceptionDef | VariantDef | TraitDef | ImplementDef)
 
 ConstDef     ::= "const" NAME ":" Ty "=" Expr TERMINATOR
-FnDef        ::= "fn" Ident TypeParams? "(" Params? ")" "nothrow"? ReturnSig RequireClause? Block
-ReturnSig    ::= "returns" Ty
+FnDef        ::= "fn" Ident TypeParams? "(" Params? ")" ReturnSig RequireClause? Block
+ReturnSig    ::= "nothrow"? "returns" Ty
 Params       ::= Param ("," Param)*
 Param        ::= Ident ":" Ty
 
-StructDef    ::= "struct" NAME TypeParams? RequireClause? StructBody TERMINATOR?
+StructDef    ::= "struct" NAME TypeParams? RequireClause? StructBody
 StructBody   ::= TupleStruct | BlockStruct
 TupleStruct  ::= "(" StructFieldList? ")"
 StructFieldList ::= StructField ("," StructField)*
 StructField  ::= NAME ":" Ty
 BlockStruct  ::= "{" TERMINATOR* (StructField ","? TERMINATOR*)* "}"
 
-ExceptionDef ::= "exception" NAME "(" ExceptionParams? ")" TERMINATOR?
+ExceptionDef ::= "exception" NAME "(" ExceptionParams? ")"
 ExceptionParams ::= ExceptionParam ("," ExceptionParam)*
 ExceptionParam ::= NAME ":" Ty | "domain" "=" STRING
 
-VariantDef   ::= "variant" NAME TypeParams? VariantBody TERMINATOR?
+VariantDef   ::= "variant" NAME TypeParams? VariantBody
 VariantBody  ::= "{" (VariantArm ("," | TERMINATOR)*)+ "}"
 VariantArm   ::= NAME VariantFields?
 VariantFields ::= "(" VariantFieldList? ")"
@@ -89,7 +89,7 @@ Types:
 ```
 Ty           ::= RefType | FnType | BaseType
 RefType      ::= "&" "mut"? Ty
-FnType       ::= "fn" "(" (Ty ("," Ty)*)? ")" "nothrow"? "returns" Ty
+FnType       ::= "fn" "(" (Ty ("," Ty)*)? ")" ReturnSig
 BaseType     ::= NAME "." NAME TypeArgs? | NAME TypeArgs?
 TypeArgs     ::= "[" Ty ("," Ty)* "]" | "<" Ty ("," Ty)* ">"
 TypeParams   ::= "<" NAME ("," NAME)* ">"

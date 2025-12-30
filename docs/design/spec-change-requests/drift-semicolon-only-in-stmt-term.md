@@ -17,7 +17,7 @@ val y: Int = match x {
 	0 => { log("zero"); 10 },
 	_ => { 20 },
 };
-````
+```
 
 while also allowing standalone `match` without an ugly trailing semicolon:
 
