@@ -1,8 +1,8 @@
-fn id(s: String) returns String nothrow {
+fn id(s: String) nothrow returns String {
     return s;
 }
 
-fn main() returns Int  nothrow{
+fn main() nothrow returns Int{
 	val s = id("xyz");
 	return s.len;
 }

@@ -1,1 +1,1 @@
-fn main() returns Int  nothrow{ return 0; }
+fn main() nothrow returns Int{ return 0; }

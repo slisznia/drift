@@ -5,12 +5,12 @@ import a as a
 pub struct Point { x: Int }
 
 implement Point {
-	pub fn bump(self: &mut Point, dx: Int) returns Void nothrow {
+	pub fn bump(self: &mut Point, dx: Int) nothrow returns Void {
 		x += dx;
 	}
 }
 
-fn main() returns Int nothrow {
+fn main() nothrow returns Int {
 	var p: Point = Point(x = 1);
 	p.bump(1);
 	return p.x;

@@ -1,5 +1,5 @@
 module m
 
-fn add1(x: Int) returns Int nothrow {
+fn add1(x: Int) nothrow returns Int {
 	return x + 1;
 }

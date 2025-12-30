@@ -32,7 +32,7 @@ implement Point {
 	}
 }
 
-fn main() returns Int  nothrow{
+fn main() nothrow returns Int{
 	return 0;
 }
 """.lstrip(),

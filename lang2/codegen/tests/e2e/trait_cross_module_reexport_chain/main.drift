@@ -5,7 +5,7 @@ import m_box
 
 use trait m_api.Show
 
-fn main() returns Int  nothrow{
+fn main() nothrow returns Int{
 	val b: m_box.Box = try m_box.make_box(3) catch { m_box.Box(value = 0) };
 	return try b.show() catch { 0 };
 }

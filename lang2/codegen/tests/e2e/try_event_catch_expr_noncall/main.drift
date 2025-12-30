@@ -2,7 +2,7 @@ module m
 
 exception MyErr()
 
-fn main() returns Int  nothrow{
+fn main() nothrow returns Int{
 	// The attempt must be a function/method call in the current revision.
 	val x: Int = try 1 + 2 catch MyErr(e) { 0 };
 	return x;

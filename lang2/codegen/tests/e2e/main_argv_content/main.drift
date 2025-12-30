@@ -1,5 +1,5 @@
 
-fn main(argv: Array<String>) returns Int  nothrow{
+fn main(argv: Array<String>) nothrow returns Int{
     if argv.len < 3 { return 1; }
     if !(argv[1] == "foo") { return 2; }
     if !(argv[2] == "bar") { return 3; }

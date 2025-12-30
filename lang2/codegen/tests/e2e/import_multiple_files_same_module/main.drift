@@ -2,6 +2,6 @@ module main
 import lib as lib
 
 
-fn main() returns Int  nothrow{
+fn main() nothrow returns Int{
 	return (try lib.a() catch { 0 }) + (try lib.b() catch { 0 });
 }

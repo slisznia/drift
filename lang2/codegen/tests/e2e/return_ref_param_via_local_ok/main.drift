@@ -1,9 +1,9 @@
-fn id(p: &Int) returns &Int nothrow {
+fn id(p: &Int) nothrow returns &Int {
 	val r = p;
 	return r;
 }
 
-fn main() returns Int  nothrow{
+fn main() nothrow returns Int{
 	var x = 9;
 	return *id(&x);
 }

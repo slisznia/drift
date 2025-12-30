@@ -502,7 +502,32 @@ class Checker:
 			nonlocal first_span
 			nonlocal first_note
 			if isinstance(expr, H.HCall):
-				if isinstance(expr.fn, H.HVar):
+				if call_info_by_node_id is not None:
+					info = call_info_by_node_id.get(expr.node_id)
+					if info is None:
+						if not isinstance(expr.fn, H.HVar):
+							# Constructor calls (qualified member, etc.) are not function calls
+							# and do not carry CallInfo; they are non-throwing.
+							return
+						raise AssertionError(
+							f"BUG: missing CallInfo for call during nothrow analysis (node_id={expr.node_id})"
+						)
+					if info.sig.can_throw and not catch_all:
+						may_throw = True
+						if first_span is None:
+							first_span = Span.from_loc(getattr(expr, "loc", None))
+						if first_note is None:
+							first_note = "call may throw"
+						if (
+							info.target.kind is CallTargetKind.DIRECT
+							and info.target.symbol is not None
+						):
+							callee_name = function_symbol(info.target.symbol)
+							if self._is_boundary_call(callee_name, current_fn, fn_infos):
+								first_note = (
+									"cross-module call to exported/extern requires can-throw calling convention"
+								)
+				elif isinstance(expr.fn, H.HVar):
 					if catch_all:
 						# Catch-all in scope handles any propagated throw from this call.
 						pass
@@ -2145,6 +2170,7 @@ class Checker:
 			ResultErr,
 			Call,
 			CallIndirect,
+			FnPtrConst,
 			ConstInt,
 			ConstBool,
 			ConstString,
@@ -2286,6 +2312,18 @@ class Checker:
 							elif isinstance(instr, ConstString) and dest is not None:
 								if value_types.get((fn_name, dest)) != self._string_type:
 									value_types[(fn_name, dest)] = self._string_type
+									changed = True
+							elif isinstance(instr, FnPtrConst) and dest is not None:
+								params = list(instr.call_sig.param_types)
+								ret = instr.call_sig.user_ret_type
+								fn_ty = self._type_table.ensure_function(
+									"fn",
+									params,
+									ret,
+									can_throw=bool(instr.call_sig.can_throw),
+								)
+								if value_types.get((fn_name, dest)) != fn_ty:
+									value_types[(fn_name, dest)] = fn_ty
 									changed = True
 							elif isinstance(instr, StringLen) and dest is not None:
 								if value_types.get((fn_name, dest)) != self._uint_type:

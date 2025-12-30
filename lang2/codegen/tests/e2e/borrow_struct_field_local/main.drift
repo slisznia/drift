@@ -1,6 +1,6 @@
 struct Point(x: Int, y: Int)
 
-fn main() returns Int  nothrow{
+fn main() nothrow returns Int{
 	var p = Point(41, 0);
 	val rx = &mut p.x;
 	*rx = *rx + 1;

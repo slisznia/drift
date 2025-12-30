@@ -20,7 +20,7 @@ module main
 
 import lib
 
-fn main() returns Int nothrow {
+fn main() nothrow returns Int {
 	return 0
 }
 """.lstrip(),
@@ -32,7 +32,7 @@ module lib
 
 export { id }
 
-pub fn id<T>(x: T) returns T nothrow {
+pub fn id<T>(x: T) nothrow returns T {
 	return x
 }
 """.lstrip(),
@@ -44,7 +44,7 @@ module lib
 
 export { need }
 
-pub fn need<T>(x: T) returns Int nothrow require T is Copy {
+pub fn need<T>(x: T) nothrow returns Int require T is Copy {
 	return 1
 }
 """.lstrip(),

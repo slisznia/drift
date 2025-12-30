@@ -33,7 +33,7 @@ def test_missing_semicolon_in_block_reports_error(tmp_path: Path, capsys: pytest
 		"""
 module main
 
-fn main() returns Int nothrow {
+fn main() nothrow returns Int {
 	val a: Int = 1
 	return a;
 }
@@ -53,9 +53,9 @@ def test_missing_semicolon_after_return_try_catch_reports_error(
 		"""
 module main
 
-fn foo() returns Int nothrow { return 1; }
+fn foo() nothrow returns Int { return 1; }
 
-fn main() returns Int nothrow {
+fn main() nothrow returns Int {
 	return try foo() catch { 0 }
 }
 """.lstrip(),
@@ -74,9 +74,9 @@ def test_value_block_allows_trailing_expr_without_semicolon(
 		"""
 module main
 
-fn foo() returns Int nothrow { return 1; }
+fn foo() nothrow returns Int { return 1; }
 
-fn main() returns Int nothrow {
+fn main() nothrow returns Int {
 	val x: Int = try foo() catch { println("x"); 0 };
 	return x;
 }
@@ -97,7 +97,7 @@ def test_compound_stmt_does_not_require_semicolon(
 		"""
 module main
 
-fn main() returns Int nothrow {
+fn main() nothrow returns Int {
 	while true {
 		break;
 	}
@@ -120,7 +120,7 @@ def test_semicolon_after_compound_stmt_is_error(
 		"""
 module main
 
-fn main() returns Int nothrow {
+fn main() nothrow returns Int {
 	while true { break; };
 	return 0;
 }
@@ -143,7 +143,7 @@ variant Flag {
 	Off,
 }
 
-fn main() returns Int nothrow {
+fn main() nothrow returns Int {
 	val f: Flag = On();
 	val y: Int = match f {
 		On => { 10 },
@@ -177,7 +177,7 @@ variant Flag {
 	Off,
 }
 
-fn main() returns Int nothrow {
+fn main() nothrow returns Int {
 	val f: Flag = On();
 	val y: Int = match f {
 		On => { 10 }
@@ -206,7 +206,7 @@ variant Flag {
 	Off,
 }
 
-fn main() returns Int nothrow {
+fn main() nothrow returns Int {
 	val f: Flag = On();
 	match f {
 		On => { println("on"); },
@@ -235,7 +235,7 @@ variant Flag {
 	Off,
 }
 
-fn main() returns Int nothrow {
+fn main() nothrow returns Int {
 	val f: Flag = On();
 	match f {
 		On => { 10 },

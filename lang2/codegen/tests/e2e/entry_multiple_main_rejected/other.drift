@@ -1,5 +1,5 @@
 module main
 
-fn main() returns Int nothrow {
+fn main() nothrow returns Int {
 	return 1;
 }

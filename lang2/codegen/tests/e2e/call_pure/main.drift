@@ -1,8 +1,8 @@
-fn add_one(x: Int) returns Int nothrow {
+fn add_one(x: Int) nothrow returns Int {
 	return x + 1;
 }
 
-fn main() returns Int  nothrow{
+fn main() nothrow returns Int{
 	val r: Int = add_one(41);
 	return r;
 }

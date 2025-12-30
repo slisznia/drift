@@ -3,6 +3,6 @@ fn bad() returns &Int {
 	return &x;
 }
 
-fn main() returns Int  nothrow{
+fn main() nothrow returns Int{
 	return 0;
 }

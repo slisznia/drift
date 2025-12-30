@@ -182,8 +182,9 @@ class TypeChecker:
 			ret_type = td.param_types[-1] if td.param_types else self._unknown
 			params = ", ".join(self._pretty_type_name(t, current_module=current_module) for t in param_types)
 			ret = self._pretty_type_name(ret_type, current_module=current_module)
-			suffix = "" if td.can_throw() else " nothrow"
-			return f"fn({params}) returns {ret}{suffix}"
+			if td.can_throw():
+				return f"fn({params}) returns {ret}"
+			return f"fn({params}) nothrow returns {ret}"
 		if td.param_types:
 			args = ", ".join(self._pretty_type_name(t, current_module=current_module) for t in td.param_types)
 			return f"{name}<{args}>"
@@ -939,7 +940,8 @@ class TypeChecker:
 						return True
 					return any(expr_can_throw(a) for a in expr.args)
 				if isinstance(expr, H.HTryExpr):
-					if expr_can_throw(expr.attempt):
+					catch_all = any(arm.event_fqn is None for arm in expr.arms)
+					if not catch_all and expr_can_throw(expr.attempt):
 						return True
 					for arm in expr.arms:
 						if block_can_throw(arm.block):
@@ -4501,6 +4503,13 @@ class TypeChecker:
 									span=mapped_spans[idx],
 								)
 							)
+					record_call_info(
+						expr,
+						param_types=list(arm_def.field_types),
+						return_type=inst_tid,
+						can_throw=False,
+						target=CallTarget.indirect(expr.node_id),
+					)
 					return record_expr(expr, inst_tid)
 
 				# Variant constructor call in expression position.
@@ -4607,6 +4616,13 @@ class TypeChecker:
 											span=mapped_spans[idx],
 										)
 									)
+							record_call_info(
+								expr,
+								param_types=field_types,
+								return_type=expected_type,
+								can_throw=False,
+								target=CallTarget.indirect(expr.node_id),
+							)
 							return record_expr(expr, expected_type)
 
 				# Always type fn and args first for side-effects/subexpressions.
@@ -4693,9 +4709,15 @@ class TypeChecker:
 							)
 						)
 						return record_expr(expr, self._unknown)
-					if expected_type in (self._int, self._uint):
-						return record_expr(expr, expected_type)
-					return record_expr(expr, self._uint)
+					ret_ty = expected_type if expected_type in (self._int, self._uint) else self._uint
+					record_call_info(
+						expr,
+						param_types=[arg_ty],
+						return_type=ret_ty,
+						can_throw=False,
+						target=CallTarget.direct(_fn_id_from_symbol(expr.fn.name)),
+					)
+					return record_expr(expr, ret_ty)
 
 				if isinstance(expr.fn, H.HVar) and expr.fn.name in ("string_eq", "string_concat") and len(expr.args) == 2:
 					if kw_pairs:
@@ -4726,6 +4748,13 @@ class TypeChecker:
 						)
 						return record_expr(expr, self._unknown)
 					ret_ty = self._bool if expr.fn.name == "string_eq" else self._string
+					record_call_info(
+						expr,
+						param_types=[self._string, self._string],
+						return_type=ret_ty,
+						can_throw=False,
+						target=CallTarget.direct(_fn_id_from_symbol(expr.fn.name)),
+					)
 					return record_expr(expr, ret_ty)
 
 				# Builtins: swap/replace operate on *places*.
@@ -4857,6 +4886,13 @@ class TypeChecker:
 									span=getattr(expr, "loc", Span()),
 								)
 							)
+						record_call_info(
+							expr,
+							param_types=[t for t in arg_types if t is not None],
+							return_type=self._void,
+							can_throw=False,
+							target=CallTarget.direct(_fn_id_from_symbol(expr.fn.name)),
+						)
 						return record_expr(expr, self._void)
 					# replace(place, new_value) -> old_value
 					if name == "replace":
@@ -4891,6 +4927,13 @@ class TypeChecker:
 									span=getattr(new_val_expr, "loc", getattr(expr, "loc", Span())),
 								)
 							)
+						record_call_info(
+							expr,
+							param_types=[t for t in arg_types if t is not None],
+							return_type=place_ty if place_ty is not None else self._unknown,
+							can_throw=False,
+							target=CallTarget.direct(_fn_id_from_symbol(expr.fn.name)),
+						)
 						return record_expr(expr, place_ty if place_ty is not None else self._unknown)
 
 				# Struct constructor: `Point(1, 2)` constructs a `struct Point`.
@@ -5150,6 +5193,13 @@ class TypeChecker:
 					else:
 						field_names = list(struct_def.field_names or [])
 						field_types = list(struct_def.param_types)
+					record_call_info(
+						expr,
+						param_types=field_types,
+						return_type=struct_id,
+						can_throw=False,
+						target=CallTarget.indirect(expr.node_id),
+					)
 					if len(field_names) != len(field_types):
 						diagnostics.append(
 							Diagnostic(

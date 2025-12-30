@@ -59,7 +59,7 @@ def test_cross_module_exported_call_uses_wrapper_not_impl(tmp_path: Path) -> Non
 				"",
 				"import acme.point as ap",
 				"",
-				"fn main() returns Int  nothrow{",
+				"fn main() nothrow returns Int {",
 				"\tval p: ap.Point = try ap.make_point() catch { ap.Point(x = 0, y = 0) };",
 				"\treturn p.x + p.y;",
 				"}",

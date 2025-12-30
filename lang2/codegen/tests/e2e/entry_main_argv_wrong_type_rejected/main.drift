@@ -1,5 +1,5 @@
 module main
 
-fn main(argv: Array<Int>) returns Int nothrow {
+fn main(argv: Array<Int>) nothrow returns Int {
 	return 0;
 }

@@ -3,4 +3,4 @@ import lib as m
 import other as m
 
 
-fn main() returns Int  nothrow{ return 0; }
+fn main() nothrow returns Int{ return 0; }

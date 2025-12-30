@@ -10,7 +10,7 @@ def test_stage1_function_def_nothrow_sets_declared_can_throw(tmp_path: Path) -> 
 	src = tmp_path / "main.drift"
 	src.write_text(
 		"""
-fn add1(x: Int) returns Int nothrow { return x + 1; }
+fn add1(x: Int) nothrow returns Int { return x + 1; }
 """
 	)
 	func_hirs, sigs, fn_ids_by_name, _table, _exc_catalog, diagnostics = parse_drift_to_hir(src)

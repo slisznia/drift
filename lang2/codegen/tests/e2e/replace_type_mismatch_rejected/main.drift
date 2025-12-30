@@ -1,4 +1,4 @@
-fn main() returns Int  nothrow{
+fn main() nothrow returns Int{
 	var a = 1;
 	val old = replace(a, "x");
 	return old;

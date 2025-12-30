@@ -1,8 +1,8 @@
-fn inc(p: &mut Int) returns Void nothrow {
+fn inc(p: &mut Int) nothrow returns Void {
 	*p = *p + 1;
 }
 
-fn main() returns Int  nothrow{
+fn main() nothrow returns Int{
 	var x = 41;
 	inc(&mut x);
 	return x;

@@ -1,4 +1,4 @@
-fn main() returns Int  nothrow{
+fn main() nothrow returns Int{
 	var x = 41;
 	val p = &mut x;
 	val q = &mut *p;

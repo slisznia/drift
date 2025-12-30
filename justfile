@@ -4,7 +4,6 @@ CLANG_BIN := "clang-15"
 
 # Default task: run the staged lang2 compiler tests.
 default: lang2-test
-	@echo "lang2-test: Success."
 
 test: test-ssa test-e2e
 	@echo "test-ssa test-e2e: Success."
@@ -57,7 +56,7 @@ parse-examples:
 	./.venv/bin/python3 tools/draft_linter.py examples
 
 # Lang2 staged compiler tests
-lang2-test: lang2-stage1-test lang2-stage2-test lang2-stage3-test lang2-stage4-test lang2-parser-test lang2-core-test lang2-llvm-test lang2-borrow-test lang2-type-checker-test lang2-method-registry-test lang2-codegen-test lang2-driver-suite
+lang2-test: lang2-stage1-test lang2-stage2-test lang2-stage3-test lang2-stage4-test lang2-parser-test lang2-core-test lang2-llvm-test lang2-borrow-test lang2-type-checker-test lang2-method-registry-test lang2-driver-suite lang2-codegen-test
 	@echo "lang2 tests: Success."
 
 lang2-stage1-test:
@@ -162,7 +161,7 @@ lang2-codegen-test:
 	# Run clang-based IR cases (per-case dirs under lang2/codegen/ir_cases).
 	PYTHONPATH=. ./.venv/bin/python3 lang2/codegen/ir_cases/e2e_runner.py
 	# Run Drift-source e2e cases (per-case dirs under lang2/codegen/tests/e2e).
-	PYTHONPATH=. ./.venv/bin/python3 lang2/codegen/tests/e2e/runner.py
+	PYTHONPATH=. ./.venv/bin/python3 lang2/codegen/tests/e2e/runner.py --summarize
 
 # Lang2 e2e runner (lang2.driftc: json + run modes against tests/e2e)
 lang2-e2e CASES="":

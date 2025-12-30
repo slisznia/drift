@@ -24,7 +24,7 @@ def test_pretty_function_type_name():
 	fn_nothrow = table.ensure_function("fn", [int_ty], int_ty, can_throw=False)
 	fn_can_throw = table.ensure_function("fn", [int_ty], int_ty, can_throw=True)
 
-	assert tc._pretty_type_name(fn_nothrow, current_module="main") == "fn(Int) returns Int nothrow"
+	assert tc._pretty_type_name(fn_nothrow, current_module="main") == "fn(Int) nothrow returns Int"
 	assert tc._pretty_type_name(fn_can_throw, current_module="main") == "fn(Int) returns Int"
 
 

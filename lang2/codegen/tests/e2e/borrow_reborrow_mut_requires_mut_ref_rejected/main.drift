@@ -4,7 +4,7 @@ fn bad(p: &Int) returns Int {
 	return 0;
 }
 
-fn main() returns Int  nothrow{
+fn main() nothrow returns Int{
 	var x = 1;
 	bad(&x);
 	return 0;

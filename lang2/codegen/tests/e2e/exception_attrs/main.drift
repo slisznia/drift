@@ -2,7 +2,7 @@ module m
 
 exception Boom(a: Int, b: String)
 
-fn handle() returns Int nothrow {
+fn handle() nothrow returns Int {
     try {
         throw Boom(a = 7, b = "hi");
     } catch Boom(e) {
@@ -18,7 +18,7 @@ fn handle() returns Int nothrow {
     return 1;
 }
 
-fn main() returns Int  nothrow{
+fn main() nothrow returns Int{
     // The handler throws and catches internally; this call should stay on the
     // happy path. For this smoke test we only care that codegen succeeds
     // end-to-end.

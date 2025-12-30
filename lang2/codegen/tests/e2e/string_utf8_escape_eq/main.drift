@@ -1,4 +1,4 @@
-fn main() returns Int  nothrow{
+fn main() nothrow returns Int{
     val a = "Solidarność";
     val b = "Solidarno\xC5\x9B\xC4\x87";
     if a == b {

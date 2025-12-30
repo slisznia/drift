@@ -1,9 +1,9 @@
 module main
 
-pub fn add(x: Int) returns Int nothrow {
+pub fn add(x: Int) nothrow returns Int {
 	return x + 1;
 }
 
-fn main() returns Int nothrow {
+fn main() nothrow returns Int {
 	return add(2);
 }

@@ -44,7 +44,7 @@ Item         ::= PubItem | FnDef | ConstDef | StructDef | ExceptionDef | Variant
 PubItem      ::= "pub" (FnDef | ConstDef | StructDef | ExceptionDef | VariantDef | TraitDef | ImplementDef)
 
 ConstDef     ::= "const" NAME ":" Ty "=" Expr TERMINATOR
-FnDef        ::= "fn" Ident TypeParams? "(" Params? ")" ReturnSig "nothrow"? RequireClause? Block
+FnDef        ::= "fn" Ident TypeParams? "(" Params? ")" "nothrow"? ReturnSig RequireClause? Block
 ReturnSig    ::= "returns" Ty
 Params       ::= Param ("," Param)*
 Param        ::= Ident ":" Ty
@@ -89,7 +89,7 @@ Types:
 ```
 Ty           ::= RefType | FnType | BaseType
 RefType      ::= "&" "mut"? Ty
-FnType       ::= "fn" "(" (Ty ("," Ty)*)? ")" "returns" Ty "nothrow"?
+FnType       ::= "fn" "(" (Ty ("," Ty)*)? ")" "nothrow"? "returns" Ty
 BaseType     ::= NAME "." NAME TypeArgs? | NAME TypeArgs?
 TypeArgs     ::= "[" Ty ("," Ty)* "]" | "<" Ty ("," Ty)* ">"
 TypeParams   ::= "<" NAME ("," NAME)* ">"

@@ -9,7 +9,7 @@ fn maybe_boom(x: Int) returns Int {
 	return x;
 }
 
-fn main() returns Int  nothrow{
+fn main() nothrow returns Int{
 	val xs = [1, 2, 3];
 	var sum: Int = 0;
 

@@ -4,7 +4,7 @@ fn foo() returns Int {
 	return 0;
 }
 
-fn main() returns Int  nothrow{
+fn main() nothrow returns Int{
 	foo() = 1;
 	return 0;
 }

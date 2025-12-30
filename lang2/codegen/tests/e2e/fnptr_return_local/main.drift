@@ -1,0 +1,10 @@
+module main
+
+fn g(x: Int) nothrow returns Int { return x; }
+
+fn make() nothrow returns fn(Int) nothrow returns Int { return g; }
+
+fn main() nothrow returns Int {
+	val fp: fn(Int) nothrow returns Int = make();
+	return fp(3);
+}

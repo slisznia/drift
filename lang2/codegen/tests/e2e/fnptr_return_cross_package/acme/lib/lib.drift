@@ -1,0 +1,7 @@
+module acme.lib
+
+export { make }
+
+pub fn g(x: Int) nothrow returns Int { return x + 1; }
+
+pub fn make() returns fn(Int) nothrow returns Int { return g; }

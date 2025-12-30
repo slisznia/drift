@@ -58,8 +58,8 @@ Drift expressions largely follow a C-style surface with explicit ownership rules
 - String byte length is exposed via `byte_length(s: String) -> Uint` (UTF‑8 code units, not characters); a future `char_length` may count user-visible characters.
 - Empty strings may be written as `""` or `String.EMPTY`. A convenience helper `is_empty(s: String) -> Bool` checks `byte_length(s) == 0`.
 - Program entry (v1): exactly one `main` function, returning `Int`, **declared `nothrow`**, with one of two signatures:
-  - `fn main() returns Int nothrow`
-  - `fn main(argv: Array<String>) returns Int nothrow` (argv includes the program name at index 0). The runtime builds `argv` and calls this `main`; no drift_main indirection in user code.
+  - `fn main() nothrow returns Int`
+  - `fn main(argv: Array<String>) nothrow returns Int` (argv includes the program name at index 0). The runtime builds `argv` and calls this `main`; no drift_main indirection in user code.
   - `main` is only allowed in the **root package**; dependency packages must not define a `main`.
 
 ### 2.x. Receiver placeholder (`.foo`, `.foo(...)`)
@@ -85,7 +85,7 @@ Semantics:
 `cast<T>(expr)` is an explicit, compile-time checked cast. In v1, `cast` is **strict** and supported only for function types; it is primarily used to disambiguate overloads when taking a function reference:
 
 ```drift
-val f = cast<fn(Int) returns Int nothrow>(abs);
+val f = cast<fn(Int) nothrow returns Int>(abs);
 ```
 
 No thunking or adapter insertion occurs in this build; other cast targets are rejected.
@@ -2261,7 +2261,7 @@ implement<K, V> FromMapLiteral<K, V> for Map<K, V> {
 This keeps “hello world” code terse:
 
 ```drift
-fn main() returns Int nothrow {
+fn main() nothrow returns Int {
     println("hello, world");
     return 0;
 }
@@ -2555,7 +2555,7 @@ Unwinding, when used, is an **implementation strategy only** and must preserve t
 
 Drift distinguishes **can-throw** functions from **non-throwing** ones and enforces the contract statically:
 
-- **Can-throw is an effect, not a type.** Surface signatures remain `fn f(...) returns T`. A function is considered can-throw when its body may throw (via `throw`/`rethrow` or uncaught calls to other can-throw functions). A function may be declared **nothrow** with `fn f(...) returns T nothrow { ... }`; this is a compile-time constraint that forbids escaping throws.
+- **Can-throw is an effect, not a type.** Surface signatures remain `fn f(...) returns T`. A function is considered can-throw when its body may throw (via `throw`/`rethrow` or uncaught calls to other can-throw functions). A function may be declared **nothrow** with `fn f(...) nothrow returns T { ... }`; this is a compile-time constraint that forbids escaping throws.
 - **Non-throwing invariants.** A non-throwing function must not use `throw`/`raise`/`rethrow`, must not construct an `Error`, and must not allow an exception to escape. It may call can-throw functions only if it handles failures locally (e.g., via `try/catch`) and still returns a plain `T`. Violations are compile-time errors tied to the source span of the offending statement/expression.
 - **Can-throw invariants.** A can-throw function may throw and may call other can-throw functions without local handling; exceptions propagate to the nearest enclosing `try/catch` or to the caller.
 - **ABI clarity.** The compiler lowers can-throw functions to the internal `Result<T, Error>` calling convention for codegen/ABI purposes (not a surface-level type). Non-throwing functions use plain returns internally; exported functions always use the `Result<T, Error>` ABI at module boundaries. Mixing conventions within a single call boundary is rejected rather than silently coerced.

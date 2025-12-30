@@ -1,4 +1,4 @@
-fn main() returns Int  nothrow{
+fn main() nothrow returns Int{
     val a = true and not false;
     val b = false or true;
 

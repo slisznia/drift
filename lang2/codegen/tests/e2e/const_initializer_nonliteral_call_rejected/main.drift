@@ -4,6 +4,6 @@ fn foo() returns Int { return 1; }
 
 const X: Int = foo();
 
-fn main() returns Int  nothrow{
+fn main() nothrow returns Int{
 	return 0;
 }

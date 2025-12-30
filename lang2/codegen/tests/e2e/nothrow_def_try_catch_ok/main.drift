@@ -6,11 +6,11 @@ fn boom() returns Int {
 	throw Boom();
 }
 
-fn safe() returns Int nothrow {
+fn safe() nothrow returns Int {
 	val x: Int = try boom() catch { 0 };
 	return x;
 }
 
-fn main() returns Int nothrow {
+fn main() nothrow returns Int {
 	return safe();
 }

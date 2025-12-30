@@ -1,7 +1,7 @@
-fn id(p: &Int) returns Int nothrow {
+fn id(p: &Int) nothrow returns Int {
 	return *p;
 }
 
-fn main() returns Int  nothrow{
+fn main() nothrow returns Int{
 	return id(&(1 + 2));
 }

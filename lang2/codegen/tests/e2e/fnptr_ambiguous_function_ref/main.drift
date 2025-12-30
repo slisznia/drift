@@ -1,17 +1,17 @@
 module main
 
-fn abs(x: Int) returns Int nothrow {
+fn abs(x: Int) nothrow returns Int {
 	if x < 0 {
 		return 0 - x;
 	}
 	return x;
 }
 
-fn abs(x: Float) returns Float nothrow {
+fn abs(x: Float) nothrow returns Float {
 	return x;
 }
 
-fn main() returns Int  nothrow{
+fn main() nothrow returns Int{
 	val fp = abs;
 	return 0;
 }

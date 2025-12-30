@@ -1,7 +1,7 @@
 module main
 import a as a
 
-fn main() returns Int nothrow {
+fn main() nothrow returns Int {
 	val y = a.id(1);
 	return y;
 }

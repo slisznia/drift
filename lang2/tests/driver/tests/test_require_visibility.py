@@ -34,7 +34,7 @@ pub trait Show {
 	fn show(self: Self) returns Int
 }
 
-pub fn id<T>(x: T) returns T nothrow require T is Show {
+pub fn id<T>(x: T) nothrow returns T require T is Show {
 	return x;
 }
 """.lstrip(),
@@ -71,7 +71,7 @@ module main
 import lib
 import types
 {import_impls_line}
-fn main() returns Int nothrow {{
+fn main() nothrow returns Int {{
 	try lib.id(types.Bad(x = 1)) catch {{
 		val _ = types.Bad(x = 0);
 	}}

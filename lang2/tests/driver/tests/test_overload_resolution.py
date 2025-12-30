@@ -123,7 +123,7 @@ fn f(x: String) returns Int { return 2; }
 		"""
 module m
 
-fn main() returns Int  nothrow{
+fn main() nothrow returns Int{
     val a: Int = f(1);
     val b: Int = f("hi");
     return a + b;

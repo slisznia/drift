@@ -1,7 +1,7 @@
 module main
 
-fn main() returns Int  nothrow{
-	val fp: fn(Int) returns Int nothrow = |x| => x + 1;
+fn main() nothrow returns Int{
+	val fp: fn(Int) nothrow returns Int = |x| => x + 1;
 	val y = fp(3);
 	return y;
 }

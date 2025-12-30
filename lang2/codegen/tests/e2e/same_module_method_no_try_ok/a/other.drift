@@ -5,7 +5,7 @@ export { Other }
 pub struct Other { x: Int }
 
 implement Other {
-	pub fn bump(self: &mut Other, dx: Int) returns Void nothrow {
+	pub fn bump(self: &mut Other, dx: Int) nothrow returns Void {
 		x += dx;
 	}
 }

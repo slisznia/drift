@@ -129,7 +129,7 @@ module main
 
 import lib as lib
 
-fn main() returns Int  nothrow{
+fn main() nothrow returns Int{
 	return try lib.add(40, 2) catch { 0 };
 }
 """.lstrip(),

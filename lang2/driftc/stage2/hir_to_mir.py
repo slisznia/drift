@@ -613,10 +613,9 @@ class HIRToMIR:
 				ret = args[-1]
 				params_s = ", ".join(_format_type_expr(a) for a in params)
 				ret_s = _format_type_expr(ret)
-				s = f"fn({params_s}) returns {ret_s}"
-				if not can_throw:
-					s = f"{s} nothrow"
-				return s
+				if can_throw:
+					return f"fn({params_s}) returns {ret_s}"
+				return f"fn({params_s}) nothrow returns {ret_s}"
 			base = name if isinstance(name, str) else "<type>"
 			if isinstance(module_id, str) and module_id:
 				base = f"{module_id}.{base}"

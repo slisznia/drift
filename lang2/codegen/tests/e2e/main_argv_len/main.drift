@@ -1,1 +1,1 @@
-fn main(argv: Array<String>) returns Int  nothrow{ return argv.len; }
+fn main(argv: Array<String>) nothrow returns Int{ return argv.len; }

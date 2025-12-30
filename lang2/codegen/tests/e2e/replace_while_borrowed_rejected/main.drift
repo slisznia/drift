@@ -1,6 +1,6 @@
 struct Point(x: Int, y: Int)
 
-fn main() returns Int  nothrow{
+fn main() nothrow returns Int{
 	var p = Point(1, 2);
 	val r = &p.x;
 	replace(p.x, 3);

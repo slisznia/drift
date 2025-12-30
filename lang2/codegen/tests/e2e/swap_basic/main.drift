@@ -1,4 +1,4 @@
-fn main() returns Int  nothrow{
+fn main() nothrow returns Int{
 	var a = 1;
 	var b = 2;
 	swap(a, b);

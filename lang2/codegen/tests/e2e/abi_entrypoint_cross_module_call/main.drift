@@ -2,7 +2,7 @@ module main
 import acme.lib as lib
 
 
-fn main() returns Int  nothrow{
+fn main() nothrow returns Int{
 	val v: Int = try lib.answer() catch { 0 };
 	return v;
 }

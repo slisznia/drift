@@ -2,6 +2,6 @@ module main
 
 export { main }
 
-pub fn main() returns Int  nothrow{
+pub fn main() nothrow returns Int{
 	return (try a() catch { 0 }) + (try b() catch { 0 });
 }

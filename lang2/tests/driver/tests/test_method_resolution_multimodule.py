@@ -205,7 +205,7 @@ module m_main
 
 import m_box
 
-fn main() returns Int  nothrow{
+fn main() nothrow returns Int{
 	val b: m_box.Box<Int> = m_box.Box<type Int>(1);
 	return b.tag();
 }
@@ -256,7 +256,7 @@ import m_types
 import m_a
 import m_b
 
-fn main() returns Int  nothrow{
+fn main() nothrow returns Int{
 	val b: m_types.Box<Int> = m_types.Box<type Int>(1);
 	return b.tag();
 }
@@ -348,7 +348,7 @@ module m_main
 import m_types
 import m_a
 
-fn main() returns Int  nothrow{
+fn main() nothrow returns Int{
 	val b: m_types.Box<Int> = m_types.Box<type Int>(1);
 	return b.tag();
 }
@@ -392,7 +392,7 @@ implement m_box.Box<Int> {
 	pub fn tag(self: m_box.Box<Int>) returns Int { return 1; }
 }
 
-fn main() returns Int  nothrow{
+fn main() nothrow returns Int{
 	val b: m_box.Box<Int> = m_box.Box<type Int>(1);
 	return b.tag();
 }
@@ -433,7 +433,7 @@ module m_main
 import m_types
 import m_impl
 
-fn main() returns Int  nothrow{
+fn main() nothrow returns Int{
 	val b: m_types.Box<Int> = m_types.Box<type Int>(1);
 	return b.tag();
 }
@@ -506,7 +506,7 @@ module m_main
 import m_box
 import m_impl
 
-fn main() returns Int  nothrow{
+fn main() nothrow returns Int{
 	val b: m_box.Box<Array<Int>> = m_box.Box<type Array<Int>>([1, 2]);
 	return b.inner();
 }
@@ -610,7 +610,7 @@ module m_main
 import m_api
 import m_types
 
-fn main() returns Int  nothrow{
+fn main() nothrow returns Int{
 	val b: m_types.Box = m_types.Box(value = 1);
 	return b.tag();
 }
@@ -642,7 +642,7 @@ export { Point }
 pub struct Point { x: Int }
 
 implement Point {
-\tpub fn bump(self: Point) returns Int nothrow { return self.x + 1; }
+\tpub fn bump(self: Point) nothrow returns Int { return self.x + 1; }
 }
 """,
 		Path("mod_b/main.drift"): """
@@ -650,7 +650,7 @@ module mod_b
 
 import mod_a as A
 
-fn main() returns Int  nothrow{
+fn main() nothrow returns Int{
 \tval p = A.Point(x = 1);
 \treturn try p.bump() catch { 0 };
 }

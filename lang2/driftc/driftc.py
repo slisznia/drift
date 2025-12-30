@@ -208,16 +208,6 @@ class MethodWrapperSpec:
 	target_fn_id: FunctionId
 
 
-def _type_contains_fn(table: TypeTable, ty_id: int) -> bool:
-	td = table.get(ty_id)
-	if td.kind is TypeKind.FUNCTION:
-		return True
-	for param in list(td.param_types or []):
-		if _type_contains_fn(table, int(param)):
-			return True
-	return False
-
-
 def _inject_method_boundary_wrappers(
 	*,
 	signatures_by_id: dict[FunctionId, FnSignature],
@@ -241,12 +231,6 @@ def _inject_method_boundary_wrappers(
 			continue
 		if sig.param_type_ids is None or sig.return_type_id is None:
 			errors.append(f"internal: missing param/return types for method '{sig.name}'")
-			continue
-		if _type_contains_fn(type_table, sig.return_type_id):
-			errors.append(
-				f"public method '{sig.name}' requires a boundary wrapper but returns a function type; "
-				"method boundary wrappers for function-typed returns are not supported yet"
-			)
 			continue
 		wrapper_id = method_wrapper_id(fn_id)
 		if wrapper_id in signatures_by_id:
@@ -723,6 +707,7 @@ def compile_stubbed_funcs(
 	  from parsed sources instead of the shims here.
 	"""
 	func_hirs_by_id, signatures_by_id, fn_ids_by_name = _normalize_func_maps(func_hirs, signatures)
+	from lang2.driftc import stage1 as H
 
 	# Guard: signatures with TypeIds must come with a shared TypeTable so TypeKind
 	# queries stay coherent end-to-end.
@@ -772,14 +757,14 @@ def compile_stubbed_funcs(
 		sym = function_symbol(fid)
 		signatures_by_symbol[sym] = replace(sig, name=sym)
 
-	# Normalize after typecheck so lowering sees canonical HIR and preserves any
-	# checker-produced annotations needed by stage2 (e.g., match binder indices).
+	# Normalize before typecheck so the checker sees canonical HIR for diagnostics.
 	normalized_hirs_by_id: Dict[FunctionId, H.HBlock] = {
 		fn_id: normalize_hir(hir_block) for fn_id, hir_block in func_hirs_by_id.items()
 	}
 	normalized_hirs: Dict[str, H.HBlock] = {
 		function_symbol(fn_id): block for fn_id, block in normalized_hirs_by_id.items()
 	}
+
 	call_sigs_by_name: dict[str, list[FnSignature]] = {}
 	for fn_id, sig in signatures_by_id.items():
 		if sig.is_method:
@@ -981,9 +966,21 @@ def compile_stubbed_funcs(
 		type_diags.extend(result.diagnostics)
 		typed_fns_by_symbol[name] = result.typed_fn
 
+	# Use the type-checked HIR directly so node_ids stay aligned with CallInfo.
+	# Pre-typecheck normalization already produced canonical forms; the checker
+	# only injects nodes like HFnPtrConst without breaking normalization.
+	normalized_hirs_by_id = {}
+	normalized_hirs = {}
+	for sym, typed_fn in typed_fns_by_symbol.items():
+		block = getattr(typed_fn, "body", None)
+		if not isinstance(block, H.HBlock):
+			continue
+		fn_id = _parse_function_symbol(sym)
+		normalized_hirs_by_id[fn_id] = block
+		normalized_hirs[sym] = block
+
 	# Instantiation phase (explicit type args only): clone generic templates into
 	# concrete instantiations and rewrite call targets.
-	from lang2.driftc import stage1 as H
 	from lang2.driftc.core.type_subst import Subst, apply_subst
 	from lang2.driftc.instantiation.key import (
 		InstantiationKey,

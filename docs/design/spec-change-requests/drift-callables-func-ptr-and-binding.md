@@ -30,7 +30,7 @@ This document captures the decisions around **function values**, **static vs dyn
 
 ## 2. Core value kinds
 
-### 2.1 Function pointers: `fn(P...) returns R [nothrow]`
+### 2.1 Function pointers: `fn(P...) [nothrow] returns R`
 
 A function pointer is a **thin pointer** to code, with a fully known signature.
 
@@ -48,7 +48,7 @@ Throw-mode:
   * NOTHROW: returns `R`
   * CAN_THROW: returns `FnResult<R, Error>` (canonical `Error` TypeId)
 
-### 2.2 Static callables: `Callable<fn(P...) returns R [nothrow]>`
+### 2.2 Static callables: `Callable<fn(P...) [nothrow] returns R>`
 
 A static callable is a **concrete type** (usually a struct) that implements a trait/interface for a specific signature.
 
@@ -57,7 +57,7 @@ Properties:
 * May capture values (receiver, bound args, remap tables).
 * Calls are statically dispatched when monomorphized; can inline.
 
-### 2.3 Dynamic callables: `CallableDyn<fn(P...) returns R [nothrow]>`
+### 2.3 Dynamic callables: `CallableDyn<fn(P...) [nothrow] returns R>`
 
 A dynamic callable is a **type-erased callable** used for:
 
@@ -83,8 +83,8 @@ Unbound method references do not capture a receiver; they are compatible with `f
 
 Example conceptual shape:
 
-* method `S.inc(self: &S, x: Int) returns Int nothrow`
-* unbound reference type: `fn(&S, Int) returns Int nothrow`
+* method `S.inc(self: &S, x: Int) nothrow returns Int`
+* unbound reference type: `fn(&S, Int) nothrow returns Int`
 
 Ergonomics:
 
@@ -109,7 +109,7 @@ This keeps the two-worlds rule clean:
 Decision:
 
 * `bind` is a **standard library** feature, not compiler magic.
-* It returns a concrete type implementing `Callable<fn(P...) returns R [nothrow]>`.
+* It returns a concrete type implementing `Callable<fn(P...) [nothrow] returns R>`.
 
 Basic form:
 
@@ -259,7 +259,7 @@ Implementation hint:
 
 ## 8. Summary of pinned choices
 
-* `bind` returns **static**: `Callable<fn(P...) returns R [nothrow]>`
+* `bind` returns **static**: `Callable<fn(P...) [nothrow] returns R>`
 * Dynamic callable creation is explicit:
 
   * `std.callable<Sig>(c)` → owned (may box)

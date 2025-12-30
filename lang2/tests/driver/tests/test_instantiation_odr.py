@@ -98,7 +98,7 @@ export {{ id, Show }}
 pub trait Show {{
 	fn show(self: Self) returns Int;
 }}
-pub fn id<T>(x: T) returns T nothrow{require_clause} {{
+pub fn id<T>(x: T) nothrow returns T{require_clause} {{
 	{body};
 }}
 """.lstrip(),
@@ -160,9 +160,9 @@ def test_instantiation_index_marks_comdat_linkonce(tmp_path: Path) -> None:
 		"""
 module main
 
-fn id<T>(x: T) returns T nothrow { return x; }
+fn id<T>(x: T) nothrow returns T { return x; }
 
-fn main() returns Int  nothrow{
+fn main() nothrow returns Int{
 	return id<type Int>(1);
 }
 """.lstrip(),
@@ -199,7 +199,7 @@ module main
 
 import acme.gen as gen
 
-fn main() returns Int  nothrow{
+fn main() nothrow returns Int{
 	return try gen.id<type Int>(1) catch { 0 };
 }
 """.lstrip(),
@@ -237,7 +237,7 @@ import acme.req as req
 
 struct Bad { value: Int }
 
-fn main() returns Int  nothrow{
+fn main() nothrow returns Int{
 	try {
 		req.id<type Bad>(Bad(1));
 		return 0;
@@ -368,7 +368,7 @@ module main
 import acme.a as a
 import acme.b as b
 
-fn main() returns Int  nothrow{
+fn main() nothrow returns Int{
 	return try (a.a() + b.b()) catch { 0 };
 }
 """.lstrip(),

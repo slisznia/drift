@@ -3,7 +3,7 @@ module m
 struct Point(x: Int)
 
 implement Point {
-	fn bump_and_sum(self: &mut Point) returns Int nothrow {
+	fn bump_and_sum(self: &mut Point) nothrow returns Int {
 		// Local bindings shadow implicit `self` members.
 		val x: Int = 1;
 
@@ -15,7 +15,7 @@ implement Point {
 	}
 }
 
-fn main() returns Int  nothrow{
+fn main() nothrow returns Int{
 	var p: Point = Point(1);
 	return p.bump_and_sum();
 }

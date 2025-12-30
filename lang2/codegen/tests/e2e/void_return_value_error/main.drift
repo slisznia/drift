@@ -2,7 +2,7 @@ fn bad() returns Void {
 	return 1;
 }
 
-fn main() returns Int  nothrow{
+fn main() nothrow returns Int{
 	bad();
 	return 0;
 }

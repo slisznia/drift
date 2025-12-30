@@ -6,7 +6,7 @@ fn foo() returns Int {
 	throw Boom();
 }
 
-fn main() returns Int  nothrow{
+fn main() nothrow returns Int{
 	try foo() catch {
 		print("caught");
 	}

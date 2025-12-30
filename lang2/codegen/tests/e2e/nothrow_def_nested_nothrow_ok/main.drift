@@ -1,13 +1,13 @@
 module main
 
-fn inner() returns Int nothrow {
+fn inner() nothrow returns Int {
 	return 2;
 }
 
-fn outer() returns Int nothrow {
+fn outer() nothrow returns Int {
 	return inner();
 }
 
-fn main() returns Int nothrow {
+fn main() nothrow returns Int {
 	return outer();
 }

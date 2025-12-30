@@ -4,6 +4,6 @@ fn bad() returns Int {
     rethrow;
 }
 
-fn main() returns Int nothrow {
+fn main() nothrow returns Int {
     return 0;
 }

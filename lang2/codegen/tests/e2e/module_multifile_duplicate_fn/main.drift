@@ -1,4 +1,4 @@
 module m
 
-fn main() returns Int  nothrow{ return dup(); }
+fn main() nothrow returns Int{ return dup(); }
 

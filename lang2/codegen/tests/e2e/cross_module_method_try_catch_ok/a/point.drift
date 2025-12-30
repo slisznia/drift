@@ -5,7 +5,7 @@ export { Point }
 pub struct Point { x: Int }
 
 implement Point {
-	pub fn bump(self: &mut Point, dx: Int) returns Void nothrow {
+	pub fn bump(self: &mut Point, dx: Int) nothrow returns Void {
 		x += dx;
 	}
 }

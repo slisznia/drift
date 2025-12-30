@@ -1,7 +1,7 @@
 struct Inner(arr: Array<Int>)
 struct Wrap(inner: Inner)
 
-fn main() returns Int  nothrow{
+fn main() nothrow returns Int{
 	var w = Wrap(Inner([0, 0]));
 	val r = &w.inner;
 	w.inner.arr[0] = 1;

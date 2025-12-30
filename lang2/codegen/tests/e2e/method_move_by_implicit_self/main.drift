@@ -3,7 +3,7 @@ module m
 struct Point(x: Int, y: Int)
 
 implement Point {
-	fn move_by(self: &mut Point, dx: Int, dy: Int) returns Void nothrow {
+	fn move_by(self: &mut Point, dx: Int, dy: Int) nothrow returns Void {
 		// Implicit `self` member lookup (spec §3.9):
 		// `x` and `y` resolve to `self->x` / `self->y` because they are not local
 		// bindings and are known fields of the receiver type.
@@ -12,7 +12,7 @@ implement Point {
 	}
 }
 
-fn main() returns Int  nothrow{
+fn main() nothrow returns Int{
 	var p: Point = Point(1, 2);
 	p.move_by(10, 20);
 	return p.x + p.y;

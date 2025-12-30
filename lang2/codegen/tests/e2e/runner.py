@@ -19,9 +19,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import sys
+import time
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 from typing import Iterable, Optional
 
@@ -283,6 +286,22 @@ def _run_case(case_dir: Path) -> str:
 	return "ok"
 
 
+def _run_case_worker(case_dir: str) -> tuple[str, str]:
+	path = Path(case_dir)
+	try:
+		status = _run_case(path)
+	except Exception as err:  # pragma: no cover - worker guardrail
+		return path.name, f"FAIL (worker exception: {err})"
+	return path.name, status
+
+
+def _run_case_chunk(case_dirs: list[str]) -> list[tuple[str, str]]:
+	results: list[tuple[str, str]] = []
+	for case_dir in case_dirs:
+		results.append(_run_case_worker(case_dir))
+	return results
+
+
 def main(argv: Iterable[str] | None = None) -> int:
 	ap = argparse.ArgumentParser(description="Run Drift-source codegen e2e cases (clang-based)")
 	ap.add_argument(
@@ -290,7 +309,31 @@ def main(argv: Iterable[str] | None = None) -> int:
 		nargs="*",
 		help="Specific test case names to run (directories under lang2/codegen/tests/e2e)",
 	)
+	ap.add_argument(
+		"-j",
+		"--jobs",
+		type=str,
+		default="auto",
+		help="Run cases in parallel across N worker processes (N or 'auto', default: auto)",
+	)
+	ap.add_argument(
+		"--work-size",
+		type=int,
+		default=4,
+		help="Run this many cases sequentially per worker task (default: 4)",
+	)
+	ap.add_argument(
+		"--ordered",
+		action="store_true",
+		help="Print results in deterministic case order instead of as they finish",
+	)
+	ap.add_argument(
+		"--summarize",
+		action="store_true",
+		help="Print a summary line with test counts and elapsed time",
+	)
 	args = ap.parse_args(argv)
+	start_time = time.monotonic() if args.summarize else None
 
 	case_root = ROOT / "lang2" / "codegen" / "tests" / "e2e"
 	case_dirs = (
@@ -307,17 +350,77 @@ def main(argv: Iterable[str] | None = None) -> int:
 		case_dirs = [d for d in case_dirs if d.name in names]
 
 	failures: list[tuple[Path, str]] = []
-	for case_dir in case_dirs:
-		status = _run_case(case_dir)
-		print(f"{case_dir.name}: {status}")
-		if status.startswith("FAIL"):
-			failures.append((case_dir, status))
+	if args.jobs == "auto":
+		cpu_count = os.cpu_count() or 1
+		jobs = max(1, cpu_count - 1)
+	else:
+		try:
+			jobs = int(args.jobs)
+		except ValueError:
+			print(f"invalid --jobs value: {args.jobs!r} (expected integer or 'auto')", file=sys.stderr)
+			return 2
+		if jobs < 1:
+			print(f"invalid --jobs value: {jobs} (must be >= 1 or 'auto')", file=sys.stderr)
+			return 2
+	if jobs == 1 or len(case_dirs) <= 1:
+		for case_dir in case_dirs:
+			status = _run_case(case_dir)
+			print(f"{case_dir.name}: {status}")
+			if status.startswith("FAIL"):
+				failures.append((case_dir, status))
+	else:
+		if args.work_size < 1:
+			print(f"invalid --work-size value: {args.work_size} (must be >= 1)", file=sys.stderr)
+			return 2
+		chunk_size = args.work_size
+		chunks: list[list[str]] = []
+		for i in range(0, len(case_dirs), chunk_size):
+			chunks.append([str(p) for p in case_dirs[i : i + chunk_size]])
+		with ProcessPoolExecutor(max_workers=jobs) as executor:
+			futures = [executor.submit(_run_case_chunk, chunk) for chunk in chunks]
+			if args.ordered:
+				results: dict[str, str] = {}
+				next_idx = 0
+				for fut in as_completed(futures):
+					for name, status in fut.result():
+						results[name] = status
+					# Emit any newly available results in deterministic order.
+					while next_idx < len(case_dirs):
+						case_dir = case_dirs[next_idx]
+						status = results.get(case_dir.name)
+						if status is None:
+							break
+						print(f"{case_dir.name}: {status}")
+						if status.startswith("FAIL"):
+							failures.append((case_dir, status))
+						next_idx += 1
+				for case_dir in case_dirs[next_idx:]:
+					status = results.get(case_dir.name, "FAIL (missing result)")
+					print(f"{case_dir.name}: {status}")
+					if status.startswith("FAIL"):
+						failures.append((case_dir, status))
+			else:
+				for fut in as_completed(futures):
+					for name, status in fut.result():
+						print(f"{name}: {status}")
+						if status.startswith("FAIL"):
+							failures.append((case_root / name, status))
 
 	if failures:
 		for case, status in failures:
 			print(f"[codegen e2e] {case.name}: {status}", file=sys.stderr)
-		return 1
-	return 0
+		exit_code = 1
+	else:
+		exit_code = 0
+	if start_time is not None:
+		elapsed = time.monotonic() - start_time
+		total = len(case_dirs)
+		failed = len(failures)
+		passed = total - failed
+		print("============[ SUMMARY ]=============", file=sys.stderr)
+		print(f"Tests: {total} ({passed} successful, {failed} failed)", file=sys.stderr)
+		print(f"Elapsed: {elapsed:.2f} seconds", file=sys.stderr)
+	return exit_code
 
 
 if __name__ == "__main__":

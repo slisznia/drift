@@ -2,7 +2,7 @@ module main
 import acme.boom as boom
 
 
-fn main() returns Int  nothrow{
+fn main() nothrow returns Int{
 	try boom.boom() catch {
 		return 0;
 	}

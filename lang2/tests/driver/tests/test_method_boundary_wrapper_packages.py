@@ -38,12 +38,12 @@ export {{ S, make }}
 pub struct S {{ x: Int }}
 
 implement S {{
-\tpub fn bump(self: S) returns Int nothrow {{
+\tpub fn bump(self: S) nothrow returns Int {{
 \t\treturn self.x + 1;
 \t}}
 }}
 
-pub fn make() returns S nothrow {{
+pub fn make() nothrow returns S {{
 \treturn S(x = 1);
 }}
 """.lstrip(),
@@ -81,7 +81,7 @@ export {{ S, make }}
 pub struct S {{ x: Int }}
 
 implement S {{
-\tpub fn apply(self: S, f: fn(Int) returns Int nothrow) returns Int {{
+\tpub fn apply(self: S, f: fn(Int) nothrow returns Int) returns Int {{
 \t\treturn f(self.x);
 \t}}
 }}
@@ -314,7 +314,7 @@ module main
 
 import acme.pointm as P
 
-fn main() returns Int  nothrow{
+fn main() nothrow returns Int{
 \tval p = P.make();
 \treturn try p.bump() catch { 0 };
 }
@@ -424,7 +424,7 @@ module main
 
 import acme.fnparam as P
 
-fn add1(x: Int) returns Int nothrow { return x + 1; }
+fn add1(x: Int) nothrow returns Int { return x + 1; }
 
 fn main() returns Int {
 \tval s = P.make();

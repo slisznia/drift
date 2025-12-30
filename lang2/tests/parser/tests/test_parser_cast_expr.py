@@ -9,7 +9,7 @@ def test_parser_cast_expr_builds_cast_node() -> None:
 	prog = p.parse_program(
 		"""
 fn main() returns Int {
-	val f = cast<fn(Int) returns Int nothrow>(abs);
+	val f = cast<fn(Int) nothrow returns Int>(abs);
 	return 0;
 }
 """

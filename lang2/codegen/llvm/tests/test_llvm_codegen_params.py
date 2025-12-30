@@ -105,7 +105,7 @@ def test_fnptr_param_headers():
     fnptr_nothrow = _fn_type(table, int_ty, can_throw=False)
     fnptr_throwing = _fn_type(table, int_ty, can_throw=True)
 
-    # apply(f: fn(Int) returns Int nothrow, x: Int) returns Int { return x }
+    # apply(f: fn(Int) nothrow returns Int, x: Int) returns Int { return x }
     apply_block = BasicBlock(name="entry", instructions=[], terminator=Return(value="x"))
     apply = MirFunc(name="apply", params=["f", "x"], locals=[], blocks={"entry": apply_block}, entry="entry")
     apply_ssa = MirToSSA().run(apply)

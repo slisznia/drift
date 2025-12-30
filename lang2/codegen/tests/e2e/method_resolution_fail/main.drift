@@ -4,7 +4,7 @@ implement Int {
 	fn bump(self: &mut Int) returns Void { }
 }
 
-fn main() returns Int  nothrow{
+fn main() nothrow returns Int{
 	val flag = false;
 	flag.bump(); // no method for Bool.
 	return 0;

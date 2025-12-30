@@ -1,4 +1,4 @@
-fn main() returns Int  nothrow{
+fn main() nothrow returns Int{
 	val x = 1;
 	val p = &mut (x);
 	return 0;

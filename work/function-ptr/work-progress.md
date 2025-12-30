@@ -1,4 +1,4 @@
-# Function pointer values (`fn(...) returns T`) — work-progress
+# Function pointer values (`fn(...) [nothrow] returns T`) — work-progress
 
 ## Goal
 Add first-class **non-capturing** function values (function pointers) with a
@@ -12,7 +12,9 @@ effect-based throw ABI.
 - `TypeKind.FUNCTION` carries **throw mode**:
   - `CAN_THROW` vs `NOTHROW` (effect qualifier, not return type).
   - `fn(...) returns T` defaults to `CAN_THROW`.
-  - `fn(...) returns T nothrow` is `NOTHROW`.
+  - `fn(...) nothrow returns T` is `NOTHROW`.
+- Function type syntax places `nothrow` before `returns`:
+  - `fn(P...) [nothrow] returns R`.
 - Function values are **positional-only** for MVP: kwargs on function values are
   a hard error.
 - Function reference throw mode:
@@ -35,7 +37,7 @@ effect-based throw ABI.
 ## Plan (detailed)
 1) **Type system + parser** (partial)
    - Add `TypeKind.FUNCTION` payload with `fn_throws`.
-   - Parse `fn(...) returns T [nothrow]` in type positions.
+   - Parse `fn(...) [nothrow] returns T` in type positions.
    - Serialize/deserialize `fn_throws` in type tables.
 2) **Type keys + equality**
    - Ensure function types compare by `(params, ret, throw_mode)`.
@@ -61,12 +63,12 @@ effect-based throw ABI.
    - Include `TypeKind.FUNCTION` in callback-like detection.
    - Do **not** apply “borrowed-capture closure” restrictions to function values.
 8) **Docs + grammar alignment**
-   - Update `docs/design/drift-lang-grammar.md` with `fn(...) returns T nothrow`.
+   - Update `docs/design/drift-lang-grammar.md` with `fn(...) nothrow returns T`.
    - Update `docs/design/drift-lang-spec.md` to match throw-mode type syntax.
 9) **Tests**
    - Stage1 parsing/typing (before MIR/SSA/LLVM):
-     - Parse `fn(...) returns T [nothrow]` and validate `fn_throws` on `TypeExpr`.
-     - `_pretty_type_name` renders `fn(...) returns T [nothrow]`.
+     - Parse `fn(...) [nothrow] returns T` and validate `fn_throws` on `TypeExpr`.
+     - `_pretty_type_name` renders `fn(...) [nothrow] returns T`.
      - Structural identity: same `fn` type built via distinct paths reuses the same TypeId.
      - Unification rejects throw-mode mismatches; nothrow → can-throw behavior is explicit.
      - Captureless lambda → `fn` coercion success; capturing lambda → error.
@@ -77,7 +79,7 @@ effect-based throw ABI.
      - Trait impl matching respects function throw-mode.
    - Later-stage: MIR/SSA/LLVM indirect calls for NOTHROW vs CAN_THROW.
 10) **`nothrow` on function definitions**
-   - Parse `fn ... returns T nothrow` on definitions (incl. impl methods).
+   - Parse `fn ... nothrow returns T` on definitions (incl. impl methods).
    - Thread `declared_nothrow` into signatures as `declared_can_throw=False`.
    - Enforce: explicit nothrow rejects bodies that may throw.
    - Update spec/grammar + add parser and integration tests.
@@ -105,7 +107,7 @@ effect-based throw ABI.
 - Step 7: **done**
   - ✅ TypeKind.FUNCTION included in non-retaining analysis; borrow gating excludes function values.
 - Step 8: **done**
-  - ✅ Grammar + spec aligned with `fn(...) returns T nothrow` and `cast<T>(expr)`.
+- ✅ Grammar + spec aligned with `fn(...) nothrow returns T` and `cast<T>(expr)`.
 - Step 9: **done**
   - ✅ Stage1 tests: NodeId determinism, NodeId-keyed typed tables, CallInfo for direct calls, CallSig ABI return check.
   - ✅ Stage1 tests: canonical Error TypeId across modules in a single workspace build.
@@ -266,7 +268,4 @@ Status:
   - TypeVar bypass removed from stage4 throw checks.
 
 ## Current backend limitation (tracked)
-- Function-typed *returns* (including `FnResult` ok payloads that are fn-typed)
-  are still rejected until LLVM lowering supports them. Enforcement is guarded
-  at package build for public/visible exports; local codegen paths are expected
-  to error if such signatures slip through.
+- None at this time.

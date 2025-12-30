@@ -9,7 +9,7 @@ fn may_fail(flag: Int) returns Int {
 	throw Boom();
 }
 
-fn main() returns Int  nothrow{
+fn main() nothrow returns Int{
 	return (|| => {
 		val x: Int = try may_fail(0) catch { 0 };
 		return x + 1;

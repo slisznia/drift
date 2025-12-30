@@ -37,7 +37,7 @@ module main
 
 import lib as lib
 
-fn main() returns Int  nothrow{
+fn main() nothrow returns Int{
 	return lib.add(40, 2)
 }
 """.lstrip(),

@@ -6,7 +6,7 @@ fn fail() returns Int {
 	throw E(msg = "boom");
 }
 
-fn main() returns Int  nothrow{
+fn main() nothrow returns Int{
     try fail() catch err {
         print("caught");
     }

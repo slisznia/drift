@@ -6,10 +6,10 @@ fn boom() returns Int {
 	throw Boom();
 }
 
-fn bad() returns Int nothrow {
+fn bad() nothrow returns Int {
 	return boom();
 }
 
-fn main() returns Int nothrow {
+fn main() nothrow returns Int {
 	return 0;
 }

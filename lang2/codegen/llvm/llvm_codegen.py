@@ -6,14 +6,16 @@ SSA → LLVM IR lowering for the v1 Drift ABI (textual emitter).
 Scope (v1 bring-up):
   - Input: SSA (`SsaFunc`) plus MIR (`MirFunc`) and `FnInfo` metadata.
   - Supported types: Int (i64), Bool (i1 in regs), String ({%drift.size, i8*}),
-    Array<T>, and FnResult<ok, Error> where ok ∈ {Int, String, Void-like, Ref<T>}
-    (arrays are supported as values but not as FnResult ok payloads yet).
+    Array<T>, and FnResult<ok, Error> where ok ∈ {Int, String, Void-like, Ref<T>,
+    Struct, Variant, FnPtr} (arrays are supported as values but not as FnResult ok
+    payloads yet).
   - Supported ops: ConstInt/Bool/String, AssignSSA aliases, BinaryOpInstr (int),
     Call (Int/String or FnResult return), Phi, ConstructResultOk/Err,
     ConstructError (attrs zeroed), Return, IfTerminator/Goto, Array ops.
   - FnResult lowering requires a TypeTable so we can map ok/error TypeIds to
     LLVM payloads; we fail fast without it for can-throw functions. FnResult
-    ok payloads outside {Int, String, Void-like, Ref<T>} are currently rejected.
+    ok payloads outside {Int, String, Void-like, Ref<T>, Struct, Variant, FnPtr}
+    are currently rejected.
   - Control flow: straight-line, if/else, and loops/backedges (general CFGs).
 
 ABI (from docs/design/drift-lang-abi.md):
@@ -2184,6 +2186,13 @@ class _FuncBuilder:
 			# Variant TypeIds are unique per instantiation; include the TypeId to
 			# avoid collisions between different instantiations with the same name.
 			return f"Variant_{ty_id}"
+		if td.kind is TypeKind.FUNCTION:
+			if not td.param_types:
+				return "FnPtr_Unknown"
+			args = "_".join(self._type_key(t) for t in td.param_types[:-1]) or "Void"
+			ret = self._type_key(td.param_types[-1])
+			throw_tag = "CanThrow" if td.fn_throws else "NoThrow"
+			return f"FnPtr_{args}_to_{ret}_{throw_tag}"
 		return f"{td.kind.name}"
 
 	def _llvm_ok_type_for_typeid(self, ty_id: TypeId) -> tuple[str, str]:
@@ -2191,7 +2200,7 @@ class _FuncBuilder:
 		Map an Ok TypeId to (ok_llty, ok_key) for FnResult payloads.
 
 		Supported in v1: Int -> i64, String -> %DriftString, Void -> i8, Ref<T> -> T*,
-		and concrete Struct/Variant values by-value.
+		function pointers, and concrete Struct/Variant values by-value.
 		Other kinds are rejected with a clear diagnostic.
 		"""
 		if self.type_table is None:
@@ -2209,9 +2218,11 @@ class _FuncBuilder:
 			if td.param_types:
 				inner_llty = self._llvm_type_for_typeid(td.param_types[0])
 			return f"{inner_llty}*", key
+		if td.kind is TypeKind.FUNCTION:
+			return self._llvm_type_for_typeid(ty_id), key
 		if td.kind in (TypeKind.STRUCT, TypeKind.VARIANT):
 			return self._llvm_type_for_typeid(ty_id), key
-		supported = "Int, String, Void, Ref<T>, Struct, Variant"
+		supported = "Int, String, Void, Ref<T>, Struct, Variant, FnPtr"
 		raise NotImplementedError(
 			f"LLVM codegen v1: FnResult ok type {key} is not supported yet; supported ok payloads: {supported}"
 		)

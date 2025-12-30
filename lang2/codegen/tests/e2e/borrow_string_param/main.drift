@@ -1,8 +1,8 @@
-fn byte_len_ref(s: &String) returns Int nothrow {
+fn byte_len_ref(s: &String) nothrow returns Int {
 	return byte_length(s);
 }
 
-fn main() returns Int  nothrow{
+fn main() nothrow returns Int{
 	val s = "hello";
 	return byte_len_ref(&s);
 }

@@ -15,7 +15,7 @@ fn run() returns Int {
     return 0;
 }
 
-fn main() returns Int  nothrow{
+fn main() nothrow returns Int{
     try run() catch { return 0; }
     return 0;
 }

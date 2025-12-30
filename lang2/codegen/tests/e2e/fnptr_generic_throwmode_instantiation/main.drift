@@ -1,13 +1,13 @@
 module main
 
-fn apply<T>(f: fn(T) returns T nothrow, x: T) returns T nothrow {
+fn apply<T>(f: fn(T) nothrow returns T, x: T) nothrow returns T {
 	return f(x);
 }
 
-fn add1(x: Int) returns Int nothrow {
+fn add1(x: Int) nothrow returns Int {
 	return x + 1;
 }
 
-fn main() returns Int nothrow {
+fn main() nothrow returns Int {
 	return apply<type Int>(add1, 1);
 }

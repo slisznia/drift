@@ -2,7 +2,7 @@ fn takes(a: &Int, b: &mut Int) returns Int {
 	return 0;
 }
 
-fn main() returns Int  nothrow{
+fn main() nothrow returns Int{
 	var x = 0;
 	takes(&x, &mut x);
 	return 0;

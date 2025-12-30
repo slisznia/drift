@@ -2,7 +2,7 @@ module main
 
 import b as x
 
-fn main() returns Int  nothrow{
+fn main() nothrow returns Int{
 	return x.ANSWER;
 }
 
