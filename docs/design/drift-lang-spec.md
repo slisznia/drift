@@ -1102,6 +1102,44 @@ The concurrency chapter (Chapter 19) references these bounds when describing vir
 
 ---
 
+### 5.14.1. Unborrowed marker trait
+
+Some APIs must store values indefinitely (globals, registries, caches). For these
+cases Drift uses a marker trait that guarantees the value does not depend on any
+borrowed views:
+
+- **`Unborrowed`** — values contain no borrowed references or borrowed views
+  and therefore do not rely on shorter lifetimes.
+
+```drift
+trait Unborrowed { }
+```
+
+Meaning: “borrowed” includes any type whose validity depends on an owner’s
+lifetime (for example `&T`, `&mut T`, and borrowed view types such as slices).
+
+Guarantee: if `T is Unborrowed`, then values of `T` may be stored indefinitely
+without capturing a borrow to shorter-lived data.
+
+Non-guarantees: `Unborrowed` is orthogonal to thread safety; it does not imply
+`Send` or `Sync`.
+`Unborrowed` is about lifetime independence; owning indirections/containers are
+allowed so long as they do not embed borrows.
+
+Structural rules (compiler-known, auto-impl):
+- `&T` and `&mut T` are never `Unborrowed`.
+- Borrowed view types (for example `ByteSlice`, `MutByteSlice`, and future
+  string slices/spans) are never `Unborrowed`.
+- Structs/variants/tuples/arrays are `Unborrowed` iff all field/element types
+  are `Unborrowed`.
+- Generic containers are `Unborrowed` iff the container does not embed borrows
+  and all type arguments are `Unborrowed`.
+- Function pointers are `Unborrowed` when non-capturing.
+- Closures are `Unborrowed` iff they capture no borrows and all by-value
+  captures are `Unborrowed`.
+
+---
+
 
 ### 5.15. Design Rationale
 
