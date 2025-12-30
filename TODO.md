@@ -6,6 +6,7 @@
 - Remaining surface/runtime work:
   - Expose/route any user-facing string printing helper once available.
   - Keep expanding test coverage as features land (print, more negative cases).
+- Move `print`/`println`/`eprint`/`eprintln` from the prelude hack into real `std.runtime` APIs (no lang.core special-casing).
 
 [FFI / ABI]
 - Document “current ABI intent” now; freeze later:

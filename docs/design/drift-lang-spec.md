@@ -247,8 +247,9 @@ Notes:
 - Inputs to `print`/`println`/`eprintln` must be `String` (UTF-8). `print` writes
   to stdout without a trailing newline; `println` writes to stdout and appends
   exactly one `\n`; `eprintln` writes to stderr and appends exactly one `\n`.
-- In v1 these functions do not throw; if a write fails, behavior is
-  implementation-defined (abort or silent failure).
+- In v1 these functions do not throw; if the console handle is unavailable,
+  the call traps. Other write failures are implementation-defined (abort or
+  silent failure).
 - They perform no formatting beyond what you compose yourself.
 - The compiler flag `--no-prelude` disables the implicit import; users must
   explicitly import or qualify `lang.core` symbols. `--prelude` re-enables it.
@@ -1571,6 +1572,9 @@ and ensures deterministic linking.
 
 Example: the Drift standard library is distributed as one package containing
 multiple modules under the `std.*` module-id prefix.
+
+The `std.runtime` module is reserved for OS/process interface surfaces such as
+argv/env access, registry-style runtime storage, and standard I/O handles.
 
 **Tooling note — module roots vs package roots.** The compiler distinguishes:
 - **Source module roots**: directories searched for `.drift` source modules (CLI: `-M/--module-path`, repeatable).
@@ -3068,8 +3072,9 @@ fn eprintln(text: String) returns Void   // stderr, appends '\n'
 ```
 
 These write UTF-8 text to the process standard output/error. They do not format
-arguments beyond what you concatenate yourself. They do not throw in v1; failed
-writes are implementation-defined (abort or silent failure).
+arguments beyond what you concatenate yourself. They do not throw in v1; if
+the console handle is unavailable, the call traps. Other write failures are
+implementation-defined (abort or silent failure).
 
 `std.io` / `std.console` remain reserved for richer stream-based APIs in future
 revisions. The stream-based design sketched here (with `out`/`err`/`in`) is
