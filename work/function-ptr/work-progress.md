@@ -85,13 +85,13 @@ effect-based throw ABI.
 ## Status
 - Step 1: **done** (type/core + parser changes landed).
 - Step 2: **done** (function type interning + linker key fixed).
-- Step 3: **in progress**
+- Step 3: **done**
   - ✅ HFnPtrConst/MFnPtrConst IR plumbing (HIR/MIR/LLVM).
   - ✅ Typed-context function reference resolution in type checker.
   - ✅ Basic function reference tests (typed context, ambiguity, exported can-throw).
   - ✅ Stage2 + LLVM tests for FnPtrConst lowering.
   - ✅ Explicit `cast<T>(expr)` for function-reference disambiguation (fn types only).
-- Step 4: **in progress**:
+- Step 4: **done**:
   - ✅ NodeId assigned in stage1 HIR; typed side tables keyed by NodeId.
   - ✅ CallInfo/CallSig recorded for direct calls; Stage2 HCall uses CallInfo (no name-based throw lookup).
   - ✅ CallTarget.Direct uses canonical `FunctionId` in CallInfo.
@@ -106,7 +106,7 @@ effect-based throw ABI.
   - ✅ TypeKind.FUNCTION included in non-retaining analysis; borrow gating excludes function values.
 - Step 8: **done**
   - ✅ Grammar + spec aligned with `fn(...) returns T nothrow` and `cast<T>(expr)`.
-- Step 9: **in progress**
+- Step 9: **done**
   - ✅ Stage1 tests: NodeId determinism, NodeId-keyed typed tables, CallInfo for direct calls, CallSig ABI return check.
   - ✅ Stage1 tests: canonical Error TypeId across modules in a single workspace build.
   - ✅ Stage2 tests: missing CallInfo hard-fails; direct call ABI return types verified.
@@ -120,7 +120,6 @@ effect-based throw ABI.
   - ✅ Codegen e2e tests for fnptr refs/cast/thunks/lambdas/cross-module wrappers (runtime + diagnostics).
   - ✅ Codegen e2e tests for nothrow defs + boundary-call handling (direct throw, throwing call, try/catch ok, same-module pub ok, can-throw→nothrow fnptr reject).
   - ✅ Cross-module method boundary enforcement e2e re-enabled (stub checker now uses CallInfo from typecheck).
-  - ⏸️ Codegen e2e for fnptr parameter overload/instantiation moved to `__pending_*` (LLVM lacks function-type params in signatures).
 - Step 10: **done**
   - ✅ Parse `nothrow` on function definitions and propagate to signatures.
   - ✅ Enforce explicit nothrow on throwing bodies.
