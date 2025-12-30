@@ -27,7 +27,6 @@
   ```
 - Explicit capture list follow-ups:
   - Allow projections in `captures(...)` with renaming (e.g., `p = &x.field`).
-  - Support explicit/implicit mixing or capture-list overrides (if desired).
   - Gate `copy` via a real `Copy` trait post-typecheck.
   - Add lifetime-tracked closure types so borrowed-capture closures can escape.
   - Refine escape analysis beyond conservative "unknown call site" handling.

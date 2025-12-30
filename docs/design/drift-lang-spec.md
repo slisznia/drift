@@ -3504,6 +3504,7 @@ read-only uses still borrow.
 
 If a closure has a `captures(...)` clause, the capture list is exhaustive: every
 free root used in the body must be listed, and no implicit captures are allowed.
+Using an explicit capture list disables implicit capture entirely.
 
 Capture items:
 
