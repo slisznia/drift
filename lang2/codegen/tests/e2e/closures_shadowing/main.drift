@@ -3,5 +3,5 @@ module m
 fn main() returns Int  nothrow{
 	val y: Int = 1;
 	val x: Int = 5;
-	return (|x: Int| => { return x + y; })(10)
+	return (|x: Int| => { return x + y; })(10);
 }

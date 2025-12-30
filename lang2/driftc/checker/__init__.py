@@ -84,6 +84,8 @@ class FnSignature:
 	# Wrapper metadata (boundary Ok-wrap, not user-facing).
 	is_wrapper: bool = False
 	wraps_target_fn_id: Optional[FunctionId] = None
+	# Instantiation marker (generic monomorphization output).
+	is_instantiation: bool = False
 
 	# Legacy/raw fields (to be removed once real type checker is wired).
 	return_type: Any = None

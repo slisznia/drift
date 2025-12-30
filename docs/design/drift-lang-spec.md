@@ -85,7 +85,7 @@ Semantics:
 `cast<T>(expr)` is an explicit, compile-time checked cast. In v1, `cast` is **strict** and supported only for function types; it is primarily used to disambiguate overloads when taking a function reference:
 
 ```drift
-val f = cast<fn(Int) returns Int nothrow>(abs)
+val f = cast<fn(Int) returns Int nothrow>(abs);
 ```
 
 No thunking or adapter insertion occurs in this build; other cast targets are rejected.
@@ -93,8 +93,8 @@ No thunking or adapter insertion occurs in this build; other cast targets are re
   behaves like:
 
   ```drift
-  val __recv = R
-  __recv.method(__recv.a(), __recv.b)
+  val __recv = R;
+  __recv.method(__recv.a(), __recv.b);
   ```
 
 Where leading-dot is valid:
@@ -107,15 +107,15 @@ Scoping / nesting:
 - Leading-dot binds to the immediately enclosing receiver. Nested calls each have their own receiver placeholder. For example:
 
   ```drift
-  outer().a(.x, inner().b(.y))
+  outer().a(.x, inner().b(.y));
   ```
 
   desugars to:
 
   ```drift
-  val __outer = outer()
-  val __inner = inner()
-  __outer.a(__outer.x, __inner.b(__inner.y))
+  val __outer = outer();
+  val __inner = inner();
+  __outer.a(__outer.x, __inner.b(__inner.y));
   ```
 
 All arguments still evaluate left-to-right; the only special rule is reuse of the already-evaluated receiver.
@@ -156,6 +156,8 @@ All modules compile down to a canonical Drift Module IR (DMIR) that can be crypt
 | **Blocks & scopes** | `{ ... }` | Define scope boundaries for RAII and deterministic lifetimes |
 
 `val`/`var` bindings may omit the type annotation when the right-hand expression makes the type unambiguous. For example, `val greeting = "hello"` infers `String`, while `val nums = [1, 2, 3]` infers `Array<Int64>`. Add an explicit `: Type` when inference fails or when you want to document the intent.
+
+**Statement terminators:** Simple statements end with `;`. Compound statements that carry a block (`if`/`while`/`for`/`try`/`match`) are self-terminating. Newlines are whitespace only. In a normal block, a bare expression must appear as an expression statement and end with `;`. In a value-producing block (e.g., lambda bodies, match arms, try/catch expression arms), the final expression must **not** end with `;`.
 
 ### 3.1. Primitive palette (updated)
 
@@ -209,10 +211,10 @@ Drift supports two comment forms:
 
 ```drift
 // Single-line comment through the newline
-val greeting = "hello"
+val greeting = "hello";
 
 /* Multi-line
-   block comment */
+   block comment */;
 fn example() returns Void { ... }
 ```
 
@@ -254,7 +256,7 @@ Notes:
 Typical usage:
 
 ```drift
-println("hello, world")
+println("hello, world");
 ```
 
 ### 3.4. Struct syntax variants
@@ -276,8 +278,8 @@ The tuple-style header desugars to the block form. Field names remain available 
 
 ```drift
 struct Test {
-    val GAME_CTRL_UP:   Int = 1
-    val GAME_CTRL_DOWN: Int = 2
+    val GAME_CTRL_UP:   Int = 1;
+    val GAME_CTRL_DOWN: Int = 2;
 }
 ```
 
@@ -300,7 +302,7 @@ Rules:
 Drift supports **tuple types** as simple product types with unnamed fields. They are a single type written with parentheses:
 
 ```drift
-(T1, T2, ..., Tn)    // n >= 2; (T) is just T
+(T1, T2, ..., Tn) // n >= 2; (T) is just T
 ```
 
 - Elements may have different types.
@@ -311,7 +313,7 @@ Drift supports **tuple types** as simple product types with unnamed fields. They
 Tuple **expressions** use the same shape:
 
 ```drift
-val pair = (left, right)
+val pair = (left, right);
 ```
 
 Each element’s ownership flows into the tuple according to the expression used.
@@ -319,7 +321,7 @@ Each element’s ownership flows into the tuple according to the expression used
 Tuples can be **destructured** in bindings:
 
 ```drift
-val (x, y) = bounds()   // moves the returned tuple; x and y bind its elements
+val (x, y) = bounds(); // moves the returned tuple; x and y bind its elements
 ```
 
 Functions may return tuples or accept them as parameters, and tuple types appear in generics (e.g., `Callable<(Int, String), Bool>`). There is no implicit tuple splat/spread; tuple members are accessed via destructuring or pattern matching once supported.
@@ -418,9 +420,9 @@ uses (no runtime storage is required in v1).
 Syntax:
 
 ```drift
-const ANSWER: Int = 42
-const OK: Bool = true
-const GREETING: String = "hello"
+const ANSWER: Int = 42;
+const OK: Bool = true;
+const GREETING: String = "hello";
 ```
 
 MVP rules (v1):
@@ -467,15 +469,15 @@ struct File {
     fd: Int
 }
 
-var f = open("log.txt")
+var f = open("log.txt");
 
-var g = f        // ❌ cannot copy move-only type; use a move
-var h = move f      // ✅ move ownership
+var g = f; // ❌ cannot copy move-only type; use a move
+var h = move f; // ✅ move ownership
 
 fn use_file(x: File) returns Void { ... }
 
-use_file(f)      // ❌ copy required
-use_file(move f)    // ✅ move into the call
+use_file(f); // ❌ copy required
+use_file(move f); // ✅ move into the call
 ```
 
 This design keeps ownership explicit: you opt *out* of move-only semantics only when cheap copies are well-defined.
@@ -491,8 +493,8 @@ implement Copy for Bool {}
 struct Job { id: Int }
 implement Copy for Job {}
 
-var a = Job(id = 1)
-var b = a      // ✅ copies `a` by calling `copy`
+var a = Job(id = 1);
+var b = a; // ✅ copies `a` by calling `copy`
 
 ### 4.4. Explicit copy expression
 
@@ -510,13 +512,13 @@ struct Buffer { data: ByteBuffer }   // move-only
 
 implement Buffer {
     fn clone(self: &Buffer) returns Buffer {
-        return Buffer(data = self.data.copy())
+        return Buffer(data = self.data.copy());
     }
 }
 
-var b1 = Buffer(...)
-var b2 = b1.clone()   // ✅ explicit deep copy
-var b3 = b1           // ❌ still not allowed; Buffer is not `Copy`
+var b1 = Buffer(...);
+var b2 = b1.clone(); // ✅ explicit deep copy
+var b3 = b1; // ❌ still not allowed; Buffer is not `Copy`
 ```
 
 This pattern distinguishes cheap, implicit copies (`Copy`) from explicit, potentially heavy duplication.
@@ -529,14 +531,14 @@ This pattern distinguishes cheap, implicit copies (`Copy`) from explicit, potent
 struct Job { id: Int }
 
 fn process(job: Job) returns Void {
-    print("processing job ", job.id)
+    print("processing job ", job.id);
 }
 
-var j = Job(id = 1)
+var j = Job(id = 1);
 
-process(j)    // ✅ copy (Job is copyable)
-process(move j)  // ✅ move; j now invalid
-process(j)    // ❌ error: j was moved
+process(j); // ✅ copy (Job is copyable)
+process(move j); // ✅ move; j now invalid
+process(j); // ❌ error: j was moved
 ```
 
 ---
@@ -547,12 +549,12 @@ process(j)    // ❌ error: j was moved
 struct File { /* non-copyable handle */ }
 
 fn upload(f: File) returns Void {
-    print("sending file")
+    print("sending file");
 }
 
-var f = File()
-upload(move f)   // ✅ move ownership
-upload(f)     // ❌ cannot copy non-copyable type
+var f = File();
+upload(move f); // ✅ move ownership
+upload(f); // ❌ cannot copy non-copyable type
 ```
 
 ---
@@ -561,12 +563,12 @@ upload(f)     // ❌ cannot copy non-copyable type
 
 ```drift
 fn inspect(f: &File) returns Void {
-    print("just reading header")
+    print("just reading header");
 }
 
-var f = File()
-inspect(f)     // auto-borrows &f
-upload(move f)       // later move ownership away
+var f = File();
+inspect(f); // auto-borrows &f
+upload(move f); // later move ownership away
 ```
 
 ---
@@ -576,9 +578,9 @@ upload(move f)       // later move ownership away
 ```drift
 fn fill(f: &mut File) returns Void { /* writes data */ }
 
-var f = File()
-fill(f)        // auto-borrows &mut f
-upload(move f)       // move after borrow ends
+var f = File();
+fill(f); // auto-borrows &mut f
+upload(move f); // move after borrow ends
 ```
 
 Borrow lifetimes are scoped to braces; once the borrow ends, moving is allowed again.
@@ -589,12 +591,12 @@ Borrow lifetimes are scoped to braces; once the borrow ends, moving is allowed a
 
 ```drift
 fn open(name: String) returns File {
-    val f = File()
-    return move f        // move to caller
+    val f = File();
+    return move f; // move to caller
 }
 
 fn example() returns Void {
-    var f = open("log.txt")
+    var f = open("log.txt");
 }
 ```
 
@@ -607,12 +609,12 @@ Ownership flows *out* of the function; RAII ensures destruction if not returned.
 ```drift
 fn take(a: Array<Job>) returns Void { /* consumes array */ }
 
-var jobs = Array<Job>()
-jobs.push(Job(id = 1))
-jobs.push(Job(id = 2))
+var jobs = Array<Job>();
+jobs.push(Job(id = 1));
+jobs.push(Job(id = 2));
 
-take(move jobs)    // move entire container
-take(jobs)      // ❌ jobs invalid after move
+take(move jobs); // move entire container
+take(jobs); // ❌ jobs invalid after move
 ```
 
 ---
@@ -696,7 +698,7 @@ struct Point { x: Int64, y: Int64 }
 
 implement Debuggable for Point {
     fn fmt(self) returns String {
-        return "(" + self.x.to_string() + ", " + self.y.to_string() + ")"
+        return "(" + self.x.to_string() + ", " + self.y.to_string() + ")";
     }
 }
 ```
@@ -710,7 +712,7 @@ implement Debuggable for Box<T>
     require T is Debuggable
 {
     fn fmt(self) returns String {
-        return self.value.fmt()
+        return self.value.fmt();
     }
 }
 ```
@@ -774,9 +776,9 @@ Functions may restrict their usage to specific capabilities:
 fn clone_twice<T>
     require T is Clonable
 (value: T) returns (T, T) {
-    val a = value.clone()
-    val b = value.clone()
-    return (a, b)
+    val a = value.clone();
+    val b = value.clone();
+    return (a, b);
 }
 ```
 
@@ -787,8 +789,8 @@ fn print_both<T, U>
     require T is Debuggable,
             U is Debuggable
 (t: T, u: U) returns Void {
-    println(t.fmt())
-    println(u.fmt())
+    println(t.fmt());
+    println(u.fmt());
 }
 ```
 
@@ -823,7 +825,7 @@ import m_traits as t
 use trait t.Show
 
 fn f<T>(x: T) returns Int require T is t.Show {
-    return x.show()
+    return x.show();
 }
 ```
 
@@ -836,9 +838,9 @@ Trait guards allow functions to adapt behavior based on whether a type implement
 ```drift
 fn log_value<T>(value: T) returns Void {
     if T is Debuggable {
-        println("[dbg] " + value.fmt())
+        println("[dbg] " + value.fmt());
     } else {
-        println("<value>")
+        println("<value>");
     }
 }
 ```
@@ -856,13 +858,13 @@ Semantics:
 ```drift
 fn log_value<T>(value: T) returns Void {
     if T is Debuggable and T is Serializable {
-        ...
+        ...;
     } else if T is Debuggable {
-        ...
+        ...;
     } else if T is Serializable {
-        ...
+        ...;
     } else {
-        ...
+        ...;
     }
 }
 ```
@@ -885,11 +887,11 @@ Example:
 ```drift
 fn clone_if_possible<T>(value: T) returns T {
     if T is Copyable {
-        return value            // implicit copy
+        return value; // implicit copy
     } else if T is Clonable {
-        return value.clone()
+        return value.clone();
     } else {
-        panic("Type cannot be cloned")
+        panic("Type cannot be cloned");
     }
 }
 ```
@@ -907,7 +909,7 @@ trait Printable
     require Self is Debuggable, Self is Displayable
 {
     fn print(self) returns String {
-        return self.fmt()
+        return self.fmt();
     }
 }
 ```
@@ -938,7 +940,7 @@ struct OwnedMySql
 implement Destructible for OwnedMySql {
     fn destroy(self) returns Void {
         if !self.handle.is_null() {
-            mysql_close(self.handle)
+            mysql_close(self.handle);
         }
     }
 }
@@ -962,11 +964,11 @@ Functions may overload based on trait requirements:
 fn save<T>
     require T is Serializable
 (value: T) returns ByteBuffer {
-    return value.serialize()
+    return value.serialize();
 }
 
 fn save<T>(value: T) returns ByteBuffer {
-    return reflect::dump(value)
+    return reflect::dump(value);
 }
 ```
 
@@ -1005,7 +1007,7 @@ struct Cache<K, V>
     require K is Hashable,
             Self is Destructible
 {
-    ...
+    ...;
 }
 ```
 
@@ -1177,18 +1179,18 @@ struct Point { x: Int64, y: Int64 }
 
 implement Point {
     fn move_by(self: &mut Point, dx: Int64, dy: Int64) returns Void {
-        self.x += dx
-        self.y += dy
+        self.x += dx;
+        self.y += dy;
     }
 }
 
 fn translate(p: &mut Point, dx: Int64, dy: Int64) returns Void {
-    p.x += dx
-    p.y += dy
+    p.x += dx;
+    p.y += dy;
 }
 
-point.move_by(1, 2)     // method call (auto-borrows &mut point)
-translate(point, 3, 4)  // free function call (auto-borrows &mut point)
+point.move_by(1, 2); // method call (auto-borrows &mut point)
+translate(point, 3, 4); // free function call (auto-borrows &mut point)
 
 Within a module, a given name may not be used both for a free function and for a method; method names may be reused across different types as long as each (type, method name) pair is unique.
 ```
@@ -1208,15 +1210,15 @@ struct File {
 
 implement OutputStream for File {
     fn write(self: &File, bytes: ByteSlice) returns Void {
-        sys_write(self.fd, bytes)
+        sys_write(self.fd, bytes);
     }
 
     fn writeln(self: &File, text: String) returns Void {
-        self.write((text + "\n").to_bytes())
+        self.write((text + "\n").to_bytes());
     }
 
     fn flush(self: &File) returns Void {
-        sys_flush(self.fd)
+        sys_flush(self.fd);
     }
 }
 ```
@@ -1238,7 +1240,7 @@ Interfaces may be used anywhere that types may appear.
 
 ```drift
 fn write_header(out: OutputStream) returns Void {
-    println("=== header ===")
+    println("=== header ===");
 }
 ```
 
@@ -1246,24 +1248,24 @@ fn write_header(out: OutputStream) returns Void {
 
 ```drift
 fn open_log(path: String) returns OutputStream {
-    var f = File.open(path)
-    return f      // implicit upcast: File → OutputStream
+    var f = File.open(path);
+    return f; // implicit upcast: File → OutputStream
 }
 ```
 
 #### 6.5.3. Locals
 
 ```drift
-var out: OutputStream = open_log("app.log")
-println("ready")
+var out: OutputStream = open_log("app.log");
+println("ready");
 ```
 
 #### 6.5.4. Heterogeneous arrays
 
 ```drift
-var sinks: Array<OutputStream> = []
-sinks.push(open_log("app.log"))
-sinks.push(open_log("audit.log"))
+var sinks: Array<OutputStream> = [];
+sinks.push(open_log("app.log"));
+sinks.push(open_log("audit.log"));
 ```
 
 Each element may be a different type implementing the same interface.
@@ -1280,7 +1282,7 @@ A value of interface type is represented as a **fat pointer**, containing:
 When calling:
 
 ```drift
-out.write(buf)
+out.write(buf);
 ```
 
 the compiler emits:
@@ -1329,13 +1331,13 @@ struct Rect   { w: Float64, h: Float64 }
 
 implement Shape for Circle {
     fn area(self: &Circle) returns Float64 {
-        return 3.14159265 * self.radius * self.radius
+        return 3.14159265 * self.radius * self.radius;
     }
 }
 
 implement Shape for Rect {
     fn area(self: &Rect) returns Float64 {
-        return self.w * self.h
+        return self.w * self.h;
     }
 }
 ```
@@ -1344,22 +1346,22 @@ implement Shape for Rect {
 
 ```drift
 fn total_area(shapes: Array<Shape>) returns Float64 {
-    var acc: Float64 = 0.0
-    var i = 0
+    var acc: Float64 = 0.0;
+    var i = 0;
     while i < shapes.len() {
-        acc = acc + shapes[i].area()
-        i = i + 1
+        acc = acc + shapes[i].area();
+        i = i + 1;
     }
-    return acc
+    return acc;
 }
 ```
 
 Heterogeneous containers work naturally:
 
 ```drift
-var all: Array<Shape> = []
-all.push(Circle(radius = 4.0))
-all.push(Rect(w = 3.0, h = 5.0))
+var all: Array<Shape> = [];
+all.push(Circle(radius = 4.0));
+all.push(Rect(w = 3.0, h = 5.0));
 ```
 
 ---
@@ -1372,7 +1374,7 @@ Interface values follow Drift ownership and move semantics.
 
 ```drift
 fn consume(out: OutputStream) returns Void {
-    println("consumed")
+    println("consumed");
 }
 ```
 
@@ -1387,9 +1389,9 @@ At scope exit:
 
 ```drift
 {
-    var log = open_log("a.log")    // OutputStream
-    log.writeln("start")
-}   // log.destroy() runs if File is Destructible
+    var log = open_log("a.log"); // OutputStream
+    log.writeln("start");
+}; // log.destroy() runs if File is Destructible
 ```
 
 No double‑destroy is possible because `destroy(self)` consumes the value.
@@ -1432,7 +1434,7 @@ interface DebugSink {
 fn log_value<T>
     require T is Debuggable
 (val: T, sink: DebugSink) returns Void {
-    sink.write_debug(val.fmt())
+    sink.write_debug(val.fmt());
 }
 ```
 
@@ -1449,12 +1451,12 @@ Interface method calls participate in normal exception propagation:
 
 ```drift
 fn dump(src: InputStream, dst: OutputStream) returns Void {
-    var buf = ByteBuffer.with_capacity(4096)
+    var buf = ByteBuffer.with_capacity(4096);
     loop {
-        buf.clear()
-        val n = src.read(buf.as_mut_slice())
+        buf.clear();
+        val n = src.read(buf.as_mut_slice());
         if n == 0 { break }
-        dst.write(buf.slice(0, n))
+        dst.write(buf.slice(0, n));
     }
 }
 ```
@@ -1524,6 +1526,11 @@ interface independently. Imports always target modules by module id; packages
 only determine **where** module contents and interfaces are sourced from (source
 roots vs package roots).
 
+**Module id uniqueness.** A build must reject any configuration in which the
+same module id is provided by multiple packages (or by both source and package).
+Module ids are globally unique within a build; this prevents ambiguous imports
+and ensures deterministic linking.
+
 Example: the Drift standard library is distributed as one package containing
 multiple modules under the `std.*` module-id prefix.
 
@@ -1591,7 +1598,15 @@ import std.concurrent as conc  // bind with alias
 
 - Declared with `module <id>` once per file; multiple files may share the same `<id>`, but a single-module build fails if any file is missing or mismatches the ID. A standalone file with no declaration defaults to `main`.
 - `<id>` must be lowercase segments separated by dots. Each segment must start with a lowercase letter and may contain lowercase letters, digits, and underscores; underscores may not be leading/trailing or consecutive. Dots may not be leading/trailing or consecutive. Total length ≤ 254 UTF-8 bytes.
-- Reserved prefixes are rejected: `lang.`, `abi.`, `std.`, `core.`, `lib.`.
+- Reserved namespaces: `lang.*`, `std.*`, and `drift.*` (and any future toolchain‑reserved
+  prefixes) are allowed syntactically but may only be provided by **trusted
+  toolchain keys** under the package trust policy. This restriction is enforced
+  at package load time (not in the parser) and **cannot** be bypassed with
+  `--allow-unsigned-from`. User trust-store entries do not grant access to
+  reserved namespaces; only toolchain‑shipped keys are accepted via the
+  toolchain’s core trust store. Toolchains may provide non‑normative dev/test
+  switches that replace the core trust store; those switches are not part of the
+  language/build specification.
 - Frames/backtraces record the declared module ID (not filenames), so cross-module stacks are unambiguous.
 
 ### 7.2. Module interface and exports
@@ -1639,9 +1654,9 @@ Drift uses structured control flow; all loops and conditionals are block-based.
 
 ```drift
 if cond {
-    do_true()
+    do_true();
 } else {
-    do_false()
+    do_false();
 }
 ```
 
@@ -1652,9 +1667,9 @@ if cond {
 ### 8.2. While loops
 
 ```drift
-var i: Int64 = 0
+var i: Int64 = 0;
 while i < 3 {
-    i = i + 1
+    i = i + 1;
 }
 ```
 
@@ -1666,7 +1681,7 @@ while i < 3 {
 ### 8.3. Ternary (`? :`) operator
 
 ```drift
-val label = is_error ? "error" : "ok"
+val label = is_error ? "error" : "ok";
 ```
 
 - `cond ? then_expr : else_expr` is an expression-form conditional; `cond` must be `Bool`.
@@ -1678,10 +1693,10 @@ val label = is_error ? "error" : "ok"
 **Expression form (`try expr catch …`):**
 
 ```drift
-val result = try parse_int(input) catch { 0 }
-val logged = try parse_int(input) catch err { log(err); 0 }
-val parsed = try parse_amount(input) catch BadFormat(e) { 0 }
-val routed = try parse(input) catch BadFormat(e) { 0 } catch { 1 }
+val result = try parse_int(input) catch { 0 };
+val logged = try parse_int(input) catch err { log(err); 0 };
+val parsed = try parse_amount(input) catch BadFormat(e) { 0 };
+val routed = try parse(input) catch BadFormat(e) { 0 } catch { 1 };
 ```
 
 - Evaluates the attempt expression; on success, yields its value.
@@ -1702,9 +1717,9 @@ val routed = try parse(input) catch BadFormat(e) { 0 } catch { 1 }
 
 ```drift
 try {
-    risky()
+    risky();
 } catch MyError(err) {
-    handle(err)
+    handle(err);
 }
 ```
 
@@ -1756,8 +1771,8 @@ Only the active variant’s fields may be accessed. This is enforced statically 
 Each constructor behaves like a value constructor call:
 
 ```drift
-val success: Result<Int, String> = Ok(42)
-val failure: Result<Int, String> = Err("oops")
+val success: Result<Int, String> = Ok(42);
+val failure: Result<Int, String> = Err("oops");
 ```
 
 MVP rules:
@@ -1769,8 +1784,8 @@ MVP rules:
 Examples:
 
 ```drift
-val x: Optional<Int> = Some(1)   // OK: expected type is Optional<Int>
-val y = Some(1)                 // error (no expected variant type)
+val x: Optional<Int> = Some(1); // OK: expected type is Optional<Int>
+val y = Some(1); // error (no expected variant type)
 ```
 
 #### 10.3.1. Qualified constructor calls (`TypeRef::Ctor(...)`)
@@ -1778,9 +1793,9 @@ val y = Some(1)                 // error (no expected variant type)
 To disambiguate constructors (and to allow type argument inference without an expected type), Drift supports *qualified* constructor calls:
 
 ```drift
-val x = Optional::Some(1)          // OK: infers Optional<Int>
-val y = Optional<Int>::None()      // OK: explicit type arguments on the variant type
-val z = Optional::None<type Int>() // OK: explicit type arguments after the constructor name
+val x = Optional::Some(1); // OK: infers Optional<Int>
+val y = Optional<Int>::None(); // OK: explicit type arguments on the variant type
+val z = Optional::None<type Int>(); // OK: explicit type arguments after the constructor name
 ```
 
 Rules (v1 MVP):
@@ -1805,16 +1820,19 @@ MVP restriction:
 
 ### 10.4. Pattern matching and exhaustiveness
 
-`match` is used to consume a variant. In v1, `match` is an **expression**:
+`match` is used to consume a variant. In v1, `match` is an **expression** and is also allowed as a **compound statement** (no trailing `;` needed). At least one arm is required. Arms are **comma-separated** with an optional trailing comma.
 
 ```drift
 val s = match result {
-    Ok(v) => { "ok: " + v.to_string() }
-    Err(e) => { "error: " + e }
-}
+    Ok(v) => { "ok: " + v.to_string() },
+    Err(e) => { "error: " + e },
+};
 ```
 
-**Arm bodies are blocks**. A block may contain statements; the match arm’s value (when needed) is the last expression in the block.
+**Arm bodies are blocks.**
+
+- **Expression form:** arm bodies are value blocks (a block with a final expression) and the match result is that final value.
+- **Statement form:** arm bodies are blocks only (no value); statement-form matches must not yield a value.
 
 **Default arm**:
 
@@ -1830,9 +1848,9 @@ Exhaustiveness rules (v1):
 ```drift
 fn describe(result: Result<Int, String>) returns String {
     return match result {
-        Ok(value) => { "ok: " + value.to_string() }
-        Err(error) => { "error: " + error }
-    }
+        Ok(value) => { "ok: " + value.to_string() },
+        Err(error) => { "error: " + error },
+    };
 }
 ```
 
@@ -1856,16 +1874,16 @@ variant LookupResult<T> {
 }
 
 fn describe_lookup(id: Int64, r: LookupResult<String>) returns String {
-    match r {
-        Found(value) => { "Record " + id.to_string() + ": " + value }
-        Missing      => { "No record for id " + id.to_string() }
+    return match r {
+        Found(value) => { "Record " + id.to_string() + ": " + value },
+        Missing      => { "No record for id " + id.to_string() },
         Error(err)   => { match err {
-            ConnectionLost       => { "Database connection lost" }
-            QueryFailed(message) => { "Query failed: " + message }
-            default              => { "Unknown db error" }
-        } }
-        default      => { "Unknown lookup result" }
-    }
+            ConnectionLost       => { "Database connection lost" },
+            QueryFailed(message) => { "Query failed: " + message },
+            default              => { "Unknown db error" },
+        } },
+        default      => { "Unknown lookup result" },
+    };
 }
 ```
 
@@ -1886,9 +1904,9 @@ variant PairOrError<T, E> {
 
 fn make_pair(x: Int, y: Int) returns PairOrError<Int, String> {
     if x == y {
-        return Error("values must differ")
+        return Error("values must differ");
     }
-    return Pair(x, y)
+    return Pair(x, y);
 }
 ```
 
@@ -1898,7 +1916,7 @@ the `type` marker to avoid ambiguity with comparisons:
 
 ```drift
 fn id<T>(value: T) returns T { return value }
-val x = id<type Int>(1)
+val x = id<type Int>(1);
 ```
 
 Type arguments may be inferred from arguments in obvious cases, but if any type
@@ -1931,16 +1949,16 @@ Drift is **null-free**. There is no `null` literal. A value is either present (`
 ### 11.2. Construction
 
 ```drift
-val present: Optional<Int64> = Some(42)
-val empty: Optional<Int64> = None()
+val present: Optional<Int64> = Some(42);
+val empty: Optional<Int64> = None();
 ```
 
 ### 11.3. Control flow
 
 ```drift
 match qty {
-    Some(q) => { println("qty=" + q.to_string()) }
-    None => { println("no qty") }
+    Some(q) => { println("qty=" + q.to_string()); },
+    None => { println("no qty"); },
 }
 ```
 
@@ -1955,10 +1973,10 @@ There is no safe-navigation operator (`?.`). Access requires explicit pattern ma
 ```drift
 fn find_sku(id: Int64) returns Optional<String> { /* ... */ }
 
-val sku = find_sku(42)
+val sku = find_sku(42);
 match sku {
-    Some(s) => { println("sku=" + s) }
-    None => { println("missing") }
+    Some(s) => { println("sku=" + s); },
+    None => { println("missing"); },
 }
 ```
 
@@ -1983,20 +2001,20 @@ struct Order {
 }
 
 fn find_order(id: Int64) returns Optional<Order> {
-    if id == 42 { return Some(Order(id = 42, sku = "DRIFT-1", quantity = 1)) }
-    return None()
+    if id == 42 { return Some(Order(id = 42, sku = "DRIFT-1", quantity = 1)); }
+    return None();
 }
 
 fn ship(o: Order) returns Void {
-    println("shipping " + o.sku + " id=" + o.id)
+    println("shipping " + o.sku + " id=" + o.id);
 }
 
 fn example() returns Void {
-    val maybe_order = find_order(42)
+    val maybe_order = find_order(42);
 
     match maybe_order {
-        Some(o) => { ship(o) }
-        None => { println("order not found") }
+        Some(o) => { ship(o); },
+        None => { println("order not found"); },
     }
 }
 
@@ -2004,25 +2022,25 @@ fn example() returns Void {
 
 Helper methods/combinators on `Optional<T>` (e.g. `is_some`, `unwrap_or`) are expected to exist, but are deferred until the module/trait story is finalized. MVP code should use `match`.
 
----
+---;
 ## 12. `lang.array`, `ByteBuffer`, and array literals
 
 `lang.array` is the standard module for homogeneous sequences. It exposes the generic type `Array<T>` plus builder helpers and the binary-centric `ByteBuffer`. `Array` is always in scope for type annotations, so you can write:
 
 ```drift
 fn example() returns Void {
-    val names: Array<String> = ["Bob", "Alice", "Ada"]
-    println("names ready")
+    val names: Array<String> = ["Bob", "Alice", "Ada"];
+    println("names ready");
 }
 ```
 
 Array literals follow the same ownership and typing rules as other expressions:
 
 ```drift
-val nums = [1, 2, 3]            // infers Array<Int64>
-val names = ["Bob", "Alice"]     // infers Array<String>
+val nums = [1, 2, 3]; // infers Array<Int64>
+val names = ["Bob", "Alice"]; // infers Array<String>
 
-val explicit: Array<Int64> = [1, 2, 3]  // annotation still allowed when desired
+val explicit: Array<Int64> = [1, 2, 3]; // annotation still allowed when desired
 ```
 
 - `[expr1, expr2, ...]` constructs an `Array<T>` where every element shares the same type `T`. The compiler infers `T` from the elements.
@@ -2066,9 +2084,9 @@ Binary APIs use three closely related stdlib types:
 `ByteBuffer` lives in `lang.array.byte` and follows the same ownership rules as other containers. Constructors include:
 
 ```drift
-var buf = ByteBuffer.with_capacity(4096)
-val literal = ByteBuffer.from_array([0x48, 0x69])
-val from_utf8 = ByteBuffer.from_string("drift")
+var buf = ByteBuffer.with_capacity(4096);
+val literal = ByteBuffer.from_array([0x48, 0x69]);
+val from_utf8 = ByteBuffer.from_string("drift");
 ```
 
 Core operations:
@@ -2089,15 +2107,15 @@ Typical I/O pattern:
 
 ```drift
 fn copy_stream(src: InputStream, dst: OutputStream) returns Void {
-    var scratch = ByteBuffer.with_capacity(4096)
+    var scratch = ByteBuffer.with_capacity(4096);
 
     loop {
-        scratch.clear()
-        val filled = src.read(scratch.as_mut_slice())
+        scratch.clear();
+        val filled = src.read(scratch.as_mut_slice());
         if filled == 0 { break }
 
-        val chunk = scratch.slice(0, filled)
-        dst.write(chunk)
+        val chunk = scratch.slice(0, filled);
+        dst.write(chunk);
     }
 }
 ```
@@ -2124,18 +2142,18 @@ Bounds checks mirror simple indexing: out-of-range indices raise `IndexError(con
 Use square brackets to read an element:
 
 ```drift
-val nums = [1, 2, 3]
-val first = nums[0]
+val nums = [1, 2, 3];
+val first = nums[0];
 ```
 
 Assignments through an index require the binding to be mutable:
 
 ```drift
-var mutable_values: Array<Int64> = [5, 10, 15]
-mutable_values[1] = 42      // ok
+var mutable_values: Array<Int64> = [5, 10, 15];
+mutable_values[1] = 42; // ok
 
-val frozen = [7, 8, 9]
-frozen[0] = 1               // compile error: cannot assign through immutable binding
+val frozen = [7, 8, 9];
+frozen[0] = 1; // compile error: cannot assign through immutable binding
 ```
 
 Nested indexing works as expected (e.g., `matrix[row][col]`) as long as the root binding is declared with `var`.
@@ -2225,17 +2243,17 @@ The prelude wires literals to the default collections:
 ```drift
 implement<T> FromArrayLiteral<T> for Array<T> {
     static fn from_array_literal(items: Array<T>) returns Array<T> {
-        return items
+        return items;
     }
 }
 
 implement<K, V> FromMapLiteral<K, V> for Map<K, V> {
     static fn from_map_literal(entries: Array<(K, V)>) returns Map<K, V> {
-        val m = Map<K, V>()
+        val m = Map<K, V>();
         for (k, v) in entries {
-            m.insert(k, v)
+            m.insert(k, v);
         }
-        return m
+        return m;
     }
 }
 ```
@@ -2244,8 +2262,8 @@ This keeps “hello world” code terse:
 
 ```drift
 fn main() returns Int nothrow {
-    println("hello, world")
-    return 0
+    println("hello, world");
+    return 0;
 }
 ```
 
@@ -2264,13 +2282,13 @@ struct SmallVec<T> { /* ... */ }
 
 implement<T> FromArrayLiteral<T> for SmallVec<T> {
     static fn from_array_literal(items: Array<T>) returns SmallVec<T> {
-        var sv = SmallVec<T>()
+        var sv = SmallVec<T>();
         for v in items { sv.push(v) }
-        return sv
+        return sv;
     }
 }
 
-val fast: SmallVec<Int> = [1, 2, 3]
+val fast: SmallVec<Int> = [1, 2, 3];
 ```
 
 The same pattern applies to alternative map implementations.
@@ -2388,7 +2406,7 @@ Each field type must implement the `Diagnostic` trait (see §5.13.7).
 
 #### 14.3.2. Throwing
 ```drift
-throw InvalidOrder(order_id = order.id, code = "order.invalid")
+throw InvalidOrder(order_id = order.id, code = "order.invalid");
 ```
 
 Runtime builds an `Error` with:
@@ -2420,7 +2438,7 @@ Each exception field type must implement `Diagnostic` (see §5.13.7) so the runt
 Locals can be captured:
 
 ```drift
-val ^input: String as "record.field" = s
+val ^input: String as "record.field" = s;
 ```
 
 A frame is added when unwinding past the function:
@@ -2446,9 +2464,9 @@ Rules:
 #### 14.5.1. Catch by event
 ```drift
 try {
-    ship(order)
+    ship(order);
 } catch shop.orders:InvalidOrder(e) {
-    log(&e)
+    log(&e);
 }
 ```
 
@@ -2458,8 +2476,8 @@ Catch clauses must use the canonical FQN form `<module>.<submodules>:<Event>`; n
 #### 14.5.2. Catch-all + rethrow
 ```drift
 catch e {
-    log(&e)
-    rethrow
+    log(&e);
+    rethrow;
 }
 ```
 
@@ -2470,7 +2488,7 @@ Ownership moves back to unwinder.
 For a single call where you just want a fallback value, use the one-liner form:
 
 ```drift
-val date = try parse_date(input) catch { default_date }
+val date = try parse_date(input) catch { default_date };
 ```
 
 This is sugar for a catch-all handler:
@@ -2479,7 +2497,7 @@ This is sugar for a catch-all handler:
 val date = {
     try { parse_date(input) }
     catch _ { default_date }
-}
+};
 ```
 
 The `else` expression must produce the same type as the `try` expression. Exception context (`event`, attrs, captured locals, stack) is still recorded before control flows into the `else` arm.
@@ -2491,8 +2509,8 @@ The `else` expression must produce the same type as the `try` expression. Except
 Attributes are accessed via `Error.attrs`:
 
 ```drift
-val code = e.attrs["sql_code"].as_int()
-val cust = e.attrs["order"]["customer"]["id"].as_string()
+val code = e.attrs["sql_code"].as_int();
+val cust = e.attrs["order"]["customer"]["id"].as_string();
 ```
 
 Lookups and `.as_*()` are non-throwing; missing or wrong-typed fields yield `DiagnosticValue::Missing` and `Optional.none`.
@@ -2646,14 +2664,14 @@ Finalizers are **optional** unless early release, explicit error handling, or sh
 {
     open("x")
       |> fill
-      |> tune;      // RAII closes automatically here
+      |> tune; // RAII closes automatically here
 }
 
 {
     open("x")
       >> fill
       >> tune
-      >> finalize;  // explicit end-of-life
+      >> finalize; // explicit end-of-life
 }
 ```
 
@@ -2708,12 +2726,12 @@ module lang.abi
 struct RawBuffer { /* opaque */ }
 struct Layout { size: Int, align: Int }
 
-@intrinsic fn size_of<T>() returns Int
-@intrinsic fn align_of<T>() returns Int
+@intrinsic fn size_of<T>() returns Int;
+@intrinsic fn align_of<T>() returns Int;
 
-@unsafe fn alloc(layout: Layout) returns RawBuffer
-@unsafe fn realloc(buf: RawBuffer, old: Layout, new: Layout) returns RawBuffer
-@unsafe fn dealloc(buf: RawBuffer, layout: Layout) returns Void
+@unsafe fn alloc(layout: Layout) returns RawBuffer;
+@unsafe fn realloc(buf: RawBuffer, old: Layout, new: Layout) returns RawBuffer;
+@unsafe fn dealloc(buf: RawBuffer, layout: Layout) returns Void;
 ```
 
 - `alloc` returns uninitialized storage for a layout.
@@ -2839,14 +2857,14 @@ Chapter 16 defines the canonical typed-storage helpers `Slot<T>` and `Uninit<T>`
 Growable containers expose builder objects instead of raw capacity math. Example:
 
 ```drift
-var xs = Array<Line>()
-xs.reserve(100)
+var xs = Array<Line>();
+xs.reserve(100);
 
-var builder = xs.begin_uninit(3)
-builder.emplace(/* args for element 0 */)
-builder.emplace(/* args for element 1 */)
-builder.emplace(/* args for element 2 */)
-builder.finish()                 // commits len += 3; rollback if dropped early
+var builder = xs.begin_uninit(3);
+builder.emplace(/* args for element 0 */);
+builder.emplace(/* args for element 1 */);
+builder.emplace(/* args for element 2 */);
+builder.finish(); // commits len += 3; rollback if dropped early
 ```
 
 - `UninitBuilder<T>` only exposes `emplace`, `write`, `len_built`, and `finish`.
@@ -2909,14 +2927,14 @@ fn crc32(seed: Uint32, data: &Uint8, len: Uint32) returns Uint32
 ```drift
 fn narrow_size_to_u32(len: Size) returns Uint32 {
     if len > Uint32::MAX {
-        throw Error("len-too-large", code = "zlib.len.out_of_range")
+        throw Error("len-too-large", code = "zlib.len.out_of_range");
     }
-    return cast(len)
+    return cast(len);
 }
 
 fn crc32(seed: Uint32, buf: ByteBuffer) returns Uint32 {
-    val len32: Uint32 = narrow_size_to_u32(buf.len())
-    return lang.abi.zlib.crc32(seed, buf.as_slice().data_ptr(), len32)
+    val len32: Uint32 = narrow_size_to_u32(buf.len());
+    return lang.abi.zlib.crc32(seed, buf.as_slice().data_ptr(), len32);
 }
 ```
 
@@ -2939,7 +2957,7 @@ extern "C" struct Point { x: Int32, y: Int32 }
 extern "C" fn draw(points: abi.Slice<Point>) returns Int32
 
 fn render(points: Array<Point>) returns Int32 {
-    return draw(points.as_slice())     // no raw pointers in user code
+    return draw(points.as_slice()); // no raw pointers in user code
 }
 ```
 
@@ -2963,14 +2981,14 @@ Truly low-level helpers (`Slot<T>`, unchecked length changes, raw buffer manipul
 **Placement without pointers**
 
 ```drift
-var arr = Array<UserType>.with_capacity(10)
+var arr = Array<UserType>.with_capacity(10);
 
-var value = UserType(...)
-arr.push(value)                      // standard path
+var value = UserType(...);
+arr.push(value); // standard path
 
-var builder = arr.begin_uninit(1)
-builder.write(value)
-builder.finish()
+var builder = arr.begin_uninit(1);
+builder.write(value);
+builder.finish();
 ```
 
 **FFI call**
@@ -2982,7 +3000,7 @@ extern "C" struct Buf { data: abi.CPtr<U8>, len: Int32 }
 extern "C" fn send(buf: abi.Slice<U8>) returns Int32
 
 fn transmit(bytes: Array<U8>) returns Int32 {
-    return send(bytes.as_slice())
+    return send(bytes.as_slice());
 }
 ```
 
@@ -3040,9 +3058,9 @@ Drift’s standard concurrency module exposes straightforward helpers:
 ```drift
 import std.concurrent as conc
 
-val t = conc.spawn(| | => compute_answer())
+val t = conc.spawn(| | => compute_answer());
 
-val ans = t.join()
+val ans = t.join();
 ```
 
 Spawn operations return a handle whose `join()` parks the caller until completion. Joining a failed thread returns a `JoinError` encapsulating the thrown `Error`.
@@ -3058,11 +3076,11 @@ val policy = ExecutorPolicy.builder()
     .queue_limit(5000)
     .timeout(2.seconds)
     .on_saturation(Policy.RETURN_BUSY)
-    .build()
+    .build();
 
-val exec = conc.make_executor(policy)
+val exec = conc.make_executor(policy);
 
-val t = conc.spawn_on(exec, | | => handle_connection())
+val t = conc.spawn_on(exec, | | => handle_connection());
 ```
 
 #### 19.2.2. Structured concurrency
@@ -3071,14 +3089,14 @@ val t = conc.spawn_on(exec, | | => handle_connection())
 
 ```drift
 conc.scope(|scope: conc.Scope| => {
-    val u = scope.spawn(| | => load_user(42))
-    val d = scope.spawn(| | => fetch_data())
+    val u = scope.spawn(| | => load_user(42));
+    val d = scope.spawn(| | => fetch_data());
 
-    val user = u.join()
-    val data = d.join()
+    val user = u.join();
+    val data = d.join();
 
-    render(user, data)
-})
+    render(user, data);
+});
 ```
 
 If any child fails, the scope cancels the remaining children and propagates the error, ensuring deterministic cleanup.
@@ -3094,9 +3112,9 @@ val policy = ExecutorPolicy.builder()
     .queue_limit(10000)
     .timeout(250.millis)
     .on_saturation(Policy.BLOCK)
-    .build()
+    .build();
 
-val exec = conc.make_executor(policy)
+val exec = conc.make_executor(policy);
 ```
 
 Policy fields:
@@ -3138,13 +3156,13 @@ At the bottom layer the runtime exposes a minimal intrinsic surface to the stand
 ```drift
 module lang.thread
 
-@intrinsic fn vt_spawn(entry: fn() returns Void, exec: ExecutorHandle)
-@intrinsic fn vt_park() returns Void
-@intrinsic fn vt_unpark(thread: VirtualThreadHandle) returns Void
-@intrinsic fn current_executor() returns ExecutorHandle
+@intrinsic fn vt_spawn(entry: fn() returns Void, exec: ExecutorHandle);
+@intrinsic fn vt_park() returns Void;
+@intrinsic fn vt_unpark(thread: VirtualThreadHandle) returns Void;
+@intrinsic fn current_executor() returns ExecutorHandle;
 
-@intrinsic fn register_io(fd: Int, interest: IOEvent, thread: VirtualThreadHandle)
-@intrinsic fn register_timer(when: Timestamp, thread: VirtualThreadHandle)
+@intrinsic fn register_io(fd: Int, interest: IOEvent, thread: VirtualThreadHandle);
+@intrinsic fn register_timer(when: Timestamp, thread: VirtualThreadHandle);
 ```
 
 Library code such as `std.concurrent` is responsible for presenting straightforward APIs; user programs never touch these intrinsics directly.
@@ -3155,16 +3173,16 @@ Structured scopes ensure children finish (or are cancelled) before scope exit:
 
 ```drift
 conc.scope(|scope: conc.Scope| => {
-    val a = scope.spawn(| | => slow_calc())
-    val b = scope.spawn(| | => slow_calc())
-    val c = scope.spawn(| | => slow_calc())
+    val a = scope.spawn(| | => slow_calc());
+    val b = scope.spawn(| | => slow_calc());
+    val c = scope.spawn(| | => slow_calc());
 
-    val ra = a.join()
-    val rb = b.join()
-    val rc = c.join()
+    val ra = a.join();
+    val rb = b.join();
+    val rc = c.join();
 
-    println(ra + rb + rc)
-})
+    println(ra + rb + rc);
+});
 ```
 
 This pattern mirrors `try/finally`: if any child throws, the scope cancels the rest and rethrows after all joins complete.
@@ -3411,15 +3429,15 @@ extern "C"
 fn plugin_do_work(api: &PluginApi, req: &RequestC, resp: &mut ResponseC) returns Int32
 
 fn do_work(req: Request) returns Result<Response, Error> {
-    var req_c = to_c_request(req)
-    var resp_c = ResponseC.zero()
+    var req_c = to_c_request(req);
+    var resp_c = ResponseC.zero();
 
-    val code = plugin_do_work(api, &req_c, &resp_c)
+    val code = plugin_do_work(api, &req_c, &resp_c);
     if code == 0 {
-        return Ok(from_c_response(resp_c))
+        return Ok(from_c_response(resp_c));
     }
     // convert error code to Drift Error
-    return Err(make_plugin_error(code))
+    return Err(make_plugin_error(code));
 }
 ```
 
@@ -3580,18 +3598,18 @@ Generics use these traits for zero-cost, monomorphized dispatch:
 ```drift
 fn apply_twice<F>(f: F, x: Int) returns Int
     require F is Callable<(Int), Int> {
-    return f.call(x) + f.call(x)
+    return f.call(x) + f.call(x);
 }
 
 fn accumulate<F>(f: &mut F, xs: Array<Int>) returns Void
     require F is CallableMut<(Int), Void> {
-    var i = 0
+    var i = 0;
     while i < xs.len() { f.call(xs[i]); i = i + 1 }
 }
 
 fn run_once<F>(f: F) returns Int
     require F is CallableOnce<Void, Int> {
-    return f.call()
+    return f.call();
 }
 ```
 
@@ -3627,14 +3645,14 @@ Borrow captures were rejected in earlier revisions; in this revision they are su
 struct Job { id: Int }
 
 fn process(job: Job) returns Void {
-    println("processing job " + job.id.to_string())
+    println("processing job " + job.id.to_string());
 }
 
-var j = Job(id = 1)
+var j = Job(id = 1);
 
-process(j)    // copy
-process(move j)  // move
-process(j)    // error: use of moved value
+process(j); // copy
+process(move j); // move
+process(j); // error: use of moved value
 ```
 
 ---

@@ -154,6 +154,7 @@ def verify_package_signatures(
 	pkg_bytes: bytes,
 	pkg_manifest: dict[str, Any],
 	trust: TrustStore,
+	core_trust: TrustStore,
 	require_signatures: bool,
 	allow_unsigned_roots: list[Path],
 ) -> None:
@@ -163,6 +164,7 @@ def verify_package_signatures(
 	Raises ValueError on policy failure.
 	"""
 	pkg_sha = sha256_hex(pkg_bytes)
+	core_trust_store = core_trust
 
 	allow_unsigned = False
 	if not require_signatures and bool(pkg_manifest.get("unsigned")):
@@ -175,6 +177,19 @@ def verify_package_signatures(
 			allow_unsigned = True
 			break
 
+	# Reserved namespaces must never be satisfied by unsigned packages.
+	if allow_unsigned and bool(pkg_manifest.get("unsigned")):
+		modules = pkg_manifest.get("modules")
+		if isinstance(modules, list):
+			for m in modules:
+				if not isinstance(m, dict):
+					continue
+				mid = m.get("module_id")
+				if isinstance(mid, str) and mid.startswith(("std.", "lang.", "drift.")):
+					raise ValueError(
+						f"unsigned package is not permitted for reserved module namespace '{mid}'"
+					)
+
 	sig_path = Path(str(pkg_path) + ".sig")
 	if not sig_path.exists():
 		if allow_unsigned:
@@ -186,22 +201,31 @@ def verify_package_signatures(
 		raise ValueError("signature sidecar package_sha256 mismatch")
 
 	# Verify signatures and collect the set of verified kids.
-	verified_kids: dict[str, str] = {}  # kid -> pubkey source ("trust"|"sidecar")
+	verified_kids: dict[str, str] = {}  # kid -> pubkey source ("trust"|"core"|"sidecar")
 	seen_ed25519 = 0
 	seen_revoked_kids: set[str] = set()
 	for entry in sf.signatures:
 		if entry.algo != "ed25519":
 			continue
 		seen_ed25519 += 1
-		if entry.kid in trust.revoked_kids:
+		core_tk = core_trust_store.keys_by_kid.get(entry.kid)
+		if core_tk is not None:
+			if entry.kid in core_trust_store.revoked_kids:
+				seen_revoked_kids.add(entry.kid)
+				continue
+		elif entry.kid in trust.revoked_kids:
 			seen_revoked_kids.add(entry.kid)
 			continue
 		pub_raw = None
 		pub_source = "none"
-		tk = trust.keys_by_kid.get(entry.kid)
-		if tk is not None:
-			pub_raw = tk.pubkey_raw
-			pub_source = "trust"
+		if core_tk is not None:
+			pub_raw = core_tk.pubkey_raw
+			pub_source = "core"
+		else:
+			tk = trust.keys_by_kid.get(entry.kid)
+			if tk is not None:
+				pub_raw = tk.pubkey_raw
+				pub_source = "trust"
 		# MVP policy: driftc does not perform TOFU by accepting unknown public keys
 		# from signature sidecars. The trust store is authoritative for which keys
 		# are trusted and what their public key bytes are. Sidecars may still
@@ -236,16 +260,19 @@ def verify_package_signatures(
 		mid = m.get("module_id")
 		if not isinstance(mid, str):
 			continue
-		allowed = trust.allowed_kids_for_module(mid)
+		is_core = mid.startswith(("std.", "lang.", "drift."))
+		allowed = (
+			core_trust_store.allowed_kids_for_module(mid)
+			if is_core
+			else trust.allowed_kids_for_module(mid)
+		)
 		if not allowed:
 			raise ValueError(f"no trusted keys configured for module namespace of '{mid}'")
-		# Core namespaces must not be TOFU'd via sidecar pubkeys.
-		is_core = mid.startswith(("std.", "lang.", "drift."))
 		ok = False
 		for kid, source in verified_kids.items():
 			if kid not in allowed:
 				continue
-			if is_core and source != "trust":
+			if is_core and source != "core":
 				continue
 			ok = True
 			break

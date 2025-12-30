@@ -9,15 +9,15 @@ variant B {
 }
 
 fn main() returns Int  nothrow{
-	val a = A::Some(10)
-	val b = B::Some(20)
-	val ax = match a {
-		Some(v) => { v }
-		None => { 0 }
-	}
-	val bx = match b {
-		Some(v) => { v }
-		None => { 0 }
-	}
-	return ax + bx
+	val a = A::Some(10);
+	val b = B::Some(20);
+	val ax = match a{
+	Some(v) => { v },
+		None => { 0 },
+	};
+	val bx = match b{
+	Some(v) => { v },
+		None => { 0 },
+	};
+	return ax + bx;
 }

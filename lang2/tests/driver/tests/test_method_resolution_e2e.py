@@ -23,7 +23,7 @@ implement Point {
 
 fn main() returns Int  nothrow{
     val x = 1;
-    return x.m(); // no such method on Int
+    return x.m(); // no such method on Int;
 }
 """
 	)

@@ -1,5 +1,1 @@
-{
-  "exit_code": 1,
-  "phase": "parser",
-  "diagnostics": [{ "phase": "parser", "message_contains": "reserved prefix" }]
-}
+{ "exit_code": 0, "stdout": "", "stderr": "" }

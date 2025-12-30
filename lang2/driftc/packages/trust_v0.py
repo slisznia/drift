@@ -19,6 +19,7 @@ import base64
 import json
 from dataclasses import dataclass
 from pathlib import Path
+import os
 from typing import Any, Mapping
 
 
@@ -136,6 +137,19 @@ def load_trust_store_json(path: Path) -> TrustStore:
 		revoked_kids = {str(k) for k in revoked_obj.keys() if isinstance(k, str)}
 
 	return TrustStore(keys_by_kid=keys_by_kid, allowed_kids_by_namespace=allowed, revoked_kids=revoked_kids)
+
+
+def load_core_trust_store() -> TrustStore:
+	"""
+	Load the toolchain-shipped core trust store.
+
+	This store is authoritative for reserved namespaces (`lang.*`, `std.*`,
+	`drift.*`) and is not influenced by user/project trust files.
+	"""
+	default_path = Path(__file__).with_name("core_trust.json")
+	if default_path.exists():
+		return load_trust_store_json(default_path)
+	raise ValueError(f"core trust store not found: {default_path}")
 
 
 def merge_trust_stores(primary: TrustStore, secondary: TrustStore) -> TrustStore:

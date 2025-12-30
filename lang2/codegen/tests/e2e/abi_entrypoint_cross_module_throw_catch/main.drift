@@ -4,8 +4,8 @@ import acme.boom as boom
 
 fn main() returns Int  nothrow{
 	try boom.boom() catch {
-		return 0
+		return 0;
 	}
-	return 1
+	return 1;
 }
 

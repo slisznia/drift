@@ -120,6 +120,12 @@ class Stmt:
 
 
 @dataclass
+class BlockStmt(Stmt):
+	loc: Located
+	block: Block
+
+
+@dataclass
 class LetStmt(Stmt):
     loc: Located
     name: str

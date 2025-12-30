@@ -6,12 +6,12 @@ pub struct Point { x: Int }
 
 implement Point {
 	pub fn bump(self: &mut Point, dx: Int) returns Void nothrow {
-		x += dx
+		x += dx;
 	}
 }
 
 fn main() returns Int nothrow {
-	var p: Point = Point(x = 1)
-	p.bump(1)
-	return p.x
+	var p: Point = Point(x = 1);
+	p.bump(1);
+	return p.x;
 }

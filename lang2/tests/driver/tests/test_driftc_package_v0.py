@@ -139,7 +139,7 @@ module {module_id}
 export {{ add }}
 
 pub fn add(a: Int, b: Int) returns Int nothrow {{
-	return a + b
+	return a + b;
 }}
 """.lstrip(),
 	)
@@ -170,7 +170,7 @@ module {module_id}
 export {{ main }}
 
 pub fn main() returns Int nothrow {{
-	return 0
+	return 0;
 }}
 """.lstrip(),
 	)
@@ -200,11 +200,11 @@ module {module_id}
 
 export {{ S }}
 
-pub struct S(x: Int)
+pub struct S(x: Int);
 
 implement S {{
 	pub fn main(self: &S) returns Int nothrow {{
-		return 0
+		return 0;
 	}}
 }}
 """.lstrip(),
@@ -236,11 +236,11 @@ module {module_id}
 export {{ add }}
 
 pub fn add(a: Int, b: Int) returns Int nothrow {{
-	return a + b
+	return a + b;
 }}
 
 fn hidden() returns Int {{
-	return 1
+	return 1;
 }}
 """.lstrip(),
 	)
@@ -271,11 +271,11 @@ module {module_id}
 export {{ add }}
 
 pub fn add(a: Int, b: Int) returns Int nothrow {{
-	return a + b
+	return a + b;
 }}
 
 pub fn hidden() returns Int {{
-	return 1
+	return 1;
 }}
 """.lstrip(),
 	)
@@ -313,7 +313,7 @@ module {core_id}
 export {{ add }}
 
 pub fn add(a: Int, b: Int) returns Int nothrow {{
-	return a + b
+	return a + b;
 }}
 """.lstrip(),
 	)
@@ -384,7 +384,7 @@ export {{ Point }}
 pub struct Point {{ x: Int, y: Int }}
 
 fn make() returns Point {{
-	return Point(x = 1, y = 2)
+	return Point(x = 1, y = 2);
 }}
 """.lstrip(),
 	)
@@ -423,7 +423,7 @@ export {{ Point, make }}
 pub struct Point {{ x: Int, y: Int }}
 
 pub fn make() returns Point nothrow {{
-	return Point(x = 1, y = 0)
+	return Point(x = 1, y = 0);
 }}
 """.lstrip(),
 	)
@@ -483,7 +483,7 @@ pub variant Optional<T> {{
 }}
 
 pub fn foo() returns Optional<Int> nothrow {{
-	return Some(41)
+	return Some(41);
 }}
 """.lstrip(),
 	)
@@ -519,10 +519,10 @@ module {module_id}
 
 export {{ Boom }}
 
-pub exception Boom(a: Int, b: String)
+pub exception Boom(a: Int, b: String);
 
 fn dummy() returns Int nothrow {{
-	return 0
+	return 0;
 }}
 """.lstrip(),
 	)
@@ -619,7 +619,7 @@ module main
 import lib as lib
 
 fn main() returns Int  nothrow{
-	return try lib.add(40, 2) catch { 0 }
+	return try lib.add(40, 2) catch { 0 };
 }
 """.lstrip(),
 	)
@@ -631,7 +631,7 @@ module lib
 export { add }
 
 pub fn add(a: Int, b: Int) returns Int nothrow {
-	return a + b
+	return a + b;
 }
 """.lstrip(),
 	)
@@ -686,13 +686,13 @@ import acme.optb as optb
 
 fn main() returns Int  nothrow{
 	try {
-		val x = liba.add(40, 2)
-		val y: optb.Optional<Int> = optb.foo()
+		val x = liba.add(40, 2);
+		val y: optb.Optional<Int> = optb.foo();
 		val z = match y {
-			Some(v) => { v }
-			default => { 0 }
-		}
-		return x + z
+			Some(v) => { v },
+			default => { 0 },
+		};
+		return x + z;
 	} catch {
 		return 0;
 	}
@@ -732,7 +732,7 @@ fn main() returns Int  nothrow{
 
 def test_emit_package_is_deterministic_with_changed_package_filenames(tmp_path: Path) -> None:
 	"""
-	Determinism guard: package discovery ordering (filename sorting / rglob order)
+	Determinism guard: package discovery ordering (filename sorting / rglob order);
 	must not affect build output.
 	"""
 	src_root = tmp_path / "src"
@@ -753,13 +753,13 @@ import acme.optb as optb
 
 fn main() returns Int  nothrow{
 	try {
-		val x = liba.add(40, 2)
-		val y: optb.Optional<Int> = optb.foo()
+		val x = liba.add(40, 2);
+		val y: optb.Optional<Int> = optb.foo();
 		val z = match y {
-			Some(v) => { v }
-			default => { 0 }
-		}
-		return x + z
+			Some(v) => { v },
+			default => { 0 },
+		};
+		return x + z;
 	} catch {
 		return 0;
 	}
@@ -823,13 +823,13 @@ import acme.opt as opt
 
 fn main() returns Int  nothrow{
 	try {
-		val p: g.Point = g.make()
-		val o: opt.Optional<g.Point> = Some(p)
+		val p: g.Point = g.make();
+		val o: opt.Optional<g.Point> = Some(p);
 		val x = match o {
-			Some(v) => { v.x }
-			default => { 0 }
-		}
-		return (try liba.add(40, 2) catch { 0 }) + x
+			Some(v) => { v.x },
+			default => { 0 },
+		};
+		return (try liba.add(40, 2) catch { 0 }) + x;
 	} catch {
 		return 0;
 	}
@@ -875,7 +875,7 @@ module main
 import lib as lib
 
 fn main() returns Int  nothrow{
-	return try lib.add(40, 2) catch { 0 }
+	return try lib.add(40, 2) catch { 0 };
 }
 """.lstrip(),
 	)
@@ -887,7 +887,7 @@ module lib
 export { add }
 
 pub fn add(a: Int, b: Int) returns Int nothrow {
-	return a + b
+	return a + b;
 }
 """.lstrip(),
 	)
@@ -923,7 +923,7 @@ module lib
 export { add }
 
 pub fn add(a: Int, b: Int) returns Int nothrow {
-	return a + b
+	return a + b;
 }
 """.lstrip(),
 	)
@@ -963,7 +963,7 @@ module lib
 export { add }
 
 pub fn add(a: Int, b: Int) returns Int nothrow {
-	return a + b
+	return a + b;
 }
 """.lstrip(),
 	)
@@ -996,7 +996,7 @@ module lib
 export { add }
 
 pub fn add(a: Int, b: Int) returns Int nothrow {
-	return a + b
+	return a + b;
 }
 """.lstrip(),
 	)
@@ -1029,7 +1029,7 @@ module lib
 export { add }
 
 pub fn add(a: Int, b: Int) returns Int nothrow {
-	return a + b
+	return a + b;
 }
 """.lstrip(),
 	)
@@ -1089,7 +1089,7 @@ module lib
 export {{ add }}
 
 pub fn add(a: Int, b: Int) returns Int nothrow {{
-	return a + b + {n}
+	return a + b + {n};
 }}
 """.lstrip(),
 		)
@@ -1116,7 +1116,7 @@ module main
 import lib as lib
 
 fn main() returns Int  nothrow{
-	return try lib.add(40, 2) catch { 0 }
+	return try lib.add(40, 2) catch { 0 };
 }
 """.lstrip(),
 	)
@@ -1147,10 +1147,10 @@ module lib
 
 export { S, make }
 
-pub struct S(x: Int)
+pub struct S(x: Int);
 
 pub fn make() returns S nothrow {
-	return S(x = 42)
+	return S(x = 42);
 }
 """.lstrip(),
 	)
@@ -1178,8 +1178,8 @@ import lib as lib
 
 fn main() returns Int  nothrow{
 	try {
-		val s: lib.S = lib.make()
-		return s.x
+		val s: lib.S = lib.make();
+		return s.x;
 	} catch {
 		return 0;
 	}
@@ -1210,7 +1210,7 @@ def test_driftc_rejects_dependency_main_entrypoint(tmp_path: Path, capsys: pytes
 module main
 
 fn main() returns Int nothrow {
-	return 0
+	return 0;
 }
 """.lstrip(),
 	)
@@ -1241,7 +1241,7 @@ def test_driftc_allows_dependency_method_named_main(tmp_path: Path) -> None:
 module main
 
 fn main() returns Int nothrow {
-	return 0
+	return 0;
 }
 """.lstrip(),
 	)
@@ -1261,6 +1261,301 @@ fn main() returns Int nothrow {
 	assert rc == 0
 
 
+def test_driftc_rejects_duplicate_module_ids_across_packages(
+	tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+	pkgs_a = tmp_path / "pkgs_a"
+	pkgs_b = tmp_path / "pkgs_b"
+	pkgs_a.mkdir(parents=True, exist_ok=True)
+	pkgs_b.mkdir(parents=True, exist_ok=True)
+
+	module_id = "dup.mod"
+	for root, pkg_id in ((pkgs_a, "pkg.a"), (pkgs_b, "pkg.b")):
+		module_dir = root.joinpath(*module_id.split("."))
+		_write_file(
+			module_dir / "mod.drift",
+			f"""
+module {module_id}
+
+export {{ add }}
+
+pub fn add(a: Int, b: Int) returns Int nothrow {{
+	return a + b;
+}}
+""".lstrip(),
+		)
+		pkg_path = root / f"{pkg_id}.dmp"
+		assert (
+			driftc_main(
+				[
+					"-M",
+					str(root),
+					str(module_dir / "mod.drift"),
+					*_emit_pkg_args(pkg_id),
+					"--emit-package",
+					str(pkg_path),
+				]
+			)
+			== 0
+		)
+
+	_write_file(
+		tmp_path / "main.drift",
+		"""
+module main
+
+fn main() returns Int nothrow {
+	return 0;
+}
+""".lstrip(),
+	)
+
+	rc, payload = _run_driftc_json(
+		[
+			"-M",
+			str(tmp_path),
+			"--package-root",
+			str(pkgs_a),
+			"--package-root",
+			str(pkgs_b),
+			"--allow-unsigned-from",
+			str(pkgs_a),
+			"--allow-unsigned-from",
+			str(pkgs_b),
+			str(tmp_path / "main.drift"),
+			"--emit-ir",
+			str(tmp_path / "out.ll"),
+		],
+		capsys,
+	)
+	assert rc != 0
+	diags = payload.get("diagnostics", [])
+	assert any("provided by multiple packages" in d.get("message", "") for d in diags)
+
+
+def test_driftc_rejects_unsigned_reserved_namespace_package(
+	tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+	_write_file(
+		tmp_path / "main.drift",
+		"""
+module main
+
+fn main() returns Int nothrow {
+	return 0;
+}
+""".lstrip(),
+	)
+	for module_id in ("std.evil", "lang.evil", "drift.evil"):
+		pkg_root = tmp_path / f"pkgs_{module_id.replace('.', '_')}"
+		pkg_root.mkdir(parents=True, exist_ok=True)
+		module_dir = pkg_root.joinpath(*module_id.split("."))
+		_write_file(
+			module_dir / "evil.drift",
+			f"""
+module {module_id}
+
+export {{ add }}
+
+pub fn add(a: Int, b: Int) returns Int nothrow {{
+	return a + b;
+}}
+""".lstrip(),
+		)
+		pkg_path = pkg_root / "evil.dmp"
+		assert (
+			driftc_main(
+				[
+					"-M",
+					str(pkg_root),
+					str(module_dir / "evil.drift"),
+					*_emit_pkg_args(module_id),
+					"--emit-package",
+					str(pkg_path),
+				]
+			)
+			== 0
+		)
+
+		rc, payload = _run_driftc_json(
+			[
+				"-M",
+				str(tmp_path),
+				"--package-root",
+				str(pkg_root),
+				"--allow-unsigned-from",
+				str(pkg_root),
+				str(tmp_path / "main.drift"),
+				"--emit-ir",
+				str(tmp_path / "out.ll"),
+			],
+			capsys,
+		)
+		assert rc != 0
+		diags = payload.get("diagnostics", [])
+		assert any("reserved module namespace" in d.get("message", "") for d in diags)
+
+
+def test_driftc_reserved_namespace_requires_core_trust_keys(
+	tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+	home = tmp_path / "home"
+	monkeypatch.setenv("HOME", str(home))
+	user_trust_path = home / ".config" / "drift" / "trust.json"
+	user_trust_path.parent.mkdir(parents=True, exist_ok=True)
+	core_trust_path = tmp_path / "core_trust.json"
+
+	core_priv = Ed25519PrivateKey.generate()
+	core_pub_raw = _public_key_bytes(core_priv.public_key())
+	core_kid = compute_ed25519_kid(core_pub_raw)
+	core_pub_b64 = _b64(core_pub_raw)
+
+	user_priv = Ed25519PrivateKey.generate()
+	user_pub_raw = _public_key_bytes(user_priv.public_key())
+	user_kid = compute_ed25519_kid(user_pub_raw)
+	user_pub_b64 = _b64(user_pub_raw)
+
+	trust_path = tmp_path / "trust.json"
+	_write_trust_store(trust_path, kid=core_kid, pub_b64=core_pub_b64, ns="std.*")
+	_write_trust_store(user_trust_path, kid=user_kid, pub_b64=user_pub_b64, ns="std.*")
+	_write_trust_store(core_trust_path, kid=core_kid, pub_b64=core_pub_b64, ns="std.*")
+
+	pkg_root = tmp_path / "pkgs"
+	pkg_root.mkdir(parents=True, exist_ok=True)
+	module_id = "std.evil"
+	module_dir = pkg_root.joinpath(*module_id.split("."))
+	_write_file(
+		module_dir / "evil.drift",
+		f"""
+module {module_id}
+
+export {{ add }}
+
+pub fn add(a: Int, b: Int) returns Int nothrow {{
+	return a + b;
+}}
+""".lstrip(),
+	)
+	pkg_path = pkg_root / "evil.dmp"
+	assert (
+		driftc_main(
+			[
+				"-M",
+				str(pkg_root),
+				str(module_dir / "evil.drift"),
+				*_emit_pkg_args(module_id),
+				"--emit-package",
+				str(pkg_path),
+			]
+		)
+		== 0
+	)
+
+	_write_file(
+		tmp_path / "main.drift",
+		"""
+module main
+
+fn main() returns Int nothrow {
+	return 0;
+}
+""".lstrip(),
+	)
+
+	pkg_bytes = pkg_path.read_bytes()
+	user_sig = user_priv.sign(pkg_bytes)
+	_write_sig_sidecar(pkg_path, pkg_bytes=pkg_bytes, kid=user_kid, sig_raw=user_sig)
+
+	rc, payload = _run_driftc_json(
+		[
+			"-M",
+			str(tmp_path),
+			"--package-root",
+			str(pkg_root),
+			"--allow-unsigned-from",
+			str(pkg_root),
+			"--dev",
+			"--dev-core-trust-store",
+			str(core_trust_path),
+			"--trust-store",
+			str(trust_path),
+			"--require-signatures",
+			str(tmp_path / "main.drift"),
+			"--emit-ir",
+			str(tmp_path / "out.ll"),
+		],
+		capsys,
+	)
+	assert rc != 0
+	diags = payload.get("diagnostics", [])
+	assert any("package signatures are not trusted for module" in d.get("message", "") for d in diags)
+
+	core_sig = core_priv.sign(pkg_bytes)
+	_write_sig_sidecar(pkg_path, pkg_bytes=pkg_bytes, kid=core_kid, sig_raw=core_sig)
+
+	rc, payload = _run_driftc_json(
+		[
+			"-M",
+			str(tmp_path),
+			"--package-root",
+			str(pkg_root),
+			"--allow-unsigned-from",
+			str(pkg_root),
+			"--dev",
+			"--dev-core-trust-store",
+			str(core_trust_path),
+			"--trust-store",
+			str(trust_path),
+			"--require-signatures",
+			str(tmp_path / "main.drift"),
+			"--emit-ir",
+			str(tmp_path / "out.ll"),
+		],
+		capsys,
+	)
+	assert rc == 0
+	assert payload.get("diagnostics") == []
+
+
+def test_driftc_dev_core_trust_requires_dev_flag(
+	tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+	core_trust_path = tmp_path / "core_trust.json"
+	core_priv = Ed25519PrivateKey.generate()
+	core_pub_raw = _public_key_bytes(core_priv.public_key())
+	core_kid = compute_ed25519_kid(core_pub_raw)
+	core_pub_b64 = _b64(core_pub_raw)
+	_write_trust_store(core_trust_path, kid=core_kid, pub_b64=core_pub_b64, ns="std.*")
+
+	_write_file(
+		tmp_path / "main.drift",
+		"""
+module main
+
+fn main() returns Int nothrow {
+	return 0;
+}
+""".lstrip(),
+	)
+	rc, payload = _run_driftc_json(
+		[
+			"-M",
+			str(tmp_path),
+			"--package-root",
+			str(tmp_path),
+			"--dev-core-trust-store",
+			str(core_trust_path),
+			str(tmp_path / "main.drift"),
+			"--emit-ir",
+			str(tmp_path / "out.ll"),
+		],
+		capsys,
+	)
+	assert rc != 0
+	diags = payload.get("diagnostics", [])
+	assert any("--dev-core-trust-store requires --dev" in d.get("message", "") for d in diags)
+
+
 def test_package_embedding_includes_only_call_graph_closure(tmp_path: Path) -> None:
 	_write_file(
 		tmp_path / "lib" / "lib.drift",
@@ -1270,11 +1565,11 @@ module lib
 export { add }
 
 pub fn add(a: Int, b: Int) returns Int nothrow {
-	return a + b
+	return a + b;
 }
 
 fn unused() returns Int nothrow {
-	return 999
+	return 999;
 }
 """.lstrip(),
 	)
@@ -1301,7 +1596,7 @@ module main
 import lib as lib
 
 fn main() returns Int  nothrow{
-	return try lib.add(40, 2) catch { 0 }
+	return try lib.add(40, 2) catch { 0 };
 }
 """.lstrip(),
 	)
@@ -1347,7 +1642,7 @@ module lib
 export { add }
 
 pub fn add(a: Int, b: Int) returns Int nothrow {
-	return a + b
+	return a + b;
 }
 """.lstrip(),
 	)
@@ -1376,7 +1671,7 @@ module main
 import lib as lib
 
 fn main() returns Int  nothrow{
-	return try lib.add(40, 2) catch { 0 }
+	return try lib.add(40, 2) catch { 0 };
 }
 """.lstrip(),
 	)
@@ -1402,7 +1697,7 @@ def test_driftc_missing_explicit_trust_store_is_reported_as_diagnostic(tmp_path:
 module main
 
 fn main() returns Int  nothrow{
-	return 0
+	return 0;
 }
 """.lstrip(),
 	)
@@ -1440,7 +1735,7 @@ module main
 import acme.lib as lib
 
 fn main() returns Int  nothrow{
-	return try lib.add(40, 2) catch { 0 }
+	return try lib.add(40, 2) catch { 0 };
 }
 """.lstrip(),
 	)
@@ -1545,7 +1840,7 @@ module main
 import acme.badmod as badmod
 
 fn main() returns Int  nothrow{
-	return 0
+	return 0;
 }
 """.lstrip(),
 	)
@@ -1585,7 +1880,7 @@ module main
 import acme.lib as lib
 
 fn main() returns Int  nothrow{
-	return try lib.add(40, 2) catch { 0 }
+	return try lib.add(40, 2) catch { 0 };
 }
 """.lstrip(),
 	)
@@ -1622,7 +1917,7 @@ module main
 import acme.lib as lib
 
 fn main() returns Int  nothrow{
-	return try lib.add(40, 2) catch { 0 }
+	return try lib.add(40, 2) catch { 0 };
 }
 """.lstrip(),
 	)
@@ -1660,7 +1955,7 @@ module main
 import acme.lib as lib
 
 fn main() returns Int  nothrow{
-	return try lib.add(40, 2) catch { 0 }
+	return try lib.add(40, 2) catch { 0 };
 }
 """.lstrip(),
 	)
@@ -1705,7 +2000,7 @@ module main
 import acme.lib as lib
 
 fn main() returns Int  nothrow{
-	return try lib.add(40, 2) catch { 0 }
+	return try lib.add(40, 2) catch { 0 };
 }
 """.lstrip(),
 	)
@@ -1744,7 +2039,7 @@ module main
 import acme.lib as lib
 
 fn main() returns Int  nothrow{
-	return try lib.add(40, 2) catch { 0 }
+	return try lib.add(40, 2) catch { 0 };
 }
 """.lstrip(),
 	)
@@ -1783,7 +2078,7 @@ module main
 import acme.lib as lib
 
 fn main() returns Int  nothrow{
-	return try lib.add(40, 2) catch { 0 }
+	return try lib.add(40, 2) catch { 0 };
 }
 """.lstrip(),
 	)
@@ -1828,7 +2123,7 @@ module main
 import acme.lib as lib
 
 fn main() returns Int  nothrow{
-	return try lib.add(40, 2) catch { 0 }
+	return try lib.add(40, 2) catch { 0 };
 }
 """.lstrip(),
 	)
@@ -1900,7 +2195,7 @@ module main
 import acme.lib as lib
 
 fn main() returns Int  nothrow{
-	return try lib.add(40, 2) catch { 0 }
+	return try lib.add(40, 2) catch { 0 };
 }
 """.lstrip(),
 	)
@@ -1957,7 +2252,7 @@ module main
 import acme.lib as lib
 
 fn main() returns Int  nothrow{
-	return try lib.add(40, 2) catch { 0 }
+	return try lib.add(40, 2) catch { 0 };
 }
 """.lstrip(),
 	)
@@ -2020,7 +2315,7 @@ module main
 import acme.lib as lib
 
 fn main() returns Int  nothrow{
-	return try lib.add(40, 2) catch { 0 }
+	return try lib.add(40, 2) catch { 0 };
 }
 """.lstrip(),
 	)
@@ -2059,7 +2354,7 @@ module main
 import acme.lib as lib
 
 fn main() returns Int  nothrow{
-	return try lib.add(40, 2) catch { 0 }
+	return try lib.add(40, 2) catch { 0 };
 }
 """.lstrip(),
 	)
@@ -2098,7 +2393,7 @@ module main
 import acme.lib as lib
 
 fn main() returns Int  nothrow{
-	return try lib.add(40, 2) catch { 0 }
+	return try lib.add(40, 2) catch { 0 };
 }
 """.lstrip(),
 	)
@@ -2131,7 +2426,7 @@ module lib
 export { add }
 
 pub fn add(a: Int, b: Int) returns Int nothrow {
-	return a + b
+	return a + b;
 }
 """.lstrip(),
 	)
@@ -2169,7 +2464,7 @@ module main
 import lib as lib
 
 fn main() returns Int  nothrow{
-	return try lib.add(40, 2) catch { 0 }
+	return try lib.add(40, 2) catch { 0 };
 }
 """.lstrip(),
 	)
@@ -2202,12 +2497,12 @@ import acme.opt as opt
 
 fn main() returns Int  nothrow{
 	try {
-		val x: opt.Optional<Int> = opt.foo()
+		val x: opt.Optional<Int> = opt.foo();
 		val y = match x {
-			Some(v) => { v + 1 }
-			None => { 0 }
-		}
-		return y
+			Some(v) => { v + 1 },
+			None => { 0 },
+		};
+		return y;
 	} catch {
 		return 0;
 	}
@@ -2251,7 +2546,7 @@ variant Optional<T> {
 }
 
 fn main() returns Int  nothrow{
-	return 0
+	return 0;
 }
 """.lstrip(),
 	)
@@ -2288,7 +2583,7 @@ def test_driftc_rejects_variant_schema_collision_between_packages(tmp_path: Path
 module main
 
 fn main() returns Int  nothrow{
-	return 0
+	return 0;
 }
 """.lstrip(),
 	)
@@ -2325,7 +2620,7 @@ module main
 import acme.hidden as hidden
 
 fn main() returns Int  nothrow{
-	return hidden.hidden()
+	return hidden.hidden();
 }
 """.lstrip(),
 	)
@@ -2361,7 +2656,7 @@ module main
 import acme.hiddenpub as hidden
 
 fn main() returns Int  nothrow{
-	return hidden.hidden()
+	return hidden.hidden();
 }
 """.lstrip(),
 	)
@@ -2398,7 +2693,7 @@ module main
 import acme.api as api
 
 fn main() returns Int  nothrow{
-	return try api.add(40, 2) catch { 0 }
+	return try api.add(40, 2) catch { 0 };
 }
 """.lstrip(),
 	)
@@ -2431,7 +2726,7 @@ module main
 import acme.consts as consts
 
 fn main() returns Int  nothrow{
-	return consts.ANSWER
+	return consts.ANSWER;
 }
 """.lstrip(),
 	)
@@ -2468,8 +2763,8 @@ module main
 import acme.point as point
 
 fn main() returns Int  nothrow{
-	val p: point.Point = point.make()
-	return p.x
+	val p: point.Point = point.make();
+	return p.x;
 }
 """.lstrip(),
 	)
@@ -2508,9 +2803,9 @@ import b.geom as bg
 
 fn main() returns Int  nothrow{
 	try {
-		val p1: ag.Point = ag.make()
-		val p2: bg.Point = bg.make()
-		return p1.x + p2.x
+		val p1: ag.Point = ag.make();
+		val p2: bg.Point = bg.make();
+		return p1.x + p2.x;
 	} catch {
 		return 0;
 	}
@@ -2607,7 +2902,7 @@ module main
 import acme.badiface as badiface
 
 fn main() returns Int  nothrow{
-	return try badiface.add(40, 2) catch { 0 }
+	return try badiface.add(40, 2) catch { 0 };
 }
 """.lstrip(),
 	)
@@ -2691,7 +2986,7 @@ module main
 import acme.badiface2 as badiface2
 
 fn main() returns Int  nothrow{
-	return try badiface2.add(40, 2) catch { 0 }
+	return try badiface2.add(40, 2) catch { 0 };
 }
 """.lstrip(),
 	)
@@ -2780,7 +3075,7 @@ module main
 import acme.badiface3 as badiface3
 
 fn main() returns Int  nothrow{
-	return try badiface3.add(40, 2) catch { 0 }
+	return try badiface3.add(40, 2) catch { 0 };
 }
 """.lstrip(),
 	)
@@ -2862,7 +3157,7 @@ module main
 import acme.badexc as badexc
 
 fn main() returns Int  nothrow{
-	return 0
+	return 0;
 }
 """.lstrip(),
 	)
@@ -2943,8 +3238,8 @@ module main
 import acme.badvar as badvar
 
 fn main() returns Int  nothrow{
-	val o: badvar.Optional<Int> = None
-	return 0
+	val o: badvar.Optional<Int> = None;
+	return 0;
 }
 """.lstrip(),
 	)
@@ -3115,7 +3410,7 @@ module lib
 export { add }
 
 pub fn add(a: Int, b: Int) returns Int nothrow {
-	return a + b
+	return a + b;
 }
 """.lstrip(),
 	)
@@ -3144,7 +3439,7 @@ module main
 import lib as lib
 
 fn main() returns Int  nothrow{
-	return try lib.add(40, 2) catch { 0 }
+	return try lib.add(40, 2) catch { 0 };
 }
 """.lstrip(),
 	)

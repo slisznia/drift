@@ -37,7 +37,7 @@ module lib
 export { add }
 
 pub fn add(a: Int, b: Int) returns Int {
-	return a + b
+	return a + b;
 }
 """.lstrip(),
 	)
@@ -151,7 +151,7 @@ module lib
 export { add }
 
 pub fn add(a: Int, b: Int) returns Int {
-	return a + b
+	return a + b;
 }
 """.lstrip(),
 	)
@@ -297,8 +297,8 @@ pub fn add(a: Int, b: Int) returns Int {{
 	# Two packages with the same package_id but different identities.
 	pkg_a = tmp_path / "lib_a.dmp"
 	pkg_b = tmp_path / "lib_b.dmp"
-	sha_a, bytes_a = _build_pkg(version="0.0.0", lib_body="return a + b", out_pkg=pkg_a)
-	sha_b, _bytes_b = _build_pkg(version="0.0.1", lib_body="return a + b + 1", out_pkg=pkg_b)
+	sha_a, bytes_a = _build_pkg(version="0.0.0", lib_body="return a + b;", out_pkg=pkg_a)
+	sha_b, _bytes_b = _build_pkg(version="0.0.1", lib_body="return a + b + 1;", out_pkg=pkg_b)
 	assert sha_a != sha_b
 
 	# Publish to two repos; both will have the same deterministic filename but
@@ -351,7 +351,7 @@ module lib
 export { add }
 
 pub fn add(a: Int, b: Int) returns Int {
-	return a + b
+	return a + b;
 }
 """.lstrip(),
 	)
@@ -413,7 +413,7 @@ module lib
 export { add }
 
 pub fn add(a: Int, b: Int) returns Int {
-	return a + b
+	return a + b;
 }
 """.lstrip(),
 	)
@@ -476,7 +476,7 @@ module lib
 export { add }
 
 pub fn add(a: Int, b: Int) returns Int {
-	return a + b
+	return a + b;
 }
 """.lstrip(),
 	)
@@ -593,7 +593,7 @@ module a
 export { add }
 
 pub fn add(x: Int, y: Int) returns Int {
-	return x + y
+	return x + y;
 }
 """.lstrip(),
 	)
@@ -605,7 +605,7 @@ module b
 export { add }
 
 pub fn add(x: Int, y: Int) returns Int {
-	return x + y + 1
+	return x + y + 1;
 }
 """.lstrip(),
 	)
@@ -712,7 +712,7 @@ module lib
 export { add }
 
 pub fn add(a: Int, b: Int) returns Int {
-	return a + b
+	return a + b;
 }
 """.lstrip(),
 	)
@@ -785,7 +785,7 @@ module lib
 export { add }
 
 pub fn add(a: Int, b: Int) returns Int {
-	return a + b
+	return a + b;
 }
 """.lstrip(),
 	)
@@ -845,7 +845,7 @@ module lib
 export { add }
 
 pub fn add(a: Int, b: Int) returns Int {
-	return a + b
+	return a + b;
 }
 """.lstrip(),
 	)
@@ -974,8 +974,8 @@ pub fn add(a: Int, b: Int) returns Int {{
 
 	pkg_a = tmp_path / "lib_a.dmp"
 	pkg_b = tmp_path / "lib_b.dmp"
-	_build_pkg("return a + b", pkg_a)
-	_build_pkg("return a + b + 1", pkg_b)
+	_build_pkg("return a + b;", pkg_a)
+	_build_pkg("return a + b + 1;", pkg_b)
 
 	repo_a = tmp_path / "repo_a"
 	repo_b = tmp_path / "repo_b"

@@ -12,7 +12,7 @@ from lang2.driftc.method_resolver import MethodResolution
 from lang2.driftc.traits.solver import Env, ProofStatus, prove_expr
 from lang2.driftc.core.function_id import FunctionId, function_symbol
 from lang2.driftc.core.types_core import TypeKind, TypeParamId
-from lang2.driftc.traits.world import TraitWorld, TypeKey, type_key_from_typeid
+from lang2.driftc.traits.world import TraitWorld, TypeKey, normalize_type_key, type_key_from_typeid
 from lang2.driftc.core.type_resolve_common import resolve_opaque_type
 
 
@@ -85,12 +85,6 @@ def collect_used_type_keys(
 	return used
 
 
-def _normalize_type_key(key: TypeKey, *, module_name: str) -> TypeKey:
-	if key.module is None:
-		return TypeKey(module=module_name, name=key.name, args=key.args)
-	return key
-
-
 def _collect_trait_subjects(expr: parser_ast.TraitExpr, out: Set[object]) -> None:
 	if isinstance(expr, parser_ast.TraitIs):
 		out.add(expr.subject)
@@ -110,7 +104,7 @@ def enforce_struct_requires(
 	diags: List[Diagnostic] = []
 	env = Env(default_module=module_name)
 	for ty in used_types:
-		ty_norm = _normalize_type_key(ty, module_name=module_name)
+		ty_norm = normalize_type_key(ty, module_name=module_name)
 		req = world.requires_by_struct.get(ty_norm)
 		if req is None:
 			continue
@@ -128,7 +122,7 @@ def enforce_struct_requires(
 
 
 def enforce_fn_requires(
-	world: TraitWorld,
+	trait_worlds: Dict[str, TraitWorld],
 	typed_fn: object,
 	type_table: object,
 	*,
@@ -136,7 +130,6 @@ def enforce_fn_requires(
 	signatures: Dict[FunctionId, object],
 ) -> TraitEnforceResult:
 	diags: List[Diagnostic] = []
-	env = Env(default_module=module_name)
 	exprs: List[H.HExpr] = []
 	_walk_block(getattr(typed_fn, "body"), exprs)
 	expr_types = getattr(typed_fn, "expr_types", {})
@@ -224,9 +217,14 @@ def enforce_fn_requires(
 			fn_id = symbol_to_id.get(decl_name)
 		if fn_id is None:
 			continue
+		callee_mod = getattr(fn_id, "module", None) or module_name
+		world = trait_worlds.get(callee_mod)
+		if world is None:
+			continue
 		req = world.requires_by_fn.get(fn_id)
 		if req is None:
 			continue
+		env = Env(default_module=callee_mod)
 		sig = signatures.get(fn_id)
 		subst: Dict[object, TypeKey] = {}
 		subjects: Set[object] = set()
@@ -239,7 +237,7 @@ def enforce_fn_requires(
 			if tid is None:
 				continue
 			arg_type_ids.append(tid)
-			arg_keys.append(_normalize_type_key(type_key_from_typeid(type_table, tid), module_name=module_name))
+			arg_keys.append(normalize_type_key(type_key_from_typeid(type_table, tid), module_name=module_name))
 		if sig and getattr(sig, "type_params", None):
 			type_params = list(getattr(sig, "type_params", []) or [])
 			type_args = getattr(expr, "type_args", None) or []
@@ -254,12 +252,12 @@ def enforce_fn_requires(
 			if bindings:
 				for tp_id, ty_id in bindings.items():
 					if tp_id in subjects:
-						subst[tp_id] = _normalize_type_key(type_key_from_typeid(type_table, ty_id), module_name=module_name)
+						subst[tp_id] = normalize_type_key(type_key_from_typeid(type_table, ty_id), module_name=module_name)
 				for tp in type_params:
 					ty_id = bindings.get(tp.id)
 					if ty_id is None:
 						continue
-					type_arg_keys.append(_normalize_type_key(type_key_from_typeid(type_table, ty_id), module_name=module_name))
+					type_arg_keys.append(normalize_type_key(type_key_from_typeid(type_table, ty_id), module_name=module_name))
 			if getattr(sig, "param_names", None):
 				for idx, pname in enumerate(sig.param_names or []):
 					if pname in subjects and idx < len(arg_keys):
@@ -273,6 +271,7 @@ def enforce_fn_requires(
 			diags.append(
 				Diagnostic(
 					message=f"trait requirements not met for call to '{expr.fn.name}'",
+					code="E_REQUIREMENT_NOT_SATISFIED",
 					severity="error",
 					span=getattr(expr, "loc", Span()),
 				)

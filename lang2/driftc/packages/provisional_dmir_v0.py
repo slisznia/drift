@@ -416,7 +416,7 @@ def encode_signatures(signatures: Mapping[str, FnSignature], *, module_id: str) 
 	out: dict[str, Any] = {}
 	for name in sorted(signatures.keys()):
 		sig = signatures[name]
-		if getattr(sig, "module", None) not in (module_id, None):
+		if getattr(sig, "module", None) not in (module_id, None) and not getattr(sig, "is_instantiation", False):
 			continue
 		sig_module = getattr(sig, "module", None) or module_id
 		type_param_names = [p.name for p in getattr(sig, "type_params", []) or []]
@@ -627,6 +627,10 @@ def decode_generic_templates(generic_templates_obj: Any) -> list[dict[str, Any]]
 		if not isinstance(entry, dict):
 			continue
 		decoded = dict(entry)
+		req = entry.get("require")
+		if req is not None:
+			decoded_req = decode_trait_expr(req)
+			decoded["require"] = decoded_req if decoded_req is not None else None
 		ir = entry.get("ir")
 		if ir is not None:
 			decoded["ir"] = from_jsonable(ir, dataclasses_by_name=dc, enums_by_name=enums)

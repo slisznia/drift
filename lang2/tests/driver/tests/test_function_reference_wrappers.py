@@ -42,8 +42,8 @@ module mod_b
 import mod_a as A
 
 fn main() returns Int  nothrow{
-\tval fp: fn(Int) returns Int = A.id
-\treturn 0
+\tval fp: fn(Int) returns Int = A.id;
+\treturn 0;
 }
 """,
 	}

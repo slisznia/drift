@@ -46,7 +46,8 @@ def _qualify_fn_name(module_id: str, name: str) -> str:
 
 def _validate_module_id(mid: str, *, span: Span) -> list[Diagnostic]:
 	"""
-	Validate a module id per the language spec (format + reserved prefixes).
+	Validate a module id per the language spec (format only; reserved namespaces
+	are enforced by loader trust policy).
 
 	This is shared by:
 	- single-module builds (`parse_drift_files_to_hir`), and
@@ -70,18 +71,8 @@ def _validate_module_id(mid: str, *, span: Span) -> list[Diagnostic]:
 				span=span,
 			)
 		]
-	# Reserved module namespaces. Only the dotted namespace prefixes are reserved
-	# (e.g. `std.foo`), not the bare segment itself (e.g. `lib` is allowed).
-	forbidden_prefixes = ("lang", "abi", "std", "core", "lib")
-	for pfx in forbidden_prefixes:
-		if mid.startswith(pfx + "."):
-			return [
-				Diagnostic(
-					message=f"invalid module id '{mid}': reserved prefix '{pfx}' is not allowed",
-					severity="error",
-					span=span,
-				)
-			]
+	# Reserved namespaces are enforced by package trust policy at load time,
+	# not by the parser.
 	if mid.startswith(".") or mid.endswith(".") or ".." in mid:
 		return [
 			Diagnostic(
@@ -668,6 +659,20 @@ def _diagnostic(message: str, loc: object | None) -> Diagnostic:
 	return Diagnostic(message=message, severity="error", span=Span.from_loc(loc))
 
 
+def _parse_error_code(err: UnexpectedInput) -> str | None:
+	expected = getattr(err, "expected", None)
+	token = getattr(err, "token", None)
+	if expected and "COMMA" in expected:
+		token_type = getattr(token, "type", None) if token is not None else None
+		if token_type in {"NAME", "DEFAULT"}:
+			return "E_EXPECTED_COMMA_BETWEEN_MATCH_ARMS"
+	if expected and "TERMINATOR" in expected:
+		return "E_EXPECTED_SEMICOLON"
+	if token is not None and getattr(token, "type", None) == "TERMINATOR":
+		return "E_UNEXPECTED_SEMICOLON_AFTER_COMPOUND"
+	return None
+
+
 def _typeexpr_uses_internal_fnresult(typ: parser_ast.TypeExpr) -> bool:
 	"""
 	Return True if a surface type annotation mentions `FnResult` anywhere.
@@ -919,13 +924,14 @@ def parse_drift_files_to_hir(
 			diagnostics.append(Diagnostic(message=str(err), severity="error", span=_span_in_file(path, err.loc)))
 			continue
 		except UnexpectedInput as err:
+			code = _parse_error_code(err)
 			span = Span(
 				file=str(path),
 				line=getattr(err, "line", None),
 				column=getattr(err, "column", None),
 				raw=err,
 			)
-			diagnostics.append(Diagnostic(message=str(err), severity="error", span=span))
+			diagnostics.append(Diagnostic(message=str(err), severity="error", span=span, code=code))
 			continue
 		programs.append((path, prog))
 
@@ -1253,13 +1259,14 @@ def parse_drift_workspace_to_hir(
 			diagnostics.append(Diagnostic(message=str(err), severity="error", span=_span_in_file(path, err.loc)))
 			continue
 		except UnexpectedInput as err:
+			code = _parse_error_code(err)
 			span = Span(
 				file=str(path),
 				line=getattr(err, "line", None),
 				column=getattr(err, "column", None),
 				raw=err,
 			)
-			diagnostics.append(Diagnostic(message=str(err), severity="error", span=span))
+			diagnostics.append(Diagnostic(message=str(err), severity="error", span=span, code=code))
 			continue
 		parsed.append((path, prog))
 
@@ -3447,13 +3454,14 @@ def parse_drift_to_hir(path: Path) -> Tuple[Dict[FunctionId, H.HBlock], Dict[Fun
 	except _parser.QualifiedMemberParseError as err:
 		return {}, {}, {}, TypeTable(), {}, [Diagnostic(message=str(err), severity="error", span=_span_in_file(path, err.loc))]
 	except UnexpectedInput as err:
+		code = _parse_error_code(err)
 		span = Span(
 			file=str(path),
 			line=getattr(err, "line", None),
 			column=getattr(err, "column", None),
 			raw=err,
 		)
-		return {}, {}, {}, TypeTable(), {}, [Diagnostic(message=str(err), severity="error", span=span)]
+		return {}, {}, {}, TypeTable(), {}, [Diagnostic(message=str(err), severity="error", span=span, code=code)]
 	func_hirs, sigs, fn_ids, table, excs, _impl_metas, diags = _lower_parsed_program_to_hir(
 		prog,
 		diagnostics=[],

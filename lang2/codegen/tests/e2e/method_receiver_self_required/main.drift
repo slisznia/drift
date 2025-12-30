@@ -6,12 +6,12 @@ implement Point {
 	fn bump(this: &mut Point) returns Void {
 		// Spec: the receiver must be spelled as the first parameter named `self`.
 		// This method is intentionally invalid.
-		this->x += 1
+		this->x += 1;
 	}
 }
 
 fn main() returns Int  nothrow{
-	var p: Point = Point(1)
-	p.bump()
-	return p.x
+	var p: Point = Point(1);
+	p.bump();
+	return p.x;
 }

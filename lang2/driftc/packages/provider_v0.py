@@ -536,6 +536,7 @@ class PackageTrustPolicy:
 	"""
 
 	trust_store: TrustStore
+	core_trust_store: TrustStore
 	require_signatures: bool
 	allow_unsigned_roots: list[Path]
 
@@ -565,6 +566,7 @@ def load_package_v0_with_policy(path: Path, *, policy: PackageTrustPolicy, pkg_b
 		pkg_bytes=data,
 		pkg_manifest=pkg.manifest,
 		trust=policy.trust_store,
+		core_trust=policy.core_trust_store,
 		require_signatures=policy.require_signatures,
 		allow_unsigned_roots=policy.allow_unsigned_roots,
 	)

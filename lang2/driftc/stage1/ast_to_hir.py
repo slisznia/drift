@@ -904,6 +904,9 @@ class AstToHIR:
 		else_block = self.lower_block(stmt.else_block) if stmt.else_block else None
 		return H.HIf(cond=cond, then_block=then_block, else_block=else_block)
 
+	def _visit_stmt_BlockStmt(self, stmt: ast.BlockStmt) -> H.HStmt:
+		return self.lower_block(stmt.block)
+
 	def _visit_stmt_TryStmt(self, stmt: ast.TryStmt) -> H.HStmt:
 		"""
 		Lower statement-form try/catch with multiple arms into HTry + HCatchArm.

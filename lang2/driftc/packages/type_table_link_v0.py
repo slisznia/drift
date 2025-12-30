@@ -41,8 +41,10 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from lang2.driftc.core.generic_type_expr import GenericTypeExpr
+from lang2.driftc.core.function_id import FunctionId
 from lang2.driftc.core.types_core import (
 	NominalKey,
+	TypeParamId,
 	TypeDef,
 	TypeId,
 	TypeKind,
@@ -397,6 +399,9 @@ def import_type_tables_and_build_typeid_maps(pkg_tt_objs: list[Mapping[str, Any]
 
 	# Phase B: allocate/import host TypeIds in canonical order (no discovery dependence).
 	key_to_host: dict[TypeKey, TypeId] = {}
+	typevar_param_ids: dict[TypeKey, TypeParamId] = {}
+	typevar_owner = FunctionId(module="lang.__external", name="__pkg_typevar", ordinal=0)
+	typevar_index = 0
 
 	def ensure_builtin(k: TypeKey) -> TypeId:
 		_, kind_s, name = k
@@ -546,6 +551,13 @@ def import_type_tables_and_build_typeid_maps(pkg_tt_objs: list[Mapping[str, Any]
 			base_tid = key_to_host[k[1]]
 			args = [key_to_host[x] for x in list(k[2])]
 			key_to_host[k] = host.ensure_instantiated(base_tid, args)
+		elif tag == "kind" and k[1] == "TYPEVAR":
+			param_id = typevar_param_ids.get(k)
+			if param_id is None:
+				param_id = TypeParamId(typevar_owner, typevar_index)
+				typevar_param_ids[k] = param_id
+				typevar_index += 1
+			key_to_host[k] = host.ensure_typevar(param_id, name=str(k[2]))
 		else:
 			raise ValueError(f"unsupported type key in package linker: {k!r}")
 

@@ -8,7 +8,7 @@ fn run() returns Int {
             throw E();
         } catch err {
             print("inner");
-            rethrow
+            rethrow;
         }
         print("UNREACHABLE");
     } catch err {

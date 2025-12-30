@@ -10,11 +10,7 @@ This file defines the lexical rules, precedence, and productions for Drift. It i
 - **Literals:** `IntLiteral`, `FloatLiteral`, `StringLiteral` (UTF-8), `FStringLiteral`, `BoolLiteral` (`true` / `false`).
 - **Operators/punctuation:** `+ - * / % == != < <= > >= & | ^ ~ << >> and or not ! ? : += -= *= /= %= &= |= ^= <<= >>= . , : ; = -> => [ ] { } ( ) |> <|`.
 - **`mut` token:** `mut` is a keyword token and is meaningful after `&` in types/expressions.
-- **Newlines / terminators:** The lexer may emit a `TERMINATOR` token on newline (`\n`) when **all** hold:
-  1. Parenthesis/brace/bracket depth is zero.
-  2. The previous token is “terminable” (identifiers, literals, `)`, `]`, `}`, `return`, `break`, etc.).
-  3. The previous token is **not** an operator or separator that requires a follower (`+`, `*`, `>>`, `.`, `,`, `:`, `?`, etc.).
-  Parsers may treat `TERMINATOR` like a semicolon; an explicit `;` is also allowed anywhere a `TERMINATOR` could appear.
+- **Statement terminators:** `TERMINATOR` is the `;` token only. Newlines are whitespace and never produce `TERMINATOR`.
 
 ## 2. Precedence and associativity (high → low)
 
@@ -53,18 +49,18 @@ ReturnSig    ::= "returns" Ty
 Params       ::= Param ("," Param)*
 Param        ::= Ident ":" Ty
 
-StructDef    ::= "struct" NAME TypeParams? RequireClause? StructBody
+StructDef    ::= "struct" NAME TypeParams? RequireClause? StructBody TERMINATOR?
 StructBody   ::= TupleStruct | BlockStruct
 TupleStruct  ::= "(" StructFieldList? ")"
 StructFieldList ::= StructField ("," StructField)*
 StructField  ::= NAME ":" Ty
 BlockStruct  ::= "{" TERMINATOR* (StructField ","? TERMINATOR*)* "}"
 
-ExceptionDef ::= "exception" NAME "(" ExceptionParams? ")"
+ExceptionDef ::= "exception" NAME "(" ExceptionParams? ")" TERMINATOR?
 ExceptionParams ::= ExceptionParam ("," ExceptionParam)*
 ExceptionParam ::= NAME ":" Ty | "domain" "=" STRING
 
-VariantDef   ::= "variant" NAME TypeParams? VariantBody
+VariantDef   ::= "variant" NAME TypeParams? VariantBody TERMINATOR?
 VariantBody  ::= "{" (VariantArm ("," | TERMINATOR)*)+ "}"
 VariantArm   ::= NAME VariantFields?
 VariantFields ::= "(" VariantFieldList? ")"
@@ -101,13 +97,13 @@ TypeParams   ::= "<" NAME ("," NAME)* ">"
 
 Statements and blocks:
 ```
-Block        ::= "{" (Stmt | TERMINATOR)* "}"
-ValueBlock   ::= "{" (Stmt | TERMINATOR)* Expr "}"
+Block        ::= "{" Stmt* "}"
+ValueBlock   ::= "{" Stmt* Expr "}"
 
-Stmt         ::= IfStmt | TryStmt | SimpleStmt TERMINATOR
+Stmt         ::= CompoundStmt | SimpleStmt TERMINATOR
+CompoundStmt ::= Block | IfStmt | WhileStmt | ForStmt | TryStmt | MatchStmt
 SimpleStmt   ::= LetStmt | ReturnStmt | RethrowStmt | RaiseStmt | BreakStmt
-              | ContinueStmt | WhileStmt | ForStmt | AugAssignStmt
-              | AssignStmt | ExprStmt
+              | ContinueStmt | AugAssignStmt | AssignStmt | ExprStmt
 
 LetStmt      ::= ("val" | "var") BindingName TypeSpec? AliasClause? "=" Expr
 BindingName  ::= "^"? Ident
@@ -120,16 +116,15 @@ RaiseStmt    ::= "raise" DomainClause? Expr | "throw" ExceptionCtor | "throw" Ex
 DomainClause ::= "domain" NAME
 BreakStmt    ::= "break"
 ContinueStmt ::= "continue"
-WhileStmt    ::= "while" Expr TerminatorOpt Block
-ForStmt      ::= "for" Ident "in" Expr TerminatorOpt Block
+WhileStmt    ::= "while" Expr Block
+ForStmt      ::= "for" Ident "in" Expr Block
 
-IfStmt       ::= "if" IfCond TerminatorOpt Block ElseClause? TerminatorOpt
+IfStmt       ::= "if" IfCond Block ElseClause?
 IfCond       ::= TraitExpr | Expr
-ElseClause   ::= TerminatorOpt "else" TerminatorOpt Block
-TryStmt      ::= "try" (Block | Expr) TerminatorOpt CatchClause (TerminatorOpt CatchClause)* TerminatorOpt
+ElseClause   ::= "else" Block
+TryStmt      ::= "try" (Block | Expr) CatchClause (CatchClause)*
 CatchClause  ::= "catch" CatchPattern Block
 CatchPattern ::= EventFqn "(" Ident ")" | Ident | (empty)
-TerminatorOpt ::= TERMINATOR*
 
 AssignStmt   ::= AssignTarget "=" Expr
 AugAssignStmt ::= AssignTarget ("+=" | "-=" | "*=" | "/=" | "%=" | "&=" | "|=" | "^=" | "<<=" | ">>=") Expr
@@ -140,8 +135,12 @@ ExprStmt     ::= PostfixExpr
 Expressions:
 ```
 Expr         ::= TryCatchExpr | MatchExpr | Ternary | Pipeline
-MatchExpr    ::= "match" Expr "{" (MatchArm (TERMINATOR | ",")*)+ "}"
-MatchArm     ::= MatchPat "=>" MatchArmBody
+MatchExpr    ::= "match" Expr "{" MatchExprArms "}"
+MatchStmt    ::= "match" Expr "{" MatchStmtArms "}"
+MatchExprArms ::= MatchExprArm ("," MatchExprArm)* ","?
+MatchExprArm  ::= MatchPat "=>" MatchExprArmBody
+MatchStmtArms ::= MatchStmtArm ("," MatchStmtArm)* ","?
+MatchStmtArm  ::= MatchPat "=>" MatchStmtArmBody
 MatchPat     ::= "default"
               | NAME "(" ")"
               | NAME "(" MatchNamedBinders ")"
@@ -149,7 +148,8 @@ MatchPat     ::= "default"
               | NAME
 MatchBinders ::= NAME ("," NAME)*
 MatchNamedBinders ::= NAME "=" NAME ("," NAME "=" NAME)*
-MatchArmBody ::= ValueBlock | Block
+MatchExprArmBody ::= ValueBlock
+MatchStmtArmBody ::= Block
 
 TryCatchExpr ::= "try" Expr ("catch" CatchExprArm)+
 CatchExprArm ::= EventFqn "(" Ident ")" ValueBlock
@@ -236,5 +236,6 @@ Literal      ::= IntLiteral | FloatLiteral | StringLiteral | BoolLiteral | FStri
 - Pipelines use `|>` and are left-associative; `<|` is reserved for a future reverse-pipeline form.
 - Lambda captures are inferred by default; `captures(...)` opts into explicit capture mode.
 - This grammar is a reference for parsers; semantic rules (ownership, moves, errors) are defined in `drift-lang-spec.md`.
-- In general blocks, a bare expression must appear as a statement (`ExprStmt`) with a terminator (`;` or newline), e.g., `catch { 0; }` or `catch { return 0; }`. Expression-only forms that explicitly use `value_block` (e.g., lambda bodies, match arms) may allow `{ expr }` as a value-producing block.
+- In normal blocks, a bare expression must appear as a statement (`ExprStmt`) and end with `;`. In a `ValueBlock` (`{ ... Expr }`), statements require `;`, but the final value expression must not.
+- Examples: `try f() catch { 0 }`, `try f() catch { log("x"); 0 }`. A `{ x + 1 }` block is only legal where a value-producing block is expected (lambda bodies, match **expression** arms, try/catch expression arms).
 - Leading-dot expressions (`.foo`, `.foo(...)`) are only valid inside indexing brackets or argument lists; they desugar to member access on the receiver value (see §2.x “Receiver placeholder” in `drift-lang-spec.md` for semantics).

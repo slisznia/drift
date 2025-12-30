@@ -55,7 +55,14 @@ from lang2.driftc.infer import (
 	format_infer_failure,
 )
 from lang2.driftc.trait_index import GlobalTraitImplIndex, GlobalTraitIndex, TraitImplCandidate
-from lang2.driftc.traits.world import TraitKey, TraitWorld, TypeKey, trait_key_from_expr, type_key_from_typeid
+from lang2.driftc.traits.world import (
+	TraitKey,
+	TraitWorld,
+	TypeKey,
+	normalize_type_key,
+	trait_key_from_expr,
+	type_key_from_typeid,
+)
 from lang2.driftc.method_resolver import MethodResolution, ResolutionError, resolve_method_call
 from lang2.driftc.core.iter_intrinsics import ensure_array_iter_struct, is_array_iter_struct
 from lang2.driftc.parser import ast as parser_ast
@@ -559,8 +566,8 @@ class TypeChecker:
 			return expr
 
 		def _normalize_type_key(key: object) -> object:
-			if getattr(key, "module", None) is None:
-				return type(key)(module=current_module_name, name=key.name, args=key.args)
+			if isinstance(key, TypeKey):
+				return normalize_type_key(key, module_name=current_module_name)
 			return key
 
 		def _type_key_label(key: object) -> str:
@@ -1050,6 +1057,13 @@ class TypeChecker:
 				msg = f"{msg} (required by {label})"
 			return msg
 
+		def _failure_code(failure: ProofFailure) -> str:
+			if failure.reason is ProofFailureReason.AMBIGUOUS_IMPL:
+				return "E_REQUIREMENT_AMBIGUOUS"
+			if failure.reason is ProofFailureReason.UNKNOWN:
+				return "E_REQUIREMENT_UNKNOWN"
+			return "E_REQUIREMENT_NOT_SATISFIED"
+
 		def _pick_best_failure(failures: list[ProofFailure]) -> ProofFailure | None:
 			if not failures:
 				return None
@@ -1496,7 +1510,14 @@ class TypeChecker:
 				world=global_trait_world,
 			)
 			if failure is not None:
-				diagnostics.append(Diagnostic(message=_format_failure_message(failure), severity="error", span=span))
+				diagnostics.append(
+					Diagnostic(
+						message=_format_failure_message(failure),
+						code=_failure_code(failure),
+						severity="error",
+						span=span,
+					)
+				)
 
 		sig_span = Span()
 		if signatures_by_id is not None:
@@ -1833,7 +1854,11 @@ class TypeChecker:
 				if saw_require_failed:
 					failure = _pick_best_failure(require_failures)
 					if failure is not None:
-						raise ResolutionError(_format_failure_message(failure), span=call_type_args_span)
+						raise ResolutionError(
+							_format_failure_message(failure),
+							code=_failure_code(failure),
+							span=call_type_args_span,
+						)
 					raise ResolutionError(f"trait requirements not met for function '{name}'")
 				raise ResolutionError(f"no matching overload for function '{name}' with args {arg_types}")
 			if len(applicable) == 1:
@@ -2859,8 +2884,8 @@ class TypeChecker:
 				)
 				return record_expr(expr, self._unknown)
 
-			# `match` expression (expression-only in MVP, but may appear in statement
-			# position as an ExprStmt where the result is ignored).
+			# `match` expression (statement-form match is parsed separately; this
+			# branch only handles expression-form matches).
 			if hasattr(H, "HMatchExpr") and isinstance(expr, getattr(H, "HMatchExpr")):
 				scrut_ty = type_expr(expr.scrutinee)
 				inst = None
@@ -4025,6 +4050,7 @@ class TypeChecker:
 								diagnostics.append(
 									Diagnostic(
 										message=_format_failure_message(failure) if failure is not None else "trait requirements not met",
+										code=_failure_code(failure) if failure is not None else None,
 										severity="error",
 										span=(failure.obligation.span if failure is not None else None)
 										or getattr(expr, "loc", Span()),
@@ -5307,6 +5333,7 @@ class TypeChecker:
 						diagnostics.append(
 							Diagnostic(
 								message=str(err),
+								code=getattr(err, "code", None),
 								severity="error",
 								span=diag_span,
 								notes=list(getattr(err, "notes", []) or []),
@@ -6454,6 +6481,7 @@ class TypeChecker:
 								failure = _pick_best_failure(trait_require_failures)
 								raise ResolutionError(
 									_format_failure_message(failure) if failure is not None else "trait requirements not met",
+									code=_failure_code(failure) if failure is not None else None,
 									span=(failure.obligation.span if failure is not None else None)
 									or getattr(expr, "loc", Span()),
 								)
@@ -6461,6 +6489,7 @@ class TypeChecker:
 								failure = _pick_best_failure(require_failures)
 								raise ResolutionError(
 									_format_failure_message(failure) if failure is not None else "trait requirements not met",
+									code=_failure_code(failure) if failure is not None else None,
 									span=(failure.obligation.span if failure is not None else None)
 									or getattr(expr, "loc", Span()),
 								)
@@ -6523,6 +6552,7 @@ class TypeChecker:
 						diagnostics.append(
 							Diagnostic(
 								message=str(err),
+								code=getattr(err, "code", None),
 								severity="error",
 								span=diag_span,
 								notes=list(getattr(err, "notes", []) or []),

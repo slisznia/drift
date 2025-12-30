@@ -27,7 +27,7 @@ module lib
 export { add }
 
 pub fn add(a: Int, b: Int) returns Int {
-	return a + b
+	return a + b;
 }
 """.lstrip(),
 	)
@@ -111,7 +111,7 @@ module main
 import lib as lib
 
 fn main() returns Int  nothrow{
-	return try lib.add(40, 2) catch { 0 }
+	return try lib.add(40, 2) catch { 0 };
 }
 """.lstrip(),
 	)

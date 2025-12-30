@@ -12,7 +12,7 @@ from lang2.test_support import build_exception_catalog, make_signatures
 
 def test_compile_stubbed_funcs_builds_ssa_and_type_env():
 	"""
-	When build_ssa=True, the driver should run MIR→SSA, derive a TypeEnv from
+	When build_ssa=True, the driver should run MIR→SSA, derive a TypeEnv from;
 	signatures, and pass it into throw checks without raising.
 	"""
 	hir_block = H.HBlock(

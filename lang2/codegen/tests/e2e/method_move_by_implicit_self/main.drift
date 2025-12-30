@@ -7,13 +7,13 @@ implement Point {
 		// Implicit `self` member lookup (spec §3.9):
 		// `x` and `y` resolve to `self->x` / `self->y` because they are not local
 		// bindings and are known fields of the receiver type.
-		x += dx
-		y += dy
+		x += dx;
+		y += dy;
 	}
 }
 
 fn main() returns Int  nothrow{
-	var p: Point = Point(1, 2)
-	p.move_by(10, 20)
-	return p.x + p.y
+	var p: Point = Point(1, 2);
+	p.move_by(10, 20);
+	return p.x + p.y;
 }

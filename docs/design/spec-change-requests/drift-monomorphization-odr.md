@@ -16,12 +16,12 @@ The InstantiationKey is a stable, deterministic identifier computed from:
 
 * **Generic definition identity**
 
-  * `(PackageId, ModulePath, GenericDefId)` (or an equivalent compiler-internal stable ID)
+  * `(ModuleId, GenericDefId)` (or an equivalent compiler-internal stable ID)
 * **Canonicalized type arguments**
 
   * Type aliases expanded
   * Normalized defining module identity applied (same normalization rules used for trait/impl matching)
-  * Fully-qualified types include package identity to prevent cross-package collisions
+  * Fully-qualified types include module identity; builds must reject duplicate ModuleIds
 * **Canonicalized where/trait arguments** (if present in the generic header)
 * **ABI-relevant flags**
 

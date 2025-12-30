@@ -131,6 +131,15 @@ def _llvm_fn_sym(name: str) -> str:
 	return f"@\"{escaped}\""
 
 
+def _llvm_comdat_sym(name: str) -> str:
+	"""
+	Render a COMDAT group symbol for LLVM IR.
+
+	Uses the function symbol name with a `$` prefix.
+	"""
+	return _llvm_fn_sym(name).replace("@", "$", 1)
+
+
 def _module_id_from_symbol(sym: str) -> str | None:
 	"""
 	Best-effort extraction of a module id from a qualified callable symbol.
@@ -359,6 +368,7 @@ class LlvmModuleBuilder:
 	type_decls: List[str] = field(default_factory=list)
 	consts: List[str] = field(default_factory=list)
 	funcs: List[str] = field(default_factory=list)
+	comdats: set[str] = field(default_factory=set)
 	needs_array_helpers: bool = False
 	needs_string_eq: bool = False
 	needs_string_cmp: bool = False
@@ -538,6 +548,9 @@ class LlvmModuleBuilder:
 	def emit_func(self, text: str) -> None:
 		self.funcs.append(text)
 
+	def ensure_comdat(self, name: str) -> None:
+		self.comdats.add(name)
+
 	def emit_entry_wrapper(self, drift_main: str = "drift_main") -> None:
 		"""
 		Emit a tiny OS entrypoint wrapper that calls `@drift_main` and truncs to i32.
@@ -594,6 +607,10 @@ class LlvmModuleBuilder:
 		lines.append("")
 		if self.consts:
 			lines.extend(self.consts)
+			lines.append("")
+		if self.comdats:
+			for name in sorted(self.comdats):
+				lines.append(f"{_llvm_comdat_sym(name)} = comdat any")
 			lines.append("")
 		if self.needs_argv_helper:
 			array_type = self.array_string_type or f"{{ {DRIFT_SIZE_TYPE}, {DRIFT_SIZE_TYPE}, {DRIFT_STRING_TYPE}* }}"
@@ -827,7 +844,13 @@ class _FuncBuilder:
 				param_parts.append(f"{llty} {llvm_name}")
 		params_str = ", ".join(param_parts)
 		func_name = self.sym_name or self.func.name
-		self.lines.append(f"define {ret_ty} {_llvm_fn_sym(func_name)}({params_str}) {{")
+		is_instantiation = bool(getattr(sig, "is_instantiation", False))
+		linkage = " linkonce_odr" if is_instantiation else ""
+		comdat = ""
+		if is_instantiation:
+			self.module.ensure_comdat(func_name)
+			comdat = " comdat"
+		self.lines.append(f"define{linkage} {ret_ty} {_llvm_fn_sym(func_name)}({params_str}){comdat} {{")
 
 	def _declare_array_helpers_if_needed(self) -> None:
 		"""Mark the module to emit array helper decls if any array ops are present."""

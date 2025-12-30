@@ -1,6 +1,6 @@
 struct Point { x: Int }
 
 fn main() returns Int  nothrow{
-	val x = Point::Some(1)
-	return 0
+	val x = Point::Some(1);
+	return 0;
 }

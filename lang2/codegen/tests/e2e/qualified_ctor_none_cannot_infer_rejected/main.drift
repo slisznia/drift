@@ -4,6 +4,6 @@ variant Optional<T> {
 }
 
 fn main() returns Int  nothrow{
-	val x = Optional::None()
-	return 0
+	val x = Optional::None();
+	return 0;
 }

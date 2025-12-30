@@ -35,10 +35,12 @@ class ResolutionError(ValueError):
 		self,
 		message: str,
 		*,
+		code: str | None = None,
 		span: object | None = None,
 		notes: list[str] | None = None,
 	) -> None:
 		super().__init__(message)
+		self.code = code
 		self.span = span
 		self.notes = list(notes or [])
 

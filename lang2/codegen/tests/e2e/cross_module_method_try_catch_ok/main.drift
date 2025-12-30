@@ -3,11 +3,11 @@ module main
 import a as a
 
 fn main() returns Int nothrow {
-	var p: a.Point = a.Point(x = 1)
+	var p: a.Point = a.Point(x = 1);
 	try {
-		p.bump(1)
+		p.bump(1);
 	} catch {
-		return 0
+		return 0;
 	}
-	return p.x
+	return p.x;
 }

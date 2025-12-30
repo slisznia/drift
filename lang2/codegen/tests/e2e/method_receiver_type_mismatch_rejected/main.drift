@@ -6,10 +6,10 @@ struct Other(x: Int)
 implement Point {
 	fn bad(self: &mut Other) returns Void {
 		// Intentionally invalid: receiver type does not match the implement target.
-		self->x += 1
+		self->x += 1;
 	}
 }
 
 fn main() returns Int  nothrow{
-	return 0
+	return 0;
 }

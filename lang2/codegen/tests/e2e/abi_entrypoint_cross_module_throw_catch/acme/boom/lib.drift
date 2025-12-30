@@ -5,6 +5,6 @@ export { boom }
 exception Boom()
 
 pub fn boom() returns Int {
-	throw Boom()
+	throw Boom();
 }
 

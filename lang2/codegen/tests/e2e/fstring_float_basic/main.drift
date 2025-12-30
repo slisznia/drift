@@ -1,11 +1,11 @@
 module m
 
 fn main() returns Int  nothrow{
-	val i = 10
-	val b = true
-	val s = "x"
-	val f = 1.25
-	println(f"i={i} b={b} s={s} f={f}")
-	return 0
+	val i = 10;
+	val b = true;
+	val s = "x";
+	val f = 1.25;
+	println(f"i={i} b={b} s={s} f={f}");
+	return 0;
 }
 

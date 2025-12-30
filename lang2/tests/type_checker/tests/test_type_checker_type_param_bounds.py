@@ -62,9 +62,9 @@ def _typecheck_fn(src: str, tmp_path: Path, fn_name: str) -> tuple[TypeChecker, 
 
 def _enforce_fn_requires(tc: TypeChecker, typed_fn: object, sigs: dict[FunctionId, object], fn_id: FunctionId) -> list[object]:
 	worlds = getattr(tc.type_table, "trait_worlds", {}) or {}
-	world = worlds.get(fn_id.module or "main")
-	assert world is not None
-	res = enforce_fn_requires(world, typed_fn, tc.type_table, module_name=fn_id.module or "main", signatures=sigs)
+	assert isinstance(worlds, dict)
+	assert (fn_id.module or "main") in worlds
+	res = enforce_fn_requires(worlds, typed_fn, tc.type_table, module_name=fn_id.module or "main", signatures=sigs)
 	return res.diagnostics
 
 

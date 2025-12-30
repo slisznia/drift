@@ -17,6 +17,7 @@ class Diagnostic:
 	"""Represents a compiler diagnostic (error/warning/etc.)."""
 
 	message: str
+	code: str | None = None
 	# Optional diagnostic phase label.
 	#
 	# Most compiler code paths emit diagnostics into a phase-specific sink (parser,

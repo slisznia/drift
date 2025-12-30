@@ -1,7 +1,7 @@
 module main
 
 fn bad() returns Int {
-    rethrow
+    rethrow;
 }
 
 fn main() returns Int nothrow {

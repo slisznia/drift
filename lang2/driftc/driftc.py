@@ -82,7 +82,12 @@ from lang2.driftc.packages.provider_v0 import (
 	load_package_v0,
 	load_package_v0_with_policy,
 )
-from lang2.driftc.packages.trust_v0 import TrustStore, load_trust_store_json, merge_trust_stores
+from lang2.driftc.packages.trust_v0 import (
+	TrustStore,
+	load_core_trust_store,
+	load_trust_store_json,
+	merge_trust_stores,
+)
 
 
 def _remap_tid(tid_map: dict[int, int], tid: object) -> object:
@@ -671,6 +676,7 @@ def compile_stubbed_funcs(
 	type_table: "TypeTable | None" = None,
 	run_borrow_check: bool = False,
 	prelude_enabled: bool = True,
+	emit_instantiation_index: Path | None = None,
 ) -> (
 	Dict[str, M.MirFunc]
 	| tuple[Dict[str, M.MirFunc], CheckedProgram]
@@ -701,6 +707,8 @@ def compile_stubbed_funcs(
 	    in throw checks.
 	  run_borrow_check: when True, run the borrow checker on HIR blocks and append
 	    diagnostics; this is a stubbed integration path (coarse regions).
+	  emit_instantiation_index: optional path for a deterministic JSON dump of
+	    instantiation keys/symbols/ABI flags produced in this run.
 	  # TODO: drop declared_can_throw once all callers provide signatures/parsing.
 
 	Returns:
@@ -977,18 +985,15 @@ def compile_stubbed_funcs(
 	# concrete instantiations and rewrite call targets.
 	from lang2.driftc import stage1 as H
 	from lang2.driftc.core.type_subst import Subst, apply_subst
-	from lang2.driftc.core.xxhash64 import hash64
-	from lang2.driftc.traits.world import type_key_from_typeid
+	from lang2.driftc.instantiation.key import (
+		InstantiationKey,
+		build_instantiation_key,
+		instantiation_key_hash,
+		instantiation_key_str,
+	)
 	from lang2.driftc.method_resolver import MethodResolution
 	from lang2.driftc.method_registry import CallableDecl
 	from collections import deque
-
-	def _type_key_str(key) -> str:
-		base = f"{key.module}::{key.name}" if getattr(key, "module", None) else key.name
-		if getattr(key, "args", None):
-			args = ",".join(_type_key_str(a) for a in key.args)
-			return f"{base}<{args}>"
-		return base
 
 	def _inst_can_throw(fn_id: FunctionId) -> bool:
 		sig = signatures_by_id.get(fn_id)
@@ -996,20 +1001,16 @@ def compile_stubbed_funcs(
 			return True
 		return bool(sig.declared_can_throw)
 
-	def _inst_key(fn_id: FunctionId, type_args: tuple[TypeId, ...]) -> tuple[FunctionId, tuple[object, ...], bool]:
-		type_keys = tuple(type_key_from_typeid(shared_type_table, tid) for tid in type_args)
-		return (fn_id, type_keys, _inst_can_throw(fn_id))
+	def _inst_key(fn_id: FunctionId, type_args: tuple[TypeId, ...]) -> InstantiationKey:
+		return build_instantiation_key(
+			fn_id,
+			type_args,
+			type_table=shared_type_table,
+			can_throw=_inst_can_throw(fn_id),
+		)
 
-	def _inst_key_str(key: tuple[FunctionId, tuple[object, ...], bool]) -> str:
-		fn_id, type_keys, can_throw = key
-		base = f"{fn_id.module}::{fn_id.name}#{fn_id.ordinal}"
-		args = ",".join(_type_key_str(k) for k in type_keys)
-		return f"{base}|{args}|can_throw={int(can_throw)}"
-
-	def _inst_hash(key: tuple[FunctionId, tuple[object, ...], bool]) -> str:
-		key_str = _inst_key_str(key)
-		h = hash64(key_str.encode("utf-8"))
-		return f"{h:016x}"
+	def _inst_hash(key: InstantiationKey) -> str:
+		return instantiation_key_hash(key)
 
 	def _collect_typearg_calls(block: H.HBlock) -> list[H.HExpr]:
 		out: list[H.HExpr] = []
@@ -1065,16 +1066,35 @@ def compile_stubbed_funcs(
 		if sig and (sig.type_params or getattr(sig, "impl_type_params", [])):
 			template_hirs_by_id.setdefault(fn_id, block)
 
-	inst_cache: dict[tuple[FunctionId, tuple[object, ...], bool], FunctionId] = {}
-	inst_queue: deque[tuple[FunctionId, tuple[TypeId, ...], tuple[FunctionId, tuple[object, ...], bool]]] = deque()
+	@dataclass
+	class InstantiationHandle:
+		key: InstantiationKey
+		target_fn_id: FunctionId
+		type_args: tuple[TypeId, ...]
+		fn_id: FunctionId
+		status: str  # "pending"|"emitted"|"failed"
+
+	inst_cache: dict[InstantiationKey, InstantiationHandle] = {}
+	inst_queue: deque[InstantiationHandle] = deque()
 	instantiated_targets: set[FunctionId] = set()
 
-	def _enqueue_inst(target_fn_id: FunctionId, type_args: list[TypeId]) -> None:
+	def _request_instantiation(target_fn_id: FunctionId, type_args: list[TypeId]) -> InstantiationHandle:
 		key = _inst_key(target_fn_id, tuple(type_args))
-		if key in inst_cache:
-			return
-		if not any(k == key for _, _, k in inst_queue):
-			inst_queue.append((target_fn_id, tuple(type_args), key))
+		handle = inst_cache.get(key)
+		if handle is not None:
+			return handle
+		inst_name = f"{target_fn_id.name}__inst__{_inst_hash(key)}"
+		inst_fn_id = FunctionId(module=target_fn_id.module, name=inst_name, ordinal=target_fn_id.ordinal)
+		handle = InstantiationHandle(
+			key=key,
+			target_fn_id=target_fn_id,
+			type_args=tuple(type_args),
+			fn_id=inst_fn_id,
+			status="pending",
+		)
+		inst_cache[key] = handle
+		inst_queue.append(handle)
+		return handle
 
 	for typed_fn in typed_fns_by_symbol.values():
 		block = getattr(typed_fn, "body", None)
@@ -1092,12 +1112,19 @@ def compile_stubbed_funcs(
 				resolve_opaque_type(t, shared_type_table, module_id=getattr(target_fn_id, "module", None))
 				for t in (call.type_args or [])
 			]
-			_enqueue_inst(target_fn_id, type_arg_ids)
+			_request_instantiation(target_fn_id, type_arg_ids)
 
 	while inst_queue:
-		target_fn_id, type_args, key = inst_queue.popleft()
-		if key in inst_cache:
-			continue
+		handle = inst_queue.popleft()
+		if handle.status == "emitted":
+			raise AssertionError(
+				f"duplicate instantiation emission for '{function_symbol(handle.target_fn_id)}' ({instantiation_key_str(handle.key)})"
+			)
+		if handle.status != "pending":
+			raise AssertionError(f"unexpected instantiation status: {handle.status}")
+		target_fn_id = handle.target_fn_id
+		type_args = handle.type_args
+		key = handle.key
 		sig = signatures_by_id.get(target_fn_id)
 		if sig is None or not getattr(sig, "type_params", None):
 			continue
@@ -1115,9 +1142,7 @@ def compile_stubbed_funcs(
 		if sig.param_type_ids is None or sig.return_type_id is None:
 			continue
 		can_throw_val = True if sig.declared_can_throw is None else bool(sig.declared_can_throw)
-		inst_name = f"{target_fn_id.name}__inst__{_inst_hash(key)}"
-		inst_fn_id = FunctionId(module=target_fn_id.module, name=inst_name, ordinal=target_fn_id.ordinal)
-		inst_cache[key] = inst_fn_id
+		inst_fn_id = handle.fn_id
 		instantiated_targets.add(target_fn_id)
 		subst = Subst(owner=target_fn_id, args=list(type_args))
 		inst_params = [apply_subst(t, subst, shared_type_table) for t in sig.param_type_ids]
@@ -1129,6 +1154,10 @@ def compile_stubbed_funcs(
 			return_type_id=inst_ret,
 			type_params=[],
 			impl_type_params=[],
+			param_types=None,
+			return_type=None,
+			is_exported_entrypoint=False,
+			is_instantiation=True,
 		)
 		signatures_by_id[inst_fn_id] = inst_sig
 		signatures_by_symbol[function_symbol(inst_fn_id)] = inst_sig
@@ -1137,10 +1166,12 @@ def compile_stubbed_funcs(
 			type_diags.append(
 				Diagnostic(
 					message=f"generic instantiation requires a template body for '{function_symbol(target_fn_id)}'",
+					code="E_MISSING_TEMPLATE_BODY",
 					severity="error",
 					span=getattr(sig, "loc", None),
 				)
 			)
+			handle.status = "failed"
 			continue
 		inst_hir = normalize_hir(template_hir)
 		normalized_hirs[function_symbol(inst_fn_id)] = inst_hir
@@ -1181,7 +1212,8 @@ def compile_stubbed_funcs(
 				resolve_opaque_type(t, shared_type_table, module_id=getattr(target, "module", None))
 				for t in (call.type_args or [])
 			]
-			_enqueue_inst(target, arg_ids)
+			_request_instantiation(target, arg_ids)
+		handle.status = "emitted"
 
 	def _rewrite_call_targets(typed_fn: object, block: H.HBlock) -> None:
 		call_info_map = getattr(typed_fn, "call_info_by_node_id", None)
@@ -1199,21 +1231,21 @@ def compile_stubbed_funcs(
 				resolve_opaque_type(t, shared_type_table, module_id=getattr(target_fn_id, "module", None))
 				for t in (call.type_args or [])
 			]
-			inst_fn_id = inst_cache.get(_inst_key(target_fn_id, tuple(type_arg_ids)))
-			if inst_fn_id is None:
+			handle = inst_cache.get(_inst_key(target_fn_id, tuple(type_arg_ids)))
+			if handle is None or handle.status != "emitted":
 				continue
 			info = call_info_map.get(call.node_id)
 			if info is None:
 				continue
-			inst_sig = signatures_by_id.get(inst_fn_id)
+			inst_sig = signatures_by_id.get(handle.fn_id)
 			if inst_sig is None or inst_sig.param_type_ids is None or inst_sig.return_type_id is None:
 				continue
 			call_info_map[call.node_id] = CallInfo(
-				target=CallTarget.direct(inst_fn_id),
+				target=CallTarget.direct(handle.fn_id),
 				sig=CallSig(
 					param_types=tuple(inst_sig.param_type_ids),
 					user_ret_type=inst_sig.return_type_id,
-					can_throw=_inst_can_throw(inst_fn_id),
+					can_throw=_inst_can_throw(handle.fn_id),
 				),
 			)
 
@@ -1221,6 +1253,26 @@ def compile_stubbed_funcs(
 		block = getattr(typed_fn, "body", None)
 		if isinstance(block, H.HBlock):
 			_rewrite_call_targets(typed_fn, block)
+
+	if emit_instantiation_index is not None:
+		entries: list[dict[str, object]] = []
+		for handle in inst_cache.values():
+			if handle.status != "emitted":
+				continue
+			entries.append(
+				{
+					"key": instantiation_key_str(handle.key),
+					"symbol": function_symbol(handle.fn_id),
+					"can_throw": bool(handle.key.abi.can_throw),
+					"linkage": "linkonce_odr",
+					"comdat": True,
+				}
+			)
+		entries.sort(key=lambda e: str(e.get("key", "")))
+		emit_instantiation_index.write_text(
+			json.dumps(entries, sort_keys=True),
+			encoding="utf-8",
+		)
 
 	method_wrapper_by_target: dict[FunctionId, FunctionId] = {}
 	for sig_id, sig in signatures_by_id.items():
@@ -1594,6 +1646,7 @@ def compile_to_llvm_ir_for_tests(
 	module_exports: Mapping[str, dict[str, object]] | None = None,
 	module_deps: Mapping[str, set[str]] | None = None,
 	prelude_enabled: bool = True,
+	emit_instantiation_index: Path | None = None,
 ) -> tuple[str, CheckedProgram]:
 	"""
 	End-to-end helper: HIR -> MIR -> throw checks -> SSA -> LLVM IR for tests.
@@ -1649,6 +1702,7 @@ def compile_to_llvm_ir_for_tests(
 		return_ssa=True,
 		type_table=shared_type_table,
 		prelude_enabled=prelude_enabled,
+		emit_instantiation_index=emit_instantiation_index,
 	)
 	if any(d.severity == "error" for d in checked.diagnostics):
 		return "", checked
@@ -1771,6 +1825,7 @@ def _diag_to_json(diag: Diagnostic, phase: str, source: Path) -> dict:
 	return {
 		"phase": phase,
 		"message": diag.message,
+		"code": getattr(diag, "code", None),
 		"severity": diag.severity,
 		"file": file,
 		"line": line,
@@ -1822,12 +1877,27 @@ def main(argv: list[str] | None = None) -> int:
 		help="Allow unsigned packages from this directory (repeatable)",
 	)
 	parser.add_argument(
+		"--dev",
+		action="store_true",
+		help="Enable dev-only switches (non-normative, for local testing)",
+	)
+	parser.add_argument(
+		"--dev-core-trust-store",
+		type=Path,
+		help="Dev-only override for the core trust store JSON (requires --dev)",
+	)
+	parser.add_argument(
 		"--require-signatures",
 		action="store_true",
 		help="Require signatures for all packages (including local build outputs)",
 	)
 	parser.add_argument("-o", "--output", type=Path, help="Path to output executable")
 	parser.add_argument("--emit-ir", type=Path, help="Write LLVM IR to the given path")
+	parser.add_argument(
+		"--emit-instantiation-index",
+		type=Path,
+		help="Write instantiation index JSON to the given path",
+	)
 	parser.add_argument("--emit-package", type=Path, help="Write an unsigned package artifact (.dmp) to the given path")
 	parser.add_argument("--package-id", type=str, help="Package identity (required with --emit-package)")
 	parser.add_argument("--package-version", type=str, help="Package version (SemVer; required with --emit-package)")
@@ -1898,7 +1968,59 @@ def main(argv: list[str] | None = None) -> int:
 				print(f"{project_trust_path}:?:?: error: {msg}", file=sys.stderr)
 			return 1
 
+		if args.dev_core_trust_store is not None and not args.dev:
+			msg = "--dev-core-trust-store requires --dev"
+			if args.json:
+				print(
+					json.dumps(
+						{
+							"exit_code": 1,
+							"diagnostics": [
+								{
+									"phase": "package",
+									"message": msg,
+									"severity": "error",
+									"file": None,
+									"line": None,
+									"column": None,
+								}
+							],
+						}
+					)
+				)
+			else:
+				print(f"error: {msg}", file=sys.stderr)
+			return 1
+
 		merged_trust = project_trust
+		try:
+			if args.dev_core_trust_store is not None:
+				core_trust = load_trust_store_json(args.dev_core_trust_store)
+			else:
+				core_trust = load_core_trust_store()
+		except ValueError as err:
+			msg = str(err)
+			if args.json:
+				print(
+					json.dumps(
+						{
+							"exit_code": 1,
+							"diagnostics": [
+								{
+									"phase": "package",
+									"message": msg,
+									"severity": "error",
+									"file": None,
+									"line": None,
+									"column": None,
+								}
+							],
+						}
+					)
+				)
+			else:
+				print(f"error: {msg}", file=sys.stderr)
+			return 1
 		if not args.no_user_trust_store:
 			user_path = Path.home() / ".config" / "drift" / "trust.json"
 			if user_path.exists():
@@ -1913,6 +2035,7 @@ def main(argv: list[str] | None = None) -> int:
 
 		policy = PackageTrustPolicy(
 			trust_store=merged_trust,
+			core_trust_store=core_trust,
 			require_signatures=bool(args.require_signatures),
 			allow_unsigned_roots=allow_unsigned_roots,
 		)
@@ -2061,6 +2184,7 @@ def main(argv: list[str] | None = None) -> int:
 	external_missing_traits: set[object] = set()
 	external_missing_impl_modules: set[str] = set()
 	external_template_hirs_by_id: dict[FunctionId, H.HBlock] = {}
+	external_template_requires_by_id: dict[FunctionId, object] = {}
 
 	if parse_diags:
 		if args.json:
@@ -2414,6 +2538,50 @@ def main(argv: list[str] | None = None) -> int:
 					hir = entry.get("ir")
 					if isinstance(hir, H.HBlock):
 						external_template_hirs_by_id[fn_id] = normalize_hir(hir)
+					req = entry.get("require")
+					if req is not None:
+						external_template_requires_by_id[fn_id] = req
+
+		# Merge external trait metadata and function require clauses into trait worlds
+		# so requirement enforcement can operate across package boundaries.
+		if type_table is not None:
+			from lang2.driftc.traits.world import TraitWorld, ImplDef, type_key_from_typeid
+
+			trait_worlds = getattr(type_table, "trait_worlds", None)
+			if not isinstance(trait_worlds, dict):
+				trait_worlds = {}
+				type_table.trait_worlds = trait_worlds
+			for trait_def in external_trait_defs:
+				mod = getattr(trait_def.key, "module", None) or "main"
+				world = trait_worlds.setdefault(mod, TraitWorld())
+				if trait_def.key not in world.traits:
+					world.traits[trait_def.key] = trait_def
+			for impl in external_impl_metas:
+				trait_key = getattr(impl, "trait_key", None)
+				if trait_key is None:
+					continue
+				def_mod = getattr(impl, "def_module", None) or "main"
+				world = trait_worlds.setdefault(def_mod, TraitWorld())
+				target_key = type_key_from_typeid(type_table, impl.target_type_id)
+				head_key = target_key.head()
+				impl_id = len(world.impls)
+				world.impls.append(
+					ImplDef(
+						trait=trait_key,
+						target=target_key,
+						target_head=head_key,
+						methods=[],
+						require=getattr(impl, "require_expr", None),
+						loc=getattr(impl, "loc", None),
+					)
+				)
+				world.impls_by_trait.setdefault(trait_key, []).append(impl_id)
+				world.impls_by_target_head.setdefault(head_key, []).append(impl_id)
+				world.impls_by_trait_target.setdefault((trait_key, head_key), []).append(impl_id)
+			for fn_id, req_expr in external_template_requires_by_id.items():
+				mod = getattr(fn_id, "module", None) or "main"
+				world = trait_worlds.setdefault(mod, TraitWorld())
+				world.requires_by_fn[fn_id] = req_expr
 
 		# Import package constant tables into the host TypeTable so source code can
 		# reference imported consts as typed literals.
@@ -3037,10 +3205,7 @@ def main(argv: list[str] | None = None) -> int:
 			trait_diags.extend(res.diagnostics)
 		for fn_id, typed_fn in typed_fns.items():
 			module_name = fn_id.module or "main"
-			world = trait_worlds.get(module_name)
-			if world is None:
-				continue
-			res = enforce_fn_requires(world, typed_fn, type_table, module_name=module_name, signatures=signatures_by_id)
+			res = enforce_fn_requires(trait_worlds, typed_fn, type_table, module_name=module_name, signatures=signatures_by_id)
 			trait_diags.extend(res.diagnostics)
 	if trait_diags:
 		if args.json:
@@ -3113,6 +3278,7 @@ def main(argv: list[str] | None = None) -> int:
 			return_checked=True,
 			prelude_enabled=bool(args.prelude),
 			generic_templates_by_id=external_template_hirs_by_id,
+			emit_instantiation_index=args.emit_instantiation_index,
 		)
 		if any(d.severity == "error" for d in checked_pkg.diagnostics):
 			if args.json:
@@ -3127,22 +3293,48 @@ def main(argv: list[str] | None = None) -> int:
 					print(f"{source_path}:{loc}: {d.severity}: {d.message}", file=sys.stderr)
 			return 1
 
+		pkg_signatures_by_symbol: dict[str, FnSignature] = {
+			name: info.signature
+			for name, info in checked_pkg.fn_infos.items()
+			if info.signature is not None
+		}
+
 		# Group functions/signatures by module id.
+		source_module_ids = {getattr(fn_id, "module", None) or "main" for fn_id in normalized_hirs_by_id.keys()}
 		per_module_sigs: dict[str, dict[str, FnSignature]] = {}
-		for name, sig in signatures_by_symbol.items():
+		inst_sigs: dict[str, FnSignature] = {}
+		for name, sig in pkg_signatures_by_symbol.items():
+			if getattr(sig, "is_instantiation", False):
+				inst_sigs[name] = sig
+				continue
 			mid = getattr(sig, "module", None) or "main"
+			if mid not in source_module_ids:
+				continue
 			per_module_sigs.setdefault(mid, {})[name] = sig
 
 		per_module_mir: dict[str, dict[str, object]] = {}
+		inst_mir: dict[str, object] = {}
 		for name, fn in mir_funcs.items():
-			sig = signatures_by_symbol.get(name)
+			sig = pkg_signatures_by_symbol.get(name)
 			mid = getattr(sig, "module", None) if sig is not None else None
 			mid = mid or "main"
-			per_module_mir.setdefault(mid, {})[name] = fn
+			if sig is not None and getattr(sig, "is_instantiation", False):
+				inst_mir[name] = fn
+				continue
+			if mid in source_module_ids:
+				per_module_mir.setdefault(mid, {})[name] = fn
 		per_module_hir: dict[str, dict[str, H.HBlock]] = {}
 		for fn_id, block in normalized_hirs_by_id.items():
 			mid = getattr(fn_id, "module", None) or "main"
 			per_module_hir.setdefault(mid, {})[function_symbol(fn_id)] = block
+
+		inst_module_id: str | None = None
+		if inst_sigs or inst_mir:
+			inst_module_id = f"{args.package_id}.__instantiations"
+			if inst_sigs:
+				per_module_sigs.setdefault(inst_module_id, {}).update(inst_sigs)
+			if inst_mir:
+				per_module_mir.setdefault(inst_module_id, {}).update(inst_mir)
 
 		blobs_by_sha: dict[str, bytes] = {}
 		blob_types: dict[str, int] = {}
@@ -3471,8 +3663,22 @@ def main(argv: list[str] | None = None) -> int:
 			return_ssa=True,
 			type_table=type_table,
 			prelude_enabled=bool(args.prelude),
+			generic_templates_by_id=external_template_hirs_by_id,
+			emit_instantiation_index=args.emit_instantiation_index,
 		)
 		ssa_src = ssa_src or {}
+		if any(d.severity == "error" for d in checked_src.diagnostics):
+			if args.json:
+				payload = {
+					"exit_code": 1,
+					"diagnostics": [_diag_to_json(d, "stage4", source_path) for d in checked_src.diagnostics],
+				}
+				print(json.dumps(payload))
+			else:
+				for d in checked_src.diagnostics:
+					loc = f"{getattr(d.span, 'line', '?')}:{getattr(d.span, 'column', '?')}" if d.span else "?:?"
+					print(f"{source_path}:{loc}: {d.severity}: {d.message}", file=sys.stderr)
+			return 1
 
 		# Decode package MIR payloads. We intentionally do not blindly embed all
 		# loaded package modules; instead we include only the call-graph closure
@@ -3594,6 +3800,7 @@ def main(argv: list[str] | None = None) -> int:
 			exc_env=exception_catalog,
 			entry="main",
 			type_table=type_table,
+			emit_instantiation_index=args.emit_instantiation_index,
 		)
 
 	# Emit IR if requested.

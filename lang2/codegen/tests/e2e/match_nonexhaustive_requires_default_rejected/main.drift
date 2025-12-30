@@ -6,11 +6,11 @@ variant Optional<T> {
 }
 
 fn main() returns Int  nothrow{
-	val x: Optional<Int> = None()
+	val x: Optional<Int> = None();
 	// Non-exhaustive match without `default` is rejected in MVP.
-	val y = match x {
-		Some(v) => { v }
-	}
-	return y
+	val y = match x{
+	Some(v) => { v },
+	};
+	return y;
 }
 

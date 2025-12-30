@@ -4,11 +4,11 @@ import a.geom as ag
 import b.geom as bg
 
 fn main() returns Int  nothrow{
-	var p1: ag.Point = try ag.make() catch { ag.Point(x = 0, y = 0) }
-	var p2: bg.Point = try bg.make() catch { bg.Point(x = 0, y = 0) }
+	var p1: ag.Point = try ag.make() catch { ag.Point(x = 0, y = 0) };
+	var p2: bg.Point = try bg.make() catch { bg.Point(x = 0, y = 0) };
 
 	try p1.move_by(10, 0) catch { return 0; }
 	try p2.move_by(0, 20) catch { return 0; }
 
-	return p1.x + p2.y
+	return p1.x + p2.y;
 }

@@ -104,10 +104,11 @@ LINE_COMMENT: /\/\/[^\n]*/
 BLOCK_COMMENT: /\/\*([^*]|\*(?!\/))*\*\//
 
 %ignore WS_INLINE
+%ignore NEWLINE
 %ignore LINE_COMMENT
 %ignore BLOCK_COMMENT
 
-program: (module_decl | item | TERMINATOR)*
+program: (module_decl | item)*
 
 module_decl: MODULE module_path
 module_path: NAME (DOT NAME)*
@@ -175,19 +176,25 @@ type_args: square_type_args
 square_type_args: "[" type_expr (COMMA type_expr)* "]"
 angle_type_args: ("<" | TYPE_LT) type_expr (COMMA type_expr)* (">" | TYPE_GT)
 
-block: "{" (stmt | TERMINATOR)* "}"
+block: "{" stmt* "}"
 
 // A "value block" is a braced block that evaluates to a value.
 // It allows zero or more statements, followed by a trailing expression that
-// does not require a terminator (though one may be present).
+// must not have a terminator.
 //
 // This is used by expression-form try/catch arms:
 //   try foo() catch { log(e); 0 }
-value_block: "{" (stmt | TERMINATOR)* expr "}"
+value_block: "{" stmt* expr "}"
 
-stmt: if_stmt
-    | try_stmt
+stmt: compound_stmt
     | simple_stmt TERMINATOR
+
+compound_stmt: if_stmt
+             | while_stmt
+             | for_stmt
+             | try_stmt
+             | match_stmt
+             | block
 
 simple_stmt: let_stmt
 	           | return_stmt
@@ -195,8 +202,6 @@ simple_stmt: let_stmt
 	           | raise_stmt
 	           | break_stmt
 	           | continue_stmt
-	           | while_stmt
-	           | for_stmt
 	           | aug_assign_stmt
 	           | assign_stmt
 	           | expr_stmt
@@ -205,7 +210,7 @@ simple_stmt: let_stmt
 // an expression form (`try_catch_expr`). In statement position we want the
 // parser to prefer `try_stmt` so `try foo() catch { ... }` behaves like the
 // statement construct (and does not get parsed as an expression statement).
-try_stmt.2: TRY (block | expr) terminator_opt catch_clause (terminator_opt catch_clause)* terminator_opt
+try_stmt.2: TRY (block | expr) catch_clause catch_clause*
 catch_clause: CATCH catch_pattern block
 catch_pattern: event_fqn "(" ident ")"   -> catch_event
              | ident "(" ident ")"      -> catch_event_unqualified
@@ -223,15 +228,14 @@ aug_assign_stmt: assign_target (PLUS_EQ | MINUS_EQ | STAR_EQ | SLASH_EQ | PERCEN
 assign_target: postfix
              | STAR assign_target -> deref
 
-for_stmt: "for" ident "in" expr terminator_opt block
+for_stmt: "for" ident "in" expr block
 
-if_stmt: IF if_cond terminator_opt block else_clause? terminator_opt
+if_stmt: IF if_cond block else_clause?
 if_cond: trait_expr | expr
-else_clause: terminator_opt ELSE terminator_opt block
+else_clause: ELSE block
 break_stmt: BREAK
 continue_stmt: CONTINUE
-while_stmt: WHILE expr terminator_opt block
-terminator_opt: TERMINATOR*
+while_stmt: WHILE expr block
 
 let_stmt: binder binding_name type_spec? alias_clause? EQUAL expr
 binder: VAL
@@ -267,7 +271,7 @@ module_path_star: NAME (DOT NAME)* DOT STAR
 use_trait_stmt: USE TRAIT trait_ref
 trait_ref: module_path
 
-struct_def: "struct" NAME type_params? require_clause? struct_body
+struct_def: "struct" NAME type_params? require_clause? struct_body TERMINATOR?
 struct_body: tuple_struct | block_struct
 tuple_struct: "(" struct_field_list? ")"
 struct_field_list: struct_field (COMMA struct_field)*
@@ -275,7 +279,7 @@ struct_field: NAME COLON type_expr
 block_struct: "{" TERMINATOR* (block_field TERMINATOR*)* "}"
 block_field: struct_field [COMMA]
 
-exception_def: EXCEPTION NAME "(" [exception_params] ")"
+exception_def: EXCEPTION NAME "(" [exception_params] ")" TERMINATOR?
 exception_params: exception_param (COMMA exception_param)*
 exception_param: NAME COLON type_expr
                 | "domain" EQUAL STRING -> exception_domain_param
@@ -287,7 +291,7 @@ domain_clause: "domain" NAME
 // MVP supports:
 // - positional constructor field lists (`Some(value: T, other: U)`),
 // - generic type parameters (`variant Optional<T> { ... }`).
-variant_def: VARIANT NAME type_params? variant_body
+variant_def: VARIANT NAME type_params? variant_body TERMINATOR?
 type_params: ("<" | TYPE_LT) NAME (COMMA NAME)* (">" | TYPE_GT)
 variant_body: "{" (variant_arm (COMMA | TERMINATOR)*)+ "}"
 variant_arm: NAME variant_fields?
@@ -301,24 +305,27 @@ variant_field: NAME COLON type_expr
      | ternary
      | pipeline
 
-// `match` expression (expression-only in MVP). Each arm body is a block:
+// `match` expression and statement forms.
+//
+// Expression form requires `value_block` arms:
 //   match x {
-//     Some(v) => { v + 1 }
-//     default => { 0 }
+//     Some(v) => { v + 1 },
+//     default => { 0 },
 //   }
 //
-// Arm bodies use:
-// - `value_block` when the arm produces a value, and
-// - `block` when the match result is unused (statement position).
+// Statement form requires `block` arms only (no `value_block`s).
 //
-// Type checking enforces:
-// - `default` (if present) is last and appears at most once,
-// - duplicates are rejected,
-// - without `default` matches must be exhaustive for known variants, and
-// - when the match result is used, all arms must provide `value_block`s whose
-//   result types match exactly.
-match_expr: MATCH expr "{" (match_arm (TERMINATOR | COMMA)*)+ "}"
-match_arm: match_pat FATARROW match_arm_body
+// Notes:
+// - arms are comma-separated; trailing comma is allowed.
+// - without `default` matches must be exhaustive for known variants.
+// - when the match result is used, all arms must provide values and match
+//   result types exactly.
+match_expr: MATCH expr "{" match_expr_arms "}"
+match_stmt: MATCH expr "{" match_stmt_arms "}"
+?match_expr_arms: match_expr_arm (COMMA match_expr_arm)* COMMA?
+match_expr_arm: match_pat FATARROW match_expr_arm_body
+?match_stmt_arms: match_stmt_arm (COMMA match_stmt_arm)* COMMA?
+match_stmt_arm: match_pat FATARROW match_stmt_arm_body
 match_pat: DEFAULT              -> match_default
          | NAME "(" ")"         -> match_ctor_paren
          | NAME "(" match_named_binders ")"  -> match_ctor_named
@@ -327,8 +334,8 @@ match_pat: DEFAULT              -> match_default
 match_binders: NAME (COMMA NAME)*
 match_named_binders: match_named_binder (COMMA match_named_binder)*
 match_named_binder: NAME EQUAL NAME
-match_arm_body: value_block
-              | block
+match_expr_arm_body: value_block
+match_stmt_arm_body: block
 
 // Note: expression-form `try` (`try_catch_expr`) requires catch arms that
 // produce a value (see `value_block`). Statement-form `try` (`try_stmt`) uses

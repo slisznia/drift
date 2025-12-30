@@ -40,7 +40,7 @@ module m_impl_b
 
 import m_types
 
-pub const MARK: Int = 1
+pub const MARK: Int = 1;
 
 export { MARK }
 

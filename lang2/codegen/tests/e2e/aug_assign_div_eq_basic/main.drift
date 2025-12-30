@@ -1,7 +1,7 @@
 module m
 
 fn main() returns Int  nothrow{
-	var x: Int = 84
-	x /= 2
-	return x
+	var x: Int = 84;
+	x /= 2;
+	return x;
 }

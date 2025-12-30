@@ -3,6 +3,6 @@ module acme.lib
 export { answer }
 
 pub fn answer() returns Int {
-	return 42
+	return 42;
 }
 

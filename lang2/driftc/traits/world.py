@@ -88,6 +88,17 @@ def type_key_from_typeid(type_table: object, tid: int) -> TypeKey:
 	return TypeKey(module=getattr(td, "module_id", None), name=getattr(td, "name", ""), args=args)
 
 
+def normalize_type_key(key: TypeKey, *, module_name: str) -> TypeKey:
+	"""
+	Normalize a TypeKey with the same rule used by trait resolution.
+
+	If the key has no module id, it is resolved to the current module name.
+	"""
+	if key.module is None:
+		return TypeKey(module=module_name, name=key.name, args=key.args)
+	return key
+
+
 def trait_key_from_expr(typ: parser_ast.TypeExpr, *, default_module: Optional[str] = None) -> TraitKey:
 	return TraitKey(module=_qual_from_type_expr(typ) or default_module, name=typ.name)
 
@@ -104,6 +115,11 @@ def _type_key_str(key: TypeKey | TypeHeadKey) -> str:
 
 def _trait_key_str(key: TraitKey) -> str:
 	return f"{key.module}.{key.name}" if key.module else key.name
+
+
+def type_key_str(key: TypeKey | TypeHeadKey) -> str:
+	"""Render a TypeKey/TypeHeadKey as a canonical string label."""
+	return _type_key_str(key)
 
 
 def _diag(message: str, loc: object | None) -> Diagnostic:
@@ -350,4 +366,6 @@ __all__ = [
 	"resolve_struct_require_subjects",
 	"resolve_trait_subjects",
 	"type_key_from_typeid",
+	"normalize_type_key",
+	"type_key_str",
 ]

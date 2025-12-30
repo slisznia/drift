@@ -150,6 +150,11 @@ effect-based throw ABI.
 - Prelude flag support: `--no-prelude` disables implicit `lang.core` import but explicit `import lang.core` still works (prelude exports injected for import resolution, auto-visibility remains gated).
 - CLI now runs stub checker **after** typecheck with CallInfo so nothrow method-boundary violations are enforced (no name-based inference); stubbed pipeline checks normalized HIR for CallInfo alignment.
 - Driver package test verifies fn-typed method params survive package encode/decode and resolve in a consumer.
+- Core trust enforcement: core trust is mandatory, dev override requires `--dev --dev-core-trust-store`, and core keys cannot be revoked via user/project trust.
+- InstantiationKey now derives module identity from `generic_def_id.module` (no separate module_id field), and key strings are based on `function_symbol(...)`.
+- Instantiation signatures clear `param_types`/`return_type` so package decode can’t reintroduce `TypeVar` payloads (fixes cross-package instantiation dedup).
+- Match statement cleanup: removed duplicate `match_stmt_arm_body` grammar alternative and added a negative test that rejects value-style arms in statement-form match.
+- Trait-bound test harness now passes `trait_worlds` into `enforce_fn_requires` (fixes TypeChecker type-param bounds test).
 
 ## Out of scope (this branch)
 - Method references / bound `self` function values.
@@ -205,7 +210,9 @@ Pinned invariants:
 - No `TypeKind.TYPEVAR` may reach DMIR/MIR/SSA/LLVM.
 - Generic templates live in package payload `generic_templates` and are not DMIR.
 - Instantiation is per compilation unit; emitted symbols are linkonce/ODR-foldable
-  and named by `InstantiationKey` (package/module/def id + canonical args + ABI flags).
+  and named by `InstantiationKey` (module/def id + canonical args + ABI flags).
+- Module ids are globally unique within a build; duplicate ModuleIds across
+  packages are a hard error (locked by driver test).
 
 Package payload shape:
 - Top-level key: `generic_templates`.
@@ -227,6 +234,19 @@ Instantiation phase (new):
   “no TypeVar in codegen” guard is recursive (nested param types).
 - Emit concrete MIR only; reject if any TypeVar remains.
 - Rewrite call targets to instantiated FunctionIds.
+- ✅ InstantiationKey finalized (ModuleId + GenericDefId + canonical args + ABI flags),
+  using the shared trait-resolution normalization helper.
+- ✅ Instantiation cache + job queue dedup with pending/emitted handles; duplicate
+  emission is a hard error.
+- ✅ `--emit-instantiation-index` dumps deterministic key/symbol/ABI records.
+
+### Definition of Done (instantiation phase)
+- Single `InstantiationKey` helper used by all instantiation requests.
+- Instantiation cache + job queue dedup; duplicate emission is a hard error.
+- `--emit-instantiation-index` emits deterministic key+symbol+ABI records.
+- ✅ COMDAT/linkonce emission for instantiations.
+- Cross-package instantiation tests (constraint failure, dedup, missing template,
+  ABI split) are green.
 
 Docs alignment:
 - `docs/design/dmir-spec.md` remains strict: DMIR/MIR monomorphic only.

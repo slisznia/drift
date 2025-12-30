@@ -2,7 +2,7 @@ module m
 
 fn main() returns Int  nothrow{
 	// MVP currently supports only empty `:spec`.
-	println(f"{10:03}")
-	return 0
+	println(f"{10:03}");
+	return 0;
 }
 

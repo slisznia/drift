@@ -1,6 +1,6 @@
 export { Point, make }
 
-pub struct Point(x: Int, y: Int)
+pub struct Point(x: Int, y: Int);
 
 pub fn make(x: Int, y: Int) returns Point {
 	return Point(x = x, y = y);

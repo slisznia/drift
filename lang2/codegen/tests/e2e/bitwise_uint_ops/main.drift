@@ -3,22 +3,22 @@ module m
 fn main() returns Int  nothrow{
 	// Uint can be introduced via a type annotation; the literal initializer is
 	// accepted in MVP to make Uint usable without casts.
-	var x: Uint = 6
-	var y: Uint = 3
-	var eight: Uint = 8
-	var one: Uint = 1
-	var two: Uint = 2
-	var four: Uint = 4
-	var mask: Uint = 255
+	var x: Uint = 6;
+	var y: Uint = 3;
+	var eight: Uint = 8;
+	var one: Uint = 1;
+	var two: Uint = 2;
+	var four: Uint = 4;
+	var mask: Uint = 255;
 
 	// x = 6
-	x &= y        // 6 & 3 = 2
-	x |= eight    // 2 | 8 = 10
-	x ^= one      // 10 ^ 1 = 11
-	x <<= one     // 11 << 1 = 22
-	x >>= two     // 22 >> 2 = 5
-	x %= four     // 5 % 4 = 1
-	x = ~x        // bitwise not
-	x &= mask     // keep low 8 bits
-	return x      // 254
+	x &= y;       // 6 & 3 = 2
+	x |= eight;   // 2 | 8 = 10
+	x ^= one;     // 10 ^ 1 = 11
+	x <<= one;    // 11 << 1 = 22
+	x >>= two;    // 22 >> 2 = 5
+	x %= four;    // 5 % 4 = 1
+	x = ~x;       // bitwise not
+	x &= mask;    // keep low 8 bits
+	return x;     // 254
 }

@@ -4,11 +4,11 @@ variant Optional<T> {
 }
 
 fn main() returns Int  nothrow{
-	val x = Optional<Array<String>>::None()
-	val y = match x {
-		Some(v) => { 1 }
-		None => { 0 }
-	}
-	return y
+	val x = Optional<Array<String>>::None();
+	val y = match x{
+	Some(v) => { 1 },
+		None => { 0 },
+	};
+	return y;
 }
 

@@ -2,7 +2,7 @@ module m
 
 fn main() returns Int  nothrow{
     try {
-        rethrow
+        rethrow;
     } catch err {
         print("caught");
     }

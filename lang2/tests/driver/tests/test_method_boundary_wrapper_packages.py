@@ -315,8 +315,8 @@ module main
 import acme.pointm as P
 
 fn main() returns Int  nothrow{
-\tval p = P.make()
-\treturn try p.bump() catch { 0 }
+\tval p = P.make();
+\treturn try p.bump() catch { 0 };
 }
 """.lstrip(),
 	)
@@ -427,8 +427,8 @@ import acme.fnparam as P
 fn add1(x: Int) returns Int nothrow { return x + 1; }
 
 fn main() returns Int {
-\tval s = P.make()
-\treturn s.apply(add1)
+\tval s = P.make();
+\treturn s.apply(add1);
 }
 """.lstrip(),
 	)

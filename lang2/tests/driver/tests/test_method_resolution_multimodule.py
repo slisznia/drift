@@ -578,7 +578,7 @@ module m_impl_a
 
 import m_types
 
-pub const MARK_A: Int = 1
+pub const MARK_A: Int = 1;
 
 export { MARK_A }
 
@@ -591,7 +591,7 @@ module m_impl_b
 
 import m_types
 
-pub const MARK_B: Int = 2
+pub const MARK_B: Int = 2;
 
 export { MARK_B }
 
@@ -651,8 +651,8 @@ module mod_b
 import mod_a as A
 
 fn main() returns Int  nothrow{
-\tval p = A.Point(x = 1)
-\treturn try p.bump() catch { 0 }
+\tval p = A.Point(x = 1);
+\treturn try p.bump() catch { 0 };
 }
 """,
 	}

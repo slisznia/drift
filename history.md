@@ -1,3 +1,12 @@
+## 2025-12-29 – Core trust enforcement (reserved namespaces)
+- Made the core trust store mandatory for reserved namespaces; removed fallback to project/user trust for `lang.*`, `std.*`, and `drift.*`.
+- Added dev-only override via `--dev --dev-core-trust-store` (non-normative), and documented the exception in the spec.
+- Core-key revocations now consult only the core trust store; user/project revocations cannot disable toolchain keys.
+- Added a toolchain core trust file with the required format header and updated tests accordingly.
+- Prevented instantiation signatures from re-serializing template type exprs (clears `param_types`/`return_type`), fixing cross-package instantiation dedup.
+- Cleaned match statement grammar (removed duplicate `match_stmt_arm_body`) and added a negative test to reject value-style arms in statement-form match.
+- Updated trait-bound test harness to pass full `trait_worlds` into `enforce_fn_requires`.
+
 ## 2025-12-28 – Function pointers: thunks + captureless lambdas
 - Added NOTHROW→CAN_THROW Ok-wrap thunking for function values with a dedicated FunctionRefKind and a thunk cache; typed-context assignment can insert thunks while `cast<T>` stays strict.
 - Added captureless lambda coercion to `fn(...)` pointers with capture rejection and can-throw validation.

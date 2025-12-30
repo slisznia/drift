@@ -1,14 +1,14 @@
 struct S(a: Int, b: Int)
 
 fn main() returns Int  nothrow{
-	var s = S(0, 0)
-	var r: &Int = &s.a
+	var s = S(0, 0);
+	var r: &Int = &s.a;
 	if true {
-		r = &s.a
+		r = &s.a;
 	} else {
-		r = &s.a
+		r = &s.a;
 	}
-	s.a = 1
-	val y = *r
-	return y
+	s.a = 1;
+	val y = *r;
+	return y;
 }

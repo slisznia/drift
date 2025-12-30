@@ -1,8 +1,8 @@
 module m
 
 fn main() returns Int  nothrow{
-	val xs = [1, 2, 3]
-	println(f"{xs}")
-	return 0
+	val xs = [1, 2, 3];
+	println(f"{xs}");
+	return 0;
 }
 

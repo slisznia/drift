@@ -15,6 +15,7 @@ from .ast import (
     QualifiedMember,
     Binary,
     Block,
+    BlockStmt,
     Call,
     ConstDef,
     CatchClause,
@@ -330,146 +331,14 @@ def _parse_fstring(loc: Located, raw_string_token: Token) -> FString:
 
 
 class TerminatorInserter:
-    always_accept = ("NEWLINE", "SEMI")
-
-    TERMINABLE = {
-        "NAME",
-        "SIGNED_INT",
-        # Float literals in lang2 MVP use the `FLOAT` token (dot required).
-        "FLOAT",
-        # Legacy/compat token name; keep for safety if the grammar changes.
-        "SIGNED_FLOAT",
-        "STRING",
-        "TRUE",
-        "FALSE",
-        "RPAR",
-        "RSQB",
-        "RBRACE",
-        "RETURN",
-        "THROW",
-        "RETHROW",
-        "BREAK",
-        "CONTINUE",
-    }
-
-    SUPPRESS = {
-        "DOT",
-        "ARROW",
-        "PLUS",
-        "PLUS_EQ",
-        "MINUS",
-        "MINUS_EQ",
-        "STAR_EQ",
-        "SLASH_EQ",
-        "PERCENT_EQ",
-        "AMP_EQ",
-        "BAR_EQ",
-        "CARET_EQ",
-        "LSHIFT_EQ",
-        "SHR_EQ",
-        "STAR",
-        "SLASH",
-        "PERCENT",
-        "BAR",
-        "CARET",
-        "TILDE",
-        "LSHIFT",
-        "SHR",
-        "PIPE_FWD",
-        "PIPE_REV",
-        "AND",
-        "OR",
-        "EQEQ",
-        "NOTEQ",
-        "LTE",
-        "GTE",
-        "LT",
-        "GT",
-        "COLON",
-        "COMMA",
-        "EQUAL",
-        "IF",
-        "ELSE",
-    }
-
-    def __init__(self) -> None:
-        self._reset()
-
-    def _reset(self) -> None:
-        self.paren_depth = 0
-        self.bracket_depth = 0
-        self.can_terminate = False
+    always_accept = ("SEMI",)
 
     def process(self, stream):
-        """
-        Insert `TERMINATOR` tokens for statement boundaries.
-
-        We treat explicit `;` as an unconditional terminator, and we treat
-        newline as a terminator *only* when the previous token can terminate a
-        statement and we're not inside parentheses/brackets.
-
-        One additional rule keeps `try ... catch ...` readable across lines:
-
-            try foo()
-                catch { ... }
-
-        The newline between the attempt and the `catch` keyword must not create
-        a statement terminator. To support that without complicating the
-        grammar, we suppress newline-terminator insertion when the next
-        significant token is `CATCH`.
-        """
-
-        self._reset()
-        pending_newline: Token | None = None
-
         for token in stream:
-            ttype = token.type
-
-            if ttype == "NEWLINE":
-                # Defer the decision until we see the next non-newline token so
-                # we can suppress terminators before `catch`.
-                pending_newline = token
-                continue
-
-            if ttype == "SEMI":
-                # An explicit semicolon always terminates the current statement.
-                pending_newline = None
+            if token.type == "SEMI":
                 yield Token.new_borrow_pos("TERMINATOR", token.value, token)
-                self.can_terminate = False
                 continue
-
-            if pending_newline is not None:
-                if self._should_emit_terminator() and ttype != "CATCH":
-                    yield Token.new_borrow_pos("TERMINATOR", pending_newline.value, pending_newline)
-                    self.can_terminate = False
-                pending_newline = None
-
             yield token
-            self._update_depth(ttype)
-            self.can_terminate = self._is_terminable(ttype)
-
-        if pending_newline is not None:
-            if self._should_emit_terminator():
-                yield Token.new_borrow_pos("TERMINATOR", pending_newline.value, pending_newline)
-                self.can_terminate = False
-
-    def _update_depth(self, ttype: str) -> None:
-        if ttype == "LPAR":
-            self.paren_depth += 1
-        elif ttype == "RPAR" and self.paren_depth:
-            self.paren_depth -= 1
-        elif ttype == "LSQB":
-            self.bracket_depth += 1
-        elif ttype == "RSQB" and self.bracket_depth:
-            self.bracket_depth -= 1
-
-    def _is_terminable(self, ttype: str) -> bool:
-        if ttype in self.SUPPRESS:
-            return False
-        return ttype in self.TERMINABLE
-
-    def _should_emit_terminator(self) -> bool:
-        return self.paren_depth == 0 and self.bracket_depth == 0 and self.can_terminate
 
 
 class QualifiedTypeArgInserter:
@@ -774,8 +643,7 @@ class DriftPostLex:
 	"""Combined post-lexer: type-arg disambiguation, then terminator insertion."""
 
 	# Lark may drop tokens that aren't referenced in the grammar unless the
-	# post-lexer asks to keep them. We need newlines/semicolons for terminator
-	# insertion.
+	# post-lexer asks to keep them. We need semicolons for terminator insertion.
 	always_accept = TerminatorInserter.always_accept
 
 	def __init__(self) -> None:
@@ -1278,10 +1146,10 @@ def _build_block(tree: Tree) -> Block:
 def _build_value_block(tree: Tree) -> Block:
     """
     Build a "value block": a braced block that ends with a trailing expression
-    that does not require a terminator (though one may be present).
+    that must not have a terminator.
 
     Grammar:
-        value_block: "{" (stmt | TERMINATOR)* expr terminator_opt "}"
+        value_block: "{" stmt* expr "}"
 
     We represent the trailing expression as a final `ExprStmt` in the block.
     Downstream stages (AstToHIR / checker) are responsible for enforcing any
@@ -1299,8 +1167,6 @@ def _build_value_block(tree: Tree) -> Block:
             stmt = _build_stmt(child)
             if stmt is not None:
                 statements.append(stmt)
-            continue
-        if name == "terminator_opt":
             continue
         result_expr_node = child
 
@@ -1470,16 +1336,19 @@ def _build_stmt(tree: Tree):
 		for child in tree.children:
 			if isinstance(child, Tree):
 				inner_kind = _name(child)
-				if inner_kind in {"simple_stmt", "if_stmt", "try_stmt"}:
+				if inner_kind in {"simple_stmt", "compound_stmt", "if_stmt", "try_stmt"}:
 					return _build_stmt(child)
+		return None
+	if kind == "compound_stmt":
+		for child in tree.children:
+			if isinstance(child, Tree):
+				return _build_stmt(child)
 		return None
 	if kind == "simple_stmt":
 		target = tree.children[0]
 		stmt_kind = _name(target)
 		if stmt_kind == "let_stmt":
 			return _build_let_stmt(target)
-		if stmt_kind == "for_stmt":
-			return _build_for_stmt(target)
 		if stmt_kind == "aug_assign_stmt":
 			return _build_aug_assign_stmt(target)
 		if stmt_kind == "assign_stmt":
@@ -1498,8 +1367,6 @@ def _build_stmt(tree: Tree):
 			return _build_export_stmt(target)
 		if stmt_kind == "use_trait_stmt":
 			return _build_use_trait_stmt(target)
-		if stmt_kind == "while_stmt":
-			return _build_while_stmt(target)
 		if stmt_kind == "break_stmt":
 			return _build_break_stmt(target)
 		if stmt_kind == "continue_stmt":
@@ -1507,10 +1374,17 @@ def _build_stmt(tree: Tree):
 		return None
 	if kind == "if_stmt":
 		return _build_if_stmt(tree)
+	if kind == "match_stmt":
+		match_expr = _build_match_expr(tree, arm_node_names=("match_stmt_arm",))
+		return ExprStmt(loc=_loc(tree), value=match_expr)
 	if kind == "while_stmt":
 		return _build_while_stmt(tree)
+	if kind == "for_stmt":
+		return _build_for_stmt(tree)
 	if kind == "try_stmt":
 		return _build_try_stmt(tree)
+	if kind == "block":
+		return BlockStmt(loc=_loc(tree), block=_build_block(tree))
 	if kind == "let_stmt":
 		return _build_let_stmt(tree)
 	if kind == "assign_stmt":
@@ -1641,9 +1515,6 @@ def _build_for_stmt(tree: Tree) -> ForStmt:
         or (isinstance(child, Tree) and _name(child) == "ident")
     )
     name_token = _unwrap_ident(ident_node)
-    # `for` statement shape:
-    #   for <ident> in <expr> terminator_opt <block>
-    #
     # The parse tree includes both the loop binding `ident` and the iterable
     # `expr` as Tree nodes. We must select the iterable expression here, not
     # the binding identifier; otherwise we end up trying to build an expression
@@ -1651,7 +1522,7 @@ def _build_for_stmt(tree: Tree) -> ForStmt:
     expr_node = next(
         child
         for child in tree.children
-        if isinstance(child, Tree) and _name(child) not in {"ident", "block", "terminator_opt"}
+        if isinstance(child, Tree) and _name(child) not in {"ident", "block"}
     )
     block_node = next(child for child in tree.children if isinstance(child, Tree) and _name(child) == "block")
     iter_expr = _build_expr(expr_node)
@@ -1875,7 +1746,7 @@ def _build_if_stmt(tree: Tree) -> IfStmt:
         if not isinstance(child, Tree):
             continue
         name = _name(child)
-        if condition_node is None and name != "terminator_opt":
+        if condition_node is None:
             condition_node = child
             continue
         if then_block_node is None and name == "block":
@@ -1909,8 +1780,6 @@ def _build_while_stmt(tree: Tree) -> WhileStmt:
     condition_node = None
     body_node = None
     for child in tree.children:
-        if isinstance(child, Tree) and _name(child) == "terminator_opt":
-            continue
         if condition_node is None and isinstance(child, Tree):
             condition_node = child
             continue
@@ -2060,7 +1929,7 @@ def _build_expr(node) -> Expr:
     if name == "try_catch_expr":
         return _build_try_catch_expr(node)
     if name == "match_expr":
-        return _build_match_expr(node)
+        return _build_match_expr(node, arm_node_names=("match_expr_arm",))
     if name == "ternary":
         return _build_ternary(node)
     if name == "pipeline":
@@ -2289,8 +2158,6 @@ def _build_try_catch_expr(tree: Tree) -> TryCatchExpr:
     arm_nodes: list[Tree] = []
     for node in parts:
         name = _name(node)
-        if name == "terminator_opt":
-            continue
         if name.startswith("catch_expr_"):
             arm_nodes.append(node)
             continue
@@ -2367,20 +2234,21 @@ def _build_try_catch_expr(tree: Tree) -> TryCatchExpr:
     return TryCatchExpr(loc=_loc(tree), attempt=attempt, catch_arms=arms)
 
 
-def _build_match_expr(tree: Tree) -> MatchExpr:
+def _build_match_expr(tree: Tree, *, arm_node_names: tuple[str, ...] = ("match_expr_arm",)) -> MatchExpr:
 	"""
 	Build a match expression.
 
 	Grammar:
-	  match_expr: MATCH expr "{" (match_arm (TERMINATOR | COMMA)*)+ "}"
+	  match_expr: MATCH expr "{" match_expr_arms? "}"
 	"""
 	# The scrutinee is the first expression subtree directly under `match_expr`.
 	#
 	# Note: because `expr` is an inlined rule (`?expr`), Lark does not always
 	# materialize it as a distinct `Tree("expr")`. The first child that is a
-	# `Tree` and is *not* a `match_arm` is the scrutinee expression.
+	# `Tree` and is *not* a match arm is the scrutinee expression.
+	excluded = set(arm_node_names) | {"match_expr_arms", "match_stmt_arms"}
 	scrutinee_node = next(
-		(c for c in tree.children if isinstance(c, Tree) and _name(c) != "match_arm"),
+		(c for c in tree.children if isinstance(c, Tree) and _name(c) not in excluded),
 		None,
 	)
 	if scrutinee_node is None:
@@ -2388,7 +2256,17 @@ def _build_match_expr(tree: Tree) -> MatchExpr:
 	scrutinee = _build_expr(scrutinee_node)
 
 	arms: list[MatchArm] = []
-	for arm_node in (c for c in tree.children if isinstance(c, Tree) and _name(c) == "match_arm"):
+	arm_nodes: list[Tree] = []
+	for child in (c for c in tree.children if isinstance(c, Tree)):
+		name = _name(child)
+		if name in arm_node_names:
+			arm_nodes.append(child)
+			continue
+		if name in {"match_expr_arms", "match_stmt_arms"}:
+			arm_nodes.extend(
+				c for c in child.children if isinstance(c, Tree) and _name(c) in arm_node_names
+			)
+	for arm_node in arm_nodes:
 		pat: Optional[Tree] = None
 		for child in (c for c in arm_node.children if isinstance(c, Tree)):
 			child_name = _name(child)
@@ -2454,7 +2332,15 @@ def _build_match_expr(tree: Tree) -> MatchExpr:
 		else:
 			raise ValueError(f"Unsupported match_pat shape: {pat_kind}")
 
-		body_node = next((c for c in arm_node.children if isinstance(c, Tree) and _name(c) == "match_arm_body"), None)
+		body_node = next(
+			(
+				c
+				for c in arm_node.children
+				if isinstance(c, Tree)
+				and _name(c) in ("match_expr_arm_body", "match_stmt_arm_body", "match_arm_body")
+			),
+			None,
+		)
 		if body_node is None:
 			raise ValueError("match_arm missing body")
 		inner = next((c for c in body_node.children if isinstance(c, Tree)), None)

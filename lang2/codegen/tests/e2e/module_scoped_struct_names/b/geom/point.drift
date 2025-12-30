@@ -5,5 +5,5 @@ export { Point, make }
 pub struct Point { x: Int, y: Int }
 
 pub fn make() returns Point {
-	return Point(x = 2, y = 0)
+	return Point(x = 2, y = 0);
 }

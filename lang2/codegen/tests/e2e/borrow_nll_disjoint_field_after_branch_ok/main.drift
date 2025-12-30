@@ -1,11 +1,11 @@
 struct S(a: Int, b: Int)
 
 fn main() returns Int  nothrow{
-	var s = S(0, 0)
+	var s = S(0, 0);
 	if true {
-		val r = &s.a
-		val y = *r
+		val r = &s.a;
+		val y = *r;
 	}
-	s.b = 1
-	return s.b
+	s.b = 1;
+	return s.b;
 }

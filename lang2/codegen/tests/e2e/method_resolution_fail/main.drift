@@ -5,7 +5,7 @@ implement Int {
 }
 
 fn main() returns Int  nothrow{
-	val flag = false
-	flag.bump() // no method for Bool
+	val flag = false;
+	flag.bump(); // no method for Bool.
 	return 0;
 }

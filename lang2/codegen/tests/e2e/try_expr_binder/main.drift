@@ -10,8 +10,7 @@ fn may_fail(flag: Int) returns Int {
 }
 
 fn main() returns Int  nothrow{
-	val x: Int = try may_fail(1) catch err {
-		println("caught");
+	val x: Int = try may_fail(1) catch err {		println("caught");
 		42 };
 	return x;
 }
