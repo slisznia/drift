@@ -53,7 +53,9 @@ def test_missing_semicolon_after_return_try_catch_reports_error(
 		"""
 module main
 
-fn foo() nothrow returns Int { return 1; }
+	exception Boom()
+
+	fn foo() returns Int { throw Boom(); }
 
 fn main() nothrow returns Int {
 	return try foo() catch { 0 }
@@ -74,7 +76,9 @@ def test_value_block_allows_trailing_expr_without_semicolon(
 		"""
 module main
 
-fn foo() nothrow returns Int { return 1; }
+exception Boom()
+
+fn foo() returns Int { throw Boom(); }
 
 fn main() nothrow returns Int {
 	val x: Int = try foo() catch { println("x"); 0 };

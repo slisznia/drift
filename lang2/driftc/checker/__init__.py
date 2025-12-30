@@ -484,6 +484,9 @@ class Checker:
 		fn_infos: Mapping[str, FnInfo],
 		current_fn: str,
 		call_info_by_node_id: Mapping[int, CallInfo] | None,
+		*,
+		unknown_calls_throw: bool = False,
+		indexing_throws: bool = False,
 	) -> tuple[bool, Span, str | None]:  # type: ignore[name-defined]
 		"""
 		Walk a HIR block and conservatively decide if it may throw.
@@ -518,10 +521,7 @@ class Checker:
 							first_span = Span.from_loc(getattr(expr, "loc", None))
 						if first_note is None:
 							first_note = "call may throw"
-						if (
-							info.target.kind is CallTargetKind.DIRECT
-							and info.target.symbol is not None
-						):
+						if info.target.kind is CallTargetKind.DIRECT and info.target.symbol is not None:
 							callee_name = function_symbol(info.target.symbol)
 							if self._is_boundary_call(callee_name, current_fn, fn_infos):
 								first_note = (
@@ -531,16 +531,25 @@ class Checker:
 					if catch_all:
 						# Catch-all in scope handles any propagated throw from this call.
 						pass
-					elif self._is_boundary_call(expr.fn.name, current_fn, fn_infos):
-						may_throw = True
-						if first_span is None:
-							first_span = Span.from_loc(getattr(expr, "loc", None))
-						if first_note is None:
-							first_note = "cross-module call to exported/extern requires can-throw calling convention"
-					elif self._call_may_throw(expr.fn.name, fn_infos):
-						may_throw = True
-						if first_span is None:
-							first_span = Span.from_loc(getattr(expr, "loc", None))
+					else:
+						info = fn_infos.get(expr.fn.name)
+						if info is None:
+							if unknown_calls_throw:
+								may_throw = True
+								if first_span is None:
+									first_span = Span.from_loc(getattr(expr, "loc", None))
+								if first_note is None:
+									first_note = "call may throw"
+						elif self._is_boundary_call(expr.fn.name, current_fn, fn_infos):
+							may_throw = True
+							if first_span is None:
+								first_span = Span.from_loc(getattr(expr, "loc", None))
+							if first_note is None:
+								first_note = "cross-module call to exported/extern requires can-throw calling convention"
+						elif self._call_may_throw(expr.fn.name, fn_infos):
+							may_throw = True
+							if first_span is None:
+								first_span = Span.from_loc(getattr(expr, "loc", None))
 				for arg in expr.args:
 					walk_expr(arg, caught_events, catch_all)
 				for kw in getattr(expr, "kwargs", []) or []:
@@ -563,7 +572,37 @@ class Checker:
 							first_span = Span.from_loc(getattr(expr, "loc", None))
 						if first_note is None:
 							first_note = "method call may throw"
+				elif unknown_calls_throw and not catch_all:
+					may_throw = True
+					if first_span is None:
+						first_span = Span.from_loc(getattr(expr, "loc", None))
+					if first_note is None:
+						first_note = "method call may throw"
 				walk_expr(expr.receiver, caught_events, catch_all)
+				for arg in expr.args:
+					walk_expr(arg, caught_events, catch_all)
+				for kw in getattr(expr, "kwargs", []) or []:
+					walk_expr(kw.value, caught_events, catch_all)
+			elif isinstance(expr, H.HInvoke):
+				if call_info_by_node_id is not None:
+					info = call_info_by_node_id.get(expr.node_id)
+					if info is None:
+						raise AssertionError(
+							f"BUG: missing CallInfo for invoke during nothrow analysis (node_id={expr.node_id})"
+						)
+					if info.sig.can_throw and not catch_all:
+						may_throw = True
+						if first_span is None:
+							first_span = Span.from_loc(getattr(expr, "loc", None))
+						if first_note is None:
+							first_note = "call may throw"
+				elif unknown_calls_throw and not catch_all:
+					may_throw = True
+					if first_span is None:
+						first_span = Span.from_loc(getattr(expr, "loc", None))
+					if first_note is None:
+						first_note = "call may throw"
+				walk_expr(expr.callee, caught_events, catch_all)
 				for arg in expr.args:
 					walk_expr(arg, caught_events, catch_all)
 				for kw in getattr(expr, "kwargs", []) or []:
@@ -596,6 +635,12 @@ class Checker:
 			elif isinstance(expr, H.HIndex):
 				walk_expr(expr.subject, caught_events, catch_all)
 				walk_expr(expr.index, caught_events, catch_all)
+				if indexing_throws and not catch_all:
+					may_throw = True
+					if first_span is None:
+						first_span = Span.from_loc(getattr(expr, "loc", None))
+					if first_note is None:
+						first_note = "indexing may throw"
 			elif isinstance(expr, H.HDVInit):
 				for a in expr.args:
 					walk_expr(a, caught_events, catch_all)
@@ -667,6 +712,29 @@ class Checker:
 
 		walk_block(block)
 		return may_throw, (first_span or Span()), first_note
+
+	def _expr_may_throw(
+		self,
+		expr: "H.HExpr",
+		fn_infos: Mapping[str, FnInfo],
+		current_fn: str,
+		call_info_by_node_id: Mapping[int, CallInfo] | None,
+		*,
+		unknown_calls_throw: bool = False,
+		indexing_throws: bool = False,
+	) -> bool:
+		from lang2.driftc import stage1 as H
+
+		block = H.HBlock(statements=[H.HExprStmt(expr=expr)])
+		may_throw, _span, _note = self._function_may_throw(
+			block,
+			fn_infos,
+			current_fn,
+			call_info_by_node_id,
+			unknown_calls_throw=unknown_calls_throw,
+			indexing_throws=indexing_throws,
+		)
+		return may_throw
 
 	@dataclass
 	class _TypingContext:
@@ -1076,18 +1144,7 @@ class Checker:
 					return td.param_types[0]
 				self.report_index_subject_not_array()
 				return None
-
 			if hasattr(H, "HTryExpr") and isinstance(expr, getattr(H, "HTryExpr")):
-				if not isinstance(expr.attempt, (H.HCall, H.HMethodCall)):
-					self._append_diag(
-						Diagnostic(
-							message="try/catch attempt must be a function call",
-							severity="error",
-							span=getattr(expr, "loc", Span()),
-						)
-					)
-					return None
-
 				attempt_ty = self._infer_expr_type(expr.attempt)
 				if attempt_ty is not None and self.table.is_void(attempt_ty):
 					self._append_diag(
@@ -1098,6 +1155,27 @@ class Checker:
 						)
 					)
 					return None
+
+				if self.current_fn is not None:
+					call_info_by_node_id = self.checker._call_info_by_name.get(self.current_fn.name)
+					attempt_may_throw = self.checker._expr_may_throw(
+						expr.attempt,
+						self.fn_infos,
+						self.current_fn.name,
+						call_info_by_node_id,
+						unknown_calls_throw=True,
+						indexing_throws=True,
+					)
+					if not attempt_may_throw:
+						self._append_diag(
+							Diagnostic(
+								message="'try' applied to a nothrow expression (catch is unreachable)",
+								severity="error",
+								span=getattr(expr, "loc", Span()),
+								notes=["expression contains no throwing operations"],
+							)
+						)
+						return None
 
 				seen_events: set[str] = set()
 				catch_all_seen = False
@@ -1128,6 +1206,8 @@ class Checker:
 						)
 						return None
 					return self._infer_expr_type(result_expr)
+
+				result_ty = attempt_ty
 
 				for arm in expr.arms:
 					if arm.event_fqn is None:
@@ -1169,18 +1249,23 @@ class Checker:
 							self.locals.pop(arm.binder, None)
 						else:
 							self.locals[arm.binder] = prev
-					if attempt_ty is not None and arm_ty is not None and arm_ty != attempt_ty:
+					if result_ty is None and arm_ty is not None:
+						result_ty = arm_ty
+					elif result_ty is not None and arm_ty is not None and arm_ty != result_ty:
+						expected_label = self.table.get(result_ty).name
+						arm_label = self.table.get(arm_ty).name
+						if attempt_ty is not None:
+							message = f"catch arm type {arm_label} does not match attempt type {expected_label}"
+						else:
+							message = f"catch arm type {arm_label} does not match other catch arm type {expected_label}"
 						self._append_diag(
 							Diagnostic(
-								message=(
-									f"catch arm type {self.table.get(arm_ty).name} does not match "
-									f"attempt type {self.table.get(attempt_ty).name}"
-								),
+								message=message,
 								severity="error",
 								span=arm.loc,
 							)
 						)
-				return attempt_ty
+				return result_ty
 
 			return None
 

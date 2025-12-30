@@ -2,6 +2,6 @@
   "exit_code": 1,
   "phase": "typecheck",
   "diagnostics": [
-    { "message_contains": "try/catch attempt must be a function call" }
+    { "message_contains": "'try' applied to a nothrow expression (catch is unreachable)" }
   ]
 }

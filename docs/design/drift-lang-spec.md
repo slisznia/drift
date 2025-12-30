@@ -1710,7 +1710,7 @@ val routed = try parse(input) catch BadFormat(e) { 0 } catch { 1 };
 - Multiple catch arms are allowed; event arms are tested in source order, then catch-all; if no arm matches and there is no catch-all, the error is rethrown.
 - Catch blocks in expression form may **not** contain `return`, `break`, `continue`, or `rethrow`; they must evaluate to a value whose type matches the attempt. Violation diagnostic: **E-TRYEXPR-CONTROLFLOW** (“control-flow statement not allowed in try-expression catch block; use statement try { ... } catch { ... } instead”).
 - Event identity is by event name in source; lowering compares deterministic `event_code` constants derived from the fully-qualified event name (§14.1.1). The runtime never matches on strings.
-- The **attempt must be a function call** (`Name` or `Name.Attr`); non-call attempts are a compile-time error in the current revision.
+- The attempt is any value-producing expression. Applying `try` to a statically `nothrow` expression is a compile-time error.
 - This is sugar for a block-wrapped statement `try/catch` that returns the block’s value.
 
 **Statement form (`try/catch`):**
