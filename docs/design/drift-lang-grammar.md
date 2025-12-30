@@ -61,7 +61,7 @@ ExceptionParams ::= ExceptionParam ("," ExceptionParam)*
 ExceptionParam ::= NAME ":" Ty | "domain" "=" STRING
 
 VariantDef   ::= "variant" NAME TypeParams? VariantBody
-VariantBody  ::= "{" (VariantArm ("," | TERMINATOR)*)+ "}"
+VariantBody  ::= "{" VariantArm ("," VariantArm)* ","? "}"
 VariantArm   ::= NAME VariantFields?
 VariantFields ::= "(" VariantFieldList? ")"
 VariantFieldList ::= VariantField ("," VariantField)*
@@ -94,6 +94,9 @@ BaseType     ::= NAME "." NAME TypeArgs? | NAME TypeArgs?
 TypeArgs     ::= "[" Ty ("," Ty)* "]" | "<" Ty ("," Ty)* ">"
 TypeParams   ::= "<" NAME ("," NAME)* ">"
 ```
+
+Notes:
+- `nothrow`, when present, appears immediately before `returns` in `ReturnSig` for both `FnDef` and `FnType`. `returns T nothrow` is invalid.
 
 Statements and blocks:
 ```

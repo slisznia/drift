@@ -12,7 +12,7 @@ effect-based throw ABI.
 - `TypeKind.FUNCTION` carries **throw mode**:
   - `CAN_THROW` vs `NOTHROW` (effect qualifier, not return type).
   - `fn(...) [nothrow] returns T` defaults to `CAN_THROW` when `nothrow` is omitted.
-  - `fn(...) nothrow returns T` is `NOTHROW`.
+  - `fn(...) [nothrow] returns T` is `NOTHROW` when `nothrow` is present.
 - Function type syntax places `nothrow` before `returns`:
   - `fn(P...) [nothrow] returns R`.
 - Function values are **positional-only** for MVP: kwargs on function values are
@@ -63,7 +63,7 @@ effect-based throw ABI.
    - Include `TypeKind.FUNCTION` in callback-like detection.
    - Do **not** apply “borrowed-capture closure” restrictions to function values.
 8) **Docs + grammar alignment**
-   - Update `docs/design/drift-lang-grammar.md` with `fn(...) nothrow returns T`.
+   - Update `docs/design/drift-lang-grammar.md` with `fn(...) [nothrow] returns T`.
    - Update `docs/design/drift-lang-spec.md` to match throw-mode type syntax.
 9) **Tests**
    - Stage1 parsing/typing (before MIR/SSA/LLVM):
@@ -79,7 +79,7 @@ effect-based throw ABI.
      - Trait impl matching respects function throw-mode.
    - Later-stage: MIR/SSA/LLVM indirect calls for NOTHROW vs CAN_THROW.
 10) **`nothrow` on function definitions**
-   - Parse `fn ... nothrow returns T` on definitions (incl. impl methods).
+   - Parse `fn ... [nothrow] returns T` on definitions (incl. impl methods).
    - Thread `declared_nothrow` into signatures as `declared_can_throw=False`.
    - Enforce: explicit nothrow rejects bodies that may throw.
    - Update spec/grammar + add parser and integration tests.
@@ -107,7 +107,7 @@ effect-based throw ABI.
 - Step 7: **done**
   - ✅ TypeKind.FUNCTION included in non-retaining analysis; borrow gating excludes function values.
 - Step 8: **done**
-- ✅ Grammar + spec aligned with `fn(...) nothrow returns T` and `cast<T>(expr)`.
+- ✅ Grammar + spec aligned with `fn(...) [nothrow] returns T` and `cast<T>(expr)`.
 - Step 9: **done**
   - ✅ Stage1 tests: NodeId determinism, NodeId-keyed typed tables, CallInfo for direct calls, CallSig ABI return check.
   - ✅ Stage1 tests: canonical Error TypeId across modules in a single workspace build.
