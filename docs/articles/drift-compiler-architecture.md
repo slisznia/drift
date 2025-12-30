@@ -238,7 +238,7 @@ Prevent use-after-move and conflicting borrows before codegen. Runs on typed HIR
 * **Moves**: UNINIT/VALID/MOVED per place; use-after-move diagnostics; moves blocked while a loan exists; assignments drop overlapping loans.
 * **Borrows**: explicit `HBorrow` (`&`/`&mut`) only from lvalues; reject borrows from moved/uninit/rvalues; shared-vs-mut conflicts enforced.
 * **Lifetime approximation**: loans carry `region_id`; explicit `HBorrow` lets compute block-liveness via def/use reachability, others are function-long; temporary borrows in expr/conds and auto-borrows are dropped after use (coarse NLL approximation).
-* **Auto-borrow scaffold**: optional flag treats call args/receivers as shared, call-scoped borrows; signature-driven shared vs mut is still TODO.
+* **Auto-borrow scaffold**: optional flag treats call args/receivers as call-scoped borrows, using signature `&T`/`&mut T` (or receiver auto-borrow metadata) when available; otherwise no heuristic auto-borrow.
 
 ### Next steps
 

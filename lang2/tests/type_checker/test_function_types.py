@@ -2,9 +2,6 @@
 from __future__ import annotations
 
 """Unit tests for the type checker (not Stage-1 pipeline validation)."""
-#
-# TODO(function-ptr): add Stage-1 NodeId/CallSig/CallTarget assertions once
-# typed HIR carries stable ids.
 
 from lang2.driftc import stage1 as H
 from lang2.driftc.core.function_id import FunctionId
