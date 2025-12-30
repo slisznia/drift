@@ -522,6 +522,37 @@ class TypeChecker:
 						merged.impls_by_trait_target.setdefault((impl.trait, impl.target_head), []).append(impl_id)
 				global_trait_world = merged
 				self.type_table._global_trait_world = merged
+		visible_trait_world: TraitWorld | None = None
+		if isinstance(trait_worlds, dict) and trait_worlds and visible_modules:
+			visible_names: list[str] = []
+			for mid in visible_modules:
+				chain = visibility_provenance.get(mid)
+				if chain:
+					visible_names.append(chain[-1])
+			if not visible_names and current_module_name is not None:
+				visible_names.append(current_module_name)
+
+			def _merge_trait_worlds_by_name(mod_names: list[str]) -> TraitWorld:
+				merged = TraitWorld()
+				for mod in mod_names:
+					world = trait_worlds.get(mod)
+					if world is None:
+						continue
+					for key, tr in world.traits.items():
+						merged.traits.setdefault(key, tr)
+					for fn_key, req in world.requires_by_fn.items():
+						merged.requires_by_fn.setdefault(fn_key, req)
+					for ty_key, req in world.requires_by_struct.items():
+						merged.requires_by_struct.setdefault(ty_key, req)
+					for impl in world.impls:
+						impl_id = len(merged.impls)
+						merged.impls.append(impl)
+						merged.impls_by_trait.setdefault(impl.trait, []).append(impl_id)
+						merged.impls_by_target_head.setdefault(impl.target_head, []).append(impl_id)
+						merged.impls_by_trait_target.setdefault((impl.trait, impl.target_head), []).append(impl_id)
+				return merged
+
+			visible_trait_world = _merge_trait_worlds_by_name(visible_names)
 		type_param_map: dict[str, TypeParamId] = {}
 		type_param_names: dict[TypeParamId, str] = {}
 		fn_require_assumed: set[tuple[object, TraitKey]] = set()
@@ -1799,7 +1830,7 @@ class TypeChecker:
 					applicable.append((decl, sig_inst, inst_subst))
 					ranks[decl.callable_id] = (True, 0)
 					continue
-				world = global_trait_world
+				world = visible_trait_world or global_trait_world
 				req = world.requires_by_fn.get(fn_id) if world is not None else None
 				if req is None:
 					applicable.append((decl, sig_inst, inst_subst))
@@ -3789,7 +3820,7 @@ class TypeChecker:
 												if decl.fn_id is not None and decl.fn_id.module
 												else current_module_name
 											)
-											world = global_trait_world
+											world = visible_trait_world or global_trait_world
 											if world is None:
 												continue
 											subjects: set[object] = set()
@@ -3874,7 +3905,7 @@ class TypeChecker:
 									inst_params = inst_res.inst_params
 									inst_return = inst_res.inst_return
 									if decl.fn_id is not None:
-										world = global_trait_world
+										world = visible_trait_world or global_trait_world
 										req = world.requires_by_fn.get(decl.fn_id) if world is not None else None
 										if req is not None:
 											subjects = set()
@@ -5883,7 +5914,7 @@ class TypeChecker:
 							inst_subst = inst_res.subst
 							# Enforce method-level requirements after instantiation.
 							if decl.fn_id is not None:
-								world = global_trait_world
+								world = visible_trait_world or global_trait_world
 								req = world.requires_by_fn.get(decl.fn_id) if world is not None else None
 								if req is not None:
 									subjects: set[object] = set()
@@ -6180,7 +6211,7 @@ class TypeChecker:
 												if decl.fn_id is not None and decl.fn_id.module
 												else current_module_name
 											)
-											world = global_trait_world
+											world = visible_trait_world or global_trait_world
 											if world is None:
 												continue
 											subjects: set[object] = set()
@@ -6266,7 +6297,7 @@ class TypeChecker:
 									inst_subst = inst_res.subst
 									# Enforce method-level requirements after instantiation.
 									if decl.fn_id is not None:
-										world = global_trait_world
+										world = visible_trait_world or global_trait_world
 										req = world.requires_by_fn.get(decl.fn_id) if world is not None else None
 										if req is not None:
 											subjects: set[object] = set()
@@ -7191,7 +7222,7 @@ class TypeChecker:
 							if subj in scope:
 								subst[subj] = _normalize_type_key(type_key_from_typeid(self.type_table, scope[subj]))
 								break
-					world = global_trait_world
+					world = visible_trait_world or global_trait_world
 					if world is None:
 						diagnostics.append(
 							Diagnostic(

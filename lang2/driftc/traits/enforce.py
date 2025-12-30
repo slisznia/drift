@@ -128,7 +128,28 @@ def enforce_fn_requires(
 	*,
 	module_name: str,
 	signatures: Dict[FunctionId, object],
+	visible_modules: Iterable[str] | None = None,
 ) -> TraitEnforceResult:
+	def _merge_trait_worlds(trait_worlds: Dict[str, TraitWorld], mods: Iterable[str]) -> TraitWorld:
+		merged = TraitWorld()
+		for mod in mods:
+			world = trait_worlds.get(mod)
+			if world is None:
+				continue
+			for key, trait in world.traits.items():
+				merged.traits.setdefault(key, trait)
+			for impl in world.impls:
+				idx = len(merged.impls)
+				merged.impls.append(impl)
+				merged.impls_by_trait.setdefault(impl.trait, []).append(idx)
+				merged.impls_by_target_head.setdefault(impl.target_head, []).append(idx)
+				merged.impls_by_trait_target.setdefault((impl.trait, impl.target_head), []).append(idx)
+			for key, expr in world.requires_by_struct.items():
+				merged.requires_by_struct.setdefault(key, expr)
+			for key, expr in world.requires_by_fn.items():
+				merged.requires_by_fn.setdefault(key, expr)
+		return merged
+
 	diags: List[Diagnostic] = []
 	exprs: List[H.HExpr] = []
 	_walk_block(getattr(typed_fn, "body"), exprs)
@@ -136,6 +157,8 @@ def enforce_fn_requires(
 	call_resolutions = getattr(typed_fn, "call_resolutions", {}) or {}
 	seen: Set[Tuple[FunctionId, Tuple[TypeKey, ...], Tuple[TypeKey, ...]]] = set()
 	symbol_to_id = {function_symbol(fid): fid for fid in signatures.keys()}
+	visible_list = sorted(set(visible_modules)) if visible_modules is not None else None
+	visible_world = _merge_trait_worlds(trait_worlds, visible_list) if visible_list is not None else None
 
 	def _infer_type_args_from_call(sig: object, arg_type_ids: List[object]) -> Dict[TypeParamId, object] | None:
 		type_params = list(getattr(sig, "type_params", []) or [])
@@ -218,12 +241,13 @@ def enforce_fn_requires(
 		if fn_id is None:
 			continue
 		callee_mod = getattr(fn_id, "module", None) or module_name
-		world = trait_worlds.get(callee_mod)
-		if world is None:
+		req_world = trait_worlds.get(callee_mod)
+		if req_world is None:
 			continue
-		req = world.requires_by_fn.get(fn_id)
+		req = req_world.requires_by_fn.get(fn_id)
 		if req is None:
 			continue
+		world = visible_world or req_world
 		env = Env(default_module=callee_mod)
 		sig = signatures.get(fn_id)
 		subst: Dict[object, TypeKey] = {}

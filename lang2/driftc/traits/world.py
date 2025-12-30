@@ -7,7 +7,7 @@ from typing import Dict, List, Optional, Tuple
 from lang2.driftc.core.diagnostics import Diagnostic
 from lang2.driftc.core.function_id import FunctionId
 from lang2.driftc.core.span import Span
-from lang2.driftc.core.types_core import TypeParamId
+from lang2.driftc.core.types_core import TypeKind, TypeParamId
 from lang2.driftc.parser import ast as parser_ast
 
 
@@ -74,9 +74,17 @@ def _qual_from_type_expr(typ: parser_ast.TypeExpr) -> Optional[str]:
 	return getattr(typ, "module_id", None) or getattr(typ, "module_alias", None)
 
 
+BUILTIN_TYPE_NAMES = {"Int", "Bool", "String", "Uint", "Float", "Void", "Error", "DiagnosticValue"}
+
+
 def type_key_from_expr(typ: parser_ast.TypeExpr, *, default_module: Optional[str] = None) -> TypeKey:
+	qual = _qual_from_type_expr(typ)
+	if qual is None and typ.name in BUILTIN_TYPE_NAMES:
+		mod = None
+	else:
+		mod = qual or default_module
 	return TypeKey(
-		module=_qual_from_type_expr(typ) or default_module,
+		module=mod,
 		name=typ.name,
 		args=tuple(type_key_from_expr(a, default_module=default_module) for a in getattr(typ, "args", []) or []),
 	)
@@ -84,6 +92,16 @@ def type_key_from_expr(typ: parser_ast.TypeExpr, *, default_module: Optional[str
 
 def type_key_from_typeid(type_table: object, tid: int) -> TypeKey:
 	td = type_table.get(tid)
+	if td.kind is TypeKind.STRUCT:
+		inst = type_table.get_struct_instance(tid)
+		if inst is not None:
+			args = tuple(type_key_from_typeid(type_table, t) for t in inst.type_args)
+			return TypeKey(module=getattr(td, "module_id", None), name=getattr(td, "name", ""), args=args)
+	if td.kind is TypeKind.VARIANT:
+		inst = type_table.get_variant_instance(tid)
+		if inst is not None:
+			args = tuple(type_key_from_typeid(type_table, t) for t in inst.type_args)
+			return TypeKey(module=getattr(td, "module_id", None), name=getattr(td, "name", ""), args=args)
 	args = tuple(type_key_from_typeid(type_table, t) for t in getattr(td, "param_types", []) or [])
 	return TypeKey(module=getattr(td, "module_id", None), name=getattr(td, "name", ""), args=args)
 
@@ -95,6 +113,8 @@ def normalize_type_key(key: TypeKey, *, module_name: str) -> TypeKey:
 	If the key has no module id, it is resolved to the current module name.
 	"""
 	if key.module is None:
+		if key.name in BUILTIN_TYPE_NAMES:
+			return key
 		return TypeKey(module=module_name, name=key.name, args=key.args)
 	return key
 
@@ -238,11 +258,10 @@ def build_trait_world(prog: parser_ast.Program, *, diagnostics: Optional[List[Di
 		if getattr(impl, "trait", None) is None:
 			continue
 		trait_key = trait_key_from_expr(impl.trait, default_module=module_id)
-		if trait_key not in world.traits:
+		if trait_key not in world.traits and trait_key.module == module_id:
 			world.diagnostics.append(
 				_diag(f"unknown trait '{_trait_key_str(trait_key)}' in implement block", getattr(impl, "loc", None))
 			)
-			continue
 		target_key = type_key_from_expr(impl.target, default_module=module_id)
 		head_key = target_key.head()
 		req_expr = impl.require.expr if getattr(impl, "require", None) is not None else None

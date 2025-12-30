@@ -3205,7 +3205,15 @@ def main(argv: list[str] | None = None) -> int:
 			trait_diags.extend(res.diagnostics)
 		for fn_id, typed_fn in typed_fns.items():
 			module_name = fn_id.module or "main"
-			res = enforce_fn_requires(trait_worlds, typed_fn, type_table, module_name=module_name, signatures=signatures_by_id)
+			visible_modules = visible_module_names_by_name.get(module_name, {module_name})
+			res = enforce_fn_requires(
+				trait_worlds,
+				typed_fn,
+				type_table,
+				module_name=module_name,
+				signatures=signatures_by_id,
+				visible_modules=visible_modules,
+			)
 			trait_diags.extend(res.diagnostics)
 	if trait_diags:
 		if args.json:
