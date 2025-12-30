@@ -13,6 +13,12 @@
   - Calling convention assumptions at ABI boundaries and current string/array/buffer representations.
   - Add an explicit NOT YET STABLE banner + checklist for freezing.
 
+[Traits]
+- Gate `copy` via a real `Copy` trait post-typecheck.
+- Trait-based iteration: replace iterator intrinsics with a real `Iterator` trait + library implementation once module support lands (no dynamic dispatch in MVP).
+- Dynamic dispatch and trait bounds: pin surface syntax and type rules for trait bounds / trait objects.
+- Replace iterator intrinsics with real modules/traits: migrate `Array<T>.iter()` / `__ArrayIter_<T>.next()` from compiler intrinsics to a real `Iterator` trait + library implementation when module support lands.
+
 ## Post MVP
 
 [Error handling]
@@ -27,12 +33,9 @@
   ```
 - Explicit capture list follow-ups:
   - Allow projections in `captures(...)` with renaming (e.g., `p = &x.field`).
-  - Gate `copy` via a real `Copy` trait post-typecheck.
   - Add lifetime-tracked closure types so borrowed-capture closures can escape.
-  - Refine escape analysis beyond conservative "unknown call site" handling.
 
 [Borrow / references]
-  - Escape sink #3 (closures/unknown contexts): once closures exist, enforce “borrowing closures are non-escaping only” and reject passing `&`/`&mut` captures (or ref-typed params) to unknown call sites; add e2e negatives.
   - Place model expansion: extend `HPlaceExpr.base` beyond locals/params once globals/captures land (so borrow/move/assign can target them).
   - NLL-lite: replace lexical borrow lifetimes with loan liveness ending at last use (CFG-based), so “borrow then write after last use” stops being rejected.
   - Autoref/autoderef: decide whether to introduce limited autoderef for method calls / operators (currently explicit `*p` / `(*p).field`).
@@ -44,10 +47,7 @@
   - Variant external ABI: freeze and document a stable ABI in `docs/design/drift-lang-abi.md` once FFI/packages demand it (currently compiler-private).
 
 [Iteration]
-  - Trait-based iteration: replace iterator intrinsics with a real `Iterator` trait + library implementation once module support lands (no dynamic dispatch in MVP).
-  - Dynamic dispatch and trait bounds: pin surface syntax and type rules for trait bounds / trait objects.
   - Generic functions and generic `implement<T>` blocks: extend generics beyond nominal types.
-  - Replace iterator intrinsics with real modules/traits: migrate `Array<T>.iter()` / `__ArrayIter_<T>.next()` from compiler intrinsics to a real `Iterator` trait + library implementation when module support lands.
 
 [Tooling / Packages]
 - Phase 5 polish (highest leverage):
