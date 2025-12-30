@@ -154,6 +154,7 @@ effect-based throw ABI.
 - Instantiation signatures clear `param_types`/`return_type` so package decode can’t reintroduce `TypeVar` payloads (fixes cross-package instantiation dedup).
 - Match statement cleanup: removed duplicate `match_stmt_arm_body` grammar alternative and added a negative test that rejects value-style arms in statement-form match.
 - Trait-bound test harness now passes `trait_worlds` into `enforce_fn_requires` (fixes TypeChecker type-param bounds test).
+- `enforce_fn_requires` now merges use-site visible modules in deterministic order; builtin type keys remain module-less during normalization; added driver tests for use-site `require` visibility.
 
 ## Out of scope (this branch)
 - Method references / bound `self` function values.

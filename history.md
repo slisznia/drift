@@ -6,6 +6,7 @@
 - Prevented instantiation signatures from re-serializing template type exprs (clears `param_types`/`return_type`), fixing cross-package instantiation dedup.
 - Cleaned match statement grammar (removed duplicate `match_stmt_arm_body`) and added a negative test to reject value-style arms in statement-form match.
 - Updated trait-bound test harness to pass full `trait_worlds` into `enforce_fn_requires`.
+- Made `enforce_fn_requires` merge use-site visible modules deterministically and preserved module-less builtins in trait requirement normalization; added driver coverage for use-site require visibility.
 
 ## 2025-12-28 – Function pointers: thunks + captureless lambdas
 - Added NOTHROW→CAN_THROW Ok-wrap thunking for function values with a dedicated FunctionRefKind and a thunk cache; typed-context assignment can insert thunks while `cast<T>` stays strict.
