@@ -1,0 +1,355 @@
+# Work plan: Generics + impl support
+
+## Status
+Draft (planning).
+
+## What's missing today
+- Generic functions are parsed, but call resolution and instantiation still assume fully concrete signatures; generic callables are effectively skipped unless already specialized.
+- Generic `implement<T> ...` blocks are not wired end-to-end: methods need to be selectable based on receiver type arguments and then instantiated into concrete callables.
+- Trait bounds on function/impl type params need to participate in method selection and call typing (inference allowed; underconstrained -> error).
+- Trait dot-call lookup must respect `use trait ...` imports (trait bounds vs lookup scope are separate).
+- Template/monomorphization is incomplete for generic methods and generic free functions across module/package boundaries.
+- Instantiation currently triggers only from explicit `<type ...>` call sites; inferred type args are not recorded for monomorphization.
+- Instantiation only keys off `sig.type_params` (function generics); `impl_type_params`-only methods do not get instantiated yet.
+- Call-site metadata does not preserve resolved type arguments, so later phases cannot request the right instantiations.
+- Method resolver still treats multiple receiver-compatible candidates as ambiguous (no lvalue receiver preference applied yet).
+- The stdlib still relies on compiler intrinsics for core containers (e.g., `Array<T>`); we cannot implement these in userland yet.
+
+## End result (user POV)
+Users can write generic functions and generic impl blocks, and the compiler monomorphizes them into concrete code.
+
+Examples (expected to work):
+
+```drift
+fn id<T>(value: T) returns T {
+    return value;
+}
+
+fn main() returns Int {
+    return id(1);
+}
+```
+
+```drift
+struct Box<T> { value: T }
+
+implement<T> Box<T> {
+    fn get(self: &Box<T>) returns &T {
+        return &(*self).value;
+    }
+}
+```
+
+```drift
+trait Show { fn show(self: &Self) returns String }
+
+implement<T> Show for Box<T> require T is Show {
+    fn show(self: &Box<T>) returns String {
+        return "Box(" + (*self).value.show() + ")";
+    }
+}
+```
+
+And this should enable stdlib containers to live in userland modules:
+
+```drift
+struct Vec<T> { /* fields */ }
+
+implement<T> Vec<T> {
+    fn push(self: &mut Vec<T>, value: T) returns Void { /* ... */ }
+    fn get(self: &Vec<T>, idx: Int) returns &T { /* ... */ }
+}
+```
+
+## How we can get there
+1. **Surface rules (lock behavior).**
+   - Keep type argument inference for generic functions/methods; if underconstrained, emit a hard error.
+   - Explicit `<type ...>` arguments remain allowed and override inference.
+   - Confirm syntax for generic function definitions and generic `implement<T>` blocks (including trait `require` clauses).
+   - **Grammar convergence (hard gate):** make the grammar and spec match the chosen surface forms
+     (parenthesized parameter lists, receiver syntax, `<type ...>` type args). Treat mismatches as
+     build-breaking CI errors.
+   - **Spec alignment:** update the spec to adopt the package-scoped coherence/orphan rule
+     (impl allowed only if trait or receiver type head is defined in the current package).
+   - **Spec alignment:** update trait-guard semantics to allow guard-scoped dot-call visibility
+     (in addition to file-scoped `use trait`) and to add guard assumptions to proof.
+   - **UFCS support (hard gate):** define the UFCS surface form for trait method disambiguation,
+     parse it, and route it through resolution as a single forced candidate.
+     - Proposed form: `TraitName::method(receiver, args...)` (module-qualified trait names allowed).
+     - UFCS bypasses `use trait` scope but still respects visibility.
+     - HIR stores the resolved FunctionKey/ImplKey on the call node so later passes do not re-resolve.
+
+2. **Representation in AST/HIR.**
+   - Ensure function definitions carry `type_params` and `require` clauses in HIR.
+   - Make impl blocks carry `impl_type_params` for inherent and trait impls.
+   - Ensure struct/variant type definitions carry type-level `require` (e.g., `struct Box<T> require T is Clonable`).
+   - Ensure trait definitions carry `require` (trait dependencies).
+
+3. **Type checking and resolution.**
+   - Introduce a type-param scope for functions and impls; create type vars for `T` params.
+   - At call sites, instantiate generic signatures using explicit type args or inferred args.
+   - Build dot-call candidates using a **trait visibility environment**:
+     - base: file-scoped `use trait ...`
+     - plus per-branch assumptions from trait guards (`if T is Trait`, etc.)
+   - Keep trait bounds for applicability checks (separate from lookup scope).
+   - Branch-local trait-guard assumptions feed both dot-call visibility and `prove_expr` in that branch.
+   - For method calls, resolve receiver mode first (lvalue prefers `self: &T`, then `self: &mut T`, then `self: T`; rvalues only `self: T`).
+   - Match `impl<T>` blocks against the receiver’s concrete type, solve `T` args, and apply trait bounds.
+   - Overload resolution: filter by satisfiable `require`, then choose the most specific applicable candidate; else emit ambiguity.
+     - **Specificity rule:** A is more specific than B iff `require_A ⇒ require_B` and not vice versa.
+       Incomparable requires are an ambiguity error.
+     - Implement implication as SAT/unsat over boolean `require` expressions:
+       `A ⇒ B` iff `A ∧ ¬B` is UNSAT. If neither implies the other, they are
+       incomparable → ambiguity error.
+       SAT instance includes trait-dependency axioms (see C2).
+   - **Coherence rule:** after `require` filtering, if multiple trait impls match the same concrete
+     specialization, emit a hard error with all impl origins. For inherent methods, require uniqueness
+     per `(TypeHead, method name, receiver mode, param types)`; if multiple match, error.
+   - **Dedup rule:** before coherence/ambiguity checks, dedupe candidates by stable impl identity
+     (ImplKey/TraitKey + target specialization) **after** key normalization so re-exports do not
+     trigger false conflicts.
+   - **Canonicalization rule (global):** all impl/type identity checks use the same canonical form
+     (alias-expanded + canonical defining module), including:
+     - impl lookup TypeHeadKey
+     - receiver matching for `implement<T> Type<...>`
+     - coherence uniqueness tuple `(TypeHead, method name, receiver mode, param types)`
+     - instantiation key type args
+   - **Global coherence policy:** an impl is legal only if the trait is defined in the current
+     package **or** the receiver type head is defined in the current package. (No cross-package
+     orphan impls by default.)
+   - Enforce type-level `require` at type application sites (instantiating `Box<NonClonable>` is ill-formed).
+   - When a type is well-formed, its type-level `require` obligations become proof assumptions
+     for values of that type (fed into `prove_expr` as implied facts).
+
+4. **Monomorphization and instantiation.**
+   - Emit TemplateHIR for generic functions and generic methods (inherent + trait).
+   - Instantiate TemplateHIR at each use site into concrete HIR/MIR based on resolved type args.
+   - Deduplicate generated symbols via the existing instantiation key + ODR policy.
+   - Dedup boundary: package build artifact-level. Identity is `(FunctionKey, canonical type_args...)`.
+     Linkonce/ODR folding is a safety net only, not the primary dedup mechanism.
+
+5. **Packages and cross-module use.**
+   - Export generic templates for functions and impl methods in package payloads (DMIR template bodies, not just signatures).
+   - Import templates from dependencies and instantiate via a **package-build–wide queue**
+     (across all CUs/modules), emitting one canonical set of monomorphized symbols.
+   - Ensure module interface metadata is sufficient to instantiate generics without source.
+   - **Template identity stability:** exported templates must use a stable FunctionKey
+     (package id + canonical module path + declared name + stable disambiguator).
+     Do not export ordinal-based identity as the canonical key.
+   - **Disambiguator definition:** `decl_fingerprint = hash(kind + canonical module + declared name +
+     arity + canonical param types + receiver mode + trait key + impl receiver head key +
+     generic_param_layout_hash + require_fingerprint)`, where `generic_param_layout_hash` is the hash
+     of the canonical `generic_param_layout` list and `require_fingerprint` is a hash of the
+     normalized `require` AST using canonical atom keys (sentinel for "no require").
+     Canonical atoms use `TyVar(scope=impl|fn|trait_self, index)` for type variables.
+   - **Orphan rule gate:** update spec text (and add a spec example + error code) before shipping
+     the package-scoped coherence policy.
+
+6. **Tests (MVP coverage).**
+   - Generic free function calls with explicit type args.
+   - Generic inherent methods on generic types.
+   - Generic trait impls with `require` bounds.
+   - Cross-module generic method resolution + instantiation.
+   - End-to-end codegen for a small userland container (e.g., `Vec<T>`).
+
+## Implementation details (current code path + concrete changes)
+
+### A) Package templates: encode/decode flow
+**Current state (today):**
+- Export: `lang2/driftc/packages/provisional_dmir_v0.py` `encode_generic_templates(...)`
+  - Emits `generic_templates` payload entries with:
+    - `template_id` `{module, name, ordinal}`
+    - `signature` (encoded FnSignature)
+    - `require` (encoded trait expr if any)
+    - `ir_kind = "TemplateHIR-v0"`
+    - `ir` (HIR block)
+- Import: `lang2/driftc/driftc.py` `decode_generic_templates(...)`
+  - Decodes TemplateHIR, stores in:
+    - `external_template_hirs_by_id[FunctionId]`
+    - `external_template_requires_by_id[FunctionId]`
+
+**Target state (stable contract):**
+- Payload uses `template_id` as a stable FunctionKey:
+  - `FunctionKey = (package_id, canonical_module_path, declared_name, decl_fingerprint)`
+  - `decl_fingerprint` includes `require_fingerprint` (normalized `require` AST, canonical atoms).
+- Template payload includes **generic parameter layout**:
+  - `generic_param_layout = [(scope=impl|fn, index), ...]` (required canonical form).
+  - `impl_type_param_count` + `fn_type_param_count` may be derived, but are not the authoritative form.
+- `ir_kind = "TemplateHIR-v1"`.
+- Import stores templates in maps keyed by FunctionKey:
+  - `external_template_hirs_by_key[FunctionKey]`
+  - `external_template_requires_by_key[FunctionKey]`
+  - `external_template_layout_by_key[FunctionKey]`
+- If an internal FunctionId is needed, derive it from FunctionKey (never the reverse).
+- **Versioning:** `TemplateHIR-v1` is required for new artifacts; `TemplateHIR-v0` is legacy/import-only.
+- Trait requirement metadata is keyed by FunctionKey; if the trait world needs FunctionId,
+  map deterministically from FunctionKey.
+
+**Delta (concrete todo):**
+- Replace serialized `template_id` with FunctionKey; keep ordinals internal-only.
+- Key external template maps by FunctionKey, not ordinal-derived ids.
+- Emit and consume the generic parameter layout in template payloads.
+- Bump `ir_kind` to `TemplateHIR-v1` and keep `TemplateHIR-v0` only for legacy imports.
+- Ensure methods from `implement<T>` blocks are included in `per_module_hir` so
+  `encode_generic_templates(...)` emits templates for generic methods, not just
+  free functions.
+- Keep template bodies in package payloads (DMIR) as the canonical export for
+  downstream monomorphization; signatures alone are insufficient.
+  - **Milestone gate:** “generic method templates exported/imported end-to-end” is required
+    before generics are considered usable in stdlib packages.
+
+Pseudo-flow (export/import):
+
+```text
+// export (package build)
+generic_templates = encode_generic_templates(module_id, signatures, hir_blocks, requires_by_symbol)
+payload["generic_templates"] = generic_templates
+
+// import (consumer build)
+for entry in decode_generic_templates(payload["generic_templates"]):
+    if entry.ir_kind == "TemplateHIR-v1":
+        template_hirs_by_key[function_key] = normalize_hir(entry.ir)
+        requires_by_key[function_key] = entry.require
+        layout_by_key[function_key] = entry.generic_param_layout
+```
+
+### B) Instantiation in `compile_stubbed_funcs` (driftc.py)
+Current behavior:
+- Builds `template_hirs_by_key` from:
+  - external templates, and
+  - local signatures with `type_params`/`impl_type_params`.
+- Requests instantiations only for calls that **spell explicit type args**
+  (via `_collect_typearg_calls` scanning `HCall`/`HMethodCall` with `type_args`).
+- Instantiates by cloning the template HIR, substituting into the signature,
+  then re-typechecking the instantiation; rewrites call targets to the
+  instantiated symbol.
+
+Core logic (simplified from `lang2/driftc/driftc.py`):
+
+```text
+template_hirs_by_key = external_templates + local_generic_templates
+
+for typed_fn in typed_fns:
+    for call in _collect_typearg_calls(typed_fn.body):
+        if sig.type_params:
+            request_instantiation(target_key, explicit_type_args)
+
+while inst_queue:
+    handle = inst_queue.pop()
+    inst_sig = apply_subst(sig, type_args)
+    inst_hir = normalize_hir(template_hir)
+    typecheck(inst_fn_id, inst_hir, inst_sig)
+    enqueue nested instantiations from inst_hir
+    rewrite call_info targets to inst_fn_id
+```
+
+Concrete todo:
+- Replace `_collect_typearg_calls` as the sole trigger. We need a new source of
+  truth that includes **inferred** type arguments.
+- Support `impl_type_params`-only methods (e.g., `implement<T> Box<T> { ... }`)
+  by treating receiver-matched impl arguments as instantiation inputs even when
+  the method itself has no `type_params`.
+
+Suggested data plumbing:
+
+```text
+// in type_checker: record resolved type args per call node
+typed_fn.instantiations[call_site_id] = {
+    target_key,
+    type_args: [impl_args..., fn_args...],
+}
+
+// in compile_stubbed_funcs: request instantiation from that map
+for (call_site_id, req) in typed_fn.instantiations:
+    _request_instantiation(req.target_key, req.type_args)
+```
+
+### C) Type checker: inference + instantiation hooks
+Current behavior:
+- Inference exists (`_instantiate_sig_with_subst`); it returns `InferResult`
+  including `subst` and `inst_params`/`inst_return`.
+- The resolved substitution is **not persisted** on call sites; it is used to
+  type-check and then discarded.
+
+Concrete todo:
+- Persist the resolved type args (from `InferResult.subst`) in a call-site map.
+- For method calls, also persist impl substitutions from `_match_impl_type_args`.
+- Define a deterministic ordering for instantiation keys:
+  - `type_args = impl_type_args + fn_type_args` is the simplest.
+  - Use that ordering consistently in `build_instantiation_key(...)`.
+
+Pseudo-code sketch for call typing:
+
+```text
+inst_res = _instantiate_sig_with_subst(sig, arg_types, expected_type, explicit_type_args, allow_infer)
+if inst_res.ok:
+    resolved_fn_args = inst_res.subst.args if inst_res.subst else []
+    resolved_impl_args = impl_subst.args if impl_subst else []
+    typed_fn.instantiations[call_site_id] = (target_key, resolved_impl_args + resolved_fn_args)
+```
+
+### D) Receiver preference + trait lookup scope
+Current behavior:
+- `method_resolver.py` treats multiple viable candidates as ambiguous; no
+  receiver-mode preference is applied.
+- `type_checker.py` already gates trait dot-call candidates by
+  `trait_scope_by_module` (the `use trait ...` set), but this behavior is not
+  reflected in the plan.
+
+Concrete todo:
+- Implement receiver-mode preference in the method resolver or in the
+  type-checker selection step:
+  - lvalue receiver: prefer `self: &T`, then `self: &mut T`, then `self: T`
+  - rvalue receiver: allow only `self: T`
+- If `self: T` is selected for an lvalue receiver, bind by copy if `T is Copy`,
+  otherwise move and mark the lvalue as moved (unusable after the call).
+- Keep trait lookup scope separate from `require` proof:
+  - `use trait` controls candidate visibility.
+  - `require` controls candidate applicability.
+
+### E) Overload resolution with `require` + inference
+Current behavior:
+- `type_checker.py` uses `prove_expr` to validate `require` after instantiation,
+  but candidate ordering is still ambiguous when multiple apply.
+
+Concrete todo:
+- Establish the explicit resolution pipeline:
+  1) build candidate set (visible + receiver compatible),
+  2) instantiate + infer (or fail),
+  3) filter by `require`,
+  4) pick most-specific using C2 implication ordering; no other tie-breakers.
+### C1) Call-site identity stability
+Current risk: using raw `node_id` for instantiation requests only works if IDs are
+stable across normalization, cloning, and re-typechecking.
+
+Concrete todo:
+- Introduce a dedicated `CallSiteId` (or `ExprId`) assigned at parse/HIR build.
+- Preserve it through normalization and template cloning; cloned call-sites get
+  new deterministic IDs.
+- Use `CallSiteId` as the key for instantiation requests.
+- When template cloning creates new call nodes, assign fresh deterministic CallSiteIds.
+
+### C2) “Most specific” as logical implication
+Implement implication over the full boolean `require` language (`and`/`or`/`not`/parentheses)
+as propositional SAT over canonical atoms (no trait-solver semantics):
+
+```text
+// more-specific check
+more_specific(A, B) := implies(require_A, require_B) && !implies(require_B, require_A)
+```
+
+```text
+implies(A, B) iff (A ∧ ¬B) is UNSAT
+```
+
+Atoms are canonicalized before SAT encoding:
+- `AtomKey = (TraitKey, CanonicalTypeTuple)`
+- Types in atoms use alias-expansion + canonical defining module, same as impl matching.
+- Type variables are encoded canonically as `TyVar(scope=impl|fn|trait_self, index)`;
+  `Self` uses `scope=trait_self`.
+
+Implication runs over these boolean atoms **plus** axioms from the trait dependency graph:
+for each trait `X` with requirement expression `ReqX(Self)`, add the axiom
+`Atom(Self is X) ⇒ ReqX(Self)` (with `ReqX` normalized), transitively.
+Trait proving is **separate** and only used to filter applicability; implication is for ordering
+among already-applicable candidates and is always decidable at this level.
