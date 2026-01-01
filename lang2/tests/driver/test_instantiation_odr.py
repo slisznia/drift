@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from lang2.driftc.core.function_id import FunctionId, function_symbol
+from lang2.driftc.core.function_key import FunctionKey
 from lang2.driftc.core.types_core import TypeTable
 from lang2.driftc.driftc import main as driftc_main
 from lang2.driftc.instantiation.key import build_instantiation_key, instantiation_key_str
@@ -100,6 +101,172 @@ pub trait Show {{
 }}
 pub fn id<T>(x: T) nothrow returns T{require_clause} {{
 	{body};
+}}
+""".lstrip(),
+	)
+	pkg_path = tmp_path / f"{pkg_name}.dmp"
+	assert (
+		driftc_main(
+			[
+				"-M",
+				str(tmp_path),
+				str(module_dir / "lib.drift"),
+				*_emit_pkg_args(pkg_name),
+				"--emit-package",
+				str(pkg_path),
+			]
+		)
+		== 0
+	)
+	return pkg_path
+
+
+def _emit_box_pkg(tmp_path: Path, *, module_id: str, pkg_name: str) -> Path:
+	module_dir = tmp_path.joinpath(*module_id.split("."))
+	_write_file(
+		module_dir / "lib.drift",
+		f"""
+module {module_id}
+
+export {{ Box, make }}
+
+pub struct Box<T> {{ value: T }}
+
+pub fn make() returns Box<Int> {{
+	return Box<type Int>(1);
+}}
+
+implement<T> Box<T> {{
+	pub fn tag(self: Box<T>) returns Int {{
+		return 1;
+	}}
+}}
+""".lstrip(),
+	)
+	pkg_path = tmp_path / f"{pkg_name}.dmp"
+	assert (
+		driftc_main(
+			[
+				"-M",
+				str(tmp_path),
+				str(module_dir / "lib.drift"),
+				*_emit_pkg_args(pkg_name),
+				"--emit-package",
+				str(pkg_path),
+			]
+		)
+		== 0
+	)
+	return pkg_path
+
+
+def _emit_box_get_pkg(tmp_path: Path, *, module_id: str, pkg_name: str) -> Path:
+	module_dir = tmp_path.joinpath(*module_id.split("."))
+	_write_file(
+		module_dir / "lib.drift",
+		f"""
+module {module_id}
+
+export {{ Box, make }}
+
+pub struct Box<T> {{ value: T }}
+
+pub fn make() returns Box<Int> {{
+	return Box<type Int>(1);
+}}
+
+implement<T> Box<T> {{
+	pub fn get(self: Box<T>) returns Int {{
+		return 1;
+	}}
+}}
+""".lstrip(),
+	)
+	pkg_path = tmp_path / f"{pkg_name}.dmp"
+	assert (
+		driftc_main(
+			[
+				"-M",
+				str(tmp_path),
+				str(module_dir / "lib.drift"),
+				*_emit_pkg_args(pkg_name),
+				"--emit-package",
+				str(pkg_path),
+			]
+		)
+		== 0
+	)
+	return pkg_path
+
+
+def _emit_box_id_pkg(tmp_path: Path, *, module_id: str, pkg_name: str) -> Path:
+	module_dir = tmp_path.joinpath(*module_id.split("."))
+	_write_file(
+		module_dir / "lib.drift",
+		f"""
+module {module_id}
+
+export {{ Box, make }}
+
+pub struct Box<T> {{ value: T }}
+
+pub fn make() returns Box<Int> {{
+	return Box<type Int>(1);
+}}
+
+implement<T> Box<T> {{
+	pub fn id<U>(self: &Box<T>, value: U) returns U {{
+		return value;
+	}}
+}}
+""".lstrip(),
+	)
+	pkg_path = tmp_path / f"{pkg_name}.dmp"
+	assert (
+		driftc_main(
+			[
+				"-M",
+				str(tmp_path),
+				str(module_dir / "lib.drift"),
+				*_emit_pkg_args(pkg_name),
+				"--emit-package",
+				str(pkg_path),
+			]
+		)
+		== 0
+	)
+	return pkg_path
+
+
+def _emit_box_show_pkg(tmp_path: Path, *, module_id: str, pkg_name: str) -> Path:
+	module_dir = tmp_path.joinpath(*module_id.split("."))
+	_write_file(
+		module_dir / "lib.drift",
+		f"""
+module {module_id}
+
+export {{ Box, make, Show, Debuggable }}
+
+pub trait Debuggable {{
+	fn debug(self: Self) returns Int
+}}
+
+pub trait Show {{
+	fn show(self: Self) returns Int
+}}
+
+pub struct Box<T> {{ value: T }}
+
+implement Debuggable for Int {{
+	pub fn debug(self: Int) returns Int {{ return self; }}
+}}
+
+implement<T> Show for Box<T> require T is Debuggable {{
+	pub fn show(self: Box<T>) returns Int {{ return 7; }}
+}}
+
+pub fn make() returns Box<Int> {{
+	return Box<type Int>(1);
 }}
 """.lstrip(),
 	)
@@ -350,9 +517,9 @@ pub fn b() returns Int {
 		== 0
 	)
 
-	target_sym = function_symbol(FunctionId(module="acme.common", name="id", ordinal=0))
-	a_entries = [e for e in _read_inst_index(a_idx) if isinstance(e.get("key"), str) and str(e["key"]).startswith(target_sym)]
-	b_entries = [e for e in _read_inst_index(b_idx) if isinstance(e.get("key"), str) and str(e["key"]).startswith(target_sym)]
+	target_prefix = "acme.common:acme.common::id@"
+	a_entries = [e for e in _read_inst_index(a_idx) if isinstance(e.get("key"), str) and str(e["key"]).startswith(target_prefix)]
+	b_entries = [e for e in _read_inst_index(b_idx) if isinstance(e.get("key"), str) and str(e["key"]).startswith(target_prefix)]
 	assert a_entries and b_entries
 	assert a_entries[0]["symbol"] == b_entries[0]["symbol"]
 	inst_symbol = str(a_entries[0]["symbol"])
@@ -404,10 +571,355 @@ fn main() nothrow returns Int{
 	assert len(matches) == 1
 
 
+def test_generic_function_infers_type_args_across_modules(tmp_path: Path) -> None:
+	lib_root = tmp_path / "libpkg"
+	_emit_generic_pkg(lib_root, module_id="acme.lib", pkg_name="acme.lib")
+
+	user_root = tmp_path / "userpkg"
+	user_mod_a = user_root / "acme" / "user_a" / "lib.drift"
+	user_mod_b = user_root / "acme" / "user_b" / "lib.drift"
+	_write_file(
+		user_mod_a,
+		"""
+module acme.user_a
+
+import acme.lib as lib
+export { run_a }
+
+pub fn run_a() returns Int {
+	return lib.id(1);
+}
+""".lstrip(),
+	)
+	_write_file(
+		user_mod_b,
+		"""
+module acme.user_b
+
+import acme.lib as lib
+export { run_b }
+
+pub fn run_b() returns Int {
+	return lib.id(2);
+}
+""".lstrip(),
+	)
+	user_pkg = user_root / "user.dmp"
+	idx_path = user_root / "inst.json"
+	assert (
+		driftc_main(
+			[
+				"-M",
+				str(user_root),
+				"--package-root",
+				str(lib_root),
+				"--allow-unsigned-from",
+				str(lib_root),
+				str(user_mod_a),
+				str(user_mod_b),
+				*_emit_pkg_args("acme.user"),
+				"--emit-package",
+				str(user_pkg),
+				"--emit-instantiation-index",
+				str(idx_path),
+			]
+		)
+		== 0
+	)
+	entries = _read_inst_index(idx_path)
+	prefix = "acme.lib:acme.lib::id@"
+	matches = [e for e in entries if isinstance(e.get("key"), str) and str(e["key"]).startswith(prefix)]
+	assert matches
+	assert len(matches) == 1
+	assert "Int" in str(matches[0]["key"])
+
+
+def test_impl_generic_method_instantiated_across_packages(tmp_path: Path) -> None:
+	box_root = tmp_path / "boxpkg"
+	_emit_box_pkg(box_root, module_id="acme.box", pkg_name="acme.box")
+
+	user_root = tmp_path / "userpkg"
+	user_mod_dir = user_root / "acme" / "user"
+	user_src = user_mod_dir / "main.drift"
+	_write_file(
+		user_src,
+		"""
+module acme.user
+
+import acme.box as box
+export { run }
+
+pub fn run() returns Int {
+	val b: box.Box<Int> = box.make();
+	return b.tag();
+}
+""".lstrip(),
+	)
+	user_pkg = user_root / "user.dmp"
+	idx_path = user_root / "inst.json"
+	assert (
+		driftc_main(
+			[
+				"-M",
+				str(user_root),
+				"--package-root",
+				str(box_root),
+				"--allow-unsigned-from",
+				str(box_root),
+				str(user_src),
+				*_emit_pkg_args("acme.user"),
+				"--emit-package",
+				str(user_pkg),
+				"--emit-instantiation-index",
+				str(idx_path),
+			]
+		)
+		== 0
+	)
+	entries = _read_inst_index(idx_path)
+	assert entries
+	prefix = "acme.box:acme.box::Box<T>::tag@"
+	assert any(isinstance(e.get("key"), str) and str(e["key"]).startswith(prefix) for e in entries)
+
+
+def test_impl_generic_method_infers_type_args_across_packages(tmp_path: Path) -> None:
+	box_root = tmp_path / "boxpkg"
+	_emit_box_get_pkg(box_root, module_id="acme.box", pkg_name="acme.box")
+
+	user_root = tmp_path / "userpkg"
+	user_mod_dir = user_root / "acme" / "user"
+	user_src = user_mod_dir / "main.drift"
+	_write_file(
+		user_src,
+		"""
+module acme.user
+
+import acme.box as box
+export { run }
+
+pub fn run() returns Int {
+	val b: box.Box<Int> = box.make();
+	return b.get();
+}
+""".lstrip(),
+	)
+	user_pkg = user_root / "user.dmp"
+	idx_path = user_root / "inst.json"
+	assert (
+		driftc_main(
+			[
+				"-M",
+				str(user_root),
+				"--package-root",
+				str(box_root),
+				"--allow-unsigned-from",
+				str(box_root),
+				str(user_src),
+				*_emit_pkg_args("acme.user"),
+				"--emit-package",
+				str(user_pkg),
+				"--emit-instantiation-index",
+				str(idx_path),
+			]
+		)
+		== 0
+	)
+	entries = _read_inst_index(idx_path)
+	prefix = "acme.box:acme.box::Box<T>::get@"
+	matches = [e for e in entries if isinstance(e.get("key"), str) and str(e["key"]).startswith(prefix)]
+	assert len(matches) == 1
+	assert "Int" in str(matches[0]["key"])
+
+
+def test_impl_method_type_params_instantiated_across_packages(tmp_path: Path) -> None:
+	box_root = tmp_path / "boxpkg"
+	_emit_box_id_pkg(box_root, module_id="acme.box", pkg_name="acme.box")
+
+	user_root = tmp_path / "userpkg"
+	user_mod_a = user_root / "acme" / "user_a" / "lib.drift"
+	user_mod_b = user_root / "acme" / "user_b" / "lib.drift"
+	_write_file(
+		user_mod_a,
+		"""
+module acme.user_a
+
+import acme.box as box
+export { run_a }
+
+pub fn run_a() returns Int {
+	val b: box.Box<Int> = box.make();
+	return b.id(1);
+}
+""".lstrip(),
+	)
+	_write_file(
+		user_mod_b,
+		"""
+module acme.user_b
+
+import acme.box as box
+export { run_b }
+
+pub fn run_b() returns String {
+	val b: box.Box<Int> = box.make();
+	return b.id("x");
+}
+""".lstrip(),
+	)
+	user_pkg = user_root / "user.dmp"
+	idx_path = user_root / "inst.json"
+	assert (
+		driftc_main(
+			[
+				"-M",
+				str(user_root),
+				"--package-root",
+				str(box_root),
+				"--allow-unsigned-from",
+				str(box_root),
+				str(user_mod_a),
+				str(user_mod_b),
+				*_emit_pkg_args("acme.user"),
+				"--emit-package",
+				str(user_pkg),
+				"--emit-instantiation-index",
+				str(idx_path),
+			]
+		)
+		== 0
+	)
+	entries = _read_inst_index(idx_path)
+	prefix = "acme.box:acme.box::Box<T>::id@"
+	keys = [
+		str(e.get("key"))
+		for e in entries
+		if isinstance(e.get("key"), str) and str(e["key"]).startswith(prefix)
+	]
+	assert keys
+	assert len(keys) == len(set(keys))
+	assert any("|Int,Int|" in key for key in keys)
+	assert any("|Int,String|" in key for key in keys)
+
+
+def test_trait_generic_method_instantiated_across_packages(tmp_path: Path) -> None:
+	box_root = tmp_path / "boxpkg"
+	_emit_box_show_pkg(box_root, module_id="acme.box", pkg_name="acme.box")
+
+	user_root = tmp_path / "userpkg"
+	user_mod_dir = user_root / "acme" / "user"
+	user_src = user_mod_dir / "main.drift"
+	_write_file(
+		user_src,
+		"""
+module acme.user
+
+import acme.box as box
+export { run }
+use trait box.Show
+
+pub fn run() returns Int {
+	val b: box.Box<Int> = box.make();
+	return b.show();
+}
+""".lstrip(),
+	)
+	user_pkg = user_root / "user.dmp"
+	idx_path = user_root / "inst.json"
+	assert (
+		driftc_main(
+			[
+				"-M",
+				str(user_root),
+				"--package-root",
+				str(box_root),
+				"--allow-unsigned-from",
+				str(box_root),
+				str(user_src),
+				*_emit_pkg_args("acme.user"),
+				"--emit-package",
+				str(user_pkg),
+				"--emit-instantiation-index",
+				str(idx_path),
+			]
+		)
+		== 0
+	)
+	entries = _read_inst_index(idx_path)
+	assert entries
+	prefix = "acme.box:acme.box::Box<T>::Show::show@"
+	assert any(isinstance(e.get("key"), str) and str(e["key"]).startswith(prefix) for e in entries)
+
+
+def test_trait_generic_method_dedup_across_modules_in_package(tmp_path: Path) -> None:
+	box_root = tmp_path / "boxpkg"
+	_emit_box_show_pkg(box_root, module_id="acme.box", pkg_name="acme.box")
+
+	user_root = tmp_path / "userpkg"
+	user_mod_a = user_root / "acme" / "user_a" / "lib.drift"
+	user_mod_b = user_root / "acme" / "user_b" / "lib.drift"
+	_write_file(
+		user_mod_a,
+		"""
+module acme.user_a
+
+import acme.box as box
+export { run_a }
+use trait box.Show
+
+pub fn run_a() returns Int {
+	val b: box.Box<Int> = box.make();
+	return b.show();
+}
+""".lstrip(),
+	)
+	_write_file(
+		user_mod_b,
+		"""
+module acme.user_b
+
+import acme.box as box
+export { run_b }
+use trait box.Show
+
+pub fn run_b() returns Int {
+	val b: box.Box<Int> = box.make();
+	return b.show();
+}
+""".lstrip(),
+	)
+	user_pkg = user_root / "user.dmp"
+	idx_path = user_root / "inst.json"
+	assert (
+		driftc_main(
+			[
+				"-M",
+				str(user_root),
+				"--package-root",
+				str(box_root),
+				"--allow-unsigned-from",
+				str(box_root),
+				str(user_mod_a),
+				str(user_mod_b),
+				*_emit_pkg_args("acme.user"),
+				"--emit-package",
+				str(user_pkg),
+				"--emit-instantiation-index",
+				str(idx_path),
+			]
+		)
+		== 0
+	)
+	entries = _read_inst_index(idx_path)
+	prefix = "acme.box:acme.box::Box<T>::Show::show@"
+	matches = [e for e in entries if isinstance(e.get("key"), str) and str(e["key"]).startswith(prefix)]
+	assert matches
+	assert len(matches) == 1
+
+
 def test_instantiation_key_includes_abi_flags() -> None:
 	table = TypeTable()
 	int_ty = table.ensure_int()
-	fn_id = FunctionId(module="main", name="id", ordinal=0)
-	key_a = build_instantiation_key(fn_id, (int_ty,), type_table=table, can_throw=True)
-	key_b = build_instantiation_key(fn_id, (int_ty,), type_table=table, can_throw=False)
+	fn_key = FunctionKey(package_id="test", module_path="main", name="id", decl_fingerprint="fp")
+	key_a = build_instantiation_key(fn_key, (int_ty,), type_table=table, can_throw=True)
+	key_b = build_instantiation_key(fn_key, (int_ty,), type_table=table, can_throw=False)
 	assert instantiation_key_str(key_a) != instantiation_key_str(key_b)

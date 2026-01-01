@@ -4,6 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from lang2.driftc.parser import parse_drift_workspace_to_hir
+from lang2.driftc.module_lowered import flatten_modules
 from lang2.driftc.traits.world import TraitKey
 
 
@@ -17,7 +18,12 @@ def _parse_workspace(tmp_path: Path, files: dict[Path, str]):
 	for rel, content in files.items():
 		_write_file(mod_root / rel, content)
 	paths = sorted(mod_root.rglob("*.drift"))
-	return parse_drift_workspace_to_hir(paths, module_paths=[mod_root])
+	modules, type_table, exc_catalog, module_exports, module_deps, diagnostics = parse_drift_workspace_to_hir(
+		paths,
+		module_paths=[mod_root],
+	)
+	func_hirs, sigs, fn_ids_by_name = flatten_modules(modules)
+	return func_hirs, sigs, fn_ids_by_name, type_table, exc_catalog, module_exports, module_deps, diagnostics
 
 
 def test_use_trait_resolves_and_records_scope(tmp_path: Path) -> None:
@@ -44,7 +50,7 @@ fn main() nothrow returns Int{ return 0; }
 	)
 	assert diagnostics == []
 	scope = module_exports.get("m_main", {}).get("trait_scope", [])
-	assert TraitKey(module="m_traits", name="Show") in scope
+	assert TraitKey(package_id=None, module="m_traits", name="Show") in scope
 
 
 def test_use_trait_unknown_trait_is_error(tmp_path: Path) -> None:

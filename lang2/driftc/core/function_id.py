@@ -29,6 +29,40 @@ def function_symbol(fn_id: FunctionId) -> str:
 	return f"{base}#{fn_id.ordinal}"
 
 
+def parse_function_symbol(symbol: str) -> FunctionId:
+	ordinal = 0
+	base = symbol
+	if "#" in symbol:
+		head, tail = symbol.rsplit("#", 1)
+		if tail.isdigit():
+			ordinal = int(tail)
+			base = head
+	if "::" in base:
+		module, name = base.split("::", 1)
+	else:
+		module, name = "main", base
+	return FunctionId(module=module, name=name, ordinal=ordinal)
+
+
+def function_id_to_obj(fn_id: FunctionId) -> dict[str, object]:
+	return {"module": fn_id.module, "name": fn_id.name, "ordinal": fn_id.ordinal}
+
+
+def function_id_from_obj(obj: object) -> FunctionId | None:
+	if not isinstance(obj, dict):
+		return None
+	module = obj.get("module")
+	name = obj.get("name")
+	ordinal = obj.get("ordinal")
+	if not isinstance(module, str) or not module:
+		return None
+	if not isinstance(name, str) or not name:
+		return None
+	if not isinstance(ordinal, int):
+		return None
+	return FunctionId(module=module, name=name, ordinal=ordinal)
+
+
 class FunctionRefKind(Enum):
 	WRAPPER = auto()
 	IMPL = auto()
@@ -60,6 +94,9 @@ def method_wrapper_id(target: FunctionId) -> FunctionId:
 __all__ = [
 	"FunctionId",
 	"function_symbol",
+	"parse_function_symbol",
+	"function_id_to_obj",
+	"function_id_from_obj",
 	"FunctionRefId",
 	"FunctionRefKind",
 	"function_ref_symbol",

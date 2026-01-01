@@ -164,9 +164,10 @@ def validate_trait_scopes(
 		module_names_by_id = {mid: name for name, mid in module_ids.items() if name is not None}
 
 	def _trait_label(trait_key: TraitKey) -> str:
-		if trait_key.module:
-			return f"{trait_key.module}.{trait_key.name}"
-		return trait_key.name
+		base = f"{trait_key.module}.{trait_key.name}" if trait_key.module else trait_key.name
+		if trait_key.package_id:
+			return f"{trait_key.package_id}::{base}"
+		return base
 
 	seen_scope: set[TraitKey] = set()
 	for mod_name, trait_keys in trait_scope_by_module.items():

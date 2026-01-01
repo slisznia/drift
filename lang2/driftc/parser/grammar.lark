@@ -152,7 +152,7 @@ implement_item: PUB func_def -> implement_func_pub
 trait_def: TRAIT NAME require_clause? trait_body
 trait_body: "{" (trait_item | TERMINATOR)* "}"
 trait_item: trait_method_sig TERMINATOR*
-trait_method_sig: "fn" ident "(" [params] ")" return_sig
+trait_method_sig: "fn" ident type_params? "(" [params] ")" return_sig
 
 type_expr: ref_type
          | fn_type

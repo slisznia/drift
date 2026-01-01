@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Mapping
 
 from lang2.driftc.core.diagnostics import Diagnostic
 from lang2.driftc.core.function_id import FunctionId
@@ -13,28 +13,41 @@ from lang2.driftc.parser import ast as parser_ast
 
 @dataclass(frozen=True)
 class TraitKey:
+	package_id: Optional[str]
 	module: Optional[str]
 	name: str
 
 
 @dataclass(frozen=True)
 class TypeKey:
+	package_id: Optional[str]
 	module: Optional[str]
 	name: str
 	args: Tuple["TypeKey", ...] = ()
 
 	def head(self) -> "TypeHeadKey":
-		return TypeHeadKey(module=self.module, name=self.name)
+		return TypeHeadKey(package_id=self.package_id, module=self.module, name=self.name)
 
 
 @dataclass(frozen=True)
 class TypeHeadKey:
+	package_id: Optional[str]
 	module: Optional[str]
 	name: str
 
 
 @dataclass(frozen=True)
+class ImplKey:
+	package_id: Optional[str]
+	module: Optional[str]
+	trait: TraitKey
+	target_head: TypeHeadKey
+	decl_fingerprint: str
+
+
+@dataclass(frozen=True)
 class FnKey:
+	package_id: Optional[str]
 	module: Optional[str]
 	name: str
 
@@ -77,36 +90,68 @@ def _qual_from_type_expr(typ: parser_ast.TypeExpr) -> Optional[str]:
 BUILTIN_TYPE_NAMES = {"Int", "Bool", "String", "Uint", "Float", "Void", "Error", "DiagnosticValue"}
 
 
-def type_key_from_expr(typ: parser_ast.TypeExpr, *, default_module: Optional[str] = None) -> TypeKey:
+def type_key_from_expr(
+	typ: parser_ast.TypeExpr,
+	*,
+	default_module: Optional[str] = None,
+	default_package: Optional[str] = None,
+	module_packages: Mapping[str, str] | None = None,
+) -> TypeKey:
 	qual = _qual_from_type_expr(typ)
 	if qual is None and typ.name in BUILTIN_TYPE_NAMES:
 		mod = None
 	else:
 		mod = qual or default_module
+	pkg = None
+	if mod is not None:
+		pkg = (module_packages or {}).get(mod, default_package)
+	elif typ.name not in BUILTIN_TYPE_NAMES:
+		pkg = default_package
 	return TypeKey(
+		package_id=pkg,
 		module=mod,
 		name=typ.name,
-		args=tuple(type_key_from_expr(a, default_module=default_module) for a in getattr(typ, "args", []) or []),
+		args=tuple(
+			type_key_from_expr(
+				a,
+				default_module=default_module,
+				default_package=default_package,
+				module_packages=module_packages,
+			)
+			for a in getattr(typ, "args", []) or []
+		),
 	)
 
 
 def type_key_from_typeid(type_table: object, tid: int) -> TypeKey:
 	td = type_table.get(tid)
+	module_id = getattr(td, "module_id", None)
+	module_packages = getattr(type_table, "module_packages", {}) or {}
+	default_package = getattr(type_table, "package_id", None)
+	package_id = None
+	if module_id is not None:
+		package_id = module_packages.get(module_id, default_package)
 	if td.kind is TypeKind.STRUCT:
 		inst = type_table.get_struct_instance(tid)
 		if inst is not None:
 			args = tuple(type_key_from_typeid(type_table, t) for t in inst.type_args)
-			return TypeKey(module=getattr(td, "module_id", None), name=getattr(td, "name", ""), args=args)
+			return TypeKey(package_id=package_id, module=module_id, name=getattr(td, "name", ""), args=args)
 	if td.kind is TypeKind.VARIANT:
 		inst = type_table.get_variant_instance(tid)
 		if inst is not None:
 			args = tuple(type_key_from_typeid(type_table, t) for t in inst.type_args)
-			return TypeKey(module=getattr(td, "module_id", None), name=getattr(td, "name", ""), args=args)
+			return TypeKey(package_id=package_id, module=module_id, name=getattr(td, "name", ""), args=args)
 	args = tuple(type_key_from_typeid(type_table, t) for t in getattr(td, "param_types", []) or [])
-	return TypeKey(module=getattr(td, "module_id", None), name=getattr(td, "name", ""), args=args)
+	return TypeKey(package_id=package_id, module=module_id, name=getattr(td, "name", ""), args=args)
 
 
-def normalize_type_key(key: TypeKey, *, module_name: str) -> TypeKey:
+def normalize_type_key(
+	key: TypeKey,
+	*,
+	module_name: str,
+	default_package: Optional[str] = None,
+	module_packages: Mapping[str, str] | None = None,
+) -> TypeKey:
 	"""
 	Normalize a TypeKey with the same rule used by trait resolution.
 
@@ -115,18 +160,38 @@ def normalize_type_key(key: TypeKey, *, module_name: str) -> TypeKey:
 	if key.module is None:
 		if key.name in BUILTIN_TYPE_NAMES:
 			return key
-		return TypeKey(module=module_name, name=key.name, args=key.args)
+		pkg = key.package_id or (module_packages or {}).get(module_name, default_package)
+		return TypeKey(package_id=pkg, module=module_name, name=key.name, args=key.args)
+	if key.package_id is None:
+		pkg = (module_packages or {}).get(key.module, default_package)
+		if pkg is not None:
+			return TypeKey(package_id=pkg, module=key.module, name=key.name, args=key.args)
 	return key
 
 
-def trait_key_from_expr(typ: parser_ast.TypeExpr, *, default_module: Optional[str] = None) -> TraitKey:
-	return TraitKey(module=_qual_from_type_expr(typ) or default_module, name=typ.name)
+def trait_key_from_expr(
+	typ: parser_ast.TypeExpr,
+	*,
+	default_module: Optional[str] = None,
+	default_package: Optional[str] = None,
+	module_packages: Mapping[str, str] | None = None,
+) -> TraitKey:
+	module = _qual_from_type_expr(typ) or default_module
+	pkg = None
+	if module is not None:
+		pkg = (module_packages or {}).get(module, default_package)
+	else:
+		pkg = default_package
+	return TraitKey(package_id=pkg, module=module, name=typ.name)
 
 
 def _type_key_str(key: TypeKey | TypeHeadKey) -> str:
+	pkg = getattr(key, "package_id", None)
 	module = getattr(key, "module", None)
 	name = getattr(key, "name", "")
 	base = f"{module}.{name}" if module else name
+	if pkg:
+		base = f"{pkg}::{base}"
 	if isinstance(key, TypeKey) and key.args:
 		args = ", ".join(_type_key_str(a) for a in key.args)
 		return f"{base}<{args}>"
@@ -134,7 +199,10 @@ def _type_key_str(key: TypeKey | TypeHeadKey) -> str:
 
 
 def _trait_key_str(key: TraitKey) -> str:
-	return f"{key.module}.{key.name}" if key.module else key.name
+	base = f"{key.module}.{key.name}" if key.module else key.name
+	if key.package_id:
+		return f"{key.package_id}::{base}"
+	return base
 
 
 def type_key_str(key: TypeKey | TypeHeadKey) -> str:
@@ -158,7 +226,13 @@ def _collect_trait_is(expr: parser_ast.TraitExpr) -> List[parser_ast.TraitIs]:
 	return out
 
 
-def build_trait_world(prog: parser_ast.Program, *, diagnostics: Optional[List[Diagnostic]] = None) -> TraitWorld:
+def build_trait_world(
+	prog: parser_ast.Program,
+	*,
+	diagnostics: Optional[List[Diagnostic]] = None,
+	package_id: Optional[str] = None,
+	module_packages: Mapping[str, str] | None = None,
+) -> TraitWorld:
 	diags: List[Diagnostic] = list(diagnostics or [])
 	world = TraitWorld(diagnostics=diags)
 	module_id = getattr(prog, "module", None) or "main"
@@ -166,7 +240,7 @@ def build_trait_world(prog: parser_ast.Program, *, diagnostics: Optional[List[Di
 	# Collect trait declarations.
 	method_seen: Dict[Tuple[TraitKey, str], object | None] = {}
 	for tr in getattr(prog, "traits", []) or []:
-		key = TraitKey(module=module_id, name=tr.name)
+		key = TraitKey(package_id=package_id, module=module_id, name=tr.name)
 		if key in world.traits:
 			world.diagnostics.append(_diag(f"duplicate trait definition '{_trait_key_str(key)}'", tr.loc))
 			continue
@@ -185,7 +259,12 @@ def build_trait_world(prog: parser_ast.Program, *, diagnostics: Optional[List[Di
 						_diag("trait require clause must use 'Self is Trait'", getattr(atom, "loc", None))
 					)
 					continue
-				trait_key = trait_key_from_expr(atom.trait, default_module=module_id)
+				trait_key = trait_key_from_expr(
+					atom.trait,
+					default_module=module_id,
+					default_package=package_id,
+					module_packages=module_packages,
+				)
 				if trait_key not in world.traits:
 					world.diagnostics.append(
 						_diag(
@@ -209,14 +288,19 @@ def build_trait_world(prog: parser_ast.Program, *, diagnostics: Optional[List[Di
 	for s in getattr(prog, "structs", []) or []:
 		if getattr(s, "require", None) is None:
 			continue
-		type_key = TypeKey(module=module_id, name=s.name, args=())
+		type_key = TypeKey(package_id=package_id, module=module_id, name=s.name, args=())
 		req_expr = s.require.expr
 		world.requires_by_struct[type_key] = req_expr
 		type_param_names = set(getattr(s, "type_params", []) or [])
 		for atom in _collect_trait_is(req_expr):
 			subj = atom.subject
 			if subj == "Self" or (isinstance(subj, str) and subj in type_param_names):
-				trait_key = trait_key_from_expr(atom.trait, default_module=module_id)
+				trait_key = trait_key_from_expr(
+					atom.trait,
+					default_module=module_id,
+					default_package=package_id,
+					module_packages=module_packages,
+				)
 				if trait_key not in world.traits:
 					world.diagnostics.append(
 						_diag(
@@ -244,25 +328,40 @@ def build_trait_world(prog: parser_ast.Program, *, diagnostics: Optional[List[Di
 					_diag("function require clause cannot use 'Self'", getattr(atom, "loc", None))
 				)
 				continue
-			trait_key = trait_key_from_expr(atom.trait, default_module=module_id)
+			trait_key = trait_key_from_expr(
+				atom.trait,
+				default_module=module_id,
+				default_package=package_id,
+				module_packages=module_packages,
+			)
 			if trait_key not in world.traits:
 				world.diagnostics.append(
 					_diag(
 						f"unknown trait '{_trait_key_str(trait_key)}' in require clause",
 						getattr(atom, "loc", None),
 					)
-				)
+					)
 
 	# Collect impls (trait impls only).
 	for impl in getattr(prog, "implements", []) or []:
 		if getattr(impl, "trait", None) is None:
 			continue
-		trait_key = trait_key_from_expr(impl.trait, default_module=module_id)
+		trait_key = trait_key_from_expr(
+			impl.trait,
+			default_module=module_id,
+			default_package=package_id,
+			module_packages=module_packages,
+		)
 		if trait_key not in world.traits and trait_key.module == module_id:
 			world.diagnostics.append(
 				_diag(f"unknown trait '{_trait_key_str(trait_key)}' in implement block", getattr(impl, "loc", None))
 			)
-		target_key = type_key_from_expr(impl.target, default_module=module_id)
+		target_key = type_key_from_expr(
+			impl.target,
+			default_module=module_id,
+			default_package=package_id,
+			module_packages=module_packages,
+		)
 		head_key = target_key.head()
 		req_expr = impl.require.expr if getattr(impl, "require", None) is not None else None
 		impl_id = len(world.impls)
@@ -281,7 +380,12 @@ def build_trait_world(prog: parser_ast.Program, *, diagnostics: Optional[List[Di
 		world.impls_by_trait_target.setdefault((trait_key, head_key), []).append(impl_id)
 		if req_expr is not None:
 			for atom in _collect_trait_is(req_expr):
-				trait_dep = trait_key_from_expr(atom.trait, default_module=module_id)
+				trait_dep = trait_key_from_expr(
+					atom.trait,
+					default_module=module_id,
+					default_package=package_id,
+					module_packages=module_packages,
+				)
 				if trait_dep not in world.traits:
 					world.diagnostics.append(
 						_diag(
@@ -378,6 +482,7 @@ __all__ = [
 	"TraitKey",
 	"TypeKey",
 	"TypeHeadKey",
+	"ImplKey",
 	"ImplDef",
 	"TraitDef",
 	"FnKey",

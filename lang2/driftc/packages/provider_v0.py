@@ -20,6 +20,7 @@ from pathlib import Path
 from lang2.driftc.packages.dmir_pkg_v0 import LoadedPackage, load_dmir_pkg_v0
 from lang2.driftc.packages.signature_v0 import verify_package_signatures
 from lang2.driftc.packages.trust_v0 import TrustStore
+from lang2.driftc.core.function_id import function_id_from_obj, function_symbol
 
 
 def discover_package_files(package_roots: list[Path]) -> list[Path]:
@@ -116,6 +117,10 @@ def _validate_package_interfaces(pkg: LoadedPackage) -> None:
 
 	def _err(msg: str) -> ValueError:
 		return ValueError(msg)
+
+	pkg_id = pkg.manifest.get("package_id")
+	if not isinstance(pkg_id, str) or not pkg_id:
+		raise _err("package manifest missing package_id")
 
 	for mid, mod in pkg.modules_by_id.items():
 		if not isinstance(mod.interface, dict):
@@ -299,9 +304,27 @@ def _validate_package_interfaces(pkg: LoadedPackage) -> None:
 			for idx, entry in enumerate(iface_trait_meta):
 				if not isinstance(entry, dict):
 					raise _err(f"module '{mid}' trait_metadata[{idx}] must be an object")
+				trait_id_obj = entry.get("trait_id")
+				if not isinstance(trait_id_obj, dict):
+					raise _err(f"module '{mid}' trait_metadata[{idx}] missing trait_id")
+				trait_pkg = trait_id_obj.get("package_id")
+				trait_mod = trait_id_obj.get("module")
+				trait_name = trait_id_obj.get("name")
+				if not isinstance(trait_pkg, str) or not trait_pkg:
+					raise _err(f"module '{mid}' trait_metadata[{idx}] invalid trait_id.package_id")
+				if not isinstance(trait_mod, str) or not trait_mod:
+					raise _err(f"module '{mid}' trait_metadata[{idx}] invalid trait_id.module")
+				if not isinstance(trait_name, str) or not trait_name:
+					raise _err(f"module '{mid}' trait_metadata[{idx}] invalid trait_id.name")
+				if trait_pkg != pkg_id:
+					raise _err(f"module '{mid}' trait_metadata[{idx}] trait_id package_id mismatch")
+				if trait_mod != mid:
+					raise _err(f"module '{mid}' trait_metadata[{idx}] trait_id module mismatch")
 				name = entry.get("name")
 				if not isinstance(name, str) or not name:
 					raise _err(f"module '{mid}' trait_metadata[{idx}] missing name")
+				if name != trait_name:
+					raise _err(f"module '{mid}' trait_metadata[{idx}] trait_id name mismatch")
 				if name not in traits:
 					raise _err(f"module '{mid}' trait_metadata[{idx}] refers to non-exported trait '{name}'")
 				if name in seen_traits:
@@ -317,6 +340,16 @@ def _validate_package_interfaces(pkg: LoadedPackage) -> None:
 					mname = method.get("name")
 					if not isinstance(mname, str) or not mname:
 						raise _err(f"module '{mid}' trait_metadata[{idx}].methods[{midx}] missing name")
+					type_params = method.get("type_params")
+					if type_params is not None:
+						if not isinstance(type_params, list):
+							raise _err(
+								f"module '{mid}' trait_metadata[{idx}].methods[{midx}].type_params must be a list"
+							)
+						if not all(isinstance(p, str) and p for p in type_params):
+							raise _err(
+								f"module '{mid}' trait_metadata[{idx}].methods[{midx}].type_params must be strings"
+							)
 					key = (name, mname)
 					if key in seen_methods:
 						raise _err(f"module '{mid}' trait_metadata duplicate method '{mname}' in trait '{name}'")
@@ -366,6 +399,9 @@ def _validate_package_interfaces(pkg: LoadedPackage) -> None:
 					raise _err(f"module '{mid}' impl_headers[{idx}] impl_id must be an int")
 				if not isinstance(def_module, str) or not def_module:
 					raise _err(f"module '{mid}' impl_headers[{idx}] def_module must be a string")
+				decl_fp = impl.get("decl_fingerprint")
+				if not isinstance(decl_fp, str) or not decl_fp:
+					raise _err(f"module '{mid}' impl_headers[{idx}] missing decl_fingerprint")
 				key = (def_module, impl_id)
 				if key in seen_impls:
 					raise _err(f"module '{mid}' impl_headers contains duplicate impl_id {impl_id} for '{def_module}'")
@@ -374,8 +410,11 @@ def _validate_package_interfaces(pkg: LoadedPackage) -> None:
 				if trait_obj is not None:
 					if not isinstance(trait_obj, dict):
 						raise _err(f"module '{mid}' impl_headers[{idx}] trait must be an object")
+					tpkg = trait_obj.get("package_id")
 					tmod = trait_obj.get("module")
 					tname = trait_obj.get("name")
+					if not isinstance(tpkg, str) or not tpkg:
+						raise _err(f"module '{mid}' impl_headers[{idx}] trait must include package_id")
 					if not isinstance(tmod, str) or not tmod or not isinstance(tname, str) or not tname:
 						raise _err(f"module '{mid}' impl_headers[{idx}] trait must include module/name")
 				type_params = impl.get("type_params")
@@ -395,6 +434,16 @@ def _validate_package_interfaces(pkg: LoadedPackage) -> None:
 					fn_symbol = method.get("fn_symbol")
 					if not isinstance(fn_symbol, str) or not fn_symbol:
 						raise _err(f"module '{mid}' impl_headers[{idx}].methods[{midx}] missing fn_symbol")
+					fn_id_obj = method.get("fn_id")
+					if not isinstance(fn_id_obj, dict):
+						raise _err(f"module '{mid}' impl_headers[{idx}].methods[{midx}] missing fn_id")
+					fn_id = function_id_from_obj(fn_id_obj)
+					if fn_id is None:
+						raise _err(f"module '{mid}' impl_headers[{idx}].methods[{midx}] invalid fn_id")
+					if fn_symbol != function_symbol(fn_id):
+						raise _err(
+							f"module '{mid}' impl_headers[{idx}].methods[{midx}] fn_symbol mismatch"
+						)
 					if fn_symbol not in payload_sigs:
 						raise _err(
 							f"module '{mid}' impl_headers method '{mname}' missing signature entry '{fn_symbol}'"

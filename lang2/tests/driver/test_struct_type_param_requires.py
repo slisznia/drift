@@ -7,7 +7,9 @@ from lang2.driftc.core.function_id import FunctionId
 from lang2.driftc.impl_index import GlobalImplIndex
 from lang2.driftc.method_registry import CallableRegistry, CallableSignature, SelfMode, Visibility
 from lang2.driftc.parser import parse_drift_workspace_to_hir
+from lang2.driftc.module_lowered import flatten_modules
 from lang2.driftc.trait_index import GlobalTraitImplIndex, GlobalTraitIndex
+from lang2.driftc.test_helpers import build_linked_world
 from lang2.driftc.type_checker import TypeChecker
 
 
@@ -70,11 +72,12 @@ def _visible_modules_for(module_name: str, module_deps: dict[str, set[str]], mod
 def _typecheck_main(src: str, tmp_path: Path) -> list[object]:
 	path = tmp_path / "main.drift"
 	_write_file(path, src)
-	func_hirs, signatures, fn_ids_by_name, type_table, _exc_catalog, module_exports, module_deps, diagnostics = parse_drift_workspace_to_hir(
+	modules, type_table, _exc_catalog, module_exports, module_deps, diagnostics = parse_drift_workspace_to_hir(
 		[path],
 		module_paths=[tmp_path],
 	)
 	assert diagnostics == []
+	func_hirs, signatures, fn_ids_by_name = flatten_modules(modules)
 	registry, module_ids = _build_registry(signatures)
 	impl_index = GlobalImplIndex.from_module_exports(
 		module_exports=module_exports,
@@ -90,6 +93,7 @@ def _typecheck_main(src: str, tmp_path: Path) -> list[object]:
 	trait_scope_by_module = {
 		mod: list(exports.get("trait_scope", []) or []) for mod, exports in module_exports.items()
 	}
+	linked_world, require_env = build_linked_world(type_table)
 	main_ids = fn_ids_by_name.get("main") or []
 	if not main_ids:
 		qualified = [name for name in fn_ids_by_name.keys() if name.endswith("::main")]
@@ -116,6 +120,8 @@ def _typecheck_main(src: str, tmp_path: Path) -> list[object]:
 		trait_index=trait_index,
 		trait_impl_index=trait_impl_index,
 		trait_scope_by_module=trait_scope_by_module,
+		linked_world=linked_world,
+		require_env=require_env,
 		visible_modules=visible_mods,
 		current_module=current_mod,
 	)

@@ -14,7 +14,7 @@ def _write_module(root: Path, rel: str, src: str) -> None:
 
 def _parse_workspace(root: Path) -> list[str]:
 	paths = sorted(root.rglob("*.drift"))
-	_hirs, _sigs, _fn_ids_by_name, _tt, _exc, _exports, _deps, diagnostics = parse_drift_workspace_to_hir(
+	_modules, _tt, _exc, _exports, _deps, diagnostics = parse_drift_workspace_to_hir(
 		paths,
 		module_paths=[root],
 	)

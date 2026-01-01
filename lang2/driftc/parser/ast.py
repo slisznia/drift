@@ -512,6 +512,8 @@ class TraitMethodSig:
 	params: Sequence[Param]
 	return_type: TypeExpr
 	loc: Located
+	type_params: List[str] = field(default_factory=list)
+	type_param_locs: List[Located] = field(default_factory=list)
 
 
 @dataclass

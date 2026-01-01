@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Iterable, Optional
 
 from lang2.driftc.parser import parse_drift_to_hir, parse_drift_files_to_hir, parse_drift_workspace_to_hir
+from lang2.driftc.module_lowered import flatten_modules
 from lang2.driftc.driftc import compile_to_llvm_ir_for_tests
 from lang2.driftc.core.function_id import function_symbol
 from lang2.drift_core.runtime import get_runtime_sources
@@ -153,11 +154,12 @@ def _run_case(case_dir: Path) -> str:
 	# import resolution behavior is consistent:
 	# - missing module imports are diagnosed,
 	# - multi-file modules and multi-module cases share the same entry path.
-	func_hirs, signatures, fn_ids_by_name, type_table, exception_catalog, module_exports, module_deps, parse_diags = parse_drift_workspace_to_hir(
+	modules, type_table, exception_catalog, module_exports, module_deps, parse_diags = parse_drift_workspace_to_hir(
 		drift_files,
 		module_paths=[case_dir / mp for mp in module_paths] or None,
 		enforce_entrypoint=True,
 	)
+	func_hirs, signatures, fn_ids_by_name = flatten_modules(modules)
 	expected_phase = expected.get("phase")
 
 	if parse_diags:

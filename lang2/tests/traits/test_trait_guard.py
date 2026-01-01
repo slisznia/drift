@@ -5,12 +5,14 @@ from pathlib import Path
 
 from lang2.driftc.core.function_id import function_symbol
 from lang2.driftc.parser import parse_drift_to_hir
+from lang2.driftc.test_helpers import build_linked_world
 from lang2.driftc.type_checker import TypeChecker
 
 
 def _typecheck_main(src: Path):
 	func_hirs, sigs, fn_ids_by_name, type_table, _exc_catalog, diagnostics = parse_drift_to_hir(src)
 	assert diagnostics == []
+	linked_world, require_env = build_linked_world(type_table)
 	tc = TypeChecker(type_table=type_table)
 	fn_ids = fn_ids_by_name.get("main") or []
 	assert len(fn_ids) == 1
@@ -28,6 +30,8 @@ def _typecheck_main(src: Path):
 		return_type=sig.return_type_id if sig is not None else None,
 		call_signatures=call_signatures,
 		callable_registry=None,
+		linked_world=linked_world,
+		require_env=require_env,
 		visible_modules=(),
 		current_module=0,
 	)

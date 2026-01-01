@@ -8,6 +8,7 @@ from lang2.driftc.core.function_id import FunctionId
 from lang2.driftc.core.types_core import TypeKind
 from lang2.driftc.method_registry import CallableRegistry, CallableSignature, Visibility
 from lang2.driftc.parser import parse_drift_workspace_to_hir
+from lang2.driftc.module_lowered import flatten_modules
 from lang2.driftc.type_checker import TypeChecker
 
 
@@ -131,11 +132,12 @@ fn main() nothrow returns Int{
 """,
 	)
 	paths = [mod_root / "a.drift", mod_root / "b.drift", mod_root / "main.drift"]
-	func_hirs, signatures, fn_ids_by_name, type_table, _exc_catalog, _exports, _deps, diagnostics = parse_drift_workspace_to_hir(
+	modules, type_table, _exc_catalog, _exports, _deps, diagnostics = parse_drift_workspace_to_hir(
 		paths,
 		module_paths=[tmp_path],
 	)
 	assert diagnostics == []
+	func_hirs, signatures, fn_ids_by_name = flatten_modules(modules)
 	registry, module_ids = _build_registry(signatures)
 	main_ids = fn_ids_by_name.get("m::main") or []
 	assert len(main_ids) == 1

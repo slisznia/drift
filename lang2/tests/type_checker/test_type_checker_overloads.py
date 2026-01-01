@@ -11,8 +11,10 @@ from lang2.driftc.checker import FnSignature
 from lang2.driftc.core.function_id import FunctionId
 from lang2.driftc.core.types_core import TypeKind
 from lang2.driftc.method_registry import CallableRegistry, CallableSignature, Visibility
+from lang2.driftc.parser import ast as parser_ast
 from lang2.driftc.parser import parse_drift_to_hir
 from lang2.driftc.type_checker import TypeChecker
+from lang2.driftc.test_helpers import build_linked_world
 
 
 def _callable_name(fn_id: FunctionId) -> str:
@@ -85,6 +87,7 @@ def _resolve_main_call(
 	if main_sig and main_sig.param_names and main_sig.param_type_ids:
 		param_types = {pname: pty for pname, pty in zip(main_sig.param_names, main_sig.param_type_ids)}
 	current_mod = module_ids.setdefault(main_sig.module, len(module_ids))
+	linked_world, require_env = build_linked_world(type_table)
 	result = tc.check_function(
 		main_id,
 		main_block,
@@ -92,6 +95,8 @@ def _resolve_main_call(
 		return_type=main_sig.return_type_id if main_sig is not None else None,
 		signatures_by_id=sigs,
 		callable_registry=registry,
+		linked_world=linked_world,
+		require_env=require_env,
 		visible_modules=(current_mod,),
 		current_module=current_mod,
 	)
@@ -142,7 +147,7 @@ def test_overload_require_rejects_when_unmet(tmp_path: Path) -> None:
 	src = """
 struct S { }
 trait A { fn a(self: S) returns Int }
-fn h(x: S) returns Int require x is A { return 1; }
+fn h<T>(x: T) returns Int require T is A { return 1; }
 fn h(x: Int) returns Int { return x; }
 fn main(x: S) returns Int { return h(x); }
 """
@@ -161,6 +166,7 @@ fn main(x: S) returns Int { return h(x); }
 	if main_sig and main_sig.param_names and main_sig.param_type_ids:
 		param_types = {pname: pty for pname, pty in zip(main_sig.param_names, main_sig.param_type_ids)}
 	current_mod = module_ids.setdefault(main_sig.module, len(module_ids))
+	linked_world, require_env = build_linked_world(type_table)
 	result = tc.check_function(
 		main_id,
 		main_block,
@@ -168,6 +174,8 @@ fn main(x: S) returns Int { return h(x); }
 		return_type=main_sig.return_type_id if main_sig is not None else None,
 		signatures_by_id=sigs,
 		callable_registry=registry,
+		linked_world=linked_world,
+		require_env=require_env,
 		visible_modules=(current_mod,),
 		current_module=current_mod,
 	)
@@ -189,3 +197,126 @@ fn main() returns Int { return f<type Int, String>(1, "s"); }
 		if sig.name == "f" and len(list(sig.param_names or [])) == 2
 	)
 	assert resolved_id == expected
+
+
+def test_overload_require_prefers_trait_dependency(tmp_path: Path) -> None:
+	resolved_id, _sigs, type_table = _resolve_main_call(
+		tmp_path,
+		"""
+struct S { }
+
+trait Debuggable { fn debug(self: &Self) returns String; }
+trait Printable require Self is Debuggable { fn show(self: &Self) returns String; }
+
+implement Debuggable for S { fn debug(self: &S) returns String { return "d"; } }
+implement Printable for S { fn show(self: &S) returns String { return "p"; } }
+
+fn f<T>(x: T) returns Int require T is Debuggable { return 1; }
+fn f<T>(x: T) returns Int require T is Printable { return 2; }
+
+fn main(x: S) returns Int { return f(x); }
+""",
+	)
+	linked_world, _require_env = build_linked_world(type_table)
+	world = linked_world.global_world
+	req = world.requires_by_fn.get(resolved_id)
+	assert isinstance(req, parser_ast.TraitIs)
+	assert req.trait.name == "Printable"
+
+
+def test_overload_require_incomparable_is_ambiguous(tmp_path: Path) -> None:
+	src = """
+struct S { }
+
+trait A { fn a(self: &Self) returns Int; }
+trait B { fn b(self: &Self) returns Int; }
+
+implement A for S { fn a(self: &S) returns Int { return 1; } }
+implement B for S { fn b(self: &S) returns Int { return 2; } }
+
+fn f<T>(x: T) returns Int require T is A { return 1; }
+fn f<T>(x: T) returns Int require T is B { return 2; }
+
+fn main(x: S) returns Int { return f(x); }
+"""
+	src_path = tmp_path / "overload_require_incomparable.drift"
+	src_path.write_text(src)
+	func_hirs, sigs, fn_ids_by_name, type_table, _exc_catalog, diagnostics = parse_drift_to_hir(src_path)
+	assert diagnostics == []
+	registry, module_ids = _build_registry(sigs)
+	fn_ids = fn_ids_by_name.get("main") or []
+	assert len(fn_ids) == 1
+	main_id = fn_ids[0]
+	main_block = func_hirs[main_id]
+	call_expr = _first_call(main_block)
+	tc = TypeChecker(type_table=type_table)
+	main_sig = sigs.get(main_id)
+	param_types = {}
+	if main_sig and main_sig.param_names and main_sig.param_type_ids:
+		param_types = {pname: pty for pname, pty in zip(main_sig.param_names, main_sig.param_type_ids)}
+	current_mod = module_ids.setdefault(main_sig.module, len(module_ids))
+	result = tc.check_function(
+		main_id,
+		main_block,
+		param_types=param_types,
+		return_type=main_sig.return_type_id if main_sig is not None else None,
+		signatures_by_id=sigs,
+		callable_registry=registry,
+		visible_modules=(current_mod,),
+		current_module=current_mod,
+	)
+	assert any("ambiguous call to function 'f'" in d.message for d in result.diagnostics)
+
+
+def test_overload_dedupes_duplicate_candidates(tmp_path: Path) -> None:
+	src = """
+fn f(x: Int) returns Int { return x; }
+fn main() returns Int { return f(1); }
+"""
+	src_path = tmp_path / "overload_dedupe.drift"
+	src_path.write_text(src)
+	func_hirs, sigs, fn_ids_by_name, type_table, _exc_catalog, diagnostics = parse_drift_to_hir(src_path)
+	assert diagnostics == []
+	registry, module_ids = _build_registry(sigs)
+	fn_ids = fn_ids_by_name.get("f") or []
+	assert len(fn_ids) == 1
+	f_id = fn_ids[0]
+	f_sig = sigs.get(f_id)
+	assert f_sig is not None
+	assert f_sig.param_type_ids is not None
+	assert f_sig.return_type_id is not None
+	module_id = module_ids.setdefault(f_sig.module, len(module_ids))
+	registry.register_free_function(
+		callable_id=999,
+		name=_callable_name(f_id),
+		module_id=module_id,
+		visibility=Visibility.public(),
+		signature=CallableSignature(
+			param_types=tuple(f_sig.param_type_ids),
+			result_type=f_sig.return_type_id,
+		),
+		fn_id=f_id,
+		is_generic=False,
+	)
+	main_ids = fn_ids_by_name.get("main") or []
+	assert len(main_ids) == 1
+	main_id = main_ids[0]
+	main_block = func_hirs[main_id]
+	call_expr = _first_call(main_block)
+	tc = TypeChecker(type_table=type_table)
+	main_sig = sigs.get(main_id)
+	current_mod = module_ids.setdefault(main_sig.module, len(module_ids))
+	result = tc.check_function(
+		main_id,
+		main_block,
+		param_types={},
+		return_type=main_sig.return_type_id if main_sig is not None else None,
+		signatures_by_id=sigs,
+		callable_registry=registry,
+		visible_modules=(current_mod,),
+		current_module=current_mod,
+	)
+	assert result.diagnostics == []
+	resolved = result.typed_fn.call_resolutions.get(call_expr.node_id)
+	assert resolved is not None
+	assert getattr(resolved, "fn_id", None) == f_id

@@ -12,7 +12,8 @@ from lang2.driftc.method_resolver import MethodResolution
 from lang2.driftc.traits.solver import Env, ProofStatus, prove_expr
 from lang2.driftc.core.function_id import FunctionId, function_symbol
 from lang2.driftc.core.types_core import TypeKind, TypeParamId
-from lang2.driftc.traits.world import TraitWorld, TypeKey, normalize_type_key, type_key_from_typeid
+from lang2.driftc.traits.linked_world import LinkedWorld, RequireEnv
+from lang2.driftc.traits.world import TypeKey, normalize_type_key, type_key_from_typeid
 from lang2.driftc.core.type_resolve_common import resolve_opaque_type
 
 
@@ -96,16 +97,28 @@ def _collect_trait_subjects(expr: parser_ast.TraitExpr, out: Set[object]) -> Non
 
 
 def enforce_struct_requires(
-	world: TraitWorld,
+	linked_world: LinkedWorld,
+	require_env: RequireEnv,
 	used_types: Iterable[TypeKey],
 	*,
 	module_name: str,
+	visible_modules: Iterable[str] | None = None,
 ) -> TraitEnforceResult:
 	diags: List[Diagnostic] = []
-	env = Env(default_module=module_name)
+	env = Env(
+		default_module=module_name,
+		default_package=require_env.default_package,
+		module_packages=require_env.module_packages,
+	)
+	world = linked_world.visible_world(visible_modules) if visible_modules is not None else linked_world.global_world
 	for ty in used_types:
-		ty_norm = normalize_type_key(ty, module_name=module_name)
-		req = world.requires_by_struct.get(ty_norm)
+		ty_norm = normalize_type_key(
+			ty,
+			module_name=module_name,
+			default_package=require_env.default_package,
+			module_packages=require_env.module_packages,
+		)
+		req = require_env.requires_by_struct.get(ty_norm)
 		if req is None:
 			continue
 		subst = {"Self": ty_norm}
@@ -122,7 +135,8 @@ def enforce_struct_requires(
 
 
 def enforce_fn_requires(
-	trait_worlds: Dict[str, TraitWorld],
+	linked_world: LinkedWorld,
+	require_env: RequireEnv,
 	typed_fn: object,
 	type_table: object,
 	*,
@@ -130,26 +144,6 @@ def enforce_fn_requires(
 	signatures: Dict[FunctionId, object],
 	visible_modules: Iterable[str] | None = None,
 ) -> TraitEnforceResult:
-	def _merge_trait_worlds(trait_worlds: Dict[str, TraitWorld], mods: Iterable[str]) -> TraitWorld:
-		merged = TraitWorld()
-		for mod in mods:
-			world = trait_worlds.get(mod)
-			if world is None:
-				continue
-			for key, trait in world.traits.items():
-				merged.traits.setdefault(key, trait)
-			for impl in world.impls:
-				idx = len(merged.impls)
-				merged.impls.append(impl)
-				merged.impls_by_trait.setdefault(impl.trait, []).append(idx)
-				merged.impls_by_target_head.setdefault(impl.target_head, []).append(idx)
-				merged.impls_by_trait_target.setdefault((impl.trait, impl.target_head), []).append(idx)
-			for key, expr in world.requires_by_struct.items():
-				merged.requires_by_struct.setdefault(key, expr)
-			for key, expr in world.requires_by_fn.items():
-				merged.requires_by_fn.setdefault(key, expr)
-		return merged
-
 	diags: List[Diagnostic] = []
 	exprs: List[H.HExpr] = []
 	_walk_block(getattr(typed_fn, "body"), exprs)
@@ -157,8 +151,7 @@ def enforce_fn_requires(
 	call_resolutions = getattr(typed_fn, "call_resolutions", {}) or {}
 	seen: Set[Tuple[FunctionId, Tuple[TypeKey, ...], Tuple[TypeKey, ...]]] = set()
 	symbol_to_id = {function_symbol(fid): fid for fid in signatures.keys()}
-	visible_list = sorted(set(visible_modules)) if visible_modules is not None else None
-	visible_world = _merge_trait_worlds(trait_worlds, visible_list) if visible_list is not None else None
+	world = linked_world.visible_world(visible_modules) if visible_modules is not None else linked_world.global_world
 
 	def _infer_type_args_from_call(sig: object, arg_type_ids: List[object]) -> Dict[TypeParamId, object] | None:
 		type_params = list(getattr(sig, "type_params", []) or [])
@@ -241,14 +234,14 @@ def enforce_fn_requires(
 		if fn_id is None:
 			continue
 		callee_mod = getattr(fn_id, "module", None) or module_name
-		req_world = trait_worlds.get(callee_mod)
-		if req_world is None:
-			continue
-		req = req_world.requires_by_fn.get(fn_id)
+		req = require_env.requires_by_fn.get(fn_id)
 		if req is None:
 			continue
-		world = visible_world or req_world
-		env = Env(default_module=callee_mod)
+		env = Env(
+			default_module=callee_mod,
+			default_package=require_env.default_package,
+			module_packages=require_env.module_packages,
+		)
 		sig = signatures.get(fn_id)
 		subst: Dict[object, TypeKey] = {}
 		subjects: Set[object] = set()
@@ -261,7 +254,14 @@ def enforce_fn_requires(
 			if tid is None:
 				continue
 			arg_type_ids.append(tid)
-			arg_keys.append(normalize_type_key(type_key_from_typeid(type_table, tid), module_name=module_name))
+			arg_keys.append(
+				normalize_type_key(
+					type_key_from_typeid(type_table, tid),
+					module_name=module_name,
+					default_package=require_env.default_package,
+					module_packages=require_env.module_packages,
+				)
+			)
 		if sig and getattr(sig, "type_params", None):
 			type_params = list(getattr(sig, "type_params", []) or [])
 			type_args = getattr(expr, "type_args", None) or []
@@ -276,12 +276,24 @@ def enforce_fn_requires(
 			if bindings:
 				for tp_id, ty_id in bindings.items():
 					if tp_id in subjects:
-						subst[tp_id] = normalize_type_key(type_key_from_typeid(type_table, ty_id), module_name=module_name)
+						subst[tp_id] = normalize_type_key(
+							type_key_from_typeid(type_table, ty_id),
+							module_name=module_name,
+							default_package=require_env.default_package,
+							module_packages=require_env.module_packages,
+						)
 				for tp in type_params:
 					ty_id = bindings.get(tp.id)
 					if ty_id is None:
 						continue
-					type_arg_keys.append(normalize_type_key(type_key_from_typeid(type_table, ty_id), module_name=module_name))
+					type_arg_keys.append(
+						normalize_type_key(
+							type_key_from_typeid(type_table, ty_id),
+							module_name=module_name,
+							default_package=require_env.default_package,
+							module_packages=require_env.module_packages,
+						)
+					)
 			if getattr(sig, "param_names", None):
 				for idx, pname in enumerate(sig.param_names or []):
 					if pname in subjects and idx < len(arg_keys):

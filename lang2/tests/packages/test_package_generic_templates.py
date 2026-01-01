@@ -21,7 +21,7 @@ module main
 import lib
 
 fn main() nothrow returns Int {
-	return 0
+	return 0;
 }
 """.lstrip(),
 	)
@@ -33,7 +33,7 @@ module lib
 export { id }
 
 pub fn id<T>(x: T) nothrow returns T {
-	return x
+	return x;
 }
 """.lstrip(),
 	)
@@ -45,7 +45,31 @@ module lib
 export { need }
 
 pub fn need<T>(x: T) nothrow returns Int require T is Copy {
-	return 1
+	return 1;
+}
+""".lstrip(),
+	)
+	_write_file(
+		tmp_path / "lib" / "methods.drift",
+		"""
+module lib
+
+struct Box<T> { value: T }
+
+implement<T> Box<T> {
+	pub fn get<U>(self: &Box, value: U) returns U {
+		return value;
+	}
+}
+
+pub trait Show {
+	fn show<U>(self: &Self, value: U) returns Int;
+}
+
+implement<T> Show for Box<T> {
+	pub fn show<U>(self: &Box, value: U) returns Int {
+		return 1;
+	}
 }
 """.lstrip(),
 	)
@@ -57,6 +81,7 @@ pub fn need<T>(x: T) nothrow returns Int require T is Copy {
 		str(tmp_path / "main.drift"),
 		str(tmp_path / "lib" / "lib.drift"),
 		str(tmp_path / "lib" / "req.drift"),
+		str(tmp_path / "lib" / "methods.drift"),
 		"--package-id",
 		"test.pkg",
 		"--package-version",
@@ -73,12 +98,13 @@ pub fn need<T>(x: T) nothrow returns Int require T is Copy {
 	templates = lib_payload.get("generic_templates")
 	assert isinstance(templates, list)
 	entry = next(e for e in templates if isinstance(e, dict) and e.get("fn_symbol") == "lib::id")
-	assert entry.get("ir_kind") == "TemplateHIR-v0"
+	assert entry.get("ir_kind") == "TemplateHIR-v1"
 	template_id = entry.get("template_id")
 	assert isinstance(template_id, dict)
+	assert template_id.get("package") == "test.pkg"
 	assert template_id.get("module") == "lib"
 	assert template_id.get("name") == "id"
-	assert template_id.get("ordinal") == 0
+	assert isinstance(template_id.get("fingerprint"), str)
 	assert "require" in entry
 	ir = entry.get("ir")
 	assert isinstance(ir, dict)
@@ -86,6 +112,7 @@ pub fn need<T>(x: T) nothrow returns Int require T is Copy {
 	sig = entry.get("signature")
 	assert isinstance(sig, dict)
 	assert sig.get("type_params") == ["T"]
+	assert entry.get("generic_param_layout") == [{"scope": "fn", "index": 0}]
 	param_types = sig.get("param_types")
 	assert isinstance(param_types, list)
 	assert param_types[0].get("param") == "T"
@@ -94,3 +121,19 @@ pub fn need<T>(x: T) nothrow returns Int require T is Copy {
 	assert ret.get("param") == "T"
 	need = next(e for e in templates if isinstance(e, dict) and e.get("fn_symbol") == "lib::need")
 	assert isinstance(need.get("require"), dict)
+	inherent = next(e for e in templates if isinstance(e, dict) and e.get("fn_symbol") == "lib::Box<T>::get")
+	inherent_sig = inherent.get("signature")
+	assert isinstance(inherent_sig, dict)
+	assert inherent_sig.get("is_method") is True
+	assert inherent_sig.get("impl_type_params") == ["T"]
+	assert inherent_sig.get("type_params") == ["U"]
+	assert inherent.get("generic_param_layout") == [{"scope": "impl", "index": 0}, {"scope": "fn", "index": 0}]
+	trait_method = next(
+		e for e in templates if isinstance(e, dict) and e.get("fn_symbol") == "lib::Box<T>::Show::show"
+	)
+	trait_sig = trait_method.get("signature")
+	assert isinstance(trait_sig, dict)
+	assert trait_sig.get("is_method") is True
+	assert trait_sig.get("impl_type_params") == ["T"]
+	assert trait_sig.get("type_params") == ["U"]
+	assert trait_method.get("generic_param_layout") == [{"scope": "impl", "index": 0}, {"scope": "fn", "index": 0}]

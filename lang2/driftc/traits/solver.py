@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Set, Tuple, Mapping
 
 from lang2.driftc.parser import ast as parser_ast
 from .world import TraitWorld, TraitKey, TypeKey, ImplDef, trait_key_from_expr
@@ -66,14 +66,19 @@ class Env:
 	assumed_true: Set[Tuple[object, TraitKey]] = field(default_factory=set)
 	assumed_false: Set[Tuple[object, TraitKey]] = field(default_factory=set)
 	default_module: Optional[str] = None
+	default_package: Optional[str] = None
+	module_packages: Mapping[str, str] = field(default_factory=dict)
 
 
 CacheKey = Tuple[object, str, Optional[TypeKey]]
 
 
 def _type_key_str(key: TypeKey) -> str:
+	pkg = key.package_id
 	module = key.module
 	base = f"{module}.{key.name}" if module else key.name
+	if pkg:
+		base = f"{pkg}::{base}"
 	if not key.args:
 		return base
 	args = ", ".join(_type_key_str(a) for a in key.args)
@@ -81,7 +86,10 @@ def _type_key_str(key: TypeKey) -> str:
 
 
 def _trait_key_str(key: TraitKey) -> str:
-	return f"{key.module}.{key.name}" if key.module else key.name
+	base = f"{key.module}.{key.name}" if key.module else key.name
+	if key.package_id:
+		return f"{key.package_id}::{base}"
+	return base
 
 
 def _impl_sort_key(impl: ImplDef) -> Tuple[str, str, int, int]:
@@ -103,7 +111,12 @@ def prove_expr(
 	_in_progress: Optional[Set[Tuple[str, TraitKey, Optional[TypeKey]]]] = None,
 ) -> ProofResult:
 	if isinstance(expr, parser_ast.TraitIs):
-		trait_key = trait_key_from_expr(expr.trait, default_module=env.default_module)
+		trait_key = trait_key_from_expr(
+			expr.trait,
+			default_module=env.default_module,
+			default_package=env.default_package,
+			module_packages=env.module_packages,
+		)
 		return prove_is(world, env, subst, expr.subject, trait_key, _cache=_cache, _in_progress=_in_progress)
 	if isinstance(expr, parser_ast.TraitAnd):
 		left = prove_expr(world, env, subst, expr.left, _cache=_cache, _in_progress=_in_progress)
@@ -146,7 +159,12 @@ def deny_expr(
 	_in_progress: Optional[Set[Tuple[str, TraitKey, Optional[TypeKey]]]] = None,
 ) -> ProofResult:
 	if isinstance(expr, parser_ast.TraitIs):
-		trait_key = trait_key_from_expr(expr.trait, default_module=env.default_module)
+		trait_key = trait_key_from_expr(
+			expr.trait,
+			default_module=env.default_module,
+			default_package=env.default_package,
+			module_packages=env.module_packages,
+		)
 		res = prove_is(world, env, subst, expr.subject, trait_key, _cache=_cache, _in_progress=_in_progress)
 		if res.status is ProofStatus.PROVED:
 			return ProofResult(status=ProofStatus.REFUTED, reasons=res.reasons)

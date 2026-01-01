@@ -6,6 +6,7 @@ from pathlib import Path
 from lang2.driftc.core.function_id import function_symbol
 from lang2.driftc.core.types_core import TypeKind, TypeTable
 from lang2.driftc.parser import parse_drift_workspace_to_hir
+from lang2.driftc.module_lowered import flatten_modules
 from lang2.driftc.stage1.normalize import normalize_hir
 from lang2.driftc.type_checker import TypeChecker
 from lang2.driftc.stage1.call_info import CallSig, call_abi_ret_type
@@ -45,10 +46,9 @@ fn main() returns Int { return boom(); }
 """.lstrip()
 	)
 
-	func_hirs, sigs, _fn_ids, table, _exc, _exports, _deps, diags = parse_drift_workspace_to_hir(
-		[mod_a, mod_b]
-	)
+	modules, table, _exc, _exports, _deps, diags = parse_drift_workspace_to_hir([mod_a, mod_b])
 	assert not diags
+	func_hirs, sigs, _fn_ids = flatten_modules(modules)
 
 	call_sigs_by_name: dict[str, list] = {}
 	can_throw_by_name: dict[str, bool] = {}

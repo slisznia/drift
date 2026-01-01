@@ -992,6 +992,14 @@ def _build_trait_method_sig(tree: Tree) -> TraitMethodSig:
 	idx = 0
 	name_token = _unwrap_ident(children[idx])
 	idx += 1
+	type_params: list[str] = []
+	type_param_locs: list[Located] = []
+	if idx < len(children) and _name(children[idx]) == "type_params":
+		for tok in children[idx].children:
+			if isinstance(tok, Token) and tok.type == "NAME":
+				type_params.append(tok.value)
+				type_param_locs.append(_loc_from_token(tok))
+		idx += 1
 	params: List[Param] = []
 	if idx < len(children) and _name(children[idx]) == "params":
 		params = [_build_param(p) for p in children[idx].children if isinstance(p, Tree)]
@@ -999,7 +1007,14 @@ def _build_trait_method_sig(tree: Tree) -> TraitMethodSig:
 	return_sig = children[idx]
 	type_child = next(child for child in return_sig.children if isinstance(child, Tree))
 	return_type = _build_type_expr(type_child)
-	return TraitMethodSig(name=name_token.value, params=params, return_type=return_type, loc=loc)
+	return TraitMethodSig(
+		name=name_token.value,
+		params=params,
+		return_type=return_type,
+		loc=loc,
+		type_params=type_params,
+		type_param_locs=type_param_locs,
+	)
 
 
 def _build_trait_def(tree: Tree) -> TraitDef:

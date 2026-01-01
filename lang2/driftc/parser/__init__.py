@@ -32,6 +32,7 @@ from lang2.driftc.core.types_core import (
 from lang2.driftc.core.type_resolve_common import resolve_opaque_type
 from lang2.driftc.core.generic_type_expr import GenericTypeExpr
 from lang2.driftc.impl_index import ImplMeta, ImplMethodMeta
+from lang2.driftc.module_lowered import ModuleLowered
 if TYPE_CHECKING:
 	from lang2.driftc.traits.world import TraitKey
 
@@ -190,6 +191,20 @@ def _type_expr_key(typ: parser_ast.TypeExpr) -> tuple[object | None, str, tuple]
 		throws_key = typ.fn_throws_raw()
 		return (qual, typ.name, throws_key, tuple(_type_expr_key(a) for a in getattr(typ, "args", []) or []))
 	return (qual, typ.name, tuple(_type_expr_key(a) for a in getattr(typ, "args", []) or []))
+
+
+def _trait_expr_key(expr: parser_ast.TraitExpr | None) -> tuple | None:
+	if expr is None:
+		return None
+	if isinstance(expr, parser_ast.TraitIs):
+		return ("is", expr.subject, _type_expr_key(expr.trait))
+	if isinstance(expr, parser_ast.TraitAnd):
+		return ("and", _trait_expr_key(expr.left), _trait_expr_key(expr.right))
+	if isinstance(expr, parser_ast.TraitOr):
+		return ("or", _trait_expr_key(expr.left), _trait_expr_key(expr.right))
+	if isinstance(expr, parser_ast.TraitNot):
+		return ("not", _trait_expr_key(expr.expr))
+	return ("unknown",)
 
 
 def _type_expr_key_str(typ: parser_ast.TypeExpr) -> str:
@@ -893,6 +908,7 @@ def parse_drift_files_to_hir(
 	paths: list[Path],
 	*,
 	enforce_entrypoint: bool = False,
+	package_id: str | None = None,
 ) -> Tuple[Dict[FunctionId, H.HBlock], Dict[FunctionId, FnSignature], Dict[str, List[FunctionId]], "TypeTable", Dict[str, int], List[Diagnostic]]:
 	"""
 	Parse and lower a set of Drift source files into a single module unit.
@@ -973,6 +989,7 @@ def parse_drift_files_to_hir(
 	func_hirs, sigs, fn_ids, table, excs, _impl_metas, diags = _lower_parsed_program_to_hir(
 		merged,
 		diagnostics=diagnostics,
+		package_id=package_id,
 	)
 	return func_hirs, sigs, fn_ids, table, excs, diags
 
@@ -1002,10 +1019,12 @@ def _merge_module_files(
 	free_names: set[str] = set()
 	for path, prog in files:
 		for fn in getattr(prog, "functions", []) or []:
+			require_key = _trait_expr_key(fn.require.expr) if getattr(fn, "require", None) is not None else None
 			sig_key = (
 				fn.name,
 				len(getattr(fn, "params", []) or []),
 				tuple(_type_expr_key(p.type_expr) for p in getattr(fn, "params", []) or []),
+				require_key,
 			)
 			if sig_key in first_fn_sig:
 				first_path, first_loc = first_fn_sig[sig_key]
@@ -1200,11 +1219,11 @@ def parse_drift_workspace_to_hir(
 	*,
 	module_paths: list[Path] | None = None,
 	external_module_exports: dict[str, dict[str, object]] | None = None,
+	external_module_packages: dict[str, str] | None = None,
 	enforce_entrypoint: bool = False,
+	package_id: str | None = None,
 ) -> Tuple[
-	Dict[FunctionId, H.HBlock],
-	Dict[FunctionId, FnSignature],
-	Dict[str, List[FunctionId]],
+	Dict[str, ModuleLowered],
 	"TypeTable",
 	Dict[str, int],
 	Dict[str, Dict[str, object]],
@@ -1234,13 +1253,13 @@ def parse_drift_workspace_to_hir(
 		  (types: structs, variants, exceptions).
 
 	Returns:
-	  (func_hirs, signatures, fn_ids_by_name, type_table, exception_catalog, module_exports, module_deps, diagnostics)
+	  (modules, type_table, exception_catalog, module_exports, module_deps, diagnostics)
 	"""
 	from lang2.driftc.traits.world import TraitKey
 
 	diagnostics: list[Diagnostic] = []
 	if not paths:
-		return {}, {}, {}, TypeTable(), {}, {}, {}, [Diagnostic(message="no input files", severity="error")]
+		return {}, TypeTable(), {}, {}, {}, [Diagnostic(message="no input files", severity="error")]
 
 	def _effective_module_id(p: parser_ast.Program) -> str:
 		return getattr(p, "module", None) or "main"
@@ -1273,7 +1292,7 @@ def parse_drift_workspace_to_hir(
 		parsed.append((path, prog))
 
 	if any(d.severity == "error" for d in diagnostics):
-		return {}, {}, {}, TypeTable(), {}, {}, {}, diagnostics
+		return {}, TypeTable(), {}, {}, {}, diagnostics
 
 	def _infer_module_id_from_paths(path: Path) -> tuple[str, Path] | tuple[None, None]:
 		"""
@@ -1371,7 +1390,7 @@ def parse_drift_workspace_to_hir(
 			by_module.setdefault(mid, []).append((path, prog))
 
 	if any(d.severity == "error" for d in diagnostics):
-		return {}, {}, {}, TypeTable(), {}, {}, {}, diagnostics
+		return {}, TypeTable(), {}, {}, {}, diagnostics
 
 	# When module roots are used, reject ambiguous module ids coming from
 	# multiple roots (prevents accidental shadowing/selection by search order).
@@ -1394,7 +1413,7 @@ def parse_drift_workspace_to_hir(
 					)
 				)
 	if any(d.severity == "error" for d in diagnostics):
-		return {}, {}, {}, TypeTable(), {}, {}, {}, diagnostics
+		return {}, TypeTable(), {}, {}, {}, diagnostics
 
 	if enforce_entrypoint:
 		# Enforce entrypoint constraints before lowering.
@@ -1403,7 +1422,7 @@ def parse_drift_workspace_to_hir(
 			prog_list.extend(files)
 		_check_entrypoint_main(prog_list, diagnostics)
 		if any(d.severity == "error" for d in diagnostics):
-			return {}, {}, {}, TypeTable(), {}, {}, {}, diagnostics
+			return {}, TypeTable(), {}, {}, {}, diagnostics
 	# Merge each module (Milestone 1 rules) and retain callable provenance per file.
 	merged_programs: dict[str, parser_ast.Program] = {}
 	origin_by_module: dict[str, dict[FunctionId, Path]] = {}
@@ -1413,7 +1432,7 @@ def parse_drift_workspace_to_hir(
 		origin_by_module[mid] = origins
 
 	if any(d.severity == "error" for d in diagnostics):
-		return {}, {}, {}, TypeTable(), {}, {}, {}, diagnostics
+		return {}, TypeTable(), {}, {}, {}, diagnostics
 
 	def _build_export_interface(
 		*,
@@ -1877,7 +1896,7 @@ def parse_drift_workspace_to_hir(
 		return out
 
 	if any(d.severity == "error" for d in diagnostics):
-		return {}, {}, {}, TypeTable(), {}, {}, {}, diagnostics
+		return {}, TypeTable(), {}, {}, {}, diagnostics
 
 	# Export interface summary (used by package emission and future tooling).
 	module_exports: dict[str, dict[str, object]] = {}
@@ -1956,6 +1975,15 @@ def parse_drift_workspace_to_hir(
 	# Resolve `use trait ...` directives into per-module trait scopes.
 	trait_scope_by_module: dict[str, list[TraitKey]] = {mid: [] for mid in merged_programs}
 	trait_scope_seen: dict[str, set[TraitKey]] = {mid: set() for mid in merged_programs}
+	module_packages_for_scope: dict[str, str] = {}
+	if isinstance(external_module_packages, dict):
+		for mod, pkg in external_module_packages.items():
+			if isinstance(mod, str) and isinstance(pkg, str):
+				module_packages_for_scope.setdefault(mod, pkg)
+	if package_id is not None:
+		for mod in merged_programs:
+			module_packages_for_scope.setdefault(mod, package_id)
+	module_packages_for_scope.setdefault("lang.core", "lang.core")
 
 	def _exported_traits_for_module(mod: str) -> set[str]:
 		if mod in exports_traits_by_module:
@@ -2033,7 +2061,8 @@ def parse_drift_workspace_to_hir(
 					)
 					continue
 				origin_mod, origin_name = _resolve_trait_origin(mod, tr.name)
-				key = TraitKey(module=origin_mod, name=origin_name)
+				origin_pkg = module_packages_for_scope.get(origin_mod, package_id)
+				key = TraitKey(package_id=origin_pkg, module=origin_mod, name=origin_name)
 				if key in trait_scope_seen[mid]:
 					continue
 				trait_scope_seen[mid].add(key)
@@ -2360,10 +2389,18 @@ def parse_drift_workspace_to_hir(
 		)
 
 	if any(d.severity == "error" for d in diagnostics):
-		return {}, {}, {}, TypeTable(), {}, {}, {}, diagnostics
+		return {}, TypeTable(), {}, {}, {}, diagnostics
 
 	# Lower modules using a shared TypeTable so TypeIds remain comparable across the workspace.
 	shared_type_table = TypeTable()
+	if package_id is not None:
+		shared_type_table.package_id = package_id
+	if isinstance(external_module_packages, dict):
+		for mod, pkg in external_module_packages.items():
+			if not isinstance(mod, str) or not isinstance(pkg, str):
+				continue
+			shared_type_table.module_packages.setdefault(mod, pkg)
+	shared_type_table.module_packages.setdefault("lang.core", "lang.core")
 	_prime_builtins(shared_type_table)
 	# Pre-declare all nominal type names across the workspace before lowering any
 	# individual module.
@@ -2418,7 +2455,7 @@ def parse_drift_workspace_to_hir(
 				diagnostics.append(Diagnostic(message=str(err), severity="error", span=Span.from_loc(getattr(_v, "loc", None))))
 
 		if any(d.severity == "error" for d in diagnostics):
-			return {}, {}, {}, TypeTable(), {}, {}, {}, diagnostics
+			return {}, TypeTable(), {}, {}, {}, diagnostics
 
 	def _qualify_fn_name(module_id: str, name: str) -> str:
 		# MVP: symbols in the default `main` module remain unqualified so
@@ -2448,6 +2485,9 @@ def parse_drift_workspace_to_hir(
 	all_func_hirs: dict[FunctionId, H.HBlock] = {}
 	all_sigs: dict[FunctionId, FnSignature] = {}
 	fn_ids_by_name: dict[str, list[FunctionId]] = {}
+	func_hirs_by_module: dict[str, dict[FunctionId, H.HBlock]] = {}
+	signatures_by_module: dict[str, dict[FunctionId, FnSignature]] = {}
+	fn_ids_by_name_by_module: dict[str, dict[str, list[FunctionId]]] = {}
 	exc_catalog: dict[str, int] = {}
 	fn_owner_module: dict[FunctionId, str] = {}
 	fn_symbol_by_id: dict[FunctionId, str] = {}
@@ -2459,6 +2499,7 @@ def parse_drift_workspace_to_hir(
 			prog,
 			diagnostics=[],
 			type_table=shared_type_table,
+			package_id=package_id,
 		)
 		diagnostics.extend(diags)
 		exc_catalog.update(excs)
@@ -2467,14 +2508,20 @@ def parse_drift_workspace_to_hir(
 		local_free_fns = {fn.name for fn in getattr(prog, "functions", []) or []}
 		exported_values = exports_values_by_module.get(mid, {})
 
+		module_func_hirs = func_hirs_by_module.setdefault(mid, {})
+		module_sigs = signatures_by_module.setdefault(mid, {})
+		module_fn_ids_by_name = fn_ids_by_name_by_module.setdefault(mid, {})
+
 		# Qualify and copy function bodies/signatures.
 		for fn_id, block in func_hirs.items():
 			local_name = fn_id.name
 			global_name = _qualify_symbol(mid, local_name, local_free_fns=local_free_fns)
 			all_func_hirs[fn_id] = block
+			module_func_hirs[fn_id] = block
 			fn_owner_module[fn_id] = mid
 			fn_symbol_by_id[fn_id] = global_name
 			fn_ids_by_name.setdefault(global_name, []).append(fn_id)
+			module_fn_ids_by_name.setdefault(global_name, []).append(fn_id)
 
 		for fn_id, sig in sigs.items():
 			local_name = fn_id.name
@@ -2482,7 +2529,9 @@ def parse_drift_workspace_to_hir(
 			# Mark module-interface entry points early so downstream phases can
 			# enforce visibility and (later) ABI-boundary rules consistently.
 			is_exported = (local_name in local_free_fns) and (local_name in exported_values) and (local_name != "main")
-			all_sigs[fn_id] = replace(sig, name=global_name, is_exported_entrypoint=is_exported)
+			updated_sig = replace(sig, name=global_name, is_exported_entrypoint=is_exported)
+			all_sigs[fn_id] = updated_sig
+			module_sigs[fn_id] = updated_sig
 
 	# Attach impl metadata after lowering so downstream phases can build
 	# the global impl index without rescanning signatures.
@@ -2494,7 +2543,7 @@ def parse_drift_workspace_to_hir(
 	# the origin module/value during lowering (no trampolines).
 
 		if any(d.severity == "error" for d in diagnostics):
-			return {}, {}, {}, TypeTable(), {}, {}, {}, diagnostics
+			return {}, TypeTable(), {}, {}, {}, diagnostics
 
 	# Materialize const re-exports into the exporting module’s const table when
 	# the origin const value is already available in the shared TypeTable.
@@ -2971,7 +3020,43 @@ def parse_drift_workspace_to_hir(
 		else:
 			payload_seen[payload] = fqn
 
-	return all_func_hirs, all_sigs, fn_ids_by_name, shared_type_table, exc_catalog, module_exports, deps, diagnostics
+	type_defs_by_module: dict[str, dict[str, list[str]]] = {}
+	for mid, prog in merged_programs.items():
+		type_defs_by_module[mid] = {
+			"structs": [s.name for s in getattr(prog, "structs", []) or []],
+			"variants": [v.name for v in getattr(prog, "variants", []) or []],
+			"exceptions": [e.name for e in getattr(prog, "exceptions", []) or []],
+		}
+
+	trait_worlds = getattr(shared_type_table, "trait_worlds", None)
+	if not isinstance(trait_worlds, dict):
+		trait_worlds = {}
+	requires_by_fn_by_module: dict[str, dict[FunctionId, object]] = {}
+	requires_by_struct_by_module: dict[str, dict[object, object]] = {}
+	for mid in merged_programs.keys():
+		world = trait_worlds.get(mid)
+		if world is None:
+			requires_by_fn_by_module[mid] = {}
+			requires_by_struct_by_module[mid] = {}
+		else:
+			requires_by_fn_by_module[mid] = dict(getattr(world, "requires_by_fn", {}) or {})
+			requires_by_struct_by_module[mid] = dict(getattr(world, "requires_by_struct", {}) or {})
+
+	modules: dict[str, ModuleLowered] = {}
+	for mid in merged_programs.keys():
+		modules[mid] = ModuleLowered(
+			module_id=mid,
+			package_id=package_id,
+			func_hirs=func_hirs_by_module.get(mid, {}),
+			signatures_by_id=signatures_by_module.get(mid, {}),
+			fn_ids_by_name=fn_ids_by_name_by_module.get(mid, {}),
+			requires_by_fn=requires_by_fn_by_module.get(mid, {}),
+			requires_by_struct=requires_by_struct_by_module.get(mid, {}),
+			type_defs=type_defs_by_module.get(mid, {}),
+			impl_defs=impls_by_module.get(mid, []),
+		)
+
+	return modules, shared_type_table, exc_catalog, module_exports, deps, diagnostics
 
 
 def _lower_parsed_program_to_hir(
@@ -2979,6 +3064,7 @@ def _lower_parsed_program_to_hir(
 	*,
 	diagnostics: list[Diagnostic] | None = None,
 	type_table: TypeTable | None = None,
+	package_id: str | None = None,
 ) -> Tuple[
 	Dict[FunctionId, H.HBlock],
 	Dict[FunctionId, FnSignature],
@@ -3004,6 +3090,8 @@ def _lower_parsed_program_to_hir(
 	diagnostics = list(diagnostics or [])
 	module_name = getattr(prog, "module", None)
 	module_id = module_name or "main"
+	if package_id is not None:
+		type_table.module_packages.setdefault(module_id, package_id)
 	func_hirs: Dict[FunctionId, H.HBlock] = {}
 	fn_ids_by_name: Dict[str, List[FunctionId]] = {}
 	decls: list[_FrontendDecl] = []
@@ -3025,10 +3113,17 @@ def _lower_parsed_program_to_hir(
 	# before resolving function signatures. This prevents `resolve_opaque_type`
 	# from minting unrelated placeholder TypeIds for struct names.
 	type_table = type_table or TypeTable()
+	if package_id is not None:
+		type_table.package_id = package_id
 	_prime_builtins(type_table)
 	# Build a per-module TraitWorld and stash it on the shared TypeTable so later
 	# phases can enforce requirements without re-parsing sources.
-	world = build_trait_world(prog, diagnostics=diagnostics)
+	world = build_trait_world(
+		prog,
+		diagnostics=diagnostics,
+		package_id=package_id,
+		module_packages=getattr(type_table, "module_packages", None),
+	)
 	trait_worlds = getattr(type_table, "trait_worlds", None)
 	if not isinstance(trait_worlds, dict):
 		trait_worlds = {}
@@ -3129,7 +3224,7 @@ def _lower_parsed_program_to_hir(
 			)
 			param_ids = type_table.get_struct_type_param_ids(struct_base_id) or []
 			if param_ids:
-				struct_param_maps[TypeKey(module=module_id, name=s.name, args=())] = {
+				struct_param_maps[TypeKey(package_id=package_id, module=module_id, name=s.name, args=())] = {
 					name: pid for name, pid in zip(getattr(s, "type_params", []) or [], param_ids)
 				}
 		except ValueError as err:
@@ -3200,11 +3295,13 @@ def _lower_parsed_program_to_hir(
 	seen_sig: dict[tuple, object | None] = {}
 	name_ord: dict[str, int] = {}
 	for fn in prog.functions:
+		require_key = _trait_expr_key(fn.require.expr) if getattr(fn, "require", None) is not None else None
 		sig_key = (
 			module_id,
 			fn.name,
 			len(getattr(fn, "params", []) or []),
 			tuple(_type_expr_key(p.type_expr) for p in getattr(fn, "params", []) or []),
+			require_key,
 		)
 		if sig_key in seen_sig:
 			diagnostics.append(
@@ -3262,7 +3359,12 @@ def _lower_parsed_program_to_hir(
 		impl_target_str = _type_expr_key_str(impl.target)
 		impl_trait_str = _type_expr_key_str(impl.trait) if getattr(impl, "trait", None) is not None else None
 		impl_trait_key = (
-			trait_key_from_expr(impl.trait, default_module=module_id)
+			trait_key_from_expr(
+				impl.trait,
+				default_module=module_id,
+				default_package=package_id,
+				module_packages=getattr(type_table, "module_packages", None),
+			)
 			if getattr(impl, "trait", None) is not None
 			else None
 		)
@@ -3353,6 +3455,8 @@ def _lower_parsed_program_to_hir(
 			name_ord[symbol_name] = ordinal + 1
 			fn_id = FunctionId(module=module_id, name=symbol_name, ordinal=ordinal)
 			fn_ids_by_name.setdefault(symbol_name, []).append(fn_id)
+			if getattr(fn, "require", None) is not None:
+				world.requires_by_fn[fn_id] = fn.require.expr
 			impl_meta.methods.append(
 				ImplMethodMeta(
 					fn_id=fn_id,
@@ -3441,7 +3545,11 @@ def _lower_parsed_program_to_hir(
 	return func_hirs, signatures, fn_ids_by_name, type_table, exception_catalog, impl_metas, diagnostics
 
 
-def parse_drift_to_hir(path: Path) -> Tuple[Dict[FunctionId, H.HBlock], Dict[FunctionId, FnSignature], Dict[str, List[FunctionId]], "TypeTable", Dict[str, int], List[Diagnostic]]:
+def parse_drift_to_hir(
+	path: Path,
+	*,
+	package_id: str | None = None,
+) -> Tuple[Dict[FunctionId, H.HBlock], Dict[FunctionId, FnSignature], Dict[str, List[FunctionId]], "TypeTable", Dict[str, int], List[Diagnostic]]:
 	"""
 	Parse a Drift source file into lang2 HIR blocks + FnSignatures + TypeTable.
 
@@ -3467,6 +3575,7 @@ def parse_drift_to_hir(path: Path) -> Tuple[Dict[FunctionId, H.HBlock], Dict[Fun
 	func_hirs, sigs, fn_ids, table, excs, _impl_metas, diags = _lower_parsed_program_to_hir(
 		prog,
 		diagnostics=[],
+		package_id=package_id,
 	)
 	return func_hirs, sigs, fn_ids, table, excs, diags
 

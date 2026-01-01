@@ -7,6 +7,8 @@ from lang2.driftc import stage1 as H
 from lang2.driftc.core.function_id import FunctionId
 from lang2.driftc.method_registry import CallableRegistry, CallableSignature, Visibility
 from lang2.driftc.parser import parse_drift_workspace_to_hir
+from lang2.driftc.module_lowered import flatten_modules
+from lang2.driftc.test_helpers import build_linked_world
 from lang2.driftc.type_checker import TypeChecker
 
 
@@ -135,11 +137,12 @@ fn main() nothrow returns Int{
 """,
 	)
 	paths = [mod_root / "a" / "lib.drift", mod_root / "b" / "main.drift"]
-	func_hirs, signatures, fn_ids_by_name, type_table, _exc_catalog, _exports, module_deps, diagnostics = parse_drift_workspace_to_hir(
+	modules, type_table, _exc_catalog, _exports, module_deps, diagnostics = parse_drift_workspace_to_hir(
 		paths,
 		module_paths=[mod_root],
 	)
 	assert diagnostics == []
+	func_hirs, signatures, fn_ids_by_name = flatten_modules(modules)
 	registry, module_ids = _build_registry(signatures)
 	main_ids = fn_ids_by_name.get("b::main") or []
 	assert len(main_ids) == 1
@@ -151,6 +154,7 @@ fn main() nothrow returns Int{
 		param_types = {pname: pty for pname, pty in zip(main_sig.param_names, main_sig.param_type_ids)}
 	current_mod = module_ids.setdefault(main_sig.module, len(module_ids))
 	visible_mods = _visible_modules_for("b", module_deps, module_ids)
+	linked_world, require_env = build_linked_world(type_table)
 	tc = TypeChecker(type_table=type_table)
 	result = tc.check_function(
 		main_id,
@@ -159,6 +163,8 @@ fn main() nothrow returns Int{
 		return_type=main_sig.return_type_id if main_sig is not None else None,
 		signatures_by_id=signatures,
 		callable_registry=registry,
+		linked_world=linked_world,
+		require_env=require_env,
 		visible_modules=visible_mods,
 		current_module=current_mod,
 	)

@@ -8,7 +8,9 @@ from lang2.driftc.core.function_id import FunctionId
 from lang2.driftc.impl_index import GlobalImplIndex, ImplMeta
 from lang2.driftc.method_registry import CallableRegistry, CallableSignature, SelfMode, Visibility
 from lang2.driftc.parser import parse_drift_workspace_to_hir
+from lang2.driftc.module_lowered import flatten_modules
 from lang2.driftc.trait_index import GlobalTraitImplIndex, GlobalTraitIndex
+from lang2.driftc.test_helpers import build_linked_world
 from lang2.driftc.type_checker import TypeChecker
 from lang2.driftc.traits.world import TraitKey
 
@@ -129,9 +131,10 @@ def _resolve_main_block(
 	for rel, content in files.items():
 		_write_file(mod_root / rel, content)
 	paths = sorted(mod_root.rglob("*.drift"))
-	func_hirs, signatures, fn_ids_by_name, type_table, _exc_catalog, module_exports, module_deps, diagnostics = parse_drift_workspace_to_hir(
+	modules, type_table, _exc_catalog, module_exports, module_deps, diagnostics = parse_drift_workspace_to_hir(
 		paths,
 	)
+	func_hirs, signatures, fn_ids_by_name = flatten_modules(modules)
 	assert diagnostics == []
 	registry, module_ids = _build_registry(signatures)
 	impl_index = GlobalImplIndex.from_module_exports(
@@ -150,6 +153,7 @@ def _resolve_main_block(
 		if isinstance(exp, dict):
 			scope = exp.get("trait_scope", [])
 			trait_scope_by_module[mod] = list(scope) if isinstance(scope, list) else []
+	linked_world, require_env = build_linked_world(type_table)
 	main_key = f"{main_module}::main"
 	main_ids = fn_ids_by_name.get(main_key) or []
 	assert len(main_ids) == 1
@@ -166,6 +170,8 @@ def _resolve_main_block(
 		trait_index=trait_index,
 		trait_impl_index=trait_impl_index,
 		trait_scope_by_module=trait_scope_by_module,
+		linked_world=linked_world,
+		require_env=require_env,
 		visible_modules=visible_modules,
 		current_module=module_ids.setdefault(main_module, len(module_ids)),
 	)
@@ -191,9 +197,10 @@ def _typecheck_named_fn(
 	for rel, content in files.items():
 		_write_file(mod_root / rel, content)
 	paths = sorted(mod_root.rglob("*.drift"))
-	func_hirs, signatures, fn_ids_by_name, type_table, _exc_catalog, module_exports, module_deps, diagnostics = parse_drift_workspace_to_hir(
+	modules, type_table, _exc_catalog, module_exports, module_deps, diagnostics = parse_drift_workspace_to_hir(
 		paths,
 	)
+	func_hirs, signatures, fn_ids_by_name = flatten_modules(modules)
 	assert diagnostics == []
 	registry, module_ids = _build_registry(signatures)
 	impl_index = GlobalImplIndex.from_module_exports(
@@ -212,6 +219,7 @@ def _typecheck_named_fn(
 		if isinstance(exp, dict):
 			scope = exp.get("trait_scope", [])
 			trait_scope_by_module[mod] = list(scope) if isinstance(scope, list) else []
+	linked_world, require_env = build_linked_world(type_table)
 	key = f"{module_name}::{fn_name}"
 	fn_ids = fn_ids_by_name.get(key) or []
 	assert len(fn_ids) == 1
@@ -235,6 +243,8 @@ def _typecheck_named_fn(
 		trait_index=trait_index,
 		trait_impl_index=trait_impl_index,
 		trait_scope_by_module=trait_scope_by_module,
+		linked_world=linked_world,
+		require_env=require_env,
 		visible_modules=visible_modules,
 		current_module=current_mod,
 	)
@@ -278,6 +288,64 @@ fn main() nothrow returns Int{
 	res = result.typed_fn.call_resolutions[calls[0].node_id]
 	assert res.decl.fn_id in sigs
 	assert res.decl.fn_id.module == "m_box"
+
+
+def test_trait_method_infers_method_type_params(tmp_path: Path) -> None:
+	files = {
+		Path("m_box.drift"): """
+module m_box
+
+pub struct Box<T> { value: T }
+
+pub trait MapOne {
+	fn map<U>(self: &Self, x: U) returns U
+}
+
+export { Box, MapOne }
+
+implement<T> MapOne for Box<T> {
+	pub fn map<U>(self: &Box<T>, x: U) returns U { return x; }
+}
+""",
+		Path("m_main.drift"): """
+module m_main
+
+import m_box as box
+use trait box.MapOne
+
+fn main() nothrow returns Int{
+	val b: box.Box<Int> = box.Box<type Int>(1);
+	val a: Int = b.map(1);
+	val s: String = b.map("x");
+	return a;
+}
+""",
+	}
+	main_block, result, _sigs, _deps, _ids, type_table, _trait_scope = _resolve_main_block(
+		tmp_path, files, main_module="m_main"
+	)
+	assert result.diagnostics == []
+	calls = _collect_method_calls(main_block)
+	assert len(calls) == 2
+	impl_ids = [
+		fn_id
+		for fn_id, sig in _sigs.items()
+		if getattr(sig, "is_method", False)
+		and (sig.method_name or sig.name) == "map"
+		and getattr(sig, "module", None) == "m_box"
+		and "MapOne" in sig.name
+	]
+	assert len(impl_ids) == 1
+	expected_fn_id = impl_ids[0]
+	int_ty = type_table.ensure_int()
+	str_ty = type_table.ensure_string()
+	result_types = [result.typed_fn.expr_types.get(call.node_id) for call in calls]
+	assert int_ty in result_types
+	assert str_ty in result_types
+	for call in calls:
+		res = result.typed_fn.call_resolutions.get(call.node_id)
+		assert res is not None
+		assert res.decl.fn_id == expected_fn_id
 
 
 def test_trait_not_in_scope_is_not_found(tmp_path: Path) -> None:
@@ -926,7 +994,7 @@ fn main() nothrow returns Int{
 	for rel, content in files.items():
 		_write_file(mod_root / rel, content)
 	paths = sorted(mod_root.rglob("*.drift"))
-	_func_hirs, _sigs, _ids, _types, _exc, _exports, _deps, diagnostics = parse_drift_workspace_to_hir(paths)
+	_modules, _types, _exc, _exports, _deps, diagnostics = parse_drift_workspace_to_hir(paths)
 	assert diagnostics
 	msgs = [d.message for d in diagnostics]
 	assert any("does not export trait 'Show'" in m for m in msgs)
@@ -965,9 +1033,7 @@ implement t.Show for m_box.Box<Int> {
 	for rel, content in files.items():
 		_write_file(mod_root / rel, content)
 	paths = sorted(mod_root.rglob("*.drift"))
-	_func_hirs, _sigs, _fn_ids_by_name, type_table, _exc_catalog, module_exports, _deps, diagnostics = (
-		parse_drift_workspace_to_hir(paths)
-	)
+	_modules, type_table, _exc_catalog, module_exports, _deps, diagnostics = parse_drift_workspace_to_hir(paths)
 	assert diagnostics == []
 	module_ids: dict[object, int] = {None: 0}
 	trait_impl_index = GlobalTraitImplIndex.from_module_exports(
@@ -1024,10 +1090,9 @@ fn main() nothrow returns Int{
 	for rel, content in files.items():
 		_write_file(mod_root / rel, content)
 	paths = sorted(mod_root.rglob("*.drift"))
-	func_hirs, signatures, fn_ids_by_name, type_table, _exc_catalog, module_exports, module_deps, diagnostics = (
-		parse_drift_workspace_to_hir(paths)
-	)
+	modules, type_table, _exc_catalog, module_exports, module_deps, diagnostics = parse_drift_workspace_to_hir(paths)
 	assert diagnostics == []
+	func_hirs, signatures, fn_ids_by_name = flatten_modules(modules)
 	registry, module_ids = _build_registry(signatures)
 	impl_index = GlobalImplIndex.from_module_exports(
 		module_exports=module_exports,
@@ -1045,8 +1110,9 @@ fn main() nothrow returns Int{
 	main_block = func_hirs[main_id]
 	visible_modules = _visible_modules_for("m_main", module_deps, module_ids)
 	trait_index = GlobalTraitIndex()
-	trait_index.mark_missing(TraitKey(module="m_traits", name="Show"))
+	trait_index.mark_missing(TraitKey(package_id=None, module="m_traits", name="Show"))
 	trait_impl_index = GlobalTraitImplIndex()
+	linked_world, require_env = build_linked_world(type_table)
 	type_checker = TypeChecker(type_table=type_table)
 	result = type_checker.check_function(
 		main_id,
@@ -1057,6 +1123,8 @@ fn main() nothrow returns Int{
 		trait_index=trait_index,
 		trait_impl_index=trait_impl_index,
 		trait_scope_by_module=trait_scope_by_module,
+		linked_world=linked_world,
+		require_env=require_env,
 		visible_modules=visible_modules,
 		current_module=module_ids.setdefault("m_main", len(module_ids)),
 	)

@@ -7,6 +7,7 @@ from lang2.driftc.core.function_id import FunctionId, function_symbol
 from lang2.driftc.method_registry import CallableRegistry, CallableSignature, Visibility
 from lang2.driftc.parser import parse_drift_to_hir
 from lang2.driftc.traits.enforce import enforce_fn_requires
+from lang2.driftc.test_helpers import build_linked_world
 from lang2.driftc.type_checker import TypeChecker
 
 
@@ -47,6 +48,7 @@ def _typecheck_fn(src: str, tmp_path: Path, fn_name: str) -> tuple[TypeChecker, 
 	fn_id = fn_ids[0]
 	registry, module_ids = _build_registry(sigs)
 	current_mod = module_ids.setdefault(fn_id.module, len(module_ids))
+	linked_world, require_env = build_linked_world(type_table)
 	tc = TypeChecker(type_table=type_table)
 	res = tc.check_function(
 		fn_id,
@@ -54,6 +56,8 @@ def _typecheck_fn(src: str, tmp_path: Path, fn_name: str) -> tuple[TypeChecker, 
 		return_type=sigs[fn_id].return_type_id if fn_id in sigs else None,
 		signatures_by_id=sigs,
 		callable_registry=registry,
+		linked_world=linked_world,
+		require_env=require_env,
 		visible_modules=(current_mod,),
 		current_module=current_mod,
 	)
@@ -61,10 +65,15 @@ def _typecheck_fn(src: str, tmp_path: Path, fn_name: str) -> tuple[TypeChecker, 
 
 
 def _enforce_fn_requires(tc: TypeChecker, typed_fn: object, sigs: dict[FunctionId, object], fn_id: FunctionId) -> list[object]:
-	worlds = getattr(tc.type_table, "trait_worlds", {}) or {}
-	assert isinstance(worlds, dict)
-	assert (fn_id.module or "main") in worlds
-	res = enforce_fn_requires(worlds, typed_fn, tc.type_table, module_name=fn_id.module or "main", signatures=sigs)
+	linked_world, require_env = build_linked_world(tc.type_table)
+	res = enforce_fn_requires(
+		linked_world,
+		require_env,
+		typed_fn,
+		tc.type_table,
+		module_name=fn_id.module or "main",
+		signatures=sigs,
+	)
 	return res.diagnostics
 
 

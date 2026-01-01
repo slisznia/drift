@@ -648,7 +648,7 @@ They are compile-time contracts, not inheritance hierarchies and not runtime pol
 Traits provide:
 - **Adjective-like descriptions** of capabilities (“Clonable”, “Destructible”, “Debuggable”).
 - **Static dispatch** — no vtables, zero runtime cost.
-- **Injectable implementations** — implementations can be attached from any module.
+- **Package-scoped implementations** — an impl is legal only if the trait or the receiver type head is defined in the current package.
 - **Type completeness checks** — types may *require* certain traits to exist.
 - **Trait-guarded code paths** — functions may adapt their behavior based on whether a type implements a trait.
 
@@ -704,6 +704,12 @@ implement Debuggable for Point {
 }
 ```
 
+Rules:
+
+- **Orphan rule:** an impl is legal only if the trait is defined in the current package
+  or the receiver type head is defined in the current package. Otherwise:
+  `E-IMPL-ORPHAN: implementation is not allowed outside the trait or type package.`
+
 #### 5.4.1. Generic trait implementations
 
 ```drift
@@ -750,6 +756,9 @@ Compiler errors if missing:
 E-REQUIRE-SELF: Type File requires trait Destructible but no implementation was found.
 E-REQUIRE-SELF: Type File requires trait Debuggable but no implementation was found.
 ```
+
+When a type is well-formed, its `require` obligations are assumed as implied facts
+when proving trait requirements for values of that type.
 
 #### 5.5.1. Requiring traits of parameters
 
@@ -805,14 +814,19 @@ are not part of the surface language.
 
 ### 5.6.1. Trait method lookup and scope
 
-Trait dot-call lookup is explicit and file-scoped:
+Trait dot-call lookup is explicit and file-scoped, with guard-scoped additions:
 
-- Traits participate in dot-call lookup only if listed via `use trait`.
+- Traits participate in dot-call lookup if listed via `use trait` or assumed by a
+  trait guard in the current branch.
 - `use trait <QualifiedTraitName>` is a module-level directive (file-scoped).
 - Multiple `use trait` directives are allowed; all listed traits are in scope.
-- Dot-call lookup does **not** consider traits outside the file-scoped list.
-- Ambiguity between traits requires explicit disambiguation (UFCS); there is no
-  block-scoped trait import.
+- Trait guards add a temporary, branch-local scope; there is no general block-scoped
+  trait import.
+- Dot-call lookup does **not** consider traits outside the file-scoped list and
+  the current guard assumptions.
+- Ambiguity between traits requires explicit disambiguation (UFCS).
+- UFCS syntax: `TraitName::method(receiver, args...)`. Module-qualified trait names
+  are allowed. UFCS bypasses `use trait` scope but still respects visibility.
 
 Trait bounds and `use trait` are orthogonal:
 
@@ -851,6 +865,7 @@ Semantics:
 - `if T is Debuggable` is a **compile-time condition**.
 - Only the active branch must type-check for the given `T`.
 - Inside the guarded block, methods from the trait become valid (`value.fmt()` here).
+- The guard condition is assumed as a proof fact in that branch for trait requirements.
 - Guard subjects must be type parameters (or `Self`); value identifiers are not
   allowed in this revision.
 

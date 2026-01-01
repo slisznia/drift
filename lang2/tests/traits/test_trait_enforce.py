@@ -5,6 +5,7 @@ from pathlib import Path
 
 from lang2.driftc.core.function_id import function_symbol
 from lang2.driftc.parser import parse_drift_to_hir
+from lang2.driftc.test_helpers import build_linked_world
 from lang2.driftc.type_checker import TypeChecker
 from lang2.driftc.traits.enforce import collect_used_type_keys, enforce_struct_requires, enforce_fn_requires
 
@@ -12,6 +13,7 @@ from lang2.driftc.traits.enforce import collect_used_type_keys, enforce_struct_r
 def _typecheck_all(src: Path):
 	func_hirs, sigs, _fn_ids_by_name, type_table, _exc_catalog, diagnostics = parse_drift_to_hir(src)
 	assert diagnostics == []
+	linked_world, require_env = build_linked_world(type_table)
 	type_checker = TypeChecker(type_table=type_table)
 	typed_fns = {}
 	call_signatures = {function_symbol(fid): s for fid, s in sigs.items() if not s.is_method}
@@ -27,6 +29,8 @@ def _typecheck_all(src: Path):
 			return_type=sig.return_type_id if sig is not None else None,
 			call_signatures=call_signatures,
 			callable_registry=None,
+			linked_world=linked_world,
+			require_env=require_env,
 			visible_modules=(),
 			current_module=0,
 		)
@@ -45,9 +49,9 @@ fn main(x: S) returns Int { return 0; }
 """
 	)
 	_func_hirs, sigs, type_table, typed_fns = _typecheck_all(src)
-	world = type_table.trait_worlds["main"]
+	linked_world, require_env = build_linked_world(type_table)
 	used = collect_used_type_keys(typed_fns, type_table, sigs)
-	res = enforce_struct_requires(world, used, module_name="main")
+	res = enforce_struct_requires(linked_world, require_env, used, module_name="main")
 	assert any("trait requirements not met for struct" in d.message for d in res.diagnostics)
 
 
@@ -62,9 +66,9 @@ fn main(x: S) returns Int { return 0; }
 """
 	)
 	_func_hirs, sigs, type_table, typed_fns = _typecheck_all(src)
-	world = type_table.trait_worlds["main"]
+	linked_world, require_env = build_linked_world(type_table)
 	used = collect_used_type_keys(typed_fns, type_table, sigs)
-	res = enforce_struct_requires(world, used, module_name="main")
+	res = enforce_struct_requires(linked_world, require_env, used, module_name="main")
 	assert res.diagnostics == []
 
 
@@ -74,14 +78,21 @@ def test_fn_require_enforced_at_call(tmp_path: Path) -> None:
 		"""
 trait A { fn a(self: Int) returns Int }
 struct S { }
-fn f(x: S) returns Int require x is A { return 0; }
+fn f<T>(x: T) returns Int require T is A { return 0; }
 fn main(x: S) returns Int { return f(x); }
 """
 	)
 	_func_hirs, sigs, type_table, typed_fns = _typecheck_all(src)
-	world = type_table.trait_worlds["main"]
+	linked_world, require_env = build_linked_world(type_table)
 	main_fn = next(fid for fid in typed_fns if fid.name == "main")
-	res = enforce_fn_requires(world, typed_fns[main_fn], type_table, module_name="main", signatures=sigs)
+	res = enforce_fn_requires(
+		linked_world,
+		require_env,
+		typed_fns[main_fn],
+		type_table,
+		module_name="main",
+		signatures=sigs,
+	)
 	assert any("trait requirements not met for call" in d.message for d in res.diagnostics)
 
 
@@ -92,12 +103,19 @@ def test_fn_require_satisfied_at_call(tmp_path: Path) -> None:
 trait A { fn a(self: Int) returns Int }
 struct S { }
 implement A for S { fn a(self: S) returns Int { return 0; } }
-fn f(x: S) returns Int require x is A { return 0; }
+fn f<T>(x: T) returns Int require T is A { return 0; }
 fn main(x: S) returns Int { return f(x); }
 """
 	)
 	_func_hirs, sigs, type_table, typed_fns = _typecheck_all(src)
-	world = type_table.trait_worlds["main"]
+	linked_world, require_env = build_linked_world(type_table)
 	main_fn = next(fid for fid in typed_fns if fid.name == "main")
-	res = enforce_fn_requires(world, typed_fns[main_fn], type_table, module_name="main", signatures=sigs)
+	res = enforce_fn_requires(
+		linked_world,
+		require_env,
+		typed_fns[main_fn],
+		type_table,
+		module_name="main",
+		signatures=sigs,
+	)
 	assert res.diagnostics == []

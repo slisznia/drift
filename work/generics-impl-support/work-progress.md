@@ -1,19 +1,97 @@
 # Work plan: Generics + impl support
 
 ## Status
-Draft (planning).
+In progress (feature work paused; refactor milestones active).
+
+## Roadmap (refactor milestones)
+Note: pause **feature work** only; keep landing small fixes + tests as safety net.
+
+### Milestone A: LinkedWorld + RequireEnv (combine refactors 2 + 5)
+**Goal:** deterministic trait proving + SAT ordering with zero cache invalidation.
+- **A1. Define immutable objects.**
+  - `LinkedWorld`: merged `TypeTable`, trait defs, impl defs, and all lookup indexes.
+  - `RequireEnv`: normalized require ASTs, SAT atom table, trait dependency axioms.
+- **A2. Build in one place.**
+  - `link_world(modules, imports) -> LinkedWorld` builds and dedupes once.
+  - Delete cache invalidation (`_global_trait_world`); if needed short-term, keep it private inside `LinkedWorld`.
+- **A3. Convert consumers.**
+  - Typechecker takes `LinkedWorld` + `RequireEnv`.
+  - SAT ordering uses `RequireEnv` (no re-normalization).
+  - Proving uses `LinkedWorld` impl indexes.
+- **A4. Tests.**
+  - Re-run cross-package trait method instantiation, SAT ordering tests, UFCS e2e.
+  - **Exit criteria:** no mutation + no cache invalidation during typecheck.
+- **Progress (done).**
+  - `LinkedWorld`/`RequireEnv` added and wired into the typechecker entrypoint.
+  - `_global_trait_world` cache removed from the typechecker path.
+  - Tests updated to use `LinkedWorld` instead of `_global_trait_world`.
+  - `LinkedWorld.visible_world` now computes module names once for deterministic merges.
+  - `merge_trait_worlds` now dedupes impls and flags conflicting trait/require/impl definitions.
+  - Visibility mapping failures emit compiler-bug diagnostics when provenance is provided; missing mappings fall back to registry-derived names.
+  - `driftc` now syncs visibility provenance when module ids are added and includes prelude modules in provenance chains.
+- RequireEnv now normalizes require expressions, interns SAT atoms, and provides implication checks for ordering.
+- SAT-based “most specific” ordering now consumes RequireEnv (no per-call re-normalization).
+- Require lookups are routed through RequireEnv (no direct `world.requires_by_*` in the checker).
+- Typechecker no longer embeds legacy SAT helpers; implication is RequireEnv-only.
+- `driftc` now builds `LinkedWorld`/`RequireEnv` once per package build and threads them into typecheck.
+- Test helpers that use traits now pass `LinkedWorld`/`RequireEnv` into the checker.
+- Trait enforcement now consumes `LinkedWorld` + `RequireEnv` (no raw `TraitWorld` paths).
+- Tests share a single `build_linked_world` helper to avoid linker drift.
+- `RequireEnv.requires_by_impl` removed (no ImplKey path yet).
+- Milestone C started: `IdRegistry` added and TemplateHIR-v1 import interns `FunctionKey -> FunctionId` (no signature scanning).
+- TemplateHIR-v1 export now includes structured `fn_id`, and import no longer parses `fn_symbol` for identity.
+- Package signatures now include structured `fn_id`/`wraps_target_fn_id`, and imports no longer parse `fn_symbol`/`wraps_target_symbol`.
+- External signature registration now uses structured `fn_id` keys (no `fn_symbol` parsing in callable registry).
+- Impl header methods now include structured `fn_id`, and trait/impl metadata import no longer parses `fn_symbol`.
+- Trait metadata now includes structured `trait_id`, and import hard-gates on it (with module/name/package checks).
+- Struct schema payloads now include structured `type_id`, and type-table import validates against it.
+- Impl headers now carry a stable `decl_fingerprint`, and import interns impl keys using `ImplKey(package_id, module, trait, target_head, decl_fingerprint)`.
+- Trait/type keys are now package-scoped (`TraitKey`/`TypeKey`/`TypeHeadKey` include `package_id`).
+- `IdRegistry` now interns typed keys (`TraitKey`, `TypeKey`, `ImplKey`), and `ImplKey` is defined explicitly.
+- Require/SAT normalization now incorporates `package_id` (RequireEnv carries module→package mapping; trait/type normalization uses it consistently).
+- Impl headers now include `package_id` in the trait identity and imports hard-gate on it.
+- Type-table linker nominal keys now include `package_id` in the canonical key tuples.
+
+### Milestone B: CallInfo is authoritative (finish refactor 4)
+**Goal:** stage2 never guesses call targets.
+- ctor calls by AST shape only; everything else must have CallInfo/call_resolutions.
+- UFCS missing CallInfo → internal error.
+- Qualified member indirect CallInfo ignored only for ctors → internal error otherwise.
+- **Exit criteria:** stage2 does not scan signatures or infer targets.
+
+### Milestone C: IdRegistry at import boundary (start refactor 3)
+**Goal:** no string-based identity across package boundaries.
+- `IdRegistry`: `FunctionKey -> FunctionId`, `TraitKey -> TraitId`, `TypeKey -> TypeId`, `ImplKey -> ImplId`.
+- Package import resolves all external identifiers into stable internal IDs.
+- Internal lowering can remain string-based temporarily as long as it maps to keys.
+- **Exit criteria:** no string-symbol reconstruction across package boundaries.
+
+### Milestone D: Phase bundles / immutability wrappers (start refactor 1)
+**Goal:** make phase boundaries explicit without a full pipeline rewrite.
+- Introduce `ModuleLowered { hir, signatures, requires, type_defs, impl_defs }`.
+- Stop passing raw dicts/maps between phases; pass bundles instead.
+- **Exit criteria:** compiler entrypoints take explicit bundles, not loose maps.
+- **Progress (in flight).**
+- `ModuleLowered` bundle added (`lang2/driftc/module_lowered.py`) with a `flatten_modules` adapter.
+- `ModuleLowered` now carries per-module requires/type defs/impl defs (populated from the trait world and parser).
+  - Workspace parsing now returns `dict[module_id, ModuleLowered]` instead of loose maps.
+  - `driftc` and codegen e2e runner flatten bundles for existing pipelines.
+  - Tests updated to adapt via `flatten_modules` where needed.
+
+## Completed (recent)
+- TemplateHIR-v1 export/import keyed by FunctionKey with required `generic_param_layout`.
+- Generic method templates included in package payloads (inherent + trait).
+- Call-site instantiations recorded for inferred type args (impl + fn) and consumed by monomorphization.
+- `impl_type_params`-only methods instantiate correctly once receiver args are known.
+- Receiver-mode preference is enforced for method resolution (lvalue/rvalue ordering).
+- SAT/implication ordering for `require`-based overload resolution in method candidate sets.
+- Trait method generics parse + metadata propagation (TemplateHIR + trait metadata).
+- Cross-package instantiation for impl + method generics (method-level type params).
+- Trait method inference test for method-level type params (local).
+- LinkedWorld/RequireEnv introduced; typechecker no longer depends on `_global_trait_world`.
 
 ## What's missing today
-- Generic functions are parsed, but call resolution and instantiation still assume fully concrete signatures; generic callables are effectively skipped unless already specialized.
-- Generic `implement<T> ...` blocks are not wired end-to-end: methods need to be selectable based on receiver type arguments and then instantiated into concrete callables.
-- Trait bounds on function/impl type params need to participate in method selection and call typing (inference allowed; underconstrained -> error).
-- Trait dot-call lookup must respect `use trait ...` imports (trait bounds vs lookup scope are separate).
-- Template/monomorphization is incomplete for generic methods and generic free functions across module/package boundaries.
-- Instantiation currently triggers only from explicit `<type ...>` call sites; inferred type args are not recorded for monomorphization.
-- Instantiation only keys off `sig.type_params` (function generics); `impl_type_params`-only methods do not get instantiated yet.
-- Call-site metadata does not preserve resolved type arguments, so later phases cannot request the right instantiations.
-- Method resolver still treats multiple receiver-compatible candidates as ambiguous (no lvalue receiver preference applied yet).
-- The stdlib still relies on compiler intrinsics for core containers (e.g., `Array<T>`); we cannot implement these in userland yet.
+- Full stdlib container implementations in userland (still relying on compiler intrinsics).
 
 ## End result (user POV)
 Users can write generic functions and generic impl blocks, and the compiler monomorphizes them into concrete code.

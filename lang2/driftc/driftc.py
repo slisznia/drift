@@ -49,11 +49,20 @@ from lang2.driftc.borrow_checker_pass import BorrowChecker
 from lang2.driftc.borrow_checker import PlaceBase, PlaceKind
 from lang2.driftc.core.diagnostics import Diagnostic
 from lang2.driftc.core.types_core import TypeTable, TypeParamId, TypeKind
-from lang2.driftc.core.function_id import FunctionId, function_symbol, method_wrapper_id
+from lang2.driftc.core.function_id import (
+	FunctionId,
+	function_id_from_obj,
+	function_id_to_obj,
+	function_symbol,
+	method_wrapper_id,
+)
 from lang2.driftc.traits.enforce import collect_used_type_keys, enforce_struct_requires, enforce_fn_requires
+from lang2.driftc.traits.linked_world import build_require_env, link_trait_worlds, LinkedWorld, RequireEnv
+from lang2.driftc.traits.world import TypeKey, type_key_from_typeid
 from lang2.codegen.llvm import lower_module_to_llvm
 from lang2.drift_core.runtime import get_runtime_sources
 from lang2.driftc.parser import parse_drift_to_hir, parse_drift_files_to_hir, parse_drift_workspace_to_hir
+from lang2.driftc.module_lowered import flatten_modules
 from lang2.driftc.type_resolver import resolve_program_signatures
 from lang2.driftc.core.type_resolve_common import resolve_opaque_type
 from lang2.driftc.type_checker import TypeChecker
@@ -62,11 +71,14 @@ from lang2.driftc.impl_index import GlobalImplIndex, find_impl_method_conflicts
 from lang2.driftc.trait_index import GlobalTraitImplIndex, GlobalTraitIndex, validate_trait_scopes
 from lang2.driftc.fake_decl import FakeDecl
 from lang2.driftc.packages.dmir_pkg_v0 import canonical_json_bytes, sha256_hex, write_dmir_pkg_v0
+from lang2.driftc.core.function_key import FunctionKey, function_key_from_obj, function_key_str
+from lang2.driftc.id_registry import IdRegistry
 from lang2.driftc.packages.provisional_dmir_v0 import (
 	decode_mir_funcs,
 	decode_generic_templates,
 	decode_trait_expr,
 	decode_type_expr,
+	compute_template_decl_fingerprint,
 	encode_generic_templates,
 	encode_module_payload_v0,
 	encode_span,
@@ -101,6 +113,20 @@ def _remap_tid(tid_map: dict[int, int], tid: object) -> object:
 	if isinstance(tid, int):
 		return tid_map.get(tid, tid)
 	return tid
+
+
+def _build_linked_world(type_table: TypeTable | None) -> tuple[LinkedWorld | None, RequireEnv | None]:
+	trait_worlds = getattr(type_table, "trait_worlds", None) if type_table is not None else None
+	if not isinstance(trait_worlds, dict):
+		return None, None
+	linked_world = link_trait_worlds(trait_worlds)
+	default_package = getattr(type_table, "package_id", None)
+	module_packages = getattr(type_table, "module_packages", None)
+	return linked_world, build_require_env(
+		linked_world,
+		default_package=default_package,
+		module_packages=module_packages,
+	)
 
 
 def _remap_mir_func_typeids(fn: M.MirFunc, tid_map: dict[int, int]) -> None:
@@ -362,6 +388,7 @@ def _find_dependency_main(loaded_pkgs: list["LoadedPackage"]) -> tuple[str, Path
 
 def _encode_trait_metadata_for_module(
 	*,
+	package_id: str,
 	module_id: str,
 	exported_traits: list[str],
 	trait_world: object | None,
@@ -379,8 +406,13 @@ def _encode_trait_metadata_for_module(
 			continue
 		if getattr(trait_def, "name", None) not in exported:
 			continue
+		trait_type_params = list(getattr(trait_def, "type_params", []) or [])
 		methods: list[dict[str, object]] = []
 		for method in getattr(trait_def, "methods", []) or []:
+			method_type_params = list(getattr(method, "type_params", []) or [])
+			type_param_names = {"Self"}
+			type_param_names.update(trait_type_params)
+			type_param_names.update(method_type_params)
 			params: list[dict[str, object]] = []
 			for param in list(getattr(method, "params", []) or []):
 				params.append(
@@ -389,30 +421,38 @@ def _encode_trait_metadata_for_module(
 						"type": encode_type_expr(
 							param.type_expr,
 							default_module=module_id,
-							type_param_names={"Self"},
+							type_param_names=type_param_names,
 						),
 					}
 				)
 			methods.append(
 				{
 					"name": getattr(method, "name", ""),
+					"type_params": method_type_params,
 					"params": params,
 					"return_type": encode_type_expr(
 						getattr(method, "return_type", None),
 						default_module=module_id,
-						type_param_names={"Self"},
+						type_param_names=type_param_names,
 					),
 					"require": encode_trait_expr(
 						getattr(method, "require", None),
 						default_module=module_id,
-						type_param_names=[],
+						type_param_names=method_type_params + trait_type_params,
 					),
 					"span": encode_span(getattr(method, "loc", None)),
 				}
 			)
+		trait_name = getattr(trait_def, "name", "")
+		trait_id_obj = {
+			"package_id": package_id,
+			"module": getattr(key, "module", None) or module_id,
+			"name": trait_name,
+		}
 		out.append(
 			{
-				"name": getattr(trait_def, "name", ""),
+				"trait_id": trait_id_obj,
+				"name": trait_name,
 				"type_params": list(getattr(trait_def, "type_params", []) or []),
 				"methods": methods,
 				"require": encode_trait_expr(
@@ -449,7 +489,11 @@ def _encode_impl_headers_for_module(
 			trait_mod = getattr(trait_key, "module", None) or module_id
 			trait_name = getattr(trait_key, "name", None)
 			if isinstance(trait_name, str):
-				trait_obj = {"module": trait_mod, "name": trait_name}
+				trait_obj = {
+					"package_id": getattr(trait_key, "package_id", None),
+					"module": trait_mod,
+					"name": trait_name,
+				}
 		methods: list[dict[str, object]] = []
 		for method in list(getattr(impl, "methods", []) or []):
 			fn_id = getattr(method, "fn_id", None)
@@ -458,23 +502,38 @@ def _encode_impl_headers_for_module(
 			methods.append(
 				{
 					"name": getattr(method, "name", ""),
+					"fn_id": function_id_to_obj(fn_id),
 					"fn_symbol": function_symbol(fn_id),
 					"is_pub": bool(getattr(method, "is_pub", False)),
 					"span": encode_span(getattr(method, "loc", None)),
 				}
 			)
+		def_module = getattr(impl, "def_module", module_id)
+		require_obj = encode_trait_expr(
+			getattr(impl, "require_expr", None),
+			default_module=module_id,
+			type_param_names=type_params,
+		)
+		decl_fingerprint = sha256_hex(
+			canonical_json_bytes(
+				{
+					"def_module": def_module,
+					"trait": trait_obj,
+					"type_params": type_params,
+					"target": target_obj,
+					"require": require_obj,
+				}
+			)
+		)
 		out.append(
 			{
 				"impl_id": int(getattr(impl, "impl_id", -1)),
-				"def_module": getattr(impl, "def_module", module_id),
+				"def_module": def_module,
 				"trait": trait_obj,
 				"type_params": type_params,
 				"target": target_obj,
-				"require": encode_trait_expr(
-					getattr(impl, "require_expr", None),
-					default_module=module_id,
-					type_param_names=type_params,
-				),
+				"require": require_obj,
+				"decl_fingerprint": decl_fingerprint,
 				"methods": methods,
 				"span": encode_span(getattr(impl, "loc", None)),
 			}
@@ -486,9 +545,10 @@ def _collect_external_trait_and_impl_metadata(
 	*,
 	loaded_pkgs: list[object],
 	type_table: TypeTable,
-	external_signatures_by_symbol: dict[str, FnSignature],
+	external_signatures_by_id: dict[FunctionId, FnSignature],
+	id_registry: IdRegistry | None = None,
 ) -> tuple[list[object], list[object], set[object], set[str]]:
-	from lang2.driftc.traits.world import TraitDef, TraitKey
+	from lang2.driftc.traits.world import ImplKey, TraitDef, TraitKey
 	from lang2.driftc.impl_index import ImplMeta, ImplMethodMeta
 	from lang2.driftc.packages.provisional_dmir_v0 import decode_span
 	from lang2.driftc.parser import ast as parser_ast
@@ -499,6 +559,9 @@ def _collect_external_trait_and_impl_metadata(
 	missing_impl_modules: set[str] = set()
 
 	for pkg in loaded_pkgs:
+		pkg_id = getattr(pkg, "manifest", {}).get("package_id")
+		if not isinstance(pkg_id, str) or not pkg_id:
+			pkg_id = str(getattr(pkg, "path", "")) or "<unknown>"
 		for mid, mod in getattr(pkg, "modules_by_id", {}).items():
 			if not isinstance(mid, str):
 				continue
@@ -518,9 +581,27 @@ def _collect_external_trait_and_impl_metadata(
 				for entry in trait_meta:
 					if not isinstance(entry, dict):
 						continue
+					trait_id_obj = entry.get("trait_id")
+					if not isinstance(trait_id_obj, dict):
+						raise ValueError(f"module '{mid}' trait_metadata missing trait_id")
+					trait_pkg = trait_id_obj.get("package_id")
+					trait_mod = trait_id_obj.get("module")
+					trait_name = trait_id_obj.get("name")
+					if not isinstance(trait_pkg, str) or not trait_pkg:
+						raise ValueError(f"module '{mid}' trait_metadata invalid trait_id.package_id")
+					if not isinstance(trait_mod, str) or not trait_mod:
+						raise ValueError(f"module '{mid}' trait_metadata invalid trait_id.module")
+					if not isinstance(trait_name, str) or not trait_name:
+						raise ValueError(f"module '{mid}' trait_metadata invalid trait_id.name")
+					if trait_pkg != pkg_id:
+						raise ValueError(f"module '{mid}' trait_metadata trait_id package_id mismatch")
+					if trait_mod != mid:
+						raise ValueError(f"module '{mid}' trait_metadata trait_id module mismatch")
 					name = entry.get("name")
 					if not isinstance(name, str) or not name:
 						continue
+					if name != trait_name:
+						raise ValueError(f"module '{mid}' trait_metadata trait_id name mismatch")
 					seen_trait_names.add(name)
 					methods: list[parser_ast.TraitMethodSig] = []
 					for method in entry.get("methods", []) if isinstance(entry.get("methods"), list) else []:
@@ -529,6 +610,12 @@ def _collect_external_trait_and_impl_metadata(
 						mname = method.get("name")
 						if not isinstance(mname, str) or not mname:
 							continue
+						type_params_raw = method.get("type_params")
+						type_params = (
+							[p for p in type_params_raw if isinstance(p, str)]
+							if isinstance(type_params_raw, list)
+							else []
+						)
 						params: list[parser_ast.Param] = []
 						for param in method.get("params", []) if isinstance(method.get("params"), list) else []:
 							if not isinstance(param, dict):
@@ -547,12 +634,16 @@ def _collect_external_trait_and_impl_metadata(
 								params=params,
 								return_type=ret_type,
 								loc=decode_span(method.get("span")) or None,
+								type_params=type_params,
 							)
 						)
 					require = decode_trait_expr(entry.get("require"))
+					trait_key = TraitKey(package_id=trait_pkg, module=trait_mod, name=trait_name)
+					if id_registry is not None:
+						id_registry.intern_trait(trait_key)
 					trait_defs.append(
 						TraitDef(
-							key=TraitKey(module=mid, name=name),
+							key=trait_key,
 							name=name,
 							methods=methods,
 							require=require,
@@ -561,7 +652,7 @@ def _collect_external_trait_and_impl_metadata(
 					)
 			for name in exported_traits:
 				if name not in seen_trait_names:
-					missing_traits.add(TraitKey(module=mid, name=name))
+					missing_traits.add(TraitKey(package_id=pkg_id, module=mid, name=name))
 
 			impl_headers = iface.get("impl_headers")
 			if not isinstance(impl_headers, list):
@@ -572,8 +663,11 @@ def _collect_external_trait_and_impl_metadata(
 					continue
 				impl_id = entry.get("impl_id")
 				def_module = entry.get("def_module") or mid
+				decl_fp = entry.get("decl_fingerprint")
 				if not isinstance(impl_id, int) or not isinstance(def_module, str):
 					continue
+				if not isinstance(decl_fp, str) or not decl_fp:
+					raise ValueError(f"module '{mid}' impl_headers missing decl_fingerprint")
 				target_expr = decode_type_expr(entry.get("target"))
 				if target_expr is None:
 					continue
@@ -590,19 +684,44 @@ def _collect_external_trait_and_impl_metadata(
 				trait_key = None
 				trait_obj = entry.get("trait")
 				if isinstance(trait_obj, dict):
+					tpkg = trait_obj.get("package_id")
 					tmod = trait_obj.get("module")
 					tname = trait_obj.get("name")
+					if not isinstance(tpkg, str) or not tpkg:
+						raise ValueError(f"module '{mid}' impl_headers trait missing package_id")
 					if isinstance(tmod, str) and isinstance(tname, str):
-						trait_key = TraitKey(module=tmod, name=tname)
+						trait_key = TraitKey(package_id=tpkg, module=tmod, name=tname)
+						if id_registry is not None:
+							id_registry.intern_trait(trait_key)
 				methods: list[ImplMethodMeta] = []
 				for method in entry.get("methods", []) if isinstance(entry.get("methods"), list) else []:
 					if not isinstance(method, dict):
 						continue
 					mname = method.get("name")
 					fn_symbol = method.get("fn_symbol")
-					if not isinstance(mname, str) or not mname or not isinstance(fn_symbol, str) or not fn_symbol:
-						continue
-					fn_id = _parse_function_symbol(fn_symbol)
+					fn_id_obj = method.get("fn_id")
+					if not isinstance(mname, str) or not mname or not isinstance(fn_id_obj, dict):
+						raise ValueError(
+							f"module '{mid}' impl_headers method '{mname or '<unknown>'}' missing fn_id"
+						)
+					fn_id = function_id_from_obj(fn_id_obj)
+					if not isinstance(fn_id, FunctionId):
+						raise ValueError(
+							f"module '{mid}' impl_headers method '{mname}' has invalid fn_id"
+						)
+					if fn_symbol is not None:
+						if not isinstance(fn_symbol, str) or not fn_symbol:
+							raise ValueError(
+								f"module '{mid}' impl_headers method '{mname}' has invalid fn_symbol"
+							)
+						if fn_symbol != function_symbol(fn_id):
+							raise ValueError(
+								f"module '{mid}' impl_headers method '{mname}' fn_symbol mismatch"
+							)
+					if getattr(fn_id, "module", None) != def_module:
+						raise ValueError(
+							f"module '{mid}' impl_headers method '{mname}' fn_id module mismatch"
+						)
 					methods.append(
 						ImplMethodMeta(
 							fn_id=fn_id,
@@ -612,7 +731,7 @@ def _collect_external_trait_and_impl_metadata(
 							loc=decode_span(method.get("span")) or None,
 						)
 					)
-					sig = external_signatures_by_symbol.get(fn_symbol)
+					sig = external_signatures_by_id.get(fn_id)
 					if sig is not None:
 						impl_param_map = {p.name: p.id for p in getattr(sig, "impl_type_params", []) or []}
 						if getattr(target_expr, "args", None):
@@ -629,6 +748,16 @@ def _collect_external_trait_and_impl_metadata(
 						else:
 							sig.impl_target_type_args = []
 				require_expr = decode_trait_expr(entry.get("require"))
+				if id_registry is not None:
+					target_head = type_key_from_typeid(type_table, target_type_id).head()
+					impl_key = ImplKey(
+						package_id=pkg_id,
+						module=def_module,
+						trait=trait_key,
+						target_head=target_head,
+						decl_fingerprint=decl_fp,
+					)
+					id_registry.intern_impl(impl_key, preferred=impl_id)
 				impl_metas.append(
 					ImplMeta(
 						impl_id=impl_id,
@@ -653,7 +782,14 @@ def compile_stubbed_funcs(
 	exc_env: Mapping[str, int] | None = None,
 	module_exports: Mapping[str, dict[str, object]] | None = None,
 	module_deps: Mapping[str, set[str]] | None = None,
+	package_id: str | None = None,
 	generic_templates_by_id: Mapping[FunctionId, H.HBlock] | None = None,
+	generic_templates_by_key: Mapping[FunctionKey, H.HBlock] | None = None,
+	template_keys_by_fn_id: Mapping[FunctionId, FunctionKey] | None = None,
+	external_trait_defs: Sequence[object] | None = None,
+	external_impl_metas: Sequence[object] | None = None,
+	external_missing_traits: set[object] | None = None,
+	external_missing_impl_modules: set[str] | None = None,
 	return_checked: bool = False,
 	build_ssa: bool = False,
 	return_ssa: bool = False,
@@ -677,7 +813,9 @@ def compile_stubbed_funcs(
 	    use parsed/type-checked signatures to derive throw intent; this parameter
 	    lets tests mimic that shape without a full parser/type checker.
 	  exc_env: optional exception environment (event name -> code) passed to HIRToMIR.
-	  generic_templates_by_id: optional map of FunctionId -> TemplateHIR (from packages).
+	  generic_templates_by_id: optional legacy map of FunctionId -> TemplateHIR (from packages).
+	  generic_templates_by_key: optional map of FunctionKey -> TemplateHIR (from packages).
+	  template_keys_by_fn_id: optional map of FunctionId -> FunctionKey (package templates).
 	  return_checked: when True, also return the CheckedProgram produced by the
 	    checker so diagnostics/fn_infos can be asserted in integration tests.
 	  build_ssa: when True, also run MIR→SSA and derive a TypeEnv from SSA +
@@ -785,6 +923,139 @@ def compile_stubbed_funcs(
 	else:
 		for fn_id in signatures_by_id.keys():
 			module_ids.setdefault(getattr(fn_id, "module", None), len(module_ids))
+	visibility_provenance_by_id: dict[int, tuple[str, ...]] = {}
+	for mod_name, mod_id in module_ids.items():
+		if mod_name is None:
+			continue
+		visibility_provenance_by_id[int(mod_id)] = (str(mod_name),)
+	def _module_id_with_visibility(name: object) -> int:
+		mod_id = module_ids.setdefault(name, len(module_ids))
+		if name is not None and int(mod_id) not in visibility_provenance_by_id:
+			visibility_provenance_by_id[int(mod_id)] = (str(name),)
+		return mod_id
+	def _sync_visibility_provenance() -> None:
+		for mod_name, mod_id in module_ids.items():
+			if mod_name is None:
+				continue
+			visibility_provenance_by_id.setdefault(int(mod_id), (str(mod_name),))
+	function_keys_by_fn_id: dict[FunctionId, FunctionKey] = {}
+	if isinstance(template_keys_by_fn_id, dict):
+		function_keys_by_fn_id.update(template_keys_by_fn_id)
+	requires_by_fn_id: dict[FunctionId, object] = {}
+	trait_worlds = getattr(shared_type_table, "trait_worlds", {}) if shared_type_table is not None else {}
+	if shared_type_table is not None and (external_trait_defs or external_impl_metas):
+		from lang2.driftc.traits.world import TraitWorld, ImplDef, type_key_from_expr
+
+		if not isinstance(trait_worlds, dict):
+			trait_worlds = {}
+		default_package = getattr(shared_type_table, "package_id", None)
+		module_packages = getattr(shared_type_table, "module_packages", None)
+
+		def _ensure_world(mod: str | None) -> TraitWorld:
+			key = mod or "main"
+			world = trait_worlds.get(key)
+			if world is None:
+				world = TraitWorld()
+				trait_worlds[key] = world
+			return world
+
+		if external_trait_defs:
+			for trait_def in external_trait_defs:
+				key = getattr(trait_def, "key", None)
+				if key is None:
+					continue
+				world = _ensure_world(getattr(key, "module", None))
+				world.traits.setdefault(key, trait_def)
+
+		if external_impl_metas:
+			for impl in external_impl_metas:
+				if getattr(impl, "trait_key", None) is None:
+					continue
+				target_expr = getattr(impl, "target_expr", None)
+				if target_expr is None:
+					continue
+				world = _ensure_world(getattr(impl, "def_module", None))
+				target_key = type_key_from_expr(
+					target_expr,
+					default_module=getattr(impl, "def_module", None),
+					default_package=default_package,
+					module_packages=module_packages,
+				)
+				head_key = target_key.head()
+				existing_ids = world.impls_by_trait_target.get((impl.trait_key, head_key), [])
+				dup = False
+				if existing_ids:
+					for impl_id in existing_ids:
+						existing = world.impls[impl_id]
+						if existing.target == target_key and existing.require == getattr(impl, "require_expr", None):
+							dup = True
+							break
+				if dup:
+					continue
+				impl_def = ImplDef(
+					trait=impl.trait_key,
+					target=target_key,
+					target_head=head_key,
+					methods=[],
+					require=getattr(impl, "require_expr", None),
+					loc=getattr(impl, "loc", None),
+				)
+				impl_id = len(world.impls)
+				world.impls.append(impl_def)
+				world.impls_by_trait.setdefault(impl_def.trait, []).append(impl_id)
+				world.impls_by_target_head.setdefault(impl_def.target_head, []).append(impl_id)
+				world.impls_by_trait_target.setdefault((impl_def.trait, impl_def.target_head), []).append(impl_id)
+
+		shared_type_table.trait_worlds = trait_worlds
+		if hasattr(shared_type_table, "_global_trait_world"):
+			delattr(shared_type_table, "_global_trait_world")
+	if isinstance(trait_worlds, dict):
+		for world in trait_worlds.values():
+			for fn_id, req in getattr(world, "requires_by_fn", {}).items():
+				requires_by_fn_id[fn_id] = req
+	linked_world, require_env = _build_linked_world(shared_type_table)
+
+	def _declared_name_from_fn_id(fn_id: FunctionId, module_id: str) -> str:
+		sym = function_symbol(fn_id)
+		name = sym
+		prefix = f"{module_id}::"
+		if name.startswith(prefix):
+			name = name[len(prefix) :]
+		if "#" in name:
+			base, ord_text = name.rsplit("#", 1)
+			if ord_text.isdigit():
+				name = base
+		return name
+
+	local_package_id = package_id or "__local__"
+	default_package = getattr(shared_type_table, "package_id", None) or package_id
+	module_packages = getattr(shared_type_table, "module_packages", None)
+	for fn_id, sig in signatures_by_id.items():
+		if not (getattr(sig, "type_params", []) or getattr(sig, "impl_type_params", [])):
+			continue
+		if fn_id in function_keys_by_fn_id:
+			continue
+		module_id = getattr(sig, "module", None) or getattr(fn_id, "module", None) or "main"
+		declared_name = _declared_name_from_fn_id(fn_id, module_id)
+		if sig.param_types is None or sig.return_type is None:
+			raise ValueError(
+				f"TemplateHIR-v1 requires TypeExpr signatures for '{function_symbol(fn_id)}'"
+			)
+		req_expr = requires_by_fn_id.get(fn_id)
+		decl_fp, _layout = compute_template_decl_fingerprint(
+			sig,
+			declared_name=declared_name,
+			module_id=module_id,
+			require_expr=req_expr if req_expr is not None else None,
+			default_package=default_package,
+			module_packages=module_packages,
+		)
+		function_keys_by_fn_id[fn_id] = FunctionKey(
+			package_id=local_package_id,
+			module_path=module_id,
+			name=declared_name,
+			decl_fingerprint=decl_fp,
+		)
 	next_callable_id = 1
 	for fn_id, sig in signatures_by_id.items():
 		if sig.return_type_id is None:
@@ -858,6 +1129,23 @@ def compile_stubbed_funcs(
 			type_table=shared_type_table,
 			module_ids=module_ids,
 		)
+		if external_impl_metas:
+			for impl in external_impl_metas:
+				if getattr(impl, "trait_key", None) is None and impl_index is not None:
+					impl_index.add_impl(impl=impl, type_table=shared_type_table, module_ids=module_ids)
+				if getattr(impl, "trait_key", None) is not None and trait_impl_index is not None:
+					trait_impl_index.add_impl(impl=impl, type_table=shared_type_table, module_ids=module_ids)
+		if external_trait_defs and trait_index is not None:
+			for trait_def in external_trait_defs:
+				if hasattr(trait_def, "key"):
+					trait_index.add_trait(trait_def.key, trait_def)
+		if external_missing_traits and trait_index is not None:
+			for missing_trait in external_missing_traits:
+				if hasattr(missing_trait, "module") and hasattr(missing_trait, "name"):
+					trait_index.mark_missing(missing_trait)
+		if external_missing_impl_modules and trait_impl_index is not None:
+			for module_id in external_missing_impl_modules:
+				trait_impl_index.mark_missing_module(module_ids.setdefault(module_id, len(module_ids)))
 		trait_scope_by_module = {}
 		for mod, exp in module_exports.items():
 			if isinstance(exp, dict):
@@ -942,11 +1230,12 @@ def compile_stubbed_funcs(
 		if sig is not None and sig.param_names is not None and sig.param_type_ids is not None:
 			param_types = {pname: pty for pname, pty in zip(sig.param_names, sig.param_type_ids)}
 		mod_name = getattr(fn_id, "module", None) or "main"
-		current_mod = module_ids.setdefault(mod_name, len(module_ids))
+		current_mod = _module_id_with_visibility(mod_name)
 		visible_mods = None
 		if module_deps is not None:
 			visible = visible_module_names_by_name.get(mod_name, {mod_name})
-			visible_mods = tuple(sorted(module_ids.setdefault(m, len(module_ids)) for m in visible))
+			visible_mods = tuple(sorted(_module_id_with_visibility(m) for m in visible))
+		_sync_visibility_provenance()
 		result = type_checker.check_function(
 			fn_id,
 			hir_norm,
@@ -954,14 +1243,18 @@ def compile_stubbed_funcs(
 			return_type=sig.return_type_id if sig is not None else None,
 			call_signatures=call_sigs_by_name,
 			signatures_by_id=signatures_by_id,
+			function_keys_by_fn_id=function_keys_by_fn_id,
 			can_throw_by_name=sig_throw_by_name or None,
 			callable_registry=callable_registry,
 			impl_index=impl_index,
 			trait_index=trait_index,
 			trait_impl_index=trait_impl_index,
 			trait_scope_by_module=trait_scope_by_module,
+			linked_world=linked_world,
+			require_env=require_env,
 			visible_modules=visible_mods,
 			current_module=current_mod,
+			visibility_provenance=visibility_provenance_by_id,
 		)
 		type_diags.extend(result.diagnostics)
 		typed_fns_by_symbol[name] = result.typed_fn
@@ -979,8 +1272,8 @@ def compile_stubbed_funcs(
 		normalized_hirs_by_id[fn_id] = block
 		normalized_hirs[sym] = block
 
-	# Instantiation phase (explicit type args only): clone generic templates into
-	# concrete instantiations and rewrite call targets.
+	# Instantiation phase: clone generic templates into concrete instantiations
+	# and rewrite call targets.
 	from lang2.driftc.core.type_subst import Subst, apply_subst
 	from lang2.driftc.instantiation.key import (
 		InstantiationKey,
@@ -989,102 +1282,75 @@ def compile_stubbed_funcs(
 		instantiation_key_str,
 	)
 	from lang2.driftc.method_resolver import MethodResolution
-	from lang2.driftc.method_registry import CallableDecl
 	from collections import deque
 
-	def _inst_can_throw(fn_id: FunctionId) -> bool:
+	template_hirs_by_key: dict[FunctionKey, H.HBlock] = {}
+	if isinstance(generic_templates_by_key, dict):
+		template_hirs_by_key.update(generic_templates_by_key)
+	if isinstance(generic_templates_by_id, dict):
+		for fn_id, hir in generic_templates_by_id.items():
+			key = function_keys_by_fn_id.get(fn_id)
+			if key is None:
+				continue
+			template_hirs_by_key.setdefault(key, hir)
+	for fn_id, block in normalized_hirs_by_id.items():
 		sig = signatures_by_id.get(fn_id)
+		if sig and (sig.type_params or getattr(sig, "impl_type_params", [])):
+			key = function_keys_by_fn_id.get(fn_id)
+			if key is None:
+				continue
+			template_hirs_by_key.setdefault(key, block)
+
+	template_sigs_by_key: dict[FunctionKey, FnSignature] = {}
+	for fn_id, sig in signatures_by_id.items():
+		if not (sig.type_params or getattr(sig, "impl_type_params", [])):
+			continue
+		key = function_keys_by_fn_id.get(fn_id)
+		if key is None:
+			continue
+		template_sigs_by_key.setdefault(key, sig)
+
+	template_fn_id_by_key: dict[FunctionKey, FunctionId] = {}
+	for fn_id, key in function_keys_by_fn_id.items():
+		template_fn_id_by_key.setdefault(key, fn_id)
+
+	def _inst_can_throw(sig: FnSignature | None) -> bool:
 		if sig is None or sig.declared_can_throw is None:
 			return True
 		return bool(sig.declared_can_throw)
 
-	def _inst_key(fn_id: FunctionId, type_args: tuple[TypeId, ...]) -> InstantiationKey:
+	def _inst_key(fn_key: FunctionKey, type_args: tuple[TypeId, ...]) -> InstantiationKey:
 		return build_instantiation_key(
-			fn_id,
+			fn_key,
 			type_args,
 			type_table=shared_type_table,
-			can_throw=_inst_can_throw(fn_id),
+			can_throw=_inst_can_throw(template_sigs_by_key.get(fn_key)),
 		)
 
 	def _inst_hash(key: InstantiationKey) -> str:
 		return instantiation_key_hash(key)
 
-	def _collect_typearg_calls(block: H.HBlock) -> list[H.HExpr]:
-		out: list[H.HExpr] = []
-
-		def _walk_expr(expr: H.HExpr) -> None:
-			if isinstance(expr, (H.HCall, H.HMethodCall)) and getattr(expr, "type_args", None):
-				out.append(expr)
-			for v in expr.__dict__.values():
-				if isinstance(v, H.HExpr):
-					_walk_expr(v)
-				elif isinstance(v, list):
-					for item in v:
-						if isinstance(item, H.HExpr):
-							_walk_expr(item)
-
-		def _walk_block(b: H.HBlock) -> None:
-			for stmt in b.statements:
-				if isinstance(stmt, H.HReturn) and stmt.value is not None:
-					_walk_expr(stmt.value)
-				elif isinstance(stmt, H.HLet):
-					_walk_expr(stmt.value)
-				elif isinstance(stmt, H.HAssign):
-					_walk_expr(stmt.value)
-				elif isinstance(stmt, H.HIf):
-					_walk_expr(stmt.cond)
-					_walk_block(stmt.then_block)
-					if stmt.else_block:
-						_walk_block(stmt.else_block)
-				elif isinstance(stmt, H.HLoop):
-					_walk_block(stmt.body)
-				elif isinstance(stmt, H.HTry):
-					_walk_block(stmt.body)
-					for arm in stmt.catches:
-						_walk_block(arm.block)
-				elif isinstance(stmt, H.HExprStmt):
-					_walk_expr(stmt.expr)
-
-		_walk_block(block)
-		return out
-
-	def _resolved_fn_id(resolution: object) -> FunctionId | None:
-		if isinstance(resolution, MethodResolution):
-			return resolution.decl.fn_id
-		if isinstance(resolution, CallableDecl):
-			return resolution.fn_id
-		return None
-
-	template_hirs_by_id: dict[FunctionId, H.HBlock] = {}
-	if isinstance(generic_templates_by_id, dict):
-		template_hirs_by_id.update(generic_templates_by_id)
-	for fn_id, block in normalized_hirs_by_id.items():
-		sig = signatures_by_id.get(fn_id)
-		if sig and (sig.type_params or getattr(sig, "impl_type_params", [])):
-			template_hirs_by_id.setdefault(fn_id, block)
-
 	@dataclass
 	class InstantiationHandle:
 		key: InstantiationKey
-		target_fn_id: FunctionId
+		template_key: FunctionKey
 		type_args: tuple[TypeId, ...]
 		fn_id: FunctionId
 		status: str  # "pending"|"emitted"|"failed"
 
 	inst_cache: dict[InstantiationKey, InstantiationHandle] = {}
 	inst_queue: deque[InstantiationHandle] = deque()
-	instantiated_targets: set[FunctionId] = set()
 
-	def _request_instantiation(target_fn_id: FunctionId, type_args: list[TypeId]) -> InstantiationHandle:
-		key = _inst_key(target_fn_id, tuple(type_args))
+	def _request_instantiation(template_key: FunctionKey, type_args: tuple[TypeId, ...]) -> InstantiationHandle:
+		key = _inst_key(template_key, tuple(type_args))
 		handle = inst_cache.get(key)
 		if handle is not None:
 			return handle
-		inst_name = f"{target_fn_id.name}__inst__{_inst_hash(key)}"
-		inst_fn_id = FunctionId(module=target_fn_id.module, name=inst_name, ordinal=target_fn_id.ordinal)
+		inst_name = f"{template_key.name}__inst__{_inst_hash(key)}"
+		inst_fn_id = FunctionId(module=template_key.module_path, name=inst_name, ordinal=0)
 		handle = InstantiationHandle(
 			key=key,
-			target_fn_id=target_fn_id,
+			template_key=template_key,
 			type_args=tuple(type_args),
 			fn_id=inst_fn_id,
 			status="pending",
@@ -1093,62 +1359,101 @@ def compile_stubbed_funcs(
 		inst_queue.append(handle)
 		return handle
 
+	def _queue_instantiations(typed_fn: object) -> None:
+		inst_map = getattr(typed_fn, "instantiations", None)
+		if not isinstance(inst_map, dict):
+			return
+		for inst in inst_map.values():
+			type_args = tuple(getattr(inst, "type_args", ()) or ())
+			if not type_args:
+				continue
+			template_key = getattr(inst, "target_key", None)
+			if not isinstance(template_key, FunctionKey):
+				continue
+			_request_instantiation(template_key, type_args)
+
 	for typed_fn in typed_fns_by_symbol.values():
-		block = getattr(typed_fn, "body", None)
-		if not isinstance(block, H.HBlock):
-			continue
-		for call in _collect_typearg_calls(block):
-			decl = getattr(typed_fn, "call_resolutions", {}).get(call.node_id)
-			target_fn_id = _resolved_fn_id(decl)
-			if target_fn_id is None:
-				continue
-			sig = signatures_by_id.get(target_fn_id)
-			if sig is None or not getattr(sig, "type_params", None):
-				continue
-			type_arg_ids = [
-				resolve_opaque_type(t, shared_type_table, module_id=getattr(target_fn_id, "module", None))
-				for t in (call.type_args or [])
-			]
-			_request_instantiation(target_fn_id, type_arg_ids)
+		_queue_instantiations(typed_fn)
 
 	while inst_queue:
 		handle = inst_queue.popleft()
 		if handle.status == "emitted":
 			raise AssertionError(
-				f"duplicate instantiation emission for '{function_symbol(handle.target_fn_id)}' ({instantiation_key_str(handle.key)})"
+				f"duplicate instantiation emission for '{function_key_str(handle.template_key)}' ({instantiation_key_str(handle.key)})"
 			)
 		if handle.status != "pending":
 			raise AssertionError(f"unexpected instantiation status: {handle.status}")
-		target_fn_id = handle.target_fn_id
+		template_key = handle.template_key
 		type_args = handle.type_args
-		key = handle.key
-		sig = signatures_by_id.get(target_fn_id)
-		if sig is None or not getattr(sig, "type_params", None):
-			continue
-		if sig.param_type_ids is None and sig.param_types is not None:
-			type_params = {p.name: p.id for p in getattr(sig, "type_params", [])}
-			sig.param_type_ids = [
-				resolve_opaque_type(p, shared_type_table, module_id=getattr(sig, "module", None), type_params=type_params)
-				for p in sig.param_types
-			]
-		if sig.return_type_id is None and sig.return_type is not None:
-			type_params = {p.name: p.id for p in getattr(sig, "type_params", [])}
-			sig.return_type_id = resolve_opaque_type(
-				sig.return_type, shared_type_table, module_id=getattr(sig, "module", None), type_params=type_params
+		sig = template_sigs_by_key.get(template_key)
+		template_fn_id = template_fn_id_by_key.get(template_key)
+		if sig is None or template_fn_id is None:
+			type_diags.append(
+				Diagnostic(
+					message=f"generic instantiation missing signature for '{function_key_str(template_key)}'",
+					code="E_MISSING_TEMPLATE_SIG",
+					severity="error",
+					span=None,
+				)
 			)
-		if sig.param_type_ids is None or sig.return_type_id is None:
+			handle.status = "failed"
 			continue
-		can_throw_val = True if sig.declared_can_throw is None else bool(sig.declared_can_throw)
+		impl_count = len(getattr(sig, "impl_type_params", []) or [])
+		fn_count = len(getattr(sig, "type_params", []) or [])
+		if len(type_args) != impl_count + fn_count:
+			type_diags.append(
+				Diagnostic(
+					message=(
+						"generic instantiation type argument mismatch for "
+						f"'{function_key_str(template_key)}' (expected {impl_count + fn_count}, got {len(type_args)})"
+					),
+					code="E_INSTANTIATION_TYPEARGS",
+					severity="error",
+					span=getattr(sig, "loc", None),
+				)
+			)
+			handle.status = "failed"
+			continue
+		if sig.param_type_ids is None or sig.return_type_id is None:
+			type_diags.append(
+				Diagnostic(
+					message=f"generic instantiation missing type ids for '{function_key_str(template_key)}'",
+					code="E_MISSING_TEMPLATE_SIG",
+					severity="error",
+					span=getattr(sig, "loc", None),
+				)
+			)
+			handle.status = "failed"
+			continue
+		impl_args = type_args[:impl_count]
+		fn_args = type_args[impl_count:]
 		inst_fn_id = handle.fn_id
-		instantiated_targets.add(target_fn_id)
-		subst = Subst(owner=target_fn_id, args=list(type_args))
-		inst_params = [apply_subst(t, subst, shared_type_table) for t in sig.param_type_ids]
-		inst_ret = apply_subst(sig.return_type_id, subst, shared_type_table)
+		inst_param_ids = list(sig.param_type_ids)
+		inst_ret_id = sig.return_type_id
+		if impl_args:
+			impl_owner = sig.impl_type_params[0].id.owner
+			impl_subst = Subst(owner=impl_owner, args=list(impl_args))
+			inst_param_ids = [apply_subst(t, impl_subst, shared_type_table) for t in inst_param_ids]
+			inst_ret_id = apply_subst(inst_ret_id, impl_subst, shared_type_table)
+		if fn_args:
+			fn_subst = Subst(owner=template_fn_id, args=list(fn_args))
+			inst_param_ids = [apply_subst(t, fn_subst, shared_type_table) for t in inst_param_ids]
+			inst_ret_id = apply_subst(inst_ret_id, fn_subst, shared_type_table)
+		inst_impl_target_args = None
+		if sig.impl_target_type_args is not None:
+			inst_impl_target_args = list(sig.impl_target_type_args)
+			if impl_args:
+				impl_owner = sig.impl_type_params[0].id.owner
+				impl_subst = Subst(owner=impl_owner, args=list(impl_args))
+				inst_impl_target_args = [
+					apply_subst(t, impl_subst, shared_type_table) for t in inst_impl_target_args
+				]
 		inst_sig = replace(
 			sig,
 			name=function_symbol(inst_fn_id),
-			param_type_ids=inst_params,
-			return_type_id=inst_ret,
+			param_type_ids=inst_param_ids,
+			return_type_id=inst_ret_id,
+			impl_target_type_args=inst_impl_target_args,
 			type_params=[],
 			impl_type_params=[],
 			param_types=None,
@@ -1158,11 +1463,11 @@ def compile_stubbed_funcs(
 		)
 		signatures_by_id[inst_fn_id] = inst_sig
 		signatures_by_symbol[function_symbol(inst_fn_id)] = inst_sig
-		template_hir = template_hirs_by_id.get(target_fn_id)
+		template_hir = template_hirs_by_key.get(template_key)
 		if template_hir is None:
 			type_diags.append(
 				Diagnostic(
-					message=f"generic instantiation requires a template body for '{function_symbol(target_fn_id)}'",
+					message=f"generic instantiation requires a template body for '{function_key_str(template_key)}'",
 					code="E_MISSING_TEMPLATE_BODY",
 					severity="error",
 					span=getattr(sig, "loc", None),
@@ -1174,75 +1479,64 @@ def compile_stubbed_funcs(
 		normalized_hirs[function_symbol(inst_fn_id)] = inst_hir
 		func_hirs_by_symbol[function_symbol(inst_fn_id)] = inst_hir
 		mod_name = getattr(inst_fn_id, "module", None) or "main"
-		current_mod = module_ids.setdefault(mod_name, len(module_ids))
+		current_mod = _module_id_with_visibility(mod_name)
 		visible_mods = None
 		if module_deps is not None:
 			visible = visible_module_names_by_name.get(mod_name, {mod_name})
-			visible_mods = tuple(sorted(module_ids.setdefault(m, len(module_ids)) for m in visible))
+			visible_mods = tuple(sorted(_module_id_with_visibility(m) for m in visible))
+		_sync_visibility_provenance()
 		inst_result = type_checker.check_function(
 			inst_fn_id,
 			inst_hir,
-			param_types={pname: pty for pname, pty in zip(sig.param_names or [], inst_params)},
-			return_type=inst_ret,
+			param_types={pname: pty for pname, pty in zip(sig.param_names or [], inst_param_ids)},
+			return_type=inst_ret_id,
 			call_signatures=call_sigs_by_name,
 			signatures_by_id=signatures_by_id,
+			function_keys_by_fn_id=function_keys_by_fn_id,
 			can_throw_by_name=sig_throw_by_name or None,
 			callable_registry=callable_registry,
 			impl_index=impl_index,
 			trait_index=trait_index,
 			trait_impl_index=trait_impl_index,
 			trait_scope_by_module=trait_scope_by_module,
+			linked_world=linked_world,
+			require_env=require_env,
 			visible_modules=visible_mods,
 			current_module=current_mod,
+			visibility_provenance=visibility_provenance_by_id,
 		)
 		type_diags.extend(inst_result.diagnostics)
 		typed_fns_by_symbol[function_symbol(inst_fn_id)] = inst_result.typed_fn
-		for call in _collect_typearg_calls(inst_hir):
-			decl = getattr(inst_result.typed_fn, "call_resolutions", {}).get(call.node_id)
-			target = _resolved_fn_id(decl)
-			if target is None:
-				continue
-			t_sig = signatures_by_id.get(target)
-			if t_sig is None or not getattr(t_sig, "type_params", None):
-				continue
-			arg_ids = [
-				resolve_opaque_type(t, shared_type_table, module_id=getattr(target, "module", None))
-				for t in (call.type_args or [])
-			]
-			_request_instantiation(target, arg_ids)
+		_queue_instantiations(inst_result.typed_fn)
 		handle.status = "emitted"
 
 	def _rewrite_call_targets(typed_fn: object, block: H.HBlock) -> None:
 		call_info_map = getattr(typed_fn, "call_info_by_node_id", None)
 		if not isinstance(call_info_map, dict):
 			return
-		for call in _collect_typearg_calls(block):
-			decl = getattr(typed_fn, "call_resolutions", {}).get(call.node_id)
-			target_fn_id = _resolved_fn_id(decl)
-			if target_fn_id is None:
+		inst_map = getattr(typed_fn, "instantiations", None)
+		if not isinstance(inst_map, dict):
+			return
+		for node_id, inst in inst_map.items():
+			template_key = getattr(inst, "target_key", None)
+			type_args = tuple(getattr(inst, "type_args", ()) or ())
+			if not isinstance(template_key, FunctionKey) or not type_args:
 				continue
-			sig = signatures_by_id.get(target_fn_id)
-			if sig is None or not getattr(sig, "type_params", None):
-				continue
-			type_arg_ids = [
-				resolve_opaque_type(t, shared_type_table, module_id=getattr(target_fn_id, "module", None))
-				for t in (call.type_args or [])
-			]
-			handle = inst_cache.get(_inst_key(target_fn_id, tuple(type_arg_ids)))
+			handle = inst_cache.get(_inst_key(template_key, type_args))
 			if handle is None or handle.status != "emitted":
 				continue
-			info = call_info_map.get(call.node_id)
+			info = call_info_map.get(node_id)
 			if info is None:
 				continue
 			inst_sig = signatures_by_id.get(handle.fn_id)
 			if inst_sig is None or inst_sig.param_type_ids is None or inst_sig.return_type_id is None:
 				continue
-			call_info_map[call.node_id] = CallInfo(
+			call_info_map[node_id] = CallInfo(
 				target=CallTarget.direct(handle.fn_id),
 				sig=CallSig(
 					param_types=tuple(inst_sig.param_type_ids),
 					user_ret_type=inst_sig.return_type_id,
-					can_throw=_inst_can_throw(handle.fn_id),
+					can_throw=_inst_can_throw(inst_sig),
 				),
 			)
 
@@ -1460,6 +1754,7 @@ def compile_stubbed_funcs(
 				param_types=param_types,
 				signatures=signatures_by_symbol,
 				call_info_by_node_id=getattr(typed_fns_by_symbol.get(name), "call_info_by_node_id", {}),
+				call_resolutions=getattr(typed_fns_by_symbol.get(name), "call_resolutions", {}),
 				can_throw_by_name=declared,
 				return_type=sig.return_type_id if sig is not None else None,
 			).lower_function_body(hir_norm)
@@ -2162,12 +2457,25 @@ def main(argv: list[str] | None = None) -> int:
 	if "lang.core" not in external_exports:
 		external_exports["lang.core"] = _prelude_exports()
 
-	func_hirs, signatures, fn_ids_by_name, type_table, exception_catalog, module_exports, module_deps, parse_diags = parse_drift_workspace_to_hir(
+	external_module_packages: dict[str, str] = {}
+	if loaded_pkgs:
+		for pkg in loaded_pkgs:
+			pkg_id = getattr(pkg, "manifest", {}).get("package_id")
+			if not isinstance(pkg_id, str) or not pkg_id:
+				continue
+			for mid in getattr(pkg, "modules_by_id", {}).keys():
+				if isinstance(mid, str):
+					external_module_packages.setdefault(mid, pkg_id)
+
+	modules, type_table, exception_catalog, module_exports, module_deps, parse_diags = parse_drift_workspace_to_hir(
 		source_paths,
 		module_paths=module_paths,
 		external_module_exports=external_exports,
+		external_module_packages=external_module_packages,
 		enforce_entrypoint=bool(args.output or args.emit_ir),
+		package_id=str(args.package_id or ""),
 	)
+	func_hirs, signatures, fn_ids_by_name = flatten_modules(modules)
 	prelude_injected = _should_inject_prelude(bool(args.prelude), module_deps)
 	if prelude_injected:
 		_inject_prelude(signatures, fn_ids_by_name, type_table)
@@ -2180,8 +2488,11 @@ def main(argv: list[str] | None = None) -> int:
 	external_impl_metas: list[object] = []
 	external_missing_traits: set[object] = set()
 	external_missing_impl_modules: set[str] = set()
-	external_template_hirs_by_id: dict[FunctionId, H.HBlock] = {}
-	external_template_requires_by_id: dict[FunctionId, object] = {}
+	external_template_hirs_by_key: dict[FunctionKey, H.HBlock] = {}
+	external_template_requires_by_key: dict[FunctionKey, object] = {}
+	external_template_keys_by_fn_id: dict[FunctionId, FunctionKey] = {}
+	external_template_layout_by_key: dict[FunctionKey, list[dict[str, object]]] = {}
+	id_registry = IdRegistry()
 
 	if parse_diags:
 		if args.json:
@@ -2301,6 +2612,18 @@ def main(argv: list[str] | None = None) -> int:
 			return 1
 		for path, tid_map in zip(pkg_paths, maps):
 			pkg_typeid_maps[path] = tid_map
+		for base_id, schema in getattr(type_table, "struct_bases", {}).items():
+			mod = getattr(schema, "module_id", None)
+			name = getattr(schema, "name", None)
+			if isinstance(mod, str) and isinstance(name, str):
+				pkg = getattr(type_table, "module_packages", {}).get(mod, getattr(type_table, "package_id", None))
+				id_registry.intern_type(TypeKey(package_id=pkg, module=mod, name=name, args=()), preferred=base_id)
+		for base_id, schema in getattr(type_table, "variant_schemas", {}).items():
+			mod = getattr(schema, "module_id", None)
+			name = getattr(schema, "name", None)
+			if isinstance(mod, str) and isinstance(name, str):
+				pkg = getattr(type_table, "module_packages", {}).get(mod, getattr(type_table, "package_id", None))
+				id_registry.intern_type(TypeKey(package_id=pkg, module=mod, name=name, args=()), preferred=base_id)
 
 	# If package roots were provided, merge package signatures into the signature
 	# environment so type checking can validate calls to imported functions.
@@ -2402,12 +2725,9 @@ def main(argv: list[str] | None = None) -> int:
 					impl_tid = sd.get("impl_target_type_id")
 					if isinstance(impl_tid, int):
 						impl_tid = tid_map.get(impl_tid, impl_tid)
-					wraps_symbol = sd.get("wraps_target_symbol")
-					wraps_fn_id = None
-					if isinstance(wraps_symbol, str) and wraps_symbol:
-						wraps_fn_id = _parse_function_symbol(wraps_symbol)
+					wraps_fn_id = function_id_from_obj(sd.get("wraps_target_fn_id"))
 					if bool(sd.get("is_wrapper", False)) and wraps_fn_id is None:
-						msg = f"package signature '{name}' is marked wrapper but missing wraps_target_symbol"
+						msg = f"package signature '{name}' is marked wrapper but missing wraps_target_fn_id"
 						if args.json:
 							print(
 								json.dumps(
@@ -2431,7 +2751,53 @@ def main(argv: list[str] | None = None) -> int:
 						return 1
 
 					symbol = str(sym)
-					fn_id = _parse_function_symbol(symbol)
+					fn_id = function_id_from_obj(sd.get("fn_id"))
+					if fn_id is None:
+						msg = f"package signature '{name}' missing fn_id; signatures must include fn_id"
+						if args.json:
+							print(
+								json.dumps(
+									{
+										"exit_code": 1,
+										"diagnostics": [
+											{
+												"phase": "package",
+												"message": msg,
+												"severity": "error",
+												"file": str(source_path),
+												"line": None,
+												"column": None,
+											}
+										],
+									}
+								)
+							)
+						else:
+							print(f"{source_path}:?:?: error: {msg}", file=sys.stderr)
+						return 1
+					if module_name is not None and fn_id.module != module_name:
+						msg = f"package signature '{name}' fn_id module mismatch ({fn_id.module} vs {module_name})"
+						if args.json:
+							print(
+								json.dumps(
+									{
+										"exit_code": 1,
+										"diagnostics": [
+											{
+												"phase": "package",
+												"message": msg,
+												"severity": "error",
+												"file": str(source_path),
+												"line": None,
+												"column": None,
+											}
+										],
+									}
+								)
+							)
+						else:
+							print(f"{source_path}:?:?: error: {msg}", file=sys.stderr)
+						return 1
 					type_param_names = sd.get("type_params")
 					if not isinstance(type_param_names, list):
 						type_param_names = []
@@ -2448,6 +2814,11 @@ def main(argv: list[str] | None = None) -> int:
 						if isinstance(tp_name, str):
 							impl_type_params.append(TypeParam(id=TypeParamId(impl_owner, idx), name=tp_name))
 					type_param_map = {p.name: p.id for p in (impl_type_params + type_params)}
+					impl_target_type_args: list[TypeId] | None = None
+					if impl_type_params:
+						impl_target_type_args = [
+							type_table.ensure_typevar(tp.id, name=tp.name) for tp in impl_type_params
+						]
 
 					param_types_raw = sd.get("param_types")
 					param_types: list[object] | None = None
@@ -2493,6 +2864,7 @@ def main(argv: list[str] | None = None) -> int:
 						return_type=return_type,
 						type_params=type_params,
 						impl_type_params=impl_type_params,
+						impl_target_type_args=impl_target_type_args,
 					)
 					external_signatures_by_name[name] = sig
 					if symbol not in external_signatures_by_symbol:
@@ -2508,10 +2880,15 @@ def main(argv: list[str] | None = None) -> int:
 		) = _collect_external_trait_and_impl_metadata(
 			loaded_pkgs=loaded_pkgs,
 			type_table=type_table,
-			external_signatures_by_symbol=external_signatures_by_symbol,
+			external_signatures_by_id=external_signatures_by_id,
+			id_registry=id_registry,
 		)
 
+		legacy_template_warned: set[str] = set()
 		for pkg in loaded_pkgs:
+			pkg_id = pkg.manifest.get("package_id")
+			if not isinstance(pkg_id, str) or not pkg_id:
+				pkg_id = "<unknown>"
 			for mid, mod in pkg.modules_by_id.items():
 				payload = mod.payload
 				if not isinstance(payload, dict):
@@ -2521,23 +2898,192 @@ def main(argv: list[str] | None = None) -> int:
 				for entry in templates:
 					if not isinstance(entry, dict):
 						continue
-					if entry.get("ir_kind") != "TemplateHIR-v0":
+					ir_kind = entry.get("ir_kind")
+					if ir_kind not in ("TemplateHIR-v1", "TemplateHIR-v0"):
 						continue
+					fn_symbol = entry.get("fn_symbol")
+					fn_id: FunctionId | None = None
+
+					def _template_import_error(msg: str) -> int:
+						if args.json:
+							print(
+								json.dumps(
+									{
+										"exit_code": 1,
+										"diagnostics": [
+											{
+												"phase": "package",
+												"message": msg,
+												"severity": "error",
+												"file": str(pkg.path),
+												"line": None,
+												"column": None,
+											}
+										],
+									}
+								)
+							)
+						else:
+							print(f"{pkg.path}:?:?: error: {msg}", file=sys.stderr)
+						return 1
+
 					template_id = entry.get("template_id")
-					if not isinstance(template_id, dict):
-						continue
-					mod_name = template_id.get("module")
-					fn_name = template_id.get("name")
-					ord_val = template_id.get("ordinal", 0)
-					if not isinstance(mod_name, str) or not isinstance(fn_name, str) or not isinstance(ord_val, int):
-						continue
-					fn_id = FunctionId(module=mod_name, name=fn_name, ordinal=int(ord_val))
-					hir = entry.get("ir")
-					if isinstance(hir, H.HBlock):
-						external_template_hirs_by_id[fn_id] = normalize_hir(hir)
+					fn_key = function_key_from_obj(template_id)
+					if fn_key is None:
+						if ir_kind != "TemplateHIR-v0":
+							return _template_import_error(
+								f"invalid TemplateHIR-v1 template_id in package {pkg_id}"
+							)
+						# Legacy v0: synthesize a stable-ish key from module/name/ordinal.
+						if not isinstance(template_id, dict):
+							return _template_import_error(
+								f"invalid TemplateHIR-v0 template_id in package {pkg_id}"
+							)
+						mod_name = template_id.get("module")
+						fn_name = template_id.get("name")
+						ord_val = template_id.get("ordinal", 0)
+						if not isinstance(mod_name, str) or not isinstance(fn_name, str) or not isinstance(ord_val, int):
+							return _template_import_error(
+								f"invalid TemplateHIR-v0 template_id in package {pkg_id}"
+							)
+						pkg_path = str(pkg.path)
+						if pkg_path not in legacy_template_warned and not args.json:
+							print(
+								f"{pkg_path}:?:?: warning: TemplateHIR-v0 templates are deprecated; rebuild the package",
+								file=sys.stderr,
+							)
+							legacy_template_warned.add(pkg_path)
+						legacy_fp = sha256_hex(
+							canonical_json_bytes(
+								{"module": mod_name, "name": fn_name, "ordinal": int(ord_val)}
+							)
+						)
+						fn_key = FunctionKey(
+							package_id=pkg_id,
+							module_path=mod_name,
+							name=fn_name,
+							decl_fingerprint=legacy_fp,
+						)
+					if fn_key.package_id != pkg_id:
+						return _template_import_error(
+							f"TemplateHIR entry package id mismatch ({fn_key.package_id} vs {pkg_id})"
+						)
 					req = entry.get("require")
 					if req is not None:
-						external_template_requires_by_id[fn_id] = req
+						external_template_requires_by_key[fn_key] = req
+					if ir_kind == "TemplateHIR-v1":
+						fn_id = function_id_from_obj(entry.get("fn_id"))
+						if fn_id is None:
+							return _template_import_error(
+								f"TemplateHIR-v1 entry missing fn_id in package {pkg_id}"
+							)
+						if fn_id.module != fn_key.module_path or fn_id.name != fn_key.name:
+							return _template_import_error(
+								f"TemplateHIR-v1 fn_id does not match template_id in package {pkg_id}"
+							)
+						if fn_id.ordinal < 0:
+							return _template_import_error(
+								f"TemplateHIR-v1 fn_id has invalid ordinal in package {pkg_id}"
+							)
+						sig_entry = entry.get("signature")
+						if not isinstance(sig_entry, dict):
+							ident = f"{fn_id.module}::{fn_id.name}"
+							return _template_import_error(
+								f"TemplateHIR-v1 entry missing signature for {ident}"
+							)
+						impl_params = sig_entry.get("impl_type_params") or []
+						fn_params = sig_entry.get("type_params") or []
+						if not isinstance(impl_params, list) or not isinstance(fn_params, list):
+							ident = f"{fn_id.module}::{fn_id.name}"
+							return _template_import_error(
+								f"TemplateHIR-v1 signature missing type params for {ident}"
+							)
+						expected_layout = []
+						for idx in range(len(impl_params)):
+							expected_layout.append({"scope": "impl", "index": idx})
+						for idx in range(len(fn_params)):
+							expected_layout.append({"scope": "fn", "index": idx})
+						layout = entry.get("generic_param_layout")
+						if layout != expected_layout:
+							ident = f"{fn_id.module}::{fn_id.name}"
+							return _template_import_error(
+								f"TemplateHIR-v1 generic_param_layout mismatch for {ident}"
+							)
+						prev_layout = external_template_layout_by_key.get(fn_key)
+						if prev_layout is not None and prev_layout != expected_layout:
+							ident = f"{fn_id.module}::{fn_id.name}"
+							return _template_import_error(
+								f"TemplateHIR-v1 generic_param_layout conflict for {ident}"
+							)
+						if prev_layout is None:
+							external_template_layout_by_key[fn_key] = list(expected_layout)
+					hir = entry.get("ir")
+					if ir_kind == "TemplateHIR-v1" and not isinstance(hir, H.HBlock):
+						if fn_id is not None:
+							ident = f"{fn_id.module}::{fn_id.name}"
+						else:
+							ident = f"{fn_key.module_path}::{fn_key.name}"
+						return _template_import_error(
+							f"TemplateHIR-v1 entry missing HIR body for {ident}"
+						)
+					if isinstance(hir, H.HBlock):
+						external_template_hirs_by_key[fn_key] = normalize_hir(hir)
+					if ir_kind == "TemplateHIR-v1":
+						if fn_id is None:
+							return _template_import_error(
+								f"TemplateHIR-v1 entry missing fn_id in package {pkg_id}"
+							)
+						sig = external_signatures_by_id.get(fn_id)
+						if sig is None:
+							return _template_import_error(
+								f"TemplateHIR-v1 entry missing signature for {fn_id.module}::{fn_id.name}"
+							)
+						if sig.param_types is None or sig.return_type is None:
+							return _template_import_error(
+								f"TemplateHIR-v1 signature missing TypeExprs for {fn_id.module}::{fn_id.name}"
+							)
+						decl_fp, _layout = compute_template_decl_fingerprint(
+							sig,
+							declared_name=fn_key.name,
+							module_id=fn_key.module_path,
+							require_expr=req if req is not None else None,
+							default_package=pkg_id,
+							module_packages=getattr(type_table, "module_packages", None),
+						)
+						if decl_fp != fn_key.decl_fingerprint:
+							return _template_import_error(
+								f"TemplateHIR-v1 signature fingerprint mismatch for {fn_id.module}::{fn_id.name}"
+							)
+						try:
+							fn_id = id_registry.intern_function(fn_key, preferred=fn_id)
+						except ValueError as err:
+							return _template_import_error(
+								f"TemplateHIR-v1 entry id conflict for {fn_id.module}::{fn_id.name}: {err}"
+							)
+						prev_key = external_template_keys_by_fn_id.get(fn_id)
+						if prev_key is not None and prev_key != fn_key:
+							return _template_import_error(
+								f"duplicate template mapping for {fn_key.module_path}::{fn_key.name} in package {pkg_id}"
+							)
+						external_template_keys_by_fn_id[fn_id] = fn_key
+					elif isinstance(fn_symbol, str):
+						try:
+							fn_id = _parse_function_symbol(fn_symbol)
+						except Exception:
+							fn_id = None
+						if fn_id is not None:
+							try:
+								fn_id = id_registry.intern_function(fn_key, preferred=fn_id)
+							except ValueError as err:
+								return _template_import_error(
+									f"TemplateHIR-v0 entry id conflict for {fn_symbol}: {err}"
+								)
+							prev_key = external_template_keys_by_fn_id.get(fn_id)
+							if prev_key is not None and prev_key != fn_key:
+								return _template_import_error(
+									f"duplicate template mapping for {fn_symbol} in package {pkg_id}"
+								)
+							external_template_keys_by_fn_id[fn_id] = fn_key
 
 		# Merge external trait metadata and function require clauses into trait worlds
 		# so requirement enforcement can operate across package boundaries.
@@ -2561,6 +3107,16 @@ def main(argv: list[str] | None = None) -> int:
 				world = trait_worlds.setdefault(def_mod, TraitWorld())
 				target_key = type_key_from_typeid(type_table, impl.target_type_id)
 				head_key = target_key.head()
+				existing_ids = world.impls_by_trait_target.get((trait_key, head_key), [])
+				dup = False
+				if existing_ids:
+					for impl_id in existing_ids:
+						existing = world.impls[impl_id]
+						if existing.target == target_key and existing.require == getattr(impl, "require_expr", None):
+							dup = True
+							break
+				if dup:
+					continue
 				impl_id = len(world.impls)
 				world.impls.append(
 					ImplDef(
@@ -2575,7 +3131,10 @@ def main(argv: list[str] | None = None) -> int:
 				world.impls_by_trait.setdefault(trait_key, []).append(impl_id)
 				world.impls_by_target_head.setdefault(head_key, []).append(impl_id)
 				world.impls_by_trait_target.setdefault((trait_key, head_key), []).append(impl_id)
-			for fn_id, req_expr in external_template_requires_by_id.items():
+			for fn_id, fn_key in external_template_keys_by_fn_id.items():
+				req_expr = external_template_requires_by_key.get(fn_key)
+				if req_expr is None:
+					continue
 				mod = getattr(fn_id, "module", None) or "main"
 				world = trait_worlds.setdefault(mod, TraitWorld())
 				world.requires_by_fn[fn_id] = req_expr
@@ -2737,7 +3296,7 @@ def main(argv: list[str] | None = None) -> int:
 		if sig.name:
 			can_throw_by_name[sig.name] = bool(sig.declared_can_throw)
 
-	display_name_by_id = {fn_id: _display_name_for_fn_id(fn_id) for fn_id in signatures_by_id.keys()}
+	display_name_by_id = {fn_id: _display_name_for_fn_id(fn_id) for fn_id in signatures_by_id_all.keys()}
 
 	for fn_id, sig in signatures_by_id.items():
 		if sig.param_type_ids is None or sig.return_type_id is None:
@@ -2811,9 +3370,8 @@ def main(argv: list[str] | None = None) -> int:
 				)
 				next_callable_id += 1
 
-	for symbol, sig in external_signatures_by_symbol.items():
-		fn_id = _parse_function_symbol(symbol)
-		sig_name = sig.name
+	for fn_id, sig in external_signatures_by_id.items():
+		sig_name = display_name_by_id.get(fn_id, _display_name_for_fn_id(fn_id))
 		if sig.param_type_ids is None or sig.return_type_id is None:
 			continue
 		param_types_tuple = tuple(sig.param_type_ids)
@@ -2962,6 +3520,8 @@ def main(argv: list[str] | None = None) -> int:
 						heapq.heappush(queue, (len(new_chain), new_chain, tgt))
 			visible = set(best.keys())
 			if prelude_modules:
+				for prelude in sorted(prelude_modules):
+					best.setdefault(prelude, (mod_name, prelude))
 				visible |= prelude_modules
 			visible_module_names_by_name[mod_name] = visible
 			visibility_provenance_by_name[mod_name] = best
@@ -3031,6 +3591,7 @@ def main(argv: list[str] | None = None) -> int:
 
 	signatures_by_id_all = dict(signatures_by_id)
 	signatures_by_id_all.update(external_signatures_by_id)
+	linked_world, require_env = _build_linked_world(type_table)
 
 	typed_fns: dict[FunctionId, object] = {}
 	for fn_id, hir_block in normalized_hirs_by_id.items():
@@ -3058,6 +3619,8 @@ def main(argv: list[str] | None = None) -> int:
 			trait_index=global_trait_index,
 			trait_impl_index=global_trait_impl_index,
 			trait_scope_by_module=trait_scope_by_module,
+			linked_world=linked_world,
+			require_env=require_env,
 			visible_modules=visible_modules,
 			current_module=fn_module_id,
 			visibility_provenance=visibility_by_id,
@@ -3133,7 +3696,7 @@ def main(argv: list[str] | None = None) -> int:
 	decl_names: set[str] = set(func_hirs_by_symbol.keys())
 	decl_names.update(signatures_for_checker.keys())
 	checked = checker.check(sorted(decl_names))
-	if checked.type_table is not None:
+	if checked.type_table is not None and not loaded_pkgs:
 		type_table = checked.type_table
 	if checked.diagnostics:
 		if args.json:
@@ -3184,8 +3747,8 @@ def main(argv: list[str] | None = None) -> int:
 
 	# Enforce trait requirements (struct + function requires) before borrow checking.
 	trait_diags: list[Diagnostic] = []
-	trait_worlds = getattr(type_table, "trait_worlds", {}) if type_table is not None else {}
-	if isinstance(trait_worlds, dict) and trait_worlds:
+	linked_world, require_env = _build_linked_world(type_table)
+	if linked_world is not None and require_env is not None:
 		used_types = collect_used_type_keys(typed_fns, type_table, signatures_by_id)
 		used_by_module: dict[str, set] = {}
 		used_unknown: set = set()
@@ -3195,16 +3758,24 @@ def main(argv: list[str] | None = None) -> int:
 				used_unknown.add(ty)
 				continue
 			used_by_module.setdefault(mod, set()).add(ty)
-		for module_name, world in trait_worlds.items():
+		for module_name in linked_world.trait_worlds.keys():
 			module_used = set(used_by_module.get(module_name, set()))
 			module_used.update(used_unknown)
-			res = enforce_struct_requires(world, module_used, module_name=module_name)
+			visible_modules = visible_module_names_by_name.get(module_name, {module_name})
+			res = enforce_struct_requires(
+				linked_world,
+				require_env,
+				module_used,
+				module_name=module_name,
+				visible_modules=visible_modules,
+			)
 			trait_diags.extend(res.diagnostics)
 		for fn_id, typed_fn in typed_fns.items():
 			module_name = fn_id.module or "main"
 			visible_modules = visible_module_names_by_name.get(module_name, {module_name})
 			res = enforce_fn_requires(
-				trait_worlds,
+				linked_world,
+				require_env,
 				typed_fn,
 				type_table,
 				module_name=module_name,
@@ -3275,14 +3846,27 @@ def main(argv: list[str] | None = None) -> int:
 			return 1
 
 		signatures_for_pkg = signatures_by_id_all if loaded_pkgs else signatures_by_id
+		combined_exports: dict[str, dict[str, object]] | None = None
+		if module_exports or external_exports:
+			combined_exports = dict(external_exports or {})
+			if isinstance(module_exports, dict):
+				combined_exports.update(module_exports)
 		mir_funcs, checked_pkg = compile_stubbed_funcs(
 			func_hirs=func_hirs_by_id,
 			signatures=signatures_for_pkg,
 			exc_env=exception_catalog,
+			module_exports=combined_exports,
+			module_deps=module_deps,
 			type_table=type_table,
+			package_id=str(args.package_id) if args.package_id is not None else None,
+			external_trait_defs=external_trait_defs,
+			external_impl_metas=external_impl_metas,
+			external_missing_traits=external_missing_traits,
+			external_missing_impl_modules=external_missing_impl_modules,
 			return_checked=True,
 			prelude_enabled=bool(args.prelude),
-			generic_templates_by_id=external_template_hirs_by_id,
+			generic_templates_by_key=external_template_hirs_by_key,
+			template_keys_by_fn_id=external_template_keys_by_fn_id,
 			emit_instantiation_index=args.emit_instantiation_index,
 		)
 		if any(d.severity == "error" for d in checked_pkg.diagnostics):
@@ -3406,6 +3990,7 @@ def main(argv: list[str] | None = None) -> int:
 				for fn_id, req_expr in getattr(trait_world, "requires_by_fn", {}).items():
 					requires_by_symbol[function_symbol(fn_id)] = req_expr
 			trait_metadata = _encode_trait_metadata_for_module(
+				package_id=str(args.package_id or ""),
 				module_id=mid,
 				exported_traits=exported_traits,
 				trait_world=trait_world,
@@ -3476,15 +4061,18 @@ def main(argv: list[str] | None = None) -> int:
 					sig_env[sym] = replace(sig, is_exported_entrypoint=True)
 
 			payload_obj = encode_module_payload_v0(
+				package_id=str(args.package_id or ""),
 				module_id=mid,
 				type_table=checked_pkg.type_table or type_table,
 				signatures=sig_env,
 				mir_funcs=per_module_mir.get(mid, {}),
 				generic_templates=encode_generic_templates(
+					package_id=str(args.package_id or ""),
 					module_id=mid,
 					signatures=sig_env,
 					hir_blocks=per_module_hir.get(mid, {}),
 					requires_by_symbol=requires_by_symbol,
+					module_packages=getattr(checked_pkg.type_table or type_table, "module_packages", None),
 				),
 				exported_values=exported_values,
 				exported_types=exported_types,
@@ -3659,17 +4247,29 @@ def main(argv: list[str] | None = None) -> int:
 
 	if loaded_pkgs:
 		# Compile source functions through the normal pipeline to get MIR+SSA.
+		combined_exports: dict[str, dict[str, object]] | None = None
+		if module_exports or external_exports:
+			combined_exports = dict(external_exports or {})
+			if isinstance(module_exports, dict):
+				combined_exports.update(module_exports)
 		src_mir, checked_src, ssa_src = compile_stubbed_funcs(
 			func_hirs=func_hirs_by_id,
 			signatures=signatures_by_id_all,
 			exc_env=exception_catalog,
+			module_exports=combined_exports,
+			module_deps=module_deps,
 			return_checked=True,
 			build_ssa=True,
 			return_ssa=True,
 			type_table=type_table,
 			prelude_enabled=bool(args.prelude),
-			generic_templates_by_id=external_template_hirs_by_id,
+			generic_templates_by_key=external_template_hirs_by_key,
+			template_keys_by_fn_id=external_template_keys_by_fn_id,
 			emit_instantiation_index=args.emit_instantiation_index,
+			external_trait_defs=external_trait_defs,
+			external_impl_metas=external_impl_metas,
+			external_missing_traits=external_missing_traits,
+			external_missing_impl_modules=external_missing_impl_modules,
 		)
 		ssa_src = ssa_src or {}
 		if any(d.severity == "error" for d in checked_src.diagnostics):

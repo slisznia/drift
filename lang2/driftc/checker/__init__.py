@@ -304,7 +304,23 @@ class Checker:
 						expected = self._type_table.ensure_ref(sig.impl_target_type_id)
 					elif sig.self_mode == "ref_mut":
 						expected = self._type_table.ensure_ref_mut(sig.impl_target_type_id)
-					if expected is not None and recv_ty != expected:
+					impl_args = getattr(sig, "impl_target_type_args", None)
+					receiver_ok = expected is not None and recv_ty == expected
+					if not receiver_ok and impl_args:
+						check_ty = recv_ty
+						if sig.self_mode in {"ref", "ref_mut"}:
+							td_recv = self._type_table.get(recv_ty)
+							if td_recv.kind is TypeKind.REF and td_recv.param_types:
+								check_ty = td_recv.param_types[0]
+						struct_inst = self._type_table.get_struct_instance(check_ty)
+						var_inst = self._type_table.get_variant_instance(check_ty)
+						if struct_inst is not None:
+							if struct_inst.base_id == sig.impl_target_type_id and list(struct_inst.type_args) == list(impl_args):
+								receiver_ok = True
+						elif var_inst is not None:
+							if var_inst.base_id == sig.impl_target_type_id and list(var_inst.type_args) == list(impl_args):
+								receiver_ok = True
+					if expected is not None and not receiver_ok:
 						target_name = self._type_table.get(sig.impl_target_type_id).name
 						diagnostics.append(
 							Diagnostic(
@@ -558,9 +574,18 @@ class Checker:
 				if call_info_by_node_id is not None:
 					info = call_info_by_node_id.get(expr.node_id)
 					if info is None:
-						raise AssertionError(
-							f"BUG: missing CallInfo for method call during nothrow analysis (node_id={expr.node_id})"
-						)
+						if unknown_calls_throw and not catch_all:
+							may_throw = True
+							if first_span is None:
+								first_span = Span.from_loc(getattr(expr, "loc", None))
+							if first_note is None:
+								first_note = "method call may throw"
+						walk_expr(expr.receiver, caught_events, catch_all)
+						for arg in expr.args:
+							walk_expr(arg, caught_events, catch_all)
+						for kw in getattr(expr, "kwargs", []) or []:
+							walk_expr(kw.value, caught_events, catch_all)
+						return
 					call_can_throw = info.sig.can_throw
 					if info.target.kind is CallTargetKind.DIRECT and info.target.symbol is not None:
 						fn_info = fn_infos.get(function_symbol(info.target.symbol))

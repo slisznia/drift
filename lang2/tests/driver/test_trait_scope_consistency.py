@@ -19,7 +19,7 @@ def test_trait_scope_missing_from_index_reports_error() -> None:
 	trait_index = GlobalTraitIndex()
 	trait_impl_index = GlobalTraitImplIndex()
 	module_ids: dict[str | None, ModuleId] = {"m_main": 0, "ext": 1}
-	trait_scope_by_module = {"m_main": [TraitKey(module="ext", name="Show")]}
+	trait_scope_by_module = {"m_main": [TraitKey(package_id=None, module="ext", name="Show")]}
 
 	diags = validate_trait_scopes(
 		trait_index=trait_index,
@@ -37,7 +37,7 @@ def test_trait_impl_missing_from_index_reports_error() -> None:
 	trait_index = GlobalTraitIndex()
 	trait_impl_index = GlobalTraitImplIndex()
 	module_ids: dict[str | None, ModuleId] = {"m_impl": 0}
-	missing_trait = TraitKey(module="m_trait", name="Show")
+	missing_trait = TraitKey(package_id=None, module="m_trait", name="Show")
 	fn_id = FunctionId(module="m_impl", name="show", ordinal=0)
 	cand = TraitImplCandidate(
 		fn_id=fn_id,

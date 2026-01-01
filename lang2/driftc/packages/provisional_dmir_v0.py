@@ -21,12 +21,14 @@ from enum import Enum
 from typing import Any, Mapping
 
 from lang2.driftc.checker import FnSignature
-from lang2.driftc.core.function_id import function_symbol
+from lang2.driftc.core.function_id import function_id_to_obj, function_symbol, parse_function_symbol
 from lang2.driftc.core.generic_type_expr import GenericTypeExpr
 from lang2.driftc.core.span import Span
 from lang2.driftc.core.types_core import TypeDef, TypeId, TypeParamId, TypeTable
 from lang2.driftc.parser import ast as parser_ast
 from lang2.driftc.packages.dmir_pkg_v0 import canonical_json_bytes, sha256_hex
+from lang2.driftc.core.function_key import FunctionKey, function_key_to_obj
+from lang2.driftc.traits.world import trait_key_from_expr
 
 
 def _float64_bits_hex(value: float) -> str:
@@ -336,7 +338,7 @@ def decode_trait_expr(obj: Any) -> parser_ast.TraitExpr | None:
 	return None
 
 
-def encode_type_table(table: TypeTable) -> dict[str, Any]:
+def encode_type_table(table: TypeTable, *, package_id: str) -> dict[str, Any]:
 	"""Encode the TypeTable deterministically."""
 
 	def _def_to_obj(td: TypeDef) -> dict[str, Any]:
@@ -383,12 +385,21 @@ def encode_type_table(table: TypeTable) -> dict[str, Any]:
 	for base_id in sorted(table.variant_schemas.keys()):
 		variant_schemas[str(base_id)] = _encode_variant_schema(table.variant_schemas[base_id])
 	return {
+		"package_id": package_id,
 		"defs": defs,
 		"struct_schemas": [
 			{
+				"type_id": {
+					"package_id": package_id,
+					"module": key.module_id,
+					"name": key.name,
+				},
 				"module_id": key.module_id,
 				"name": key.name,
 				"fields": list(fields),
+				"type_params": list(
+					(getattr(table.struct_bases.get(table.get_struct_base(module_id=key.module_id or "", name=key.name)), "type_params", None) or [])
+				),
 			}
 			for key, (_n, fields) in sorted(
 				table.struct_schemas.items(),
@@ -418,6 +429,7 @@ def encode_signatures(signatures: Mapping[str, FnSignature], *, module_id: str) 
 		sig = signatures[name]
 		if getattr(sig, "module", None) not in (module_id, None) and not getattr(sig, "is_instantiation", False):
 			continue
+		fn_id = parse_function_symbol(name)
 		sig_module = getattr(sig, "module", None) or module_id
 		type_param_names = [p.name for p in getattr(sig, "type_params", []) or []]
 		impl_type_param_names = [p.name for p in getattr(sig, "impl_type_params", []) or []]
@@ -438,6 +450,7 @@ def encode_signatures(signatures: Mapping[str, FnSignature], *, module_id: str) 
 		out[name] = {
 			"name": sig.name,
 			"module": sig_module,
+			"fn_id": function_id_to_obj(fn_id),
 			"is_method": sig.is_method,
 			"method_name": getattr(sig, "method_name", None),
 			"impl_target_type_id": getattr(sig, "impl_target_type_id", None),
@@ -446,6 +459,11 @@ def encode_signatures(signatures: Mapping[str, FnSignature], *, module_id: str) 
 			"is_wrapper": bool(getattr(sig, "is_wrapper", False)),
 			"wraps_target_symbol": (
 				function_symbol(sig.wraps_target_fn_id)
+				if getattr(sig, "wraps_target_fn_id", None) is not None
+				else None
+			),
+			"wraps_target_fn_id": (
+				function_id_to_obj(sig.wraps_target_fn_id)
 				if getattr(sig, "wraps_target_fn_id", None) is not None
 				else None
 			),
@@ -462,18 +480,270 @@ def encode_signatures(signatures: Mapping[str, FnSignature], *, module_id: str) 
 	return out
 
 
+def _build_type_param_map(
+	sig: FnSignature,
+	impl_type_param_names: list[str],
+	type_param_names: list[str],
+) -> dict[object, dict[str, object]]:
+	"""Map type param names/ids to canonical TyVar descriptors."""
+	out: dict[object, dict[str, object]] = {}
+	for idx, name in enumerate(impl_type_param_names):
+		out[name] = {"scope": "impl", "index": idx}
+	for idx, name in enumerate(type_param_names):
+		out[name] = {"scope": "fn", "index": idx}
+	for idx, tp in enumerate(getattr(sig, "impl_type_params", []) or []):
+		out[getattr(tp, "id", None)] = {"scope": "impl", "index": idx}
+	for idx, tp in enumerate(getattr(sig, "type_params", []) or []):
+		out[getattr(tp, "id", None)] = {"scope": "fn", "index": idx}
+	return out
+
+
+def _generic_param_layout(
+	impl_type_param_names: list[str],
+	type_param_names: list[str],
+) -> list[dict[str, object]]:
+	layout: list[dict[str, object]] = []
+	for idx in range(len(impl_type_param_names)):
+		layout.append({"scope": "impl", "index": idx})
+	for idx in range(len(type_param_names)):
+		layout.append({"scope": "fn", "index": idx})
+	return layout
+
+
+def _canonical_type_expr(
+	expr: parser_ast.TypeExpr | None,
+	*,
+	default_module: str | None,
+	param_type_map: dict[object, dict[str, object]],
+) -> dict[str, Any] | None:
+	if expr is None:
+		return None
+	name = getattr(expr, "name", None)
+	if not isinstance(name, str) or not name:
+		return None
+	if name == "Self":
+		return {"param": {"scope": "trait_self", "index": 0}}
+	if name in param_type_map:
+		return {"param": param_type_map[name]}
+	module_id = getattr(expr, "module_id", None)
+	if module_id is None and default_module and name not in _BUILTIN_TYPE_NAMES:
+		module_id = default_module
+	args_obj = []
+	for arg in list(getattr(expr, "args", []) or []):
+		args_obj.append(
+			_canonical_type_expr(
+				arg,
+				default_module=default_module,
+				param_type_map=param_type_map,
+			)
+		)
+	out: dict[str, Any] = {"name": name}
+	if module_id:
+		out["module"] = module_id
+	if name == "fn":
+		out["can_throw"] = bool(expr.can_throw())
+	if args_obj:
+		out["args"] = args_obj
+	return out
+
+
+def _canonical_trait_expr(
+	expr: parser_ast.TraitExpr | None,
+	*,
+	default_module: str | None,
+	default_package: str | None,
+	module_packages: Mapping[str, str] | None,
+	param_type_map: dict[object, dict[str, object]],
+) -> dict[str, Any] | None:
+	if expr is None:
+		return None
+	if isinstance(expr, parser_ast.TraitIs):
+		subject = expr.subject
+		if subject == "Self":
+			subj_obj = {"var": {"scope": "trait_self", "index": 0}}
+		elif subject in param_type_map:
+			subj_obj = {"var": param_type_map[subject]}
+		elif isinstance(subject, TypeParamId) and subject in param_type_map:
+			subj_obj = {"var": param_type_map[subject]}
+		else:
+			subj_obj = {"name": str(subject)}
+		trait_key = trait_key_from_expr(
+			expr.trait,
+			default_module=default_module,
+			default_package=default_package,
+			module_packages=module_packages,
+		)
+		return {
+			"kind": "is",
+			"subject": subj_obj,
+			"trait": {
+				"package_id": trait_key.package_id,
+				"module": trait_key.module,
+				"name": trait_key.name,
+			},
+		}
+	if isinstance(expr, parser_ast.TraitAnd):
+		return {
+			"kind": "and",
+			"left": _canonical_trait_expr(
+				expr.left,
+				default_module=default_module,
+				default_package=default_package,
+				module_packages=module_packages,
+				param_type_map=param_type_map,
+			),
+			"right": _canonical_trait_expr(
+				expr.right,
+				default_module=default_module,
+				default_package=default_package,
+				module_packages=module_packages,
+				param_type_map=param_type_map,
+			),
+		}
+	if isinstance(expr, parser_ast.TraitOr):
+		return {
+			"kind": "or",
+			"left": _canonical_trait_expr(
+				expr.left,
+				default_module=default_module,
+				default_package=default_package,
+				module_packages=module_packages,
+				param_type_map=param_type_map,
+			),
+			"right": _canonical_trait_expr(
+				expr.right,
+				default_module=default_module,
+				default_package=default_package,
+				module_packages=module_packages,
+				param_type_map=param_type_map,
+			),
+		}
+	if isinstance(expr, parser_ast.TraitNot):
+		return {
+			"kind": "not",
+			"expr": _canonical_trait_expr(
+				expr.expr,
+				default_module=default_module,
+				default_package=default_package,
+				module_packages=module_packages,
+				param_type_map=param_type_map,
+			),
+		}
+	return None
+
+
+def _require_fingerprint(
+	expr: parser_ast.TraitExpr | None,
+	*,
+	default_module: str | None,
+	default_package: str | None,
+	module_packages: Mapping[str, str] | None,
+	param_type_map: dict[object, dict[str, object]],
+) -> str:
+	if expr is None:
+		return "none"
+	canon = _canonical_trait_expr(
+		expr,
+		default_module=default_module,
+		default_package=default_package,
+		module_packages=module_packages,
+		param_type_map=param_type_map,
+	)
+	return sha256_hex(canonical_json_bytes(canon))
+
+
+def _method_trait_key(declared_name: str) -> str | None:
+	parts = declared_name.split("::")
+	if len(parts) < 3:
+		return None
+	return parts[-2]
+
+
+def _impl_receiver_head(declared_name: str) -> str | None:
+	parts = declared_name.split("::")
+	if len(parts) >= 2:
+		target = parts[0]
+		if "<" in target:
+			return target.split("<", 1)[0]
+		return target
+	return None
+
+
+def _decl_fingerprint(
+	sig: FnSignature,
+	*,
+	declared_name: str,
+	module_id: str,
+	generic_param_layout_hash: str,
+	require_fingerprint: str,
+	param_type_map: dict[object, dict[str, object]],
+) -> str:
+	param_types = []
+	for p in list(getattr(sig, "param_types", []) or []):
+		param_types.append(_canonical_type_expr(p, default_module=module_id, param_type_map=param_type_map))
+	fingerprint_obj = {
+		"kind": "method" if getattr(sig, "is_method", False) else "function",
+		"module": module_id,
+		"name": declared_name,
+		"arity": len(param_types),
+		"param_types": param_types,
+		"receiver_mode": getattr(sig, "self_mode", None),
+		"trait_key": _method_trait_key(declared_name),
+		"impl_receiver_head": _impl_receiver_head(declared_name),
+		"generic_param_layout_hash": generic_param_layout_hash,
+		"require_fingerprint": require_fingerprint,
+	}
+	return sha256_hex(canonical_json_bytes(fingerprint_obj))
+
+
+def compute_template_decl_fingerprint(
+	sig: FnSignature,
+	*,
+	declared_name: str,
+	module_id: str,
+	require_expr: parser_ast.TraitExpr | None,
+	default_package: str | None = None,
+	module_packages: Mapping[str, str] | None = None,
+) -> tuple[str, list[dict[str, object]]]:
+	"""Compute the decl fingerprint + generic param layout for a template signature."""
+	type_param_names = [p.name for p in getattr(sig, "type_params", []) or []]
+	impl_type_param_names = [p.name for p in getattr(sig, "impl_type_params", []) or []]
+	param_type_map = _build_type_param_map(sig, impl_type_param_names, type_param_names)
+	generic_param_layout = _generic_param_layout(impl_type_param_names, type_param_names)
+	layout_hash = sha256_hex(canonical_json_bytes(generic_param_layout))
+	require_fp = _require_fingerprint(
+		require_expr,
+		default_module=module_id,
+		default_package=default_package,
+		module_packages=module_packages,
+		param_type_map=param_type_map,
+	)
+	decl_fp = _decl_fingerprint(
+		sig,
+		declared_name=declared_name,
+		module_id=module_id,
+		generic_param_layout_hash=layout_hash,
+		require_fingerprint=require_fp,
+		param_type_map=param_type_map,
+	)
+	return decl_fp, generic_param_layout
+
+
 def encode_generic_templates(
 	*,
+	package_id: str,
 	module_id: str,
 	signatures: Mapping[str, FnSignature],
 	hir_blocks: Mapping[str, Any],
 	requires_by_symbol: Mapping[str, parser_ast.TraitExpr] | None = None,
+	module_packages: Mapping[str, str] | None = None,
 ) -> list[dict[str, Any]]:
 	"""
 	Encode generic TemplateHIR payload entries for a module.
 
 	Each entry includes:
 	- fn_symbol (fully-qualified symbol name),
+	- fn_id (structured {module,name,ordinal}),
 	- signature template (TypeExpr-based),
 	- optional require clause,
 	- TemplateHIR body (`ir_kind` + `ir`).
@@ -495,30 +765,51 @@ def encode_generic_templates(
 		sig_entry = sig_entries.get(sym)
 		if not isinstance(sig_entry, dict):
 			continue
+		if sig.param_types is None or sig.return_type is None:
+			raise ValueError(f"TemplateHIR-v1 requires TypeExpr signatures for '{sym}'")
+		fn_id = parse_function_symbol(sym)
 		name = sym
-		ordinal = 0
 		if sym.startswith(f"{module_id}::"):
 			name = sym[len(f"{module_id}::") :]
 		if "#" in name:
 			base, ord_text = name.rsplit("#", 1)
 			if ord_text.isdigit():
 				name = base
-				ordinal = int(ord_text)
-		template_id = {"module": module_id, "name": name, "ordinal": ordinal}
+				# Ordinal suffix is stripped from the declared name.
+				# The template key fingerprint encodes identity instead.
+		type_param_names = list(sig_entry.get("type_params") or [])
+		impl_type_param_names = list(sig_entry.get("impl_type_params") or [])
+		req_expr = reqs.get(sym)
+		decl_fp, generic_param_layout = compute_template_decl_fingerprint(
+			sig,
+			declared_name=name,
+			module_id=module_id,
+			require_expr=req_expr,
+			default_package=package_id,
+			module_packages=module_packages,
+		)
+		template_id = function_key_to_obj(
+			FunctionKey(
+				package_id=package_id,
+				module_path=module_id,
+				name=name,
+				decl_fingerprint=decl_fp,
+			)
+		)
 		entry: dict[str, Any] = {
 			"fn_symbol": sym,
+			"fn_id": function_id_to_obj(fn_id),
 			"template_id": template_id,
 			"signature": sig_entry,
-			"ir_kind": "TemplateHIR-v0",
+			"ir_kind": "TemplateHIR-v1",
 			"ir": _to_jsonable(hir),
+			"generic_param_layout": list(generic_param_layout),
 		}
-		req_expr = reqs.get(sym)
 		if req_expr is not None:
-			type_param_names = list(sig_entry.get("type_params") or []) + list(sig_entry.get("impl_type_params") or [])
 			entry["require"] = encode_trait_expr(
 				req_expr,
 				default_module=module_id,
-				type_param_names=type_param_names,
+				type_param_names=type_param_names + impl_type_param_names,
 			)
 		else:
 			entry["require"] = None
@@ -528,6 +819,7 @@ def encode_generic_templates(
 
 def encode_module_payload_v0(
 	*,
+	package_id: str,
 	module_id: str,
 	type_table: TypeTable,
 	signatures: Mapping[str, FnSignature],
@@ -542,7 +834,7 @@ def encode_module_payload_v0(
 	impl_headers: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
 	"""Build the provisional payload object (not yet canonical-JSON encoded)."""
-	tt_obj = encode_type_table(type_table)
+	tt_obj = encode_type_table(type_table, package_id=package_id)
 	consts: list[str] = list(exported_consts or [])
 	const_table: dict[str, Any] = {}
 	for name in consts:

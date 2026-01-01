@@ -1,0 +1,26 @@
+module main
+
+exception Fail()
+
+trait Boom {
+	fn boom(self: &Self) returns Void
+}
+
+struct S(x: Int)
+
+implement Boom for S {
+	fn boom(self: &S) returns Void {
+		throw Fail();
+	}
+}
+
+fn main() nothrow returns Int{
+	val s: S = S(1);
+	val r: &S = &s;
+	try {
+		Boom::boom(r);
+		return 0;
+	} catch {
+		return 2;
+	}
+}

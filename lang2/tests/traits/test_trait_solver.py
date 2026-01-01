@@ -17,8 +17,8 @@ implement Debuggable for File { fn fmt(self: File) returns String { return ""; }
 	)
 	world = build_trait_world(prog)
 	env = Env(default_module="main")
-	subst = {"Self": TypeKey(module="main", name="File", args=())}
-	res = prove_is(world, env, subst, "Self", TraitKey(module="main", name="Debuggable"))
+	subst = {"Self": TypeKey(package_id=None, module="main", name="File", args=())}
+	res = prove_is(world, env, subst, "Self", TraitKey(package_id=None, module="main", name="Debuggable"))
 	assert res.status is ProofStatus.PROVED
 
 
@@ -31,8 +31,8 @@ struct File { }
 	)
 	world = build_trait_world(prog)
 	env = Env(default_module="main")
-	subst = {"Self": TypeKey(module="main", name="File", args=())}
-	res = prove_is(world, env, subst, "Self", TraitKey(module="main", name="Debuggable"))
+	subst = {"Self": TypeKey(package_id=None, module="main", name="File", args=())}
+	res = prove_is(world, env, subst, "Self", TraitKey(package_id=None, module="main", name="Debuggable"))
 	assert res.status is ProofStatus.REFUTED
 
 
@@ -47,8 +47,8 @@ implement A for File require Self is B { fn a(self: File) returns Int { return 0
 	)
 	world = build_trait_world(prog)
 	env = Env(default_module="main")
-	subst = {"Self": TypeKey(module="main", name="File", args=())}
-	res = prove_is(world, env, subst, "Self", TraitKey(module="main", name="A"))
+	subst = {"Self": TypeKey(package_id=None, module="main", name="File", args=())}
+	res = prove_is(world, env, subst, "Self", TraitKey(package_id=None, module="main", name="A"))
 	assert res.status is ProofStatus.REFUTED
 
 
@@ -81,7 +81,7 @@ struct File { }
 	)
 	world = build_trait_world(prog)
 	env = Env(default_module="main")
-	subst = {"Self": TypeKey(module="main", name="File", args=())}
+	subst = {"Self": TypeKey(package_id=None, module="main", name="File", args=())}
 	expr = parser_ast.TraitNot(
 		loc=parser_ast.Located(line=1, column=1),
 		expr=parser_ast.TraitIs(
@@ -102,7 +102,7 @@ trait A { fn a(self: Int) returns Int }
 	)
 	world = build_trait_world(prog)
 	subj = "T"
-	trait_key = TraitKey(module="main", name="A")
+	trait_key = TraitKey(package_id=None, module="main", name="A")
 	env = Env(default_module="main", assumed_true={(subj, trait_key)})
 	res = prove_is(world, env, {}, subj, trait_key)
 	assert res.status is ProofStatus.PROVED

@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from lang2.driftc.parser import parse_drift_files_to_hir, parse_drift_workspace_to_hir
+from lang2.driftc.module_lowered import flatten_modules
 
 
 def _write(path: Path, text: str) -> None:
@@ -39,8 +40,9 @@ fn main() nothrow returns Int{
 	)
 
 	# Workspace path.
-	_hirs, sigs, _fn_ids_by_name, _tt, _exc, _exports, _deps, diags = parse_drift_workspace_to_hir([src], module_paths=[tmp_path])
+	_modules, _tt, _exc, _exports, _deps, diags = parse_drift_workspace_to_hir([src], module_paths=[tmp_path])
 	assert not diags
+	_hirs, sigs, _fn_ids_by_name = flatten_modules(_modules)
 	methods = [s for s in sigs.values() if getattr(s, "is_method", False)]
 	assert methods
 	for sig in methods:

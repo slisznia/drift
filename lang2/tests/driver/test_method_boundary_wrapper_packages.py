@@ -5,14 +5,17 @@ from pathlib import Path
 
 from lang2.driftc import stage1 as H
 from lang2.driftc.core.function_id import FunctionId, function_symbol, method_wrapper_id
-from lang2.driftc.driftc import _collect_external_trait_and_impl_metadata, _parse_function_symbol, main as driftc_main
+from lang2.driftc.driftc import _collect_external_trait_and_impl_metadata, main as driftc_main
 from lang2.driftc.impl_index import GlobalImplIndex, find_impl_method_conflicts
 from lang2.driftc.method_registry import CallableRegistry, CallableSignature, SelfMode, Visibility
 from lang2.driftc.packages.provider_v0 import collect_external_exports, load_package_v0
 from lang2.driftc.packages.type_table_link_v0 import import_type_tables_and_build_typeid_maps
 from lang2.driftc.parser import parse_drift_workspace_to_hir
+from lang2.driftc.module_lowered import flatten_modules
 from lang2.driftc.stage1.call_info import CallTargetKind
+from lang2.driftc.test_helpers import build_linked_world
 from lang2.driftc.type_checker import TypeChecker
+from lang2.driftc.core.function_id import function_id_from_obj
 from lang2.driftc.checker import FnSignature, TypeParam
 from lang2.driftc.core.types_core import TypeKind, TypeParamId
 
@@ -243,6 +246,9 @@ def _decode_package_signatures(
 			module_name = sd.get("module")
 			if module_name is not None and "::" not in name:
 				name = f"{module_name}::{name}"
+			fn_id = function_id_from_obj(sd.get("fn_id"))
+			if fn_id is None:
+				raise AssertionError(f"missing fn_id for signature '{name}'")
 			param_type_ids = sd.get("param_type_ids")
 			if isinstance(param_type_ids, list):
 				param_type_ids = [tid_map.get(int(x), int(x)) for x in param_type_ids]
@@ -252,11 +258,7 @@ def _decode_package_signatures(
 			impl_tid = sd.get("impl_target_type_id")
 			if isinstance(impl_tid, int):
 				impl_tid = tid_map.get(impl_tid, impl_tid)
-			wraps_symbol = sd.get("wraps_target_symbol")
-			wraps_fn_id = None
-			if isinstance(wraps_symbol, str) and wraps_symbol:
-				wraps_fn_id = _parse_function_symbol(wraps_symbol)
-			fn_id = _parse_function_symbol(str(sym))
+			wraps_fn_id = function_id_from_obj(sd.get("wraps_target_fn_id"))
 			type_param_names = sd.get("type_params")
 			if not isinstance(type_param_names, list):
 				type_param_names = []
@@ -321,23 +323,21 @@ fn main() nothrow returns Int{
 """.lstrip(),
 	)
 	paths = sorted(src_root.rglob("*.drift"))
-	func_hirs, signatures, fn_ids_by_name, type_table, _exc_catalog, module_exports, module_deps, diagnostics = (
-		parse_drift_workspace_to_hir(
-			paths,
-			module_paths=[src_root],
-			external_module_exports=external_exports,
-		)
+	modules, type_table, _exc_catalog, module_exports, module_deps, diagnostics = parse_drift_workspace_to_hir(
+		paths,
+		module_paths=[src_root],
+		external_module_exports=external_exports,
 	)
 	assert diagnostics == []
+	func_hirs, signatures, fn_ids_by_name = flatten_modules(modules)
 
 	external_sigs_by_id = _decode_package_signatures(pkg_path, type_table=type_table)
 	signatures.update(external_sigs_by_id)
 
-	external_sigs_by_symbol = {function_symbol(fn_id): sig for fn_id, sig in external_sigs_by_id.items()}
 	_external_trait_defs, external_impl_metas, _missing_traits, _missing_impl_modules = _collect_external_trait_and_impl_metadata(
 		loaded_pkgs=[pkg],
 		type_table=type_table,
-		external_signatures_by_symbol=external_sigs_by_symbol,
+		external_signatures_by_id=external_sigs_by_id,
 	)
 	registry, module_ids = _build_registry(signatures)
 	impl_index = GlobalImplIndex.from_module_exports(
@@ -366,6 +366,7 @@ fn main() nothrow returns Int{
 		param_types = {pname: pty for pname, pty in zip(main_sig.param_names, main_sig.param_type_ids)}
 	current_mod = module_ids.setdefault(main_sig.module, len(module_ids))
 	visible_mods = _visible_modules_for("main", module_deps, module_ids)
+	linked_world, require_env = build_linked_world(type_table)
 	tc = TypeChecker(type_table=type_table)
 	call_sigs_by_name: dict[str, list[FnSignature]] = {}
 	for fn_id, sig in signatures.items():
@@ -384,6 +385,8 @@ fn main() nothrow returns Int{
 		signatures_by_id=signatures,
 		callable_registry=registry,
 		impl_index=impl_index,
+		linked_world=linked_world,
+		require_env=require_env,
 		visible_modules=visible_mods,
 		current_module=current_mod,
 	)
@@ -433,14 +436,13 @@ fn main() returns Int {
 """.lstrip(),
 	)
 	paths = sorted(src_root.rglob("*.drift"))
-	func_hirs, signatures, fn_ids_by_name, type_table, _exc_catalog, module_exports, module_deps, diagnostics = (
-		parse_drift_workspace_to_hir(
-			paths,
-			module_paths=[src_root],
-			external_module_exports=external_exports,
-		)
+	modules, type_table, _exc_catalog, module_exports, module_deps, diagnostics = parse_drift_workspace_to_hir(
+		paths,
+		module_paths=[src_root],
+		external_module_exports=external_exports,
 	)
 	assert diagnostics == []
+	func_hirs, signatures, fn_ids_by_name = flatten_modules(modules)
 
 	external_sigs_by_id = _decode_package_signatures(pkg_path, type_table=type_table)
 	signatures.update(external_sigs_by_id)
@@ -457,11 +459,10 @@ fn main() returns Int {
 	fnparam_def = type_table.get(fnparam_tid)
 	assert fnparam_def.fn_throws is False
 
-	external_sigs_by_symbol = {function_symbol(fn_id): sig for fn_id, sig in external_sigs_by_id.items()}
 	_external_trait_defs, external_impl_metas, _missing_traits, _missing_impl_modules = _collect_external_trait_and_impl_metadata(
 		loaded_pkgs=[pkg],
 		type_table=type_table,
-		external_signatures_by_symbol=external_sigs_by_symbol,
+		external_signatures_by_id=external_sigs_by_id,
 	)
 	registry, module_ids = _build_registry(signatures)
 	impl_index = GlobalImplIndex.from_module_exports(
@@ -490,6 +491,7 @@ fn main() returns Int {
 		param_types = {pname: pty for pname, pty in zip(main_sig.param_names, main_sig.param_type_ids)}
 	current_mod = module_ids.setdefault(main_sig.module, len(module_ids))
 	visible_mods = _visible_modules_for("main", module_deps, module_ids)
+	linked_world, require_env = build_linked_world(type_table)
 	tc = TypeChecker(type_table=type_table)
 	call_sigs_by_name: dict[str, list[FnSignature]] = {}
 	for fn_id, sig in signatures.items():
@@ -508,6 +510,8 @@ fn main() returns Int {
 		signatures_by_id=signatures,
 		callable_registry=registry,
 		impl_index=impl_index,
+		linked_world=linked_world,
+		require_env=require_env,
 		visible_modules=visible_mods,
 		current_module=current_mod,
 	)

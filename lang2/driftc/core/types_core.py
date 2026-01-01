@@ -56,9 +56,10 @@ class NominalKey:
 	from `struct Point` declared in module `b.geom`, even though both share the
 	short name `Point`.
 
-	Builtins use `module_id=None` and are toolchain-owned.
+	Builtins use `module_id=None`/`package_id=None` and are toolchain-owned.
 	"""
 
+	package_id: str | None
 	module_id: str | None
 	name: str
 	kind: TypeKind
@@ -202,6 +203,9 @@ class TypeTable:
 	def __init__(self) -> None:
 		self._defs: Dict[TypeId, TypeDef] = {}
 		self._next_id: TypeId = 1  # reserve 0 for "invalid"
+		# Package identity for module-scoped type keys.
+		self.package_id: str | None = None
+		self.module_packages: dict[str, str] = {}
 		# Nominal key → TypeId mapping. This ensures repeated references to the
 		# same module-scoped user-defined type resolve to a single TypeId.
 		self._nominal: Dict[NominalKey, TypeId] = {}
@@ -265,6 +269,11 @@ class TypeTable:
 		"""Return (TypeId, value) for a fully-qualified const symbol."""
 		return self.consts.get(sym)
 
+	def _package_for_module(self, module_id: str | None) -> str | None:
+		if module_id is None:
+			return None
+		return self.module_packages.get(module_id, self.package_id)
+
 	def new_scalar(self, name: str) -> TypeId:
 		"""Register a scalar type (e.g., Int, Bool) and return its TypeId."""
 		return self._add(TypeKind.SCALAR, name, [])
@@ -278,7 +287,7 @@ class TypeTable:
 		nominal type. Later, a richer kind (STRUCT/ENUM) may be declared under
 		that name; callers should prefer explicit `declare_struct` for structs.
 		"""
-		key = NominalKey(module_id=module_id, name=name, kind=TypeKind.SCALAR)
+		key = NominalKey(package_id=self._package_for_module(module_id), module_id=module_id, name=name, kind=TypeKind.SCALAR)
 		prev = self._nominal.get(key)
 		if prev is not None:
 			return prev
@@ -286,7 +295,9 @@ class TypeTable:
 
 	def get_nominal(self, *, kind: TypeKind, module_id: str | None, name: str) -> TypeId | None:
 		"""Return a nominal TypeId by identity, or None if not present."""
-		return self._nominal.get(NominalKey(module_id=module_id, name=name, kind=kind))
+		return self._nominal.get(
+			NominalKey(package_id=self._package_for_module(module_id), module_id=module_id, name=name, kind=kind)
+		)
 
 	def require_nominal(self, *, kind: TypeKind, module_id: str | None, name: str) -> TypeId:
 		"""Return a nominal TypeId by identity, raising if missing."""
@@ -320,7 +331,7 @@ class TypeTable:
 		names, then filling field types in a second pass via `define_struct_fields`.
 		"""
 		type_params = list(type_params or [])
-		key = NominalKey(module_id=module_id, name=name, kind=TypeKind.STRUCT)
+		key = NominalKey(package_id=self._package_for_module(module_id), module_id=module_id, name=name, kind=TypeKind.STRUCT)
 		if key in self._nominal:
 			ty_id = self._nominal[key]
 			td = self.get(ty_id)
@@ -355,7 +366,7 @@ class TypeTable:
 		concrete instantiation with zero type arguments, and is available via
 		`get_variant_instance(base_id)`.
 		"""
-		key = NominalKey(module_id=module_id, name=name, kind=TypeKind.VARIANT)
+		key = NominalKey(package_id=self._package_for_module(module_id), module_id=module_id, name=name, kind=TypeKind.VARIANT)
 		if key in self._nominal:
 			ty_id = self._nominal[key]
 			td = self.get(ty_id)
@@ -937,7 +948,7 @@ class TypeTable:
 		if register_named is None:
 			register_named = kind in (TypeKind.SCALAR, TypeKind.STRUCT)
 		if register_named:
-			key = NominalKey(module_id=module_id, name=name, kind=kind)
+			key = NominalKey(package_id=self._package_for_module(module_id), module_id=module_id, name=name, kind=kind)
 			self._nominal.setdefault(key, ty_id)
 		return ty_id
 

@@ -5,6 +5,7 @@ from pathlib import Path
 
 from lang2.driftc.core.function_id import function_symbol
 from lang2.driftc.parser import parse_drift_to_hir
+from lang2.driftc.test_helpers import build_linked_world
 from lang2.driftc.type_checker import TypeChecker
 from lang2.driftc.method_registry import CallableRegistry, CallableSignature, Visibility
 
@@ -30,6 +31,7 @@ def _typecheck_main_with_registry(src: Path):
 			is_generic=False,
 		)
 		next_id += 1
+	linked_world, require_env = build_linked_world(type_table)
 	tc = TypeChecker(type_table=type_table)
 	fn_ids = fn_ids_by_name.get("main") or []
 	assert len(fn_ids) == 1
@@ -47,6 +49,8 @@ def _typecheck_main_with_registry(src: Path):
 		return_type=sig.return_type_id if sig is not None else None,
 		call_signatures=call_signatures,
 		callable_registry=registry,
+		linked_world=linked_world,
+		require_env=require_env,
 		visible_modules=(0,),
 		current_module=0,
 	)
@@ -59,9 +63,9 @@ def test_require_filters_out_unmet_overload(tmp_path: Path) -> None:
 		"""
 trait A { fn a(self: Int) returns Int }
 struct S { }
-fn f(x: S) returns Int require x is A { return 1; }
+fn f<T>(x: T) returns Int require T is A { return 1; }
 fn main(x: S) returns Int { return f(x); }
-"""
+	"""
 	)
 	res = _typecheck_main_with_registry(src)
-	assert any("no matching overload" in d.message for d in res.diagnostics)
+	assert any("requirement not satisfied" in d.message for d in res.diagnostics)

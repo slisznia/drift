@@ -83,3 +83,18 @@ fn main() returns Int {
 		"E-PARSE-TYPEAPP-DUP-TYPEARGS" in msg
 		or "E-PARSE-CALL-DUP-TYPEARGS" in msg
 	)
+
+
+def test_parse_trait_method_type_params() -> None:
+	prog = p.parse_program(
+		"""
+trait Show {
+	fn show<T>(self: &Self, value: T) returns Int;
+}
+"""
+	)
+	assert len(prog.traits) == 1
+	tr = prog.traits[0]
+	assert len(tr.methods) == 1
+	method = tr.methods[0]
+	assert method.type_params == ["T"]

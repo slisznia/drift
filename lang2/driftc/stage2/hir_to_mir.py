@@ -31,9 +31,9 @@ from typing import List, Set, Mapping, Optional
 
 from lang2.driftc import stage1 as H
 from lang2.driftc.stage1 import closures as C
-from lang2.driftc.stage1.call_info import CallInfo, CallTargetKind, call_abi_ret_type
+from lang2.driftc.stage1.call_info import CallInfo, CallSig, CallTarget, CallTargetKind, call_abi_ret_type
 from lang2.driftc.checker import FnSignature
-from lang2.driftc.core.function_id import function_symbol
+from lang2.driftc.core.function_id import FunctionId, function_symbol
 from lang2.driftc.core.span import Span
 from lang2.driftc.core.types_core import TypeKind, TypeTable, TypeId
 from lang2.driftc.core.type_resolve_common import resolve_opaque_type
@@ -41,6 +41,20 @@ from lang2.driftc.core.generic_type_expr import GenericTypeExpr
 from lang2.driftc.core.iter_intrinsics import ensure_array_iter_struct, is_array_iter_struct
 from lang2.driftc.stage1.capture_discovery import discover_captures
 from . import mir_nodes as M
+
+
+def _parse_function_symbol(sym: str) -> FunctionId:
+	base = sym
+	ordinal = 0
+	if "#" in sym:
+		base, ord_text = sym.rsplit("#", 1)
+		if ord_text.isdigit():
+			ordinal = int(ord_text)
+	if "::" in base:
+		module, name = base.split("::", 1)
+	else:
+		module, name = "main", base
+	return FunctionId(module=module, name=name, ordinal=ordinal)
 
 
 class MirBuilder:
@@ -148,6 +162,7 @@ class HIRToMIR:
 		param_types: Mapping[str, TypeId] | None = None,
 		signatures: Mapping[str, FnSignature] | None = None,
 		call_info_by_node_id: Mapping[int, CallInfo] | None = None,
+		call_resolutions: Mapping[int, object] | None = None,
 		can_throw_by_name: Mapping[str, bool] | None = None,
 		return_type: TypeId | None = None,
 	):
@@ -189,6 +204,7 @@ class HIRToMIR:
 		self._opt_string = self._type_table.new_optional(self._string_type)
 		self._signatures = signatures or {}
 		self._call_info_by_node_id: dict[int, CallInfo] = dict(call_info_by_node_id) if call_info_by_node_id else {}
+		self._call_resolutions: dict[int, object] = dict(call_resolutions) if call_resolutions else {}
 		# Best-effort can-throw classification for functions. This is intentionally
 		# separate from signatures: the surface language does not expose FnResult,
 		# and "can-throw" is an effect inferred from the body (or declared by a
@@ -928,7 +944,45 @@ class HIRToMIR:
 		if isinstance(expr.fn, H.HLambda):
 			return self._lower_lambda_immediate_call(expr.fn, expr.args)
 		if hasattr(H, "HQualifiedMember") and isinstance(expr.fn, getattr(H, "HQualifiedMember")):
+			info = self._call_info_by_node_id.get(expr.node_id)
+			if info is None:
+				info = self._call_info_from_ufcs(expr)
+			if info is not None and info.target.kind is CallTargetKind.INDIRECT:
+				# Constructor calls record indirect call info during type checking;
+				# MIR lowering handles them as direct variant construction instead.
+				info = None
+			if info is not None:
+				if getattr(expr, "kwargs", None):
+					raise AssertionError("keyword arguments reached MIR lowering for a UFCS call (checker bug)")
+				result = self._lower_call_with_info(expr, info)
+				if result is None:
+					raise AssertionError("Void-returning call used in expression context (checker bug)")
+				if info.sig.can_throw:
+					ok_tid = info.sig.user_ret_type
+					def emit_call() -> M.ValueId:
+						return result
+					return self._lower_can_throw_call_value(emit_call=emit_call, ok_ty=ok_tid)
+				return result
 			qm = expr.fn
+			cur_mod = self._current_module_name()
+			base_te = getattr(qm, "base_type_expr", None)
+			base_is_variant = False
+			if base_te is not None:
+				try:
+					base_tid = resolve_opaque_type(base_te, self._type_table, module_id=cur_mod)
+					base_def = self._type_table.get(base_tid)
+					base_is_variant = base_def.kind is TypeKind.VARIANT
+					if not base_is_variant:
+						name = getattr(base_te, "name", None)
+						if isinstance(name, str):
+							base_is_variant = (
+								self._type_table.get_variant_base(module_id=cur_mod, name=name)
+								or self._type_table.get_variant_base(module_id="lang.core", name=name)
+							) is not None
+				except Exception:
+					base_is_variant = False
+			if not base_is_variant:
+				raise AssertionError("missing CallInfo for qualified member call (checker bug)")
 			expected = self._current_expected_type()
 			variant_ty = self._infer_qualified_ctor_variant_type(
 				qm, expr.args, getattr(expr, "kwargs", []) or [], expected_type=expected
@@ -1923,6 +1977,25 @@ class HIRToMIR:
 				self.b.emit(M.StoreRef(ptr=a_ptr, value=b_val, inner_ty=a_ty))
 				self.b.emit(M.StoreRef(ptr=b_ptr, value=a_val, inner_ty=b_ty))
 				return
+		if (
+			isinstance(stmt.expr, H.HCall)
+			and hasattr(H, "HQualifiedMember")
+			and isinstance(stmt.expr.fn, getattr(H, "HQualifiedMember"))
+		):
+			info = self._call_info_by_node_id.get(stmt.expr.node_id)
+			if info is not None:
+				if info.sig.can_throw:
+					fnres_val = self._lower_call_with_info(stmt.expr, info)
+					assert fnres_val is not None
+
+					def emit_call() -> M.ValueId:
+						return fnres_val
+
+					self._lower_can_throw_call_stmt(emit_call=emit_call)
+					return
+				if self._type_table.is_void(info.sig.user_ret_type):
+					self._lower_call_with_info(stmt.expr, info)
+					return
 		if isinstance(stmt.expr, H.HCall):
 			info = self._call_info_by_node_id.get(stmt.expr.node_id)
 			if info is not None:
@@ -2662,6 +2735,62 @@ class HIRToMIR:
 		self.b.emit(M.Call(dest=dest, fn=target_sym, args=arg_vals, can_throw=False))
 		self._local_types[dest] = info.sig.user_ret_type
 		return dest
+
+	def _lower_call_with_info(self, expr: H.HCall, info: CallInfo) -> M.ValueId | None:
+		if info.target.kind is CallTargetKind.INDIRECT:
+			return self._lower_indirect_call(expr.fn, expr.args, info)
+		if info.target.kind is not CallTargetKind.DIRECT or not info.target.symbol:
+			raise AssertionError("call missing direct CallTarget (typecheck/call-info bug)")
+		target_sym = function_symbol(info.target.symbol)
+		arg_vals = [self.lower_expr(a) for a in expr.args]
+		if info.sig.can_throw:
+			dest = self.b.new_temp()
+			self.b.emit(M.Call(dest=dest, fn=target_sym, args=arg_vals, can_throw=True))
+			self._local_types[dest] = call_abi_ret_type(info.sig, self._type_table)
+			return dest
+		if self._type_table.is_void(info.sig.user_ret_type):
+			self.b.emit(M.Call(dest=None, fn=target_sym, args=arg_vals, can_throw=False))
+			return None
+		dest = self.b.new_temp()
+		self.b.emit(M.Call(dest=dest, fn=target_sym, args=arg_vals, can_throw=False))
+		self._local_types[dest] = info.sig.user_ret_type
+		return dest
+
+	def _call_info_from_resolution(self, node_id: int) -> CallInfo | None:
+		res = self._call_resolutions.get(node_id)
+		decl = getattr(res, "decl", None)
+		if decl is None:
+			return None
+		target_fn_id = getattr(decl, "fn_id", None)
+		if target_fn_id is None:
+			return None
+		sig = getattr(decl, "signature", None)
+		if sig is None:
+			return None
+		params = list(getattr(sig, "param_types", []) or [])
+		result_type = getattr(res, "result_type", None) or getattr(sig, "result_type", None)
+		if result_type is None:
+			return None
+		call_can_throw = True
+		target_name = function_symbol(target_fn_id)
+		if target_name in self._can_throw_by_name:
+			call_can_throw = bool(self._can_throw_by_name[target_name])
+		info = CallInfo(
+			target=CallTarget.direct(target_fn_id),
+			sig=CallSig(
+				param_types=tuple(params),
+				user_ret_type=result_type,
+				can_throw=bool(call_can_throw),
+			),
+		)
+		self._call_info_by_node_id[node_id] = info
+		return info
+
+	def _call_info_from_ufcs(self, expr: H.HCall) -> CallInfo | None:
+		info = self._call_info_from_resolution(expr.node_id)
+		if info is not None:
+			return info
+		return None
 
 	def _lower_invoke(self, expr: H.HInvoke) -> M.ValueId | None:
 		info = self._call_info_for_invoke(expr)
