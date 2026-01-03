@@ -97,3 +97,11 @@
 - Catch event arms now accept unqualified event names (resolved to the current module) with spec updates.
 - Added nothrow e2e coverage (throwing calls, try/catch ok, cross-module method requires try, same-module pub ok, can-throw→nothrow fnptr reject).
 - Provider-emitted method boundary wrappers now exist for public NOTHROW methods, exported in package signatures and selected at cross-module call sites; cross-module method boundary e2e re-enabled with new try/catch and same-module guard cases.
+## 2026-01-02 – Callsite IDs, CallInfo authority, and generics pipeline hardening
+- Enforced callsite-id as the sole call-identity: TypedFn now stores call info and instantiations keyed by callsite_id only; node-id maps and adapters removed with guard tests.
+- Checker is FunctionId-only; removed legacy name-based adapters and signature-object identity recovery; CallInfo is required in typed mode.
+- Split base vs derived signatures (immutable base, derived synthesis only), centralized synthesized signature registration, and made stage2 read-only for signatures.
+- Hidden lambdas now typecheck as separate functions with their own callsite maps; capture binding IDs are remapped to fresh function-local IDs; captures are PlaceKind.CAPTURE; capture order is deterministic.
+- CallInfo/MIR invariants tightened: every M.Call has explicit can_throw; stage2 rejects call_resolutions in typed mode.
+- TemplateHIR-v0 import path removed in CLI (hard error); import boundary is structured IDs only.
+- byte_length now takes &String with lvalue auto-borrow; rvalue borrow rejected; entrypoint main remains nothrow Int.
