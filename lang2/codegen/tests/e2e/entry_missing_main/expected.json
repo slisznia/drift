@@ -1,6 +1,11 @@
 {
-  "phase": "parser",
+  "description": "e2e: entry missing main",
+  "diagnostics": [
+    {
+      "message_contains": "missing entry point 'main' for code generation",
+      "phase": "typecheck"
+    }
+  ],
   "exit_code": 1,
-  "stdout": "",
-  "stderr": "missing entry point 'main' for code generation"
+  "use_driftc_json": false
 }

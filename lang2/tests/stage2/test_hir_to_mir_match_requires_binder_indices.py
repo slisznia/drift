@@ -12,8 +12,9 @@ from __future__ import annotations
 from lang2.driftc import stage1 as H
 from lang2.driftc.core.generic_type_expr import GenericTypeExpr
 from lang2.driftc.core.types_core import TypeTable, VariantArmSchema, VariantFieldSchema
+from lang2.driftc.core.function_id import FunctionId
 from lang2.driftc.parser.ast import TypeExpr
-from lang2.driftc.stage2 import HIRToMIR, MirBuilder
+from lang2.driftc.stage2 import HIRToMIR, make_builder
 
 
 def test_match_missing_binder_field_indices_is_a_checker_bug() -> None:
@@ -75,7 +76,7 @@ def test_match_missing_binder_field_indices_is_a_checker_bug() -> None:
 			),
 		]
 	)
-	builder = MirBuilder(name="main")
+	builder = make_builder(FunctionId(module="main", name="main", ordinal=0))
 	lower = HIRToMIR(builder, type_table=type_table)
 	try:
 		lower.lower_block(hir)
@@ -139,5 +140,5 @@ def test_match_with_positional_binders_lowers_with_indices() -> None:
 			),
 		]
 	)
-	builder = MirBuilder(name="main")
+	builder = make_builder(FunctionId(module="main", name="main", ordinal=0))
 	HIRToMIR(builder, type_table=type_table).lower_block(hir)

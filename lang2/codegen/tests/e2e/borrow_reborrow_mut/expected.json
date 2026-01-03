@@ -1,6 +1,6 @@
 {
+  "description": "e2e: borrow reborrow mut",
   "exit_code": 42,
-  "stdout": "",
-  "stderr": ""
+  "stderr": "",
+  "stdout": ""
 }
-

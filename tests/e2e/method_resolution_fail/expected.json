@@ -1,11 +1,12 @@
 {
-  "mode": "compile",
-  "use_json": true,
-  "exit_code": 1,
+  "description": "e2e: method resolution fail",
   "diagnostics": [
     {
-      "phase": "typecheck",
-      "message_contains": "no matching method 'bump'"
+      "message_contains": "no matching method 'bump'",
+      "phase": "typecheck"
     }
-  ]
+  ],
+  "exit_code": 1,
+  "mode": "compile",
+  "use_json": true
 }

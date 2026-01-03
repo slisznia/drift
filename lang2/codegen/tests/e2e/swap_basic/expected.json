@@ -1,1 +1,10 @@
-{ "exit_code": 21, "stdout": "", "stderr": "" }
+{
+  "description": "e2e: swap basic",
+  "dev_allow_reserved_namespaces": true,
+  "exit_code": 21,
+  "module_paths": [
+    "."
+  ],
+  "stderr": "",
+  "stdout": ""
+}

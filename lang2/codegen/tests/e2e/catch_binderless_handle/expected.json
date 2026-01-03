@@ -1,5 +1,6 @@
 {
+  "description": "e2e: catch binderless handle",
   "exit_code": 0,
-  "stdout": "handled",
-  "stderr": ""
+  "stderr": "",
+  "stdout": "handled"
 }

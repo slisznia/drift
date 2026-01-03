@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from lang2.driftc.core.function_id import FunctionId
 from lang2.codegen.llvm import LlvmModuleBuilder, lower_ssa_func_to_llvm
 from lang2.driftc.checker import FnInfo, FnSignature
 from lang2.driftc.stage2 import (
@@ -32,7 +33,8 @@ def test_optional_ops_round_trip_payload():
 	opt_int_ty = table.new_optional(int_ty)
 
 	fnres_main = FnSignature(name="drift_main", return_type_id=int_ty, declared_can_throw=False)
-	fn_info_main = FnInfo(name="drift_main", declared_can_throw=False, return_type_id=int_ty, signature=fnres_main)
+	main_id = FunctionId(module="main", name="drift_main", ordinal=0)
+	fn_info_main = FnInfo(fn_id=main_id, name="drift_main", declared_can_throw=False, return_type_id=int_ty, signature=fnres_main)
 
 	# Runtime helper signature for error constructor
 	sig_err_new = FnSignature(
@@ -41,8 +43,8 @@ def test_optional_ops_round_trip_payload():
 		return_type_id=err_ty,
 		declared_can_throw=False,
 	)
-	fn_err_new = FnInfo(
-		name="drift_error_new_with_payload",
+	err_id = FunctionId(module="main", name="drift_error_new_with_payload", ordinal=0)
+	fn_err_new = FnInfo(fn_id=err_id, name="drift_error_new_with_payload",
 		declared_can_throw=False,
 		return_type_id=err_ty,
 		signature=sig_err_new,
@@ -54,10 +56,10 @@ def test_optional_ops_round_trip_payload():
 			ConstInt(dest="code", value=1),
 			ConstInt(dest="payload_int", value=7),
 			ConstructDV(dest="dv", dv_type_name="Payload", args=["payload_int"]),
-		ConstString(dest="ename", value="m:Evt"),
-		ConstString(dest="key", value="k"),
-		Call(dest="err", fn="drift_error_new_with_payload", args=["code", "ename", "key", "dv"], can_throw=False),
-		ErrorAttrsGetDV(dest="dv2", error="err", key="key"),
+			ConstString(dest="ename", value="m:Evt"),
+			ConstString(dest="key", value="k"),
+			Call(dest="err", fn_id=err_id, args=["code", "ename", "key", "dv"], can_throw=False),
+			ErrorAttrsGetDV(dest="dv2", error="err", key="key"),
 			DVAsInt(dest="opt", dv="dv2"),
 			OptionalIsSome(dest="some", opt="opt"),
 		],
@@ -74,6 +76,7 @@ def test_optional_ops_round_trip_payload():
 		terminator=Return(value="zero"),
 	)
 	mir = MirFunc(
+		fn_id=main_id,
 		name="drift_main",
 		params=[],
 		locals=[],
@@ -83,8 +86,8 @@ def test_optional_ops_round_trip_payload():
 	ssa = MirToSSA().run(mir)
 
 	fn_infos = {
-		"drift_main": fn_info_main,
-		"drift_error_new_with_payload": fn_err_new,
+		main_id: fn_info_main,
+		err_id: fn_err_new,
 	}
 
 	mod = LlvmModuleBuilder()
@@ -107,7 +110,8 @@ def test_optional_ops_round_trip_string_payload():
 	dv_ty = table.ensure_diagnostic_value()
 
 	fnres_main = FnSignature(name="drift_main", return_type_id=int_ty, declared_can_throw=False)
-	fn_info_main = FnInfo(name="drift_main", declared_can_throw=False, return_type_id=int_ty, signature=fnres_main)
+	main_id = FunctionId(module="main", name="drift_main", ordinal=0)
+	fn_info_main = FnInfo(fn_id=main_id, name="drift_main", declared_can_throw=False, return_type_id=int_ty, signature=fnres_main)
 
 	sig_err_new = FnSignature(
 		name="drift_error_new_with_payload",
@@ -115,8 +119,8 @@ def test_optional_ops_round_trip_string_payload():
 		return_type_id=err_ty,
 		declared_can_throw=False,
 	)
-	fn_err_new = FnInfo(
-		name="drift_error_new_with_payload",
+	err_id = FunctionId(module="main", name="drift_error_new_with_payload", ordinal=0)
+	fn_err_new = FnInfo(fn_id=err_id, name="drift_error_new_with_payload",
 		declared_can_throw=False,
 		return_type_id=err_ty,
 		signature=sig_err_new,
@@ -128,9 +132,9 @@ def test_optional_ops_round_trip_string_payload():
 			ConstInt(dest="code", value=1),
 			ConstString(dest="payload_str", value="hello"),
 			ConstructDV(dest="dv", dv_type_name="Payload", args=["payload_str"]),
-		ConstString(dest="ename", value="m:Evt"),
-		ConstString(dest="key", value="k"),
-		Call(dest="err", fn="drift_error_new_with_payload", args=["code", "ename", "key", "dv"], can_throw=False),
+			ConstString(dest="ename", value="m:Evt"),
+			ConstString(dest="key", value="k"),
+			Call(dest="err", fn_id=err_id, args=["code", "ename", "key", "dv"], can_throw=False),
 			ErrorAttrsGetDV(dest="dv2", error="err", key="key"),
 			DVAsString(dest="opt", dv="dv2"),
 			OptionalIsSome(dest="some", opt="opt"),
@@ -151,6 +155,7 @@ def test_optional_ops_round_trip_string_payload():
 		terminator=Return(value="zero"),
 	)
 	mir = MirFunc(
+		fn_id=main_id,
 		name="drift_main",
 		params=[],
 		locals=[],
@@ -160,8 +165,8 @@ def test_optional_ops_round_trip_string_payload():
 	ssa = MirToSSA().run(mir)
 
 	fn_infos = {
-		"drift_main": fn_info_main,
-		"drift_error_new_with_payload": fn_err_new,
+		main_id: fn_info_main,
+		err_id: fn_err_new,
 	}
 
 	mod = LlvmModuleBuilder()

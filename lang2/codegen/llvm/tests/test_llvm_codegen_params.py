@@ -1,3 +1,4 @@
+from lang2.driftc.core.function_id import FunctionId
 # vim: set noexpandtab: -*- indent-tabs-mode: t -*-
 # author: Sławomir Liszniański; created: 2025-12-10
 """
@@ -29,10 +30,11 @@ def test_int_param_header_and_call():
 
     # add(x: Int, y: Int) returns Int { return x }
     add_block = BasicBlock(name="entry", instructions=[], terminator=Return(value="x"))
-    add = MirFunc(name="add", params=["x", "y"], locals=[], blocks={"entry": add_block}, entry="entry")
+    add_id = FunctionId(module="main", name="add", ordinal=0)
+    add = MirFunc(fn_id=add_id, name="add", params=["x", "y"], locals=[], blocks={"entry": add_block}, entry="entry")
     add_ssa = MirToSSA().run(add)
     add_sig = FnSignature(name="add", param_type_ids=[int_ty, int_ty], return_type_id=int_ty)
-    add_info = FnInfo(name="add", declared_can_throw=False, signature=add_sig, return_type_id=int_ty)
+    add_info = FnInfo(fn_id=add_id, name="add", declared_can_throw=False, signature=add_sig, return_type_id=int_ty)
 
     # main() returns Int { return add(1, 2) }
     main_block = BasicBlock(
@@ -40,19 +42,20 @@ def test_int_param_header_and_call():
         instructions=[
             ConstInt(dest="t0", value=1),
             ConstInt(dest="t1", value=2),
-            Call(dest="t2", fn="add", args=["t0", "t1"], can_throw=False),
+            Call(dest="t2", fn_id=add_id, args=["t0", "t1"], can_throw=False),
         ],
         terminator=Return(value="t2"),
     )
-    main = MirFunc(name="main", params=[], locals=["t0", "t1", "t2"], blocks={"entry": main_block}, entry="entry")
+    main_id = FunctionId(module="main", name="main", ordinal=0)
+    main = MirFunc(fn_id=main_id, name="main", params=[], locals=["t0", "t1", "t2"], blocks={"entry": main_block}, entry="entry")
     main_ssa = MirToSSA().run(main)
     main_sig = FnSignature(name="main", param_type_ids=[], return_type_id=int_ty)
-    main_info = FnInfo(name="main", declared_can_throw=False, signature=main_sig, return_type_id=int_ty)
+    main_info = FnInfo(fn_id=main_id, name="main", declared_can_throw=False, signature=main_sig, return_type_id=int_ty)
 
     mod = lower_module_to_llvm(
-        {"add": add, "main": main},
-        {"add": add_ssa, "main": main_ssa},
-        {"add": add_info, "main": main_info},
+        {add_id: add, main_id: main},
+        {add_id: add_ssa, main_id: main_ssa},
+        {add_id: add_info, main_id: main_info},
         type_table=table,
     )
     ir = mod.render()
@@ -67,10 +70,11 @@ def test_mixed_int_string_params_and_return():
 
     # combine(x: Int, s: String) returns String { return s }
     comb_block = BasicBlock(name="entry", instructions=[], terminator=Return(value="s"))
-    comb = MirFunc(name="combine", params=["x", "s"], locals=[], blocks={"entry": comb_block}, entry="entry")
+    comb_id = FunctionId(module="main", name="combine", ordinal=0)
+    comb = MirFunc(fn_id=comb_id, name="combine", params=["x", "s"], locals=[], blocks={"entry": comb_block}, entry="entry")
     comb_ssa = MirToSSA().run(comb)
     comb_sig = FnSignature(name="combine", param_type_ids=[int_ty, str_ty], return_type_id=str_ty)
-    comb_info = FnInfo(name="combine", declared_can_throw=False, signature=comb_sig, return_type_id=str_ty)
+    comb_info = FnInfo(fn_id=comb_id, name="combine", declared_can_throw=False, signature=comb_sig, return_type_id=str_ty)
 
     # main() returns String { return combine(1, "abc") }
     main_block = BasicBlock(
@@ -78,19 +82,20 @@ def test_mixed_int_string_params_and_return():
         instructions=[
             ConstInt(dest="t0", value=1),
             ConstString(dest="t1", value="abc"),
-            Call(dest="t2", fn="combine", args=["t0", "t1"], can_throw=False),
+            Call(dest="t2", fn_id=comb_id, args=["t0", "t1"], can_throw=False),
         ],
         terminator=Return(value="t2"),
     )
-    main = MirFunc(name="main", params=[], locals=["t0", "t1", "t2"], blocks={"entry": main_block}, entry="entry")
+    main_id = FunctionId(module="main", name="main", ordinal=0)
+    main = MirFunc(fn_id=main_id, name="main", params=[], locals=["t0", "t1", "t2"], blocks={"entry": main_block}, entry="entry")
     main_ssa = MirToSSA().run(main)
     main_sig = FnSignature(name="main", param_type_ids=[], return_type_id=str_ty)
-    main_info = FnInfo(name="main", declared_can_throw=False, signature=main_sig, return_type_id=str_ty)
+    main_info = FnInfo(fn_id=main_id, name="main", declared_can_throw=False, signature=main_sig, return_type_id=str_ty)
 
     mod = lower_module_to_llvm(
-        {"combine": comb, "main": main},
-        {"combine": comb_ssa, "main": main_ssa},
-        {"combine": comb_info, "main": main_info},
+        {comb_id: comb, main_id: main},
+        {comb_id: comb_ssa, main_id: main_ssa},
+        {comb_id: comb_info, main_id: main_info},
         type_table=table,
     )
     ir = mod.render()
@@ -107,22 +112,24 @@ def test_fnptr_param_headers():
 
     # apply(f: fn(Int) nothrow returns Int, x: Int) returns Int { return x }
     apply_block = BasicBlock(name="entry", instructions=[], terminator=Return(value="x"))
-    apply = MirFunc(name="apply", params=["f", "x"], locals=[], blocks={"entry": apply_block}, entry="entry")
+    apply_id = FunctionId(module="main", name="apply", ordinal=0)
+    apply = MirFunc(fn_id=apply_id, name="apply", params=["f", "x"], locals=[], blocks={"entry": apply_block}, entry="entry")
     apply_ssa = MirToSSA().run(apply)
     apply_sig = FnSignature(name="apply", param_type_ids=[fnptr_nothrow, int_ty], return_type_id=int_ty)
-    apply_info = FnInfo(name="apply", declared_can_throw=False, signature=apply_sig, return_type_id=int_ty)
+    apply_info = FnInfo(fn_id=apply_id, name="apply", declared_can_throw=False, signature=apply_sig, return_type_id=int_ty)
 
     # apply_ct(f: fn(Int) returns Int, x: Int) returns Int { return x }
     apply_ct_block = BasicBlock(name="entry", instructions=[], terminator=Return(value="x"))
-    apply_ct = MirFunc(name="apply_ct", params=["f", "x"], locals=[], blocks={"entry": apply_ct_block}, entry="entry")
+    apply_ct_id = FunctionId(module="main", name="apply_ct", ordinal=0)
+    apply_ct = MirFunc(fn_id=apply_ct_id, name="apply_ct", params=["f", "x"], locals=[], blocks={"entry": apply_ct_block}, entry="entry")
     apply_ct_ssa = MirToSSA().run(apply_ct)
     apply_ct_sig = FnSignature(name="apply_ct", param_type_ids=[fnptr_throwing, int_ty], return_type_id=int_ty)
-    apply_ct_info = FnInfo(name="apply_ct", declared_can_throw=False, signature=apply_ct_sig, return_type_id=int_ty)
+    apply_ct_info = FnInfo(fn_id=apply_ct_id, name="apply_ct", declared_can_throw=False, signature=apply_ct_sig, return_type_id=int_ty)
 
     mod = lower_module_to_llvm(
-        {"apply": apply, "apply_ct": apply_ct},
-        {"apply": apply_ssa, "apply_ct": apply_ct_ssa},
-        {"apply": apply_info, "apply_ct": apply_ct_info},
+        {apply_id: apply, apply_ct_id: apply_ct},
+        {apply_id: apply_ssa, apply_ct_id: apply_ct_ssa},
+        {apply_id: apply_info, apply_ct_id: apply_ct_info},
         type_table=table,
     )
     ir = mod.render()

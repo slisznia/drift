@@ -1,1 +1,6 @@
-{ "exit_code": 104, "stdout": "", "stderr": "" }
+{
+  "description": "e2e: for loop try catch",
+  "exit_code": 104,
+  "stderr": "",
+  "stdout": ""
+}

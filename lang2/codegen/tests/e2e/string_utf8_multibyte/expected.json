@@ -1,5 +1,6 @@
 {
+  "description": "e2e: string utf8 multibyte",
   "exit_code": 0,
-  "stdout": "",
-  "stderr": ""
+  "stderr": "",
+  "stdout": ""
 }

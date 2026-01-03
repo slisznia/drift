@@ -1,1 +1,6 @@
-{ "exit_code": 7, "stdout": "", "stderr": "" }
+{
+  "description": "e2e: return ref param ok",
+  "exit_code": 7,
+  "stderr": "",
+  "stdout": ""
+}

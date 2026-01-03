@@ -1,7 +1,10 @@
 {
-  "exit_code": 1,
+  "description": "e2e: borrow array unknown indices write rejected",
   "diagnostics": [
-    { "phase": "borrowcheck", "message_contains": "cannot write to 'arr' while it is borrowed" }
-  ]
+    {
+      "message_contains": "cannot write to 'arr' while it is borrowed",
+      "phase": "borrowcheck"
+    }
+  ],
+  "exit_code": 1
 }
-

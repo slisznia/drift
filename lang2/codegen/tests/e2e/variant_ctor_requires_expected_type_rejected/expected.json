@@ -1,8 +1,10 @@
 {
-  "exit_code": 1,
-  "phase": "typecheck",
+  "description": "e2e: variant ctor requires expected type rejected",
   "diagnostics": [
-    { "message_contains": "E-CTOR-EXPECTED-TYPE" }
-  ]
+    {
+      "message_contains": "E-CTOR-EXPECTED-TYPE"
+    }
+  ],
+  "exit_code": 1,
+  "phase": "typecheck"
 }
-

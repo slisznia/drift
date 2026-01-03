@@ -7,10 +7,11 @@ outer try (in the same function) before ultimately rethrowing as FnResult.Err.
 
 from __future__ import annotations
 
-from lang2.driftc.stage2 import HIRToMIR, MirBuilder, mir_nodes as M
+from lang2.driftc.stage2 import HIRToMIR, mir_nodes as M, make_builder
 from lang2.driftc import stage1 as H
 from lang2.driftc.core.types_core import TypeTable
 from lang2.driftc.stage1.normalize import normalize_hir
+from lang2.driftc.core.function_id import FunctionId
 
 
 def _walk_dispatch_else(func: M.MirFunc, start: M.BasicBlock) -> M.BasicBlock:
@@ -26,17 +27,20 @@ def test_inner_unmatched_unwinds_to_outer_try():
 	Inner try has no matching arm and no catch-all; outer try has a matching arm.
 	The inner dispatch must jump to the outer dispatch, not return Err directly.
 	"""
-	builder = MirBuilder(name="try_nested_unwind")
+	builder = make_builder(FunctionId(module="main", name="try_nested_unwind", ordinal=0))
+	fn_id=FunctionId(module="main", name="try_nested_unwind", ordinal=0),
 	exc_env = {"m:Inner": 10, "m:Outer": 20}
 	type_table = TypeTable()
 	type_table.exception_schemas = {
 		"m:Inner": ("m:Inner", []),
 	}
+	fn_id = FunctionId(module="main", name="try_nested_unwind", ordinal=0)
 	lower = HIRToMIR(
 		builder,
 		type_table=type_table,
 		exc_env=exc_env,
-		can_throw_by_name={"try_nested_unwind": True},
+		current_fn_id=fn_id,
+		can_throw_by_id={fn_id: True},
 	)
 
 	# Structure:
@@ -80,12 +84,20 @@ def test_inner_and_outer_unmatched_rethrow_err():
 	"""
 	Inner try unmatched, outer also unmatched: rethrow should ultimately return Err.
 	"""
-	builder = MirBuilder(name="try_nested_rethrow")
+	builder = make_builder(FunctionId(module="main", name="try_nested_rethrow", ordinal=0))
+	fn_id=FunctionId(module="main", name="try_nested_rethrow", ordinal=0),
 	type_table = TypeTable()
 	type_table.exception_schemas = {
 		"m:X": ("m:X", []),
 	}
-	lower = HIRToMIR(builder, type_table=type_table, exc_env={}, can_throw_by_name={"try_nested_rethrow": True})
+	fn_id = FunctionId(module="main", name="try_nested_rethrow", ordinal=0)
+	lower = HIRToMIR(
+		builder,
+		type_table=type_table,
+		exc_env={},
+		current_fn_id=fn_id,
+		can_throw_by_id={fn_id: True},
+	)
 
 	inner_try = H.HTry(
 		body=H.HBlock(statements=[H.HThrow(value=H.HExceptionInit(event_fqn="m:X", pos_args=[], kw_args=[]))]),

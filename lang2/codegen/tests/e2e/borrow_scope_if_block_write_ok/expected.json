@@ -1,1 +1,6 @@
-{ "exit_code": 2, "stdout": "", "stderr": "" }
+{
+  "description": "e2e: borrow scope if block write ok",
+  "exit_code": 2,
+  "stderr": "",
+  "stdout": ""
+}

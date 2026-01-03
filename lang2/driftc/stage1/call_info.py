@@ -24,6 +24,17 @@ class CallTargetKind(Enum):
 	"""Call target classification for typed HIR."""
 	DIRECT = auto()
 	INDIRECT = auto()
+	INTRINSIC = auto()
+
+
+class IntrinsicKind(Enum):
+	"""Intrinsic operations emitted by the type checker."""
+	SWAP = "swap"
+	REPLACE = "replace"
+	BYTE_LENGTH = "byte_length"
+	STRING_EQ = "string_eq"
+	STRING_CONCAT = "string_concat"
+
 
 
 @dataclass(frozen=True)
@@ -31,6 +42,7 @@ class CallTarget:
 	kind: CallTargetKind
 	symbol: SymbolId | None = None
 	callee_node_id: int | None = None
+	intrinsic: IntrinsicKind | None = None
 
 	@staticmethod
 	def direct(symbol: SymbolId) -> "CallTarget":
@@ -40,12 +52,17 @@ class CallTarget:
 	def indirect(callee_node_id: int) -> "CallTarget":
 		return CallTarget(kind=CallTargetKind.INDIRECT, callee_node_id=callee_node_id)
 
+	@staticmethod
+	def intrinsic(kind: IntrinsicKind) -> "CallTarget":
+		return CallTarget(kind=CallTargetKind.INTRINSIC, intrinsic=kind)
+
 
 @dataclass(frozen=True)
 class CallSig:
 	param_types: Tuple[TypeId, ...]
 	user_ret_type: TypeId
 	can_throw: bool
+	includes_callee: bool = False
 
 
 @dataclass(frozen=True)
@@ -72,6 +89,7 @@ __all__ = [
 	"CallSig",
 	"CallTarget",
 	"CallTargetKind",
+	"IntrinsicKind",
 	"SymbolId",
 	"call_abi_ret_type",
 ]

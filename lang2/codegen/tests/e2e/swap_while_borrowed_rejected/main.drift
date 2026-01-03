@@ -1,8 +1,9 @@
+import std.mem as mem
 struct Point(x: Int, y: Int)
 
 fn main() nothrow returns Int{
 	var p = Point(1, 2);
 	val r = &p.x;
-	swap(p.x, p.y);
+	mem.swap(p.x, p.y);
 	return 0;
 }

@@ -1,11 +1,12 @@
 {
-  "exit_code": 1,
+  "description": "e2e: void return value error",
   "diagnostics": [
     {
-      "phase": "typecheck",
-      "message_contains": "cannot return a value from a Void function"
+      "message_contains": "cannot return a value from a Void function",
+      "phase": "typecheck"
     }
   ],
-  "stdout": "",
-  "stderr": ""
+  "exit_code": 1,
+  "stderr": "",
+  "stdout": ""
 }

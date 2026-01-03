@@ -1,5 +1,6 @@
 {
+  "description": "e2e: throw catch print",
   "exit_code": 0,
-  "stdout": "caught",
-  "stderr": ""
+  "stderr": "",
+  "stdout": "caught"
 }

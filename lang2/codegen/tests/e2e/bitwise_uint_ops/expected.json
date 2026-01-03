@@ -1,1 +1,6 @@
-{ "exit_code": 254, "stdout": "", "stderr": "" }
+{
+  "description": "e2e: bitwise uint ops",
+  "exit_code": 254,
+  "stderr": "",
+  "stdout": ""
+}

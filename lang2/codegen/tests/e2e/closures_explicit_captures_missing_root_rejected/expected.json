@@ -1,6 +1,10 @@
 {
-  "exit_code": 1,
+  "description": "e2e: closures explicit captures missing root rejected",
   "diagnostics": [
-    { "phase": "typecheck", "message_contains": "value used in closure body is not listed in captures(...)" }
-  ]
+    {
+      "message_contains": "value used in closure body is not listed in captures(...)",
+      "phase": "typecheck"
+    }
+  ],
+  "exit_code": 1
 }

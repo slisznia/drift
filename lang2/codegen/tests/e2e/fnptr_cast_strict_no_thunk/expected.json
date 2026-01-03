@@ -1,6 +1,10 @@
 {
-  "exit_code": 1,
+  "description": "e2e: fnptr cast strict no thunk",
   "diagnostics": [
-    { "phase": "typecheck", "message_contains": "cannot cast function 'add1'" }
-  ]
+    {
+      "message_contains": "cannot cast function 'add1'",
+      "phase": "typecheck"
+    }
+  ],
+  "exit_code": 1
 }

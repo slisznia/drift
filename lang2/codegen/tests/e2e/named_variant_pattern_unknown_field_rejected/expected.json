@@ -1,7 +1,10 @@
 {
-  "exit_code": 1,
-  "phase": "typecheck",
+  "description": "e2e: named variant pattern unknown field rejected",
   "diagnostics": [
-    { "message_contains": "unknown field 'z' in constructor pattern 'P'" }
-  ]
+    {
+      "message_contains": "unknown field 'z' in constructor pattern 'P'"
+    }
+  ],
+  "exit_code": 1,
+  "phase": "typecheck"
 }

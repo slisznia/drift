@@ -1,6 +1,14 @@
 {
-  "exit_code": 1,
+  "description": "e2e: swap same place rejected",
+  "dev_allow_reserved_namespaces": true,
   "diagnostics": [
-    { "phase": "typecheck", "message_contains": "swap operands must be distinct non-overlapping places" }
+    {
+      "message_contains": "swap operands must be distinct non-overlapping places",
+      "phase": "typecheck"
+    }
+  ],
+  "exit_code": 1,
+  "module_paths": [
+    "."
   ]
 }

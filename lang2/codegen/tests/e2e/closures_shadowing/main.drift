@@ -1,4 +1,4 @@
-module m
+module main
 
 fn main() nothrow returns Int{
 	val y: Int = 1;

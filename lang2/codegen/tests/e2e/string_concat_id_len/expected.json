@@ -1,1 +1,6 @@
-{ "exit_code": 2, "stdout": "", "stderr": "" }
+{
+  "description": "e2e: string concat id len",
+  "exit_code": 2,
+  "stderr": "",
+  "stdout": ""
+}

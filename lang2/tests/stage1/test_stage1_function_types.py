@@ -16,11 +16,11 @@ fn takes(f: fn(Int) returns Int, g: fn(Int) nothrow returns Int) returns Void {
 }
 """
 	)
-	func_hirs, sigs, fn_ids_by_name, type_table, _exc_catalog, diagnostics = parse_drift_to_hir(src)
+	module, type_table, _exc_catalog, diagnostics = parse_drift_to_hir(src)
 	assert diagnostics == []
-	fn_ids = fn_ids_by_name.get("main::takes") or fn_ids_by_name.get("takes") or []
+	fn_ids = module.fn_ids_by_name.get("main::takes") or module.fn_ids_by_name.get("takes") or []
 	assert len(fn_ids) == 1
-	sig = sigs[fn_ids[0]]
+	sig = module.signatures_by_id[fn_ids[0]]
 	assert sig.param_type_ids is not None
 	assert len(sig.param_type_ids) == 2
 
@@ -30,4 +30,4 @@ fn takes(f: fn(Int) returns Int, g: fn(Int) nothrow returns Int) returns Void {
 	assert second.kind is TypeKind.FUNCTION
 	assert first.fn_throws is True
 	assert second.fn_throws is False
-	assert {fid.name for fid in func_hirs} == {"takes"}
+	assert {fid.name for fid in module.func_hirs} == {"takes"}

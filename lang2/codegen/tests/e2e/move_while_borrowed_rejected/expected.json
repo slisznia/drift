@@ -1,7 +1,10 @@
 {
-  "exit_code": 1,
+  "description": "e2e: move while borrowed rejected",
   "diagnostics": [
-    { "phase": "borrowcheck", "message_contains": "cannot move 'x' while borrowed" }
-  ]
+    {
+      "message_contains": "cannot move 'x' while borrowed",
+      "phase": "borrowcheck"
+    }
+  ],
+  "exit_code": 1
 }
-

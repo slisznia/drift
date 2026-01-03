@@ -1,8 +1,10 @@
 {
-  "exit_code": 1,
-  "phase": "typecheck",
+  "description": "e2e: fstring bad type",
   "diagnostics": [
-    { "message_contains": "E-FSTR-UNSUPPORTED-TYPE" }
-  ]
+    {
+      "message_contains": "E-FSTR-UNSUPPORTED-TYPE"
+    }
+  ],
+  "exit_code": 1,
+  "phase": "typecheck"
 }
-

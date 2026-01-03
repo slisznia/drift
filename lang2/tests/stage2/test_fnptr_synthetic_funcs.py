@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from lang2.driftc import stage1 as H
 from lang2.driftc.checker import FnSignature
-from lang2.driftc.core.function_id import FunctionId
+from lang2.driftc.core.function_id import FunctionId, function_symbol
 from lang2.driftc.core.types_core import TypeTable
 from lang2.driftc.driftc import compile_stubbed_funcs
 from lang2.driftc.parser.ast import TypeExpr
@@ -40,7 +40,7 @@ def test_thunk_ok_wrap_function_is_emitted() -> None:
 		signatures=sigs,
 		type_table=table,
 	)
-	assert any("__thunk_ok_wrap" in name for name in mir_funcs)
+	assert any("__thunk_ok_wrap" in function_symbol(fn_id) for fn_id in mir_funcs)
 
 
 def test_captureless_lambda_function_is_emitted() -> None:
@@ -64,7 +64,7 @@ def test_captureless_lambda_function_is_emitted() -> None:
 		signatures=sigs,
 		type_table=table,
 	)
-	assert any("__lambda_fn_" in name for name in mir_funcs)
+	assert any("__lambda_fn_" in function_symbol(fn_id) for fn_id in mir_funcs)
 
 
 def test_captureless_lambda_functions_are_unique_per_enclosing_fn() -> None:
@@ -103,5 +103,5 @@ def test_captureless_lambda_functions_are_unique_per_enclosing_fn() -> None:
 		signatures=sigs,
 		type_table=table,
 	)
-	lambda_names = [name for name in mir_funcs if "__lambda_fn_" in name]
+	lambda_names = [function_symbol(fn_id) for fn_id in mir_funcs if "__lambda_fn_" in function_symbol(fn_id)]
 	assert len(lambda_names) == 2

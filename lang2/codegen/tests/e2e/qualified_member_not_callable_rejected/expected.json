@@ -1,6 +1,10 @@
 {
-  "exit_code": 1,
+  "description": "e2e: qualified member not callable rejected",
   "diagnostics": [
-    { "phase": "typecheck", "message_contains": "E-QMEM-NOT-CALLABLE" }
-  ]
+    {
+      "message_contains": "E-QMEM-NOT-CALLABLE",
+      "phase": "typecheck"
+    }
+  ],
+  "exit_code": 1
 }

@@ -18,7 +18,7 @@ from lang2.driftc.test_helpers import build_linked_world
 
 
 def _callable_name(fn_id: FunctionId) -> str:
-	return fn_id.name if fn_id.module == "main" else f"{fn_id.module}::{fn_id.name}"
+	return fn_id.name
 
 
 def _build_registry(sigs: dict[FunctionId, FnSignature]) -> tuple[CallableRegistry, dict[object, int]]:
@@ -73,16 +73,16 @@ def _resolve_main_call(
 ) -> tuple[FunctionId, dict[FunctionId, FnSignature], object]:
 	src_path = tmp_path / "overload.drift"
 	src_path.write_text(src)
-	func_hirs, sigs, fn_ids_by_name, type_table, _exc_catalog, diagnostics = parse_drift_to_hir(src_path)
+	module, type_table, _exc_catalog, diagnostics = parse_drift_to_hir(src_path)
 	assert diagnostics == []
-	registry, module_ids = _build_registry(sigs)
-	fn_ids = fn_ids_by_name.get("main") or []
+	registry, module_ids = _build_registry(module.signatures_by_id)
+	fn_ids = module.fn_ids_by_name.get("main") or []
 	assert len(fn_ids) == 1
 	main_id = fn_ids[0]
-	main_block = func_hirs[main_id]
+	main_block = module.func_hirs[main_id]
 	call_expr = _first_call(main_block)
 	tc = TypeChecker(type_table=type_table)
-	main_sig = sigs.get(main_id)
+	main_sig = module.signatures_by_id.get(main_id)
 	param_types = {}
 	if main_sig and main_sig.param_names and main_sig.param_type_ids:
 		param_types = {pname: pty for pname, pty in zip(main_sig.param_names, main_sig.param_type_ids)}
@@ -93,7 +93,7 @@ def _resolve_main_call(
 		main_block,
 		param_types=param_types,
 		return_type=main_sig.return_type_id if main_sig is not None else None,
-		signatures_by_id=sigs,
+		signatures_by_id=module.signatures_by_id,
 		callable_registry=registry,
 		linked_world=linked_world,
 		require_env=require_env,
@@ -104,7 +104,7 @@ def _resolve_main_call(
 	decl = result.typed_fn.call_resolutions.get(call_expr.node_id)
 	assert decl is not None
 	assert getattr(decl, "fn_id", None) is not None
-	return decl.fn_id, sigs, type_table
+	return decl.fn_id, module.signatures_by_id, type_table
 
 
 def test_overload_by_arity_picks_matching_signature(tmp_path: Path) -> None:
@@ -153,15 +153,15 @@ fn main(x: S) returns Int { return h(x); }
 """
 	src_path = tmp_path / "overload_require_reject.drift"
 	src_path.write_text(src)
-	func_hirs, sigs, fn_ids_by_name, type_table, _exc_catalog, diagnostics = parse_drift_to_hir(src_path)
+	module, type_table, _exc_catalog, diagnostics = parse_drift_to_hir(src_path)
 	assert diagnostics == []
-	registry, module_ids = _build_registry(sigs)
-	fn_ids = fn_ids_by_name.get("main") or []
+	registry, module_ids = _build_registry(module.signatures_by_id)
+	fn_ids = module.fn_ids_by_name.get("main") or []
 	assert len(fn_ids) == 1
 	main_id = fn_ids[0]
-	main_block = func_hirs[main_id]
+	main_block = module.func_hirs[main_id]
 	tc = TypeChecker(type_table=type_table)
-	main_sig = sigs.get(main_id)
+	main_sig = module.signatures_by_id.get(main_id)
 	param_types = {}
 	if main_sig and main_sig.param_names and main_sig.param_type_ids:
 		param_types = {pname: pty for pname, pty in zip(main_sig.param_names, main_sig.param_type_ids)}
@@ -172,7 +172,7 @@ fn main(x: S) returns Int { return h(x); }
 		main_block,
 		param_types=param_types,
 		return_type=main_sig.return_type_id if main_sig is not None else None,
-		signatures_by_id=sigs,
+		signatures_by_id=module.signatures_by_id,
 		callable_registry=registry,
 		linked_world=linked_world,
 		require_env=require_env,
@@ -241,16 +241,16 @@ fn main(x: S) returns Int { return f(x); }
 """
 	src_path = tmp_path / "overload_require_incomparable.drift"
 	src_path.write_text(src)
-	func_hirs, sigs, fn_ids_by_name, type_table, _exc_catalog, diagnostics = parse_drift_to_hir(src_path)
+	module, type_table, _exc_catalog, diagnostics = parse_drift_to_hir(src_path)
 	assert diagnostics == []
-	registry, module_ids = _build_registry(sigs)
-	fn_ids = fn_ids_by_name.get("main") or []
+	registry, module_ids = _build_registry(module.signatures_by_id)
+	fn_ids = module.fn_ids_by_name.get("main") or []
 	assert len(fn_ids) == 1
 	main_id = fn_ids[0]
-	main_block = func_hirs[main_id]
+	main_block = module.func_hirs[main_id]
 	call_expr = _first_call(main_block)
 	tc = TypeChecker(type_table=type_table)
-	main_sig = sigs.get(main_id)
+	main_sig = module.signatures_by_id.get(main_id)
 	param_types = {}
 	if main_sig and main_sig.param_names and main_sig.param_type_ids:
 		param_types = {pname: pty for pname, pty in zip(main_sig.param_names, main_sig.param_type_ids)}
@@ -260,7 +260,7 @@ fn main(x: S) returns Int { return f(x); }
 		main_block,
 		param_types=param_types,
 		return_type=main_sig.return_type_id if main_sig is not None else None,
-		signatures_by_id=sigs,
+		signatures_by_id=module.signatures_by_id,
 		callable_registry=registry,
 		visible_modules=(current_mod,),
 		current_module=current_mod,
@@ -275,13 +275,13 @@ fn main() returns Int { return f(1); }
 """
 	src_path = tmp_path / "overload_dedupe.drift"
 	src_path.write_text(src)
-	func_hirs, sigs, fn_ids_by_name, type_table, _exc_catalog, diagnostics = parse_drift_to_hir(src_path)
+	module, type_table, _exc_catalog, diagnostics = parse_drift_to_hir(src_path)
 	assert diagnostics == []
-	registry, module_ids = _build_registry(sigs)
-	fn_ids = fn_ids_by_name.get("f") or []
+	registry, module_ids = _build_registry(module.signatures_by_id)
+	fn_ids = module.fn_ids_by_name.get("f") or []
 	assert len(fn_ids) == 1
 	f_id = fn_ids[0]
-	f_sig = sigs.get(f_id)
+	f_sig = module.signatures_by_id.get(f_id)
 	assert f_sig is not None
 	assert f_sig.param_type_ids is not None
 	assert f_sig.return_type_id is not None
@@ -298,20 +298,20 @@ fn main() returns Int { return f(1); }
 		fn_id=f_id,
 		is_generic=False,
 	)
-	main_ids = fn_ids_by_name.get("main") or []
+	main_ids = module.fn_ids_by_name.get("main") or []
 	assert len(main_ids) == 1
 	main_id = main_ids[0]
-	main_block = func_hirs[main_id]
+	main_block = module.func_hirs[main_id]
 	call_expr = _first_call(main_block)
 	tc = TypeChecker(type_table=type_table)
-	main_sig = sigs.get(main_id)
+	main_sig = module.signatures_by_id.get(main_id)
 	current_mod = module_ids.setdefault(main_sig.module, len(module_ids))
 	result = tc.check_function(
 		main_id,
 		main_block,
 		param_types={},
 		return_type=main_sig.return_type_id if main_sig is not None else None,
-		signatures_by_id=sigs,
+		signatures_by_id=module.signatures_by_id,
 		callable_registry=registry,
 		visible_modules=(current_mod,),
 		current_module=current_mod,

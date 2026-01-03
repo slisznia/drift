@@ -1,5 +1,6 @@
 {
+  "description": "e2e: link exception dv symbols",
   "exit_code": 0,
-  "stdout": "ok",
-  "stderr": ""
+  "stderr": "",
+  "stdout": "ok"
 }

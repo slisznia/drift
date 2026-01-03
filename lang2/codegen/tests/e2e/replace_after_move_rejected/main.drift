@@ -1,6 +1,7 @@
+import std.mem as mem
 fn main() nothrow returns Int{
 	var x = 1;
 	val y = move x;
-	val old = replace(x, 2);
+	val old = mem.replace(x, 2);
 	return old;
 }

@@ -10,6 +10,7 @@ load-before-store.
 
 from __future__ import annotations
 
+from lang2.driftc.core.function_id import FunctionId
 import pytest
 
 from lang2.driftc.stage2 import (
@@ -36,7 +37,7 @@ def test_straight_line_ssa_passes():
 		],
 		terminator=Return(value="t0"),
 	)
-	func = MirFunc(name="f", params=[], locals=["x"], blocks={"entry": entry}, entry="entry")
+	func = MirFunc(fn_id=FunctionId(module="main", name="f", ordinal=0), name="f", params=[], locals=["x"], blocks={"entry": entry}, entry="entry")
 	ssa_func = MirToSSA().run(func)
 	assert ssa_func.func is func
 	instrs = ssa_func.func.blocks["entry"].instructions
@@ -62,7 +63,7 @@ def test_multiple_stores_version_increments():
 		],
 		terminator=Return(value="t0"),
 	)
-	func = MirFunc(name="f", params=[], locals=["x"], blocks={"entry": entry}, entry="entry")
+	func = MirFunc(fn_id=FunctionId(module="main", name="f", ordinal=0), name="f", params=[], locals=["x"], blocks={"entry": entry}, entry="entry")
 	ssa_func = MirToSSA().run(func)
 	assert ssa_func.local_versions["x"] == 2
 	assert ssa_func.current_value["x"] == "x_2"
@@ -79,7 +80,7 @@ def test_ssa_load_before_store_raises():
 		],
 		terminator=Return(value="t0"),
 	)
-	func = MirFunc(name="f", params=[], locals=["x"], blocks={"entry": entry}, entry="entry")
+	func = MirFunc(fn_id=FunctionId(module="main", name="f", ordinal=0), name="f", params=[], locals=["x"], blocks={"entry": entry}, entry="entry")
 	with pytest.raises(RuntimeError):
 		MirToSSA().run(func)
 
@@ -88,6 +89,6 @@ def test_ssa_accepts_loop_cfg():
 	# A CFG with a backedge (loop) is supported by SSA now.
 	entry = BasicBlock(name="entry", instructions=[], terminator=Goto(target="loop"))
 	loop = BasicBlock(name="loop", instructions=[], terminator=Goto(target="loop"))
-	func = MirFunc(name="f", params=[], locals=["x"], blocks={"entry": entry, "loop": loop}, entry="entry")
+	func = MirFunc(fn_id=FunctionId(module="main", name="f", ordinal=0), name="f", params=[], locals=["x"], blocks={"entry": entry, "loop": loop}, entry="entry")
 	ssa = MirToSSA().run(func)
 	assert ssa.cfg_kind is CfgKind.GENERAL

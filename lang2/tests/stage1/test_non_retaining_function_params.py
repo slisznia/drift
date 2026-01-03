@@ -58,8 +58,8 @@ def test_fn_param_typeid_callable_direct_invoke() -> None:
 	fn_id = FunctionId(module="main", name="takes_fp", ordinal=0)
 	sig = FnSignature(name="takes_fp", param_type_ids=[fn_ty], return_type_id=int_ty)
 	typed_fns = {fn_id: _typed_fn_with_direct_invoke(fn_id, param_name="f")}
-	analyze_non_retaining_params(typed_fns, {fn_id: sig}, type_table=table)
-	assert sig.param_nonretaining == [True]
+	sigs = analyze_non_retaining_params(typed_fns, {fn_id: sig}, type_table=table)
+	assert sigs[fn_id].param_nonretaining == [True]
 
 
 def test_fn_param_raw_typeexpr_callable_direct_invoke() -> None:
@@ -67,8 +67,8 @@ def test_fn_param_raw_typeexpr_callable_direct_invoke() -> None:
 	raw = TypeExpr(name="fn", args=[TypeExpr(name="Int"), TypeExpr(name="Int")])
 	sig = FnSignature(name="takes_fp", param_types=[raw])
 	typed_fns = {fn_id: _typed_fn_with_direct_invoke(fn_id, param_name="f")}
-	analyze_non_retaining_params(typed_fns, {fn_id: sig})
-	assert sig.param_nonretaining == [True]
+	sigs = analyze_non_retaining_params(typed_fns, {fn_id: sig})
+	assert sigs[fn_id].param_nonretaining == [True]
 
 
 @pytest.mark.parametrize("ref_name", ["&", "&mut"])
@@ -77,8 +77,8 @@ def test_fn_param_raw_ref_wrapped_callable(ref_name: str) -> None:
 	raw = TypeExpr(name=ref_name, args=[TypeExpr(name="fn", args=[TypeExpr(name="Int"), TypeExpr(name="Int")])])
 	sig = FnSignature(name="takes_fp", param_types=[raw])
 	typed_fns = {fn_id: _typed_fn_with_direct_invoke(fn_id, param_name="f")}
-	analyze_non_retaining_params(typed_fns, {fn_id: sig})
-	assert sig.param_nonretaining == [True]
+	sigs = analyze_non_retaining_params(typed_fns, {fn_id: sig})
+	assert sigs[fn_id].param_nonretaining == [True]
 
 
 def test_fn_param_retain_marks_false() -> None:
@@ -88,5 +88,5 @@ def test_fn_param_retain_marks_false() -> None:
 	fn_id = FunctionId(module="main", name="takes_fp", ordinal=0)
 	sig = FnSignature(name="takes_fp", param_type_ids=[fn_ty], return_type_id=int_ty)
 	typed_fns = {fn_id: _typed_fn_with_retain(fn_id, param_name="f")}
-	analyze_non_retaining_params(typed_fns, {fn_id: sig}, type_table=table)
-	assert sig.param_nonretaining == [False]
+	sigs = analyze_non_retaining_params(typed_fns, {fn_id: sig}, type_table=table)
+	assert sigs[fn_id].param_nonretaining == [False]

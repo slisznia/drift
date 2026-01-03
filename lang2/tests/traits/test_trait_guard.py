@@ -3,32 +3,35 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from lang2.driftc.core.function_id import function_symbol
+from lang2.driftc.core.function_id import fn_name_key
 from lang2.driftc.parser import parse_drift_to_hir
 from lang2.driftc.test_helpers import build_linked_world
 from lang2.driftc.type_checker import TypeChecker
 
 
 def _typecheck_main(src: Path):
-	func_hirs, sigs, fn_ids_by_name, type_table, _exc_catalog, diagnostics = parse_drift_to_hir(src)
+	module, type_table, _exc_catalog, diagnostics = parse_drift_to_hir(src)
 	assert diagnostics == []
 	linked_world, require_env = build_linked_world(type_table)
 	tc = TypeChecker(type_table=type_table)
-	fn_ids = fn_ids_by_name.get("main") or []
+	fn_ids = module.fn_ids_by_name.get("main") or []
 	assert len(fn_ids) == 1
 	fn_id = fn_ids[0]
-	main_block = func_hirs[fn_id]
-	sig = sigs.get(fn_id)
+	main_block = module.func_hirs[fn_id]
+	sig = module.signatures_by_id.get(fn_id)
 	param_types = {}
 	if sig and sig.param_names and sig.param_type_ids:
 		param_types = {pname: pty for pname, pty in zip(sig.param_names, sig.param_type_ids) if pty is not None}
-	call_signatures = {function_symbol(fid): s for fid, s in sigs.items() if not s.is_method}
+	call_signatures = {
+		fn_name_key(fid.module, fid.name): s
+		for fid, s in module.signatures_by_id.items()
+		if not s.is_method
+	}
 	result = tc.check_function(
 		fn_id,
 		main_block,
 		param_types=param_types,
 		return_type=sig.return_type_id if sig is not None else None,
-		call_signatures=call_signatures,
 		callable_registry=None,
 		linked_world=linked_world,
 		require_env=require_env,

@@ -17,6 +17,13 @@ from lang2.driftc.traits.world import TypeKey, normalize_type_key, type_key_from
 from lang2.driftc.core.type_resolve_common import resolve_opaque_type
 
 
+# Trait enforcement diagnostics are typecheck-phase.
+def _enforce_diag(*args, **kwargs):
+	if "phase" not in kwargs or kwargs.get("phase") is None:
+		kwargs["phase"] = "typecheck"
+	return Diagnostic(*args, **kwargs)
+
+
 @dataclass
 class TraitEnforceResult:
 	diagnostics: List[Diagnostic]
@@ -125,7 +132,7 @@ def enforce_struct_requires(
 		res = prove_expr(world, env, subst, req)
 		if res.status is not ProofStatus.PROVED:
 			diags.append(
-				Diagnostic(
+				_enforce_diag(
 					message=f"trait requirements not met for struct '{ty.name}'",
 					severity="error",
 					span=Span.from_loc(getattr(req, "loc", None)),
@@ -305,7 +312,7 @@ def enforce_fn_requires(
 		res = prove_expr(world, env, subst, req)
 		if res.status is not ProofStatus.PROVED:
 			diags.append(
-				Diagnostic(
+				_enforce_diag(
 					message=f"trait requirements not met for call to '{expr.fn.name}'",
 					code="E_REQUIREMENT_NOT_SATISFIED",
 					severity="error",

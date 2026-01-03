@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum, auto
+from typing import Tuple
 
 
 @dataclass(frozen=True)
@@ -16,6 +17,13 @@ Stable identity for a function definition within a module.
 	module: str
 	name: str
 	ordinal: int
+
+
+FnNameKey = Tuple[str | None, str]
+
+
+def fn_name_key(module_id: str | None, name: str) -> FnNameKey:
+	return (module_id, name)
 
 
 def function_symbol(fn_id: FunctionId) -> str:
@@ -93,6 +101,8 @@ def method_wrapper_id(target: FunctionId) -> FunctionId:
 
 __all__ = [
 	"FunctionId",
+	"FnNameKey",
+	"fn_name_key",
 	"function_symbol",
 	"parse_function_symbol",
 	"function_id_to_obj",

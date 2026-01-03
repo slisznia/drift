@@ -13,14 +13,15 @@ from lang2.driftc.stage1 import (
 )
 from lang2.driftc.stage1.normalize import normalize_hir
 from lang2.driftc.stage2 import (
-	MirBuilder,
 	HIRToMIR,
+	make_builder,
 	ErrorAttrsGetDV,
 	DVAsInt,
 	ConstructDV,
 	StoreLocal,
 )
 from lang2.driftc.checker import FnSignature
+from lang2.driftc.core.function_id import FunctionId
 from lang2.driftc.core.types_core import TypeTable
 
 
@@ -37,14 +38,14 @@ def test_error_attrs_index_lowers_to_error_attrs_get_dv():
 			HReturn(value=HVar("attr")),
 		]
 	)
-	builder = MirBuilder("f")
+	builder = make_builder(FunctionId(module="main", name="f", ordinal=0))
 	builder.func.params = ["err"]
 	sig = FnSignature(name="f", param_type_ids=[err_ty], return_type_id=table.ensure_unknown(), declared_can_throw=False)
 	lowerer = HIRToMIR(
 		builder,
 		type_table=table,
 		param_types={"err": err_ty},
-		signatures={"f": sig},
+		signatures_by_id={FunctionId(module="main", name="f", ordinal=0): sig},
 		return_type=sig.return_type_id,
 	)
 	lowerer.lower_block(normalize_hir(block))
@@ -63,7 +64,7 @@ def test_dv_as_int_lowers_to_dvasint():
 			HReturn(value=HVar("opt")),
 		]
 	)
-	builder = MirBuilder("f_dv")
+	builder = make_builder(FunctionId(module="main", name="f_dv", ordinal=0))
 	lowerer = HIRToMIR(builder, type_table=table)
 	lowerer.lower_block(normalize_hir(block))
 

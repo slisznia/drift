@@ -1,1 +1,6 @@
-{ "exit_code": 42, "stdout": "ok\n", "stderr": "" }
+{
+  "description": "e2e: try call",
+  "exit_code": 42,
+  "stderr": "",
+  "stdout": "ok\n"
+}

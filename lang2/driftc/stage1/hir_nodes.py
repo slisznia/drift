@@ -92,6 +92,7 @@ class HVar(HExpr):
 	"""Reference to a local/binding (resolved later)."""
 	name: str
 	binding_id: Optional[BindingId] = None
+	module_id: Optional[str] = None
 
 
 class HTraitExpr(HExpr):
@@ -297,6 +298,7 @@ class HCall(HExpr):
 	args: List[HExpr]
 	kwargs: List["HKwArg"] = field(default_factory=list)
 	type_args: Optional[list["HTypeExpr"]] = None
+	callsite_id: Optional[int] = None
 
 
 @dataclass
@@ -311,6 +313,7 @@ class HInvoke(HExpr):
 	args: List[HExpr]
 	kwargs: List["HKwArg"] = field(default_factory=list)
 	type_args: Optional[list["HTypeExpr"]] = None
+	callsite_id: Optional[int] = None
 
 
 @dataclass
@@ -353,6 +356,7 @@ class HMethodCall(HExpr):
 	args: List[HExpr]
 	kwargs: List["HKwArg"] = field(default_factory=list)
 	type_args: Optional[list["HTypeExpr"]] = None
+	callsite_id: Optional[int] = None
 
 
 @dataclass

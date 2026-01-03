@@ -1,7 +1,10 @@
 {
-  "exit_code": 1,
+  "description": "e2e: borrow struct whole then field write rejected",
   "diagnostics": [
-    { "phase": "borrowcheck", "message_contains": "cannot write to 'p' while it is borrowed" }
-  ]
+    {
+      "message_contains": "cannot write to 'p' while it is borrowed",
+      "phase": "borrowcheck"
+    }
+  ],
+  "exit_code": 1
 }
-

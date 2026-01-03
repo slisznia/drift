@@ -1,6 +1,6 @@
 {
+  "description": "e2e: try call catchall inline stmt",
   "exit_code": 0,
-  "stdout": "caught",
-  "stderr": ""
+  "stderr": "",
+  "stdout": "caught"
 }
-

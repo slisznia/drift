@@ -1,6 +1,7 @@
+import std.mem as mem
 fn main() nothrow returns Int{
 	var a = 1;
 	var b = 2;
-	swap(a, b);
+	mem.swap(a, b);
 	return a * 10 + b;
 }

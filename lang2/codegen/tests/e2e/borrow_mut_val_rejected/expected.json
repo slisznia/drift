@@ -1,7 +1,10 @@
 {
-  "exit_code": 1,
-  "phase": "typecheck",
+  "description": "e2e: borrow mut val rejected",
   "diagnostics": [
-    { "message_contains": "cannot take &mut of an immutable binding" }
-  ]
+    {
+      "message_contains": "cannot take &mut of an immutable binding"
+    }
+  ],
+  "exit_code": 1,
+  "phase": "typecheck"
 }

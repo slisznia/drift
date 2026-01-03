@@ -4,6 +4,7 @@ Module-level lowering and inter-function call ABI tests.
 
 from __future__ import annotations
 
+from lang2.driftc.core.function_id import FunctionId
 from lang2.codegen.llvm import lower_module_to_llvm
 from lang2.driftc.checker import FnInfo
 from lang2.driftc.stage2 import BasicBlock, MirFunc, ConstInt, Return, ConstructResultOk, Call, ResultOk
@@ -21,28 +22,30 @@ def test_module_lowering_non_throwing_call():
 		instructions=[ConstInt(dest="c0", value=7)],
 		terminator=Return(value="c0"),
 	)
-	callee_mir = MirFunc(name="callee", params=[], locals=[], blocks={"entry": callee_entry}, entry="entry")
+	callee_id = FunctionId(module="main", name="callee", ordinal=0)
+	callee_mir = MirFunc(fn_id=callee_id, name="callee", params=[], locals=[], blocks={"entry": callee_entry}, entry="entry")
 	callee_ssa = MirToSSA().run(callee_mir)
 
 	# drift_main: calls callee, returns its result
 	main_entry = BasicBlock(
 		name="entry",
-		instructions=[Call(dest="m0", fn="callee", args=[], can_throw=False)],
+		instructions=[Call(dest="m0", fn_id=callee_id, args=[], can_throw=False)],
 		terminator=Return(value="m0"),
 	)
-	main_mir = MirFunc(name="drift_main", params=[], locals=[], blocks={"entry": main_entry}, entry="entry")
+	main_id = FunctionId(module="main", name="drift_main", ordinal=0)
+	main_mir = MirFunc(fn_id=main_id, name="drift_main", params=[], locals=[], blocks={"entry": main_entry}, entry="entry")
 	main_ssa = MirToSSA().run(main_mir)
 
 	table = TypeTable()
 	int_ty = table.ensure_int()
 	fn_infos = {
-		"callee": FnInfo(name="callee", declared_can_throw=False, return_type_id=int_ty),
-		"drift_main": FnInfo(name="drift_main", declared_can_throw=False, return_type_id=int_ty),
+		callee_id: FnInfo(fn_id=callee_id, name="callee", declared_can_throw=False, return_type_id=int_ty),
+		main_id: FnInfo(fn_id=main_id, name="drift_main", declared_can_throw=False, return_type_id=int_ty),
 	}
 
 	mod = lower_module_to_llvm(
-		funcs={"callee": callee_mir, "drift_main": main_mir},
-		ssa_funcs={"callee": callee_ssa, "drift_main": main_ssa},
+		funcs={callee_id: callee_mir, main_id: main_mir},
+		ssa_funcs={callee_id: callee_ssa, main_id: main_ssa},
 		fn_infos=fn_infos,
 	)
 	ir = mod.render()
@@ -62,16 +65,18 @@ def test_module_lowering_can_throw_callee_call():
 		instructions=[ConstInt(dest="c0", value=1), ConstructResultOk(dest="cres", value="c0")],
 		terminator=Return(value="cres"),
 	)
-	callee_mir = MirFunc(name="callee", params=[], locals=[], blocks={"entry": callee_entry}, entry="entry")
+	callee_id = FunctionId(module="main", name="callee", ordinal=0)
+	callee_mir = MirFunc(fn_id=callee_id, name="callee", params=[], locals=[], blocks={"entry": callee_entry}, entry="entry")
 	callee_ssa = MirToSSA().run(callee_mir)
 
 	# drift_main: call callee, extract ok part, and return it
 	main_entry = BasicBlock(
 		name="entry",
-		instructions=[Call(dest="mres", fn="callee", args=[], can_throw=True), ResultOk(dest="m0", result="mres")],
+		instructions=[Call(dest="mres", fn_id=callee_id, args=[], can_throw=True), ResultOk(dest="m0", result="mres")],
 		terminator=Return(value="m0"),
 	)
-	main_mir = MirFunc(name="drift_main", params=[], locals=[], blocks={"entry": main_entry}, entry="entry")
+	main_id = FunctionId(module="main", name="drift_main", ordinal=0)
+	main_mir = MirFunc(fn_id=main_id, name="drift_main", params=[], locals=[], blocks={"entry": main_entry}, entry="entry")
 	main_ssa = MirToSSA().run(main_mir)
 
 	table = TypeTable()
@@ -79,13 +84,13 @@ def test_module_lowering_can_throw_callee_call():
 	err_ty = table.ensure_error()
 	fnresult_ty = table.new_fnresult(int_ty, err_ty)
 	fn_infos = {
-		"callee": FnInfo(name="callee", declared_can_throw=True, return_type_id=fnresult_ty, error_type_id=err_ty),
-		"drift_main": FnInfo(name="drift_main", declared_can_throw=False, return_type_id=int_ty),
+		callee_id: FnInfo(fn_id=callee_id, name="callee", declared_can_throw=True, return_type_id=fnresult_ty, error_type_id=err_ty),
+		main_id: FnInfo(fn_id=main_id, name="drift_main", declared_can_throw=False, return_type_id=int_ty),
 	}
 
 	mod = lower_module_to_llvm(
-		funcs={"callee": callee_mir, "drift_main": main_mir},
-		ssa_funcs={"callee": callee_ssa, "drift_main": main_ssa},
+		funcs={callee_id: callee_mir, main_id: main_mir},
+		ssa_funcs={callee_id: callee_ssa, main_id: main_ssa},
 		fn_infos=fn_infos,
 		type_table=table,
 	)

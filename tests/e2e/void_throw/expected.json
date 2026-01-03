@@ -1,9 +1,10 @@
 {
-  "mode": "run",
-  "compile_error": null,
-  "exit_code": 1,
-  "stdout": "ok\nerr\n",
-  "stderr": "",
   "args": [],
-  "env": {}
+  "compile_error": null,
+  "description": "e2e: void throw",
+  "env": {},
+  "exit_code": 1,
+  "mode": "run",
+  "stderr": "",
+  "stdout": "ok\nerr\n"
 }

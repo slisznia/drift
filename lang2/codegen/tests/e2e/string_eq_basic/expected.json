@@ -1,1 +1,6 @@
-{ "exit_code": 0, "stdout": "", "stderr": "" }
+{
+  "description": "e2e: string eq basic",
+  "exit_code": 0,
+  "stderr": "",
+  "stdout": ""
+}

@@ -1,7 +1,7 @@
 # vim: set noexpandtab: -*- indent-tabs-mode: t -*-
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace as dataclass_replace
 from typing import Mapping, Optional, Set, Tuple
 
 from lang2.driftc.checker import FnSignature
@@ -26,7 +26,7 @@ def analyze_non_retaining_params(
 	signatures_by_id: Mapping[FunctionId, FnSignature],
 	*,
 	type_table: Optional[TypeTable] = None,
-) -> None:
+) -> dict[FunctionId, FnSignature]:
 	"""
 	Compute param_nonretaining metadata for functions with bodies.
 
@@ -35,11 +35,16 @@ def analyze_non_retaining_params(
 	- forwarding is allowed only to already-proven non-retaining params
 	- any alias/store/return/capture yields retaining
 	"""
+	working_sigs: dict[FunctionId, FnSignature] = {}
+	for fn_id, sig in signatures_by_id.items():
+		if sig.param_nonretaining is None:
+			working_sigs[fn_id] = sig
+		else:
+			working_sigs[fn_id] = dataclass_replace(sig, param_nonretaining=list(sig.param_nonretaining))
+
 	method_sig_by_key: dict[tuple[int, str], FnSignature] = {}
-	sig_id_by_obj: dict[int, FunctionId] = {id(sig): fn_id for fn_id, sig in signatures_by_id.items()}
-	name_to_sigs: dict[str, list[FnSignature]] = {}
-	for sig in signatures_by_id.values():
-		name_to_sigs.setdefault(sig.name, []).append(sig)
+	sig_id_by_obj: dict[int, FunctionId] = {id(sig): fn_id for fn_id, sig in working_sigs.items()}
+	for sig in working_sigs.values():
 		if sig.is_method and sig.impl_target_type_id is not None:
 			key = (sig.impl_target_type_id, sig.method_name or sig.name)
 			method_sig_by_key[key] = sig
@@ -77,22 +82,30 @@ def analyze_non_retaining_params(
 			return len(sig.param_types)
 		return 0
 
-	def _ensure_param_nonretaining(sig: FnSignature, count: int) -> None:
-		if sig.param_nonretaining is None:
-			sig.param_nonretaining = [None] * count if count else None
-			return
-		if len(sig.param_nonretaining) < count:
-			sig.param_nonretaining.extend([None] * (count - len(sig.param_nonretaining)))
+	param_nonretaining_by_id: dict[FunctionId, list[Optional[bool]] | None] = {
+		fn_id: (list(sig.param_nonretaining) if sig.param_nonretaining is not None else None)
+		for fn_id, sig in working_sigs.items()
+	}
+
+	def _ensure_param_nonretaining(fn_id: FunctionId, count: int) -> list[Optional[bool]] | None:
+		cur = param_nonretaining_by_id.get(fn_id)
+		if cur is None:
+			cur = [None] * count if count else None
+			param_nonretaining_by_id[fn_id] = cur
+			return cur
+		if len(cur) < count:
+			cur.extend([None] * (count - len(cur)))
+		return cur
 
 	def _resolve_sig_for_call(call: H.HExpr, call_resolutions: Mapping[int, object]) -> tuple[FunctionId | None, FnSignature | None]:
 		res = call_resolutions.get(call.node_id)
 		if isinstance(res, CallableDecl):
 			if res.fn_id is not None:
-				return res.fn_id, signatures_by_id.get(res.fn_id)
+				return res.fn_id, working_sigs.get(res.fn_id)
 			return None, None
 		if isinstance(res, MethodResolution):
 			if res.decl.fn_id is not None:
-				return res.decl.fn_id, signatures_by_id.get(res.decl.fn_id)
+				return res.decl.fn_id, working_sigs.get(res.decl.fn_id)
 			impl_target = res.decl.impl_target_type_id
 			if impl_target is None:
 				return None, None
@@ -100,32 +113,6 @@ def analyze_non_retaining_params(
 			if sig is None:
 				return None, None
 			return sig_id_by_obj.get(id(sig)), sig
-		if isinstance(call, H.HCall) and isinstance(call.fn, H.HVar):
-			name = call.fn.name
-			cands = list(name_to_sigs.get(name, []))
-			if not cands:
-				cands = [sig for sig in signatures_by_id.values() if sig.name == name]
-			cands = [sig for sig in cands if not sig.is_method]
-			want_pos = len(call.args)
-			want_kw = len(call.kwargs or [])
-			if cands:
-				def _matches(sig: FnSignature) -> bool:
-					if want_kw:
-						if not sig.param_names:
-							return False
-						kw_names = [kw.name for kw in call.kwargs]
-						if len(set(kw_names)) != len(kw_names):
-							return False
-						if any(name not in sig.param_names for name in kw_names):
-							return False
-						if any(name in sig.param_names[:want_pos] for name in kw_names):
-							return False
-					return _param_count(sig) == want_pos + want_kw
-
-				cands = [sig for sig in cands if _matches(sig)]
-				if len(cands) == 1:
-					sig = cands[0]
-					return sig_id_by_obj.get(id(sig)), sig
 		return None, None
 
 	def _param_index_for_call(
@@ -152,12 +139,12 @@ def analyze_non_retaining_params(
 	eligible_by_fn: dict[FunctionId, set[int]] = {}
 
 	for fn_id, typed_fn in typed_fns.items():
-		sig = signatures_by_id.get(fn_id)
+		sig = working_sigs.get(fn_id)
 		if sig is None:
 			continue
 		param_count = len(getattr(typed_fn, "param_bindings", []) or [])
 		ensure_count = max(param_count, _param_count(sig))
-		_ensure_param_nonretaining(sig, ensure_count)
+		_ensure_param_nonretaining(fn_id, ensure_count)
 		if param_count == 0:
 			continue
 
@@ -374,12 +361,12 @@ def analyze_non_retaining_params(
 	def _target_status(target: tuple[FunctionId, int], *, internal_status: dict[tuple[FunctionId, int], Optional[bool]]) -> Optional[bool]:
 		if target in internal_status:
 			return internal_status[target]
-		sig = signatures_by_id.get(target[0])
-		if sig is None or not sig.param_nonretaining:
+		nr = param_nonretaining_by_id.get(target[0])
+		if nr is None:
 			return None
-		if target[1] >= len(sig.param_nonretaining):
+		if target[1] >= len(nr):
 			return None
-		return sig.param_nonretaining[target[1]]
+		return nr[target[1]]
 
 	internal_status: dict[tuple[FunctionId, int], Optional[bool]] = {}
 	for fn_id, usages in usage_by_fn.items():
@@ -412,18 +399,22 @@ def analyze_non_retaining_params(
 					changed = True
 
 	for fn_id, usages in usage_by_fn.items():
-		sig = signatures_by_id.get(fn_id)
-		if sig is None:
-			continue
+		nr = param_nonretaining_by_id.get(fn_id)
 		param_count = len(usages)
-		if sig.param_nonretaining is None or len(sig.param_nonretaining) < param_count:
-			sig.param_nonretaining = [None] * param_count
+		if nr is None or len(nr) < param_count:
+			nr = [None] * param_count
+			param_nonretaining_by_id[fn_id] = nr
 		eligible = eligible_by_fn.get(fn_id, set())
 		for idx in range(param_count):
 			if idx not in eligible:
-				sig.param_nonretaining[idx] = None
+				nr[idx] = None
 				continue
-			sig.param_nonretaining[idx] = internal_status.get((fn_id, idx))
+			nr[idx] = internal_status.get((fn_id, idx))
+
+	return {
+		fn_id: dataclass_replace(sig, param_nonretaining=param_nonretaining_by_id.get(fn_id))
+		for fn_id, sig in working_sigs.items()
+	}
 
 
 __all__ = ["analyze_non_retaining_params"]

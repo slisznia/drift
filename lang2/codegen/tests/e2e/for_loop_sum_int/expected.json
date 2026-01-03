@@ -1,2 +1,6 @@
-{ "exit_code": 6, "stdout": "", "stderr": "" }
-
+{
+  "description": "e2e: for loop sum int",
+  "exit_code": 6,
+  "stderr": "",
+  "stdout": ""
+}

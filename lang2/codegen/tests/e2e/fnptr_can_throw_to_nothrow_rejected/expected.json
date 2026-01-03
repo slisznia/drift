@@ -1,6 +1,10 @@
 {
-  "exit_code": 1,
+  "description": "e2e: fnptr can throw to nothrow rejected",
   "diagnostics": [
-    { "phase": "typecheck", "message_contains": "no overload of 'boom' matches function type" }
-  ]
+    {
+      "message_contains": "no overload of 'boom' matches function type",
+      "phase": "typecheck"
+    }
+  ],
+  "exit_code": 1
 }

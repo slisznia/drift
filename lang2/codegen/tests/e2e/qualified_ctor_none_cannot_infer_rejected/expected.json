@@ -1,9 +1,22 @@
 {
-  "exit_code": 1,
+  "description": "e2e: qualified ctor none cannot infer rejected",
   "diagnostics": [
-    { "phase": "typecheck", "message_contains": "E-QMEM-CANNOT-INFER" },
-    { "phase": "typecheck", "message_contains": "underconstrained" },
-    { "phase": "typecheck", "message_contains": "Optional<T>::None()" },
-    { "phase": "typecheck", "message_contains": "Optional::None<type T>()" }
-  ]
+    {
+      "message_contains": "E-QMEM-CANNOT-INFER",
+      "phase": "typecheck"
+    },
+    {
+      "message_contains": "underconstrained",
+      "phase": "typecheck"
+    },
+    {
+      "message_contains": "Optional<T>::None()",
+      "phase": "typecheck"
+    },
+    {
+      "message_contains": "Optional::None<type T>()",
+      "phase": "typecheck"
+    }
+  ],
+  "exit_code": 1
 }

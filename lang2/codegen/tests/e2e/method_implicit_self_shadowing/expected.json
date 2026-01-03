@@ -1,2 +1,6 @@
-{ "exit_code": 3, "stdout": "", "stderr": "" }
-
+{
+  "description": "e2e: method implicit self shadowing",
+  "exit_code": 3,
+  "stderr": "",
+  "stdout": ""
+}

@@ -1,2 +1,6 @@
-{ "exit_code": 0, "stdout": "", "stderr": "" }
-
+{
+  "description": "e2e: qualified ctor nested generic type args ok",
+  "exit_code": 0,
+  "stderr": "",
+  "stdout": ""
+}

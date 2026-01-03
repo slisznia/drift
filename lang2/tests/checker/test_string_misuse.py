@@ -1,13 +1,26 @@
 from lang2.driftc import stage1 as H
 from lang2.driftc.checker import Checker, FnSignature
 from lang2.driftc.core.diagnostics import Diagnostic
+from lang2.driftc.core.function_id import FunctionId
 from lang2.driftc.core.types_core import TypeTable
 
 
 def _run_checker(block: H.HBlock) -> list[Diagnostic]:
-	sig = FnSignature(name="main", return_type_id=None, param_type_ids=[], declared_can_throw=False)
-	checker = Checker(signatures={"main": sig}, hir_blocks={"main": block}, type_table=None)
-	result = checker.check(["main"])
+	fn_id = FunctionId(module="main", name="main", ordinal=0)
+	table = TypeTable()
+	sig = FnSignature(
+		name="main",
+		return_type_id=table.ensure_int(),
+		param_type_ids=[],
+		declared_can_throw=False,
+	)
+	checker = Checker(
+		signatures_by_id={fn_id: sig},
+		hir_blocks_by_id={fn_id: block},
+		call_info_by_callsite_id={},
+		type_table=table,
+	)
+	result = checker.check_by_id([fn_id])
 	return result.diagnostics
 
 
@@ -60,6 +73,12 @@ def test_if_condition_rejects_param_string() -> None:
 		return_type_id=table.ensure_int(),
 		declared_can_throw=False,
 	)
-	checker = Checker(signatures={"main": sig}, hir_blocks={"main": block}, type_table=table)
-	diagnostics = checker.check(["main"]).diagnostics
+	fn_id = FunctionId(module="main", name="main", ordinal=0)
+	checker = Checker(
+		signatures_by_id={fn_id: sig},
+		hir_blocks_by_id={fn_id: block},
+		call_info_by_callsite_id={},
+		type_table=table,
+	)
+	diagnostics = checker.check_by_id([fn_id]).diagnostics
 	assert any("if condition must be Bool" in d.message for d in diagnostics)

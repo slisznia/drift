@@ -1,6 +1,10 @@
 {
-  "exit_code": 1,
+  "description": "e2e: closures explicit captures shared write rejected",
   "diagnostics": [
-    { "phase": "typecheck", "message_contains": "capture &mut x" }
-  ]
+    {
+      "message_contains": "capture &mut x",
+      "phase": "typecheck"
+    }
+  ],
+  "exit_code": 1
 }

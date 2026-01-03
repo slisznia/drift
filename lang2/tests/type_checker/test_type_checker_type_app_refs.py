@@ -15,7 +15,7 @@ from lang2.driftc.type_checker import TypeChecker
 
 
 def _callable_name(fn_id: FunctionId) -> str:
-	return fn_id.name if fn_id.module == "main" else f"{fn_id.module}::{fn_id.name}"
+	return fn_id.name
 
 
 def _build_registry(sigs: dict[FunctionId, FnSignature]) -> tuple[CallableRegistry, dict[object, int]]:
@@ -80,8 +80,11 @@ fn main() returns Int {
 }
 """
 	)
-	func_hirs, sigs, fn_ids_by_name, type_table, _exc_catalog, diagnostics = parse_drift_to_hir(src)
+	module, type_table, _exc_catalog, diagnostics = parse_drift_to_hir(src)
 	assert diagnostics == []
+	func_hirs = module.func_hirs
+	sigs = module.signatures_by_id
+	fn_ids_by_name = module.fn_ids_by_name
 	registry, module_ids = _build_registry(sigs)
 	fn_ids = fn_ids_by_name.get("main") or []
 	assert len(fn_ids) == 1
@@ -124,8 +127,11 @@ fn main() returns Int {
 }
 """
 	)
-	func_hirs, sigs, fn_ids_by_name, type_table, _exc_catalog, diagnostics = parse_drift_to_hir(src)
+	module, type_table, _exc_catalog, diagnostics = parse_drift_to_hir(src)
 	assert diagnostics == []
+	func_hirs = module.func_hirs
+	sigs = module.signatures_by_id
+	fn_ids_by_name = module.fn_ids_by_name
 	fn_ids = fn_ids_by_name.get("main") or []
 	assert len(fn_ids) == 1
 	main_id = fn_ids[0]
@@ -163,8 +169,11 @@ fn main() returns Int {
 }
 """
 	)
-	func_hirs, sigs, fn_ids_by_name, type_table, _exc_catalog, diagnostics = parse_drift_to_hir(src)
+	module, type_table, _exc_catalog, diagnostics = parse_drift_to_hir(src)
 	assert diagnostics == []
+	func_hirs = module.func_hirs
+	sigs = module.signatures_by_id
+	fn_ids_by_name = module.fn_ids_by_name
 	fn_ids = fn_ids_by_name.get("main") or []
 	assert len(fn_ids) == 1
 	main_id = fn_ids[0]
@@ -208,8 +217,11 @@ fn main() returns Int {
 }
 """
 	)
-	func_hirs, sigs, fn_ids_by_name, type_table, _exc_catalog, diagnostics = parse_drift_to_hir(src)
+	module, type_table, _exc_catalog, diagnostics = parse_drift_to_hir(src)
 	assert diagnostics == []
+	func_hirs = module.func_hirs
+	sigs = module.signatures_by_id
+	fn_ids_by_name = module.fn_ids_by_name
 	fn_ids = fn_ids_by_name.get("main") or []
 	assert len(fn_ids) == 1
 	main_id = fn_ids[0]
@@ -238,8 +250,11 @@ fn main() returns Int {
 }
 """
 	)
-	func_hirs, sigs, fn_ids_by_name, type_table, _exc_catalog, diagnostics = parse_drift_to_hir(src)
+	module, type_table, _exc_catalog, diagnostics = parse_drift_to_hir(src)
 	assert diagnostics == []
+	func_hirs = module.func_hirs
+	sigs = module.signatures_by_id
+	fn_ids_by_name = module.fn_ids_by_name
 	registry, module_ids = _build_registry(sigs)
 	fn_ids = fn_ids_by_name.get("main") or []
 	assert len(fn_ids) == 1

@@ -1,1 +1,6 @@
-{ "exit_code": 3, "stdout": "", "stderr": "" }
+{
+  "description": "e2e: same module pub nothrow ok",
+  "exit_code": 3,
+  "stderr": "",
+  "stdout": ""
+}

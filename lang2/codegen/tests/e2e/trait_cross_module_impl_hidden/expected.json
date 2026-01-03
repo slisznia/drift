@@ -1,6 +1,9 @@
 {
-  "exit_code": 1,
+  "description": "e2e: trait cross module impl hidden",
   "diagnostics": [
-    { "message_contains": "exists but is not visible here" }
-  ]
+    {
+      "message_contains": "exists but is not visible here"
+    }
+  ],
+  "exit_code": 1
 }

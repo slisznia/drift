@@ -7,10 +7,11 @@ code does not match any arm: expect rethrow as FnResult.Err.
 
 from __future__ import annotations
 
-from lang2.driftc.stage2 import HIRToMIR, MirBuilder, mir_nodes as M
+from lang2.driftc.stage2 import HIRToMIR, mir_nodes as M, make_builder
 from lang2.driftc import stage1 as H
 from lang2.driftc.core.types_core import TypeTable
 from lang2.driftc.stage1.normalize import normalize_hir
+from lang2.driftc.core.function_id import FunctionId
 
 
 def test_try_unmatched_event_rethrows_as_err():
@@ -18,17 +19,20 @@ def test_try_unmatched_event_rethrows_as_err():
 	A try with only event-specific arms and no catch-all should rethrow as
 	FnResult.Err when no arm matches the thrown event code.
 	"""
-	builder = MirBuilder(name="try_unmatched")
+	builder = make_builder(FunctionId(module="main", name="try_unmatched", ordinal=0))
+	fn_id=FunctionId(module="main", name="try_unmatched", ordinal=0),
 	type_table = TypeTable()
 	type_table.exception_schemas = {
 		"m:Other": ("m:Other", []),
 	}
+	fn_id = FunctionId(module="main", name="try_unmatched", ordinal=0)
 	# Only catch EvtA; exc_env maps it to 123.
 	lower = HIRToMIR(
 		builder,
 		type_table=type_table,
 		exc_env={"m:EvtA": 123},
-		can_throw_by_name={"try_unmatched": True},
+		current_fn_id=fn_id,
+		can_throw_by_id={fn_id: True},
 	)
 
 	# Throw a DV with a different event name (no code mapping => 0), so it won't match.

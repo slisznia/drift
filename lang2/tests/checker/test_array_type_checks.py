@@ -1,13 +1,26 @@
 from lang2.driftc import stage1 as H
 from lang2.driftc.checker import Checker, FnSignature
+from lang2.driftc.core.function_id import FunctionId
+from lang2.driftc.core.types_core import TypeTable
 
 
 def _run_checker(func_hir):
+	fn_id = FunctionId(module="main", name="main", ordinal=0)
+	table = TypeTable()
 	checker = Checker(
-		signatures={"main": FnSignature(name="main", return_type="Int", declared_can_throw=False)},
-		hir_blocks={"main": func_hir},
+		signatures_by_id={
+			fn_id: FnSignature(
+				name="main",
+				param_type_ids=[],
+				return_type_id=table.ensure_int(),
+				declared_can_throw=False,
+			)
+		},
+		hir_blocks_by_id={fn_id: func_hir},
+		call_info_by_callsite_id={},
+		type_table=table,
 	)
-	checked = checker.check(["main"])
+	checked = checker.check_by_id([fn_id])
 	return checked.diagnostics
 
 

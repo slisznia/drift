@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import Dict, List, Optional, Mapping, Callable, Tuple, Set
+from typing import Callable, Dict, List, Mapping, Optional, Set, Tuple
 
 from lang2.driftc import stage1 as H
 from lang2.driftc.stage1 import closures as C
@@ -37,11 +37,13 @@ from lang2.driftc.borrow_checker import (
 	places_overlap,
 )
 from lang2.driftc.core.diagnostics import Diagnostic
+from lang2.driftc.core.function_id import FunctionId
 from lang2.driftc.core.span import Span
 from lang2.driftc.core.types_core import TypeKind, TypeTable, TypeId
 from lang2.driftc.checker import FnSignature
 from lang2.driftc.method_registry import CallableDecl
 from lang2.driftc.method_resolver import MethodResolution, SelfMode
+from lang2.driftc.stage1.call_info import CallInfo, CallTargetKind, IntrinsicKind
 from collections import deque
 
 
@@ -105,8 +107,9 @@ class BorrowChecker:
 	fn_types: Mapping[PlaceBase, TypeId]
 	binding_types: Optional[Dict[int, TypeId]] = None
 	binding_mutable: Optional[Dict[int, bool]] = None
-	signatures: Optional[Mapping[str, FnSignature]] = None
+	signatures_by_id: Optional[Mapping[FunctionId, FnSignature]] = None
 	call_resolutions: Optional[Mapping[int, object]] = None
+	call_info_by_callsite_id: Optional[Mapping[int, CallInfo]] = None
 	base_lookup: Callable[[object], Optional[PlaceBase]] = lambda hv: PlaceBase(
 		PlaceKind.LOCAL,
 		getattr(hv, "binding_id", -1) if getattr(hv, "binding_id", None) is not None else -1,
@@ -126,8 +129,8 @@ class BorrowChecker:
 			self.binding_types = {pb.local_id: ty for pb, ty in self.fn_types.items()}
 		self._bases_by_binding: Dict[int, PlaceBase] = {pb.local_id: pb for pb in self.fn_types.keys()}
 		self._method_sig_by_key: Dict[Tuple[int, str], FnSignature] = {}
-		if self.signatures:
-			for sig in self.signatures.values():
+		if self.signatures_by_id:
+			for sig in self.signatures_by_id.values():
 				if sig.is_method and sig.impl_target_type_id is not None:
 					key = (sig.impl_target_type_id, sig.method_name or sig.name)
 					self._method_sig_by_key[key] = sig
@@ -145,25 +148,39 @@ class BorrowChecker:
 		return place
 
 	def _resolve_sig_for_call(self, expr: H.HExpr) -> Optional[FnSignature]:
-		if not self.signatures:
+		if not self.signatures_by_id:
 			return None
 		if isinstance(expr, H.HCall):
-			if isinstance(expr.fn, H.HVar):
-				sig = self.signatures.get(expr.fn.name)
-				if sig is not None:
-					return sig
 			resolution = self.call_resolutions.get(expr.node_id) if self.call_resolutions is not None else None
 			if isinstance(resolution, CallableDecl):
-				return self.signatures.get(resolution.name)
+				if resolution.fn_id is None:
+					return None
+				return self.signatures_by_id.get(resolution.fn_id)
 			return None
 		if isinstance(expr, H.HMethodCall):
 			resolution = self.call_resolutions.get(expr.node_id) if self.call_resolutions is not None else None
 			if isinstance(resolution, MethodResolution):
+				if resolution.decl.fn_id is not None:
+					return self.signatures_by_id.get(resolution.decl.fn_id)
 				impl_target = resolution.decl.impl_target_type_id
 				if impl_target is None:
 					return None
 				return self._method_sig_by_key.get((impl_target, resolution.decl.name))
 		return None
+
+	def _intrinsic_name_for_call(self, expr: H.HCall) -> Optional[IntrinsicKind]:
+		call_info = self.call_info_by_callsite_id
+		if call_info is None:
+			return None
+		key = getattr(expr, "callsite_id", None)
+		if not isinstance(call_info, dict) or not isinstance(key, int):
+			return None
+		info = call_info.get(key)
+		if info is None or info.target.kind is not CallTargetKind.INTRINSIC:
+			return None
+		if info.target.intrinsic is None:
+			raise AssertionError("intrinsic call missing kind (typecheck/call-info bug)")
+		return info.target.intrinsic
 
 	def _param_index_for_call(
 		self,
@@ -234,7 +251,12 @@ class BorrowChecker:
 
 	@classmethod
 	def from_typed_fn(
-		cls, typed_fn, type_table: TypeTable, *, signatures: Optional[Mapping[str, FnSignature]] = None, enable_auto_borrow: bool = False
+		cls,
+		typed_fn,
+		type_table: TypeTable,
+		*,
+		signatures_by_id: Optional[Mapping[FunctionId, FnSignature]] = None,
+		enable_auto_borrow: bool = False,
 	) -> "BorrowChecker":
 		"""
 		Build a BorrowChecker from a TypedFn (binding-aware).
@@ -248,9 +270,13 @@ class BorrowChecker:
 		# - diagnostics/readability (param vs local),
 		# - avoiding accidental overlaps if/when we introduce nested binding scopes.
 		param_ids = set(getattr(typed_fn, "param_bindings", []) or [])
+		binding_place_kind = getattr(typed_fn, "binding_place_kind", None)
 		fn_types = {}
 		for bid, ty in typed_fn.binding_types.items():
-			kind = PlaceKind.PARAM if bid in param_ids else PlaceKind.LOCAL
+			if binding_place_kind is not None and bid in binding_place_kind:
+				kind = binding_place_kind[bid]
+			else:
+				kind = PlaceKind.PARAM if bid in param_ids else PlaceKind.LOCAL
 			fn_types[PlaceBase(kind, bid, typed_fn.binding_names.get(bid, "_b"))] = ty
 
 		def base_lookup(hv: object) -> Optional[PlaceBase]:
@@ -259,7 +285,10 @@ class BorrowChecker:
 			if bid is None and hasattr(typed_fn, "binding_for_var"):
 				bid = typed_fn.binding_for_var.get(hv.node_id)
 			local_id = bid if isinstance(bid, int) else -1
-			kind = PlaceKind.PARAM if local_id in param_ids else PlaceKind.LOCAL
+			if binding_place_kind is not None and local_id in binding_place_kind:
+				kind = binding_place_kind[local_id]
+			else:
+				kind = PlaceKind.PARAM if local_id in param_ids else PlaceKind.LOCAL
 			return PlaceBase(kind, local_id, name)
 
 		return cls(
@@ -267,8 +296,9 @@ class BorrowChecker:
 			fn_types=fn_types,
 			binding_types=dict(typed_fn.binding_types),
 			binding_mutable=dict(getattr(typed_fn, "binding_mutable", {}) or {}),
-			signatures=signatures,
+			signatures_by_id=signatures_by_id,
 			call_resolutions=getattr(typed_fn, "call_resolutions", None),
+			call_info_by_callsite_id=getattr(typed_fn, "call_info_by_callsite_id", None),
 			base_lookup=base_lookup,
 			enable_auto_borrow=enable_auto_borrow,
 		)
@@ -319,11 +349,15 @@ class BorrowChecker:
 		just the explicit sentinel `Span()`) makes diagnostics significantly more
 		actionable than emitting spanless errors.
 		"""
-		self.diagnostics.append(Diagnostic(message=message, severity="error", span=span or Span()))
+		self.diagnostics.append(
+			Diagnostic(message=message, severity="error", phase="borrowcheck", span=span or Span())
+		)
 
 	def _note(self, message: str, span: Span | None = None) -> None:
 		"""Append a note-level diagnostic anchored at `span`."""
-		self.diagnostics.append(Diagnostic(message=message, severity="note", span=span or Span()))
+		self.diagnostics.append(
+			Diagnostic(message=message, severity="note", phase="borrowcheck", span=span or Span())
+		)
 
 	def _emit_loan_notes(self, loan: Loan, block_id: Optional[int]) -> None:
 		"""Attach notes explaining why a conflicting loan is still live."""
@@ -646,10 +680,11 @@ class BorrowChecker:
 
 	def _param_types_for_call(self, expr: H.HCall) -> Optional[List[TypeId]]:
 		"""Return param TypeIds for a call if a signature is available; otherwise None."""
-		if not self.signatures:
+		if not self.signatures_by_id:
 			return None
-		if isinstance(expr.fn, H.HVar):
-			sig = self.signatures.get(expr.fn.name)
+		resolution = self.call_resolutions.get(expr.node_id) if self.call_resolutions is not None else None
+		if isinstance(resolution, CallableDecl) and resolution.fn_id is not None:
+			sig = self.signatures_by_id.get(resolution.fn_id)
 			if sig and sig.param_type_ids:
 				return sig.param_type_ids
 		return None
@@ -1045,48 +1080,42 @@ class BorrowChecker:
 			# They mutate their first argument (and `swap` mutates both). For borrow
 			# checking we must treat them as writes to their place operands, not as a
 			# regular call that only evaluates values.
-			if isinstance(expr.fn, H.HVar) and expr.fn.name in ("swap", "replace"):
-				name = expr.fn.name
-				if name == "swap":
-					if len(expr.args) != 2:
-						self._diagnostic("swap expects exactly 2 arguments", getattr(expr, "loc", Span()))
-						return
-					a_expr, b_expr = expr.args
-					a_place = place_from_expr(a_expr, base_lookup=self.base_lookup)
-					b_place = place_from_expr(b_expr, base_lookup=self.base_lookup)
-					if a_place is None:
-						self._diagnostic("swap argument 0 must be an addressable place", getattr(a_expr, "loc", Span()))
-						return
-					if b_place is None:
-						self._diagnostic("swap argument 1 must be an addressable place", getattr(b_expr, "loc", Span()))
-						return
-					# swap reads both places (use-after-move checks) and then writes both.
-					self._consume_place_use(state, a_place, getattr(a_expr, "loc", Span()))
-					self._consume_place_use(state, b_place, getattr(b_expr, "loc", Span()))
-					if not self._reject_write_while_borrowed(state, a_place, getattr(a_expr, "loc", Span())):
-						return
-					if not self._reject_write_while_borrowed(state, b_place, getattr(b_expr, "loc", Span())):
-						return
-					# swap preserves initialized state when it succeeds.
-					self._set_state(state, a_place, PlaceState.VALID)
-					self._set_state(state, b_place, PlaceState.VALID)
+			intrinsic_kind = self._intrinsic_name_for_call(expr)
+			if intrinsic_kind is IntrinsicKind.SWAP:
+				if len(expr.args) != 2:
+					raise AssertionError("swap expects exactly 2 arguments (checker bug)")
+				a_expr, b_expr = expr.args
+				a_place = place_from_expr(a_expr, base_lookup=self.base_lookup)
+				b_place = place_from_expr(b_expr, base_lookup=self.base_lookup)
+				if a_place is None:
+					raise AssertionError("swap argument 0 must be an addressable place (checker bug)")
+				if b_place is None:
+					raise AssertionError("swap argument 1 must be an addressable place (checker bug)")
+				# swap reads both places (use-after-move checks) and then writes both.
+				self._consume_place_use(state, a_place, getattr(a_expr, "loc", Span()))
+				self._consume_place_use(state, b_place, getattr(b_expr, "loc", Span()))
+				if not self._reject_write_while_borrowed(state, a_place, getattr(a_expr, "loc", Span())):
 					return
-				if name == "replace":
-					if len(expr.args) != 2:
-						self._diagnostic("replace expects exactly 2 arguments", getattr(expr, "loc", Span()))
-						return
-					place_expr, new_expr = expr.args
-					place = place_from_expr(place_expr, base_lookup=self.base_lookup)
-					if place is None:
-						self._diagnostic("replace argument 0 must be an addressable place", getattr(place_expr, "loc", Span()))
-						return
-					# replace reads the old value (use-after-move) and writes the new.
-					self._consume_place_use(state, place, getattr(place_expr, "loc", Span()))
-					self._visit_expr(state, new_expr, as_value=True)
-					if not self._reject_write_while_borrowed(state, place, getattr(place_expr, "loc", Span())):
-						return
-					self._set_state(state, place, PlaceState.VALID)
+				if not self._reject_write_while_borrowed(state, b_place, getattr(b_expr, "loc", Span())):
 					return
+				# swap preserves initialized state when it succeeds.
+				self._set_state(state, a_place, PlaceState.VALID)
+				self._set_state(state, b_place, PlaceState.VALID)
+				return
+			if intrinsic_kind is IntrinsicKind.REPLACE:
+				if len(expr.args) != 2:
+					raise AssertionError("replace expects exactly 2 arguments (checker bug)")
+				place_expr, new_expr = expr.args
+				place = place_from_expr(place_expr, base_lookup=self.base_lookup)
+				if place is None:
+					raise AssertionError("replace argument 0 must be an addressable place (checker bug)")
+				# replace reads the old value (use-after-move) and writes the new.
+				self._consume_place_use(state, place, getattr(place_expr, "loc", Span()))
+				self._visit_expr(state, new_expr, as_value=True)
+				if not self._reject_write_while_borrowed(state, place, getattr(place_expr, "loc", Span())):
+					return
+				self._set_state(state, place, PlaceState.VALID)
+				return
 
 			pre_loans = set(state.loans)
 			self._visit_expr(state, expr.fn, as_value=True)

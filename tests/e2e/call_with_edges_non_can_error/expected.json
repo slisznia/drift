@@ -1,6 +1,7 @@
 {
-  "mode": "run",
-  "compile_error": "call with error edges to non-can-error function foo",
   "args": [],
-  "env": {}
+  "compile_error": "call with error edges to non-can-error function foo",
+  "description": "e2e: call with edges non can error",
+  "env": {},
+  "mode": "run"
 }

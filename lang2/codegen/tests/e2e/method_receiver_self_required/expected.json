@@ -1,6 +1,10 @@
 {
-  "exit_code": 1,
+  "description": "e2e: method receiver self required",
   "diagnostics": [
-    { "phase": "typecheck", "message_contains": "first parameter of method 'bump' must be named 'self'" }
-  ]
+    {
+      "message_contains": "first parameter of method 'bump' must be named 'self'",
+      "phase": "typecheck"
+    }
+  ],
+  "exit_code": 1
 }

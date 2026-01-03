@@ -1,6 +1,10 @@
 {
-  "exit_code": 1,
+  "description": "e2e: return ref local rejected",
   "diagnostics": [
-    { "phase": "typecheck", "message_contains": "reference return must be derived from a reference parameter" }
-  ]
+    {
+      "message_contains": "reference return must be derived from a reference parameter",
+      "phase": "typecheck"
+    }
+  ],
+  "exit_code": 1
 }

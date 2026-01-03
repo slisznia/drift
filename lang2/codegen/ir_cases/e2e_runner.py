@@ -56,7 +56,7 @@ Run a single codegen IR case:
 	clang_bin: Optional[str] = os.environ.get("CLANG_BIN") or "clang-15"
 	clang = shutil.which(clang_bin) or shutil.which("clang")
 	if clang is None:
-		return "skipped (clang not found)"
+		return "FAIL (clang not found)"
 
 	bin_path = build_dir / "a.out"
 	compile_res = subprocess.run(

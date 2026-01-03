@@ -1,1 +1,11 @@
-{ "exit_code": 0, "stdout": "", "stderr": "" }
+{
+  "description": "e2e: module id invalid reserved prefix",
+  "diagnostics": [
+    {
+      "message_contains": "reserved module namespace 'std.foo' requires toolchain trust",
+      "phase": "package"
+    }
+  ],
+  "exit_code": 1,
+  "use_driftc_json": false
+}

@@ -1,5 +1,6 @@
 {
-  "mode": "run",
+  "description": "e2e: mutable bindings",
   "exit_code": 1,
+  "mode": "run",
   "stdout": "var bindings opt into future mutation\n"
 }

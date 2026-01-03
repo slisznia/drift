@@ -1,1 +1,6 @@
-{ "exit_code": 4, "stdout": "", "stderr": "" }
+{
+  "description": "e2e: fnptr thunk nothrow to can throw",
+  "exit_code": 4,
+  "stderr": "",
+  "stdout": ""
+}

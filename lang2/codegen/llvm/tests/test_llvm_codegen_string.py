@@ -1,3 +1,4 @@
+from lang2.driftc.core.function_id import FunctionId
 # vim: set noexpandtab: -*- indent-tabs-mode: t -*-
 # author: Sławomir Liszniański; created: 2025-12-10
 """
@@ -28,12 +29,13 @@ def test_string_literal_return_ir():
 		],
 		terminator=Return(value="t0"),
 	)
-	func = MirFunc(name="f", params=[], locals=[], blocks={"entry": block}, entry="entry")
+	fn_id = FunctionId(module="main", name="f", ordinal=0)
+	func = MirFunc(fn_id=fn_id, name="f", params=[], locals=[], blocks={"entry": block}, entry="entry")
 	ssa = MirToSSA().run(func)
 	sig = FnSignature(name="f", return_type_id=str_ty, param_type_ids=[])
-	fn_info = FnInfo(name="f", declared_can_throw=False, signature=sig, return_type_id=str_ty)
+	fn_info = FnInfo(fn_id=fn_id, name="f", declared_can_throw=False, signature=sig, return_type_id=str_ty)
 
-	ir = lower_ssa_func_to_llvm(func, ssa, fn_info, {"f": fn_info}, type_table=table)
+	ir = lower_ssa_func_to_llvm(func, ssa, fn_info, {fn_id: fn_info}, type_table=table)
 
 	assert "%drift.size = type i64" in ir
 	assert "%DriftString = type { %drift.size, i8*" in ir
@@ -54,12 +56,13 @@ def test_string_utf8_literal_ir():
 		],
 		terminator=Return(value="t0"),
 	)
-	func = MirFunc(name="f", params=[], locals=[], blocks={"entry": block}, entry="entry")
+	fn_id = FunctionId(module="main", name="f", ordinal=0)
+	func = MirFunc(fn_id=fn_id, name="f", params=[], locals=[], blocks={"entry": block}, entry="entry")
 	ssa = MirToSSA().run(func)
 	sig = FnSignature(name="f", return_type_id=str_ty, param_type_ids=[])
-	fn_info = FnInfo(name="f", declared_can_throw=False, signature=sig, return_type_id=str_ty)
+	fn_info = FnInfo(fn_id=fn_id, name="f", declared_can_throw=False, signature=sig, return_type_id=str_ty)
 
-	ir = lower_ssa_func_to_llvm(func, ssa, fn_info, {"f": fn_info}, type_table=table)
+	ir = lower_ssa_func_to_llvm(func, ssa, fn_info, {fn_id: fn_info}, type_table=table)
 
 	assert "%drift.size = type i64" in ir
 	assert "%DriftString = type { %drift.size, i8*" in ir
@@ -79,29 +82,31 @@ def test_string_pass_through_call_ir():
 		],
 		terminator=Return(value="s"),
 	)
-	callee = MirFunc(name="id", params=["s"], locals=[], blocks={"entry": callee_block}, entry="entry")
+	callee_id = FunctionId(module="main", name="id", ordinal=0)
+	callee = MirFunc(fn_id=callee_id, name="id", params=["s"], locals=[], blocks={"entry": callee_block}, entry="entry")
 	callee_ssa = MirToSSA().run(callee)
 	callee_sig = FnSignature(name="id", param_type_ids=[str_ty], return_type_id=str_ty)
-	callee_info = FnInfo(name="id", declared_can_throw=False, signature=callee_sig, return_type_id=str_ty)
+	callee_info = FnInfo(fn_id=callee_id, name="id", declared_can_throw=False, signature=callee_sig, return_type_id=str_ty)
 
 	# caller: pass literal through id
 	caller_block = BasicBlock(
 		name="entry",
 		instructions=[
 			ConstString(dest="t0", value="abc"),
-			Call(dest="t1", fn="id", args=["t0"], can_throw=False),
+			Call(dest="t1", fn_id=callee_id, args=["t0"], can_throw=False),
 		],
 		terminator=Return(value="t1"),
 	)
-	caller = MirFunc(name="main", params=[], locals=["t0", "t1"], blocks={"entry": caller_block}, entry="entry")
+	caller_id = FunctionId(module="main", name="main", ordinal=0)
+	caller = MirFunc(fn_id=caller_id, name="main", params=[], locals=["t0", "t1"], blocks={"entry": caller_block}, entry="entry")
 	caller_ssa = MirToSSA().run(caller)
 	caller_sig = FnSignature(name="main", param_type_ids=[], return_type_id=str_ty)
-	caller_info = FnInfo(name="main", declared_can_throw=False, signature=caller_sig, return_type_id=str_ty)
+	caller_info = FnInfo(fn_id=caller_id, name="main", declared_can_throw=False, signature=caller_sig, return_type_id=str_ty)
 
 	mod = lower_module_to_llvm(
-		{"id": callee, "main": caller},
-		{"id": callee_ssa, "main": caller_ssa},
-		{"id": callee_info, "main": caller_info},
+		{callee_id: callee, caller_id: caller},
+		{callee_id: callee_ssa, caller_id: caller_ssa},
+		{callee_id: callee_info, caller_id: caller_info},
 		type_table=table,
 	)
 	ir = mod.render()

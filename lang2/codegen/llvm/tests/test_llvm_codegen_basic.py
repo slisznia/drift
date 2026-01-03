@@ -4,6 +4,7 @@ SSA-first LLVM codegen smoke tests.
 
 from __future__ import annotations
 
+from lang2.driftc.core.function_id import FunctionId
 from lang2.codegen.llvm import LlvmModuleBuilder, lower_ssa_func_to_llvm
 from lang2.driftc.checker import FnInfo, FnSignature
 from lang2.driftc.stage2 import (
@@ -24,6 +25,7 @@ from lang2.driftc.core.types_core import TypeTable
 def _fn_info(name: str, can_throw: bool, return_ty: int) -> FnInfo:
 	"""Build a minimal FnInfo with the provided return TypeId."""
 	return FnInfo(
+		fn_id=FunctionId(module="main", name=name, ordinal=0),
 		name=name,
 		declared_can_throw=can_throw,
 		return_type_id=return_ty,
@@ -39,7 +41,7 @@ def test_codegen_plain_int_return():
 		instructions=[ConstInt(dest="t0", value=42)],
 		terminator=Return(value="t0"),
 	)
-	mir = MirFunc(name="main", params=[], locals=[], blocks={"entry": entry}, entry="entry")
+	mir = MirFunc(fn_id=FunctionId(module="main", name="main", ordinal=0), name="main", params=[], locals=[], blocks={"entry": entry}, entry="entry")
 	ssa = MirToSSA().run(mir)
 
 	table = TypeTable()
@@ -64,7 +66,7 @@ def test_codegen_fnresult_ok_return():
 		],
 		terminator=Return(value="res"),
 	)
-	mir = MirFunc(name="f", params=[], locals=[], blocks={"entry": entry}, entry="entry")
+	mir = MirFunc(fn_id=FunctionId(module="main", name="f", ordinal=0), name="f", params=[], locals=[], blocks={"entry": entry}, entry="entry")
 	ssa = MirToSSA().run(mir)
 
 	table = TypeTable()
@@ -91,7 +93,7 @@ def test_codegen_fnresult_ref_ok_return():
 		],
 		terminator=Return(value="res"),
 	)
-	mir = MirFunc(name="f_ref", params=["p0"], locals=[], blocks={"entry": entry}, entry="entry")
+	mir = MirFunc(fn_id=FunctionId(module="main", name="f_ref", ordinal=0), name="f_ref", params=["p0"], locals=[], blocks={"entry": entry}, entry="entry")
 	ssa = MirToSSA().run(mir)
 
 	table = TypeTable()
@@ -100,7 +102,7 @@ def test_codegen_fnresult_ref_ok_return():
 	error_ty = table.ensure_error()
 	fnresult_ty = table.new_fnresult(ref_int, error_ty)
 	sig = FnSignature(name="f_ref", param_type_ids=[ref_int], return_type_id=fnresult_ty, declared_can_throw=True)
-	fn_info = FnInfo(name="f_ref", declared_can_throw=True, return_type_id=fnresult_ty, signature=sig)
+	fn_info = FnInfo(fn_id=FunctionId(module="main", name="f_ref", ordinal=0), name="f_ref", declared_can_throw=True, return_type_id=fnresult_ty, signature=sig)
 
 	mod = LlvmModuleBuilder()
 	mod.emit_func(lower_ssa_func_to_llvm(mir, ssa, fn_info, type_table=table))
@@ -126,7 +128,7 @@ def test_codegen_fnresult_ref_err_zero_ok_slot():
 		],
 		terminator=Return(value="res"),
 	)
-	mir = MirFunc(name="f_ref_err", params=[], locals=[], blocks={"entry": entry}, entry="entry")
+	mir = MirFunc(fn_id=FunctionId(module="main", name="f_ref_err", ordinal=0), name="f_ref_err", params=[], locals=[], blocks={"entry": entry}, entry="entry")
 	ssa = MirToSSA().run(mir)
 
 	table = TypeTable()
@@ -134,7 +136,7 @@ def test_codegen_fnresult_ref_err_zero_ok_slot():
 	ref_int = table.ensure_ref(int_ty)
 	error_ty = table.ensure_error()
 	fnresult_ty = table.new_fnresult(ref_int, error_ty)
-	fn_info = FnInfo(name="f_ref_err", declared_can_throw=True, return_type_id=fnresult_ty)
+	fn_info = FnInfo(fn_id=FunctionId(module="main", name="f_ref_err", ordinal=0), name="f_ref_err", declared_can_throw=True, return_type_id=fnresult_ty)
 
 	mod = LlvmModuleBuilder()
 	mod.emit_func(lower_ssa_func_to_llvm(mir, ssa, fn_info, type_table=table))

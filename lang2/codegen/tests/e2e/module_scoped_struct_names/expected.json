@@ -1,1 +1,6 @@
-{ "exit_code": 3, "stdout": "", "stderr": "" }
+{
+  "description": "e2e: module scoped struct names",
+  "exit_code": 3,
+  "stderr": "",
+  "stdout": ""
+}

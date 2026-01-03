@@ -1,1 +1,6 @@
-{ "exit_code": 5, "stdout": "", "stderr": "" }
+{
+  "description": "e2e: borrow string param",
+  "exit_code": 5,
+  "stderr": "",
+  "stdout": ""
+}

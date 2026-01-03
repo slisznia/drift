@@ -1,1 +1,6 @@
-{ "exit_code": 42, "stdout": "", "stderr": "" }
+{
+  "description": "e2e: import alias",
+  "exit_code": 42,
+  "stderr": "",
+  "stdout": ""
+}

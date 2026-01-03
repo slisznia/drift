@@ -11,15 +11,17 @@ import pytest
 
 from lang2.driftc import stage1 as H
 from lang2.driftc.stage1 import normalize_hir
-from lang2.driftc.stage2 import HIRToMIR, MirBuilder, mir_nodes as M
+from lang2.driftc.stage2 import HIRToMIR, make_builder, mir_nodes as M
 from lang2.driftc.stage3.throw_summary import ThrowSummaryBuilder
 from lang2.driftc.stage4 import run_throw_checks
 from lang2.driftc.core.types_core import TypeTable
+from lang2.driftc.core.function_id import FunctionId
 
 
-def _lower_fn(name: str, hir_block: H.HBlock, *, can_throw: bool) -> tuple[str, object]:
-	builder = MirBuilder(name=name)
-	can_throw_map = {name: True} if can_throw else {}
+def _lower_fn(name: str, hir_block: H.HBlock, *, can_throw: bool) -> tuple[FunctionId, object]:
+	fn_id = FunctionId(module="main", name=name, ordinal=0)
+	builder = make_builder(fn_id)
+	can_throw_map = {fn_id: True} if can_throw else {}
 	# Stage2 lowering for exception constructors requires schemas; these tests
 	# use only zero-field events, so we seed minimal entries here.
 	type_table = TypeTable()
@@ -27,13 +29,18 @@ def _lower_fn(name: str, hir_block: H.HBlock, *, can_throw: bool) -> tuple[str, 
 		"m:EvtX": ("m:EvtX", []),
 		"m:Evt": ("m:Evt", []),
 	}
-	HIRToMIR(builder, type_table=type_table, can_throw_by_name=can_throw_map).lower_block(normalize_hir(hir_block))
-	return name, builder.func
+	HIRToMIR(
+		builder,
+		type_table=type_table,
+		current_fn_id=fn_id,
+		can_throw_by_id=can_throw_map,
+	).lower_block(normalize_hir(hir_block))
+	return fn_id, builder.func
 
 
 def test_can_throw_function_passes_checks():
 	"""A declared can-throw function that throws should pass all invariants."""
-	fn_name, mir_fn = _lower_fn(
+	fn_id, mir_fn = _lower_fn(
 		"f_can",
 		H.HBlock(
 			statements=[
@@ -44,11 +51,11 @@ def test_can_throw_function_passes_checks():
 		),
 		can_throw=True,
 	)
-	mir_funcs = {fn_name: mir_fn}
+	mir_funcs = {fn_id: mir_fn}
 	summaries = ThrowSummaryBuilder().build(mir_funcs, code_to_exc={})
-	infos = run_throw_checks(mir_funcs, summaries, declared_can_throw={fn_name: True})
-	assert fn_name in infos
-	assert infos[fn_name].declared_can_throw is True
+	infos = run_throw_checks(mir_funcs, summaries, declared_can_throw={fn_id: True})
+	assert fn_id in infos
+	assert infos[fn_id].declared_can_throw is True
 
 
 def test_can_throw_try_catch_and_return_ok_shape():
@@ -56,7 +63,7 @@ def test_can_throw_try_catch_and_return_ok_shape():
 	Can-throw function with try/catch and an explicit FnResult.Ok return passes all invariants.
 	The try/catch itself does not terminate the function; we append a ConstructResultOk + Return.
 	"""
-	fn_name, mir_fn = _lower_fn(
+	fn_id, mir_fn = _lower_fn(
 		"f_ok",
 		H.HBlock(
 			statements=[
@@ -89,11 +96,11 @@ def test_can_throw_try_catch_and_return_ok_shape():
 	)
 	cont.terminator = M.Return(value=ok_res)
 
-	mir_funcs = {fn_name: mir_fn}
+	mir_funcs = {fn_id: mir_fn}
 	summaries = ThrowSummaryBuilder().build(mir_funcs, code_to_exc={"m:Evt": 1})
-	infos = run_throw_checks(mir_funcs, summaries, declared_can_throw={fn_name: True})
-	assert fn_name in infos
-	assert infos[fn_name].declared_can_throw is True
+	infos = run_throw_checks(mir_funcs, summaries, declared_can_throw={fn_id: True})
+	assert fn_id in infos
+	assert infos[fn_id].declared_can_throw is True
 
 
 def test_can_throw_fnresult_forwarding_currently_rejected():
@@ -105,15 +112,17 @@ def test_can_throw_fnresult_forwarding_currently_rejected():
 	# MIR: entry -> return param "p" (no ConstructResultOk/Err defines it).
 	entry = M.BasicBlock(name="entry", instructions=[], terminator=M.Return(value="p"))
 	mir_fn = M.MirFunc(
+		fn_id=FunctionId(module="main", name="f_forward", ordinal=0),
 		name="f_forward",
 		params=[],
 		locals=["p"],
 		blocks={"entry": entry},
 		entry="entry",
 	)
-	mir_funcs = {"f_forward": mir_fn}
+	fn_id = FunctionId(module="main", name="f_forward", ordinal=0)
+	mir_funcs = {fn_id: mir_fn}
 	summaries = ThrowSummaryBuilder().build(mir_funcs, code_to_exc={})
-	declared_can_throw = {"f_forward": True}
+	declared_can_throw = {fn_id: True}
 
 	with pytest.raises(RuntimeError):
 		run_throw_checks(mir_funcs, summaries, declared_can_throw)
@@ -133,19 +142,21 @@ def test_can_throw_without_throw_and_ok_return_passes():
 		terminator=M.Return(value="r_ok"),
 	)
 	mir_fn = M.MirFunc(
+		fn_id=FunctionId(module="main", name="f_ok_only", ordinal=0),
 		name="f_ok_only",
 		params=[],
 		locals=[],
 		blocks={"entry": entry},
 		entry="entry",
 	)
-	mir_funcs = {"f_ok_only": mir_fn}
+	fn_id = FunctionId(module="main", name="f_ok_only", ordinal=0)
+	mir_funcs = {fn_id: mir_fn}
 	summaries = ThrowSummaryBuilder().build(mir_funcs, code_to_exc={})
-	declared_can_throw = {"f_ok_only": True}
+	declared_can_throw = {fn_id: True}
 
 	infos = run_throw_checks(mir_funcs, summaries, declared_can_throw)
-	assert "f_ok_only" in infos
-	assert infos["f_ok_only"].declared_can_throw is True
+	assert fn_id in infos
+	assert infos[fn_id].declared_can_throw is True
 
 
 def test_fnresult_forwarding_aliasing_expected_fail():
@@ -164,16 +175,17 @@ def test_fnresult_forwarding_aliasing_expected_fail():
 		terminator=M.Return(value="alias"),
 	)
 	mir_fn = M.MirFunc(
+		fn_id=FunctionId(module="main", name="f_alias", ordinal=0),
 		name="f_alias",
 		params=[],
 		locals=["alias"],
 		blocks={"entry": entry},
 		entry="entry",
 	)
-	mir_funcs = {"f_alias": mir_fn}
+	fn_id = FunctionId(module="main", name="f_alias", ordinal=0)
+	mir_funcs = {fn_id: mir_fn}
 	summaries = ThrowSummaryBuilder().build(mir_funcs, code_to_exc={})
-	declared_can_throw = {"f_alias": True}
+	declared_can_throw = {fn_id: True}
 
 	with pytest.raises(RuntimeError):
 		run_throw_checks(mir_funcs, summaries, declared_can_throw)
-

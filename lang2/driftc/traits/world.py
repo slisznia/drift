@@ -211,7 +211,7 @@ def type_key_str(key: TypeKey | TypeHeadKey) -> str:
 
 
 def _diag(message: str, loc: object | None) -> Diagnostic:
-	return Diagnostic(message=message, severity="error", span=Span.from_loc(loc))
+	return Diagnostic(message=message, severity="error", phase="typecheck", span=Span.from_loc(loc))
 
 
 def _collect_trait_is(expr: parser_ast.TraitExpr) -> List[parser_ast.TraitIs]:

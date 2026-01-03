@@ -1,4 +1,5 @@
 {
-  "exit_code": 0,
-  "diagnostics": []
+  "description": "e2e: borrow nll last use allows write",
+  "diagnostics": [],
+  "exit_code": 0
 }

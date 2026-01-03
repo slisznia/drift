@@ -19,10 +19,17 @@ from lang2.driftc.stage1 import AstToHIR
 from lang2.driftc import stage1 as H
 from lang2.driftc.checker import FnSignature
 from lang2.driftc.core.diagnostics import Diagnostic
+
+# Parser diagnostics should always carry phase.
+def _p_diag(*args, **kwargs):
+	if "phase" not in kwargs or kwargs.get("phase") is None:
+		kwargs["phase"] = "parser"
+	return Diagnostic(*args, **kwargs)
+
 from lang2.driftc.core.span import Span
 from lang2.driftc.core.types_core import TypeKind, TypeParamId
 from lang2.driftc.core.event_codes import event_code, PAYLOAD_MASK
-from lang2.driftc.core.function_id import FunctionId
+from lang2.driftc.core.function_id import FunctionId, function_symbol
 from lang2.driftc.core.types_core import (
 	TypeTable,
 	StructFieldSchema,
@@ -37,15 +44,11 @@ if TYPE_CHECKING:
 	from lang2.driftc.traits.world import TraitKey
 
 
-def _qualify_fn_name(module_id: str, name: str) -> str:
-	# MVP: symbols in the default `main` module remain unqualified so single-module
-	# programs keep legacy names. Other modules are qualified as `module::name`.
-	if module_id in (None, "main"):
-		return name
-	return f"{module_id}::{name}"
-
-
-def _validate_module_id(mid: str, *, span: Span) -> list[Diagnostic]:
+def _validate_module_id(
+	mid: str,
+	*,
+	span: Span,
+) -> list[Diagnostic]:
 	"""
 	Validate a module id per the language spec (format only; reserved namespaces
 	are enforced by loader trust policy).
@@ -57,7 +60,7 @@ def _validate_module_id(mid: str, *, span: Span) -> list[Diagnostic]:
 	"""
 	if not isinstance(mid, str) or not mid:
 		return [
-			Diagnostic(
+			_p_diag(
 				message="invalid module id (empty)",
 				severity="error",
 				span=span,
@@ -66,17 +69,15 @@ def _validate_module_id(mid: str, *, span: Span) -> list[Diagnostic]:
 	raw_len = len(mid.encode("utf-8"))
 	if raw_len > 254:
 		return [
-			Diagnostic(
+			_p_diag(
 				message=f"invalid module id '{mid}': length {raw_len} exceeds 254 UTF-8 bytes",
 				severity="error",
 				span=span,
 			)
 		]
-	# Reserved namespaces are enforced by package trust policy at load time,
-	# not by the parser.
 	if mid.startswith(".") or mid.endswith(".") or ".." in mid:
 		return [
-			Diagnostic(
+			_p_diag(
 				message=f"invalid module id '{mid}': dots must separate non-empty segments",
 				severity="error",
 				span=span,
@@ -84,7 +85,7 @@ def _validate_module_id(mid: str, *, span: Span) -> list[Diagnostic]:
 		]
 	if mid.startswith("_") or mid.endswith("_") or "__" in mid:
 		return [
-			Diagnostic(
+			_p_diag(
 				message=f"invalid module id '{mid}': underscores must not be leading/trailing or consecutive",
 				severity="error",
 				span=span,
@@ -94,7 +95,7 @@ def _validate_module_id(mid: str, *, span: Span) -> list[Diagnostic]:
 	for seg in segments:
 		if not seg:
 			return [
-				Diagnostic(
+				_p_diag(
 					message=f"invalid module id '{mid}': empty segment",
 					severity="error",
 					span=span,
@@ -102,7 +103,7 @@ def _validate_module_id(mid: str, *, span: Span) -> list[Diagnostic]:
 			]
 		if seg.startswith("_") or seg.endswith("_") or "__" in seg:
 			return [
-				Diagnostic(
+				_p_diag(
 					message=f"invalid module id '{mid}': segment '{seg}' has invalid underscore placement",
 					severity="error",
 					span=span,
@@ -112,7 +113,7 @@ def _validate_module_id(mid: str, *, span: Span) -> list[Diagnostic]:
 		# names and to keep directory→module inference predictable.
 		if not ("a" <= seg[0] <= "z"):
 			return [
-				Diagnostic(
+				_p_diag(
 					message=f"invalid module id '{mid}': segment '{seg}' must start with a lowercase letter",
 					severity="error",
 					span=span,
@@ -121,7 +122,7 @@ def _validate_module_id(mid: str, *, span: Span) -> list[Diagnostic]:
 		for ch in seg:
 			if not (("a" <= ch <= "z") or ("0" <= ch <= "9") or ch == "_"):
 				return [
-					Diagnostic(
+					_p_diag(
 						message=f"invalid module id '{mid}': segment '{seg}' contains invalid character '{ch}'",
 						severity="error",
 						span=span,
@@ -673,7 +674,7 @@ def _decl_from_parser_fn(
 
 def _diagnostic(message: str, loc: object | None) -> Diagnostic:
 	"""Helper to create a Diagnostic from a parser location."""
-	return Diagnostic(message=message, severity="error", span=Span.from_loc(loc))
+	return _p_diag(message=message, severity="error", span=Span.from_loc(loc))
 
 
 def _parse_error_code(err: UnexpectedInput) -> str | None:
@@ -794,12 +795,12 @@ def _diag_duplicate(
 	first_span = _span_in_file(first_path, first_loc)
 	second_span = _span_in_file(second_path, second_loc)
 	return [
-		Diagnostic(
+		_p_diag(
 			message=f"duplicate {kind} definition for '{name}'",
 			severity="error",
 			span=second_span,
 		),
-		Diagnostic(
+		_p_diag(
 			message=f"previous definition of '{name}' is here",
 			severity="note",
 			span=first_span,
@@ -807,109 +808,40 @@ def _diag_duplicate(
 	]
 
 
-def _check_entrypoint_main(
-	programs: list[tuple[Path, parser_ast.Program]],
-	diagnostics: list[Diagnostic],
-) -> None:
-	"""
-	Enforce MVP entrypoint rules:
-	- exactly one `main` across the workspace,
-	- entrypoint `main` must be declared `nothrow`.
-	"""
-	main_defs: list[tuple[Path, parser_ast.FunctionDef]] = []
-	for path, prog in programs:
-		for fn in getattr(prog, "functions", []) or []:
-			if getattr(fn, "name", None) == "main":
-				main_defs.append((path, fn))
+def _collect_type_defs(prog: parser_ast.Program) -> dict[str, list[str]]:
+	return {
+		"structs": [s.name for s in getattr(prog, "structs", []) or []],
+		"variants": [v.name for v in getattr(prog, "variants", []) or []],
+		"exceptions": [e.name for e in getattr(prog, "exceptions", []) or []],
+	}
 
-	if len(main_defs) == 0:
-		diagnostics.append(
-			Diagnostic(
-				message="missing entry point 'main' for code generation",
-				severity="error",
-				span=Span(),
-			)
-		)
-		return
 
-	if len(main_defs) > 1:
-		first_path, first_fn = main_defs[0]
-		for path, fn in main_defs[1:]:
-			diagnostics.extend(
-				_diag_duplicate(
-					kind="entry point",
-					name="main",
-					first_path=first_path,
-					first_loc=getattr(first_fn, "loc", None),
-					second_path=path,
-					second_loc=getattr(fn, "loc", None),
-				)
-			)
-		return
+def _collect_requires_for_module(
+	type_table: TypeTable,
+	module_id: str,
+) -> tuple[dict[FunctionId, parser_ast.TraitExpr], dict["TypeKey", parser_ast.TraitExpr]]:
+	from lang2.driftc.traits.world import TypeKey
 
-	if len(main_defs) == 1:
-		path, fn = main_defs[0]
-		ret = getattr(fn, "return_type", None)
-		if (
-			ret is None
-			or getattr(ret, "name", None) != "Int"
-			or getattr(ret, "args", None)
-			or getattr(ret, "module_alias", None)
-		):
-			diagnostics.append(
-				Diagnostic(
-					message="entrypoint main must return Int",
-					severity="error",
-					span=_span_in_file(path, getattr(fn, "loc", None)),
-				)
-			)
-		params = list(getattr(fn, "params", []) or [])
-		if params:
-			valid = False
-			if len(params) == 1:
-				param = params[0]
-				typ = getattr(param, "type_expr", None)
-				if (
-					getattr(param, "name", None) == "argv"
-					and typ is not None
-					and getattr(typ, "name", None) == "Array"
-					and not getattr(typ, "module_alias", None)
-					and not getattr(typ, "module_id", None)
-					and len(getattr(typ, "args", []) or []) == 1
-				):
-					elem = (getattr(typ, "args", None) or [None])[0]
-					if (
-						getattr(elem, "name", None) == "String"
-						and not getattr(elem, "args", None)
-						and not getattr(elem, "module_alias", None)
-						and not getattr(elem, "module_id", None)
-					):
-						valid = True
-			if not valid:
-				diagnostics.append(
-					Diagnostic(
-						message="entrypoint main has invalid signature; expected main() or main(argv: Array<String>)",
-						severity="error",
-						span=_span_in_file(path, getattr(fn, "loc", None)),
-					)
-				)
-		if not getattr(fn, "declared_nothrow", False):
-			diagnostics.append(
-				Diagnostic(
-					message="entrypoint main must be declared nothrow (uncaught exceptions are not supported yet)",
-					severity="error",
-					span=_span_in_file(path, getattr(fn, "loc", None)),
-					notes=["add 'nothrow' to main or handle failures explicitly"],
-				)
-			)
+	trait_worlds = getattr(type_table, "trait_worlds", None)
+	if not isinstance(trait_worlds, dict):
+		return {}, {}
+	world = trait_worlds.get(module_id)
+	if world is None:
+		return {}, {}
+	requires_by_fn = dict(getattr(world, "requires_by_fn", {}) or {})
+	requires_by_struct: dict[TypeKey, parser_ast.TraitExpr] = {}
+	for key, req in (getattr(world, "requires_by_struct", {}) or {}).items():
+		if not isinstance(key, TypeKey):
+			raise AssertionError(f"requires_by_struct key is not a TypeKey: {key}")
+		requires_by_struct[key] = req
+	return requires_by_fn, requires_by_struct
 
 
 def parse_drift_files_to_hir(
 	paths: list[Path],
 	*,
-	enforce_entrypoint: bool = False,
 	package_id: str | None = None,
-) -> Tuple[Dict[FunctionId, H.HBlock], Dict[FunctionId, FnSignature], Dict[str, List[FunctionId]], "TypeTable", Dict[str, int], List[Diagnostic]]:
+	) -> Tuple[ModuleLowered, "TypeTable", Dict[str, int], List[Diagnostic]]:
 	"""
 	Parse and lower a set of Drift source files into a single module unit.
 
@@ -925,7 +857,18 @@ def parse_drift_files_to_hir(
 	"""
 	diagnostics: list[Diagnostic] = []
 	if not paths:
-		return {}, {}, {}, TypeTable(), {}, [Diagnostic(message="no input files", severity="error")]
+		empty = ModuleLowered(
+			module_id="main",
+			package_id=package_id,
+			func_hirs={},
+			signatures_by_id={},
+			fn_ids_by_name={},
+			requires_by_fn={},
+			requires_by_struct={},
+			type_defs={},
+			impl_defs=[],
+		)
+		return empty, TypeTable(), {}, [_p_diag(message="no input files", severity="error")]
 
 	programs: list[tuple[Path, parser_ast.Program]] = []
 	for path in paths:
@@ -933,13 +876,13 @@ def parse_drift_files_to_hir(
 		try:
 			prog = _parser.parse_program(source)
 		except _parser.ModuleDeclError as err:
-			diagnostics.append(Diagnostic(message=str(err), severity="error", span=_span_in_file(path, err.loc)))
+			diagnostics.append(_p_diag(message=str(err), severity="error", span=_span_in_file(path, err.loc)))
 			continue
 		except _parser.QualifiedMemberParseError as err:
-			diagnostics.append(Diagnostic(message=str(err), severity="error", span=_span_in_file(path, err.loc)))
+			diagnostics.append(_p_diag(message=str(err), severity="error", span=_span_in_file(path, err.loc)))
 			continue
 		except _parser.FStringParseError as err:
-			diagnostics.append(Diagnostic(message=str(err), severity="error", span=_span_in_file(path, err.loc)))
+			diagnostics.append(_p_diag(message=str(err), severity="error", span=_span_in_file(path, err.loc)))
 			continue
 		except UnexpectedInput as err:
 			code = _parse_error_code(err)
@@ -949,17 +892,23 @@ def parse_drift_files_to_hir(
 				column=getattr(err, "column", None),
 				raw=err,
 			)
-			diagnostics.append(Diagnostic(message=str(err), severity="error", span=span, code=code))
+			diagnostics.append(_p_diag(message=str(err), severity="error", span=span, code=code))
 			continue
 		programs.append((path, prog))
 
 	if any(d.severity == "error" for d in diagnostics):
-		return {}, {}, {}, TypeTable(), {}, diagnostics
-
-	if enforce_entrypoint:
-		_check_entrypoint_main(programs, diagnostics)
-		if any(d.severity == "error" for d in diagnostics):
-			return {}, {}, {}, TypeTable(), {}, diagnostics
+		empty = ModuleLowered(
+			module_id="main",
+			package_id=package_id,
+			func_hirs={},
+			signatures_by_id={},
+			fn_ids_by_name={},
+			requires_by_fn={},
+			requires_by_struct={},
+			type_defs={},
+			impl_defs=[],
+		)
+		return empty, TypeTable(), {}, diagnostics
 
 	# Enforce single-module membership across the file set.
 	def _effective_module_id(p: parser_ast.Program) -> str:
@@ -969,29 +918,57 @@ def parse_drift_files_to_hir(
 	for path, prog in programs:
 		mid = _effective_module_id(prog)
 		decl_span = _span_in_file(path, getattr(prog, "module_loc", None))
-		diagnostics.extend(_validate_module_id(mid, span=decl_span))
+		diagnostics.extend(
+			_validate_module_id(
+				mid,
+				span=decl_span,
+							)
+		)
 	for path, prog in programs[1:]:
 		mid = _effective_module_id(prog)
 		if mid != module_id:
 			diagnostics.append(
-				Diagnostic(
+				_p_diag(
 					message=f"module id mismatch: expected '{module_id}', found '{mid}'",
 					severity="error",
 					span=Span(file=str(path), line=1, column=1),
 				)
 			)
 	if any(d.severity == "error" for d in diagnostics):
-		return {}, {}, {}, TypeTable(), {}, diagnostics
+		empty = ModuleLowered(
+			module_id="main",
+			package_id=package_id,
+			func_hirs={},
+			signatures_by_id={},
+			fn_ids_by_name={},
+			requires_by_fn={},
+			requires_by_struct={},
+			type_defs={},
+			impl_defs=[],
+		)
+		return empty, TypeTable(), {}, diagnostics
 
 	merged, _origins = _merge_module_files(module_id, programs, diagnostics)
 
 	# Lower the merged program using the existing single-file pipeline.
-	func_hirs, sigs, fn_ids, table, excs, _impl_metas, diags = _lower_parsed_program_to_hir(
+	func_hirs, sigs, fn_ids, table, excs, impl_metas, diags = _lower_parsed_program_to_hir(
 		merged,
 		diagnostics=diagnostics,
 		package_id=package_id,
 	)
-	return func_hirs, sigs, fn_ids, table, excs, diags
+	requires_by_fn, requires_by_struct = _collect_requires_for_module(table, module_id)
+	module = ModuleLowered(
+		module_id=module_id,
+		package_id=package_id,
+		func_hirs=func_hirs,
+		signatures_by_id=sigs,
+		fn_ids_by_name=fn_ids,
+		requires_by_fn=requires_by_fn,
+		requires_by_struct=requires_by_struct,
+		type_defs=_collect_type_defs(merged),
+		impl_defs=list(impl_metas),
+	)
+	return module, table, excs, diags
 
 
 def _merge_module_files(
@@ -1174,7 +1151,7 @@ def _merge_module_files(
 			elif list(getattr(dst, "type_params", []) or []) != impl_type_params:
 				impl_label = f"{trait_str} for {target_str}" if trait_str else target_str
 				diagnostics.append(
-					Diagnostic(
+					_p_diag(
 						message=f"conflicting type parameter lists for implement block '{impl_label}'",
 						severity="error",
 						span=_span_in_file(path, getattr(impl, "loc", None)),
@@ -1183,7 +1160,7 @@ def _merge_module_files(
 			elif getattr(dst, "require", None) != getattr(impl, "require", None):
 				impl_label = f"{trait_str} for {target_str}" if trait_str else target_str
 				diagnostics.append(
-					Diagnostic(
+					_p_diag(
 						message=f"conflicting require clauses for implement block '{impl_label}'",
 						severity="error",
 						span=_span_in_file(path, getattr(impl, "loc", None)),
@@ -1193,7 +1170,7 @@ def _merge_module_files(
 				if m.name in free_names:
 					first_path, _first_loc = first_fn[m.name]
 					diagnostics.append(
-						Diagnostic(
+						_p_diag(
 							message=f"method '{m.name}' conflicts with existing free function of the same name",
 							severity="error",
 							span=_span_in_file(path, getattr(m, "loc", None)),
@@ -1220,9 +1197,8 @@ def parse_drift_workspace_to_hir(
 	module_paths: list[Path] | None = None,
 	external_module_exports: dict[str, dict[str, object]] | None = None,
 	external_module_packages: dict[str, str] | None = None,
-	enforce_entrypoint: bool = False,
 	package_id: str | None = None,
-) -> Tuple[
+	) -> Tuple[
 	Dict[str, ModuleLowered],
 	"TypeTable",
 	Dict[str, int],
@@ -1259,7 +1235,7 @@ def parse_drift_workspace_to_hir(
 
 	diagnostics: list[Diagnostic] = []
 	if not paths:
-		return {}, TypeTable(), {}, {}, {}, [Diagnostic(message="no input files", severity="error")]
+		return {}, TypeTable(), {}, {}, {}, [_p_diag(message="no input files", severity="error")]
 
 	def _effective_module_id(p: parser_ast.Program) -> str:
 		return getattr(p, "module", None) or "main"
@@ -1271,13 +1247,13 @@ def parse_drift_workspace_to_hir(
 		try:
 			prog = _parser.parse_program(source)
 		except _parser.ModuleDeclError as err:
-			diagnostics.append(Diagnostic(message=str(err), severity="error", span=_span_in_file(path, err.loc)))
+			diagnostics.append(_p_diag(message=str(err), severity="error", span=_span_in_file(path, err.loc)))
 			continue
 		except _parser.QualifiedMemberParseError as err:
-			diagnostics.append(Diagnostic(message=str(err), severity="error", span=_span_in_file(path, err.loc)))
+			diagnostics.append(_p_diag(message=str(err), severity="error", span=_span_in_file(path, err.loc)))
 			continue
 		except _parser.FStringParseError as err:
-			diagnostics.append(Diagnostic(message=str(err), severity="error", span=_span_in_file(path, err.loc)))
+			diagnostics.append(_p_diag(message=str(err), severity="error", span=_span_in_file(path, err.loc)))
 			continue
 		except UnexpectedInput as err:
 			code = _parse_error_code(err)
@@ -1287,7 +1263,7 @@ def parse_drift_workspace_to_hir(
 				column=getattr(err, "column", None),
 				raw=err,
 			)
-			diagnostics.append(Diagnostic(message=str(err), severity="error", span=span, code=code))
+			diagnostics.append(_p_diag(message=str(err), severity="error", span=span, code=code))
 			continue
 		parsed.append((path, prog))
 
@@ -1351,7 +1327,7 @@ def parse_drift_workspace_to_hir(
 			inferred, root = _infer_module_id_from_paths(path)
 			if inferred is None or root is None:
 				diagnostics.append(
-					Diagnostic(
+					_p_diag(
 						message=f"file '{path}' is not under exactly one configured module root",
 						severity="error",
 						span=Span(file=str(path), line=1, column=1),
@@ -1359,17 +1335,27 @@ def parse_drift_workspace_to_hir(
 				)
 				continue
 			# Validate inferred id before using it as a module-graph key.
-			diagnostics.extend(_validate_module_id(inferred, span=Span(file=str(path), line=1, column=1)))
+			diagnostics.extend(
+				_validate_module_id(
+					inferred,
+					span=Span(file=str(path), line=1, column=1),
+									)
+			)
 			declared = getattr(prog, "module", None)
 			if declared is not None:
 				decl_span = _span_in_file(path, getattr(prog, "module_loc", None))
-				diagnostics.extend(_validate_module_id(declared, span=decl_span))
+				diagnostics.extend(
+					_validate_module_id(
+						declared,
+						span=decl_span,
+											)
+				)
 				if any(d.severity == "error" for d in diagnostics):
 					continue
 				if declared != inferred:
 					notes = [f"inferred module id is '{inferred}' from root '{root}'"]
 					diagnostics.append(
-						Diagnostic(
+						_p_diag(
 							message=f"module id mismatch: expected '{inferred}', found '{declared}'",
 							severity="error",
 							span=decl_span,
@@ -1386,7 +1372,12 @@ def parse_drift_workspace_to_hir(
 		else:
 			mid = _effective_module_id(prog)
 			decl_span = _span_in_file(path, getattr(prog, "module_loc", None))
-			diagnostics.extend(_validate_module_id(mid, span=decl_span))
+			diagnostics.extend(
+				_validate_module_id(
+					mid,
+					span=decl_span,
+									)
+			)
 			by_module.setdefault(mid, []).append((path, prog))
 
 	if any(d.severity == "error" for d in diagnostics):
@@ -1406,7 +1397,7 @@ def parse_drift_workspace_to_hir(
 						break
 				span = Span(file=str(span_file), line=1, column=1) if span_file else Span()
 				diagnostics.append(
-					Diagnostic(
+					_p_diag(
 						message=f"multiple module roots provide module '{mid}' ({root_list})",
 						severity="error",
 						span=span,
@@ -1415,14 +1406,6 @@ def parse_drift_workspace_to_hir(
 	if any(d.severity == "error" for d in diagnostics):
 		return {}, TypeTable(), {}, {}, {}, diagnostics
 
-	if enforce_entrypoint:
-		# Enforce entrypoint constraints before lowering.
-		prog_list: list[tuple[Path, parser_ast.Program]] = []
-		for files in by_module.values():
-			prog_list.extend(files)
-		_check_entrypoint_main(prog_list, diagnostics)
-		if any(d.severity == "error" for d in diagnostics):
-			return {}, TypeTable(), {}, {}, {}, diagnostics
 	# Merge each module (Milestone 1 rules) and retain callable provenance per file.
 	merged_programs: dict[str, parser_ast.Program] = {}
 	origin_by_module: dict[str, dict[FunctionId, Path]] = {}
@@ -1520,7 +1503,7 @@ def parse_drift_workspace_to_hir(
 				star_reexports[mod] = ex_span
 			else:
 				diagnostics.append(
-					Diagnostic(
+					_p_diag(
 						message=f"duplicate export of module '{mod}.*' in module '{module_id}'",
 						severity="error",
 						span=ex_span,
@@ -1534,7 +1517,7 @@ def parse_drift_workspace_to_hir(
 				seen_export_names[n] = ex_span
 			else:
 				diagnostics.append(
-					Diagnostic(
+					_p_diag(
 						message=f"duplicate export of symbol '{n}' in module '{module_id}'",
 						severity="error",
 						span=ex_span,
@@ -1553,7 +1536,7 @@ def parse_drift_workspace_to_hir(
 			in_types = type_hits > 0
 			if (in_values and in_consts) or (in_values and in_types) or (in_consts and in_types):
 				diagnostics.append(
-					Diagnostic(
+					_p_diag(
 						message=f"exported name '{n}' is ambiguous (defined as multiple kinds in module '{module_id}')",
 						severity="error",
 						span=ex_span,
@@ -1562,7 +1545,7 @@ def parse_drift_workspace_to_hir(
 				continue
 			if in_trait and (in_values or in_consts or in_types):
 				diagnostics.append(
-					Diagnostic(
+					_p_diag(
 						message=f"exported name '{n}' is ambiguous (defined as multiple kinds in module '{module_id}')",
 						severity="error",
 						span=ex_span,
@@ -1571,7 +1554,7 @@ def parse_drift_workspace_to_hir(
 				continue
 			if type_hits > 1:
 				diagnostics.append(
-					Diagnostic(
+					_p_diag(
 						message=f"exported type name '{n}' is ambiguous (defined as multiple type kinds in module '{module_id}')",
 						severity="error",
 						span=ex_span,
@@ -1581,7 +1564,7 @@ def parse_drift_workspace_to_hir(
 
 			if not in_values and not in_consts and not in_types and not in_trait:
 				diagnostics.append(
-					Diagnostic(
+					_p_diag(
 						message=f"module '{module_id}' exports unknown symbol '{n}'",
 						severity="error",
 						span=ex_span,
@@ -1592,7 +1575,7 @@ def parse_drift_workspace_to_hir(
 			if in_values:
 				if n not in module_pub_fn_names:
 					diagnostics.append(
-						Diagnostic(
+						_p_diag(
 							message=f"cannot export '{n}' from module '{module_id}': symbol is not public (mark it 'pub')",
 							severity="error",
 							span=ex_span,
@@ -1603,7 +1586,7 @@ def parse_drift_workspace_to_hir(
 			if in_consts:
 				if n not in module_pub_const_names:
 					diagnostics.append(
-						Diagnostic(
+						_p_diag(
 							message=f"cannot export '{n}' from module '{module_id}': symbol is not public (mark it 'pub')",
 							severity="error",
 							span=ex_span,
@@ -1614,7 +1597,7 @@ def parse_drift_workspace_to_hir(
 			if in_struct:
 				if n not in module_pub_struct_names:
 					diagnostics.append(
-						Diagnostic(
+						_p_diag(
 							message=f"cannot export '{n}' from module '{module_id}': symbol is not public (mark it 'pub')",
 							severity="error",
 							span=ex_span,
@@ -1625,7 +1608,7 @@ def parse_drift_workspace_to_hir(
 			if in_variant:
 				if n not in module_pub_variant_names:
 					diagnostics.append(
-						Diagnostic(
+						_p_diag(
 							message=f"cannot export '{n}' from module '{module_id}': symbol is not public (mark it 'pub')",
 							severity="error",
 							span=ex_span,
@@ -1636,7 +1619,7 @@ def parse_drift_workspace_to_hir(
 			if in_exc:
 				if n not in module_pub_exception_names:
 					diagnostics.append(
-						Diagnostic(
+						_p_diag(
 							message=f"cannot export '{n}' from module '{module_id}': symbol is not public (mark it 'pub')",
 							severity="error",
 							span=ex_span,
@@ -1647,7 +1630,7 @@ def parse_drift_workspace_to_hir(
 			if in_trait:
 				if n not in module_pub_trait_names:
 					diagnostics.append(
-						Diagnostic(
+						_p_diag(
 							message=f"cannot export '{n}' from module '{module_id}': symbol is not public (mark it 'pub')",
 							severity="error",
 							span=ex_span,
@@ -1796,7 +1779,7 @@ def parse_drift_workspace_to_hir(
 			for target_mod, ex_span in stars.items():
 				if target_mod not in merged_programs and (external_module_exports is None or target_mod not in external_module_exports):
 					diagnostics.append(
-						Diagnostic(
+						_p_diag(
 							message=f"module '{mid}' re-exports unknown module '{target_mod}'",
 							severity="error",
 							span=ex_span,
@@ -1811,7 +1794,7 @@ def parse_drift_workspace_to_hir(
 						progress = True
 					elif prev != origin:
 						diagnostics.append(
-							Diagnostic(
+							_p_diag(
 								message=(
 									f"exported name '{name}' is ambiguous due to re-exports "
 									f"('{prev[0]}' vs '{origin[0]}') in module '{mid}'"
@@ -1830,7 +1813,7 @@ def parse_drift_workspace_to_hir(
 						progress = True
 					elif prev != origin:
 						diagnostics.append(
-							Diagnostic(
+							_p_diag(
 								message=(
 									f"exported const '{name}' is ambiguous due to re-exports "
 									f"('{prev[0]}' vs '{origin[0]}') in module '{mid}'"
@@ -1850,7 +1833,7 @@ def parse_drift_workspace_to_hir(
 							progress = True
 						elif prev != origin:
 							diagnostics.append(
-								Diagnostic(
+								_p_diag(
 									message=(
 										f"exported type '{name}' is ambiguous due to re-exports "
 										f"('{prev[0]}' vs '{origin[0]}') in module '{mid}'"
@@ -1869,7 +1852,7 @@ def parse_drift_workspace_to_hir(
 						progress = True
 					elif prev != origin:
 						diagnostics.append(
-							Diagnostic(
+							_p_diag(
 								message=(
 									f"exported trait '{name}' is ambiguous due to re-exports "
 									f"('{prev[0]}' vs '{origin[0]}') in module '{mid}'"
@@ -1951,7 +1934,7 @@ def parse_drift_workspace_to_hir(
 				span = _span_in_file(path, getattr(imp, "loc", None))
 				dep_edges[mid].append((mod, span))
 				if mod not in merged_programs and (external_module_exports is None or mod not in external_module_exports):
-					diagnostics.append(Diagnostic(message=f"imported module '{mod}' not found", severity="error", span=span))
+					diagnostics.append(_p_diag(message=f"imported module '{mod}' not found", severity="error", span=span))
 					continue
 				alias = getattr(imp, "alias", None) or (getattr(imp, "path", []) or [mod])[-1]
 				prev = file_module_aliases.get(alias)
@@ -1959,7 +1942,7 @@ def parse_drift_workspace_to_hir(
 					file_module_aliases[alias] = mod
 				elif prev != mod:
 					diagnostics.append(
-						Diagnostic(
+						_p_diag(
 							message=f"import alias '{alias}' conflicts: cannot import both '{prev}' and '{mod}' as '{alias}'",
 							severity="error",
 							span=span,
@@ -2027,7 +2010,7 @@ def parse_drift_workspace_to_hir(
 				span = _span_in_file(path, getattr(tr, "loc", None))
 				if mod is None:
 					diagnostics.append(
-						Diagnostic(
+						_p_diag(
 							message=f"unknown module alias '{alias}' in trait reference '{alias}.{tr.name}'",
 							severity="error",
 							span=span,
@@ -2036,7 +2019,7 @@ def parse_drift_workspace_to_hir(
 					continue
 				if mod not in merged_programs and (external_module_exports is None or mod not in external_module_exports):
 					diagnostics.append(
-						Diagnostic(
+						_p_diag(
 							message=f"unknown module '{mod}' in trait reference '{alias}.{tr.name}'",
 							severity="error",
 							span=span,
@@ -2052,7 +2035,7 @@ def parse_drift_workspace_to_hir(
 						else [f"module '{mod}' exports no traits (private by default)"]
 					)
 					diagnostics.append(
-						Diagnostic(
+						_p_diag(
 							message=f"module '{mod}' does not export trait '{tr.name}'",
 							severity="error",
 							span=span,
@@ -2113,7 +2096,7 @@ def parse_drift_workspace_to_hir(
 			span = _span_in_file(path, getattr(te, "loc", None))
 			if mod is None:
 				diagnostics.append(
-					Diagnostic(
+					_p_diag(
 						message=f"unknown module alias '{alias}' in type reference '{alias}.{te.name}'",
 						severity="error",
 						span=span,
@@ -2168,7 +2151,7 @@ def parse_drift_workspace_to_hir(
 							else [f"module '{mod}' exports no traits (private by default)"]
 						)
 						diagnostics.append(
-							Diagnostic(
+							_p_diag(
 								message=f"module '{mod}' does not export trait '{te.name}'",
 								severity="error",
 								span=span,
@@ -2183,7 +2166,7 @@ def parse_drift_workspace_to_hir(
 						else [f"module '{mod}' exports no types (private by default)"]
 					)
 					diagnostics.append(
-						Diagnostic(
+						_p_diag(
 							message=f"module '{mod}' does not export type '{te.name}'",
 							severity="error",
 							span=span,
@@ -2380,7 +2363,7 @@ def parse_drift_workspace_to_hir(
 				if primary_span is not None:
 					break
 		diagnostics.append(
-			Diagnostic(
+			_p_diag(
 				message=f"import cycle detected: {' -> '.join(cycle)}",
 				severity="error",
 				span=primary_span or Span(),
@@ -2430,7 +2413,7 @@ def parse_drift_workspace_to_hir(
 				]
 				shared_type_table.define_struct_schema_fields(struct_id, field_templates)
 			except ValueError as err:
-				diagnostics.append(Diagnostic(message=str(err), severity="error", span=Span.from_loc(getattr(_s, "loc", None))))
+				diagnostics.append(_p_diag(message=str(err), severity="error", span=Span.from_loc(getattr(_s, "loc", None))))
 		for _v in getattr(_prog, "variants", []) or []:
 			arms: list[VariantArmSchema] = []
 			for _arm in getattr(_v, "arms", []) or []:
@@ -2452,35 +2435,10 @@ def parse_drift_workspace_to_hir(
 					arms,
 				)
 			except ValueError as err:
-				diagnostics.append(Diagnostic(message=str(err), severity="error", span=Span.from_loc(getattr(_v, "loc", None))))
+				diagnostics.append(_p_diag(message=str(err), severity="error", span=Span.from_loc(getattr(_v, "loc", None))))
 
 		if any(d.severity == "error" for d in diagnostics):
 			return {}, TypeTable(), {}, {}, {}, diagnostics
-
-	def _qualify_fn_name(module_id: str, name: str) -> str:
-		# MVP: symbols in the default `main` module remain unqualified so
-		# single-module programs keep legacy names.
-		if module_id in (None, "main"):
-			return name
-		return f"{module_id}::{name}"
-
-	def _qualify_symbol(module_id: str, sym: str, *, local_free_fns: set[str]) -> str:
-		"""
-		Qualify a module-local callable symbol for inclusion in a multi-module build.
-
-		MVP intent: avoid collisions when multiple modules are lowered into a single
-		LLVM module by making callable symbols module-scoped:
-		- free functions: `foo` → `mod::foo` (except the entry `main`)
-		- methods: `Type::method` → `mod::Type::method`
-
-		This does not define a long-term symbol identity model; it's a pragmatic
-		naming layer until the resolver carries explicit module/type identities.
-		"""
-		if sym in local_free_fns:
-			return _qualify_fn_name(module_id, sym)
-		if "::" in sym and not sym.startswith(f"{module_id}::"):
-			return f"{module_id}::{sym}"
-		return sym
 
 	all_func_hirs: dict[FunctionId, H.HBlock] = {}
 	all_sigs: dict[FunctionId, FnSignature] = {}
@@ -2490,7 +2448,6 @@ def parse_drift_workspace_to_hir(
 	fn_ids_by_name_by_module: dict[str, dict[str, list[FunctionId]]] = {}
 	exc_catalog: dict[str, int] = {}
 	fn_owner_module: dict[FunctionId, str] = {}
-	fn_symbol_by_id: dict[FunctionId, str] = {}
 	impls_by_module: dict[str, list[ImplMeta]] = {}
 
 	# Lower each module and qualify its callable symbols.
@@ -2512,24 +2469,21 @@ def parse_drift_workspace_to_hir(
 		module_sigs = signatures_by_module.setdefault(mid, {})
 		module_fn_ids_by_name = fn_ids_by_name_by_module.setdefault(mid, {})
 
-		# Qualify and copy function bodies/signatures.
+		# Copy function bodies/signatures.
 		for fn_id, block in func_hirs.items():
-			local_name = fn_id.name
-			global_name = _qualify_symbol(mid, local_name, local_free_fns=local_free_fns)
+			display_name = function_symbol(fn_id)
 			all_func_hirs[fn_id] = block
 			module_func_hirs[fn_id] = block
 			fn_owner_module[fn_id] = mid
-			fn_symbol_by_id[fn_id] = global_name
-			fn_ids_by_name.setdefault(global_name, []).append(fn_id)
-			module_fn_ids_by_name.setdefault(global_name, []).append(fn_id)
+			fn_ids_by_name.setdefault(display_name, []).append(fn_id)
+			module_fn_ids_by_name.setdefault(display_name, []).append(fn_id)
 
 		for fn_id, sig in sigs.items():
 			local_name = fn_id.name
-			global_name = _qualify_symbol(mid, local_name, local_free_fns=local_free_fns)
 			# Mark module-interface entry points early so downstream phases can
 			# enforce visibility and (later) ABI-boundary rules consistently.
 			is_exported = (local_name in local_free_fns) and (local_name in exported_values) and (local_name != "main")
-			updated_sig = replace(sig, name=global_name, is_exported_entrypoint=is_exported)
+			updated_sig = replace(sig, name=function_symbol(fn_id), is_exported_entrypoint=is_exported)
 			all_sigs[fn_id] = updated_sig
 			module_sigs[fn_id] = updated_sig
 
@@ -2565,7 +2519,7 @@ def parse_drift_workspace_to_hir(
 			if prev is not None:
 				if prev != (origin_tid, origin_val):
 					diagnostics.append(
-						Diagnostic(
+						_p_diag(
 							message=f"const '{dst_sym}' defined with a different value than re-export target '{origin_sym}'",
 							severity="error",
 							span=Span(),
@@ -2574,21 +2528,13 @@ def parse_drift_workspace_to_hir(
 				continue
 			shared_type_table.define_const(module_id=exporting_mid, name=local_name, type_id=origin_tid, value=origin_val)
 
-	# Rewrite call sites: HCall(fn=HVar(name="foo")) -> HVar(name="m::foo") for imported/local functions.
-	local_maps: dict[str, dict[str, str]] = {
-		mid: {fn.name: _qualify_fn_name(mid, fn.name) for fn in getattr(prog, "functions", []) or []}
-		for mid, prog in merged_programs.items()
-	}
-
 	def _rewrite_calls_in_block(
 		block: H.HBlock,
 		*,
 		module_id: str,
 		fn_id: FunctionId,
-		fn_symbol: str,
 		origin_file: Path | None,
 	) -> None:
-		local_map = local_maps.get(module_id, {})
 		file_module_aliases = module_aliases_by_file.get(origin_file or Path(), {})
 		# Call-site rewriting must be scope-correct: a local binding shadows only
 		# within its lexical block, not across the whole function.
@@ -2602,13 +2548,6 @@ def parse_drift_workspace_to_hir(
 		sig = all_sigs.get(fn_id)
 		if sig is not None and getattr(sig, "param_names", None):
 			param_names = [p for p in sig.param_names if p]
-
-		def rewrite_name(name: str, *, bound: set[str]) -> str:
-			if name in bound:
-				return name
-			if name in local_map:
-				return local_map[name]
-			return name
 
 		def rewrite_const_name(name: str, *, bound: set[str]) -> str:
 			if name in bound:
@@ -2695,8 +2634,8 @@ def parse_drift_workspace_to_hir(
 			  x.Point(...)  // call struct constructor Point from module lib
 
 			We do *not* create a runtime module object. Instead, we resolve the
-			member at compile time and rewrite the callee to a fully-qualified
-			callable symbol (`lib::foo`) or an unqualified struct constructor (`Point`).
+			member at compile time and rewrite the callee to carry the target
+			module id, letting later phases resolve by `(module_id, name)`.
 
 			Note on representation: in stage1 HIR, a `.`-call like `x.foo(...)` is
 			represented as `HMethodCall(receiver=x, method_name=\"foo\", ...)` (method
@@ -2718,7 +2657,7 @@ def parse_drift_workspace_to_hir(
 			if member in vals:
 				origin = exported_value_origin(mod, member) or (mod, member)
 				return H.HCall(
-					fn=H.HVar(name=_qualify_fn_name(origin[0], origin[1])),
+					fn=H.HVar(name=origin[1], module_id=origin[0]),
 					args=args,
 					kwargs=kwargs,
 					type_args=type_args,
@@ -2729,18 +2668,18 @@ def parse_drift_workspace_to_hir(
 				struct_id = shared_type_table.get_nominal(kind=TypeKind.STRUCT, module_id=def_mod, name=def_name)
 				if struct_id is None:
 					diagnostics.append(
-						Diagnostic(
+						_p_diag(
 							message=f"module-qualified constructor call '{alias}.{member}(...)' is only supported for structs in MVP",
 							severity="error",
 							span=getattr(receiver, "loc", Span()),
 						)
 					)
 					return None
-				# Rewrite to an internal fully-qualified constructor name so later
-				# phases can resolve it deterministically even when multiple modules
-				# define the same short type name.
+				# Record the target module id so later phases can resolve the
+				# constructor deterministically even when multiple modules define
+				# the same short type name.
 				return H.HCall(
-					fn=H.HVar(name=f"{def_mod}::{def_name}"),
+					fn=H.HVar(name=def_name, module_id=def_mod),
 					args=args,
 					kwargs=kwargs,
 					type_args=type_args,
@@ -2752,7 +2691,7 @@ def parse_drift_workspace_to_hir(
 				else [f"module '{mod}' exports nothing (private by default)"]
 			)
 			diagnostics.append(
-				Diagnostic(
+				_p_diag(
 					message=f"module '{mod}' does not export symbol '{member}'",
 					severity="error",
 					span=getattr(receiver, "loc", Span()),
@@ -2785,9 +2724,9 @@ def parse_drift_workspace_to_hir(
 			consts = exported_const_names(mod)
 			types = exported_type_names(mod)
 			if member in vals:
-				return H.HVar(name=_qualify_fn_name(mod, member))
+				return H.HVar(name=member, module_id=mod)
 			if member in consts:
-				return H.HVar(name=f"{mod}::{member}")
+				return H.HVar(name=member, module_id=mod)
 			available = ", ".join(sorted(vals | types | consts))
 			notes = (
 				[f"available exports: {available}"]
@@ -2795,7 +2734,7 @@ def parse_drift_workspace_to_hir(
 				else [f"module '{mod}' exports nothing (private by default)"]
 			)
 			diagnostics.append(
-				Diagnostic(
+				_p_diag(
 					message=f"module '{mod}' does not export symbol '{member}'",
 					severity="error",
 					span=getattr(receiver, "loc", Span()),
@@ -2849,10 +2788,7 @@ def parse_drift_workspace_to_hir(
 				for kw in getattr(expr, "kwargs", []) or []:
 					if getattr(kw, "value", None) is not None:
 						kw.value = walk_expr(kw.value, bound=bound)
-				# Resolve direct calls that name a local/imported/free function.
-				if isinstance(expr.fn, H.HVar):
-					expr.fn.name = rewrite_name(expr.fn.name, bound=bound)
-				elif isinstance(expr.fn, H.HField) and isinstance(expr.fn.subject, H.HVar):
+				if isinstance(expr.fn, H.HField) and isinstance(expr.fn.subject, H.HVar):
 					# Handle the (rarer) explicit field-call form: `(x.foo)(...)`.
 					q = _rewrite_module_qualified_call(
 						receiver=expr.fn.subject,
@@ -2874,13 +2810,13 @@ def parse_drift_workspace_to_hir(
 				mod = file_module_aliases.get(expr.subject.name)
 				if mod is not None:
 					if expr.name in exported_value_names(mod):
-						return H.HVar(name=_qualify_fn_name(mod, expr.name))
+						return H.HVar(name=expr.name, module_id=mod)
 					if expr.name in exported_const_names(mod):
 						# Module-qualified const access always targets the module’s own
 						# const table. Const re-exports are materialized by copying the
 						# literal value into the exporting module, so consumers do not
 						# need to reference the origin module.
-						return H.HVar(name=f"{mod}::{expr.name}")
+						return H.HVar(name=expr.name, module_id=mod)
 					available = ", ".join(sorted(exported_value_names(mod) | exported_const_names(mod) | exported_type_names(mod)))
 					notes = (
 						[f"available exports: {available}"]
@@ -2888,7 +2824,7 @@ def parse_drift_workspace_to_hir(
 						else [f"module '{mod}' exports nothing (private by default)"]
 					)
 					diagnostics.append(
-						Diagnostic(
+						_p_diag(
 							message=f"module '{mod}' does not export symbol '{expr.name}'",
 							severity="error",
 							span=getattr(expr.subject, "loc", Span()),
@@ -2992,20 +2928,17 @@ def parse_drift_workspace_to_hir(
 		walk_block(block, bound=initial_bound)
 
 	# Apply rewrite to each function body using its origin file’s import environment.
-	fn_origin_file: dict[str, Path] = {}
+	fn_origin_file: dict[FunctionId, Path] = {}
 	for _mid, origins in origin_by_module.items():
 		for fn_id, src_path in origins.items():
-			fn_symbol = fn_symbol_by_id.get(fn_id, _qualify_fn_name(fn_id.module, fn_id.name))
-			fn_origin_file[fn_symbol] = src_path
+			fn_origin_file[fn_id] = src_path
 
 	for fn_id, block in all_func_hirs.items():
-		fn_symbol = fn_symbol_by_id.get(fn_id, _qualify_fn_name(fn_id.module, fn_id.name))
 		_rewrite_calls_in_block(
 			block,
 			module_id=fn_owner_module.get(fn_id, "main"),
 			fn_id=fn_id,
-			fn_symbol=fn_symbol,
-			origin_file=fn_origin_file.get(fn_symbol),
+			origin_file=fn_origin_file.get(fn_id),
 		)
 
 	# Cross-module exception code collision detection: event codes are derived
@@ -3016,7 +2949,7 @@ def parse_drift_workspace_to_hir(
 		payload = code & PAYLOAD_MASK
 		other = payload_seen.get(payload)
 		if other is not None and other != fqn:
-			diagnostics.append(Diagnostic(message=f"exception code collision between '{other}' and '{fqn}' (payload {payload})", severity="error", span=Span()))
+			diagnostics.append(_p_diag(message=f"exception code collision between '{other}' and '{fqn}' (payload {payload})", severity="error", span=Span()))
 		else:
 			payload_seen[payload] = fqn
 
@@ -3031,8 +2964,8 @@ def parse_drift_workspace_to_hir(
 	trait_worlds = getattr(shared_type_table, "trait_worlds", None)
 	if not isinstance(trait_worlds, dict):
 		trait_worlds = {}
-	requires_by_fn_by_module: dict[str, dict[FunctionId, object]] = {}
-	requires_by_struct_by_module: dict[str, dict[object, object]] = {}
+	requires_by_fn_by_module: dict[str, dict[FunctionId, parser_ast.TraitExpr]] = {}
+	requires_by_struct_by_module: dict[str, dict["TypeKey", parser_ast.TraitExpr]] = {}
 	for mid in merged_programs.keys():
 		world = trait_worlds.get(mid)
 		if world is None:
@@ -3152,7 +3085,7 @@ def _lower_parsed_program_to_hir(
 		val = _eval_const_value(c.value)
 		if val is None:
 			diagnostics.append(
-				Diagnostic(
+				_p_diag(
 					phase="typecheck",
 					message=(
 						f"const '{c.name}' initializer must be a compile-time literal in MVP "
@@ -3181,7 +3114,7 @@ def _lower_parsed_program_to_hir(
 			ok = True
 		if not ok:
 			diagnostics.append(
-				Diagnostic(
+				_p_diag(
 					phase="typecheck",
 					message=f"const '{c.name}' declared type does not match initializer value",
 					severity="error",
@@ -3228,7 +3161,7 @@ def _lower_parsed_program_to_hir(
 					name: pid for name, pid in zip(getattr(s, "type_params", []) or [], param_ids)
 				}
 		except ValueError as err:
-			diagnostics.append(Diagnostic(message=str(err), severity="error", span=Span.from_loc(getattr(s, "loc", None))))
+			diagnostics.append(_p_diag(message=str(err), severity="error", span=Span.from_loc(getattr(s, "loc", None))))
 	# Declare all variant names/schemas next so type resolution can instantiate
 	# variants (e.g., Optional<Int>) while resolving later annotations/fields.
 	for v in variant_defs:
@@ -3250,7 +3183,7 @@ def _lower_parsed_program_to_hir(
 				arms,
 			)
 		except ValueError as err:
-			diagnostics.append(Diagnostic(message=str(err), severity="error", span=Span.from_loc(getattr(v, "loc", None))))
+			diagnostics.append(_p_diag(message=str(err), severity="error", span=Span.from_loc(getattr(v, "loc", None))))
 	# Fill field TypeIds in a second pass now that all names exist.
 	for s in struct_defs:
 		struct_id = type_table.require_nominal(kind=TypeKind.STRUCT, module_id=module_id, name=s.name)
@@ -3277,7 +3210,7 @@ def _lower_parsed_program_to_hir(
 				td = None
 			if td is not None and td.kind is TypeKind.REF:
 				diagnostics.append(
-					Diagnostic(
+					_p_diag(
 						message=f"struct '{s.name}' field '{f.name}' cannot have a reference type in MVP",
 						severity="error",
 						span=Span.from_loc(getattr(f.type_expr, "loc", getattr(f, "loc", None))),
@@ -3305,7 +3238,7 @@ def _lower_parsed_program_to_hir(
 		)
 		if sig_key in seen_sig:
 			diagnostics.append(
-				Diagnostic(
+				_p_diag(
 					message=f"duplicate function signature for '{fn.name}'",
 					severity="error",
 					span=Span.from_loc(getattr(fn, "loc", None)),
@@ -3316,8 +3249,7 @@ def _lower_parsed_program_to_hir(
 		ordinal = name_ord.get(fn.name, 0)
 		name_ord[fn.name] = ordinal + 1
 		fn_id = FunctionId(module=module_id, name=fn.name, ordinal=ordinal)
-		qualified_name = _qualify_fn_name(module_id, fn.name)
-		fn_ids_by_name.setdefault(qualified_name, []).append(fn_id)
+		fn_ids_by_name.setdefault(function_symbol(fn_id), []).append(fn_id)
 		decl_decl = _decl_from_parser_fn(fn, fn_id=fn_id)
 		decl_decl.module = module_id
 		# Reject FnResult in surface type annotations (return or parameter types).
@@ -3347,7 +3279,7 @@ def _lower_parsed_program_to_hir(
 		# Reject reference-qualified impl headers in v1 (must be nominal types).
 		if getattr(impl.target, "name", None) in {"&", "&mut"}:
 			diagnostics.append(
-				Diagnostic(
+				_p_diag(
 					message="implement header must use a nominal type, not a reference type",
 					severity="error",
 					span=Span.from_loc(getattr(impl, "loc", None)),
@@ -3444,7 +3376,7 @@ def _lower_parsed_program_to_hir(
 					)
 			if fn.name in module_function_names:
 				diagnostics.append(
-					Diagnostic(
+					_p_diag(
 						message=f"method '{fn.name}' conflicts with existing free function of the same name",
 						severity="error",
 						span=Span.from_loc(getattr(fn, "loc", None)),
@@ -3454,7 +3386,7 @@ def _lower_parsed_program_to_hir(
 			ordinal = name_ord.get(symbol_name, 0)
 			name_ord[symbol_name] = ordinal + 1
 			fn_id = FunctionId(module=module_id, name=symbol_name, ordinal=ordinal)
-			fn_ids_by_name.setdefault(symbol_name, []).append(fn_id)
+			fn_ids_by_name.setdefault(function_symbol(fn_id), []).append(fn_id)
 			if getattr(fn, "require", None) is not None:
 				world.requires_by_fn[fn_id] = fn.require.expr
 			impl_meta.methods.append(
@@ -3549,7 +3481,7 @@ def parse_drift_to_hir(
 	path: Path,
 	*,
 	package_id: str | None = None,
-) -> Tuple[Dict[FunctionId, H.HBlock], Dict[FunctionId, FnSignature], Dict[str, List[FunctionId]], "TypeTable", Dict[str, int], List[Diagnostic]]:
+) -> Tuple[ModuleLowered, "TypeTable", Dict[str, int], List[Diagnostic]]:
 	"""
 	Parse a Drift source file into lang2 HIR blocks + FnSignatures + TypeTable.
 
@@ -3560,9 +3492,31 @@ def parse_drift_to_hir(
 	try:
 		prog = _parser.parse_program(source)
 	except _parser.FStringParseError as err:
-		return {}, {}, {}, TypeTable(), {}, [Diagnostic(message=str(err), severity="error", span=_span_in_file(path, err.loc))]
+		empty = ModuleLowered(
+			module_id="main",
+			package_id=package_id,
+			func_hirs={},
+			signatures_by_id={},
+			fn_ids_by_name={},
+			requires_by_fn={},
+			requires_by_struct={},
+			type_defs={},
+			impl_defs=[],
+		)
+		return empty, TypeTable(), {}, [_p_diag(message=str(err), severity="error", span=_span_in_file(path, err.loc))]
 	except _parser.QualifiedMemberParseError as err:
-		return {}, {}, {}, TypeTable(), {}, [Diagnostic(message=str(err), severity="error", span=_span_in_file(path, err.loc))]
+		empty = ModuleLowered(
+			module_id="main",
+			package_id=package_id,
+			func_hirs={},
+			signatures_by_id={},
+			fn_ids_by_name={},
+			requires_by_fn={},
+			requires_by_struct={},
+			type_defs={},
+			impl_defs=[],
+		)
+		return empty, TypeTable(), {}, [_p_diag(message=str(err), severity="error", span=_span_in_file(path, err.loc))]
 	except UnexpectedInput as err:
 		code = _parse_error_code(err)
 		span = Span(
@@ -3571,13 +3525,37 @@ def parse_drift_to_hir(
 			column=getattr(err, "column", None),
 			raw=err,
 		)
-		return {}, {}, {}, TypeTable(), {}, [Diagnostic(message=str(err), severity="error", span=span, code=code)]
-	func_hirs, sigs, fn_ids, table, excs, _impl_metas, diags = _lower_parsed_program_to_hir(
+		empty = ModuleLowered(
+			module_id="main",
+			package_id=package_id,
+			func_hirs={},
+			signatures_by_id={},
+			fn_ids_by_name={},
+			requires_by_fn={},
+			requires_by_struct={},
+			type_defs={},
+			impl_defs=[],
+		)
+		return empty, TypeTable(), {}, [_p_diag(message=str(err), severity="error", span=span, code=code)]
+	func_hirs, sigs, fn_ids, table, excs, impl_metas, diags = _lower_parsed_program_to_hir(
 		prog,
 		diagnostics=[],
 		package_id=package_id,
 	)
-	return func_hirs, sigs, fn_ids, table, excs, diags
+	module_id = getattr(prog, "module", None) or "main"
+	requires_by_fn, requires_by_struct = _collect_requires_for_module(table, module_id)
+	module = ModuleLowered(
+		module_id=module_id,
+		package_id=package_id,
+		func_hirs=func_hirs,
+		signatures_by_id=sigs,
+		fn_ids_by_name=fn_ids,
+		requires_by_fn=requires_by_fn,
+		requires_by_struct=requires_by_struct,
+		type_defs=_collect_type_defs(prog),
+		impl_defs=list(impl_metas),
+	)
+	return module, table, excs, diags
 
 
 __all__ = ["parse_drift_to_hir", "parse_drift_files_to_hir", "parse_drift_workspace_to_hir"]

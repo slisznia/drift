@@ -74,9 +74,96 @@ Note: pause **feature work** only; keep landing small fixes + tests as safety ne
 - **Progress (in flight).**
 - `ModuleLowered` bundle added (`lang2/driftc/module_lowered.py`) with a `flatten_modules` adapter.
 - `ModuleLowered` now carries per-module requires/type defs/impl defs (populated from the trait world and parser).
-  - Workspace parsing now returns `dict[module_id, ModuleLowered]` instead of loose maps.
-  - `driftc` and codegen e2e runner flatten bundles for existing pipelines.
-  - Tests updated to adapt via `flatten_modules` where needed.
+- Workspace parsing now returns `dict[module_id, ModuleLowered]` instead of loose maps.
+- `driftc` and codegen e2e runner flatten bundles for existing pipelines.
+- Tests updated to adapt via `flatten_modules` where needed.
+- Single-module parse entrypoints now return `ModuleLowered` (no loose maps in parser entrypoints).
+- Added `assert_module_lowered_consistent` helper and used it in parser tests.
+- Workspace call rewriting now uses `FunctionId`/`module_id` (no string qualification or symbol parsing in workspace paths).
+- Stage2 `HIRToMIR` now accepts `signatures_by_id` (with optional `current_fn_id`); stubbed pipeline and stage2 tests pass ID-keyed signatures.
+- Single-module parse entrypoints now return `ModuleLowered` (no loose maps in parser entrypoints).
+- Entry-point validation moved to typecheck (parser no longer enforces main signature).
+- MIR functions now require `fn_id` (strict identity); `MirBuilder` enforces `name == function_symbol(fn_id)` and `make_builder(fn_id)` is the standard constructor across stage2/tests.
+- Global diagnostic phase enforcement is on by default; remaining typecheck-adjacent emitters now stamp `phase` by construction.
+- Reserved namespace policy no longer uses parser knobs; test IR path uses an explicit `ReservedNamespacePolicy` (dev allow vs enforce).
+- Checker-by-ID internals are in progress: `FnInfo` now requires `fn_id`, and `make_fn_info(...)` is used in driver paths.
+- MIR functions now carry `fn_id` for extras (hidden lambdas/wrappers), and driver registration is by ID (no symbol recovery).
+- `compile_stubbed_funcs` now returns MIR/SSA keyed by `FunctionId`, and driver/package/codegen paths were updated accordingly.
+- MIR `Call` now carries `fn_id` (no symbol identity), and stage3/type env/LLVM lowering use FunctionId-only call targets.
+- MIR call invariants are enforced after all synthesized MIR functions are added; all `M.Call`/`M.CallIndirect` carry explicit `can_throw` flags.
+- Stage2 typed-mode lowering is explicit (`typed_mode=True` in production paths); missing lambda `can_throw_effective` now asserts only in typed mode.
+- Stage2 test helper infers `typed_mode` from `call_info_by_node_id is not None` (empty dict still treated as typed), avoiding accidental fallback paths.
+- MIR call invariant validator now runs after wrappers/thunks/lambdas are inserted; added a negative test for non-bool `can_throw` in MIR calls.
+- Codegen/LLVM tests updated to use `Call(fn_id=...)` and FunctionId-keyed FnInfo maps.
+- Package MIR/signature consumption now stays FunctionId-keyed (no symbol parsing in call-graph closure).
+- Legacy str-keyed HIR/signature normalization is deterministic (sorted-key ordinal assignment).
+- Checker core is FunctionId-only: legacy adapters removed from production, CallInfo required in core API, and tests updated to use ID-keyed inputs.
+
+### Next slice: Checker-by-ID full cleanup (pending)
+**Goal:** checker core is FunctionId-only; strings only for diagnostics/test shims.
+- Patch list (planned):
+  - Remove legacy adapters from `lang2/driftc/checker/__init__.py` (no `LegacyCheckerInputs`, no `checker_inputs_to_legacy`, no `check([...])`).
+  - Make `Checker.__init__` accept only ID-keyed maps; require `call_info_by_id` (empty map allowed).
+  - Add test-only legacy shim at `lang2/tests/support/checker_legacy.py` for string-keyed tests.
+  - Update checker stub tests (`lang2/tests/checker/*.py`) and `lang2/tests/driver/test_void_semantics.py` to use ID-keyed inputs or the test shim.
+  - Update non-test call sites that instantiate `Checker` (e.g., SSA type-env helpers) to pass empty ID maps.
+  - Add CI grep guard: no `parse_function_symbol` / `expr.fn.name` / `_id_by_symbol` in checker core.
+  - Throw-mode normalization: resolve `declared_can_throw` to a strict boolean in signature resolution (no `None` in semantics), and thread the explicit ABI bit everywhere.
+  - CallInfo contract: non-lambda calls must have CallInfo; no name-based fallback; missing CallInfo is a deterministic internal error.
+  - CallSiteId stability: introduce stable call-site IDs before persisting instantiation maps beyond the current MVP.
+  - Remove fallback signature maps from semantic resolution (keep for diagnostics only).
+- Add a shared test helper that auto-threads minimal CallInfo for simple direct calls in stub tests.
+**Progress (done).**
+- Checker core uses FunctionId-only inputs; no legacy string-keyed adapters remain.
+- `CheckerInputsById` is callsite-only for CallInfo.
+- No semantic fallback by name exists in checker core; strings are diagnostics-only.
+- CallInfo-required invariant is enforced in typed mode.
+- Removed `can_throw_by_name` and `id(sig)`-based signature recovery from checker; function reference resolution now carries `FunctionId` explicitly.
+
+### Next slice: Base vs derived signature maps (in progress)
+**Goal:** explicit ownership of signatures; base map is immutable, derived map holds all synthesis.
+- Base map (`base_signatures_by_id`) contains resolved declarations + imports only (no mutation after resolution).
+- Derived map (`derived_signatures_by_id`) contains instantiations/wrappers/thunks/lambdas only.
+- Reads go through `ChainMap(derived, base)` everywhere.
+- Add overlap guards (`base ∩ derived = ∅`) and collision checks on derived inserts.
+- Next: route wrapper predeclarations through the derived registrar (no direct map writes).
+ - Stage2 no longer mutates signature maps; synthesized signature specs are emitted by `HIRToMIR` and registered centrally by the driver.
+ - Instantiation signatures now register through a single pre-check registrar (no direct derived map writes).
+ - Wrapper predeclarations now register via the derived registrar (no direct map writes).
+
+### Next slice: CallSiteId stability (planned)
+**Goal:** stable call-site identity for instantiation maps and CallInfo.
+- Assign a stable CallSiteId/ExprId at HIR build; clone assigns fresh deterministic IDs.
+- Use CallSiteId as the primary key for instantiation requests (not ad-hoc node ids).
+- Add a validator to ensure CallInfo maps are keyed by stable IDs for all call nodes.
+**Progress (in flight).**
+- Added `callsite_id` on `HCall`/`HMethodCall`/`HInvoke` and assign during normalization.
+- Added `assign_callsite_ids` + `validate_callsite_ids` utilities and a minimal stage1 test.
+- TypeChecker now records `call_info_by_callsite_id` and `instantiations_by_callsite_id` alongside legacy node-id maps.
+- Typed-mode validator checks callsite IDs exist and that CallInfo covers all callsites (internal diagnostics on missing).
+- Driver now uses callsite-keyed instantiation maps in typed mode (node-id fallback only when no callsite map exists) and reconciles can-throw flags via callsite maps first.
+- Stage2 HIRToMIR now accepts callsite maps and in typed mode requires callsite call info (node-id fallback only in untyped paths).
+- Stage2 no longer uses name-based method resolution fallbacks; call lowering is FunctionId + CallInfo only.
+- Stage2 unit tests now build callsite maps directly (`test_hir_to_mir`, `test_fnptr_const_lowering`, `test_stage2_rejects_hcast`); node-id usage in tests is now limited to `test_callinfo_cutover` (guarded by `test_no_nodeid_callinfo.py`).
+- Borrow-checker intrinsic test scaffolding now supplies callsite call info only (node-id map omitted in tests).
+- Hidden-lambda lowering now emits specs and the driver runs a full typed pass per hidden lambda to produce function-local callsite CallInfo before MIR lowering.
+- Hidden-lambda captures are remapped to fresh function-local binding IDs, with binding_id rewrites through statements and captures seeded as `PlaceKind.CAPTURE`.
+- Hidden-lambda capture ordering is now deterministic (`sort_captures`) in stage2 and the driver pipeline.
+- Captureless lambda function specs are re-typechecked in the driver to obtain callsite CallInfo, keeping typed-mode callsite-only.
+- Typechecker now bumps `_next_binding_id` above any preseeded capture IDs to prevent collisions when hidden lambdas allocate new bindings.
+- Stage2 lambda-shape tests now assert hidden-lambda specs instead of `extra_funcs`.
+- Stage2 lambda-shape tests now assert captureless vs captured contract (has_captures, env param prefix, and capture_map shape).
+- TypedFn no longer carries node-id callinfo/instantiation maps; checker, stage2, borrow checker, and driver now operate on callsite maps only.
+- Checker stub inputs and typed-mode validators are callsite-only (no node-id adapters in production paths).
+- Driver call-target rewriting, can-throw reconciliation, and intrinsic validation are callsite-only.
+- All tests now avoid node-id CallInfo maps; `test_callinfo_cutover.py` is callsite-only and `test_no_nodeid_callinfo.py` allowlist is empty.
+- Legacy node-id CallInfo adapters removed; checker/stage2/driver are callsite-only with no allowlist exceptions.
+- `call_info_by_node_id` usage removed from codebase; guard test remains as the only mention.
+- TemplateHIR-v0 import support removed from the CLI path; v0 templates now hard-error and require rebuild.
+- Remaining `parse_function_symbol` usage is confined to package export encoding (`lang2/driftc/packages/provisional_dmir_v0.py`); no runtime import boundary parsing remains and legacy test shim removed.
+
+### Current blockers (to clear)
+- None in driver suite. (Keep an eye on codegen e2e + LLVM suites.)
 
 ## Completed (recent)
 - TemplateHIR-v1 export/import keyed by FunctionKey with required `generic_param_layout`.
@@ -89,9 +176,25 @@ Note: pause **feature work** only; keep landing small fixes + tests as safety ne
 - Cross-package instantiation for impl + method generics (method-level type params).
 - Trait method inference test for method-level type params (local).
 - LinkedWorld/RequireEnv introduced; typechecker no longer depends on `_global_trait_world`.
+- `byte_length` now takes `&String` with lvalue auto-borrow; rvalue borrow is rejected with a clear diagnostic.
+- Call validation now uses CallInfo-driven names and includes method receivers in arity/type checks; HCall+HLambda validation no longer requires CallInfo.
+- `compile_stubbed_funcs` now stops before MIR/SSA on typecheck errors, and signature resolution always assigns `error_type_id` for can-throw functions.
+- Legacy direct-checker tests now supply CallInfo for simple calls to satisfy the CallInfo-required invariant.
+- HCall/HMethodCall validation now recurses into method receivers/Invoke callees and lambda calls enforce arity (no kwargs).
+- Signature resolution now normalizes `declared_can_throw` to a strict boolean (nothrow is the only non-throwing ABI) and assigns `error_type_id` for can-throw signatures.
+- `call_sigs_by_key` is now passed as `candidate_signatures_for_diag` and guarded to avoid semantic fallback when `callable_registry` is present.
+- `compile_stubbed_funcs` now splits `base_signatures_by_id` vs `derived_signatures_by_id`, with reads via a `ChainMap` and all synthesis/instantiation signatures added only to the derived map.
+- Stage2 no longer mutates signature maps; synthesized signature specs are emitted by `HIRToMIR` and registered centrally by the driver.
+- Instantiation signatures now register through a single pre-check registrar (no direct derived map writes).
+- Wrapper predeclarations now register via the derived registrar (no direct map writes).
 
 ## What's missing today
 - Full stdlib container implementations in userland (still relying on compiler intrinsics).
+
+## Next steps
+- Remove any remaining test-only node-id callinfo adapters (keep `test_callinfo_cutover` as the only legacy coverage or delete it entirely).
+- Empty the `test_no_nodeid_callinfo.py` allowlist and enforce zero `call_info_by_node_id` usage in tests.
+- Delete any leftover `call_info_by_node_id`/node-id instantiation fields and fallbacks once tests are fully migrated.
 
 ## End result (user POV)
 Users can write generic functions and generic impl blocks, and the compiler monomorphizes them into concrete code.

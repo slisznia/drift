@@ -6,6 +6,7 @@ from pathlib import Path
 from lang2.driftc import stage1 as H
 from lang2.driftc.core.function_id import FunctionRefKind, function_ref_symbol
 from lang2.driftc.core.types_core import TypeKind
+from lang2.driftc.method_registry import CallableRegistry, CallableSignature, Visibility
 from lang2.driftc.parser import parse_drift_workspace_to_hir
 from lang2.driftc.module_lowered import flatten_modules
 from lang2.driftc.type_checker import TypeChecker
@@ -27,10 +28,6 @@ def _parse_workspace(tmp_path: Path, files: dict[Path, str]):
 	)
 	func_hirs, sigs, fn_ids_by_name = flatten_modules(modules)
 	return func_hirs, sigs, fn_ids_by_name, type_table, exc_catalog, module_exports, module_deps, diagnostics
-
-
-def _display_name_for_fn_id(module: str, name: str) -> str:
-	return name if module == "main" else f"{module}::{name}"
 
 
 def test_exported_function_reference_uses_wrapper_symbol(tmp_path: Path) -> None:
@@ -64,14 +61,17 @@ fn main() nothrow returns Int{
 	id_fn_id = next(fid for fid in signatures if fid.module == "mod_a" and fid.name == "id")
 	signatures[id_fn_id].declared_can_throw = False
 
-	call_sigs_by_name: dict[str, list[object]] = {}
-	for fn_id, sig in signatures.items():
-		if getattr(sig, "is_method", False):
-			continue
-		name = _display_name_for_fn_id(fn_id.module or "main", fn_id.name)
-		call_sigs_by_name.setdefault(name, []).append(sig)
-		if fn_id.module == "lang.core":
-			call_sigs_by_name.setdefault(fn_id.name, []).append(sig)
+	registry = CallableRegistry()
+	module_ids: dict[str | None, int] = {None: 0, "mod_a": 1, "mod_b": 2}
+	int_ty = type_table.ensure_int()
+	registry.register_free_function(
+		callable_id=0,
+		name="id",
+		module_id=module_ids["mod_a"],
+		visibility=Visibility.public(),
+		signature=CallableSignature(param_types=(int_ty,), result_type=int_ty),
+		fn_id=id_fn_id,
+	)
 
 	param_types: dict[str, int] = {}
 	if main_sig.param_names and main_sig.param_type_ids:
@@ -82,8 +82,10 @@ fn main() nothrow returns Int{
 		main_block,
 		param_types=param_types,
 		return_type=main_sig.return_type_id,
-		call_signatures=call_sigs_by_name,
 		signatures_by_id=signatures,
+		callable_registry=registry,
+		visible_modules=(module_ids["mod_a"], module_ids["mod_b"]),
+		current_module=module_ids["mod_b"],
 	)
 	assert not res.diagnostics
 

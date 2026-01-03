@@ -1,1 +1,6 @@
-{ "exit_code": 30, "stdout": "", "stderr": "" }
+{
+  "description": "e2e: qualified ctor disambiguates same ctor name",
+  "exit_code": 30,
+  "stderr": "",
+  "stdout": ""
+}

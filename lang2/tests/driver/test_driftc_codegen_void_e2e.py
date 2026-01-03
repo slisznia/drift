@@ -21,7 +21,7 @@ BUILD_ROOT = Path("build/tests/lang2/driftc_codegen_void")
 def _run_ir_with_clang(ir: str) -> int:
 	clang = shutil.which("clang-15") or shutil.which("clang")
 	if clang is None:
-		pytest.skip("clang not available")
+		raise RuntimeError("clang not available")
 
 	BUILD_ROOT.mkdir(parents=True, exist_ok=True)
 	ir_path = BUILD_ROOT / "ir.ll"
@@ -101,7 +101,7 @@ def test_driftc_codegen_void_negative_returns_value_raises():
 		"log": H.HBlock(statements=[H.HReturn(value=H.HLiteralInt(value=1))]),
 	}
 	signatures = {
-		"log": FnSignature(name="log", return_type_id=void_ty),
+		"log": FnSignature(name="log", return_type_id=void_ty, declared_can_throw=False),
 	}
 
 	ir, checked = compile_to_llvm_ir_for_tests(func_hirs=func_hirs, signatures=signatures, entry="log", type_table=table)

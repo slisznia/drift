@@ -1,1 +1,6 @@
-{ "exit_code": 42, "stdout": "caught\n", "stderr": "" }
+{
+  "description": "e2e: try expr binder",
+  "exit_code": 42,
+  "stderr": "",
+  "stdout": "caught\n"
+}

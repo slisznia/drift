@@ -1,7 +1,10 @@
 {
-  "exit_code": 1,
+  "description": "e2e: borrow mut rvalue move rejected",
   "diagnostics": [
-    { "phase": "typecheck", "message_contains": "cannot take &mut of an expression containing move" }
-  ]
+    {
+      "message_contains": "cannot take &mut of an expression containing move",
+      "phase": "typecheck"
+    }
+  ],
+  "exit_code": 1
 }
-

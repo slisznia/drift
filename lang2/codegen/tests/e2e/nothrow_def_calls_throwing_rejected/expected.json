@@ -1,8 +1,12 @@
 {
-  "exit_code": 1,
+  "description": "e2e: nothrow def calls throwing rejected",
   "diagnostics": [
-    { "phase": "typecheck", "message_contains": "declared nothrow but may throw" }
+    {
+      "message_contains": "declared nothrow but may throw",
+      "phase": "typecheck"
+    }
   ],
-  "stdout": "",
-  "stderr": ""
+  "exit_code": 1,
+  "stderr": "",
+  "stdout": ""
 }

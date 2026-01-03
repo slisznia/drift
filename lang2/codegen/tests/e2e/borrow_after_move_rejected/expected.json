@@ -1,6 +1,10 @@
 {
-  "exit_code": 1,
+  "description": "e2e: borrow after move rejected",
   "diagnostics": [
-    { "phase": "borrowcheck", "message_contains": "cannot borrow from moved or uninitialized 'x'" }
-  ]
+    {
+      "message_contains": "cannot borrow from moved or uninitialized 'x'",
+      "phase": "borrowcheck"
+    }
+  ],
+  "exit_code": 1
 }

@@ -1,3 +1,4 @@
+from lang2.driftc.core.function_id import FunctionId
 # vim: set noexpandtab: -*- indent-tabs-mode: t -*-
 # author: Sławomir Liszniański; created: 2025-12-04
 """
@@ -21,7 +22,7 @@ def test_df_straight_line_empty():
 	entry = BasicBlock(name="entry", terminator=Goto(target="b1"))
 	b1 = BasicBlock(name="b1", terminator=Goto(target="b2"))
 	b2 = BasicBlock(name="b2", terminator=None)
-	func = MirFunc(name="f", params=[], locals=[], blocks={"entry": entry, "b1": b1, "b2": b2}, entry="entry")
+	func = MirFunc(fn_id=FunctionId(module="main", name="f", ordinal=0), name="f", params=[], locals=[], blocks={"entry": entry, "b1": b1, "b2": b2}, entry="entry")
 	info = _run_df(func)
 	assert all(not frontier for frontier in info.df.values())
 
@@ -33,6 +34,7 @@ def test_df_diamond_join_in_entry_frontier():
 	else_block = BasicBlock(name="else", terminator=Goto(target="join"))
 	join = BasicBlock(name="join", terminator=None)
 	func = MirFunc(
+		fn_id=FunctionId(module="main", name="f", ordinal=0),
 		name="f",
 		params=[],
 		locals=[],
@@ -55,6 +57,7 @@ def test_df_loop_captures_backedge_and_exit():
 	loop_body = BasicBlock(name="loop_body", terminator=IfTerminator(cond="c", then_target="loop_header", else_target="loop_exit"))
 	loop_exit = BasicBlock(name="loop_exit", terminator=None)
 	func = MirFunc(
+		fn_id=FunctionId(module="main", name="f", ordinal=0),
 		name="f",
 		params=[],
 		locals=[],

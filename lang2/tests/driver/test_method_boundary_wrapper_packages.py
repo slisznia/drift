@@ -4,7 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from lang2.driftc import stage1 as H
-from lang2.driftc.core.function_id import FunctionId, function_symbol, method_wrapper_id
+from lang2.driftc.core.function_id import FunctionId, fn_name_key, function_symbol, method_wrapper_id
 from lang2.driftc.driftc import _collect_external_trait_and_impl_metadata, main as driftc_main
 from lang2.driftc.impl_index import GlobalImplIndex, find_impl_method_conflicts
 from lang2.driftc.method_registry import CallableRegistry, CallableSignature, SelfMode, Visibility
@@ -146,7 +146,7 @@ def _build_registry(signatures: dict[FunctionId, FnSignature]) -> tuple[Callable
 		else:
 			registry.register_free_function(
 				callable_id=next_id,
-				name=fn_id.name if fn_id.module == "main" else f"{fn_id.module}::{fn_id.name}",
+			name=fn_id.name,
 				module_id=module_id,
 				visibility=Visibility.public(),
 				signature=CallableSignature(param_types=tuple(sig.param_type_ids), result_type=sig.return_type_id),
@@ -255,6 +255,9 @@ def _decode_package_signatures(
 			ret_tid = sd.get("return_type_id")
 			if isinstance(ret_tid, int):
 				ret_tid = tid_map.get(ret_tid, ret_tid)
+			err_tid = sd.get("error_type_id")
+			if isinstance(err_tid, int):
+				err_tid = tid_map.get(err_tid, err_tid)
 			impl_tid = sd.get("impl_target_type_id")
 			if isinstance(impl_tid, int):
 				impl_tid = tid_map.get(impl_tid, impl_tid)
@@ -283,6 +286,8 @@ def _decode_package_signatures(
 				param_names=sd.get("param_names"),
 				param_type_ids=param_type_ids,
 				return_type_id=ret_tid,
+				error_type_id=err_tid,
+				declared_can_throw=sd.get("declared_can_throw"),
 				is_method=bool(sd.get("is_method", False)),
 				self_mode=sd.get("self_mode"),
 				impl_target_type_id=impl_tid,
@@ -368,20 +373,18 @@ fn main() nothrow returns Int{
 	visible_mods = _visible_modules_for("main", module_deps, module_ids)
 	linked_world, require_env = build_linked_world(type_table)
 	tc = TypeChecker(type_table=type_table)
-	call_sigs_by_name: dict[str, list[FnSignature]] = {}
+	call_sigs_by_name: dict[tuple[str | None, str], list[FnSignature]] = {}
 	for fn_id, sig in signatures.items():
 		if getattr(sig, "is_method", False):
 			continue
-		name = _display_name_for_fn_id(fn_id.module or "main", fn_id.name)
-		call_sigs_by_name.setdefault(name, []).append(sig)
+		call_sigs_by_name.setdefault(fn_name_key(fn_id.module, fn_id.name), []).append(sig)
 		if fn_id.module == "lang.core":
-			call_sigs_by_name.setdefault(fn_id.name, []).append(sig)
+			call_sigs_by_name.setdefault(fn_name_key(None, fn_id.name), []).append(sig)
 	result = tc.check_function(
 		main_id,
 		main_block,
 		param_types=param_types,
 		return_type=main_sig.return_type_id,
-		call_signatures=call_sigs_by_name,
 		signatures_by_id=signatures,
 		callable_registry=registry,
 		impl_index=impl_index,
@@ -395,7 +398,7 @@ fn main() nothrow returns Int{
 	calls = _collect_method_calls(result.typed_fn.body)
 	assert len(calls) == 1
 	call = calls[0]
-	info = result.typed_fn.call_info_by_node_id.get(call.node_id)
+	info = result.typed_fn.call_info_by_callsite_id.get(call.callsite_id)
 	assert info is not None
 	assert info.target.kind is CallTargetKind.DIRECT
 
@@ -493,20 +496,18 @@ fn main() returns Int {
 	visible_mods = _visible_modules_for("main", module_deps, module_ids)
 	linked_world, require_env = build_linked_world(type_table)
 	tc = TypeChecker(type_table=type_table)
-	call_sigs_by_name: dict[str, list[FnSignature]] = {}
+	call_sigs_by_name: dict[tuple[str | None, str], list[FnSignature]] = {}
 	for fn_id, sig in signatures.items():
 		if getattr(sig, "is_method", False):
 			continue
-		name = _display_name_for_fn_id(fn_id.module or "main", fn_id.name)
-		call_sigs_by_name.setdefault(name, []).append(sig)
+		call_sigs_by_name.setdefault(fn_name_key(fn_id.module, fn_id.name), []).append(sig)
 		if fn_id.module == "lang.core":
-			call_sigs_by_name.setdefault(fn_id.name, []).append(sig)
+			call_sigs_by_name.setdefault(fn_name_key(None, fn_id.name), []).append(sig)
 	result = tc.check_function(
 		main_id,
 		main_block,
 		param_types=param_types,
 		return_type=main_sig.return_type_id,
-		call_signatures=call_sigs_by_name,
 		signatures_by_id=signatures,
 		callable_registry=registry,
 		impl_index=impl_index,
@@ -519,5 +520,5 @@ fn main() returns Int {
 
 	calls = _collect_method_calls(result.typed_fn.body)
 	assert len(calls) == 1
-	info = result.typed_fn.call_info_by_node_id.get(calls[0].node_id)
+	info = result.typed_fn.call_info_by_callsite_id.get(calls[0].callsite_id)
 	assert info is not None

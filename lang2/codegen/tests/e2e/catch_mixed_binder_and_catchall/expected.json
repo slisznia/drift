@@ -1,5 +1,6 @@
 {
+  "description": "e2e: catch mixed binder and catchall",
   "exit_code": 0,
-  "stdout": "a",
-  "stderr": ""
+  "stderr": "",
+  "stdout": "a"
 }

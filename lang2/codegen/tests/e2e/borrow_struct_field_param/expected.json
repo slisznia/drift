@@ -1,1 +1,6 @@
-{ "exit_code": 42, "stdout": "", "stderr": "" }
+{
+  "description": "e2e: borrow struct field param",
+  "exit_code": 42,
+  "stderr": "",
+  "stdout": ""
+}

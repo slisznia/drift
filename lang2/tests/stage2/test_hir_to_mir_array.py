@@ -5,9 +5,10 @@ HIR → MIR lowering for array literals and indexing.
 """
 
 from lang2.driftc.core.types_core import TypeTable
+from lang2.driftc.core.function_id import FunctionId
 from lang2.driftc.stage1 import HArrayLiteral, HAssign, HBlock, HExprStmt, HField, HIndex, HLet, HLiteralInt, HVar
 from lang2.driftc.stage1.normalize import normalize_hir
-from lang2.driftc.stage2 import AddrOfArrayElem, ArrayIndexLoad, ArrayLen, ArrayLit, HIRToMIR, MirBuilder, StoreRef
+from lang2.driftc.stage2 import AddrOfArrayElem, ArrayIndexLoad, ArrayLen, ArrayLit, HIRToMIR, StoreRef, make_builder
 
 
 def _make_type_table():
@@ -28,7 +29,7 @@ def test_array_literal_and_index_lowering():
 			HExprStmt(expr=HField(subject=HVar("xs"), name="len")),
 		]
 	)
-	builder = MirBuilder("f")
+	builder = make_builder(FunctionId(module="main", name="f", ordinal=0))
 	HIRToMIR(builder, type_table=table).lower_block(normalize_hir(block))
 	entry = builder.func.blocks[builder.func.entry]
 	kinds = {type(instr) for instr in entry.instructions}
@@ -52,7 +53,7 @@ def test_array_index_store_lowering():
 			),
 		]
 	)
-	builder = MirBuilder("f")
+	builder = make_builder(FunctionId(module="main", name="f", ordinal=0))
 	HIRToMIR(builder, type_table=table).lower_block(normalize_hir(block))
 	entry = builder.func.blocks[builder.func.entry]
 	addrs = [instr for instr in entry.instructions if isinstance(instr, AddrOfArrayElem)]

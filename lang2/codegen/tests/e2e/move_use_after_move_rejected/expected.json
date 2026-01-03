@@ -1,7 +1,10 @@
 {
-  "exit_code": 1,
+  "description": "e2e: move use after move rejected",
   "diagnostics": [
-    { "phase": "borrowcheck", "message_contains": "use after move of 'x'" }
-  ]
+    {
+      "message_contains": "use after move of 'x'",
+      "phase": "borrowcheck"
+    }
+  ],
+  "exit_code": 1
 }
-

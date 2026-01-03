@@ -1,1 +1,6 @@
-{ "exit_code": 10, "stdout": "", "stderr": "" }
+{
+  "description": "e2e: import from alias conflict across files ok",
+  "exit_code": 10,
+  "stderr": "",
+  "stdout": ""
+}

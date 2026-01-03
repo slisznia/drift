@@ -30,7 +30,7 @@ def _run_driftc_json(argv: list[str], capsys) -> tuple[int, dict]:
 
 
 def _callable_name(fn_id: FunctionId) -> str:
-	return fn_id.name if fn_id.module == "main" else f"{fn_id.module}::{fn_id.name}"
+	return fn_id.name
 
 
 def _build_registry(signatures: dict[FunctionId, object]) -> tuple[CallableRegistry, dict[object, int]]:
@@ -680,10 +680,23 @@ fn main() nothrow returns Int{
 	assert diagnostics == []
 	func_hirs, signatures, fn_ids_by_name = flatten_modules(modules)
 
+	derived_signatures: dict[FunctionId, FnSignature] = {}
+
+	def _register_derived(fn_id: FunctionId, sig: FnSignature) -> None:
+		existing = derived_signatures.get(fn_id) or signatures.get(fn_id)
+		if existing is not None:
+			if existing != sig:
+				raise AssertionError(f"signature collision for '{fn_id}'")
+			return
+		derived_signatures[fn_id] = sig
+
 	_, wrap_errors = _inject_method_boundary_wrappers(
 		signatures_by_id=signatures,
+		existing_ids=set(signatures.keys()) | set(derived_signatures.keys()),
+		register_derived=_register_derived,
 		type_table=type_table,
 	)
+	signatures = {**signatures, **derived_signatures}
 	assert wrap_errors == []
 
 	registry, module_ids = _build_registry(signatures)
@@ -730,7 +743,7 @@ fn main() nothrow returns Int{
 	calls = _collect_method_calls(result.typed_fn.body)
 	assert len(calls) == 1
 	call = calls[0]
-	info = result.typed_fn.call_info_by_node_id.get(call.node_id)
+	info = result.typed_fn.call_info_by_callsite_id.get(call.callsite_id)
 	assert info is not None
 	assert info.target.kind is CallTargetKind.DIRECT
 

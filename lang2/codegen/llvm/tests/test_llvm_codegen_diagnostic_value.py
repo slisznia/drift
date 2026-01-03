@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from lang2.driftc.core.function_id import FunctionId
 import pytest
 
 from lang2.codegen.llvm import lower_ssa_func_to_llvm, LlvmModuleBuilder
@@ -30,7 +31,7 @@ def test_error_attrs_lookup_lowered_to_runtime_call():
 	err_ty = table.ensure_error()
 	fnres_ty = table.new_fnresult(int_ty, err_ty)
 	sig = FnSignature(name="f", param_type_ids=[], return_type_id=fnres_ty, declared_can_throw=True)
-	fn_info = FnInfo(name="f", declared_can_throw=True, return_type_id=fnres_ty, signature=sig)
+	fn_info = FnInfo(fn_id=FunctionId(module="main", name="f", ordinal=0), name="f", declared_can_throw=True, return_type_id=fnres_ty, signature=sig)
 
 	entry = BasicBlock(
 		name="entry",
@@ -45,7 +46,7 @@ def test_error_attrs_lookup_lowered_to_runtime_call():
 	],
 		terminator=Return(value="res"),
 	)
-	mir = MirFunc(name="f", params=[], locals=[], blocks={"entry": entry}, entry="entry")
+	mir = MirFunc(fn_id=FunctionId(module="main", name="f", ordinal=0), name="f", params=[], locals=[], blocks={"entry": entry}, entry="entry")
 	ssa = MirToSSA().run(mir)
 
 	mod = LlvmModuleBuilder()
@@ -65,7 +66,7 @@ def test_dv_as_int_returns_optional_int():
 	opt_int_ty = table.new_optional(int_ty)
 	fnres_ty = table.new_fnresult(int_ty, err_ty)
 	sig = FnSignature(name="g", param_type_ids=[], return_type_id=fnres_ty, declared_can_throw=True)
-	fn_info = FnInfo(name="g", declared_can_throw=True, return_type_id=fnres_ty, signature=sig)
+	fn_info = FnInfo(fn_id=FunctionId(module="main", name="g", ordinal=0), name="g", declared_can_throw=True, return_type_id=fnres_ty, signature=sig)
 
 	entry = BasicBlock(
 		name="entry",
@@ -81,7 +82,7 @@ def test_dv_as_int_returns_optional_int():
 		],
 		terminator=Return(value="res"),
 	)
-	mir = MirFunc(name="g", params=[], locals=[], blocks={"entry": entry}, entry="entry")
+	mir = MirFunc(fn_id=FunctionId(module="main", name="g", ordinal=0), name="g", params=[], locals=[], blocks={"entry": entry}, entry="entry")
 	ssa = MirToSSA().run(mir)
 
 	mod = LlvmModuleBuilder()
@@ -99,7 +100,7 @@ def test_error_additional_attr_lowered_to_runtime_call():
 	err_ty = table.ensure_error()
 	fnres_ty = table.new_fnresult(int_ty, err_ty)
 	sig = FnSignature(name="h", param_type_ids=[], return_type_id=fnres_ty, declared_can_throw=True)
-	fn_info = FnInfo(name="h", declared_can_throw=True, return_type_id=fnres_ty, signature=sig)
+	fn_info = FnInfo(fn_id=FunctionId(module="main", name="h", ordinal=0), name="h", declared_can_throw=True, return_type_id=fnres_ty, signature=sig)
 
 	entry = BasicBlock(
 		name="entry",
@@ -118,7 +119,7 @@ def test_error_additional_attr_lowered_to_runtime_call():
 		],
 		terminator=Return(value="res"),
 	)
-	mir = MirFunc(name="h", params=[], locals=[], blocks={"entry": entry}, entry="entry")
+	mir = MirFunc(fn_id=FunctionId(module="main", name="h", ordinal=0), name="h", params=[], locals=[], blocks={"entry": entry}, entry="entry")
 	ssa = MirToSSA().run(mir)
 
 	mod = LlvmModuleBuilder()
@@ -134,7 +135,7 @@ def test_error_attr_round_trip_additional_key():
 	err_ty = table.ensure_error()
 
 	sig = FnSignature(name="attr_round_trip", param_type_ids=[], return_type_id=int_ty, declared_can_throw=False)
-	fn_info = FnInfo(name="attr_round_trip", declared_can_throw=False, return_type_id=int_ty, signature=sig)
+	fn_info = FnInfo(fn_id=FunctionId(module="main", name="attr_round_trip", ordinal=0), name="attr_round_trip", declared_can_throw=False, return_type_id=int_ty, signature=sig)
 
 	entry = BasicBlock(
 		name="entry",
@@ -168,6 +169,7 @@ def test_error_attr_round_trip_additional_key():
 		terminator=Return(value="zero"),
 	)
 	mir = MirFunc(
+		fn_id=FunctionId(module="main", name="attr_round_trip", ordinal=0),
 		name="attr_round_trip",
 		params=[],
 		locals=[],

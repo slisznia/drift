@@ -5,6 +5,13 @@ from dataclasses import dataclass
 from typing import Set
 
 from lang2.driftc.core.diagnostics import Diagnostic
+
+# Capture discovery diagnostics are typecheck-phase.
+def _cap_diag(*args, **kwargs):
+	if "phase" not in kwargs or kwargs.get("phase") is None:
+		kwargs["phase"] = "typecheck"
+	return Diagnostic(*args, **kwargs)
+
 from lang2.driftc.core.span import Span
 from lang2.driftc.stage1 import closures as C
 from lang2.driftc.stage1 import hir_nodes as H
@@ -105,7 +112,7 @@ def discover_captures(lambda_expr: H.HLambda) -> CaptureDiscoveryResult:
 			root = getattr(place.base, "binding_id", None)
 			if root is not None and root not in lambda_local_ids:
 				diags.append(
-					Diagnostic(
+					_cap_diag(
 						message="lambda captures support field projections only in v0",
 						severity="error",
 						span=getattr(place, "loc", Span()),
@@ -153,7 +160,7 @@ def discover_captures(lambda_expr: H.HLambda) -> CaptureDiscoveryResult:
 				root = getattr(e.base, "binding_id", None)
 				if root is not None and root not in lambda_local_ids:
 					diags.append(
-						Diagnostic(
+						_cap_diag(
 							message="lambda captures support field projections only in v0",
 							severity="error",
 							span=getattr(e, "loc", Span()),
@@ -243,7 +250,7 @@ def discover_captures(lambda_expr: H.HLambda) -> CaptureDiscoveryResult:
 		if kind == "move":
 			return C.HCaptureKind.MOVE
 		diags.append(
-			Diagnostic(
+			_cap_diag(
 				message="unsupported explicit capture kind",
 				severity="error",
 				span=span,
@@ -269,7 +276,7 @@ def discover_captures(lambda_expr: H.HLambda) -> CaptureDiscoveryResult:
 		for cap in explicit_caps:
 			if cap.name in seen_names:
 				diags.append(
-					Diagnostic(
+					_cap_diag(
 						message="duplicate capture in captures(...) list",
 						severity="error",
 						span=cap.span,
@@ -279,7 +286,7 @@ def discover_captures(lambda_expr: H.HLambda) -> CaptureDiscoveryResult:
 			seen_names.add(cap.name)
 			if cap.binding_id is None:
 				diags.append(
-					Diagnostic(
+					_cap_diag(
 						message="explicit captures require a root identifier from the enclosing scope",
 						severity="error",
 						span=cap.span,
@@ -301,7 +308,7 @@ def discover_captures(lambda_expr: H.HLambda) -> CaptureDiscoveryResult:
 		for name in lambda_local_names:
 			if name in seen_names:
 				diags.append(
-					Diagnostic(
+					_cap_diag(
 						message="capture name collides with lambda param/local",
 						severity="error",
 						span=getattr(lambda_expr, "span", Span()),
@@ -312,7 +319,7 @@ def discover_captures(lambda_expr: H.HLambda) -> CaptureDiscoveryResult:
 				continue
 			span = used_root_spans.get(root_id, Span())
 			diags.append(
-				Diagnostic(
+				_cap_diag(
 					message="value used in closure body is not listed in captures(...)",
 					severity="error",
 					span=span,
@@ -342,7 +349,7 @@ def discover_captures(lambda_expr: H.HLambda) -> CaptureDiscoveryResult:
 				name = explicit_names.get(root_id, "value")
 				span = use.span if use.span != Span() else cap.span
 				diags.append(
-					Diagnostic(
+					_cap_diag(
 						message=f"capture '{name}' is shared; capture &mut {name} to mutate",
 						severity="error",
 						span=span,
@@ -355,7 +362,7 @@ def discover_captures(lambda_expr: H.HLambda) -> CaptureDiscoveryResult:
 	for key, use in usage.items():
 		if use.move and key.proj:
 			diags.append(
-				Diagnostic(
+				_cap_diag(
 					message="lambda move captures of projections are not supported yet",
 					severity="error",
 					span=use.span,
@@ -363,7 +370,7 @@ def discover_captures(lambda_expr: H.HLambda) -> CaptureDiscoveryResult:
 			)
 		if use.move and (use.borrow_shared or use.borrow_mut or use.write):
 			diags.append(
-				Diagnostic(
+				_cap_diag(
 					message="lambda capture mixes move and borrow/write uses",
 					severity="error",
 					span=use.span,
@@ -371,7 +378,7 @@ def discover_captures(lambda_expr: H.HLambda) -> CaptureDiscoveryResult:
 			)
 		if use.borrow_shared and (use.borrow_mut or use.write):
 			diags.append(
-				Diagnostic(
+				_cap_diag(
 					message="lambda capture uses both shared and mutable access",
 					severity="error",
 					span=use.span,
@@ -403,7 +410,7 @@ def discover_captures(lambda_expr: H.HLambda) -> CaptureDiscoveryResult:
 			if cap_a.kind is C.HCaptureKind.REF and cap_b.kind is C.HCaptureKind.REF:
 				continue
 			diags.append(
-				Diagnostic(
+				_cap_diag(
 					message="overlapping lambda captures are not supported with mutable or move captures",
 					severity="error",
 					span=cap_a.span,

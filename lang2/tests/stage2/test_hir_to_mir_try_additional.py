@@ -10,24 +10,28 @@ Additional try/catch lowering coverage:
 
 from __future__ import annotations
 
-from lang2.driftc.stage2 import HIRToMIR, MirBuilder, mir_nodes as M
+from lang2.driftc.stage2 import HIRToMIR, mir_nodes as M, make_builder
 from lang2.driftc import stage1 as H
 from lang2.driftc.core.types_core import TypeTable
 from lang2.driftc.stage1.normalize import normalize_hir
+from lang2.driftc.core.function_id import FunctionId
 
 
 def test_catch_binder_and_no_binder():
 	"""First arm has a binder, second does not; binder produces a StoreLocal."""
-	builder = MirBuilder(name="try_binder_shapes")
+	builder = make_builder(FunctionId(module="main", name="try_binder_shapes", ordinal=0))
+	fn_id=FunctionId(module="main", name="try_binder_shapes", ordinal=0),
 	type_table = TypeTable()
 	type_table.exception_schemas = {
 		"m:EvtA": ("m:EvtA", []),
 	}
+	fn_id = FunctionId(module="main", name="try_binder_shapes", ordinal=0)
 	lower = HIRToMIR(
 		builder,
 		type_table=type_table,
 		exc_env={"m:EvtA": 1, "m:EvtB": 2},
-		can_throw_by_name={"try_binder_shapes": True},
+		current_fn_id=fn_id,
+		can_throw_by_id={fn_id: True},
 	)
 
 	hir = H.HBlock(
@@ -58,10 +62,18 @@ def test_unknown_event_name_matches_via_code_zero():
 	When an event name is unknown (not in exc_env), both throw and catch use code 0,
 	so the dispatch still matches.
 	"""
-	builder = MirBuilder(name="try_unknown_event")
+	builder = make_builder(FunctionId(module="main", name="try_unknown_event", ordinal=0))
+	fn_id=FunctionId(module="main", name="try_unknown_event", ordinal=0),
 	type_table = TypeTable()
 	type_table.exception_schemas = {"m:Unknown": ("m:Unknown", [])}
-	lower = HIRToMIR(builder, type_table=type_table, exc_env={}, can_throw_by_name={"try_unknown_event": True})
+	fn_id = FunctionId(module="main", name="try_unknown_event", ordinal=0)
+	lower = HIRToMIR(
+		builder,
+		type_table=type_table,
+		exc_env={},
+		current_fn_id=fn_id,
+		can_throw_by_id={fn_id: True},
+	)
 
 	hir = H.HBlock(
 		statements=[
@@ -86,7 +98,8 @@ def test_outer_catch_all_catches_unmatched_inner():
 	"""
 	Inner try has no matching arm; outer catch-all should receive the propagated error.
 	"""
-	builder = MirBuilder(name="try_outer_catch_all")
+	builder = make_builder(FunctionId(module="main", name="try_outer_catch_all", ordinal=0))
+	fn_id=FunctionId(module="main", name="try_outer_catch_all", ordinal=0),
 	type_table = TypeTable()
 	type_table.exception_schemas = {"m:Inner": ("m:Inner", [])}
 	lower = HIRToMIR(builder, type_table=type_table, exc_env={"m:Inner": 1})

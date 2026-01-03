@@ -9,10 +9,11 @@ with proper terminators on all blocks.
 
 from __future__ import annotations
 
+from lang2.driftc.core.function_id import FunctionId
 from lang2.driftc.stage0 import ast
 from lang2.driftc.stage1 import AstToHIR, HBlock
 from lang2.driftc.stage1.normalize import normalize_hir
-from lang2.driftc.stage2 import MirBuilder, HIRToMIR, MirFunc
+from lang2.driftc.stage2 import HIRToMIR, MirFunc, make_builder
 from lang2.driftc import stage1 as H
 from lang2.driftc.core.types_core import TypeTable, VariantArmSchema, VariantFieldSchema
 from lang2.driftc.core.generic_type_expr import GenericTypeExpr
@@ -118,7 +119,8 @@ def test_for_ast_lowered_to_mir_cfg():
 	assert isinstance(hir_stmt, HBlock)
 
 	# HIR → MIR
-	builder = MirBuilder(name="f_for")
+	fn_id = FunctionId(module="main", name="f_for", ordinal=0)
+	builder = make_builder(fn_id)
 	type_table = TypeTable()
 	# Stage2 unit tests bypass the parser adapter, so we must seed the prelude
 	# `Optional<T>` variant that `for` desugaring relies on.

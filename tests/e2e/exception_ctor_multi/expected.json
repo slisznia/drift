@@ -1,5 +1,6 @@
 {
-  "mode": "run",
+  "description": "e2e: exception ctor multi",
   "exit_code": 0,
+  "mode": "run",
   "stdout": "fallback\n"
 }

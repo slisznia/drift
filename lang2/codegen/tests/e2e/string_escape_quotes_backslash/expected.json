@@ -1,5 +1,6 @@
 {
+  "description": "e2e: string escape quotes backslash",
   "exit_code": 0,
-  "stdout": "",
-  "stderr": ""
+  "stderr": "",
+  "stdout": ""
 }

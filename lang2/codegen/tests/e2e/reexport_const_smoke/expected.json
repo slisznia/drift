@@ -1,2 +1,6 @@
-{ "exit_code": 42, "stdout": "", "stderr": "" }
-
+{
+  "description": "e2e: reexport const smoke",
+  "exit_code": 42,
+  "stderr": "",
+  "stdout": ""
+}

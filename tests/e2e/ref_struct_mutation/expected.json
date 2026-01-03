@@ -1,9 +1,10 @@
 {
-  "mode": "run",
-  "compile_error": null,
-  "exit_code": 42,
-  "stdout": "",
-  "stderr": "",
   "args": [],
-  "env": {}
+  "compile_error": null,
+  "description": "e2e: ref struct mutation",
+  "env": {},
+  "exit_code": 42,
+  "mode": "run",
+  "stderr": "",
+  "stdout": ""
 }

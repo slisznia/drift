@@ -1,6 +1,10 @@
 {
-  "exit_code": 1,
+  "description": "e2e: method receiver missing self",
   "diagnostics": [
-    { "phase": "typecheck", "message_contains": "missing receiver metadata (impl target/self_mode)" }
-  ]
+    {
+      "message_contains": "missing receiver metadata (impl target/self_mode)",
+      "phase": "typecheck"
+    }
+  ],
+  "exit_code": 1
 }

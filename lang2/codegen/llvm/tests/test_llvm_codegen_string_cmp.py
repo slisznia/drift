@@ -1,3 +1,4 @@
+from lang2.driftc.core.function_id import FunctionId
 # vim: set noexpandtab: -*- indent-tabs-mode: t -*-
 """
 IR lowering for string ordering operators via drift_string_cmp runtime helper.
@@ -32,12 +33,13 @@ def test_string_cmp_emits_runtime_call_and_decl() -> None:
 		],
 		terminator=Return(value="cmp"),
 	)
-	func = MirFunc(name="main", params=[], locals=["s0", "s1", "cmp"], blocks={"entry": block}, entry="entry")
+	fn_id = FunctionId(module="main", name="main", ordinal=0)
+	func = MirFunc(fn_id=fn_id, name="main", params=[], locals=["s0", "s1", "cmp"], blocks={"entry": block}, entry="entry")
 	ssa = MirToSSA().run(func)
 	sig = FnSignature(name="main", param_type_ids=[], return_type_id=int_ty)
-	info = FnInfo(name="main", declared_can_throw=False, signature=sig, return_type_id=int_ty)
+	info = FnInfo(fn_id=fn_id, name="main", declared_can_throw=False, signature=sig, return_type_id=int_ty)
 
-	mod = lower_module_to_llvm({"main": func}, {"main": ssa}, {"main": info}, type_table=table)
+	mod = lower_module_to_llvm({fn_id: func}, {fn_id: ssa}, {fn_id: info}, type_table=table)
 	ir = mod.render()
 
 	assert "declare i32 @drift_string_cmp(%DriftString, %DriftString)" in ir
@@ -68,7 +70,9 @@ def test_string_lt_lowered_via_string_cmp_and_zero_compare() -> None:
 		instructions=[ConstInt(dest="t1", value=1)],
 		terminator=Return(value="t1"),
 	)
+	fn_id = FunctionId(module="main", name="main", ordinal=0)
 	func = MirFunc(
+		fn_id=fn_id,
 		name="main",
 		params=[],
 		locals=["s0", "s1", "cmp", "z", "lt", "t0", "t1"],
@@ -77,9 +81,9 @@ def test_string_lt_lowered_via_string_cmp_and_zero_compare() -> None:
 	)
 	ssa = MirToSSA().run(func)
 	sig = FnSignature(name="main", param_type_ids=[], return_type_id=int_ty)
-	info = FnInfo(name="main", declared_can_throw=False, signature=sig, return_type_id=int_ty)
+	info = FnInfo(fn_id=fn_id, name="main", declared_can_throw=False, signature=sig, return_type_id=int_ty)
 
-	mod = lower_module_to_llvm({"main": func}, {"main": ssa}, {"main": info}, type_table=table)
+	mod = lower_module_to_llvm({fn_id: func}, {fn_id: ssa}, {fn_id: info}, type_table=table)
 	ir = mod.render()
 
 	assert "call i32 @drift_string_cmp(%DriftString %s0, %DriftString %s1)" in ir

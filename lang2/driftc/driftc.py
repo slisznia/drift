@@ -20,14 +20,18 @@ handling and diagnostics. For now it exposes a single helper
 from __future__ import annotations
 
 import argparse
+import copy
 import heapq
 import json
+from enum import Enum
 import sys
 import shutil
 import subprocess
+from collections import ChainMap
+from types import MappingProxyType
 from pathlib import Path
-from dataclasses import replace, dataclass
-from typing import Any, Dict, Mapping, List, Tuple
+from dataclasses import replace, dataclass, fields, is_dataclass
+from typing import Any, Dict, Mapping, List, Tuple, Callable
 
 # Repository root (lang2 lives under this).
 ROOT = Path(__file__).resolve().parents[2]
@@ -36,18 +40,30 @@ if str(ROOT) not in sys.path:
 
 from lang2.driftc import stage1 as H
 from lang2.driftc.stage1 import normalize_hir
-from lang2.driftc.stage1.call_info import CallInfo, CallSig, CallTarget, CallTargetKind
+from lang2.driftc.stage1 import closures as C
+from lang2.driftc.stage1.capture_discovery import discover_captures
+from lang2.driftc.stage1.closures import sort_captures
+from lang2.driftc.stage1.call_info import CallInfo, CallSig, CallTarget, CallTargetKind, IntrinsicKind
 from lang2.driftc.stage1.lambda_validate import validate_lambdas_non_retaining
 from lang2.driftc.stage1.non_retaining_analysis import analyze_non_retaining_params
-from lang2.driftc.stage2 import HIRToMIR, MirBuilder, mir_nodes as M
+from lang2.driftc.stage2 import HIRToMIR, make_builder, mir_nodes as M
 from lang2.driftc.stage3.throw_summary import ThrowSummaryBuilder
 from lang2.driftc.stage4 import run_throw_checks
 from lang2.driftc.stage4 import MirToSSA
 from lang2.driftc.checker.type_env_builder import build_minimal_checker_type_env
-from lang2.driftc.checker import Checker, CheckedProgram, FnSignature, FnInfo, TypeParam
+from lang2.driftc.checker import (
+	Checker,
+	CheckerInputsById,
+	CheckedProgramById,
+	FnSignature,
+	FnInfo,
+	make_fn_info,
+	TypeParam,
+)
 from lang2.driftc.borrow_checker_pass import BorrowChecker
 from lang2.driftc.borrow_checker import PlaceBase, PlaceKind
 from lang2.driftc.core.diagnostics import Diagnostic
+from lang2.driftc.core.span import Span
 from lang2.driftc.core.types_core import TypeTable, TypeParamId, TypeKind
 from lang2.driftc.core.function_id import (
 	FunctionId,
@@ -236,7 +252,9 @@ class MethodWrapperSpec:
 
 def _inject_method_boundary_wrappers(
 	*,
-	signatures_by_id: dict[FunctionId, FnSignature],
+	signatures_by_id: Mapping[FunctionId, FnSignature],
+	existing_ids: set[FunctionId] | None = None,
+	register_derived: Callable[[FunctionId, FnSignature], None],
 	type_table: TypeTable,
 ) -> tuple[list[MethodWrapperSpec], list[str]]:
 	"""
@@ -246,6 +264,8 @@ def _inject_method_boundary_wrappers(
 	"""
 	specs: list[MethodWrapperSpec] = []
 	errors: list[str] = []
+	if existing_ids is None:
+		existing_ids = set(signatures_by_id.keys())
 	for fn_id, sig in list(signatures_by_id.items()):
 		if not getattr(sig, "is_method", False):
 			continue
@@ -259,7 +279,7 @@ def _inject_method_boundary_wrappers(
 			errors.append(f"internal: missing param/return types for method '{sig.name}'")
 			continue
 		wrapper_id = method_wrapper_id(fn_id)
-		if wrapper_id in signatures_by_id:
+		if wrapper_id in existing_ids:
 			continue
 		wrap_sig = FnSignature(
 			name=function_symbol(wrapper_id),
@@ -268,6 +288,7 @@ def _inject_method_boundary_wrappers(
 			param_names=list(sig.param_names or []),
 			param_type_ids=list(sig.param_type_ids or []),
 			return_type_id=sig.return_type_id,
+			error_type_id=type_table.ensure_error(),
 			is_method=True,
 			self_mode=getattr(sig, "self_mode", None),
 			impl_target_type_id=getattr(sig, "impl_target_type_id", None),
@@ -281,9 +302,20 @@ def _inject_method_boundary_wrappers(
 			return_type=getattr(sig, "return_type", None),
 			declared_can_throw=True,
 		)
-		signatures_by_id[wrapper_id] = wrap_sig
+		register_derived(wrapper_id, wrap_sig)
 		specs.append(MethodWrapperSpec(wrapper_fn_id=wrapper_id, target_fn_id=fn_id))
 	return specs, errors
+
+
+def _assert_signature_map_split(
+	*,
+	base_signatures_by_id: Mapping[FunctionId, FnSignature],
+	derived_signatures_by_id: Mapping[FunctionId, FnSignature],
+	context: str,
+) -> None:
+	overlap = set(base_signatures_by_id.keys()) & set(derived_signatures_by_id.keys())
+	if overlap:
+		raise AssertionError(f"signature map overlap in {context}: {sorted(overlap)!r}")
 
 
 def _normalize_func_maps(
@@ -296,7 +328,7 @@ def _normalize_func_maps(
 	if isinstance(first_key, FunctionId):
 		fn_ids_by_name: dict[str, list[FunctionId]] = {}
 		for fid in func_hirs:
-			fn_ids_by_name.setdefault(fid.name, []).append(fid)
+			fn_ids_by_name.setdefault(function_symbol(fid), []).append(fid)
 		signatures_by_id: dict[FunctionId, FnSignature] = {}
 		if signatures:
 			signatures_by_id = dict(signatures)  # type: ignore[assignment]
@@ -304,7 +336,8 @@ def _normalize_func_maps(
 	func_hirs_by_id: dict[FunctionId, H.HBlock] = {}
 	fn_ids_by_name: dict[str, list[FunctionId]] = {}
 	name_ord: dict[str, int] = {}
-	for name, block in func_hirs.items():
+	for name in sorted(func_hirs.keys()):
+		block = func_hirs[name]
 		ordinal = name_ord.get(name, 0)
 		name_ord[name] = ordinal + 1
 		fid = FunctionId(module="main", name=name, ordinal=ordinal)
@@ -313,7 +346,8 @@ def _normalize_func_maps(
 	signatures_by_id: dict[FunctionId, FnSignature] = {}
 	if signatures:
 		name_ord.clear()
-		for name, sig in signatures.items():
+		for name in sorted(signatures.keys()):
+			sig = signatures[name]
 			ids = fn_ids_by_name.get(name, [])
 			if ids:
 				idx = name_ord.get(name, 0)
@@ -329,6 +363,96 @@ def _normalize_func_maps(
 	return func_hirs_by_id, signatures_by_id, fn_ids_by_name
 
 
+def _collect_call_nodes_by_id(root: H.HNode) -> dict[int, H.HExpr]:
+	seen: set[int] = set()
+	found: dict[int, H.HExpr] = {}
+
+	def walk(obj: object) -> None:
+		obj_id = id(obj)
+		if obj_id in seen:
+			return
+		seen.add(obj_id)
+
+		if isinstance(obj, (H.HCall, H.HMethodCall, H.HInvoke)):
+			found[getattr(obj, "node_id", -1)] = obj
+
+		if not _should_descend(obj):
+			return
+		if is_dataclass(obj):
+			for f in fields(obj):
+				walk_value(getattr(obj, f.name))
+		else:
+			for val in vars(obj).values():
+				walk_value(val)
+
+	def walk_value(val: object) -> None:
+		if val is None:
+			return
+		if isinstance(val, (list, tuple)):
+			for item in val:
+				walk_value(item)
+			return
+		if isinstance(val, dict):
+			for item in val.values():
+				walk_value(item)
+			return
+		walk(val)
+
+	def _should_descend(obj: object) -> bool:
+		if isinstance(obj, H.HNode):
+			return True
+		if is_dataclass(obj) and obj.__class__.__module__.startswith("lang2.driftc.stage1"):
+			return True
+		return False
+
+	walk(root)
+	return found
+
+
+def _validate_intrinsic_callinfo(typed_fn: "TypedFn") -> None:
+	call_nodes = _collect_call_nodes_by_id(typed_fn.body)
+	call_info = getattr(typed_fn, "call_info_by_callsite_id", None)
+	if not isinstance(call_info, dict):
+		return
+	callsite_to_node: dict[int, int] = {}
+	for node_id, call in call_nodes.items():
+		csid = getattr(call, "callsite_id", None)
+		if isinstance(csid, int):
+			callsite_to_node[csid] = node_id
+	for key, info in call_info.items():
+		if info.target.kind is not CallTargetKind.INTRINSIC:
+			continue
+		kind = info.target.intrinsic
+		if kind is None:
+			raise AssertionError("intrinsic call missing kind (checker bug)")
+		node_id = callsite_to_node.get(key)
+		call = call_nodes.get(node_id) if node_id is not None else None
+		if call is None:
+			raise AssertionError("intrinsic CallInfo without call node (checker bug)")
+		kwargs = getattr(call, "kwargs", None) or []
+		if kind is IntrinsicKind.BYTE_LENGTH:
+			if kwargs or len(call.args) != 1:
+				raise AssertionError(f"{kind.value}(...) arity mismatch reached validation (checker bug)")
+			continue
+		if kind in (IntrinsicKind.STRING_EQ, IntrinsicKind.STRING_CONCAT):
+			if kwargs or len(call.args) != 2:
+				raise AssertionError(f"{kind.value}(...) arity mismatch reached validation (checker bug)")
+			continue
+		if kind is IntrinsicKind.SWAP:
+			if kwargs or len(call.args) != 2:
+				raise AssertionError("swap(...) arity mismatch reached validation (checker bug)")
+			if not all(isinstance(arg, getattr(H, "HPlaceExpr")) for arg in call.args):
+				raise AssertionError("swap(...) requires addressable place operands (checker bug)")
+			continue
+		if kind is IntrinsicKind.REPLACE:
+			if kwargs or len(call.args) != 2:
+				raise AssertionError("replace(...) arity mismatch reached validation (checker bug)")
+			if not isinstance(call.args[0], getattr(H, "HPlaceExpr")):
+				raise AssertionError("replace(...) requires addressable place target (checker bug)")
+			continue
+		raise AssertionError(f"unknown intrinsic '{kind.value}' reached validation (checker bug)")
+
+
 def _display_name_for_fn_id(fn_id: FunctionId) -> str:
 	# Match parser qualification rules: the default `main` module stays
 	# unqualified, other modules use `module::name`.
@@ -337,23 +461,47 @@ def _display_name_for_fn_id(fn_id: FunctionId) -> str:
 	return f"{fn_id.module}::{fn_id.name}"
 
 
-def _parse_function_symbol(symbol: str) -> FunctionId:
-	ordinal = 0
-	base = symbol
-	if "#" in symbol:
-		head, tail = symbol.rsplit("#", 1)
-		if tail.isdigit():
-			ordinal = int(tail)
-			base = head
-	if "::" in base:
-		module, name = base.split("::", 1)
-	else:
-		module, name = "main", base
-	return FunctionId(module=module, name=name, ordinal=ordinal)
+def _reserved_module_ids(
+	func_hirs_by_id: Mapping[FunctionId, object] | None,
+	signatures_by_id: Mapping[FunctionId, FnSignature] | None,
+) -> list[str]:
+	mod_ids: set[str] = set()
+	if func_hirs_by_id:
+		for fn_id in func_hirs_by_id.keys():
+			if isinstance(fn_id.module, str):
+				mod_ids.add(fn_id.module)
+	if signatures_by_id:
+		for fn_id in signatures_by_id.keys():
+			if isinstance(fn_id.module, str):
+				mod_ids.add(fn_id.module)
+	return sorted(mid for mid in mod_ids if mid.startswith(("std.", "lang.", "drift.")))
+
+
+def _reserved_namespace_diags(module_ids: Iterable[str]) -> list[Diagnostic]:
+	return [
+		Diagnostic(
+			message=f"reserved module namespace '{mid}' requires toolchain trust",
+			severity="error",
+			phase="package",
+			span=Span(),
+		)
+		for mid in module_ids
+	]
+
+
+class ReservedNamespacePolicy(Enum):
+	ENFORCE = "enforce"
+	ALLOW_DEV = "allow_dev"
+
+
+def _assert_all_phased(diags: Iterable[Diagnostic], *, context: str) -> None:
+	missing = [d for d in diags if d.phase is None]
+	if missing:
+		raise AssertionError(f"{context} diagnostics missing phase ({len(missing)})")
 
 
 def _sig_declared_can_throw(sig: FnSignature) -> bool:
-	"""Treat unspecified throw-mode as can-throw."""
+	"""Normalize declared throw-mode for downstream ABI decisions."""
 	return True if sig.declared_can_throw is None else bool(sig.declared_can_throw)
 
 
@@ -744,9 +892,15 @@ def _collect_external_trait_and_impl_metadata(
 								)
 								for arg in list(getattr(target_expr, "args", []) or [])
 							]
-							sig.impl_target_type_args = impl_args
+							external_signatures_by_id[fn_id] = replace(
+								sig,
+								impl_target_type_args=impl_args,
+							)
 						else:
-							sig.impl_target_type_args = []
+							external_signatures_by_id[fn_id] = replace(
+								sig,
+								impl_target_type_args=[],
+							)
 				require_expr = decode_trait_expr(entry.get("require"))
 				if id_registry is not None:
 					target_head = type_key_from_typeid(type_table, target_type_id).head()
@@ -777,7 +931,7 @@ def _collect_external_trait_and_impl_metadata(
 
 def compile_stubbed_funcs(
 	func_hirs: Mapping[FunctionId | str, H.HBlock],
-	declared_can_throw: Mapping[str, bool] | None = None,
+	declared_can_throw: Mapping[FunctionId | str, bool] | None = None,
 	signatures: Mapping[FunctionId | str, FnSignature] | None = None,
 	exc_env: Mapping[str, int] | None = None,
 	module_exports: Mapping[str, dict[str, object]] | None = None,
@@ -797,17 +951,22 @@ def compile_stubbed_funcs(
 	run_borrow_check: bool = False,
 	prelude_enabled: bool = True,
 	emit_instantiation_index: Path | None = None,
+	enforce_entrypoint: bool = False,
 ) -> (
-	Dict[str, M.MirFunc]
-	| tuple[Dict[str, M.MirFunc], CheckedProgram]
-	| tuple[Dict[str, M.MirFunc], CheckedProgram, Dict[str, "MirToSSA.SsaFunc"] | None]
+	Dict[FunctionId, M.MirFunc]
+	| tuple[Dict[FunctionId, M.MirFunc], CheckedProgramById]
+	| tuple[
+		Dict[FunctionId, M.MirFunc],
+		CheckedProgramById,
+		Dict[FunctionId, "MirToSSA.SsaFunc"] | None,
+	]
 ):
 	"""
 	Lower a set of HIR function bodies through the lang2 pipeline and run throw checks.
 
 	Args:
 	  func_hirs: mapping of function name -> HIR block (body).
-	  declared_can_throw: optional mapping of fn name -> bool; **legacy test shim**.
+	  declared_can_throw: optional mapping of FunctionId/str -> bool; **legacy test shim**.
 	    Prefer `signatures` for new tests and treat this as deprecated.
 	  signatures: optional mapping of fn name -> FnSignature. The real checker will
 	    use parsed/type-checked signatures to derive throw intent; this parameter
@@ -816,8 +975,8 @@ def compile_stubbed_funcs(
 	  generic_templates_by_id: optional legacy map of FunctionId -> TemplateHIR (from packages).
 	  generic_templates_by_key: optional map of FunctionKey -> TemplateHIR (from packages).
 	  template_keys_by_fn_id: optional map of FunctionId -> FunctionKey (package templates).
-	  return_checked: when True, also return the CheckedProgram produced by the
-	    checker so diagnostics/fn_infos can be asserted in integration tests.
+	  return_checked: when True, also return the CheckedProgramById produced by
+	    the checker so diagnostics/fn_infos can be asserted in integration tests.
 	  build_ssa: when True, also run MIR→SSA and derive a TypeEnv from SSA +
 	    signatures so the type-aware throw check path is exercised. Loops/backedges
 	    are still rejected by the SSA pass. The preferred path is for the checker
@@ -831,11 +990,13 @@ def compile_stubbed_funcs(
 	    diagnostics; this is a stubbed integration path (coarse regions).
 	  emit_instantiation_index: optional path for a deterministic JSON dump of
 	    instantiation keys/symbols/ABI flags produced in this run.
+	  enforce_entrypoint: when True, validate entrypoint main() semantics after
+	    type checking (Int return, nothrow, correct argv shape).
 	  # TODO: drop declared_can_throw once all callers provide signatures/parsing.
 
 	Returns:
-	  dict of function name -> lowered MIR function. When `return_checked` is
-	  True, returns a `(mir_funcs, checked_program)` tuple.
+	  dict of FunctionId -> lowered MIR function. When `return_checked` is
+	  True, returns a `(mir_funcs, checked_program_by_id)` tuple.
 
 	Notes:
 	  In the driver path, throw-check violations are appended to
@@ -845,6 +1006,22 @@ def compile_stubbed_funcs(
 	  from parsed sources instead of the shims here.
 	"""
 	func_hirs_by_id, signatures_by_id, fn_ids_by_name = _normalize_func_maps(func_hirs, signatures)
+	declared_can_throw_by_id: Dict[FunctionId, bool] | None = None
+	if declared_can_throw:
+		declared_can_throw_by_id = {}
+		for key, val in declared_can_throw.items():
+			if isinstance(key, FunctionId):
+				declared_can_throw_by_id[key] = bool(val)
+				continue
+			if isinstance(key, str):
+				ids = fn_ids_by_name.get(key)
+				if not ids:
+					raise AssertionError(f"declared_can_throw provided for unknown function '{key}'")
+				if len(ids) > 1:
+					raise AssertionError(f"declared_can_throw name '{key}' is ambiguous")
+				declared_can_throw_by_id[ids[0]] = bool(val)
+				continue
+			raise AssertionError(f"declared_can_throw key must be FunctionId or str, got {type(key)!r}")
 	from lang2.driftc import stage1 as H
 
 	# Guard: signatures with TypeIds must come with a shared TypeTable so TypeKind
@@ -854,16 +1031,15 @@ def compile_stubbed_funcs(
 			if sig.return_type_id is not None or sig.param_type_ids is not None:
 				raise ValueError("signatures with TypeIds require a shared type_table")
 
-	# Important: run the checker on the original HIR (pre-normalization) so it can
-	# diagnose surface constructs that are later desugared/rewritten during
-	# normalization (structural only). We normalize only after the checker runs,
-	# and normalization copies checker-produced annotations (like match binder
-	# field indices) forward via `getattr(..., "binder_field_indices", ...)`.
+	# Important: run the checker on normalized HIR so it sees canonical forms
+	# (structural-only rewrites). We preserve node_ids and then re-use the typed
+	# HIR to keep CallInfo alignment; checker-injected annotations (e.g. match
+	# binder indices) are preserved during normalization.
 
 	# If no signatures were supplied, resolve basic signatures from the original HIR.
 	shared_type_table = type_table
 	if not signatures_by_id:
-		shared_type_table, signatures_by_id = resolve_program_signatures(
+		shared_type_table, base_signatures_by_id = resolve_program_signatures(
 			_fake_decls_from_hirs(func_hirs_by_id),
 			table=shared_type_table,
 		)
@@ -871,46 +1047,73 @@ def compile_stubbed_funcs(
 		# Ensure TypeIds are resolved on supplied signatures using a shared table.
 		if shared_type_table is None:
 			shared_type_table = TypeTable()
-		for sig in signatures_by_id.values():
-			if sig.return_type_id is None and sig.return_type is not None:
-				sig.return_type_id = resolve_opaque_type(sig.return_type, shared_type_table, module_id=getattr(sig, "module", None))
-			if sig.param_type_ids is None and sig.param_types is not None:
-				sig.param_type_ids = [resolve_opaque_type(p, shared_type_table, module_id=getattr(sig, "module", None)) for p in sig.param_types]
-			if sig.param_type_ids is None and sig.param_types is None:
-				sig.param_type_ids = []
+		resolved_signatures: dict[FunctionId, FnSignature] = {}
+		for fn_id, sig in signatures_by_id.items():
+			ret_id = sig.return_type_id
+			if ret_id is None and sig.return_type is not None:
+				ret_id = resolve_opaque_type(sig.return_type, shared_type_table, module_id=getattr(sig, "module", None))
+			param_ids = sig.param_type_ids
+			if param_ids is None and sig.param_types is not None:
+				param_ids = [resolve_opaque_type(p, shared_type_table, module_id=getattr(sig, "module", None)) for p in sig.param_types]
+			if param_ids is None and sig.param_types is None:
+				param_ids = []
+			err_id = sig.error_type_id
+			if err_id is None and ret_id is not None:
+				td = shared_type_table.get(ret_id)
+				if td.kind is TypeKind.FNRESULT and len(td.param_types) >= 2:
+					err_id = td.param_types[1]
+			declared_can_throw = sig.declared_can_throw
+			if declared_can_throw is None and declared_can_throw_by_id is not None:
+				if fn_id in declared_can_throw_by_id:
+					declared_can_throw = bool(declared_can_throw_by_id[fn_id])
+			if declared_can_throw is None:
+				declared_can_throw = True
+			if declared_can_throw is not False and err_id is None:
+				err_id = shared_type_table.ensure_error()
+			resolved_signatures[fn_id] = replace(
+				sig,
+				param_type_ids=param_ids,
+				return_type_id=ret_id,
+				error_type_id=err_id,
+				declared_can_throw=bool(declared_can_throw),
+			)
+		base_signatures_by_id = resolved_signatures
+
+	derived_signatures_by_id: dict[FunctionId, FnSignature] = {}
+	base_signatures_by_id = MappingProxyType(dict(base_signatures_by_id))
+	signatures_by_id: Mapping[FunctionId, FnSignature] = ChainMap(
+		derived_signatures_by_id,
+		base_signatures_by_id,
+	)
+	_assert_signature_map_split(
+		base_signatures_by_id=base_signatures_by_id,
+		derived_signatures_by_id=derived_signatures_by_id,
+		context="compile_stubbed_funcs pre-synthesis",
+	)
+
+	def _register_derived_signature_precheck(fn_id: FunctionId, sig: FnSignature) -> None:
+		existing = derived_signatures_by_id.get(fn_id) or base_signatures_by_id.get(fn_id)
+		if existing is not None:
+			if existing != sig:
+				raise AssertionError(f"signature collision for '{function_symbol(fn_id)}'")
+			return
+		derived_signatures_by_id[fn_id] = sig
 
 	method_wrapper_specs, wrapper_errors = _inject_method_boundary_wrappers(
-		signatures_by_id=signatures_by_id,
+		signatures_by_id=base_signatures_by_id,
+		existing_ids=set(base_signatures_by_id.keys()) | set(derived_signatures_by_id.keys()),
+		register_derived=_register_derived_signature_precheck,
 		type_table=shared_type_table,
 	)
 	if wrapper_errors:
 		raise ValueError(wrapper_errors[0])
 
-	func_hirs_by_symbol: dict[str, H.HBlock] = {}
-	signatures_by_symbol: dict[str, FnSignature] = {}
-	for fid, block in func_hirs_by_id.items():
-		sym = function_symbol(fid)
-		func_hirs_by_symbol[sym] = block
-	for fid, sig in signatures_by_id.items():
-		sym = function_symbol(fid)
-		signatures_by_symbol[sym] = replace(sig, name=sym)
-
 	# Normalize before typecheck so the checker sees canonical HIR for diagnostics.
-	normalized_hirs_by_id: Dict[FunctionId, H.HBlock] = {
+	normalized_hirs_by_id: dict[FunctionId, H.HBlock] = {
 		fn_id: normalize_hir(hir_block) for fn_id, hir_block in func_hirs_by_id.items()
 	}
-	normalized_hirs: Dict[str, H.HBlock] = {
-		function_symbol(fn_id): block for fn_id, block in normalized_hirs_by_id.items()
-	}
 
-	call_sigs_by_name: dict[str, list[FnSignature]] = {}
-	for fn_id, sig in signatures_by_id.items():
-		if sig.is_method:
-			continue
-		call_sigs_by_name.setdefault(_display_name_for_fn_id(fn_id), []).append(sig)
-		if prelude_enabled and fn_id.module == "lang.core":
-			# Prelude functions are available unqualified (e.g., `println(...)`).
-			call_sigs_by_name.setdefault(fn_id.name, []).append(sig)
+	# candidate_signatures_for_diag removed; no name-keyed fallback map
 	type_checker = TypeChecker(type_table=shared_type_table)
 	callable_registry = CallableRegistry()
 	module_ids: dict[object, int] = {None: 0}
@@ -1089,10 +1292,9 @@ def compile_stubbed_funcs(
 			)
 			next_callable_id += 1
 		else:
-			disp_name = _display_name_for_fn_id(fn_id)
 			callable_registry.register_free_function(
 				callable_id=next_callable_id,
-				name=disp_name,
+				name=fn_id.name,
 				module_id=module_id,
 				visibility=Visibility.public(),
 				signature=CallableSignature(param_types=param_types_tuple, result_type=sig.return_type_id),
@@ -1100,18 +1302,6 @@ def compile_stubbed_funcs(
 				is_generic=bool(sig.type_params),
 			)
 			next_callable_id += 1
-			if prelude_enabled and fn_id.module == "lang.core" and disp_name != fn_id.name:
-				# Prelude functions are visible unqualified (e.g., `println(...)`).
-				callable_registry.register_free_function(
-					callable_id=next_callable_id,
-					name=fn_id.name,
-					module_id=module_id,
-					visibility=Visibility.public(),
-					signature=CallableSignature(param_types=param_types_tuple, result_type=sig.return_type_id),
-					fn_id=fn_id,
-					is_generic=bool(sig.type_params),
-				)
-				next_callable_id += 1
 	# Optional method/trait resolution support when module exports/deps are available.
 	impl_index = None
 	trait_index = None
@@ -1152,17 +1342,7 @@ def compile_stubbed_funcs(
 				scope = exp.get("trait_scope", [])
 				if isinstance(scope, list):
 					trait_scope_by_module[mod] = scope
-	# Build a throw-mode map for the stubbed pipeline so call info uses a
-	# deterministic can-throw flag for every known signature.
-	sig_throw_by_name: dict[str, bool] = {}
-	for fn_id, sig in signatures_by_id.items():
-		can_throw = sig.declared_can_throw if sig.declared_can_throw is not None else True
-		sym = function_symbol(fn_id)
-		sig_throw_by_name[sym] = bool(can_throw)
-		if sig.name:
-			sig_throw_by_name[sig.name] = bool(can_throw)
-
-	typed_fns_by_symbol: dict[str, object] = {}
+	typed_fns_by_id: dict[FunctionId, object] = {}
 	type_diags: list[Diagnostic] = []
 	visible_module_names_by_name: dict[str, set[str]] = {}
 	prelude_modules: set[str] = set()
@@ -1204,6 +1384,13 @@ def compile_stubbed_funcs(
 						tgt = info.get("module")
 						if isinstance(tgt, str):
 							targets.add(tgt)
+			value_reexp = reexp.get("values") if isinstance(reexp.get("values"), dict) else {}
+			if isinstance(value_reexp, dict):
+				for info in value_reexp.values():
+					if isinstance(info, dict):
+						tgt = info.get("module")
+						if isinstance(tgt, str):
+							targets.add(tgt)
 			return targets
 
 		for mod_name in module_deps.keys():
@@ -1223,9 +1410,8 @@ def compile_stubbed_funcs(
 					visible.add(tgt)
 					queue.append(tgt)
 			visible_module_names_by_name[mod_name] = visible
-	for name, hir_norm in normalized_hirs.items():
-		fn_id = _parse_function_symbol(name)
-		sig = signatures_by_symbol.get(name)
+	for fn_id, hir_norm in normalized_hirs_by_id.items():
+		sig = signatures_by_id.get(fn_id)
 		param_types: dict[str, "TypeId"] = {}
 		if sig is not None and sig.param_names is not None and sig.param_type_ids is not None:
 			param_types = {pname: pty for pname, pty in zip(sig.param_names, sig.param_type_ids)}
@@ -1241,10 +1427,8 @@ def compile_stubbed_funcs(
 			hir_norm,
 			param_types=param_types,
 			return_type=sig.return_type_id if sig is not None else None,
-			call_signatures=call_sigs_by_name,
 			signatures_by_id=signatures_by_id,
 			function_keys_by_fn_id=function_keys_by_fn_id,
-			can_throw_by_name=sig_throw_by_name or None,
 			callable_registry=callable_registry,
 			impl_index=impl_index,
 			trait_index=trait_index,
@@ -1257,20 +1441,21 @@ def compile_stubbed_funcs(
 			visibility_provenance=visibility_provenance_by_id,
 		)
 		type_diags.extend(result.diagnostics)
-		typed_fns_by_symbol[name] = result.typed_fn
+		typed_fns_by_id[fn_id] = result.typed_fn
+	if type_checker.defaulted_phase_count() != 0:
+		raise AssertionError(
+			f"typecheck diagnostics missing phase (defaulted={type_checker.defaulted_phase_count()})"
+		)
 
-	# Use the type-checked HIR directly so node_ids stay aligned with CallInfo.
+	# Use the type-checked HIR directly so callsite ids stay aligned with CallInfo.
 	# Pre-typecheck normalization already produced canonical forms; the checker
 	# only injects nodes like HFnPtrConst without breaking normalization.
 	normalized_hirs_by_id = {}
-	normalized_hirs = {}
-	for sym, typed_fn in typed_fns_by_symbol.items():
+	for fn_id, typed_fn in typed_fns_by_id.items():
 		block = getattr(typed_fn, "body", None)
 		if not isinstance(block, H.HBlock):
 			continue
-		fn_id = _parse_function_symbol(sym)
 		normalized_hirs_by_id[fn_id] = block
-		normalized_hirs[sym] = block
 
 	# Instantiation phase: clone generic templates into concrete instantiations
 	# and rewrite call targets.
@@ -1315,9 +1500,9 @@ def compile_stubbed_funcs(
 		template_fn_id_by_key.setdefault(key, fn_id)
 
 	def _inst_can_throw(sig: FnSignature | None) -> bool:
-		if sig is None or sig.declared_can_throw is None:
+		if sig is None:
 			return True
-		return bool(sig.declared_can_throw)
+		return _sig_declared_can_throw(sig)
 
 	def _inst_key(fn_key: FunctionKey, type_args: tuple[TypeId, ...]) -> InstantiationKey:
 		return build_instantiation_key(
@@ -1360,10 +1545,11 @@ def compile_stubbed_funcs(
 		return handle
 
 	def _queue_instantiations(typed_fn: object) -> None:
-		inst_map = getattr(typed_fn, "instantiations", None)
+		inst_map = getattr(typed_fn, "instantiations_by_callsite_id", None)
 		if not isinstance(inst_map, dict):
 			return
-		for inst in inst_map.values():
+		for csid in sorted(inst_map):
+			inst = inst_map[csid]
 			type_args = tuple(getattr(inst, "type_args", ()) or ())
 			if not type_args:
 				continue
@@ -1372,7 +1558,7 @@ def compile_stubbed_funcs(
 				continue
 			_request_instantiation(template_key, type_args)
 
-	for typed_fn in typed_fns_by_symbol.values():
+	for _fn_id, typed_fn in sorted(typed_fns_by_id.items(), key=lambda kv: function_symbol(kv[0])):
 		_queue_instantiations(typed_fn)
 
 	while inst_queue:
@@ -1393,6 +1579,7 @@ def compile_stubbed_funcs(
 					message=f"generic instantiation missing signature for '{function_key_str(template_key)}'",
 					code="E_MISSING_TEMPLATE_SIG",
 					severity="error",
+					phase="typecheck",
 					span=None,
 				)
 			)
@@ -1409,6 +1596,7 @@ def compile_stubbed_funcs(
 					),
 					code="E_INSTANTIATION_TYPEARGS",
 					severity="error",
+					phase="typecheck",
 					span=getattr(sig, "loc", None),
 				)
 			)
@@ -1420,6 +1608,7 @@ def compile_stubbed_funcs(
 					message=f"generic instantiation missing type ids for '{function_key_str(template_key)}'",
 					code="E_MISSING_TEMPLATE_SIG",
 					severity="error",
+					phase="typecheck",
 					span=getattr(sig, "loc", None),
 				)
 			)
@@ -1461,8 +1650,7 @@ def compile_stubbed_funcs(
 			is_exported_entrypoint=False,
 			is_instantiation=True,
 		)
-		signatures_by_id[inst_fn_id] = inst_sig
-		signatures_by_symbol[function_symbol(inst_fn_id)] = inst_sig
+		_register_derived_signature_precheck(inst_fn_id, inst_sig)
 		template_hir = template_hirs_by_key.get(template_key)
 		if template_hir is None:
 			type_diags.append(
@@ -1470,14 +1658,14 @@ def compile_stubbed_funcs(
 					message=f"generic instantiation requires a template body for '{function_key_str(template_key)}'",
 					code="E_MISSING_TEMPLATE_BODY",
 					severity="error",
+					phase="typecheck",
 					span=getattr(sig, "loc", None),
 				)
 			)
 			handle.status = "failed"
 			continue
 		inst_hir = normalize_hir(template_hir)
-		normalized_hirs[function_symbol(inst_fn_id)] = inst_hir
-		func_hirs_by_symbol[function_symbol(inst_fn_id)] = inst_hir
+		normalized_hirs_by_id[inst_fn_id] = inst_hir
 		mod_name = getattr(inst_fn_id, "module", None) or "main"
 		current_mod = _module_id_with_visibility(mod_name)
 		visible_mods = None
@@ -1490,10 +1678,8 @@ def compile_stubbed_funcs(
 			inst_hir,
 			param_types={pname: pty for pname, pty in zip(sig.param_names or [], inst_param_ids)},
 			return_type=inst_ret_id,
-			call_signatures=call_sigs_by_name,
 			signatures_by_id=signatures_by_id,
 			function_keys_by_fn_id=function_keys_by_fn_id,
-			can_throw_by_name=sig_throw_by_name or None,
 			callable_registry=callable_registry,
 			impl_index=impl_index,
 			trait_index=trait_index,
@@ -1506,18 +1692,21 @@ def compile_stubbed_funcs(
 			visibility_provenance=visibility_provenance_by_id,
 		)
 		type_diags.extend(inst_result.diagnostics)
-		typed_fns_by_symbol[function_symbol(inst_fn_id)] = inst_result.typed_fn
+		typed_fns_by_id[inst_fn_id] = inst_result.typed_fn
 		_queue_instantiations(inst_result.typed_fn)
 		handle.status = "emitted"
 
 	def _rewrite_call_targets(typed_fn: object, block: H.HBlock) -> None:
-		call_info_map = getattr(typed_fn, "call_info_by_node_id", None)
+		call_info_map = getattr(typed_fn, "call_info_by_callsite_id", None)
 		if not isinstance(call_info_map, dict):
 			return
-		inst_map = getattr(typed_fn, "instantiations", None)
+		inst_map = getattr(typed_fn, "instantiations_by_callsite_id", None)
 		if not isinstance(inst_map, dict):
 			return
-		for node_id, inst in inst_map.items():
+		def _set_call_info(csid: int | None, info: CallInfo) -> None:
+			if csid is not None:
+				call_info_map[csid] = info
+		for key, inst in inst_map.items():
 			template_key = getattr(inst, "target_key", None)
 			type_args = tuple(getattr(inst, "type_args", ()) or ())
 			if not isinstance(template_key, FunctionKey) or not type_args:
@@ -1525,13 +1714,14 @@ def compile_stubbed_funcs(
 			handle = inst_cache.get(_inst_key(template_key, type_args))
 			if handle is None or handle.status != "emitted":
 				continue
-			info = call_info_map.get(node_id)
+			csid = key if isinstance(key, int) else None
+			info = call_info_map.get(csid) if csid is not None else None
 			if info is None:
 				continue
 			inst_sig = signatures_by_id.get(handle.fn_id)
 			if inst_sig is None or inst_sig.param_type_ids is None or inst_sig.return_type_id is None:
 				continue
-			call_info_map[node_id] = CallInfo(
+			new_info = CallInfo(
 				target=CallTarget.direct(handle.fn_id),
 				sig=CallSig(
 					param_types=tuple(inst_sig.param_type_ids),
@@ -1539,8 +1729,9 @@ def compile_stubbed_funcs(
 					can_throw=_inst_can_throw(inst_sig),
 				),
 			)
+			_set_call_info(csid, new_info)
 
-	for name, typed_fn in typed_fns_by_symbol.items():
+	for fn_id, typed_fn in typed_fns_by_id.items():
 		block = getattr(typed_fn, "body", None)
 		if isinstance(block, H.HBlock):
 			_rewrite_call_targets(typed_fn, block)
@@ -1571,16 +1762,23 @@ def compile_stubbed_funcs(
 			method_wrapper_by_target[sig.wraps_target_fn_id] = sig_id
 
 	def _ensure_method_call_info() -> None:
-		for name, typed_fn in typed_fns_by_symbol.items():
-			call_info_map = getattr(typed_fn, "call_info_by_node_id", None)
+		for fn_id, typed_fn in typed_fns_by_id.items():
+			call_info_map = getattr(typed_fn, "call_info_by_callsite_id", None)
 			if not isinstance(call_info_map, dict):
 				continue
 			call_resolutions = getattr(typed_fn, "call_resolutions", None)
 			if not isinstance(call_resolutions, dict):
 				continue
-			caller_mod = _parse_function_symbol(name).module
+			caller_mod = fn_id.module
+			node_to_callsite: dict[int, int] = {}
+			for expr in _collect_call_nodes_by_id(getattr(typed_fn, "body", H.HBlock(statements=[]))).values():
+				csid = getattr(expr, "callsite_id", None)
+				if isinstance(csid, int):
+					node_to_callsite[expr.node_id] = csid
 			for node_id, res in call_resolutions.items():
-				if node_id in call_info_map:
+				csid = node_to_callsite.get(node_id, -1)
+				info_key = csid
+				if info_key in call_info_map:
 					continue
 				if isinstance(res, MethodResolution):
 					decl = res.decl
@@ -1600,7 +1798,7 @@ def compile_stubbed_funcs(
 							call_can_throw = True
 						elif not call_can_throw:
 							call_can_throw = True
-					call_info_map[node_id] = CallInfo(
+					call_info_map[info_key] = CallInfo(
 						target=CallTarget.direct(target_fn_id),
 						sig=CallSig(
 							param_types=tuple(params),
@@ -1615,9 +1813,7 @@ def compile_stubbed_funcs(
 		if not (sig.type_params or getattr(sig, "impl_type_params", [])):
 			continue
 		# Templates are never lowered to MIR/SSA/LLVM.
-		sym = function_symbol(fn_id)
-		normalized_hirs.pop(sym, None)
-		func_hirs_by_symbol.pop(sym, None)
+		normalized_hirs_by_id.pop(fn_id, None)
 
 	def _has_typevar(tid: TypeId, seen: set[TypeId] | None = None) -> bool:
 		td = shared_type_table.get(tid)
@@ -1633,8 +1829,9 @@ def compile_stubbed_funcs(
 				return True
 		return False
 
-	for name in sorted(normalized_hirs.keys()):
-		sig = signatures_by_symbol.get(name)
+	for fn_id in sorted(normalized_hirs_by_id.keys(), key=function_symbol):
+		name = function_symbol(fn_id)
+		sig = signatures_by_id.get(fn_id)
 		if sig is not None:
 			for tid in sig.param_type_ids or []:
 				if _has_typevar(tid):
@@ -1642,6 +1839,7 @@ def compile_stubbed_funcs(
 						Diagnostic(
 							message=f"generic instantiation required: function '{name}' has an unresolved type parameter in its signature",
 							severity="error",
+							phase="typecheck",
 							span=getattr(sig, "loc", None),
 						)
 					)
@@ -1651,11 +1849,12 @@ def compile_stubbed_funcs(
 					Diagnostic(
 						message=f"generic instantiation required: function '{name}' has an unresolved type parameter in its return type",
 						severity="error",
+						phase="typecheck",
 						span=getattr(sig, "loc", None),
 					)
 				)
-		typed_fn = typed_fns_by_symbol.get(name)
-		call_info = getattr(typed_fn, "call_info_by_node_id", None) if typed_fn is not None else None
+		typed_fn = typed_fns_by_id.get(fn_id)
+		call_info = getattr(typed_fn, "call_info_by_callsite_id", None) if typed_fn is not None else None
 		if isinstance(call_info, dict):
 			for info in call_info.values():
 				if any(_has_typevar(t) for t in info.sig.param_types) or _has_typevar(info.sig.user_ret_type):
@@ -1663,6 +1862,7 @@ def compile_stubbed_funcs(
 						Diagnostic(
 							message=f"generic instantiation required: call in '{name}' has unresolved type parameters",
 							severity="error",
+							phase="typecheck",
 							span=None,
 						)
 					)
@@ -1670,53 +1870,102 @@ def compile_stubbed_funcs(
 
 	# Stage “checker”: obtain declared_can_throw from the checker stub so the
 	# driver path mirrors the real compiler layering once a proper checker exists.
-	call_info_by_name: dict[str, dict[int, CallInfo]] = {}
-	for name, typed_fn in typed_fns_by_symbol.items():
-		call_info = getattr(typed_fn, "call_info_by_node_id", None)
+	call_info_by_callsite_id: dict[FunctionId, dict[int, CallInfo]] = {}
+	for fn_id, typed_fn in typed_fns_by_id.items():
+		call_info = getattr(typed_fn, "call_info_by_callsite_id", None)
 		if isinstance(call_info, dict):
-			call_info_by_name[name] = dict(call_info)
-	checker = Checker(
-		declared_can_throw=declared_can_throw,
-		signatures=signatures_by_symbol,
-		exception_catalog=exc_env,
-		hir_blocks=normalized_hirs,
-		type_table=shared_type_table,
-		call_info_by_name=call_info_by_name,
+			call_info_by_callsite_id[fn_id] = dict(call_info)
+		else:
+			call_info_by_callsite_id.setdefault(fn_id, {})
+	check_inputs = CheckerInputsById(
+		hir_blocks_by_id=normalized_hirs_by_id,
+		signatures_by_id=signatures_by_id,
+		call_info_by_callsite_id=call_info_by_callsite_id,
 	)
-	# Important: the checker needs metadata for both:
-	# - functions we are compiling (have HIR bodies), and
-	# - functions we only know by signature (callees, intrinsics, externs).
-	#
-	# Several downstream phases (HIR→MIR lowering and SSA typing) consult the
-	# checker's `FnInfo` map to decide whether a callee is can-throw.
-	decl_names: set[str] = set(func_hirs_by_symbol.keys())
-	decl_names.update(signatures_by_symbol.keys())
-	checked = checker.check(sorted(decl_names))
+	checked = Checker.run_by_id(
+		check_inputs,
+		declared_can_throw_by_id=declared_can_throw_by_id,
+		exception_catalog=exc_env,
+		type_table=shared_type_table,
+		fn_decls_by_id=signatures_by_id.keys(),
+	)
+	if enforce_entrypoint and signatures_by_id and shared_type_table is not None:
+		from lang2.driftc.type_checker import validate_entrypoint_main
+		validate_entrypoint_main(signatures_by_id, shared_type_table, checked.diagnostics)
 	if type_diags:
 		checked.diagnostics.extend(type_diags)
+	# Typed-mode guard: every call node must have callsite CallInfo coverage.
+	for fn_id, typed_fn in typed_fns_by_id.items():
+		block = getattr(typed_fn, "body", None)
+		if not isinstance(block, H.HBlock):
+			continue
+		call_info_by_callsite = getattr(typed_fn, "call_info_by_callsite_id", None)
+		if not isinstance(call_info_by_callsite, dict):
+			continue
+		missing_callsite: list[int] = []
+		for expr in _collect_call_nodes_by_id(block).values():
+			csid = getattr(expr, "callsite_id", None)
+			if not isinstance(csid, int):
+				missing_callsite.append(-1)
+				continue
+			if csid not in call_info_by_callsite:
+				missing_callsite.append(csid)
+		if missing_callsite:
+			missing_desc = ", ".join(str(c) for c in sorted(set(missing_callsite))[:6])
+			checked.diagnostics.append(
+				Diagnostic(
+					message=(
+						f"internal: missing CallInfo for callsite ids in '{function_symbol(fn_id)}': {missing_desc}"
+					),
+					code="E_INTERNAL_MISSING_CALLSITE_CALLINFO",
+					severity="error",
+					phase="typecheck",
+					span=None,
+				)
+			)
 	had_errors = any(d.severity == "error" for d in checked.diagnostics)
-	if had_errors and not return_checked:
+	if had_errors:
+		if return_checked:
+			if return_ssa:
+				return {}, checked, None
+			return {}, checked
 		raise ValueError("compile_stubbed_funcs aborted due to errors")
 	# Ensure declared_can_throw is a bool for downstream stages; guard against
 	# accidental truthy objects sneaking in from legacy shims.
-	for info in checked.fn_infos.values():
+	for info in checked.fn_infos_by_id.values():
 		if info.declared_can_throw is None:
 			info.declared_can_throw = True
 		elif not isinstance(info.declared_can_throw, bool):
 			info.declared_can_throw = bool(info.declared_can_throw)
-	declared = {name: info.declared_can_throw for name, info in checked.fn_infos.items()}
+	declared_by_id = {fn_id: info.declared_can_throw for fn_id, info in checked.fn_infos_by_id.items()}
+
+	# Synthesize Ok-wrap thunks and captureless lambda functions (pre-LLVM).
+	def _register_synth_signature(fn_id: FunctionId, sig: FnSignature) -> None:
+		existing = derived_signatures_by_id.get(fn_id) or base_signatures_by_id.get(fn_id)
+		if existing is not None:
+			if existing != sig:
+				raise AssertionError(f"signature collision for '{function_symbol(fn_id)}'")
+			if fn_id not in checked.fn_infos_by_id:
+				info = make_fn_info(fn_id, existing, declared_can_throw=_sig_declared_can_throw(existing))
+				checked.fn_infos_by_id[fn_id] = info
+				declared_by_id[fn_id] = info.declared_can_throw
+			return None
+		derived_signatures_by_id[fn_id] = sig
+		info = make_fn_info(fn_id, sig, declared_can_throw=_sig_declared_can_throw(sig))
+		checked.fn_infos_by_id[fn_id] = info
+		declared_by_id[fn_id] = info.declared_can_throw
+		return None
 	# Align call info can-throw flags with inferred callee throw modes so MIR
 	# lowering uses a consistent ABI for direct calls.
-	for typed_fn in typed_fns_by_symbol.values():
-		call_info = getattr(typed_fn, "call_info_by_node_id", None)
-		if not isinstance(call_info, dict):
+	for typed_fn in typed_fns_by_id.values():
+		callsite_map = getattr(typed_fn, "call_info_by_callsite_id", None)
+		if not isinstance(callsite_map, dict):
 			continue
-		updated: dict[int, CallInfo] = {}
-		for node_id, info in call_info.items():
+		updated_callsite: dict[int, CallInfo] = {}
+		for csid, info in callsite_map.items():
 			call_can_throw = info.sig.can_throw
 			if info.target.kind is CallTargetKind.DIRECT and info.target.symbol is not None:
-				target_name = function_symbol(info.target.symbol)
-				target_info = checked.fn_infos.get(target_name)
+				target_info = checked.fn_infos_by_id.get(info.target.symbol)
 				if target_info is not None:
 					call_can_throw = call_can_throw or bool(target_info.declared_can_throw)
 			if call_can_throw != info.sig.can_throw:
@@ -1728,17 +1977,20 @@ def compile_stubbed_funcs(
 						can_throw=bool(call_can_throw),
 					),
 				)
-			updated[node_id] = info
-		typed_fn.call_info_by_node_id = updated
+			updated_callsite[csid] = info
+		typed_fn.call_info_by_callsite_id = updated_callsite
+	for typed_fn in typed_fns_by_id.values():
+		_validate_intrinsic_callinfo(typed_fn)
 	# Prefer the checker's table when the caller did not supply one so TypeIds
 	# stay coherent across lowering/codegen.
 	if shared_type_table is None and checked.type_table is not None:
 		shared_type_table = checked.type_table
-	mir_funcs: Dict[str, M.MirFunc] = {}
+	mir_funcs_by_id: Dict[FunctionId, M.MirFunc] = {}
+	hidden_lambda_specs: list = []
 
-	for name, hir_norm in normalized_hirs.items():
-		builder = MirBuilder(name=name)
-		sig = signatures_by_symbol.get(name)
+	for fn_id, hir_norm in normalized_hirs_by_id.items():
+		builder = make_builder(fn_id)
+		sig = signatures_by_id.get(fn_id)
 		param_types: dict[str, "TypeId"] = {}
 		param_names: list[str] = []
 		if sig is not None and sig.param_names is not None:
@@ -1747,47 +1999,394 @@ def compile_stubbed_funcs(
 			param_types = {pname: pty for pname, pty in zip(param_names, sig.param_type_ids)}
 		builder.func.params = list(param_names)
 		if sig is not None and sig.param_type_ids is not None:
-			HIRToMIR(
+			lower = HIRToMIR(
 				builder,
 				type_table=shared_type_table,
 				exc_env=exc_env,
 				param_types=param_types,
-				signatures=signatures_by_symbol,
-				call_info_by_node_id=getattr(typed_fns_by_symbol.get(name), "call_info_by_node_id", {}),
-				call_resolutions=getattr(typed_fns_by_symbol.get(name), "call_resolutions", {}),
-				can_throw_by_name=declared,
+				signatures_by_id=signatures_by_id,
+				current_fn_id=fn_id,
+				call_info_by_callsite_id=getattr(typed_fns_by_id.get(fn_id), "call_info_by_callsite_id", {}),
+				call_resolutions=getattr(typed_fns_by_id.get(fn_id), "call_resolutions", {}),
+				can_throw_by_id=declared_by_id,
 				return_type=sig.return_type_id if sig is not None else None,
-			).lower_function_body(hir_norm)
-		mir_funcs[name] = builder.func
+				typed_mode=True,
+			)
+			lower.lower_function_body(hir_norm)
+			for spec in lower.synth_sig_specs():
+				if spec.kind == "hidden_lambda":
+					continue
+				_register_synth_signature(spec.fn_id, spec.sig)
+			hidden_lambda_specs.extend(lower.hidden_lambda_specs())
+		mir_funcs_by_id[fn_id] = builder.func
 		if getattr(builder, "extra_funcs", None):
 			for extra in builder.extra_funcs:
-				mir_funcs[extra.name] = extra
-				if extra.name not in checked.fn_infos and extra.name in signatures_by_symbol:
-					info = FnInfo(
-						name=extra.name,
-						declared_can_throw=_sig_declared_can_throw(signatures_by_symbol[extra.name]),
-						signature=signatures_by_symbol[extra.name],
-					)
-					checked.fn_infos[extra.name] = info
-					declared[extra.name] = info.declared_can_throw
+				extra_id = getattr(extra, "fn_id", None)
+				if extra_id is None:
+					raise AssertionError(f"extra func missing fn_id for '{extra.name}' (stage2 bug)")
+				mir_funcs_by_id[extra_id] = extra
+				if extra_id is not None and extra_id not in checked.fn_infos_by_id:
+					sig = signatures_by_id.get(extra_id)
+					if sig is not None:
+						info = make_fn_info(
+							extra_id,
+							sig,
+							declared_can_throw=_sig_declared_can_throw(sig),
+						)
+						checked.fn_infos_by_id[extra_id] = info
+						declared_by_id[extra_id] = info.declared_can_throw
 
-	# Synthesize Ok-wrap thunks and captureless lambda functions (pre-LLVM).
-	def _register_synth_signature(fn_id: FunctionId, sig: FnSignature) -> str:
-		sym = function_symbol(fn_id)
-		signatures_by_id[fn_id] = sig
-		signatures_by_symbol[sym] = sig
-		info = FnInfo(name=sym, declared_can_throw=_sig_declared_can_throw(sig), signature=sig)
-		checked.fn_infos[sym] = info
-		declared[sym] = info.declared_can_throw
-		return sym
+	def _hidden_lambda_ret_type(
+		body: H.HBlock, typed_fn: "TypedFn", type_table: "TypeTable"
+	) -> "TypeId":
+		if body.statements:
+			last = body.statements[-1]
+			if isinstance(last, H.HReturn):
+				if last.value is None:
+					return type_table.ensure_void()
+				return typed_fn.expr_types.get(last.value.node_id, type_table.ensure_unknown())
+			if isinstance(last, H.HExprStmt):
+				return typed_fn.expr_types.get(last.expr.node_id, type_table.ensure_unknown())
+		return type_table.ensure_void()
+
+	type_diag_len = len(type_diags)
+	for spec in hidden_lambda_specs:
+		if spec.fn_id in mir_funcs_by_id:
+			continue
+		lam = copy.deepcopy(spec.lambda_expr)
+		if not getattr(lam, "captures", None):
+			discovery = discover_captures(lam)
+			lam.captures = discovery.captures
+		if lam.captures:
+			lam.captures = sort_captures(lam.captures)
+		capture_id_map: dict[int, int] = {}
+		if lam.captures:
+			max_existing = 0
+			for param in lam.params:
+				if getattr(param, "binding_id", None) is not None:
+					max_existing = max(max_existing, int(param.binding_id))
+
+			def _scan_binding_ids(obj: object) -> None:
+				nonlocal max_existing
+				if obj is None:
+					return
+				bid = getattr(obj, "binding_id", None)
+				if bid is not None:
+					max_existing = max(max_existing, int(bid))
+				if isinstance(obj, H.HExpr):
+					for child in obj.__dict__.values():
+						_scan_binding_ids(child)
+				elif isinstance(obj, H.HStmt):
+					for child in obj.__dict__.values():
+						_scan_binding_ids(child)
+				elif isinstance(obj, H.HBlock):
+					for stmt in obj.statements:
+						_scan_binding_ids(stmt)
+				elif isinstance(obj, list):
+					for item in obj:
+						_scan_binding_ids(item)
+				elif isinstance(obj, dict):
+					for item in obj.values():
+						_scan_binding_ids(item)
+
+			if lam.body_expr is not None:
+				_scan_binding_ids(lam.body_expr)
+			if lam.body_block is not None:
+				_scan_binding_ids(lam.body_block)
+			next_id = max_existing + 1
+			for cap in lam.captures:
+				orig = int(cap.key.root_local)
+				if orig not in capture_id_map:
+					capture_id_map[orig] = next_id
+					next_id += 1
+			new_caps: list[C.HCapture] = []
+			for cap in lam.captures:
+				new_root = capture_id_map.get(int(cap.key.root_local), int(cap.key.root_local))
+				if new_root != cap.key.root_local:
+					new_key = C.HCaptureKey(root_local=new_root, proj=cap.key.proj)
+					new_caps.append(C.HCapture(kind=cap.kind, key=new_key, span=cap.span))
+				else:
+					new_caps.append(cap)
+			lam.captures = new_caps
+
+			def _remap_ids(obj: object) -> None:
+				if obj is None:
+					return
+				if isinstance(obj, H.HExplicitCapture):
+					bid = getattr(obj, "binding_id", None)
+					if bid is not None:
+						if int(bid) in capture_id_map:
+							obj.binding_id = capture_id_map[int(bid)]
+						else:
+							obj.binding_id = None
+				elif isinstance(obj, H.HVar):
+					bid = getattr(obj, "binding_id", None)
+					if bid is not None:
+						if int(bid) in capture_id_map:
+							obj.binding_id = capture_id_map[int(bid)]
+						else:
+							obj.binding_id = None
+				elif hasattr(obj, "binding_id"):
+					obj.binding_id = None
+				elif isinstance(obj, H.HPlaceExpr):
+					base = obj.base
+					if isinstance(base, H.HVar):
+						bid = getattr(base, "binding_id", None)
+						if bid is not None:
+							if int(bid) in capture_id_map:
+								base.binding_id = capture_id_map[int(bid)]
+							else:
+								base.binding_id = None
+				if isinstance(obj, H.HExpr):
+					for child in obj.__dict__.values():
+						_remap_ids(child)
+				elif isinstance(obj, H.HStmt):
+					for child in obj.__dict__.values():
+						_remap_ids(child)
+				elif isinstance(obj, H.HBlock):
+					for stmt in obj.statements:
+						_remap_ids(stmt)
+				elif isinstance(obj, list):
+					for item in obj:
+						_remap_ids(item)
+				elif isinstance(obj, dict):
+					for item in obj.values():
+						_remap_ids(item)
+
+			if lam.explicit_captures:
+				for cap in lam.explicit_captures:
+					_remap_ids(cap)
+			if lam.body_expr is not None:
+				_remap_ids(lam.body_expr)
+			if lam.body_block is not None:
+				_remap_ids(lam.body_block)
+			capture_name_to_id: dict[str, int] = {}
+			for cap in lam.explicit_captures or []:
+				if cap.name and getattr(cap, "binding_id", None) is not None:
+					capture_name_to_id[cap.name] = int(cap.binding_id)
+			if capture_name_to_id:
+				local_names: set[str] = {p.name for p in lam.params}
+				capture_spans: dict[str, Span] = {}
+				for cap in lam.explicit_captures or []:
+					if cap.name:
+						capture_spans.setdefault(cap.name, getattr(cap, "span", Span()))
+				def _collect_local_names(obj: object) -> None:
+					if obj is None:
+						return
+					if isinstance(obj, H.HLet):
+						local_names.add(obj.name)
+					elif isinstance(obj, H.HMatchArm):
+						for name in obj.binders:
+							local_names.add(name)
+					elif isinstance(obj, H.HCatchArm):
+						if obj.binder:
+							local_names.add(obj.binder)
+					elif isinstance(obj, H.HTryExprArm):
+						if obj.binder:
+							local_names.add(obj.binder)
+					if isinstance(obj, H.HExpr):
+						for child in obj.__dict__.values():
+							_collect_local_names(child)
+					elif isinstance(obj, H.HStmt):
+						for child in obj.__dict__.values():
+							_collect_local_names(child)
+					elif isinstance(obj, H.HBlock):
+						for stmt in obj.statements:
+							_collect_local_names(stmt)
+					elif isinstance(obj, list):
+						for item in obj:
+							_collect_local_names(item)
+					elif isinstance(obj, dict):
+						for item in obj.values():
+							_collect_local_names(item)
+
+				if lam.body_expr is not None:
+					_collect_local_names(lam.body_expr)
+				if lam.body_block is not None:
+					_collect_local_names(lam.body_block)
+				collisions = sorted(set(local_names) & set(capture_name_to_id))
+				if collisions:
+					for name in collisions[:6]:
+						type_diags.append(
+							Diagnostic(
+								message=f"capture name '{name}' collides with a local binding",
+								code="E_CAPTURE_NAME_COLLIDES_WITH_LOCAL",
+								severity="error",
+								phase="typecheck",
+								span=capture_spans.get(name, Span()),
+							)
+						)
+					continue
+				def _apply_capture_names(obj: object) -> None:
+					if obj is None:
+						return
+					if isinstance(obj, H.HVar):
+						if getattr(obj, "binding_id", None) is None and obj.name in capture_name_to_id:
+							obj.binding_id = capture_name_to_id[obj.name]
+					elif isinstance(obj, H.HPlaceExpr):
+						base = obj.base
+						if (
+							isinstance(base, H.HVar)
+							and getattr(base, "binding_id", None) is None
+							and base.name in capture_name_to_id
+						):
+							base.binding_id = capture_name_to_id[base.name]
+					if isinstance(obj, H.HExpr):
+						for child in obj.__dict__.values():
+							_apply_capture_names(child)
+					elif isinstance(obj, H.HStmt):
+						for child in obj.__dict__.values():
+							_apply_capture_names(child)
+					elif isinstance(obj, H.HBlock):
+						for stmt in obj.statements:
+							_apply_capture_names(stmt)
+					elif isinstance(obj, list):
+						for item in obj:
+							_apply_capture_names(item)
+					elif isinstance(obj, dict):
+						for item in obj.values():
+							_apply_capture_names(item)
+				if lam.body_expr is not None:
+					_apply_capture_names(lam.body_expr)
+				if lam.body_block is not None:
+					_apply_capture_names(lam.body_block)
+		for param in lam.params:
+			param.binding_id = None
+		if lam.body_expr is not None:
+			lambda_body = H.HBlock(statements=[H.HReturn(value=lam.body_expr)])
+		elif lam.body_block is not None:
+			lambda_body = lam.body_block
+		else:
+			raise AssertionError("hidden lambda missing body (checker bug)")
+		lambda_body = normalize_hir(lambda_body)
+		lam_param_names = [p.name for p in lam.params]
+		if spec.has_captures:
+			lam_param_type_ids = list(spec.param_type_ids[1:])
+		else:
+			lam_param_type_ids = list(spec.param_type_ids)
+		param_types = {name: ty for name, ty in zip(lam_param_names, lam_param_type_ids)}
+		preseed_scope_env: dict[str, TypeId] = {}
+		preseed_scope_bindings: dict[str, int] = {}
+		preseed_binding_types: dict[int, TypeId] = {}
+		preseed_binding_names: dict[int, str] = {}
+		preseed_binding_mutable: dict[int, bool] = {}
+		preseed_binding_place_kind: dict[int, PlaceKind] = {}
+		remapped_capture_map: dict[C.HCaptureKey, int] = {}
+		for key, slot in getattr(spec, "capture_map", {}).items():
+			new_root = capture_id_map.get(int(key.root_local), int(key.root_local))
+			new_key = C.HCaptureKey(root_local=new_root, proj=key.proj)
+			remapped_capture_map[new_key] = slot
+		rev_capture_id_map = {new: old for old, new in capture_id_map.items()}
+		origin_typed = typed_fns_by_id.get(spec.origin_fn_id) if spec.origin_fn_id is not None else None
+		if origin_typed is not None:
+			for cap in lam.captures or []:
+				bid = int(cap.key.root_local)
+				orig_bid = rev_capture_id_map.get(bid, bid)
+				cap_name = origin_typed.binding_names.get(orig_bid, f"__cap_{orig_bid}")
+				cap_ty = origin_typed.binding_types.get(orig_bid, shared_type_table.ensure_unknown())
+				preseed_binding_types[bid] = cap_ty
+				preseed_binding_names[bid] = cap_name
+				preseed_binding_mutable[bid] = origin_typed.binding_mutable.get(orig_bid, False)
+				preseed_binding_place_kind[bid] = PlaceKind.CAPTURE
+		mod_name = spec.fn_id.module or "main"
+		current_mod = _module_id_with_visibility(mod_name)
+		visible_mods = None
+		if module_deps is not None:
+			visible = visible_module_names_by_name.get(mod_name, {mod_name})
+			visible_mods = tuple(sorted(_module_id_with_visibility(m) for m in visible))
+		_sync_visibility_provenance()
+		hidden_typed = type_checker.check_function(
+			fn_id=spec.fn_id,
+			body=lambda_body,
+			param_types=param_types,
+			return_type=spec.return_type_id,
+			signatures_by_id=signatures_by_id,
+			function_keys_by_fn_id=function_keys_by_fn_id,
+			callable_registry=callable_registry,
+			impl_index=impl_index,
+			trait_index=trait_index,
+			trait_impl_index=trait_impl_index,
+			trait_scope_by_module=trait_scope_by_module,
+			linked_world=linked_world,
+			require_env=require_env,
+			visible_modules=visible_mods,
+			current_module=current_mod,
+			visibility_provenance=visibility_provenance_by_id,
+			visibility_imports=None,
+			preseed_binding_types=preseed_binding_types,
+			preseed_binding_names=preseed_binding_names,
+			preseed_binding_mutable=preseed_binding_mutable,
+			preseed_binding_place_kind=preseed_binding_place_kind,
+			preseed_scope_env=preseed_scope_env,
+			preseed_scope_bindings=preseed_scope_bindings,
+		)
+		if hidden_typed.diagnostics:
+			type_diags.extend(hidden_typed.diagnostics)
+			continue
+		hidden_typed_fn = hidden_typed.typed_fn
+		hidden_ret_type = _hidden_lambda_ret_type(lambda_body, hidden_typed_fn, shared_type_table)
+		hidden_sig = FnSignature(
+			name=function_symbol(spec.fn_id),
+			param_type_ids=list(spec.param_type_ids),
+			param_names=list(spec.param_names),
+			return_type_id=hidden_ret_type,
+			declared_can_throw=bool(spec.can_throw),
+			module=spec.fn_id.module,
+		)
+		_register_synth_signature(spec.fn_id, hidden_sig)
+		builder = make_builder(spec.fn_id)
+		builder.func.params = list(spec.param_names)
+		lower = HIRToMIR(
+			builder,
+			type_table=shared_type_table,
+			exc_env=exc_env,
+			param_types=param_types,
+			signatures_by_id=signatures_by_id,
+			current_fn_id=spec.fn_id,
+			call_info_by_callsite_id=hidden_typed_fn.call_info_by_callsite_id,
+			can_throw_by_id={**declared_by_id, spec.fn_id: bool(spec.can_throw)},
+			return_type=hidden_ret_type,
+			typed_mode=True,
+		)
+		lower._lambda_capture_ref_is_value = spec.lambda_capture_ref_is_value
+		if spec.has_captures:
+			lower._lambda_env_local = spec.param_names[0]
+			lower._lambda_env_ty = spec.env_ty
+			lower._lambda_env_field_types = list(spec.env_field_types)
+			lower._lambda_capture_slots = remapped_capture_map
+			lower._lambda_capture_kinds = list(spec.capture_kinds)
+			for bid, name in preseed_binding_names.items():
+				lower._binding_names[bid] = name
+		for param in lam.params:
+			if getattr(param, "binding_id", None) is not None:
+				lower._binding_names[int(param.binding_id)] = param.name
+		lower._seed_lambda_locals_for_inference(lower, lambda_body)
+		ret_val = lower._lower_lambda_block(lower, lambda_body)
+		if builder.block.terminator is None:
+			if ret_val is None:
+				raise AssertionError("hidden lambda block must end with a value or return")
+			if spec.can_throw:
+				ok_dest = builder.new_temp()
+				builder.emit(M.ConstructResultOk(dest=ok_dest, value=ret_val))
+				ret_val = ok_dest
+			builder.set_terminator(M.Return(value=ret_val))
+		mir_funcs_by_id[spec.fn_id] = builder.func
+
+	if len(type_diags) != type_diag_len:
+		checked.diagnostics.extend(type_diags[type_diag_len:])
+		if any(d.severity == "error" for d in checked.diagnostics):
+			if return_checked:
+				if return_ssa:
+					return {}, checked, None
+				return {}, checked
+			return {}
 
 	for spec in type_checker.thunk_specs():
-		thunk_sym = function_symbol(spec.thunk_fn_id)
-		if thunk_sym in mir_funcs:
+		if spec.thunk_fn_id in mir_funcs_by_id:
 			continue
 		param_names = [f"p{i}" for i in range(len(spec.param_types))]
 		sig = FnSignature(
-			name=thunk_sym,
+			name=function_symbol(spec.thunk_fn_id),
 			param_type_ids=list(spec.param_types),
 			param_names=param_names,
 			return_type_id=spec.return_type,
@@ -1795,83 +2394,112 @@ def compile_stubbed_funcs(
 			module=spec.thunk_fn_id.module,
 		)
 		_register_synth_signature(spec.thunk_fn_id, sig)
-		builder = MirBuilder(name=thunk_sym)
+		builder = make_builder(spec.thunk_fn_id)
 		builder.func.params = list(param_names)
 		call_dest: M.ValueId | None
 		if shared_type_table is not None and shared_type_table.is_void(spec.return_type):
 			call_dest = None
 		else:
 			call_dest = builder.new_temp()
-		builder.emit(M.Call(dest=call_dest, fn=function_symbol(spec.target_fn_id), args=param_names, can_throw=False))
+		builder.emit(M.Call(dest=call_dest, fn_id=spec.target_fn_id, args=param_names, can_throw=False))
 		ok_dest = builder.new_temp()
 		builder.emit(M.ConstructResultOk(dest=ok_dest, value=call_dest))
 		builder.set_terminator(M.Return(value=ok_dest))
-		mir_funcs[thunk_sym] = builder.func
+		mir_funcs_by_id[spec.thunk_fn_id] = builder.func
 
 	for spec in type_checker.lambda_fn_specs():
-		lambda_sym = function_symbol(spec.fn_id)
-		if lambda_sym in mir_funcs:
+		if spec.fn_id in mir_funcs_by_id:
 			continue
-		param_names = [p.name for p in spec.lambda_expr.params]
+		lam = copy.deepcopy(spec.lambda_expr)
+		param_names = [p.name for p in lam.params]
 		param_types = {name: ty for name, ty in zip(param_names, spec.param_types)}
+		lambda_body: H.HBlock
+		if lam.body_expr is not None:
+			lambda_body = H.HBlock(statements=[H.HReturn(value=lam.body_expr)])
+		elif lam.body_block is not None:
+			lambda_body = lam.body_block
+		else:
+			raise AssertionError("captureless lambda missing body (checker bug)")
+		lambda_body = normalize_hir(lambda_body)
+		current_mod = _module_id_with_visibility(spec.fn_id.module or "main")
+		visible_mods = None
+		if module_deps is not None:
+			visible = visible_module_names_by_name.get(spec.fn_id.module or "main", {spec.fn_id.module or "main"})
+			visible_mods = tuple(sorted(_module_id_with_visibility(m) for m in visible))
+		_sync_visibility_provenance()
+		lambda_result = type_checker.check_function(
+			fn_id=spec.fn_id,
+			body=lambda_body,
+			param_types=param_types,
+			return_type=spec.return_type,
+			signatures_by_id=signatures_by_id,
+			function_keys_by_fn_id=function_keys_by_fn_id,
+			callable_registry=callable_registry,
+			impl_index=impl_index,
+			trait_index=trait_index,
+			trait_impl_index=trait_impl_index,
+			trait_scope_by_module=trait_scope_by_module,
+			linked_world=linked_world,
+			require_env=require_env,
+			visible_modules=visible_mods,
+			current_module=current_mod,
+			visibility_provenance=visibility_provenance_by_id,
+			visibility_imports=None,
+		)
+		if lambda_result.diagnostics:
+			type_diags.extend(lambda_result.diagnostics)
+			continue
+		lambda_typed_fn = lambda_result.typed_fn
+		lambda_ret_type = _hidden_lambda_ret_type(lambda_body, lambda_typed_fn, shared_type_table)
 		sig = FnSignature(
-			name=lambda_sym,
+			name=function_symbol(spec.fn_id),
 			param_type_ids=list(spec.param_types),
 			param_names=list(param_names),
-			return_type_id=spec.return_type,
+			return_type_id=lambda_ret_type,
 			declared_can_throw=bool(spec.can_throw),
 			module=spec.fn_id.module,
 		)
 		_register_synth_signature(spec.fn_id, sig)
-		builder = MirBuilder(name=lambda_sym)
+		builder = make_builder(spec.fn_id)
 		builder.func.params = list(param_names)
 		lower = HIRToMIR(
 			builder,
 			type_table=shared_type_table,
 			exc_env=exc_env,
 			param_types=param_types,
-			signatures=signatures_by_symbol,
-			call_info_by_node_id=spec.call_info_by_node_id,
-			can_throw_by_name={**declared, lambda_sym: bool(spec.can_throw)},
-			return_type=spec.return_type,
+			signatures_by_id=signatures_by_id,
+			current_fn_id=spec.fn_id,
+			call_info_by_callsite_id=lambda_typed_fn.call_info_by_callsite_id,
+			can_throw_by_id={**declared_by_id, spec.fn_id: bool(spec.can_throw)},
+			return_type=lambda_ret_type,
+			typed_mode=True,
 		)
-		for param in spec.lambda_expr.params:
+		for param in lam.params:
 			if getattr(param, "binding_id", None) is not None:
 				lower._binding_names[int(param.binding_id)] = param.name
-		if spec.lambda_expr.body_expr is not None:
-			ret_val = lower.lower_expr(spec.lambda_expr.body_expr, expected_type=spec.return_type)
+		lower._seed_lambda_locals_for_inference(lower, lambda_body)
+		ret_val = lower._lower_lambda_block(lower, lambda_body)
+		if builder.block.terminator is None:
+			if ret_val is None:
+				raise AssertionError("captureless lambda block must end with a value or return")
 			if spec.can_throw:
 				ok_dest = builder.new_temp()
 				builder.emit(M.ConstructResultOk(dest=ok_dest, value=ret_val))
 				ret_val = ok_dest
 			builder.set_terminator(M.Return(value=ret_val))
-		elif spec.lambda_expr.body_block is not None:
-			lower._seed_lambda_locals_for_inference(lower, spec.lambda_expr.body_block)
-			ret_val = lower._lower_lambda_block(lower, spec.lambda_expr.body_block)
-			if builder.block.terminator is None:
-				if ret_val is None:
-					raise AssertionError("captureless lambda block must end with a value or return")
-				if spec.can_throw:
-					ok_dest = builder.new_temp()
-					builder.emit(M.ConstructResultOk(dest=ok_dest, value=ret_val))
-					ret_val = ok_dest
-				builder.set_terminator(M.Return(value=ret_val))
-		else:
-			raise AssertionError("captureless lambda missing body (checker bug)")
-		mir_funcs[lambda_sym] = builder.func
+		mir_funcs_by_id[spec.fn_id] = builder.func
 
 	for spec in method_wrapper_specs:
-		wrap_sym = function_symbol(spec.wrapper_fn_id)
-		if wrap_sym in mir_funcs:
+		if spec.wrapper_fn_id in mir_funcs_by_id:
 			continue
-		wrap_sig = signatures_by_symbol.get(wrap_sym)
+		wrap_sig = signatures_by_id.get(spec.wrapper_fn_id)
 		if wrap_sig is None or wrap_sig.param_type_ids is None:
 			continue
 		param_names = list(wrap_sig.param_names or [])
 		if len(param_names) != len(wrap_sig.param_type_ids):
 			param_names = [f"p{i}" for i in range(len(wrap_sig.param_type_ids))]
 		_register_synth_signature(spec.wrapper_fn_id, wrap_sig)
-		builder = MirBuilder(name=wrap_sym)
+		builder = make_builder(spec.wrapper_fn_id)
 		builder.func.params = list(param_names)
 		call_dest: M.ValueId | None
 		if shared_type_table is not None and shared_type_table.is_void(wrap_sig.return_type_id):
@@ -1881,7 +2509,7 @@ def compile_stubbed_funcs(
 		builder.emit(
 			M.Call(
 				dest=call_dest,
-				fn=function_symbol(spec.target_fn_id),
+				fn_id=spec.target_fn_id,
 				args=param_names,
 				can_throw=False,
 			)
@@ -1889,44 +2517,61 @@ def compile_stubbed_funcs(
 		ok_dest = builder.new_temp()
 		builder.emit(M.ConstructResultOk(dest=ok_dest, value=call_dest))
 		builder.set_terminator(M.Return(value=ok_dest))
-		mir_funcs[wrap_sym] = builder.func
+		mir_funcs_by_id[spec.wrapper_fn_id] = builder.func
 
+	_validate_mir_call_invariants(mir_funcs_by_id)
+	_assert_signature_map_split(
+		base_signatures_by_id=base_signatures_by_id,
+		derived_signatures_by_id=derived_signatures_by_id,
+		context="compile_stubbed_funcs post-synthesis",
+	)
 	# Stage3: summaries
 	code_to_exc = {code: name for name, code in (exc_env or {}).items()}
-	summaries = ThrowSummaryBuilder().build(mir_funcs, code_to_exc=code_to_exc)
+	summaries = ThrowSummaryBuilder().build(mir_funcs_by_id, code_to_exc=code_to_exc)
 
 	# Optional SSA/type-env for typed throw checks
-	ssa_funcs = None
+	ssa_funcs: Dict[FunctionId, MirToSSA.SsaFunc] | None = None
 	type_env = checked.type_env
 	if build_ssa:
-		ssa_funcs = {name: MirToSSA().run(func) for name, func in mir_funcs.items()}
+		ssa_funcs = {fn_id: MirToSSA().run(func) for fn_id, func in mir_funcs_by_id.items()}
 		if type_env is None:
 			# First preference: checker-owned SSA typing using TypeIds + signatures.
-			type_env = checker.build_type_env_from_ssa(ssa_funcs, signatures_by_symbol, can_throw_by_name=declared)
+			type_env = Checker(
+				signatures_by_id={},
+				hir_blocks_by_id={},
+				call_info_by_callsite_id={},
+				type_table=shared_type_table,
+			).build_type_env_from_ssa_by_id(
+				ssa_funcs,
+				signatures_by_id,
+				can_throw_by_id=declared_by_id,
+				diagnostics=checked.diagnostics,
+			)
 			checked.type_env = type_env
-		if type_env is None and signatures_by_symbol:
+		if type_env is None and signatures_by_id:
 			# Fallback: minimal checker TypeEnv that tags return SSA values with the
 			# signature return TypeId. This keeps type-aware checks usable even when
 			# the fuller SSA typing could not derive any facts.
-			type_env = build_minimal_checker_type_env(checked, ssa_funcs, signatures_by_symbol, table=checked.type_table)
+			type_env = build_minimal_checker_type_env(checked, ssa_funcs, signatures_by_id, table=checked.type_table)
 			checked.type_env = type_env
 
 	# Stage4: throw checks
 	run_throw_checks(
-		funcs=mir_funcs,
+		funcs=mir_funcs_by_id,
 		summaries=summaries,
-		declared_can_throw=declared,
+		declared_can_throw=declared_by_id,
 		type_env=type_env or checked.type_env,
-		fn_infos=checked.fn_infos,
+		fn_infos=checked.fn_infos_by_id,
 		ssa_funcs=ssa_funcs,
 		diagnostics=checked.diagnostics,
 	)
+	_assert_all_phased(checked.diagnostics, context="compile_stubbed_funcs")
 
 	if return_checked and return_ssa:
-		return mir_funcs, checked, ssa_funcs
+		return mir_funcs_by_id, checked, ssa_funcs
 	if return_checked:
-		return mir_funcs, checked
-	return mir_funcs
+		return mir_funcs_by_id, checked
+	return mir_funcs_by_id
 
 
 def compile_to_llvm_ir_for_tests(
@@ -1939,7 +2584,9 @@ def compile_to_llvm_ir_for_tests(
 	module_deps: Mapping[str, set[str]] | None = None,
 	prelude_enabled: bool = True,
 	emit_instantiation_index: Path | None = None,
-) -> tuple[str, CheckedProgram]:
+	enforce_entrypoint: bool = False,
+	reserved_namespace_policy: ReservedNamespacePolicy = ReservedNamespacePolicy.ENFORCE,
+) -> tuple[str, CheckedProgramById]:
 	"""
 	End-to-end helper: HIR -> MIR -> throw checks -> SSA -> LLVM IR for tests.
 
@@ -1947,40 +2594,27 @@ def compile_to_llvm_ir_for_tests(
 	It is intentionally narrow: assumes a single Drift entry `drift_main` (or
 	`entry`) returning `Int`, `String`, or `FnResult<Int, Error>` and uses the
 	v1 ABI.
-	Returns IR text and the CheckedProgram so callers can assert diagnostics.
+	Returns IR text and the CheckedProgramById so callers can assert diagnostics.
 	"""
 	func_hirs_by_id, signatures_by_id, fn_ids_by_name = _normalize_func_maps(func_hirs, signatures)
+	shared_type_table = type_table or TypeTable()
+
+	reserved = _reserved_module_ids(func_hirs_by_id, signatures_by_id)
+	if reserved and reserved_namespace_policy is ReservedNamespacePolicy.ENFORCE:
+		return (
+			"",
+			CheckedProgramById(
+				fn_infos_by_id={},
+				type_table=shared_type_table,
+				exception_catalog=exc_env,
+				diagnostics=_reserved_namespace_diags(reserved),
+			),
+		)
 
 	# Ensure prelude signatures are present for tests that bypass the CLI.
-	shared_type_table = type_table or TypeTable()
 	prelude_injected = _should_inject_prelude(prelude_enabled, module_deps)
 	if prelude_injected:
 		_inject_prelude(signatures_by_id, fn_ids_by_name, shared_type_table)
-
-	func_hirs_by_symbol: dict[str, H.HBlock] = {}
-	signatures_by_symbol: dict[str, FnSignature] = {}
-	for fid, block in func_hirs_by_id.items():
-		sym = function_symbol(fid)
-		func_hirs_by_symbol[sym] = block
-	for fid, sig in signatures_by_id.items():
-		sym = function_symbol(fid)
-		signatures_by_symbol[sym] = replace(sig, name=sym)
-
-	# Mirror the real compiler behavior: any error diagnostics stop the pipeline
-	# before MIR/SSA/LLVM lowering. This prevents stage2 assertions from surfacing
-	# as user-facing failures in negative tests.
-	precheck = Checker(
-		declared_can_throw=None,
-		signatures=signatures_by_symbol,
-		exception_catalog=exc_env,
-		hir_blocks=dict(func_hirs_by_symbol),
-		type_table=shared_type_table,
-	)
-	decl_names: set[str] = set(func_hirs_by_symbol.keys())
-	decl_names.update(signatures_by_symbol.keys())
-	prechecked = precheck.check(sorted(decl_names))
-	if any(d.severity == "error" for d in prechecked.diagnostics):
-		return "", prechecked
 
 	# First, run the normal pipeline to get MIR + FnInfos + SSA (and diagnostics).
 	mir_funcs, checked, ssa_funcs = compile_stubbed_funcs(
@@ -1995,14 +2629,23 @@ def compile_to_llvm_ir_for_tests(
 		type_table=shared_type_table,
 		prelude_enabled=prelude_enabled,
 		emit_instantiation_index=emit_instantiation_index,
+		enforce_entrypoint=enforce_entrypoint,
 	)
+	_assert_all_phased(checked.diagnostics, context="compile_to_llvm_ir_for_tests")
 	if any(d.severity == "error" for d in checked.diagnostics):
 		return "", checked
 
 	# Lower module to LLVM IR and append the OS entry wrapper when needed.
-	rename_map: dict[str, str] = {}
+	rename_map: dict[FunctionId, str] = {}
 	argv_wrapper: str | None = None
-	entry_info = checked.fn_infos.get(entry)
+	entry_ids = fn_ids_by_name.get(entry, [])
+	entry_id = entry_ids[0] if entry_ids else None
+	if entry_id is None:
+		for fn_id in signatures_by_id.keys():
+			if function_symbol(fn_id) == entry:
+				entry_id = fn_id
+				break
+	entry_info = checked.fn_infos_by_id.get(entry_id) if entry_id is not None else None
 	# Detect main(argv: Array<String>) and emit a C-ABI wrapper that builds argv.
 	if (
 		entry == "main"
@@ -2020,18 +2663,24 @@ def compile_to_llvm_ir_for_tests(
 				# Guard: require return Int and exactly one param of Array<String>.
 				if entry_info.signature.return_type_id != checked.type_table.ensure_int():
 					raise ValueError("main(argv: Array<String>) must return Int")
-				rename_map["main"] = "drift_main"
+				entry_ids = fn_ids_by_name.get("main", [])
+				if not entry_ids:
+					raise ValueError("main(argv: Array<String>) requires a main entry function")
+				rename_map[entry_ids[0]] = "drift_main"
 				argv_wrapper = "drift_main"
 
 	# Add prelude FnInfos so codegen can recognize console intrinsics by module/name.
-	fn_infos = dict(checked.fn_infos)
+	fn_infos = dict(checked.fn_infos_by_id)
 	if prelude_injected:
 		for name in ("print", "println", "eprintln"):
 			ids = fn_ids_by_name.get(name, [])
-			if ids:
-				sym = function_symbol(ids[0])
-				if sym not in fn_infos and sym in signatures_by_symbol:
-					fn_infos[sym] = FnInfo(name=sym, declared_can_throw=False, signature=signatures_by_symbol[sym])
+			if not ids:
+				continue
+			if ids[0] in fn_infos:
+				continue
+			sig = signatures_by_id.get(ids[0])
+			if sig is not None:
+				fn_infos[ids[0]] = make_fn_info(ids[0], sig, declared_can_throw=False)
 
 	module = lower_module_to_llvm(
 		mir_funcs,
@@ -2098,6 +2747,23 @@ def _fake_decls_from_hirs(hirs: Mapping[FunctionId, H.HBlock]) -> list[object]:
 				ret_ty = "Void"
 		decls.append(FakeDecl(fn_id=fn_id, name=fn_id.name, params=[], return_type=ret_ty))
 	return decls
+
+
+def _validate_mir_call_invariants(funcs: Mapping[FunctionId, M.MirFunc]) -> None:
+	"""Ensure MIR call instructions carry explicit can_throw flags and stable ids."""
+	for fn_id, func in funcs.items():
+		for block in func.blocks.values():
+			for instr in block.instructions:
+				if isinstance(instr, M.Call):
+					if not isinstance(instr.fn_id, FunctionId):
+						raise AssertionError(f"MIR Call missing fn_id in {function_symbol(fn_id)}")
+					if not isinstance(instr.can_throw, bool):
+						raise AssertionError(f"MIR Call missing can_throw in {function_symbol(fn_id)}")
+				elif isinstance(instr, M.CallIndirect):
+					if not isinstance(instr.can_throw, bool):
+						raise AssertionError(
+							f"MIR CallIndirect missing can_throw in {function_symbol(fn_id)}"
+						)
 
 
 __all__ = ["compile_stubbed_funcs", "compile_to_llvm_ir_for_tests"]
@@ -2472,7 +3138,6 @@ def main(argv: list[str] | None = None) -> int:
 		module_paths=module_paths,
 		external_module_exports=external_exports,
 		external_module_packages=external_module_packages,
-		enforce_entrypoint=bool(args.output or args.emit_ir),
 		package_id=str(args.package_id or ""),
 	)
 	func_hirs, signatures, fn_ids_by_name = flatten_modules(modules)
@@ -2480,7 +3145,12 @@ def main(argv: list[str] | None = None) -> int:
 	if prelude_injected:
 		_inject_prelude(signatures, fn_ids_by_name, type_table)
 	func_hirs_by_id = func_hirs
-	signatures_by_id = signatures
+	base_signatures_by_id = MappingProxyType(dict(signatures))
+	derived_signatures_by_id: dict[FunctionId, FnSignature] = {}
+	signatures_by_id: Mapping[FunctionId, FnSignature] = ChainMap(
+		derived_signatures_by_id,
+		base_signatures_by_id,
+	)
 	external_signatures_by_name: dict[str, FnSignature] = {}
 	external_signatures_by_symbol: dict[str, FnSignature] = {}
 	external_signatures_by_id: dict[FunctionId, FnSignature] = {}
@@ -2495,6 +3165,7 @@ def main(argv: list[str] | None = None) -> int:
 	id_registry = IdRegistry()
 
 	if parse_diags:
+		_assert_all_phased(parse_diags, context="parser")
 		if args.json:
 			payload = {
 				"exit_code": 1,
@@ -2507,11 +3178,39 @@ def main(argv: list[str] | None = None) -> int:
 				print(f"{source_path}:{loc}: {d.severity}: {d.message}", file=sys.stderr)
 		return 1
 
+	if not args.dev:
+		reserved = [mid for mid in modules.keys() if mid.startswith(("std.", "lang.", "drift."))]
+		if reserved:
+			diags = _reserved_namespace_diags(reserved)
+			_assert_all_phased(diags, context="package")
+			if args.json:
+				print(json.dumps({"exit_code": 1, "diagnostics": [_diag_to_json(d, "package", source_path) for d in diags]}))
+			else:
+				for d in diags:
+					print(f"{source_path}:?:?: {d.severity}: {d.message}", file=sys.stderr)
+			return 1
+
 	method_wrapper_specs: list[MethodWrapperSpec] = []
 	wrapper_errors: list[str] = []
+
+	def _register_derived_signature_cli(fn_id: FunctionId, sig: FnSignature) -> None:
+		existing = derived_signatures_by_id.get(fn_id) or base_signatures_by_id.get(fn_id)
+		if existing is not None:
+			if existing != sig:
+				raise AssertionError(f"signature collision for '{function_symbol(fn_id)}'")
+			return
+		derived_signatures_by_id[fn_id] = sig
+
 	method_wrapper_specs, wrapper_errors = _inject_method_boundary_wrappers(
-		signatures_by_id=signatures_by_id,
+		signatures_by_id=base_signatures_by_id,
+		existing_ids=set(base_signatures_by_id.keys()) | set(derived_signatures_by_id.keys()),
+		register_derived=_register_derived_signature_cli,
 		type_table=type_table,
+	)
+	_assert_signature_map_split(
+		base_signatures_by_id=base_signatures_by_id,
+		derived_signatures_by_id=derived_signatures_by_id,
+		context="driftc CLI pre-typecheck",
 	)
 	if wrapper_errors:
 		for msg in wrapper_errors:
@@ -2884,7 +3583,6 @@ def main(argv: list[str] | None = None) -> int:
 			id_registry=id_registry,
 		)
 
-		legacy_template_warned: set[str] = set()
 		for pkg in loaded_pkgs:
 			pkg_id = pkg.manifest.get("package_id")
 			if not isinstance(pkg_id, str) or not pkg_id:
@@ -2901,7 +3599,6 @@ def main(argv: list[str] | None = None) -> int:
 					ir_kind = entry.get("ir_kind")
 					if ir_kind not in ("TemplateHIR-v1", "TemplateHIR-v0"):
 						continue
-					fn_symbol = entry.get("fn_symbol")
 					fn_id: FunctionId | None = None
 
 					def _template_import_error(msg: str) -> int:
@@ -2927,42 +3624,15 @@ def main(argv: list[str] | None = None) -> int:
 							print(f"{pkg.path}:?:?: error: {msg}", file=sys.stderr)
 						return 1
 
+					if ir_kind == "TemplateHIR-v0":
+						return _template_import_error(
+							f"TemplateHIR-v0 templates are not supported; rebuild package {pkg_id}"
+						)
 					template_id = entry.get("template_id")
 					fn_key = function_key_from_obj(template_id)
 					if fn_key is None:
-						if ir_kind != "TemplateHIR-v0":
-							return _template_import_error(
-								f"invalid TemplateHIR-v1 template_id in package {pkg_id}"
-							)
-						# Legacy v0: synthesize a stable-ish key from module/name/ordinal.
-						if not isinstance(template_id, dict):
-							return _template_import_error(
-								f"invalid TemplateHIR-v0 template_id in package {pkg_id}"
-							)
-						mod_name = template_id.get("module")
-						fn_name = template_id.get("name")
-						ord_val = template_id.get("ordinal", 0)
-						if not isinstance(mod_name, str) or not isinstance(fn_name, str) or not isinstance(ord_val, int):
-							return _template_import_error(
-								f"invalid TemplateHIR-v0 template_id in package {pkg_id}"
-							)
-						pkg_path = str(pkg.path)
-						if pkg_path not in legacy_template_warned and not args.json:
-							print(
-								f"{pkg_path}:?:?: warning: TemplateHIR-v0 templates are deprecated; rebuild the package",
-								file=sys.stderr,
-							)
-							legacy_template_warned.add(pkg_path)
-						legacy_fp = sha256_hex(
-							canonical_json_bytes(
-								{"module": mod_name, "name": fn_name, "ordinal": int(ord_val)}
-							)
-						)
-						fn_key = FunctionKey(
-							package_id=pkg_id,
-							module_path=mod_name,
-							name=fn_name,
-							decl_fingerprint=legacy_fp,
+						return _template_import_error(
+							f"invalid TemplateHIR-v1 template_id in package {pkg_id}"
 						)
 					if fn_key.package_id != pkg_id:
 						return _template_import_error(
@@ -3066,24 +3736,6 @@ def main(argv: list[str] | None = None) -> int:
 								f"duplicate template mapping for {fn_key.module_path}::{fn_key.name} in package {pkg_id}"
 							)
 						external_template_keys_by_fn_id[fn_id] = fn_key
-					elif isinstance(fn_symbol, str):
-						try:
-							fn_id = _parse_function_symbol(fn_symbol)
-						except Exception:
-							fn_id = None
-						if fn_id is not None:
-							try:
-								fn_id = id_registry.intern_function(fn_key, preferred=fn_id)
-							except ValueError as err:
-								return _template_import_error(
-									f"TemplateHIR-v0 entry id conflict for {fn_symbol}: {err}"
-								)
-							prev_key = external_template_keys_by_fn_id.get(fn_id)
-							if prev_key is not None and prev_key != fn_key:
-								return _template_import_error(
-									f"duplicate template mapping for {fn_symbol} in package {pkg_id}"
-								)
-							external_template_keys_by_fn_id[fn_id] = fn_key
 
 		# Merge external trait metadata and function require clauses into trait worlds
 		# so requirement enforcement can operate across package boundaries.
@@ -3273,10 +3925,6 @@ def main(argv: list[str] | None = None) -> int:
 	# - sugar does not leak into later stages, and
 	# - borrow materialization runs before borrow checking.
 	normalized_hirs_by_id = {fn_id: normalize_hir(block) for fn_id, block in func_hirs_by_id.items()}
-	func_hirs_by_symbol = {function_symbol(fn_id): block for fn_id, block in normalized_hirs_by_id.items()}
-	signatures_by_symbol = {function_symbol(fn_id): sig for fn_id, sig in signatures_by_id.items()}
-	signatures_for_checker = dict(signatures_by_symbol)
-	signatures_for_checker.update(external_signatures_by_name)
 
 	# Type check each function with the shared TypeTable/signatures.
 	type_checker = TypeChecker(type_table=type_table)
@@ -3284,18 +3932,11 @@ def main(argv: list[str] | None = None) -> int:
 	next_callable_id = 1
 	type_diags: list[Diagnostic] = []
 	module_ids: dict[object, int] = {None: 0}
-	signatures_by_id_all = dict(signatures_by_id)
-	signatures_by_id_all.update(external_signatures_by_id)
-	# Use explicit throw annotations only; unspecified stays unknown to the checker.
-	can_throw_by_name: dict[str, bool] = {}
-	for fn_id, sig in signatures_by_id_all.items():
-		if sig.declared_can_throw is None:
-			continue
-		sym = function_symbol(fn_id)
-		can_throw_by_name[sym] = bool(sig.declared_can_throw)
-		if sig.name:
-			can_throw_by_name[sig.name] = bool(sig.declared_can_throw)
-
+	signatures_by_id_all: Mapping[FunctionId, FnSignature] = ChainMap(
+		external_signatures_by_id,
+		derived_signatures_by_id,
+		base_signatures_by_id,
+	)
 	display_name_by_id = {fn_id: _display_name_for_fn_id(fn_id) for fn_id in signatures_by_id_all.keys()}
 
 	for fn_id, sig in signatures_by_id.items():
@@ -3312,6 +3953,7 @@ def main(argv: list[str] | None = None) -> int:
 					Diagnostic(
 						message=f"method '{display_name_by_id.get(fn_id, sig.name)}' missing receiver metadata (impl target/self_mode)",
 						severity="error",
+						phase="typecheck",
 						span=getattr(sig, "loc", None),
 					)
 				)
@@ -3326,6 +3968,7 @@ def main(argv: list[str] | None = None) -> int:
 					Diagnostic(
 						message=f"method '{display_name_by_id.get(fn_id, sig.name)}' has unsupported self_mode '{sig.self_mode}'",
 						severity="error",
+						phase="typecheck",
 						span=getattr(sig, "loc", None),
 					)
 				)
@@ -3344,13 +3987,9 @@ def main(argv: list[str] | None = None) -> int:
 			)
 			next_callable_id += 1
 		else:
-			disp_name = display_name_by_id.get(fn_id, sig.name)
 			callable_registry.register_free_function(
 				callable_id=next_callable_id,
-				# Workspace builds qualify call sites (`mod::fn`). Keep the callable
-				# registry aligned with that identity to avoid string-rewrite
-				# mismatches during resolution.
-				name=disp_name,
+				name=fn_id.name,
 				module_id=module_id,
 				visibility=Visibility.public(),
 				signature=CallableSignature(param_types=param_types_tuple, result_type=sig.return_type_id),
@@ -3358,17 +3997,6 @@ def main(argv: list[str] | None = None) -> int:
 				is_generic=bool(sig.type_params),
 			)
 			next_callable_id += 1
-			if args.prelude and fn_id.module == "lang.core" and disp_name != fn_id.name:
-				callable_registry.register_free_function(
-					callable_id=next_callable_id,
-					name=fn_id.name,
-					module_id=module_id,
-					visibility=Visibility.public(),
-					signature=CallableSignature(param_types=param_types_tuple, result_type=sig.return_type_id),
-					fn_id=fn_id,
-					is_generic=bool(sig.type_params),
-				)
-				next_callable_id += 1
 
 	for fn_id, sig in external_signatures_by_id.items():
 		sig_name = display_name_by_id.get(fn_id, _display_name_for_fn_id(fn_id))
@@ -3383,6 +4011,7 @@ def main(argv: list[str] | None = None) -> int:
 					Diagnostic(
 						message=f"method '{sig_name}' missing receiver metadata (impl target/self_mode)",
 						severity="error",
+						phase="typecheck",
 						span=getattr(sig, "loc", None),
 					)
 				)
@@ -3397,6 +4026,7 @@ def main(argv: list[str] | None = None) -> int:
 					Diagnostic(
 						message=f"method '{sig_name}' has unsupported self_mode '{sig.self_mode}'",
 						severity="error",
+						phase="typecheck",
 						span=getattr(sig, "loc", None),
 					)
 				)
@@ -3417,7 +4047,7 @@ def main(argv: list[str] | None = None) -> int:
 		else:
 			callable_registry.register_free_function(
 				callable_id=next_callable_id,
-				name=sig_name,
+				name=fn_id.name,
 				module_id=module_id,
 				visibility=Visibility.public(),
 				signature=CallableSignature(param_types=param_types_tuple, result_type=sig.return_type_id),
@@ -3426,19 +4056,7 @@ def main(argv: list[str] | None = None) -> int:
 			)
 			next_callable_id += 1
 
-	# Build a name-keyed map for free-function signatures (fallback path only).
-	call_sigs_by_name: dict[str, list[FnSignature]] = {}
-	for fn_id, sig in signatures_by_id.items():
-		if sig.is_method:
-			continue
-		name = display_name_by_id.get(fn_id, sig.name)
-		call_sigs_by_name.setdefault(name, []).append(sig)
-		if args.prelude and fn_id.module == "lang.core" and name != fn_id.name:
-			call_sigs_by_name.setdefault(fn_id.name, []).append(sig)
-	for sig_name, sig in external_signatures_by_name.items():
-		if sig.is_method:
-			continue
-		call_sigs_by_name.setdefault(sig_name, []).append(sig)
+	# candidate_signatures_for_diag removed; no name-keyed fallback map
 
 	def _collect_reexport_targets(mod: str) -> set[str]:
 		exp = module_exports.get(mod) if isinstance(module_exports, dict) else None
@@ -3467,14 +4085,21 @@ def main(argv: list[str] | None = None) -> int:
 					tgt = info.get("module")
 					if isinstance(tgt, str):
 						targets.add(tgt)
-		trait_reexp = reexp.get("traits") if isinstance(reexp.get("traits"), dict) else {}
-		if isinstance(trait_reexp, dict):
-			for info in trait_reexp.values():
-				if isinstance(info, dict):
-					tgt = info.get("module")
-					if isinstance(tgt, str):
-						targets.add(tgt)
-		return targets
+			trait_reexp = reexp.get("traits") if isinstance(reexp.get("traits"), dict) else {}
+			if isinstance(trait_reexp, dict):
+				for info in trait_reexp.values():
+					if isinstance(info, dict):
+						tgt = info.get("module")
+						if isinstance(tgt, str):
+							targets.add(tgt)
+			value_reexp = reexp.get("values") if isinstance(reexp.get("values"), dict) else {}
+			if isinstance(value_reexp, dict):
+				for info in value_reexp.values():
+					if isinstance(info, dict):
+						tgt = info.get("module")
+						if isinstance(tgt, str):
+							targets.add(tgt)
+			return targets
 
 	# Ensure module ids exist for any module mentioned in the workspace graph.
 	if isinstance(module_deps, dict):
@@ -3613,7 +4238,6 @@ def main(argv: list[str] | None = None) -> int:
 			hir_block,
 			param_types=param_types,
 			return_type=sig.return_type_id if sig is not None else None,
-			call_signatures=call_sigs_by_name,
 			callable_registry=callable_registry,
 			impl_index=global_impl_index,
 			trait_index=global_trait_index,
@@ -3626,12 +4250,16 @@ def main(argv: list[str] | None = None) -> int:
 			visibility_provenance=visibility_by_id,
 			visibility_imports=direct_imports,
 			signatures_by_id=signatures_by_id_all,
-			can_throw_by_name=can_throw_by_name,
 		)
 		type_diags.extend(result.diagnostics)
 		typed_fns[fn_id] = result.typed_fn
+	if type_checker.defaulted_phase_count() != 0:
+		raise AssertionError(
+			f"typecheck diagnostics missing phase (defaulted={type_checker.defaulted_phase_count()})"
+		)
 
 	if type_diags:
+		_assert_all_phased(type_diags, context="typecheck")
 		if args.json:
 			payload = {
 				"exit_code": 1,
@@ -3646,26 +4274,23 @@ def main(argv: list[str] | None = None) -> int:
 			return 1
 
 	# Compute non-retaining metadata for callable parameters before lambda validation.
-	analyze_non_retaining_params(
+	signatures_by_id_all = analyze_non_retaining_params(
 		typed_fns,
 		signatures_by_id_all,
 		type_table=type_table,
 	)
 
 	# Enforce non-escaping lambda rule after type resolution so method calls are visible.
-	signatures_by_display = {display_name_by_id[fn_id]: sig for fn_id, sig in signatures_by_id.items()}
-	signatures_for_validation = dict(signatures_by_display)
-	signatures_for_validation.update(signatures_by_symbol)
-	signatures_for_validation.update(external_signatures_by_name)
 	lambda_diags: list[Diagnostic] = []
 	for _fn_id, typed_fn in typed_fns.items():
 		res = validate_lambdas_non_retaining(
 			typed_fn.body,
-			signatures=signatures_for_validation,
+			signatures_by_id=signatures_by_id_all,
 			call_resolutions=getattr(typed_fn, "call_resolutions", None),
 		)
 		lambda_diags.extend(res.diagnostics)
 	if lambda_diags:
+		_assert_all_phased(lambda_diags, context="typecheck")
 		if args.json:
 			payload = {
 				"exit_code": 1,
@@ -3680,25 +4305,26 @@ def main(argv: list[str] | None = None) -> int:
 
 	# Checker (stub) enforces language-level rules (e.g., nothrow) after typecheck
 	# so we can use CallInfo for method-call throw analysis.
-	call_info_by_name: dict[str, dict[int, CallInfo]] = {}
+	call_info_by_callsite_id: dict[FunctionId, dict[int, CallInfo]] = {}
 	for fn_id, typed_fn in typed_fns.items():
-		call_info = getattr(typed_fn, "call_info_by_node_id", None)
+		call_info = getattr(typed_fn, "call_info_by_callsite_id", None)
 		if isinstance(call_info, dict):
-			call_info_by_name[function_symbol(fn_id)] = dict(call_info)
-	checker = Checker(
-		declared_can_throw=None,
-		signatures=signatures_for_checker,
+			call_info_by_callsite_id[fn_id] = dict(call_info)
+		else:
+			call_info_by_callsite_id.setdefault(fn_id, {})
+	checked = Checker.run_by_id(
+		CheckerInputsById(
+			hir_blocks_by_id=normalized_hirs_by_id,
+			signatures_by_id=signatures_by_id_all,
+			call_info_by_callsite_id=call_info_by_callsite_id,
+		),
 		exception_catalog=exception_catalog,
-		hir_blocks=func_hirs_by_symbol,
 		type_table=type_table,
-		call_info_by_name=call_info_by_name,
 	)
-	decl_names: set[str] = set(func_hirs_by_symbol.keys())
-	decl_names.update(signatures_for_checker.keys())
-	checked = checker.check(sorted(decl_names))
 	if checked.type_table is not None and not loaded_pkgs:
 		type_table = checked.type_table
 	if checked.diagnostics:
+		_assert_all_phased(checked.diagnostics, context="typecheck")
 		if args.json:
 			payload = {
 				"exit_code": 1,
@@ -3718,10 +4344,10 @@ def main(argv: list[str] | None = None) -> int:
 	# infer nothrow for methods that never throw; update the call-site metadata
 	# accordingly so nothrow enforcement matches inference.
 	for typed_fn in typed_fns.values():
-		call_info = getattr(typed_fn, "call_info_by_node_id", None)
+		call_info = getattr(typed_fn, "call_info_by_callsite_id", None)
 		if not isinstance(call_info, dict):
 			continue
-		for node_id, info in list(call_info.items()):
+		for csid, info in list(call_info.items()):
 			if info.target.kind is not CallTargetKind.DIRECT or info.target.symbol is None:
 				continue
 			target_id = info.target.symbol
@@ -3732,7 +4358,7 @@ def main(argv: list[str] | None = None) -> int:
 				continue
 			if sig.declared_can_throw is not None:
 				continue
-			fn_info = checked.fn_infos.get(function_symbol(target_id))
+			fn_info = checked.fn_infos_by_id.get(target_id)
 			if fn_info is None:
 				continue
 			inferred = bool(fn_info.declared_can_throw)
@@ -3743,7 +4369,7 @@ def main(argv: list[str] | None = None) -> int:
 				user_ret_type=info.sig.user_ret_type,
 				can_throw=inferred,
 			)
-			call_info[node_id] = CallInfo(target=info.target, sig=new_sig)
+			call_info[csid] = CallInfo(target=info.target, sig=new_sig)
 
 	# Enforce trait requirements (struct + function requires) before borrow checking.
 	trait_diags: list[Diagnostic] = []
@@ -3784,6 +4410,7 @@ def main(argv: list[str] | None = None) -> int:
 			)
 			trait_diags.extend(res.diagnostics)
 	if trait_diags:
+		_assert_all_phased(trait_diags, context="typecheck")
 		if args.json:
 			payload = {
 				"exit_code": 1,
@@ -3796,15 +4423,22 @@ def main(argv: list[str] | None = None) -> int:
 				print(f"{source_path}:{loc}: {d.severity}: {d.message}", file=sys.stderr)
 		return 1
 
+	for typed_fn in typed_fns.values():
+		_validate_intrinsic_callinfo(typed_fn)
+
 	# Borrow check each typed function (mandatory stage).
 	borrow_diags: list[Diagnostic] = []
-	signatures_for_hir = dict(external_signatures_by_name)
-	signatures_for_hir.update(signatures_by_symbol)
 	for _fn_id, typed_fn in typed_fns.items():
-		bc = BorrowChecker.from_typed_fn(typed_fn, type_table=type_table, signatures=signatures_for_hir, enable_auto_borrow=True)
+		bc = BorrowChecker.from_typed_fn(
+			typed_fn,
+			type_table=type_table,
+			signatures_by_id=signatures_by_id_all,
+			enable_auto_borrow=True,
+		)
 		borrow_diags.extend(bc.check_block(typed_fn.body))
 
 	if borrow_diags:
+		_assert_all_phased(borrow_diags, context="borrowcheck")
 		if args.json:
 			payload = {
 				"exit_code": 1,
@@ -3868,7 +4502,9 @@ def main(argv: list[str] | None = None) -> int:
 			generic_templates_by_key=external_template_hirs_by_key,
 			template_keys_by_fn_id=external_template_keys_by_fn_id,
 			emit_instantiation_index=args.emit_instantiation_index,
+			enforce_entrypoint=bool(args.output or args.emit_ir),
 		)
+		_assert_all_phased(checked_pkg.diagnostics, context="typecheck")
 		if any(d.severity == "error" for d in checked_pkg.diagnostics):
 			if args.json:
 				payload = {
@@ -3883,9 +4519,12 @@ def main(argv: list[str] | None = None) -> int:
 			return 1
 
 		pkg_signatures_by_symbol: dict[str, FnSignature] = {
-			name: info.signature
-			for name, info in checked_pkg.fn_infos.items()
+			function_symbol(fn_id): info.signature
+			for fn_id, info in checked_pkg.fn_infos_by_id.items()
 			if info.signature is not None
+		}
+		signatures_by_symbol = {
+			function_symbol(fn_id): sig for fn_id, sig in signatures_by_id_all.items()
 		}
 
 		# Group functions/signatures by module id.
@@ -3903,7 +4542,8 @@ def main(argv: list[str] | None = None) -> int:
 
 		per_module_mir: dict[str, dict[str, object]] = {}
 		inst_mir: dict[str, object] = {}
-		for name, fn in mir_funcs.items():
+		for fn_id, fn in mir_funcs.items():
+			name = function_symbol(fn_id)
 			sig = pkg_signatures_by_symbol.get(name)
 			mid = getattr(sig, "module", None) if sig is not None else None
 			mid = mid or "main"
@@ -4236,15 +4876,6 @@ def main(argv: list[str] | None = None) -> int:
 			print(json.dumps({"exit_code": 0, "diagnostics": []}))
 		return 0
 
-	# Require entry point main for codegen.
-	if not fn_ids_by_name.get("main"):
-		msg = "missing entry point 'main' for code generation"
-		if args.json:
-			print(json.dumps({"exit_code": 1, "diagnostics": [{"phase": "codegen", "message": msg, "severity": "error", "file": str(source_path), "line": None, "column": None}]}))
-		else:
-			print(f"{source_path}:?:?: error: {msg}", file=sys.stderr)
-		return 1
-
 	if loaded_pkgs:
 		# Compile source functions through the normal pipeline to get MIR+SSA.
 		combined_exports: dict[str, dict[str, object]] | None = None
@@ -4270,7 +4901,9 @@ def main(argv: list[str] | None = None) -> int:
 			external_impl_metas=external_impl_metas,
 			external_missing_traits=external_missing_traits,
 			external_missing_impl_modules=external_missing_impl_modules,
+			enforce_entrypoint=True,
 		)
+		_assert_all_phased(checked_src.diagnostics, context="typecheck")
 		ssa_src = ssa_src or {}
 		if any(d.severity == "error" for d in checked_src.diagnostics):
 			if args.json:
@@ -4289,8 +4922,8 @@ def main(argv: list[str] | None = None) -> int:
 		# loaded package modules; instead we include only the call-graph closure
 		# reachable from the source module(s). This keeps builds predictable and
 		# avoids unnecessary collisions/work.
-		pkg_mir_all: dict[str, M.MirFunc] = {}
-		pkg_sigs: dict[str, FnSignature] = {}
+		pkg_mir_all: dict[FunctionId, M.MirFunc] = {}
+		pkg_sigs_by_id: dict[FunctionId, FnSignature] = {}
 		for pkg in loaded_pkgs:
 			tid_map = pkg_typeid_maps.get(pkg.path, {})
 			for _mid, mod in pkg.modules_by_id.items():
@@ -4304,18 +4937,29 @@ def main(argv: list[str] | None = None) -> int:
 					else:
 						print(f"{source_path}:?:?: error: {msg}", file=sys.stderr)
 					return 1
-				mir_obj = payload.get("mir_funcs")
-				if isinstance(mir_obj, dict):
-					for name, fn in decode_mir_funcs(mir_obj).items():
-						if isinstance(fn, M.MirFunc):
-							_remap_mir_func_typeids(fn, tid_map)
-							pkg_mir_all[name] = fn
 				sigs_obj = payload.get("signatures")
+				name_to_fn_id: dict[str, FunctionId] = {}
 				if isinstance(sigs_obj, dict):
 					for name, sd in sigs_obj.items():
-						if name in pkg_sigs:
-							continue
 						if not isinstance(sd, dict):
+							continue
+						fn_id_obj = sd.get("fn_id")
+						fn_id = function_id_from_obj(fn_id_obj)
+						if fn_id is not None:
+							name_to_fn_id[str(name)] = fn_id
+				mir_obj = payload.get("mir_funcs")
+				if isinstance(mir_obj, dict):
+					for fn_id, fn in decode_mir_funcs(mir_obj, name_to_fn_id=name_to_fn_id).items():
+						if isinstance(fn, M.MirFunc):
+							_remap_mir_func_typeids(fn, tid_map)
+							pkg_mir_all[fn_id] = fn
+				if isinstance(sigs_obj, dict):
+					for name, sd in sigs_obj.items():
+						if not isinstance(sd, dict):
+							continue
+						fn_id_obj = sd.get("fn_id")
+						fn_id = function_id_from_obj(fn_id_obj)
+						if fn_id is None or fn_id in pkg_sigs_by_id:
 							continue
 						param_type_ids = sd.get("param_type_ids")
 						if isinstance(param_type_ids, list):
@@ -4326,7 +4970,7 @@ def main(argv: list[str] | None = None) -> int:
 						impl_tid = sd.get("impl_target_type_id")
 						if isinstance(impl_tid, int):
 							impl_tid = tid_map.get(impl_tid, impl_tid)
-						pkg_sigs[name] = FnSignature(
+						pkg_sigs_by_id[fn_id] = FnSignature(
 							name=str(sd.get("name") or name),
 							module=sd.get("module"),
 							method_name=sd.get("method_name"),
@@ -4341,23 +4985,23 @@ def main(argv: list[str] | None = None) -> int:
 						)
 
 		# SSA for package functions (required for LLVM lowering v1).
-		def _called_funcs_in_mir(fn: M.MirFunc) -> set[str]:
-			calls: set[str] = set()
+		def _called_funcs_in_mir(fn: M.MirFunc) -> set[FunctionId]:
+			calls: set[FunctionId] = set()
 			for block in fn.blocks.values():
 				for instr in block.instructions:
 					if isinstance(instr, M.Call):
-						calls.add(instr.fn)
+						calls.add(instr.fn_id)
 			return calls
 
 		# Roots: any call target from source MIR that is defined by a package.
-		needed: set[str] = set()
+		needed: set[FunctionId] = set()
 		for fn in src_mir.values():
 			for callee in _called_funcs_in_mir(fn):
 				if callee in pkg_mir_all:
 					needed.add(callee)
 
 		# Expand to call-graph closure through package functions.
-		queue = list(sorted(needed))
+		queue = list(needed)
 		while queue:
 			cur = queue.pop()
 			fn = pkg_mir_all.get(cur)
@@ -4368,11 +5012,14 @@ def main(argv: list[str] | None = None) -> int:
 					needed.add(callee)
 					queue.append(callee)
 
-		pkg_mir: dict[str, M.MirFunc] = {name: pkg_mir_all[name] for name in sorted(needed)}
+		pkg_mir: dict[FunctionId, M.MirFunc] = {}
+		for fn_id in needed:
+			fn = pkg_mir_all[fn_id]
+			pkg_mir[fn_id] = fn
 
-		pkg_ssa: dict[str, MirToSSA.SsaFunc] = {}
-		for name, fn in pkg_mir.items():
-			pkg_ssa[name] = MirToSSA().run(fn)
+		pkg_ssa: dict[FunctionId, MirToSSA.SsaFunc] = {}
+		for fn_id, fn in pkg_mir.items():
+			pkg_ssa[fn_id] = MirToSSA().run(fn)
 
 		# Merge (source wins on symbol conflicts).
 		mir_all = dict(pkg_mir)
@@ -4381,13 +5028,17 @@ def main(argv: list[str] | None = None) -> int:
 		ssa_all.update(ssa_src)
 
 		# FnInfos: include source + package signatures so codegen can type calls.
-		fn_infos = dict(checked_src.fn_infos)
-		all_sig_env = dict(pkg_sigs)
-		all_sig_env.update(signatures_by_symbol)
-		for name, sig in all_sig_env.items():
-			if name in fn_infos:
+		fn_infos = dict(checked_src.fn_infos_by_id)
+		pkg_sig_env: dict[FunctionId, FnSignature] = dict(pkg_sigs_by_id)
+		all_sig_env = dict(pkg_sig_env)
+		for fn_id, info in checked_src.fn_infos_by_id.items():
+			if info.signature is None:
 				continue
-			fn_infos[name] = FnInfo(name=name, declared_can_throw=_sig_declared_can_throw(sig), signature=sig)
+			all_sig_env[fn_id] = info.signature
+		for fn_id, sig in all_sig_env.items():
+			if fn_id in fn_infos:
+				continue
+			fn_infos[fn_id] = make_fn_info(fn_id, sig, declared_can_throw=_sig_declared_can_throw(sig))
 
 		module = lower_module_to_llvm(
 			mir_all,
@@ -4407,6 +5058,18 @@ def main(argv: list[str] | None = None) -> int:
 			type_table=type_table,
 			emit_instantiation_index=args.emit_instantiation_index,
 		)
+		if args.emit_instantiation_index is not None and not args.emit_instantiation_index.exists():
+			compile_stubbed_funcs(
+				func_hirs=func_hirs_by_id,
+				signatures=signatures_by_id,
+				exc_env=exception_catalog,
+				module_exports=module_exports,
+				module_deps=module_deps,
+				type_table=type_table,
+				prelude_enabled=bool(args.prelude),
+				emit_instantiation_index=args.emit_instantiation_index,
+				enforce_entrypoint=True,
+			)
 
 	# Emit IR if requested.
 	if args.emit_ir is not None:

@@ -8,6 +8,7 @@ Currently validates address-taken detection over simple MIR snippets.
 
 from __future__ import annotations
 
+from lang2.driftc.core.function_id import FunctionId
 from lang2.driftc.stage2 import (
 	MirFunc,
 	BasicBlock,
@@ -39,6 +40,7 @@ def test_address_taken_detected():
 	)
 	exit_block = BasicBlock(name="exit", instructions=[], terminator=None)
 	func = MirFunc(
+		fn_id=FunctionId(module="main", name="test", ordinal=0),
 		name="test",
 		params=[],
 		locals=["x"],
@@ -55,7 +57,7 @@ def test_calls_tracked_separately_from_may_fail():
 	entry = BasicBlock(
 		name="entry",
 		instructions=[
-			Call(dest="t0", fn="foo", args=[], can_throw=False),
+			Call(dest="t0", fn_id=FunctionId(module="main", name="foo", ordinal=0), args=[], can_throw=False),
 			ConstructDV(dest="t2", dv_type_name="Err", args=[]),
 			ConstInt(dest="c0", value=1234),
 			ConstString(dest="ename", value="Err"),
@@ -66,6 +68,7 @@ def test_calls_tracked_separately_from_may_fail():
 	)
 	exit_block = BasicBlock(name="exit", instructions=[], terminator=None)
 	func = MirFunc(
+		fn_id=FunctionId(module="main", name="f", ordinal=0),
 		name="f",
 		params=[],
 		locals=[],
@@ -92,6 +95,7 @@ def test_pure_ops_not_marked():
 	)
 	exit_block = BasicBlock(name="exit", instructions=[], terminator=None)
 	func = MirFunc(
+		fn_id=FunctionId(module="main", name="f", ordinal=0),
 		name="f",
 		params=[],
 		locals=["x"],

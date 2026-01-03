@@ -1,9 +1,10 @@
 {
-  "mode": "run",
-  "compile_error": null,
-  "exit_code": 5,
-  "stdout": "outer\n",
-  "stderr": "",
   "args": [],
-  "env": {}
+  "compile_error": null,
+  "description": "e2e: try event catch no fallback",
+  "env": {},
+  "exit_code": 5,
+  "mode": "run",
+  "stderr": "",
+  "stdout": "outer\n"
 }

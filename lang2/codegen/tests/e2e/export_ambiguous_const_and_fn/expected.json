@@ -1,7 +1,11 @@
 {
-  "exit_code": 1,
-  "phase": "parser",
+  "description": "e2e: export ambiguous const and fn",
   "diagnostics": [
-    { "phase": "parser", "message_contains": "exported name 'X' is ambiguous" }
-  ]
+    {
+      "message_contains": "exported name 'X' is ambiguous",
+      "phase": "parser"
+    }
+  ],
+  "exit_code": 1,
+  "phase": "parser"
 }

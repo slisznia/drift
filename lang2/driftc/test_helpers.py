@@ -3,6 +3,26 @@ from __future__ import annotations
 
 from lang2.driftc.core.types_core import TypeTable
 from lang2.driftc.traits.linked_world import LinkedWorld, RequireEnv, build_require_env, link_trait_worlds
+from lang2.driftc.module_lowered import ModuleLowered
+from lang2.driftc.traits.world import TypeKey
+
+
+def assert_module_lowered_consistent(module: ModuleLowered) -> None:
+	for fn_id, sig in module.signatures_by_id.items():
+		if fn_id.module != module.module_id:
+			raise AssertionError(f"signature fn_id {fn_id} does not match module {module.module_id}")
+		if getattr(sig, "module", None) != module.module_id:
+			raise AssertionError(f"signature module {getattr(sig, 'module', None)} != {module.module_id}")
+	for name, ids in module.fn_ids_by_name.items():
+		for fn_id in ids:
+			if fn_id not in module.signatures_by_id:
+				raise AssertionError(f"fn_ids_by_name[{name}] missing signature for {fn_id}")
+	for fn_id in module.requires_by_fn.keys():
+		if fn_id not in module.signatures_by_id:
+			raise AssertionError(f"requires_by_fn has unknown fn_id {fn_id}")
+	for key in module.requires_by_struct.keys():
+		if not isinstance(key, TypeKey):
+			raise AssertionError(f"requires_by_struct key is not a TypeKey: {key}")
 
 
 def build_linked_world(type_table: TypeTable | None) -> tuple[LinkedWorld, RequireEnv]:

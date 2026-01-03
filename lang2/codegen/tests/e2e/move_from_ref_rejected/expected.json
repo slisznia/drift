@@ -1,7 +1,10 @@
 {
-  "exit_code": 1,
+  "description": "e2e: move from ref rejected",
   "diagnostics": [
-    { "phase": "typecheck", "message_contains": "cannot move from a reference type" }
-  ]
+    {
+      "message_contains": "cannot move from a reference type",
+      "phase": "typecheck"
+    }
+  ],
+  "exit_code": 1
 }
-

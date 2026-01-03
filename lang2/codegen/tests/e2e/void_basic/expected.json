@@ -1,5 +1,6 @@
 {
+  "description": "e2e: void basic",
   "exit_code": 7,
-  "stdout": "hello\n",
-  "stderr": ""
+  "stderr": "",
+  "stdout": "hello\n"
 }

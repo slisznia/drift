@@ -1,6 +1,7 @@
 {
-  "mode": "run",
+  "description": "e2e: dot shortcut basic",
   "exit_code": 2,
-  "stdout": "",
-  "stderr": ""
+  "mode": "run",
+  "stderr": "",
+  "stdout": ""
 }

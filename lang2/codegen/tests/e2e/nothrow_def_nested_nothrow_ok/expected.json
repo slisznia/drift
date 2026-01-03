@@ -1,1 +1,6 @@
-{ "exit_code": 2, "stdout": "", "stderr": "" }
+{
+  "description": "e2e: nothrow def nested nothrow ok",
+  "exit_code": 2,
+  "stderr": "",
+  "stdout": ""
+}

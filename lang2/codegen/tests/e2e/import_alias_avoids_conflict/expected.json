@@ -1,5 +1,6 @@
 {
+  "description": "e2e: import alias avoids conflict",
   "exit_code": 42,
-  "stdout": "",
-  "stderr": ""
+  "stderr": "",
+  "stdout": ""
 }

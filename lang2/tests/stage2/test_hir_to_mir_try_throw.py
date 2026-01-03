@@ -7,8 +7,8 @@ Stage 2 tests: HIR→MIR lowering for throw/try (throw only for now).
 from lang2.driftc import stage1 as H
 from lang2.driftc.stage1.normalize import normalize_hir
 from lang2.driftc.stage2 import (
-	MirBuilder,
 	HIRToMIR,
+	make_builder,
 	ConstInt,
 	ConstString,
 	ConstructDV,
@@ -17,6 +17,8 @@ from lang2.driftc.stage2 import (
 	ConstructResultErr,
 	Return,
 )
+from lang2.driftc.core.function_id import FunctionId
+from lang2.driftc.core.types_core import TypeTable
 
 
 def test_throw_lowers_to_error_and_result_err_return():
@@ -27,12 +29,16 @@ def test_throw_lowers_to_error_and_result_err_return():
 	  - ConstructResultErr(error),
 	  - Return that result.
 	"""
-	builder = MirBuilder(name="throw_fn")
-	from lang2.driftc.core.types_core import TypeTable
-
+	builder = make_builder(FunctionId(module="main", name="throw_fn", ordinal=0))
 	type_table = TypeTable()
 	type_table.exception_schemas = {"m:Boom": ("m:Boom", ["msg"])}
-	lower = HIRToMIR(builder, type_table=type_table, can_throw_by_name={"throw_fn": True})
+	fn_id = FunctionId(module="main", name="throw_fn", ordinal=0)
+	lower = HIRToMIR(
+		builder,
+		type_table=type_table,
+		current_fn_id=fn_id,
+		can_throw_by_id={fn_id: True},
+	)
 
 	exc = H.HExceptionInit(
 		event_fqn="m:Boom",
@@ -71,12 +77,16 @@ def test_exception_init_throw_attaches_all_fields():
 	  - field 'a' under its declared name
 	  - field 'b' under its declared name
 	"""
-	builder = MirBuilder(name="throw_exc")
-	from lang2.driftc.core.types_core import TypeTable
-
+	builder = make_builder(FunctionId(module="main", name="throw_exc", ordinal=0))
 	type_table = TypeTable()
 	type_table.exception_schemas = {"m:Evt": ("m:Evt", ["a", "b"])}
-	lower = HIRToMIR(builder, type_table=type_table, can_throw_by_name={"throw_exc": True})
+	fn_id = FunctionId(module="main", name="throw_exc", ordinal=0)
+	lower = HIRToMIR(
+		builder,
+		type_table=type_table,
+		current_fn_id=fn_id,
+		can_throw_by_id={fn_id: True},
+	)
 
 	exc = H.HExceptionInit(
 		event_fqn="m:Evt",

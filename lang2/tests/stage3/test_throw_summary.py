@@ -1,3 +1,4 @@
+from lang2.driftc.core.function_id import FunctionId
 # vim: set noexpandtab: -*- indent-tabs-mode: t -*-
 # author: Sławomir Liszniański; created: 2025-12-04
 """
@@ -29,8 +30,10 @@ def test_throw_summary_records_construct_error_and_exc_types():
 		terminator=Goto(target="exit"),
 	)
 	exit_block = BasicBlock(name="exit", instructions=[], terminator=None)
+	fn_id = FunctionId(module="main", name="f", ordinal=0)
 	funcs = {
-		"f": MirFunc(
+		fn_id: MirFunc(
+			fn_id=fn_id,
 			name="f",
 			params=[],
 			locals=[],
@@ -40,7 +43,7 @@ def test_throw_summary_records_construct_error_and_exc_types():
 	}
 
 	summaries = ThrowSummaryBuilder().build(funcs, code_to_exc={7: "MyExc"})
-	s = summaries["f"]
+	s = summaries[fn_id]
 	assert s.constructs_error is True
 	assert ("entry", 1) in s.may_fail_sites
 	assert s.exception_types == {"MyExc"}

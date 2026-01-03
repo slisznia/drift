@@ -1,1 +1,6 @@
-{ "exit_code": 0, "stdout": "", "stderr": "" }
+{
+  "description": "e2e: qualified ctor none expected type ok",
+  "exit_code": 0,
+  "stderr": "",
+  "stdout": ""
+}

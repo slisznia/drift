@@ -1,7 +1,10 @@
 {
-  "exit_code": 1,
-  "phase": "typecheck",
+  "description": "e2e: try event catch expr noncall",
   "diagnostics": [
-    { "message_contains": "'try' applied to a nothrow expression (catch is unreachable)" }
-  ]
+    {
+      "message_contains": "'try' applied to a nothrow expression (catch is unreachable)"
+    }
+  ],
+  "exit_code": 1,
+  "phase": "typecheck"
 }

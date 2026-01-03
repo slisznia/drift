@@ -9,10 +9,11 @@ Ported exception scenarios to pin legacy semantics:
 
 from __future__ import annotations
 
-from lang2.driftc.stage2 import HIRToMIR, MirBuilder, mir_nodes as M
+from lang2.driftc.stage2 import HIRToMIR, mir_nodes as M, make_builder
 from lang2.driftc import stage1 as H
 from lang2.driftc.core.types_core import TypeTable
 from lang2.driftc.stage1.normalize import normalize_hir
+from lang2.driftc.core.function_id import FunctionId
 
 
 def _walk_else(func: M.MirFunc, block: M.BasicBlock) -> M.BasicBlock:
@@ -28,17 +29,20 @@ def test_throw_b_skips_inner_catch_a_hits_outer_catch_b():
 	Throw EvtB in inner body should skip inner catch and land in outer catch.
 	"""
 	exc_env = {"m:EvtA": 1, "m:EvtB": 2}
-	builder = MirBuilder(name="legacy_inner_outer_events")
+	builder = make_builder(FunctionId(module="main", name="legacy_inner_outer_events", ordinal=0))
+	fn_id=FunctionId(module="main", name="legacy_inner_outer_events", ordinal=0),
 	type_table = TypeTable()
 	type_table.exception_schemas = {
 		"m:EvtA": ("m:EvtA", []),
 		"m:EvtB": ("m:EvtB", []),
 	}
+	fn_id = FunctionId(module="main", name="legacy_inner_outer_events", ordinal=0)
 	lower = HIRToMIR(
 		builder,
 		type_table=type_table,
 		exc_env=exc_env,
-		can_throw_by_name={"legacy_inner_outer_events": True},
+		current_fn_id=fn_id,
+		can_throw_by_id={fn_id: True},
 	)
 
 	inner_try = H.HTry(
@@ -82,13 +86,21 @@ def test_multi_event_with_catch_all_matches_specific_arm():
 	the correct event-specific arm, not the catch-all.
 	"""
 	exc_env = {"m:EvtA": 1, "m:EvtB": 2}
-	builder = MirBuilder(name="legacy_multi_event")
+	builder = make_builder(FunctionId(module="main", name="legacy_multi_event", ordinal=0))
+	fn_id=FunctionId(module="main", name="legacy_multi_event", ordinal=0),
 	type_table = TypeTable()
 	type_table.exception_schemas = {
 		"m:EvtA": ("m:EvtA", []),
 		"m:EvtB": ("m:EvtB", []),
 	}
-	lower = HIRToMIR(builder, type_table=type_table, exc_env=exc_env, can_throw_by_name={"legacy_multi_event": True})
+	fn_id = FunctionId(module="main", name="legacy_multi_event", ordinal=0)
+	lower = HIRToMIR(
+		builder,
+		type_table=type_table,
+		exc_env=exc_env,
+		current_fn_id=fn_id,
+		can_throw_by_id={fn_id: True},
+	)
 
 	hir = H.HBlock(
 		statements=[
@@ -130,13 +142,21 @@ def test_throw_inside_catch_rethrows_to_outer_try():
 	the inner. Inner catch handles EvtA, outer handles EvtB; inner handler throws B.
 	"""
 	exc_env = {"m:EvtA": 1, "m:EvtB": 2}
-	builder = MirBuilder(name="legacy_throw_in_catch")
+	builder = make_builder(FunctionId(module="main", name="legacy_throw_in_catch", ordinal=0))
+	fn_id=FunctionId(module="main", name="legacy_throw_in_catch", ordinal=0),
 	type_table = TypeTable()
 	type_table.exception_schemas = {
 		"m:EvtA": ("m:EvtA", []),
 		"m:EvtB": ("m:EvtB", []),
 	}
-	lower = HIRToMIR(builder, type_table=type_table, exc_env=exc_env, can_throw_by_name={"legacy_throw_in_catch": True})
+	fn_id = FunctionId(module="main", name="legacy_throw_in_catch", ordinal=0)
+	lower = HIRToMIR(
+		builder,
+		type_table=type_table,
+		exc_env=exc_env,
+		current_fn_id=fn_id,
+		can_throw_by_id={fn_id: True},
+	)
 
 	inner_try = H.HTry(
 		body=H.HBlock(statements=[H.HThrow(value=H.HExceptionInit(event_fqn="m:EvtA", pos_args=[], kw_args=[]))]),
@@ -185,14 +205,17 @@ def test_inner_catch_all_handles_error_before_outer_specific_arm():
 	The inner catch-all must handle the thrown error, so outer dispatch is never used.
 	"""
 	exc_env = {"m:EvtX": 7}
-	builder = MirBuilder(name="legacy_inner_catchall_outer_specific")
+	builder = make_builder(FunctionId(module="main", name="legacy_inner_catchall_outer_specific", ordinal=0))
+	fn_id=FunctionId(module="main", name="legacy_inner_catchall_outer_specific", ordinal=0),
 	type_table = TypeTable()
 	type_table.exception_schemas = {"m:EvtX": ("m:EvtX", [])}
+	fn_id = FunctionId(module="main", name="legacy_inner_catchall_outer_specific", ordinal=0)
 	lower = HIRToMIR(
 		builder,
 		type_table=type_table,
 		exc_env=exc_env,
-		can_throw_by_name={"legacy_inner_catchall_outer_specific": True},
+		current_fn_id=fn_id,
+		can_throw_by_id={fn_id: True},
 	)
 
 	inner_try = H.HTry(
@@ -226,12 +249,20 @@ def test_inner_matching_catch_handles_and_stops_propagation():
 	The thrown event must be caught by the inner arm and not propagate to the outer dispatch.
 	"""
 	exc_env = {"m:EvtInner": 11, "m:EvtOuter": 22}
-	builder = MirBuilder(name="legacy_inner_matches")
+	builder = make_builder(FunctionId(module="main", name="legacy_inner_matches", ordinal=0))
+	fn_id=FunctionId(module="main", name="legacy_inner_matches", ordinal=0),
 	type_table = TypeTable()
 	type_table.exception_schemas = {
 		"m:EvtInner": ("m:EvtInner", []),
 	}
-	lower = HIRToMIR(builder, type_table=type_table, exc_env=exc_env, can_throw_by_name={"legacy_inner_matches": True})
+	fn_id = FunctionId(module="main", name="legacy_inner_matches", ordinal=0)
+	lower = HIRToMIR(
+		builder,
+		type_table=type_table,
+		exc_env=exc_env,
+		current_fn_id=fn_id,
+		can_throw_by_id={fn_id: True},
+	)
 
 	hir = H.HBlock(
 		statements=[

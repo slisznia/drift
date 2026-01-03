@@ -1,6 +1,11 @@
 {
-  "phase": "parser",
+  "description": "e2e: entry main wrong params rejected",
+  "diagnostics": [
+    {
+      "message_contains": "entrypoint main has invalid signature",
+      "phase": "typecheck"
+    }
+  ],
   "exit_code": 1,
-  "stdout": "",
-  "stderr": "entrypoint main has invalid signature; expected main() or main(argv: Array<String>)"
+  "use_driftc_json": false
 }

@@ -1,8 +1,10 @@
 {
-  "exit_code": 1,
-  "phase": "typecheck",
+  "description": "e2e: fstring bad spec",
   "diagnostics": [
-    { "message_contains": "E-FSTR-BAD-SPEC" }
-  ]
+    {
+      "message_contains": "E-FSTR-BAD-SPEC"
+    }
+  ],
+  "exit_code": 1,
+  "phase": "typecheck"
 }
-

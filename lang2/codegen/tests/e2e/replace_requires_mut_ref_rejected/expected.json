@@ -1,6 +1,14 @@
 {
-  "exit_code": 1,
+  "description": "e2e: replace requires mut ref rejected",
+  "dev_allow_reserved_namespaces": true,
   "diagnostics": [
-    { "phase": "typecheck", "message_contains": "cannot write through *p unless p is a mutable reference" }
+    {
+      "message_contains": "cannot write through *p unless p is a mutable reference",
+      "phase": "typecheck"
+    }
+  ],
+  "exit_code": 1,
+  "module_paths": [
+    "."
   ]
 }

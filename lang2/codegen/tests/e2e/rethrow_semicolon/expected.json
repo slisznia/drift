@@ -1,5 +1,6 @@
 {
+  "description": "e2e: rethrow semicolon",
   "exit_code": 0,
-  "stdout": "ok",
-  "stderr": ""
+  "stderr": "",
+  "stdout": "ok"
 }

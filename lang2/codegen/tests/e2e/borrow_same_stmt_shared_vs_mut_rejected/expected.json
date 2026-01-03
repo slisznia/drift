@@ -1,8 +1,10 @@
 {
-  "exit_code": 1,
-  "phase": "typecheck",
+  "description": "e2e: borrow same stmt shared vs mut rejected",
   "diagnostics": [
-    { "message_contains": "cannot take &mut while borrowed" }
-  ]
+    {
+      "message_contains": "cannot take &mut while borrowed"
+    }
+  ],
+  "exit_code": 1,
+  "phase": "typecheck"
 }
-

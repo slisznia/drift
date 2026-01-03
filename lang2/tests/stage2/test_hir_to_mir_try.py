@@ -7,8 +7,8 @@ Stage 2 test: HIR→MIR lowering for try/catch routing throws intra-function.
 from lang2.driftc import stage1 as H
 from lang2.driftc.stage1.normalize import normalize_hir
 from lang2.driftc.stage2 import (
-	MirBuilder,
 	HIRToMIR,
+	make_builder,
 	ConstString,
 	ConstInt,
 	ConstructError,
@@ -16,6 +16,8 @@ from lang2.driftc.stage2 import (
 	ErrorEvent,
 	IfTerminator,
 )
+from lang2.driftc.core.function_id import FunctionId
+from lang2.driftc.core.types_core import TypeTable
 
 
 def test_try_routes_throw_to_catch_block():
@@ -29,8 +31,7 @@ def test_try_routes_throw_to_catch_block():
 	  - dispatch jumps to catch-all arm
 	  - catch arm projects ErrorEvent and falls through to cont
 	"""
-	builder = MirBuilder(name="try_fn")
-	from lang2.driftc.core.types_core import TypeTable
+	builder = make_builder(FunctionId(module="main", name="try_fn", ordinal=0))
 
 	type_table = TypeTable()
 	type_table.exception_schemas = {"m:Evt": ("m:Evt", ["msg"])}
@@ -98,8 +99,7 @@ def test_try_dispatches_on_event_codes():
 	"""
 	Multi-arm try/catch should dispatch on ErrorEvent codes.
 	"""
-	builder = MirBuilder(name="try_evt")
-	from lang2.driftc.core.types_core import TypeTable
+	builder = make_builder(FunctionId(module="main", name="try_evt", ordinal=0))
 
 	type_table = TypeTable()
 	type_table.exception_schemas = {"m:EvtA": ("m:EvtA", ["msg"])}

@@ -6,15 +6,16 @@ from __future__ import annotations
 
 import pytest
 
-from lang2.driftc.stage2 import HIRToMIR, MirBuilder, mir_nodes as M
+from lang2.driftc.stage2 import HIRToMIR, mir_nodes as M, make_builder
 from lang2.driftc import stage1 as H
+from lang2.driftc.core.function_id import FunctionId
 from lang2.driftc.core.types_core import TypeTable
 from lang2.driftc.stage1.normalize import normalize_hir
 
 
 def test_multiple_catch_all_rejected():
 	"""Lowering should reject more than one catch-all arm."""
-	builder = MirBuilder(name="try_multi_catchall")
+	builder = make_builder(FunctionId(module="main", name="try_multi_catchall", ordinal=0))
 	lower = HIRToMIR(builder)
 
 	hir = H.HBlock(
@@ -34,7 +35,7 @@ def test_multiple_catch_all_rejected():
 
 def test_catch_all_not_last_is_rejected():
 	"""Catch-all before event arms is rejected to avoid unreachable handlers."""
-	builder = MirBuilder(name="try_catchall_first")
+	builder = make_builder(FunctionId(module="main", name="try_catchall_first", ordinal=0))
 	type_table = TypeTable()
 	type_table.exception_schemas = {"m:X": ("m:X", [])}
 	lower = HIRToMIR(builder, type_table=type_table, exc_env={"m:EvtA": 1})

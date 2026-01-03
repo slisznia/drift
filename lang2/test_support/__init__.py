@@ -20,13 +20,14 @@ from __future__ import annotations
 from typing import Any, Dict, Iterable, Mapping, Sequence, Tuple
 
 from lang2.driftc.checker import FnSignature
+from lang2.driftc.core.function_id import FunctionId
 
 
 def make_signatures(
-	return_types: Mapping[str, Any],
-	throws_events: Mapping[str, Sequence[str]] | None = None,
-	declared_can_throw: Mapping[str, bool] | None = None,
-) -> Dict[str, FnSignature]:
+	return_types: Mapping[object, Any],
+	throws_events: Mapping[object, Sequence[str]] | None = None,
+	declared_can_throw: Mapping[object, bool] | None = None,
+) -> Dict[object, FnSignature]:
 	"""
 	Build a name -> FnSignature map from simple return-type/throws inputs.
 
@@ -34,11 +35,12 @@ def make_signatures(
 	  return_types: mapping of function name -> return type (string/tuple placeholder).
 	  throws_events: optional mapping of function name -> iterable of event names.
 	"""
-	signatures: Dict[str, FnSignature] = {}
-	for name, ret_ty in return_types.items():
-		events = tuple(throws_events[name]) if throws_events and name in throws_events else ()
-		explicit = declared_can_throw.get(name) if declared_can_throw else None
-		signatures[name] = FnSignature(
+	signatures: Dict[object, FnSignature] = {}
+	for key, ret_ty in return_types.items():
+		events = tuple(throws_events[key]) if throws_events and key in throws_events else ()
+		explicit = declared_can_throw.get(key) if declared_can_throw else None
+		name = key.name if isinstance(key, FunctionId) else key
+		signatures[key] = FnSignature(
 			name=name,
 			return_type=ret_ty,
 			throws_events=events,
@@ -47,7 +49,7 @@ def make_signatures(
 	return signatures
 
 
-def declared_from_signatures(signatures: Mapping[str, FnSignature]) -> Dict[str, bool]:
+def declared_from_signatures(signatures: Mapping[object, FnSignature]) -> Dict[object, bool]:
 	"""
 	Derive the explicit can-throw intent from signatures.
 
@@ -55,7 +57,7 @@ def declared_from_signatures(signatures: Mapping[str, FnSignature]) -> Dict[str,
 	type. This helper therefore returns `bool(sig.declared_can_throw)` for each
 	signature, defaulting to False when unspecified.
 	"""
-	return {name: bool(sig.declared_can_throw) for name, sig in signatures.items()}
+	return {key: bool(sig.declared_can_throw) for key, sig in signatures.items()}
 
 
 def build_exception_catalog(events: Iterable[str] | Mapping[str, int]) -> Dict[str, int]:
@@ -88,6 +90,9 @@ def signatures_from_decl_nodes(func_decls: Iterable[object]) -> Dict[str, FnSign
 		if explicit is None and throws:
 			# Decl-like stubs frequently use `throws_events` as the only explicit
 			# "this may throw" marker. Treat that as can-throw intent.
+			explicit = True
+		if explicit is None:
+			# Surface ABI rule: nothrow is the only way to force non-throwing.
 			explicit = True
 		signatures[name] = FnSignature(name=name, return_type=ret_ty, throws_events=throws, declared_can_throw=explicit)
 	return signatures

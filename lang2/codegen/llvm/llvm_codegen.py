@@ -39,7 +39,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Mapping, Optional
 
 from lang2.driftc.checker import FnInfo
-from lang2.driftc.core.function_id import function_symbol, function_ref_symbol
+from lang2.driftc.core.function_id import FunctionId, function_symbol, function_ref_symbol
 from lang2.driftc.stage1 import BinaryOp, UnaryOp
 from lang2.driftc.stage2 import (
 	ArrayCap,
@@ -142,20 +142,6 @@ def _llvm_comdat_sym(name: str) -> str:
 	return _llvm_fn_sym(name).replace("@", "$", 1)
 
 
-def _module_id_from_symbol(sym: str) -> str | None:
-	"""
-	Best-effort extraction of a module id from a qualified callable symbol.
-
-	In a workspace build we qualify callables as:
-	  - free functions: `mod.sub::foo` (except the entrypoint `main`)
-	  - methods: `mod.sub::Type::method`
-
-	This helper returns the module id prefix before the first `::`, or `None`
-	for unqualified symbols (e.g. `main`).
-	"""
-	if "::" not in sym:
-		return None
-	return sym.split("::", 1)[0]
 DRIFT_DV_TYPE = "%DriftDiagnosticValue"
 DRIFT_OPT_INT_TYPE = "%DriftOptionalInt"
 DRIFT_OPT_BOOL_TYPE = "%DriftOptionalBool"
@@ -168,7 +154,7 @@ def lower_ssa_func_to_llvm(
 	func: MirFunc,
 	ssa: SsaFunc,
 	fn_info: FnInfo,
-	fn_infos: Mapping[str, FnInfo] | None = None,
+	fn_infos: Mapping[FunctionId, FnInfo] | None = None,
 	type_table: Optional[TypeTable] = None,
 ) -> str:
 	"""
@@ -187,7 +173,7 @@ def lower_ssa_func_to_llvm(
 	    arrays are supported as values but not as FnResult ok payloads yet.
 	  - General CFGs (including loops/backedges) are supported in v1.
 	"""
-	all_infos = dict(fn_infos) if fn_infos is not None else {fn_info.name: fn_info}
+	all_infos = dict(fn_infos) if fn_infos is not None else {fn_info.fn_id: fn_info}
 	mod = LlvmModuleBuilder()
 	builder = _FuncBuilder(func=func, ssa=ssa, fn_info=fn_info, fn_infos=all_infos, module=mod, type_table=type_table)
 	mod.emit_func(builder.lower())
@@ -195,11 +181,11 @@ def lower_ssa_func_to_llvm(
 
 
 def lower_module_to_llvm(
-	funcs: Mapping[str, MirFunc],
-	ssa_funcs: Mapping[str, SsaFunc],
-	fn_infos: Mapping[str, FnInfo],
+	funcs: Mapping[FunctionId, MirFunc],
+	ssa_funcs: Mapping[FunctionId, SsaFunc],
+	fn_infos: Mapping[FunctionId, FnInfo],
 	type_table: Optional[TypeTable] = None,
-	rename_map: Optional[Mapping[str, str]] = None,
+	rename_map: Optional[Mapping[FunctionId, str]] = None,
 	argv_wrapper: Optional[str] = None,
 ) -> LlvmModuleBuilder:
 	"""
@@ -208,7 +194,7 @@ def lower_module_to_llvm(
 	Args:
 	  funcs: name -> MIR function
 	  ssa_funcs: name -> SSA wrapper (must align with funcs)
-	  fn_infos: name -> FnInfo for each function
+	  fn_infos: FunctionId -> FnInfo for each function
 	"""
 	mod = LlvmModuleBuilder()
 
@@ -235,11 +221,11 @@ def lower_module_to_llvm(
 	# module interface uniformly boundary-shaped.
 	# Driver-level renames (e.g. argv wrapper name) must not affect call-site
 	# binding decisions. Keep them separate from export wrapper renames.
-	driver_rename: dict[str, str] = dict(rename_map or {})
-	body_rename: dict[str, str] = dict(driver_rename)
-	export_impl_map: dict[str, str] = {}
-	exported_fns: list[str] = []
-	for name, info in fn_infos.items():
+	driver_rename: dict[FunctionId, str] = dict(rename_map or {})
+	body_rename: dict[FunctionId, str] = dict(driver_rename)
+	export_impl_map: dict[FunctionId, str] = {}
+	exported_fns: list[FunctionId] = []
+	for fn_id, info in fn_infos.items():
 		sig = info.signature
 		if sig is None or not bool(getattr(sig, "is_exported_entrypoint", False)):
 			continue
@@ -247,20 +233,20 @@ def lower_module_to_llvm(
 			continue
 		# Only functions that exist in the current module (i.e. present in funcs)
 		# can have wrappers emitted here. Imported functions are declared elsewhere.
-		if name not in funcs:
+		if fn_id not in funcs:
 			continue
-		if name in body_rename:
+		if fn_id in body_rename:
 			# If the driver already renamed this symbol (e.g. argv wrapper), do not
 			# add another layer of indirection.
 			continue
-		impl = f"{name}__impl"
-		body_rename[name] = impl
-		export_impl_map[name] = impl
-		exported_fns.append(name)
+		impl = f"{function_symbol(fn_id)}__impl"
+		body_rename[fn_id] = impl
+		export_impl_map[fn_id] = impl
+		exported_fns.append(fn_id)
 
-	for name, mir_func in funcs.items():
-		ssa = ssa_funcs[name]
-		fn_info = fn_infos[name]
+	for fn_id, mir_func in funcs.items():
+		ssa = ssa_funcs[fn_id]
+		fn_info = fn_infos[fn_id]
 		builder = _FuncBuilder(
 			func=mir_func,
 			ssa=ssa,
@@ -268,7 +254,7 @@ def lower_module_to_llvm(
 			fn_infos=fn_infos,
 			module=mod,
 			type_table=type_table,
-			sym_name=body_rename.get(name),
+			sym_name=body_rename.get(fn_id),
 			rename_map=driver_rename,
 			export_impl_map=export_impl_map,
 		)
@@ -276,7 +262,7 @@ def lower_module_to_llvm(
 
 	# Emit wrappers after all implementation bodies so they can reference the
 	# renamed `__impl` symbols.
-	for public in sorted(exported_fns):
+	for public in sorted(exported_fns, key=function_symbol):
 		info = fn_infos[public]
 		sig = info.signature
 		assert sig is not None
@@ -310,7 +296,7 @@ def lower_module_to_llvm(
 		fnres_llty = mod.fnresult_type(ok_key, ok_llty)
 
 		lines: list[str] = []
-		lines.append(f"define {fnres_llty} {_llvm_fn_sym(public)}({params_str}) {{")
+		lines.append(f"define {fnres_llty} {_llvm_fn_sym(function_symbol(public))}({params_str}) {{")
 		lines.append("entry:")
 		args = ", ".join(f"{type_builder._llvm_type_for_typeid(t)} %{n}" for t, n in zip(param_tids, param_names))
 
@@ -719,18 +705,18 @@ class _FuncBuilder:
 	func: MirFunc
 	ssa: SsaFunc
 	fn_info: FnInfo
-	fn_infos: Mapping[str, FnInfo]
+	fn_infos: Mapping[FunctionId, FnInfo]
 	module: LlvmModuleBuilder
 	# Name mapping hooks used by the module-level emitter for ABI-boundary export
 	# wrappers. These maps are purely about symbol selection at call sites.
 	#
-	# - `export_impl_map` maps an exported public symbol name (e.g. `m::foo`) to
-	#   its private implementation symbol name (e.g. `m::foo__impl`).
-	# - `rename_map` is a more general symbol rename table supplied by the driver
-	#   (e.g. for argv wrappers). Codegen only uses it defensively for call sites
-	#   that must target renamed bodies.
-	rename_map: Mapping[str, str] = field(default_factory=dict)
-	export_impl_map: Mapping[str, str] = field(default_factory=dict)
+	# - `export_impl_map` maps an exported FunctionId to its private implementation
+	#   symbol name (e.g. `m::foo__impl`).
+	# - `rename_map` is a more general FunctionId -> symbol rename table supplied
+	#   by the driver (e.g. argv wrappers). Codegen only uses it defensively for
+	#   call sites that must target renamed bodies.
+	rename_map: Mapping[FunctionId, str] = field(default_factory=dict)
+	export_impl_map: Mapping[FunctionId, str] = field(default_factory=dict)
 	type_table: Optional[TypeTable] = None
 	tmp_counter: int = 0
 	lines: List[str] = field(default_factory=list)
@@ -760,7 +746,6 @@ class _FuncBuilder:
 	# Variant lowering caches (compiler-private ABI).
 	_variant_layouts: Dict[TypeId, "_VariantLayout"] = field(default_factory=dict)
 	_size_align_cache: Dict[TypeId, tuple[int, int]] = field(default_factory=dict)
-
 	def lower(self) -> str:
 		self._assert_cfg_supported()
 		self._prime_type_ids()
@@ -1673,50 +1658,50 @@ class _FuncBuilder:
 
 	def _lower_call(self, instr: Call) -> None:
 		dest = self._map_value(instr.dest) if instr.dest else None
-		callee_info = self.fn_infos.get(instr.fn)
+		callee_info = self.fn_infos.get(instr.fn_id)
+		callee_sym = function_symbol(instr.fn_id)
 		# Allow intrinsic console trio even without FnInfo (e.g., prelude).
-		if callee_info is None and instr.fn in {"print", "println", "eprintln"}:
+		if callee_info is None and instr.fn_id.module == "lang.core" and instr.fn_id.name in {"print", "println", "eprintln"}:
 			if len(instr.args) != 1:
-				raise NotImplementedError(f"LLVM codegen v1: {instr.fn} expects exactly one argument")
+				raise NotImplementedError(f"LLVM codegen v1: {callee_sym} expects exactly one argument")
 			arg_val = self._map_value(instr.args[0])
 			self.value_types.setdefault(arg_val, DRIFT_STRING_TYPE)
 			runtime_name = {
 				"print": "drift_console_write",
 				"println": "drift_console_writeln",
 				"eprintln": "drift_console_eprintln",
-			}[instr.fn]
+			}[instr.fn_id.name]
 			self.module.needs_console_runtime = True
 			self.lines.append(f"  call void @{runtime_name}({DRIFT_STRING_TYPE} {arg_val})")
 			if dest:
 				raise NotImplementedError("console intrinsics return Void; result cannot be captured")
 			return
 		if callee_info is None:
-			raise NotImplementedError(f"LLVM codegen v1: missing FnInfo for callee {instr.fn}")
+			raise NotImplementedError(f"LLVM codegen v1: missing FnInfo for callee {callee_sym}")
 
 		# Prelude console trio: treat lang.core::print/println/eprintln as runtime intrinsics.
-		if callee_info.signature and callee_info.signature.method_name in {"print", "println", "eprintln"}:
-			if getattr(callee_info.signature, "module", None) == "lang.core":
-				if len(instr.args) != 1:
-					raise NotImplementedError(f"LLVM codegen v1: {instr.fn} expects exactly one argument")
-				arg_val = self._map_value(instr.args[0])
-				self.value_types.setdefault(arg_val, DRIFT_STRING_TYPE)
-				runtime_name = {
-					"print": "drift_console_write",
-					"println": "drift_console_writeln",
-					"eprintln": "drift_console_eprintln",
-				}[callee_info.signature.method_name]
-				self.module.needs_console_runtime = True
-				self.lines.append(f"  call void @{runtime_name}({DRIFT_STRING_TYPE} {arg_val})")
-				if dest:
-					raise NotImplementedError("console intrinsics return Void; result cannot be captured")
-				return
+		if instr.fn_id.module == "lang.core" and instr.fn_id.name in {"print", "println", "eprintln"}:
+			if len(instr.args) != 1:
+				raise NotImplementedError(f"LLVM codegen v1: {callee_sym} expects exactly one argument")
+			arg_val = self._map_value(instr.args[0])
+			self.value_types.setdefault(arg_val, DRIFT_STRING_TYPE)
+			runtime_name = {
+				"print": "drift_console_write",
+				"println": "drift_console_writeln",
+				"eprintln": "drift_console_eprintln",
+			}[instr.fn_id.name]
+			self.module.needs_console_runtime = True
+			self.lines.append(f"  call void @{runtime_name}({DRIFT_STRING_TYPE} {arg_val})")
+			if dest:
+				raise NotImplementedError("console intrinsics return Void; result cannot be captured")
+			return
 
 		arg_parts: list[str] = []
 		if callee_info.signature and callee_info.signature.param_type_ids is not None:
 			sig = callee_info.signature
 			if len(sig.param_type_ids) != len(instr.args):
 				raise NotImplementedError(
-					f"LLVM codegen v1: arg count mismatch for {instr.fn}: "
+					f"LLVM codegen v1: arg count mismatch for {callee_sym}: "
 					f"MIR has {len(instr.args)}, signature has {len(sig.param_type_ids)}"
 				)
 			for ty_id, arg in zip(sig.param_type_ids, instr.args):
@@ -1730,7 +1715,7 @@ class _FuncBuilder:
 		is_exported_entry = bool(
 			callee_info.signature is not None and getattr(callee_info.signature, "is_exported_entrypoint", False)
 		)
-		target_sym, is_cross_module = self._resolve_call_target_symbol(instr.fn, callee_info)
+		target_sym, is_cross_module = self._resolve_call_target_symbol(instr.fn_id, callee_info)
 
 		call_can_throw = instr.can_throw
 
@@ -1831,7 +1816,7 @@ class _FuncBuilder:
 		self.lines.append(f"  {dest} = bitcast {fn_ptr_ty} {_llvm_fn_sym(sym)} to {fn_ptr_ty}")
 		self.value_types[dest] = fn_ptr_ty
 
-	def _resolve_call_target_symbol(self, symbol: str, callee_info: FnInfo) -> tuple[str, bool]:
+	def _resolve_call_target_symbol(self, fn_id: FunctionId, callee_info: FnInfo) -> tuple[str, bool]:
 		"""
 		Resolve the LLVM-level call target symbol for a MIR `Call`.
 
@@ -1847,18 +1832,18 @@ class _FuncBuilder:
 		)
 		caller_mod = (
 			getattr(self.fn_info.signature, "module", None) if self.fn_info.signature is not None else None
-		) or _module_id_from_symbol(self.func.name)
+		) or self.fn_info.fn_id.module
 		callee_mod = (
 			getattr(callee_info.signature, "module", None) if callee_info.signature is not None else None
-		) or _module_id_from_symbol(symbol)
+		) or callee_info.fn_id.module
 
 		# Treat unknown caller/callee module as cross-module to avoid accidentally
 		# targeting private `__impl` symbols from entrypoints like `main`.
 		is_cross_module = is_exported_entry and (caller_mod is None or callee_mod is None or caller_mod != callee_mod)
 
-		target_sym = symbol
+		target_sym = function_symbol(fn_id)
 		if is_exported_entry and not is_cross_module:
-			target_sym = self.export_impl_map.get(symbol, symbol)
+			target_sym = self.export_impl_map.get(fn_id, target_sym)
 
 		# Cross-module calls must never target `__impl`. If this trips, it is a
 		# compiler bug (bad module-id inference or bad signature metadata).
@@ -1866,7 +1851,7 @@ class _FuncBuilder:
 			raise AssertionError(f"cross-module call resolved to __impl symbol {target_sym} (compiler bug)")
 
 		# Apply any final driver-level renames (e.g. argv wrapper) as a backstop.
-		target_sym = self.rename_map.get(target_sym, target_sym)
+		target_sym = self.rename_map.get(fn_id, target_sym)
 		return target_sym, is_cross_module
 
 	def _lower_term(self, term: object) -> None:

@@ -1,7 +1,13 @@
 {
-  "exit_code": 1,
-  "module_paths": ["."],
+  "description": "e2e: module root mismatch",
   "diagnostics": [
-    { "phase": "parser", "message_contains": "module id mismatch" }
+    {
+      "message_contains": "module id mismatch",
+      "phase": "parser"
+    }
+  ],
+  "exit_code": 1,
+  "module_paths": [
+    "."
   ]
 }

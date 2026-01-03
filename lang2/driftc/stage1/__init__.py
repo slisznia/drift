@@ -86,7 +86,7 @@ from .closures import (
 )
 from .ast_to_hir import AstToHIR
 from .normalize import normalize_hir
-from .node_ids import assign_node_ids
+from .node_ids import assign_node_ids, assign_callsite_ids, validate_callsite_ids
 
 __all__ = [
 	"HNode",
@@ -156,6 +156,8 @@ __all__ = [
 	"AstToHIR",
 	"normalize_hir",
 	"assign_node_ids",
+	"assign_callsite_ids",
+	"validate_callsite_ids",
 	"HCaptureKind",
 	"HCaptureProj",
 	"HCaptureKey",

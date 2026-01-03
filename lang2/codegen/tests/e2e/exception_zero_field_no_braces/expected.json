@@ -1,5 +1,6 @@
 {
+  "description": "e2e: exception zero field no braces",
   "exit_code": 0,
-  "stdout": "",
-  "stderr": ""
+  "stderr": "",
+  "stdout": ""
 }

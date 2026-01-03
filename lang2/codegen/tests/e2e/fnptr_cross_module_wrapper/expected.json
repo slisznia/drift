@@ -1,1 +1,9 @@
-{ "exit_code": 1, "stdout": "", "stderr": "", "module_paths": ["."] }
+{
+  "description": "e2e: fnptr cross module wrapper",
+  "exit_code": 1,
+  "module_paths": [
+    "."
+  ],
+  "stderr": "",
+  "stdout": ""
+}

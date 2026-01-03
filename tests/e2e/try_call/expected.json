@@ -1,9 +1,10 @@
 {
-  "mode": "run",
-  "compile_error": null,
-  "exit_code": 42,
-  "stdout": "ok\n",
-  "stderr": "",
   "args": [],
-  "env": {}
+  "compile_error": null,
+  "description": "e2e: try call",
+  "env": {},
+  "exit_code": 42,
+  "mode": "run",
+  "stderr": "",
+  "stdout": "ok\n"
 }

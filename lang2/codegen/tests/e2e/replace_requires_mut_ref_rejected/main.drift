@@ -1,6 +1,7 @@
+import std.mem as mem
 fn main() nothrow returns Int{
 	var x = 1;
 	val p = &x;
-	replace(*p, 2);
+	mem.replace(*p, 2);
 	return x;
 }

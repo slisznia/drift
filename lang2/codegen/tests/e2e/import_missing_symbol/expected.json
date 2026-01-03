@@ -1,7 +1,11 @@
 {
-  "exit_code": 1,
-  "phase": "parser",
+  "description": "e2e: import missing symbol",
   "diagnostics": [
-    { "phase": "parser", "message_contains": "does not export symbol 'nope'" }
-  ]
+    {
+      "message_contains": "does not export symbol 'nope'",
+      "phase": "parser"
+    }
+  ],
+  "exit_code": 1,
+  "phase": "parser"
 }

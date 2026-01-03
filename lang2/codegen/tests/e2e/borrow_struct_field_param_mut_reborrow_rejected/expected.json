@@ -1,8 +1,10 @@
 {
-  "exit_code": 1,
-  "phase": "typecheck",
+  "description": "e2e: borrow struct field param mut reborrow rejected",
   "diagnostics": [
-    { "message_contains": "cannot take &mut through *p unless p is a mutable reference" }
-  ]
+    {
+      "message_contains": "cannot take &mut through *p unless p is a mutable reference"
+    }
+  ],
+  "exit_code": 1,
+  "phase": "typecheck"
 }
-

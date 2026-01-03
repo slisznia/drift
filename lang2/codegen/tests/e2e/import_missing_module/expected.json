@@ -1,7 +1,11 @@
 {
-  "exit_code": 1,
-  "phase": "parser",
+  "description": "e2e: import missing module",
   "diagnostics": [
-    { "phase": "parser", "message_contains": "imported module 'does_not_exist' not found" }
-  ]
+    {
+      "message_contains": "imported module 'does_not_exist' not found",
+      "phase": "parser"
+    }
+  ],
+  "exit_code": 1,
+  "phase": "parser"
 }

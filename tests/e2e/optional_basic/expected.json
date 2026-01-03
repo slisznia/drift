@@ -1,5 +1,6 @@
 {
-  "mode": "run",
+  "description": "e2e: optional basic",
   "exit_code": 0,
+  "mode": "run",
   "stdout": "some ok\nnone ok\n"
 }

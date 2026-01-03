@@ -1,6 +1,10 @@
 {
-  "exit_code": 1,
+  "description": "e2e: duplicate export in same module",
   "diagnostics": [
-    { "phase": "parser", "message_contains": "duplicate" }
-  ]
+    {
+      "message_contains": "duplicate",
+      "phase": "parser"
+    }
+  ],
+  "exit_code": 1
 }

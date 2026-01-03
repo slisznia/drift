@@ -1,1 +1,6 @@
-{ "exit_code": 7, "stdout": "", "stderr": "" }
+{
+  "description": "e2e: aug assign minus eq basic",
+  "exit_code": 7,
+  "stderr": "",
+  "stdout": ""
+}

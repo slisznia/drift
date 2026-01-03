@@ -1,1 +1,6 @@
-{ "exit_code": 42, "stdout": "", "stderr": "" }
+{
+  "description": "e2e: const basic int",
+  "exit_code": 42,
+  "stderr": "",
+  "stdout": ""
+}

@@ -1,6 +1,7 @@
 {
-  "run": false,
-  "compile_error": "has no field 'z'",
   "args": [],
-  "env": {}
+  "compile_error": "has no field 'z'",
+  "description": "e2e: invalid field",
+  "env": {},
+  "run": false
 }

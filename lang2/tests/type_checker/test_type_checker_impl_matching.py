@@ -14,7 +14,7 @@ from lang2.driftc.type_checker import TypeChecker
 
 
 def _callable_name(fn_id: FunctionId) -> str:
-	return fn_id.name if fn_id.module == "main" else f"{fn_id.module}::{fn_id.name}"
+	return fn_id.name
 
 
 def _build_registry(sigs: dict[FunctionId, FnSignature]) -> tuple[CallableRegistry, dict[object, int]]:
@@ -77,14 +77,14 @@ def _find_method_calls(block: H.HBlock) -> list[H.HMethodCall]:
 def _check_main(src: str, tmp_path: Path):
 	src_path = tmp_path / "impl_matching.drift"
 	src_path.write_text(src)
-	func_hirs, sigs, fn_ids_by_name, type_table, _exc_catalog, diagnostics = parse_drift_to_hir(src_path)
+	module, type_table, _exc_catalog, diagnostics = parse_drift_to_hir(src_path)
 	assert diagnostics == []
-	fn_ids = fn_ids_by_name.get("main") or []
+	fn_ids = module.fn_ids_by_name.get("main") or []
 	assert len(fn_ids) == 1
 	main_id = fn_ids[0]
-	main_sig = sigs.get(main_id)
-	main_block = func_hirs[main_id]
-	registry, module_ids = _build_registry(sigs)
+	main_sig = module.signatures_by_id.get(main_id)
+	main_block = module.func_hirs[main_id]
+	registry, module_ids = _build_registry(module.signatures_by_id)
 	tc = TypeChecker(type_table=type_table)
 	current_mod = module_ids.setdefault(main_sig.module, len(module_ids))
 	result = tc.check_function(
@@ -92,12 +92,12 @@ def _check_main(src: str, tmp_path: Path):
 		main_block,
 		param_types=None,
 		return_type=main_sig.return_type_id if main_sig is not None else None,
-		signatures_by_id=sigs,
+		signatures_by_id=module.signatures_by_id,
 		callable_registry=registry,
 		visible_modules=(current_mod,),
 		current_module=current_mod,
 	)
-	return result, type_table, sigs, main_block
+	return result, type_table, module.signatures_by_id, main_block
 
 
 def _find_impl_method_id(

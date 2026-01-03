@@ -1,5 +1,6 @@
 {
-  "mode": "run",
+  "description": "e2e: exception attrs diag",
   "exit_code": 42,
+  "mode": "run",
   "stdout": ""
 }

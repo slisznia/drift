@@ -44,6 +44,7 @@ def test_declared_events_subset_enforced_by_driver():
 		return_checked=True,
 	)
 
-	assert checked.fn_infos[fn_name].declared_events == frozenset({"m:EvtA"})
+	info = next(info for info in checked.fn_infos_by_id.values() if info.name == fn_name)
+	assert info.declared_events == frozenset({"m:EvtA"})
 	msgs = [d.message for d in checked.diagnostics]
 	assert any("throws ['m:EvtA'] but throws additional events ['m:EvtB']" in m for m in msgs)

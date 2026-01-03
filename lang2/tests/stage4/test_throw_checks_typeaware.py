@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from lang2.driftc.stage2 import BasicBlock, ConstructResultOk, MirFunc, Return
+from lang2.driftc.core.function_id import FunctionId
 from lang2.driftc.stage3 import ThrowSummaryBuilder
 from lang2.driftc.stage4 import MirToSSA, run_throw_checks
 from lang2.driftc.core.types_env_impl import SimpleTypeEnv
@@ -21,6 +22,7 @@ def _build_simple_mir_fn(name: str, ret_value: str) -> MirFunc:
 		terminator=Return(value=ret_value),
 	)
 	return MirFunc(
+		fn_id=FunctionId(module="main", name=name, ordinal=0),
 		name=name,
 		params=[],
 		locals=[],
@@ -31,24 +33,24 @@ def _build_simple_mir_fn(name: str, ret_value: str) -> MirFunc:
 
 def test_typeaware_accepts_fnresult_return():
 	"""Type-aware check should pass when the returned SSA value has FnResult type."""
-	fn_name = "f_type_ok"
-	mir_func = _build_simple_mir_fn(fn_name, ret_value="r0")
+	fn_id = FunctionId(module="main", name="f_type_ok", ordinal=0)
+	mir_func = _build_simple_mir_fn(fn_id.name, ret_value="r0")
 
 	# SSA for the function (single block).
 	ssa_func = MirToSSA().run(mir_func)
 
 	# SimpleTypeEnv: treat a 2-tuple as FnResult; tag r0 as FnResult(Int, Error).
 	tenv = SimpleTypeEnv()
-	tenv.set_ssa_type(fn_name, "r0", ("Int", "Error"))
+	tenv.set_ssa_type(fn_id, "r0", ("Int", "Error"))
 
-	summaries = ThrowSummaryBuilder().build({fn_name: mir_func}, code_to_exc={})
+	summaries = ThrowSummaryBuilder().build({fn_id: mir_func}, code_to_exc={})
 
 	# Should not raise: declared can-throw and return value is typed as FnResult.
 	run_throw_checks(
-		{fn_name: mir_func},
+		{fn_id: mir_func},
 		summaries,
-		declared_can_throw={fn_name: True},
-		ssa_funcs={fn_name: ssa_func},
+		declared_can_throw={fn_id: True},
+		ssa_funcs={fn_id: ssa_func},
 		type_env=tenv,
 	)
 
@@ -58,21 +60,21 @@ def test_typeaware_rejects_non_fnresult_return():
 	Type-aware check should reject can-throw functions returning non-FnResult
 	values even if structural checks would pass.
 	"""
-	fn_name = "f_type_bad"
-	mir_func = _build_simple_mir_fn(fn_name, ret_value="r0")
+	fn_id = FunctionId(module="main", name="f_type_bad", ordinal=0)
+	mir_func = _build_simple_mir_fn(fn_id.name, ret_value="r0")
 	ssa_func = MirToSSA().run(mir_func)
 
 	# Tag r0 as a non-FnResult type.
 	tenv = SimpleTypeEnv()
-	tenv.set_ssa_type(fn_name, "r0", "Int")
+	tenv.set_ssa_type(fn_id, "r0", "Int")
 
-	summaries = ThrowSummaryBuilder().build({fn_name: mir_func}, code_to_exc={})
+	summaries = ThrowSummaryBuilder().build({fn_id: mir_func}, code_to_exc={})
 
 	with pytest.raises(RuntimeError):
 		run_throw_checks(
-			{fn_name: mir_func},
+			{fn_id: mir_func},
 			summaries,
-			declared_can_throw={fn_name: True},
-			ssa_funcs={fn_name: ssa_func},
+			declared_can_throw={fn_id: True},
+			ssa_funcs={fn_id: ssa_func},
 			type_env=tenv,
 		)

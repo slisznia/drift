@@ -3,8 +3,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from lang2.driftc.core.function_id import function_symbol
 from lang2.driftc.core.types_core import TypeKind, TypeTable
+from lang2.driftc.method_registry import CallableRegistry, CallableSignature, Visibility
 from lang2.driftc.parser import parse_drift_workspace_to_hir
 from lang2.driftc.module_lowered import flatten_modules
 from lang2.driftc.stage1.normalize import normalize_hir
@@ -50,15 +50,32 @@ fn main() returns Int { return boom(); }
 	assert not diags
 	func_hirs, sigs, _fn_ids = flatten_modules(modules)
 
-	call_sigs_by_name: dict[str, list] = {}
-	can_throw_by_name: dict[str, bool] = {}
+	registry = CallableRegistry()
+	next_callable_id = 1
+	module_ids: dict[str, int] = {}
+	next_mod_id = 0
 	for fn_id, sig in sigs.items():
 		if sig.is_method:
 			continue
-		sym = function_symbol(fn_id)
-		call_sigs_by_name.setdefault(sym, []).append(sig)
+		mod_name = fn_id.module or "main"
+		mod_id = module_ids.get(mod_name)
+		if mod_id is None:
+			mod_id = next_mod_id
+			module_ids[mod_name] = mod_id
+			next_mod_id += 1
+		if sig.param_type_ids is None or sig.return_type_id is None:
+			continue
+		registry.register_free_function(
+			callable_id=next_callable_id,
+			name=fn_id.name,
+			module_id=mod_id,
+			visibility=Visibility.public(),
+			signature=CallableSignature(param_types=tuple(sig.param_type_ids), result_type=sig.return_type_id),
+			fn_id=fn_id,
+		)
+		next_callable_id += 1
 		if fn_id.name == "boom":
-			can_throw_by_name[sym] = True
+			sig.declared_can_throw = True
 
 	checker = TypeChecker(type_table=table)
 	call_infos = []
@@ -72,11 +89,12 @@ fn main() returns Int { return boom(); }
 			normalized,
 			param_types={},
 			return_type=sig.return_type_id if sig is not None else None,
-			call_signatures=call_sigs_by_name,
 			signatures_by_id=sigs,
-			can_throw_by_name=can_throw_by_name,
+			callable_registry=registry,
+			current_module=module_ids.get(fn_id.module or "main", 0),
+			visible_modules=(module_ids.get(fn_id.module or "main", 0),),
 		)
-		call_infos.extend(result.typed_fn.call_info_by_node_id.values())
+		call_infos.extend(result.typed_fn.call_info_by_callsite_id.values())
 
 	assert len(call_infos) == 2
 	ret_ids = [call_abi_ret_type(info.sig, table) for info in call_infos]

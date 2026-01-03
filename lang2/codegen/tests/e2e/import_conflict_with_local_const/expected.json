@@ -1,5 +1,6 @@
 {
+  "description": "e2e: import conflict with local const",
   "exit_code": 42,
-  "stdout": "",
-  "stderr": ""
+  "stderr": "",
+  "stdout": ""
 }

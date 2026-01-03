@@ -1,6 +1,10 @@
 {
-  "exit_code": 1,
+  "description": "e2e: borrow mut paren place requires var rejected",
   "diagnostics": [
-    { "phase": "typecheck", "message_contains": "cannot take &mut of an immutable binding" }
-  ]
+    {
+      "message_contains": "cannot take &mut of an immutable binding",
+      "phase": "typecheck"
+    }
+  ],
+  "exit_code": 1
 }

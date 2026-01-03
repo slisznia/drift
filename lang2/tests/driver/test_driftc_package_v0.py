@@ -1366,6 +1366,7 @@ pub fn add(a: Int, b: Int) nothrow returns Int {{
 		assert (
 			driftc_main(
 				[
+					"--dev",
 					"-M",
 					str(pkg_root),
 					str(module_dir / "evil.drift"),
@@ -1440,6 +1441,7 @@ pub fn add(a: Int, b: Int) nothrow returns Int {{
 	assert (
 		driftc_main(
 			[
+				"--dev",
 				"-M",
 				str(pkg_root),
 				str(module_dir / "evil.drift"),

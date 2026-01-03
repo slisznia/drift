@@ -1,9 +1,10 @@
 {
-  "mode": "run",
-  "compile_error": null,
-  "exit_code": 42,
-  "stdout": "caught\n",
-  "stderr": "",
   "args": [],
-  "env": {}
+  "compile_error": null,
+  "description": "e2e: try expr binder",
+  "env": {},
+  "exit_code": 42,
+  "mode": "run",
+  "stderr": "",
+  "stdout": "caught\n"
 }

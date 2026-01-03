@@ -19,7 +19,7 @@ def _typed_fn_with_method_call(
 	other_arg: H.HExpr,
 	self_mode: SelfMode = SelfMode.SELF_BY_REF,
 	receiver_autoborrow: SelfMode | None = None,
-) -> tuple[TypedFn, dict[str, FnSignature], dict[int, object], TypeTable]:
+) -> tuple[TypedFn, dict[FunctionId, FnSignature], dict[int, object], TypeTable]:
 	table = TypeTable()
 	int_ty = table.ensure_int()
 	unknown_ty = table.ensure_unknown()
@@ -47,8 +47,9 @@ def _typed_fn_with_method_call(
 	)
 	body = H.HBlock(statements=[x_let, s_let, y_let, H.HExprStmt(expr=call)])
 
-	signatures = {
-		"Point::for_each": FnSignature(
+	method_fn_id = FunctionId(module="main", name="Point::for_each", ordinal=0)
+	signatures_by_id = {
+		method_fn_id: FnSignature(
 			name="Point::for_each",
 			method_name="for_each",
 			is_method=True,
@@ -57,8 +58,6 @@ def _typed_fn_with_method_call(
 			param_type_ids=[recv_ty, unknown_ty, int_ty],
 		),
 	}
-
-	method_fn_id = FunctionId(module="main", name="Point::for_each", ordinal=0)
 	method_body = H.HBlock(
 		statements=[
 			H.HExprStmt(expr=H.HCall(fn=H.HVar(name="f", binding_id=2), args=[], kwargs=[])),
@@ -78,8 +77,7 @@ def _typed_fn_with_method_call(
 		binding_mutable={1: False, 2: False, 3: False},
 		call_resolutions={},
 	)
-	signatures_by_id = {method_fn_id: signatures["Point::for_each"]}
-	analyze_non_retaining_params({method_fn_id: method_typed}, signatures_by_id, type_table=table)
+	signatures_by_id = analyze_non_retaining_params({method_fn_id: method_typed}, signatures_by_id, type_table=table)
 
 	decl = CallableDecl(
 		callable_id=1,
@@ -91,6 +89,7 @@ def _typed_fn_with_method_call(
 		impl_id=1,
 		impl_target_type_id=point_ty,
 		self_mode=SelfMode.SELF_BY_REF,
+		fn_id=method_fn_id,
 	)
 	assign_node_ids(body)
 	call_resolutions = {call.node_id: MethodResolution(decl=decl, receiver_autoborrow=receiver_autoborrow)}
@@ -109,14 +108,14 @@ def _typed_fn_with_method_call(
 		binding_mutable={x_id: True, s_id: True, y_id: True},
 		call_resolutions=call_resolutions,
 	)
-	return typed_fn, signatures, call_resolutions, table
+	return typed_fn, signatures_by_id, call_resolutions, table
 
 
 def test_method_nonretaining_lambda_capture_conflicts_with_mut_arg() -> None:
 	lam = H.HLambda(params=[], body_expr=H.HVar(name="x", binding_id=1), body_block=None)
 	other = H.HBorrow(subject=H.HVar(name="x", binding_id=1), is_mut=True)
 	typed_fn, sigs, _res, table = _typed_fn_with_method_call(lambda_arg=lam, other_arg=other)
-	bc = BorrowChecker.from_typed_fn(typed_fn, type_table=table, signatures=sigs, enable_auto_borrow=True)
+	bc = BorrowChecker.from_typed_fn(typed_fn, type_table=table, signatures_by_id=sigs, enable_auto_borrow=True)
 	diags = bc.check_block(typed_fn.body)
 	assert any("mutable borrow" in d.message for d in diags)
 
@@ -125,7 +124,7 @@ def test_method_nonretaining_lambda_capture_allows_disjoint_mut_arg() -> None:
 	lam = H.HLambda(params=[], body_expr=H.HVar(name="x", binding_id=1), body_block=None)
 	other = H.HBorrow(subject=H.HVar(name="y", binding_id=3), is_mut=True)
 	typed_fn, sigs, _res, table = _typed_fn_with_method_call(lambda_arg=lam, other_arg=other)
-	bc = BorrowChecker.from_typed_fn(typed_fn, type_table=table, signatures=sigs, enable_auto_borrow=True)
+	bc = BorrowChecker.from_typed_fn(typed_fn, type_table=table, signatures_by_id=sigs, enable_auto_borrow=True)
 	diags = bc.check_block(typed_fn.body)
 	assert diags == []
 
@@ -139,6 +138,6 @@ def test_method_nonretaining_lambda_capture_conflicts_with_mut_arg_autoborrow_re
 		self_mode=SelfMode.SELF_BY_REF_MUT,
 		receiver_autoborrow=SelfMode.SELF_BY_REF_MUT,
 	)
-	bc = BorrowChecker.from_typed_fn(typed_fn, type_table=table, signatures=sigs, enable_auto_borrow=True)
+	bc = BorrowChecker.from_typed_fn(typed_fn, type_table=table, signatures_by_id=sigs, enable_auto_borrow=True)
 	diags = bc.check_block(typed_fn.body)
 	assert any("mutable borrow" in d.message for d in diags)

@@ -78,11 +78,11 @@ trait Debuggable { fn fmt(self: Int) returns String }
 fn use<T>(x: T) returns Int require T is Debuggable { return 0; }
 """
 	)
-	_func_hirs, sigs, _ids, table, _excs, diagnostics = parse_drift_to_hir(src)
+	module, table, _excs, diagnostics = parse_drift_to_hir(src)
 	assert diagnostics == []
 	world = table.trait_worlds.get("main")
 	assert world is not None
-	fn_id = next(fid for fid in sigs.keys() if fid.name == "use")
+	fn_id = next(fid for fid in module.signatures_by_id.keys() if fid.name == "use")
 	req = world.requires_by_fn.get(fn_id)
 	assert req is not None
 	if hasattr(req, "subject"):

@@ -23,6 +23,13 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Optional, Callable, FrozenSet, Mapping, Sequence, Set, Tuple, TYPE_CHECKING
 
 from lang2.driftc.core.diagnostics import Diagnostic
+
+# Checker diagnostics should always carry phase.
+def _chk_diag(*args, **kwargs):
+	if "phase" not in kwargs or kwargs.get("phase") is None:
+		kwargs["phase"] = "typecheck"
+	return Diagnostic(*args, **kwargs)
+
 from lang2.driftc.core.function_id import FunctionId, function_symbol
 from lang2.driftc.core.span import Span
 from lang2.driftc.core.types_protocol import TypeEnv
@@ -98,6 +105,20 @@ class FnSignature:
 	is_exported_entrypoint: bool = False
 
 
+@dataclass(frozen=True)
+class CheckerInputsById:
+	"""
+	ID-keyed inputs for the checker stub.
+
+	This keeps FunctionId as the primary identity in the stubbed pipeline and
+	allows a single adapter to produce legacy symbol-keyed maps as needed.
+	"""
+
+	hir_blocks_by_id: Mapping[FunctionId, "H.HBlock"]  # type: ignore[name-defined]
+	signatures_by_id: Mapping[FunctionId, FnSignature]
+	call_info_by_callsite_id: Mapping[FunctionId, Mapping[int, CallInfo]]
+
+
 @dataclass
 class FnInfo:
 	"""
@@ -109,6 +130,7 @@ class FnInfo:
 	of truth for return/param types and throws flags.
 	"""
 
+	fn_id: FunctionId
 	name: str
 	declared_can_throw: bool
 	signature: Optional[FnSignature] = None
@@ -123,6 +145,22 @@ class FnInfo:
 	error_type_id: Optional[TypeId] = None
 
 
+def make_fn_info(
+	fn_id: FunctionId,
+	sig: FnSignature,
+	*,
+	declared_can_throw: bool | None = None,
+) -> FnInfo:
+	if declared_can_throw is None:
+		declared_can_throw = True if sig.declared_can_throw is None else bool(sig.declared_can_throw)
+	return FnInfo(
+		fn_id=fn_id,
+		name=function_symbol(fn_id),
+		declared_can_throw=declared_can_throw,
+		signature=sig,
+	)
+
+
 @dataclass
 class CheckedProgram:
 	"""
@@ -134,6 +172,22 @@ class CheckedProgram:
 	"""
 
 	fn_infos: Dict[str, FnInfo]
+	type_table: Optional["TypeTable"] = None
+	type_env: Optional[TypeEnv] = None
+	exception_catalog: Optional[Dict[str, int]] = None
+	diagnostics: List[Diagnostic] = field(default_factory=list)
+
+
+@dataclass
+class CheckedProgramById:
+	"""
+	Checker output keyed by FunctionId.
+
+	This is the primary output for the stubbed pipeline; symbol-keyed maps
+	remain an internal implementation detail of the checker stub.
+	"""
+
+	fn_infos_by_id: Dict[FunctionId, FnInfo]
 	type_table: Optional["TypeTable"] = None
 	type_env: Optional[TypeEnv] = None
 	exception_catalog: Optional[Dict[str, int]] = None
@@ -155,30 +209,36 @@ class Checker:
 
 	def __init__(
 		self,
-		declared_can_throw: Mapping[str, bool] | None = None,
-		signatures: Mapping[str, FnSignature] | None = None,
+		declared_can_throw_by_id: Mapping[FunctionId, bool] | None = None,
+		signatures_by_id: Mapping[FunctionId, FnSignature] | None = None,
 		exception_catalog: Mapping[str, int] | None = None,
-		hir_blocks: Mapping[str, "H.HBlock"] | None = None,  # type: ignore[name-defined]
+		hir_blocks_by_id: Mapping[FunctionId, "H.HBlock"] | None = None,  # type: ignore[name-defined]
 		type_table: "TypeTable" | None = None,
-		call_info_by_name: Mapping[str, Mapping[int, CallInfo]] | None = None,
+		call_info_by_callsite_id: Mapping[FunctionId, Mapping[int, CallInfo]] | None = None,
 	) -> None:
-		# Until a real type checker exists we support two testing shims:
-		# 1) an explicit name -> bool map, or
-		# 2) a name -> FnSignature map, from which we can infer can-throw based
-		#    on the return type resembling FnResult.
-		self._declared_map = declared_can_throw or {}
-		self._signatures = signatures or {}
-		self._catch_arms = self._normalize_and_collect_catch_arms(hir_blocks or {})
+		declared_by_id = declared_can_throw_by_id or {}
+		signatures = signatures_by_id or {}
+		hir_blocks = hir_blocks_by_id or {}
+		if call_info_by_callsite_id is None:
+			raise AssertionError("call_info_by_callsite_id is required for Checker")
+		self._declared_by_id = {fn_id: bool(val) for fn_id, val in declared_by_id.items()}
+		self._signatures_by_id = {fn_id: sig for fn_id, sig in signatures.items()}
+		self._hir_blocks_by_id = {fn_id: block for fn_id, block in hir_blocks.items()}
+		self._call_info_by_callsite_id = {
+			fn_id: dict(call_info)
+			for fn_id, call_info in call_info_by_callsite_id.items()
+		}
+		for fn_id in self._hir_blocks_by_id.keys():
+			self._call_info_by_callsite_id.setdefault(fn_id, {})
+		self._catch_arms = self._normalize_and_collect_catch_arms(self._hir_blocks_by_id)
 		self._exception_catalog = dict(exception_catalog) if exception_catalog else None
-		self._hir_blocks = hir_blocks or {}
-		self._call_info_by_name = {k: dict(v) for k, v in (call_info_by_name or {}).items()}
 		# Use shared TypeTable when supplied; otherwise create a local one.
 		self._type_table = type_table or TypeTable()
-		# Index signatures by display name for approximate method lookups.
-		self._sigs_by_display_name: Dict[str, list[FnSignature]] = {}
-		for sig in self._signatures.values():
-			disp = sig.method_name or sig.name
-			self._sigs_by_display_name.setdefault(disp, []).append(sig)
+		self._ensure_core_types()
+
+	def _ensure_core_types(self) -> None:
+		if hasattr(self, "_int_type") and hasattr(self, "_string_type"):
+			return
 
 		def _find_named(kind: TypeKind, name: str) -> TypeId | None:
 			"""
@@ -200,23 +260,49 @@ class Checker:
 		self._void_type = _find_named(TypeKind.VOID, "Void") or self._type_table.ensure_void()
 		self._error_type = _find_named(TypeKind.ERROR, "Error") or self._type_table.ensure_error()
 		self._unknown_type = _find_named(TypeKind.UNKNOWN, "Unknown") or self._type_table.ensure_unknown()
-		# TODO: remove declared_can_throw shim once real parser/type checker supplies signatures.
 
-	def _normalize_and_collect_catch_arms(self, hir_blocks: Mapping[str, "H.HBlock"]) -> dict[str, list[list[CatchArmInfo]]]:
+	@classmethod
+	def run_by_id(
+		cls,
+		inputs: CheckerInputsById,
+		*,
+		declared_can_throw_by_id: Mapping[FunctionId, bool] | None = None,
+		exception_catalog: Mapping[str, int] | None = None,
+		type_table: "TypeTable" | None = None,
+		fn_decls_by_id: Iterable[FunctionId] | None = None,
+	) -> CheckedProgramById:
+		checker = cls(
+			declared_can_throw_by_id=declared_can_throw_by_id,
+			signatures_by_id=inputs.signatures_by_id,
+			exception_catalog=exception_catalog,
+			hir_blocks_by_id=inputs.hir_blocks_by_id,
+			type_table=type_table,
+			call_info_by_callsite_id=inputs.call_info_by_callsite_id,
+		)
+		if fn_decls_by_id is None:
+			decl_ids = list(checker._hir_blocks_by_id.keys())
+		else:
+			decl_ids = list(fn_decls_by_id)
+		return checker.check_by_id(decl_ids)
+
+	def _normalize_and_collect_catch_arms(
+		self,
+		hir_blocks: Mapping[FunctionId, "H.HBlock"],
+	) -> dict[FunctionId, list[list[CatchArmInfo]]]:
 		"""
 		Normalize HIR blocks and collect catch-arm info uniformly for all callers.
 
 		This keeps catch validation consistent between the CLI and stub helpers.
 		"""
-		catch_arms: dict[str, list[list[CatchArmInfo]]] = {}
-		for name, block in hir_blocks.items():
+		catch_arms: dict[FunctionId, list[list[CatchArmInfo]]] = {}
+		for fn_id, block in hir_blocks.items():
 			hir_norm = normalize_hir(block)
 			arms = collect_catch_arms_from_block(hir_norm)
 			if arms:
-				catch_arms[name] = arms
+				catch_arms[fn_id] = arms
 		return catch_arms
 
-	def check(self, fn_decls: Iterable[str]) -> CheckedProgram:
+	def check_by_id(self, fn_decls: Iterable[FunctionId]) -> CheckedProgramById:
 		"""
 		Produce a CheckedProgram with FnInfo for each fn name in `fn_decls`.
 
@@ -224,13 +310,161 @@ class Checker:
 		exception catalog when available, accumulating diagnostics instead
 		of raising.
 		"""
-		fn_infos: Dict[str, FnInfo] = {}
+		self._ensure_core_types()
+		fn_infos: Dict[FunctionId, FnInfo] = {}
 		diagnostics: List[Diagnostic] = []
 		known_events: Set[str] = set(self._exception_catalog.keys()) if self._exception_catalog else set()
+		callinfo_ok_by_fn: Dict[FunctionId, bool] = {}
+		skip_validation: Set[FunctionId] = set()
 
-		for name in fn_decls:
-			declared_can_throw = self._declared_map.get(name)
-			sig = self._signatures.get(name)
+		def _collect_callsite_ids(block: "H.HBlock") -> list[int]:
+			from lang2.driftc import stage1 as H
+
+			ids: list[int] = []
+
+			def walk_expr(expr: H.HExpr) -> None:
+				if isinstance(expr, H.HCall) and isinstance(expr.fn, H.HLambda):
+					lam = expr.fn
+					if getattr(lam, "body_expr", None) is not None:
+						walk_expr(lam.body_expr)
+					if getattr(lam, "body_block", None) is not None:
+						walk_block(lam.body_block)
+					for arg in expr.args:
+						walk_expr(arg)
+					for kw in getattr(expr, "kwargs", []) or []:
+						walk_expr(kw.value)
+					return
+				if isinstance(expr, H.HLambda):
+					if getattr(expr, "body_expr", None) is not None:
+						walk_expr(expr.body_expr)
+					if getattr(expr, "body_block", None) is not None:
+						walk_block(expr.body_block)
+					return
+				if isinstance(expr, (H.HCall, H.HMethodCall, H.HInvoke)):
+					csid = getattr(expr, "callsite_id", None)
+					if isinstance(csid, int):
+						ids.append(csid)
+					if isinstance(expr, H.HMethodCall):
+						walk_expr(expr.receiver)
+					elif isinstance(expr, H.HInvoke):
+						walk_expr(expr.callee)
+					for arg in expr.args:
+						walk_expr(arg)
+					for kw in getattr(expr, "kwargs", []) or []:
+						walk_expr(kw.value)
+					return
+				if isinstance(expr, H.HResultOk):
+					walk_expr(expr.value)
+				elif isinstance(expr, H.HBinary):
+					walk_expr(expr.left)
+					walk_expr(expr.right)
+				elif isinstance(expr, H.HUnary):
+					walk_expr(expr.expr)
+				elif isinstance(expr, H.HTernary):
+					walk_expr(expr.cond)
+					walk_expr(expr.then_expr)
+					walk_expr(expr.else_expr)
+				elif isinstance(expr, H.HField):
+					walk_expr(expr.subject)
+				elif isinstance(expr, H.HIndex):
+					walk_expr(expr.subject)
+					walk_expr(expr.index)
+				elif isinstance(expr, H.HDVInit):
+					for a in expr.args:
+						walk_expr(a)
+				elif isinstance(expr, H.HTryExpr):
+					walk_expr(expr.attempt)
+					for arm in expr.arms:
+						walk_block(arm.block)
+						if getattr(arm, "result", None) is not None:
+							walk_expr(arm.result)
+				elif getattr(H, "HBlockExpr", None) is not None and isinstance(expr, H.HBlockExpr):
+					walk_block(expr.block)
+				elif isinstance(expr, H.HMatchExpr):
+					walk_expr(getattr(expr, "scrutinee", getattr(expr, "subject", None)))
+					for arm in expr.arms:
+						walk_block(arm.block)
+						if getattr(arm, "result", None) is not None:
+							walk_expr(arm.result)
+
+			def walk_stmt(stmt: H.HStmt) -> None:
+				if isinstance(stmt, H.HLet):
+					if stmt.value is not None:
+						walk_expr(stmt.value)
+				elif isinstance(stmt, H.HAssign):
+					walk_expr(stmt.value)
+				elif isinstance(stmt, H.HExprStmt):
+					walk_expr(stmt.expr)
+				elif isinstance(stmt, H.HReturn):
+					if stmt.value is not None:
+						walk_expr(stmt.value)
+				elif isinstance(stmt, H.HThrow):
+					if stmt.value is not None:
+						walk_expr(stmt.value)
+				elif getattr(H, "HIf", None) is not None and isinstance(stmt, H.HIf):
+					walk_expr(stmt.cond)
+					walk_block(stmt.then_block)
+					if stmt.else_block is not None:
+						walk_block(stmt.else_block)
+				elif getattr(H, "HLoop", None) is not None and isinstance(stmt, H.HLoop):
+					walk_block(stmt.body)
+				elif getattr(H, "HWhile", None) is not None and isinstance(stmt, H.HWhile):
+					walk_expr(stmt.cond)
+					walk_block(stmt.body)
+				elif getattr(H, "HFor", None) is not None and isinstance(stmt, H.HFor):
+					walk_expr(stmt.iterable)
+					walk_block(stmt.body)
+				elif getattr(H, "HMatchStmt", None) is not None and isinstance(stmt, H.HMatchStmt):
+					walk_expr(getattr(stmt, "scrutinee", getattr(stmt, "subject", None)))
+					for arm in stmt.arms:
+						walk_block(arm.block)
+
+			def walk_block(block: H.HBlock) -> None:
+				for stmt in block.statements:
+					walk_stmt(stmt)
+
+			walk_block(block)
+			return ids
+
+		for fn_id, hir_block in self._hir_blocks_by_id.items():
+			call_info_by_callsite_id = self._call_info_by_callsite_id.get(fn_id)
+			call_sites = _collect_callsite_ids(hir_block)
+			if not call_sites:
+				callinfo_ok_by_fn[fn_id] = True
+				continue
+			if call_info_by_callsite_id is None:
+				diagnostics.append(
+					_chk_diag(
+						message="internal: missing CallInfo map for call validation (checker bug)",
+						code="E_INTERNAL_MISSING_CALLINFO",
+						severity="error",
+						span=Span(),
+					)
+				)
+				callinfo_ok_by_fn[fn_id] = False
+				skip_validation.add(fn_id)
+				continue
+			missing = [csid for csid in call_sites if csid not in call_info_by_callsite_id]
+			if missing:
+				diagnostics.append(
+					_chk_diag(
+						message=(
+							"internal: missing CallInfo for call validation (checker bug) "
+							f"(missing {len(missing)} callsites)"
+						),
+						code="E_INTERNAL_MISSING_CALLINFO",
+						severity="error",
+						span=Span(),
+					)
+				)
+				callinfo_ok_by_fn[fn_id] = False
+				skip_validation.add(fn_id)
+			else:
+				callinfo_ok_by_fn[fn_id] = True
+
+		for fn_id in fn_decls:
+			declared_can_throw = self._declared_by_id.get(fn_id)
+			sig = self._signatures_by_id.get(fn_id)
 			declared_events: Optional[FrozenSet[str]] = None
 			return_type = None
 			return_type_id: Optional[TypeId] = None
@@ -239,36 +473,43 @@ class Checker:
 			if sig is not None:
 				declared_events = frozenset(sig.throws_events) if sig.throws_events else None
 
-				# Prefer pre-resolved TypeIds if supplied; fall back to legacy resolution.
 				return_type_id = sig.return_type_id
 				error_type_id = sig.error_type_id
-				if return_type_id is None:
-					return_type_id, error_type_id = self._resolve_signature_types(sig)
-					sig.return_type_id = return_type_id
-					sig.error_type_id = error_type_id
-				elif error_type_id is None:
-					# If the signature already carries a FnResult TypeId, derive the error side.
-					td = self._type_table.get(return_type_id)
-					if td.kind is TypeKind.FNRESULT and len(td.param_types) >= 2:
-						error_type_id = td.param_types[1]
-						sig.error_type_id = error_type_id
-
-				if sig.param_type_ids is None:
-					sig.param_type_ids = self._resolve_param_types(sig)
+				if return_type_id is None or sig.param_type_ids is None:
+					diagnostics.append(
+						_chk_diag(
+							message=f"internal: signature for '{sig.name}' is missing TypeIds (checker bug)",
+							severity="error",
+							span=Span.from_loc(getattr(sig, "loc", None)),
+						)
+					)
+				if (sig.declared_can_throw is True) and error_type_id is None:
+					diagnostics.append(
+						_chk_diag(
+							message=f"internal: signature for '{sig.name}' missing error TypeId (checker bug)",
+							severity="error",
+							span=Span.from_loc(getattr(sig, "loc", None)),
+						)
+					)
 
 				# Keep legacy/raw fields for backward compatibility.
 				return_type = sig.return_type
 				if declared_events is None and sig.throws_events:
 					declared_events = frozenset(sig.throws_events)
-				if sig.declared_can_throw is None and sig.throws_events:
-					sig.declared_can_throw = True
 				# Legacy shim: an explicit bool map overrides signatures in tests.
 				if declared_can_throw is None and sig.declared_can_throw is not None:
-					declared_can_throw = sig.declared_can_throw
+					declared_can_throw = bool(sig.declared_can_throw)
 
 			if declared_can_throw is None:
-				# Unspecified throw effect: default to can-throw. The `nothrow` marker
-				# is the only way to force a non-throwing ABI at the surface.
+				diagnostics.append(
+					_chk_diag(
+						message="internal: signature missing declared_can_throw (checker bug)",
+						code="E_INTERNAL_MISSING_DECLARED_CAN_THROW",
+						severity="error",
+						span=Span.from_loc(getattr(sig, "loc", None)),
+					)
+				)
+				skip_validation.add(fn_id)
 				declared_can_throw = True
 
 			# Method receiver validation (spec §3.8).
@@ -280,7 +521,7 @@ class Checker:
 				# as their first parameter.
 				if not sig.param_names:
 					diagnostics.append(
-						Diagnostic(
+						_chk_diag(
 							message=f"method '{sig.method_name or sig.name}' must declare a receiver parameter 'self'",
 							severity="error",
 							span=Span.from_loc(getattr(sig, "loc", None)),
@@ -288,7 +529,7 @@ class Checker:
 					)
 				elif sig.param_names[0] != "self":
 					diagnostics.append(
-						Diagnostic(
+						_chk_diag(
 							message=f"first parameter of method '{sig.method_name or sig.name}' must be named 'self'",
 							severity="error",
 							span=Span.from_loc(getattr(sig, "loc", None)),
@@ -323,20 +564,21 @@ class Checker:
 					if expected is not None and not receiver_ok:
 						target_name = self._type_table.get(sig.impl_target_type_id).name
 						diagnostics.append(
-							Diagnostic(
+							_chk_diag(
 								message=f"receiver type for method '{sig.method_name or sig.name}' must be '{target_name}' (or '&{target_name}' / '&mut {target_name}')",
 								severity="error",
 								span=Span.from_loc(getattr(sig, "loc", None)),
 							)
 						)
 
-			catch_arms_groups = self._catch_arms.get(name)
+			catch_arms_groups = self._catch_arms.get(fn_id)
 			if catch_arms_groups is not None:
 				for arms in catch_arms_groups:
 					validate_catch_arms(arms, known_events, diagnostics)
 
-			fn_infos[name] = FnInfo(
-				name=name,
+			fn_infos[fn_id] = FnInfo(
+				fn_id=fn_id,
+				name=function_symbol(fn_id),
 				declared_can_throw=declared_can_throw,
 				signature=sig,
 				declared_events=declared_events,
@@ -366,32 +608,34 @@ class Checker:
 		# hook (future `nothrow`/throws syntax). If set to False, we keep the
 		# function non-throwing and emit a diagnostic when inference finds an
 		# escaping throw.
-		first_throw_span_by_fn: dict[str, Span] = {}
-		first_throw_note_by_fn: dict[str, str] = {}
-		call_info_by_node_id: Mapping[int, CallInfo] | None = None
+		first_throw_span_by_fn: dict[FunctionId, Span] = {}
+		first_throw_note_by_fn: dict[FunctionId, str] = {}
+		call_info_by_callsite_id: Mapping[int, CallInfo] | None = None
 		changed = True
 		while changed:
 			changed = False
-			for fn_name, hir_block in self._hir_blocks.items():
-				info = fn_infos.get(fn_name)
+			for fn_id, hir_block in self._hir_blocks_by_id.items():
+				info = fn_infos.get(fn_id)
 				if info is None:
 					continue
-				call_info_by_node_id = self._call_info_by_name.get(fn_name)
+				if not callinfo_ok_by_fn.get(fn_id, True):
+					continue
+				call_info_by_callsite_id = self._call_info_by_callsite_id.get(fn_id)
 				may_throw, throw_span, throw_note = self._function_may_throw(
 					hir_block,
 					fn_infos,
-					fn_name,
-					call_info_by_node_id,
+					fn_id,
+					call_info_by_callsite_id,
 				)
-				first_throw_span_by_fn.setdefault(fn_name, throw_span)
+				first_throw_span_by_fn.setdefault(fn_id, throw_span)
 				if throw_note:
-					first_throw_note_by_fn.setdefault(fn_name, throw_note)
+					first_throw_note_by_fn.setdefault(fn_id, throw_note)
 				info.inferred_may_throw = may_throw
 				explicit = info.signature.declared_can_throw if info.signature is not None else None
 				# Legacy test shim: `declared_can_throw` map is treated as an explicit
 				# annotation.
-				if fn_name in self._declared_map:
-					explicit = bool(self._declared_map[fn_name])
+				if fn_id in self._declared_by_id:
+					explicit = bool(self._declared_by_id[fn_id])
 				if explicit is False:
 					# Explicit nothrow: keep non-throwing; diagnose below.
 					continue
@@ -400,22 +644,22 @@ class Checker:
 					changed = True
 
 		# Emit diagnostics for explicit nothrow signatures that still may throw.
-		for fn_name, info in fn_infos.items():
+		for fn_id, info in fn_infos.items():
 			if info.signature is None:
 				continue
 			explicit = info.signature.declared_can_throw
-			if fn_name in self._declared_map:
-				explicit = bool(self._declared_map[fn_name])
+			if fn_id in self._declared_by_id:
+				explicit = bool(self._declared_by_id[fn_id])
 			if explicit is False and info.inferred_may_throw:
 				notes: list[str] | None = None
-				note = first_throw_note_by_fn.get(fn_name)
+				note = first_throw_note_by_fn.get(fn_id)
 				if note:
 					notes = [note]
 				diagnostics.append(
-					Diagnostic(
-						message=f"function {fn_name} is declared nothrow but may throw",
+					_chk_diag(
+						message=f"function {function_symbol(fn_id)} is declared nothrow but may throw",
 						severity="error",
-						span=first_throw_span_by_fn.get(fn_name, Span()),
+						span=first_throw_span_by_fn.get(fn_id, Span()),
 						notes=notes,
 					)
 				)
@@ -423,17 +667,29 @@ class Checker:
 		# Best-effort call arity/type checks based on FnSignature TypeIds. This
 		# only visits HCall with a plain HVar callee; arg types are unknown here
 		# so only arity is enforced.
-		for fn_name, hir_block in self._hir_blocks.items():
-			info = fn_infos.get(fn_name)
+		for fn_id, hir_block in self._hir_blocks_by_id.items():
+			info = fn_infos.get(fn_id)
 			if info is None:
 				continue
-			self._validate_calls(hir_block, fn_infos, diagnostics, current_fn=info)
+			if fn_id in skip_validation:
+				continue
+			if not callinfo_ok_by_fn.get(fn_id, True):
+				continue
+			self._validate_calls(
+				hir_block,
+				fn_infos,
+				diagnostics,
+				call_info_by_callsite_id=self._call_info_by_callsite_id.get(fn_id),
+				current_fn=info,
+			)
 
 		# Array/boolean checks share a typing context per function to keep locals
 		# consistent across validations.
-		for fn_name, hir_block in self._hir_blocks.items():
-			info = fn_infos.get(fn_name)
+		for fn_id, hir_block in self._hir_blocks_by_id.items():
+			info = fn_infos.get(fn_id)
 			if info is None:
+				continue
+			if fn_id in skip_validation:
 				continue
 			# Each function gets its own typing context so locals/diagnostics are
 			# isolated while reusing the shared traversal logic.
@@ -442,6 +698,7 @@ class Checker:
 				table=self._type_table,
 				fn_infos=fn_infos,
 				current_fn=info,
+				call_info_by_callsite_id=self._call_info_by_callsite_id.get(fn_id),
 				locals={},
 				diagnostics=diagnostics,
 			)
@@ -460,17 +717,17 @@ class Checker:
 
 			self._walk_hir(hir_block, ctx, on_expr=combined_on_expr, on_stmt=combined_on_stmt)
 
-		return CheckedProgram(
-			fn_infos=fn_infos,
+		return CheckedProgramById(
+			fn_infos_by_id=fn_infos,
 			type_table=self._type_table,
 			type_env=None,
 			exception_catalog=self._exception_catalog,
 			diagnostics=diagnostics,
 		)
 
-	def _call_may_throw(self, callee_name: str, fn_infos: Mapping[str, FnInfo]) -> bool:
-		"""Determine if a call to `callee_name` may throw, based on FnInfo."""
-		info = fn_infos.get(callee_name)
+	def _call_may_throw(self, callee_id: FunctionId, fn_infos: Mapping[FunctionId, FnInfo]) -> bool:
+		"""Determine if a call to `callee_id` may throw, based on FnInfo."""
+		info = fn_infos.get(callee_id)
 		if info is None:
 			return False
 		# Prefer explicit declared_can_throw; fall back to inferred flag.
@@ -478,28 +735,25 @@ class Checker:
 			return True
 		return info.inferred_may_throw
 
-	def _module_for_symbol(self, name: str) -> str:
-		base = name
-		if "#" in base:
-			base = base.split("#", 1)[0]
-		if "::" in base:
-			return base.split("::", 1)[0]
-		return "main"
-
-	def _is_boundary_call(self, callee_name: str, caller_name: str, fn_infos: Mapping[str, FnInfo]) -> bool:
-		info = fn_infos.get(callee_name)
+	def _is_boundary_call(
+		self,
+		callee_id: FunctionId,
+		caller_id: FunctionId,
+		fn_infos: Mapping[FunctionId, FnInfo],
+	) -> bool:
+		info = fn_infos.get(callee_id)
 		if info is None or info.signature is None:
 			return False
 		if not (info.signature.is_exported_entrypoint or info.signature.is_extern):
 			return False
-		return self._module_for_symbol(callee_name) != self._module_for_symbol(caller_name)
+		return callee_id.module != caller_id.module
 
 	def _function_may_throw(
 		self,
 		block: "H.HBlock",
-		fn_infos: Mapping[str, FnInfo],
-		current_fn: str,
-		call_info_by_node_id: Mapping[int, CallInfo] | None,
+		fn_infos: Mapping[FunctionId, FnInfo],
+		current_fn: FunctionId,
+		call_info_by_callsite_id: Mapping[int, CallInfo] | None,
 		*,
 		unknown_calls_throw: bool = False,
 		indexing_throws: bool = False,
@@ -521,83 +775,47 @@ class Checker:
 			nonlocal first_span
 			nonlocal first_note
 			if isinstance(expr, H.HCall):
-				if call_info_by_node_id is not None:
-					info = call_info_by_node_id.get(expr.node_id)
-					if info is None:
-						if not isinstance(expr.fn, H.HVar):
-							# Constructor calls (qualified member, etc.) are not function calls
-							# and do not carry CallInfo; they are non-throwing.
-							return
-						raise AssertionError(
-							f"BUG: missing CallInfo for call during nothrow analysis (node_id={expr.node_id})"
-						)
-					if info.sig.can_throw and not catch_all:
-						may_throw = True
-						if first_span is None:
-							first_span = Span.from_loc(getattr(expr, "loc", None))
-						if first_note is None:
-							first_note = "call may throw"
-						if info.target.kind is CallTargetKind.DIRECT and info.target.symbol is not None:
-							callee_name = function_symbol(info.target.symbol)
-							if self._is_boundary_call(callee_name, current_fn, fn_infos):
-								first_note = (
-									"cross-module call to exported/extern requires can-throw calling convention"
-								)
-				elif isinstance(expr.fn, H.HVar):
-					if catch_all:
-						# Catch-all in scope handles any propagated throw from this call.
-						pass
-					else:
-						info = fn_infos.get(expr.fn.name)
-						if info is None:
-							if unknown_calls_throw:
-								may_throw = True
-								if first_span is None:
-									first_span = Span.from_loc(getattr(expr, "loc", None))
-								if first_note is None:
-									first_note = "call may throw"
-						elif self._is_boundary_call(expr.fn.name, current_fn, fn_infos):
-							may_throw = True
-							if first_span is None:
-								first_span = Span.from_loc(getattr(expr, "loc", None))
-							if first_note is None:
-								first_note = "cross-module call to exported/extern requires can-throw calling convention"
-						elif self._call_may_throw(expr.fn.name, fn_infos):
-							may_throw = True
-							if first_span is None:
-								first_span = Span.from_loc(getattr(expr, "loc", None))
+				if call_info_by_callsite_id is None:
+					raise AssertionError(
+						f"BUG: missing CallInfo map for call during nothrow analysis (callsite_id={getattr(expr, 'callsite_id', None)})"
+					)
+				info = call_info_by_callsite_id.get(getattr(expr, "callsite_id", None))
+				if info is None:
+					raise AssertionError(
+						f"BUG: missing CallInfo for call during nothrow analysis (callsite_id={getattr(expr, 'callsite_id', None)})"
+					)
+				if info.sig.can_throw and not catch_all:
+					may_throw = True
+					if first_span is None:
+						first_span = Span.from_loc(getattr(expr, "loc", None))
+					if first_note is None:
+						first_note = "call may throw"
+					if info.target.kind is CallTargetKind.DIRECT and info.target.symbol is not None:
+						callee_id = info.target.symbol
+						if self._is_boundary_call(callee_id, current_fn, fn_infos):
+							first_note = (
+								"cross-module call to exported/extern requires can-throw calling convention"
+							)
 				for arg in expr.args:
 					walk_expr(arg, caught_events, catch_all)
 				for kw in getattr(expr, "kwargs", []) or []:
 					walk_expr(kw.value, caught_events, catch_all)
 			elif isinstance(expr, H.HMethodCall):
-				if call_info_by_node_id is not None:
-					info = call_info_by_node_id.get(expr.node_id)
-					if info is None:
-						if unknown_calls_throw and not catch_all:
-							may_throw = True
-							if first_span is None:
-								first_span = Span.from_loc(getattr(expr, "loc", None))
-							if first_note is None:
-								first_note = "method call may throw"
-						walk_expr(expr.receiver, caught_events, catch_all)
-						for arg in expr.args:
-							walk_expr(arg, caught_events, catch_all)
-						for kw in getattr(expr, "kwargs", []) or []:
-							walk_expr(kw.value, caught_events, catch_all)
-						return
-					call_can_throw = info.sig.can_throw
-					if info.target.kind is CallTargetKind.DIRECT and info.target.symbol is not None:
-						fn_info = fn_infos.get(function_symbol(info.target.symbol))
-						if fn_info is not None:
-							call_can_throw = bool(fn_info.declared_can_throw)
-					if call_can_throw and not catch_all:
-						may_throw = True
-						if first_span is None:
-							first_span = Span.from_loc(getattr(expr, "loc", None))
-						if first_note is None:
-							first_note = "method call may throw"
-				elif unknown_calls_throw and not catch_all:
+				if call_info_by_callsite_id is None:
+					raise AssertionError(
+						f"BUG: missing CallInfo map for method call during nothrow analysis (callsite_id={getattr(expr, 'callsite_id', None)})"
+					)
+				info = call_info_by_callsite_id.get(getattr(expr, "callsite_id", None))
+				if info is None:
+					raise AssertionError(
+						f"BUG: missing CallInfo for method call during nothrow analysis (callsite_id={getattr(expr, 'callsite_id', None)})"
+					)
+				call_can_throw = info.sig.can_throw
+				if info.target.kind is CallTargetKind.DIRECT and info.target.symbol is not None:
+					fn_info = fn_infos.get(info.target.symbol)
+					if fn_info is not None:
+						call_can_throw = bool(fn_info.declared_can_throw)
+				if call_can_throw and not catch_all:
 					may_throw = True
 					if first_span is None:
 						first_span = Span.from_loc(getattr(expr, "loc", None))
@@ -609,19 +827,16 @@ class Checker:
 				for kw in getattr(expr, "kwargs", []) or []:
 					walk_expr(kw.value, caught_events, catch_all)
 			elif isinstance(expr, H.HInvoke):
-				if call_info_by_node_id is not None:
-					info = call_info_by_node_id.get(expr.node_id)
-					if info is None:
-						raise AssertionError(
-							f"BUG: missing CallInfo for invoke during nothrow analysis (node_id={expr.node_id})"
-						)
-					if info.sig.can_throw and not catch_all:
-						may_throw = True
-						if first_span is None:
-							first_span = Span.from_loc(getattr(expr, "loc", None))
-						if first_note is None:
-							first_note = "call may throw"
-				elif unknown_calls_throw and not catch_all:
+				if call_info_by_callsite_id is None:
+					raise AssertionError(
+						f"BUG: missing CallInfo map for invoke during nothrow analysis (callsite_id={getattr(expr, 'callsite_id', None)})"
+					)
+				info = call_info_by_callsite_id.get(getattr(expr, "callsite_id", None))
+				if info is None:
+					raise AssertionError(
+						f"BUG: missing CallInfo for invoke during nothrow analysis (callsite_id={getattr(expr, 'callsite_id', None)})"
+					)
+				if info.sig.can_throw and not catch_all:
 					may_throw = True
 					if first_span is None:
 						first_span = Span.from_loc(getattr(expr, "loc", None))
@@ -741,9 +956,9 @@ class Checker:
 	def _expr_may_throw(
 		self,
 		expr: "H.HExpr",
-		fn_infos: Mapping[str, FnInfo],
-		current_fn: str,
-		call_info_by_node_id: Mapping[int, CallInfo] | None,
+		fn_infos: Mapping[FunctionId, FnInfo],
+		current_fn: FunctionId,
+		call_info_by_callsite_id: Mapping[int, CallInfo] | None,
 		*,
 		unknown_calls_throw: bool = False,
 		indexing_throws: bool = False,
@@ -755,7 +970,7 @@ class Checker:
 			block,
 			fn_infos,
 			current_fn,
-			call_info_by_node_id,
+			call_info_by_callsite_id,
 			unknown_calls_throw=unknown_calls_throw,
 			indexing_throws=indexing_throws,
 		)
@@ -767,8 +982,9 @@ class Checker:
 
 		checker: "Checker"
 		table: TypeTable
-		fn_infos: Mapping[str, FnInfo]
+		fn_infos: Mapping[FunctionId, FnInfo]
 		current_fn: Optional[FnInfo]
+		call_info_by_callsite_id: Mapping[int, CallInfo] | None
 		locals: Dict[str, TypeId]
 		diagnostics: Optional[List[Diagnostic]]
 		cache: Dict[int, Optional[TypeId]] = field(default_factory=dict)
@@ -790,7 +1006,7 @@ class Checker:
 
 		def report_index_not_int(self) -> None:
 			self._append_diag(
-				Diagnostic(
+				_chk_diag(
 					message="array index must be Int",
 					severity="error",
 					span=None,
@@ -799,7 +1015,7 @@ class Checker:
 
 		def report_index_subject_not_array(self) -> None:
 			self._append_diag(
-				Diagnostic(
+				_chk_diag(
 					message="indexing requires an Array value",
 					severity="error",
 					span=None,
@@ -808,7 +1024,7 @@ class Checker:
 
 		def report_empty_array_literal(self) -> None:
 			self._append_diag(
-				Diagnostic(
+				_chk_diag(
 					message="empty array literal requires explicit type",
 					severity="error",
 					span=None,
@@ -817,7 +1033,7 @@ class Checker:
 
 		def report_mixed_array_literal(self) -> None:
 			self._append_diag(
-				Diagnostic(
+				_chk_diag(
 					message="array literal elements do not have a consistent type",
 					severity="error",
 					span=None,
@@ -885,7 +1101,7 @@ class Checker:
 				for hole in expr.holes:
 					if hole.spec.strip():
 						self._append_diag(
-							Diagnostic(
+							_chk_diag(
 								message=f"E-FSTR-BAD-SPEC: format spec is not supported yet (have '{hole.spec}')",
 								severity="error",
 								span=getattr(hole, "loc", Span()),
@@ -902,7 +1118,7 @@ class Checker:
 						checker._string_type,
 					):
 						self._append_diag(
-							Diagnostic(
+							_chk_diag(
 								message="E-FSTR-UNSUPPORTED-TYPE: f-string hole type is not supported in MVP",
 								severity="error",
 								span=getattr(hole, "loc", Span()),
@@ -920,10 +1136,26 @@ class Checker:
 				return self._infer_expr_type(expr.subject)
 
 			if isinstance(expr, H.HCall) and isinstance(expr.fn, H.HVar):
-				callee = self.fn_infos.get(expr.fn.name)
-				if callee is not None and callee.signature and callee.signature.return_type_id is not None:
-					return callee.signature.return_type_id
-				return None
+				if self.call_info_by_callsite_id is None:
+					self._append_diag(
+						_chk_diag(
+							message="internal: missing CallInfo map for call typing (checker bug)",
+							severity="error",
+							span=getattr(expr, "loc", None),
+						)
+					)
+					return None
+				info = self.call_info_by_callsite_id.get(getattr(expr, "callsite_id", None))
+				if info is None:
+					self._append_diag(
+						_chk_diag(
+							message="internal: missing CallInfo for call typing (checker bug)",
+							severity="error",
+							span=getattr(expr, "loc", None),
+						)
+					)
+					return None
+				return info.sig.user_ret_type
 			if isinstance(expr, H.HCall) and isinstance(expr.fn, H.HLambda):
 				lam = expr.fn
 				prev_locals = dict(self.locals)
@@ -943,7 +1175,7 @@ class Checker:
 						body_ty = self._infer_expr_type(lam.body_expr)
 						if expected_ret is not None and body_ty is not None and body_ty != expected_ret:
 							self._append_diag(
-								Diagnostic(
+								_chk_diag(
 									message="lambda return type does not match body type",
 									severity="error",
 									span=getattr(lam, "span", Span()),
@@ -956,7 +1188,7 @@ class Checker:
 							body_ty = self._infer_expr_type(last.expr)
 							if expected_ret is not None and body_ty is not None and body_ty != expected_ret:
 								self._append_diag(
-									Diagnostic(
+									_chk_diag(
 										message="lambda return type does not match body type",
 										severity="error",
 										span=getattr(lam, "span", Span()),
@@ -967,7 +1199,7 @@ class Checker:
 							body_ty = self._infer_expr_type(last.value)
 							if expected_ret is not None and body_ty is not None and body_ty != expected_ret:
 								self._append_diag(
-									Diagnostic(
+									_chk_diag(
 										message="lambda return type does not match body type",
 										severity="error",
 										span=getattr(lam, "span", Span()),
@@ -976,7 +1208,7 @@ class Checker:
 							return expected_ret if expected_ret is not None else body_ty
 					if expected_ret is not None:
 						self._append_diag(
-							Diagnostic(
+							_chk_diag(
 								message="lambda with explicit return type must return a value",
 								severity="error",
 								span=getattr(lam, "span", Span()),
@@ -1097,7 +1329,7 @@ class Checker:
 					)
 					if non_string_known:
 						self._append_diag(
-							Diagnostic(
+							_chk_diag(
 								message="string binary ops require String operands and support only +, ==, !=, <, <=, >, >=",
 								severity="error",
 								span=getattr(expr, "loc", Span()),
@@ -1173,7 +1405,7 @@ class Checker:
 				attempt_ty = self._infer_expr_type(expr.attempt)
 				if attempt_ty is not None and self.table.is_void(attempt_ty):
 					self._append_diag(
-						Diagnostic(
+						_chk_diag(
 							message="try/catch attempt must produce a value (not Void)",
 							severity="error",
 							span=getattr(expr, "loc", Span()),
@@ -1182,18 +1414,18 @@ class Checker:
 					return None
 
 				if self.current_fn is not None:
-					call_info_by_node_id = self.checker._call_info_by_name.get(self.current_fn.name)
+					call_info_by_callsite_id = self.checker._call_info_by_callsite_id.get(self.current_fn.fn_id)
 					attempt_may_throw = self.checker._expr_may_throw(
 						expr.attempt,
 						self.fn_infos,
-						self.current_fn.name,
-						call_info_by_node_id,
+						self.current_fn.fn_id,
+						call_info_by_callsite_id,
 						unknown_calls_throw=True,
 						indexing_throws=True,
 					)
 					if not attempt_may_throw:
 						self._append_diag(
-							Diagnostic(
+							_chk_diag(
 								message="'try' applied to a nothrow expression (catch is unreachable)",
 								severity="error",
 								span=getattr(expr, "loc", Span()),
@@ -1211,7 +1443,7 @@ class Checker:
 					for stmt in block.statements:
 						if isinstance(stmt, (H.HReturn, H.HBreak, H.HContinue, H.HRethrow)):
 							self._append_diag(
-								Diagnostic(
+								_chk_diag(
 									message=(
 										"E-TRYEXPR-CONTROLFLOW: control-flow statement not allowed in try-expression "
 										"catch block; use statement try { ... } catch { ... } instead"
@@ -1223,7 +1455,7 @@ class Checker:
 							return None
 					if result_expr is None:
 						self._append_diag(
-							Diagnostic(
+							_chk_diag(
 								message="catch arm must produce a value",
 								severity="error",
 								span=arm_span,
@@ -1238,7 +1470,7 @@ class Checker:
 					if arm.event_fqn is None:
 						if catch_all_seen:
 							self._append_diag(
-								Diagnostic(
+								_chk_diag(
 									message="catch-all must be the last catch arm",
 									severity="error",
 									span=arm.loc,
@@ -1248,7 +1480,7 @@ class Checker:
 					else:
 						if arm.event_fqn in seen_events:
 							self._append_diag(
-								Diagnostic(
+								_chk_diag(
 									message=f"duplicate catch arm for event {arm.event_fqn}",
 									severity="error",
 									span=arm.loc,
@@ -1256,7 +1488,7 @@ class Checker:
 							)
 						if catch_all_seen:
 							self._append_diag(
-								Diagnostic(
+								_chk_diag(
 									message="catch-all before this arm makes it unreachable",
 									severity="error",
 									span=arm.loc,
@@ -1284,7 +1516,7 @@ class Checker:
 						else:
 							message = f"catch arm type {arm_label} does not match other catch arm type {expected_label}"
 						self._append_diag(
-							Diagnostic(
+							_chk_diag(
 								message=message,
 								severity="error",
 								span=arm.loc,
@@ -1306,7 +1538,7 @@ class Checker:
 	def _infer_hir_expr_type(
 		self,
 		expr: "H.HExpr",
-		fn_infos: Mapping[str, FnInfo],
+		fn_infos: Mapping[FunctionId, FnInfo],
 		current_fn: Optional[FnInfo],
 		diagnostics: Optional[List[Diagnostic]] = None,
 		locals: Optional[Dict[str, TypeId]] = None,
@@ -1316,6 +1548,7 @@ class Checker:
 			table=self._type_table,
 			fn_infos=fn_infos,
 			current_fn=current_fn,
+			call_info_by_callsite_id=self._call_info_by_callsite_id.get(current_fn.fn_id) if current_fn else None,
 			locals=locals if locals is not None else {},
 			diagnostics=diagnostics,
 		)
@@ -1324,8 +1557,9 @@ class Checker:
 	def _validate_calls(
 		self,
 		block: "H.HBlock",
-		fn_infos: Mapping[str, FnInfo],
+		fn_infos: Mapping[FunctionId, FnInfo],
 		diagnostics: List[Diagnostic],
+		call_info_by_callsite_id: Mapping[int, CallInfo] | None,
 		current_fn: Optional[FnInfo] = None,
 	) -> None:
 		"""
@@ -1339,24 +1573,83 @@ class Checker:
 		from lang2.driftc import stage1 as H
 
 		def walk_expr(expr: H.HExpr) -> None:
-			if isinstance(expr, H.HCall) and isinstance(expr.fn, H.HVar):
-				callee_info = fn_infos.get(expr.fn.name)
-				if callee_info is None:
-					return
-				arg_type_ids = [self._infer_hir_expr_type(a, fn_infos, current_fn, diagnostics) for a in expr.args]
-				self.check_call_signature(callee_info, arg_type_ids, diagnostics, loc=None)
-				for arg in expr.args:
-					walk_expr(arg)
-				for kw in getattr(expr, "kwargs", []) or []:
-					walk_expr(kw.value)
-			elif isinstance(expr, H.HCall) and isinstance(expr.fn, H.HLambda):
+			if isinstance(expr, H.HCall) and isinstance(expr.fn, H.HLambda):
+				lam = expr.fn
+				if expr.kwargs:
+					diagnostics.append(
+						_chk_diag(
+							message="lambda calls do not support keyword arguments",
+							severity="error",
+							span=getattr(expr, "loc", None),
+						)
+					)
+				if len(expr.args) != len(lam.params):
+					diagnostics.append(
+						_chk_diag(
+							message=(
+								f"lambda expects {len(lam.params)} arguments, got {len(expr.args)}"
+							),
+							severity="error",
+							span=getattr(expr, "loc", None),
+						)
+					)
 				self._infer_hir_expr_type(expr, fn_infos, current_fn, diagnostics)
 				for arg in expr.args:
 					walk_expr(arg)
 				for kw in getattr(expr, "kwargs", []) or []:
 					walk_expr(kw.value)
-			elif isinstance(expr, H.HMethodCall):
-				walk_expr(expr.receiver)
+				return
+			if isinstance(expr, (H.HCall, H.HMethodCall, H.HInvoke)):
+				if call_info_by_callsite_id is None:
+					diagnostics.append(
+						_chk_diag(
+							message="internal: missing CallInfo map for call validation (checker bug)",
+							severity="error",
+							span=getattr(expr, "loc", None),
+						)
+					)
+					return
+				info = call_info_by_callsite_id.get(getattr(expr, "callsite_id", None))
+				if info is None:
+					diagnostics.append(
+						_chk_diag(
+							message="internal: missing CallInfo for call validation (checker bug)",
+							severity="error",
+							span=getattr(expr, "loc", None),
+						)
+					)
+					return
+				kwargs = getattr(expr, "kwargs", []) or []
+				skip_type_check = bool(kwargs)
+				if isinstance(expr, H.HMethodCall):
+					arg_exprs = [expr.receiver] + list(expr.args)
+				elif isinstance(expr, H.HInvoke):
+					if info.sig.includes_callee:
+						arg_exprs = [expr.callee] + list(expr.args)
+					else:
+						arg_exprs = list(expr.args)
+				else:
+					arg_exprs = list(expr.args)
+				if kwargs:
+					arg_exprs.extend(kw.value for kw in kwargs)
+				arg_type_ids = [
+					self._infer_hir_expr_type(a, fn_infos, current_fn, diagnostics) for a in arg_exprs
+				]
+				callee_name = None
+				if info.target.kind is CallTargetKind.DIRECT and info.target.symbol is not None:
+					callee_name = function_symbol(info.target.symbol)
+				self.check_call_signature(
+					info.sig,
+					arg_type_ids,
+					diagnostics,
+					loc=None,
+					callee_name=callee_name,
+					skip_type_check=skip_type_check,
+				)
+				if isinstance(expr, H.HMethodCall):
+					walk_expr(expr.receiver)
+				elif isinstance(expr, H.HInvoke):
+					walk_expr(expr.callee)
 				for arg in expr.args:
 					walk_expr(arg)
 				for kw in getattr(expr, "kwargs", []) or []:
@@ -1428,10 +1721,13 @@ class Checker:
 
 	def check_call_signature(
 		self,
-		callee: FnInfo | FnSignature,
+		callee: FnInfo | FnSignature | "CallSig",
 		arg_type_ids: list[Optional[TypeId]],
 		diagnostics: List[Diagnostic],
 		loc: Optional[Any] = None,
+		*,
+		callee_name: Optional[str] = None,
+		skip_type_check: bool = False,
 	) -> Optional[TypeId]:
 		"""
 		Best-effort call signature check using FnInfo/FnSignature + TypeIds.
@@ -1442,43 +1738,59 @@ class Checker:
 
 		Used by `_validate_calls` over HIR for shallow call checking.
 		"""
-		sig = callee.signature if isinstance(callee, FnInfo) else callee
-		if sig.param_type_ids is None or sig.return_type_id is None:
-			return sig.return_type_id
+		from lang2.driftc.stage1.call_info import CallSig
 
-		if len(arg_type_ids) != len(sig.param_type_ids):
+		if isinstance(callee, CallSig):
+			param_types = list(callee.param_types)
+			ret_type = callee.user_ret_type
+			if callee_name is None:
+				callee_name = "<call>"
+		else:
+			sig = callee.signature if isinstance(callee, FnInfo) else callee
+			if sig.param_type_ids is None or sig.return_type_id is None:
+				return sig.return_type_id
+			param_types = list(sig.param_type_ids)
+			ret_type = sig.return_type_id
+			if callee_name is None:
+				callee_name = sig.name or "<call>"
+
+		if len(arg_type_ids) != len(param_types):
 			diagnostics.append(
-				Diagnostic(
+				_chk_diag(
 					message=(
-						f"call to {sig.name} has {len(arg_type_ids)} arguments, "
-						f"expected {len(sig.param_type_ids)}"
+						f"call to {callee_name} has {len(arg_type_ids)} arguments, "
+						f"expected {len(param_types)}"
 					),
 					severity="error",
 					span=loc,
 				)
 			)
-			return sig.return_type_id
+			return ret_type
 
 		# Generic signatures may still carry uninstantiated type params in the
 		# stubbed pipeline, so avoid mismatched TypeId checks here.
-		if getattr(sig, "type_params", None) or getattr(sig, "impl_type_params", None):
-			return sig.return_type_id
+		if skip_type_check:
+			return ret_type
 
-		for idx, (arg_ty, param_ty) in enumerate(zip(arg_type_ids, sig.param_type_ids)):
+		if not isinstance(callee, CallSig):
+			if getattr(sig, "type_params", None) or getattr(sig, "impl_type_params", None):
+				return sig.return_type_id
+
+		for idx, (arg_ty, param_ty) in enumerate(zip(arg_type_ids, param_types)):
 			if arg_ty is None or param_ty is None:
 				continue
 			if arg_ty != param_ty:
 				diagnostics.append(
-					Diagnostic(
+					_chk_diag(
 						message=(
-							f"argument {idx} to {sig.name} has type {arg_ty!r}, "
+							f"argument {idx} to {callee_name} has type {arg_ty!r}, "
 							f"expected {param_ty!r}"
 						),
 						severity="error",
 						span=loc,
 					)
 				)
-		return sig.return_type_id
+		return ret_type
 
 	def _is_fnresult_return(self, return_type: Any) -> bool:
 		"""
@@ -1670,7 +1982,9 @@ class Checker:
 		def walk_stmt(stmt: H.HStmt) -> None:
 			if on_stmt:
 				on_stmt(stmt, ctx)
-				if isinstance(stmt, H.HExprStmt):
+				if isinstance(stmt, H.HReturn) and stmt.value is not None:
+					walk_expr(stmt.value)
+				elif isinstance(stmt, H.HExprStmt):
 					walk_expr(stmt.expr)
 				elif isinstance(stmt, H.HLet):
 					walk_expr(stmt.value)
@@ -1688,7 +2002,7 @@ class Checker:
 						value_ty = decl_ty
 					if decl_ty is not None and value_ty is not None and decl_ty != value_ty:
 						ctx._append_diag(
-							Diagnostic(
+							_chk_diag(
 								message="let-binding type does not match declared type",
 								severity="error",
 								span=getattr(stmt, "loc", Span()),
@@ -1703,7 +2017,7 @@ class Checker:
 						target_ty = ctx.infer(stmt.target)
 						if target_ty is not None and value_ty is not None and target_ty != value_ty:
 							ctx._append_diag(
-								Diagnostic(
+								_chk_diag(
 									message="assignment type mismatch for indexed array element",
 									severity="error",
 									span=getattr(stmt.target, "loc", getattr(stmt, "loc", Span())),
@@ -1757,7 +2071,7 @@ class Checker:
 		scrut_ty = ctx.infer(expr.scrutinee)
 		if scrut_ty is None:
 			ctx._append_diag(
-				Diagnostic(
+				_chk_diag(
 					message="match scrutinee type is unknown",
 					severity="error",
 					span=getattr(expr, "loc", Span()),
@@ -1766,7 +2080,7 @@ class Checker:
 			return
 		if ctx.table.get(scrut_ty).kind is not TypeKind.VARIANT:
 			ctx._append_diag(
-				Diagnostic(
+				_chk_diag(
 					message="match scrutinee must have a variant type",
 					severity="error",
 					span=getattr(expr, "loc", Span()),
@@ -1777,7 +2091,7 @@ class Checker:
 		inst = ctx.table.get_variant_instance(scrut_ty)
 		if inst is None:
 			ctx._append_diag(
-				Diagnostic(
+				_chk_diag(
 					message="match scrutinee variant instance is missing",
 					severity="error",
 					span=getattr(expr, "loc", Span()),
@@ -1794,7 +2108,7 @@ class Checker:
 				continue
 			if default_seen:
 				ctx._append_diag(
-					Diagnostic(
+					_chk_diag(
 						message="match arm after default is unreachable",
 						severity="error",
 						span=getattr(arm, "loc", getattr(expr, "loc", Span())),
@@ -1802,7 +2116,7 @@ class Checker:
 				)
 			if arm.ctor in seen_ctors:
 				ctx._append_diag(
-					Diagnostic(
+					_chk_diag(
 						message=f"duplicate match arm for constructor '{arm.ctor}'",
 						severity="error",
 						span=getattr(arm, "loc", getattr(expr, "loc", Span())),
@@ -1813,7 +2127,7 @@ class Checker:
 			arm_def = inst.arms_by_name.get(arm.ctor)
 			if arm_def is None:
 				ctx._append_diag(
-					Diagnostic(
+					_chk_diag(
 						message=f"unknown constructor '{arm.ctor}' in match",
 						severity="error",
 						span=getattr(arm, "loc", getattr(expr, "loc", Span())),
@@ -1828,7 +2142,7 @@ class Checker:
 				# Bare ctor patterns are allowed only for zero-field constructors.
 				if arm_def.field_types:
 					ctx._append_diag(
-						Diagnostic(
+						_chk_diag(
 							message=(
 								"E-MATCH-PAT-BARE: bare constructor pattern is only allowed for zero-field constructors; "
 								f"use '{arm.ctor}()' to ignore payload"
@@ -1840,7 +2154,7 @@ class Checker:
 			elif form == "paren":
 				if arm.binders:
 					ctx._append_diag(
-						Diagnostic(
+						_chk_diag(
 							message=f"constructor pattern '{arm.ctor}()' must not bind fields",
 							severity="error",
 							span=getattr(arm, "loc", getattr(expr, "loc", Span())),
@@ -1852,7 +2166,7 @@ class Checker:
 				binder_fields = getattr(arm, "binder_fields", None)
 				if binder_fields is None:
 					ctx._append_diag(
-						Diagnostic(
+						_chk_diag(
 							message=f"named constructor pattern '{arm.ctor}' is missing field names",
 							severity="error",
 							span=getattr(arm, "loc", getattr(expr, "loc", Span())),
@@ -1863,7 +2177,7 @@ class Checker:
 					for fname in binder_fields:
 						if fname in seen_fields:
 							ctx._append_diag(
-								Diagnostic(
+								_chk_diag(
 									message=f"duplicate field '{fname}' in constructor pattern '{arm.ctor}'",
 									severity="error",
 									span=getattr(arm, "loc", Span()),
@@ -1873,7 +2187,7 @@ class Checker:
 						seen_fields.add(fname)
 						if fname not in field_names:
 							ctx._append_diag(
-								Diagnostic(
+								_chk_diag(
 									message=(
 										f"unknown field '{fname}' in constructor pattern '{arm.ctor}'; "
 										f"available fields: {', '.join(field_names)}"
@@ -1887,7 +2201,7 @@ class Checker:
 					# Typecheck-stage normalization: store mapping only when lengths align.
 					if len(binder_fields) != len(arm.binders):
 						ctx._append_diag(
-							Diagnostic(
+							_chk_diag(
 								message=f"constructor pattern '{arm.ctor}' expects {len(binder_fields)} binders, got {len(arm.binders)}",
 								severity="error",
 								span=getattr(arm, "loc", Span()),
@@ -1899,7 +2213,7 @@ class Checker:
 				field_types = list(getattr(arm_def, "field_types", []) or [])
 				if len(arm.binders) != len(field_types):
 					ctx._append_diag(
-						Diagnostic(
+						_chk_diag(
 							message=f"constructor pattern '{arm.ctor}' expects {len(field_types)} binders, got {len(arm.binders)}",
 							severity="error",
 							span=getattr(arm, "loc", getattr(expr, "loc", Span())),
@@ -1932,7 +2246,7 @@ class Checker:
 			inner_ty = ctx.infer(expr.expr)
 			if inner_ty is not None and inner_ty != uint_ty:
 				ctx._append_diag(
-					Diagnostic(
+					_chk_diag(
 						message="bitwise operators require Uint operands",
 						severity="error",
 						span=getattr(expr, "loc", Span()),
@@ -1951,7 +2265,7 @@ class Checker:
 			right_ty = ctx.infer(expr.right)
 			if left_ty is not None and right_ty is not None and (left_ty != uint_ty or right_ty != uint_ty):
 				ctx._append_diag(
-					Diagnostic(
+					_chk_diag(
 						message="bitwise operators require Uint operands",
 						severity="error",
 						span=getattr(expr, "loc", Span()),
@@ -1976,7 +2290,7 @@ class Checker:
 			right_ty = ctx.infer(expr.right)
 			if is_void(left_ty) or is_void(right_ty):
 				ctx._append_diag(
-					Diagnostic(
+					_chk_diag(
 						message="Void value is not allowed in a binary operation",
 						severity="error",
 						span=getattr(expr, "loc", Span()),
@@ -1988,7 +2302,7 @@ class Checker:
 			sub_ty = ctx.infer(expr.expr)
 			if is_void(sub_ty):
 				ctx._append_diag(
-					Diagnostic(
+					_chk_diag(
 						message="Void value is not allowed in a unary operation",
 						severity="error",
 						span=getattr(expr, "loc", Span()),
@@ -2001,7 +2315,7 @@ class Checker:
 			else_ty = ctx.infer(expr.else_expr)
 			if is_void(then_ty) or is_void(else_ty):
 				ctx._append_diag(
-					Diagnostic(
+					_chk_diag(
 						message="Void value is not allowed in a ternary expression",
 						severity="error",
 						span=getattr(expr, "loc", Span()),
@@ -2014,7 +2328,7 @@ class Checker:
 				arg_ty = ctx.infer(arg)
 				if is_void(arg_ty):
 					ctx._append_diag(
-						Diagnostic(
+						_chk_diag(
 							message="Void value is not allowed as a function argument",
 							severity="error",
 							span=getattr(arg, "loc", getattr(expr, "loc", Span())),
@@ -2024,7 +2338,7 @@ class Checker:
 				arg_ty = ctx.infer(kw.value)
 				if is_void(arg_ty):
 					ctx._append_diag(
-						Diagnostic(
+						_chk_diag(
 							message="Void value is not allowed as a function argument",
 							severity="error",
 							span=getattr(kw.value, "loc", getattr(expr, "loc", Span())),
@@ -2037,7 +2351,7 @@ class Checker:
 				arg_ty = ctx.infer(arg)
 				if is_void(arg_ty):
 					ctx._append_diag(
-						Diagnostic(
+						_chk_diag(
 							message="Void value is not allowed as a method argument",
 							severity="error",
 							span=getattr(arg, "loc", getattr(expr, "loc", Span())),
@@ -2047,7 +2361,7 @@ class Checker:
 				arg_ty = ctx.infer(kw.value)
 				if is_void(arg_ty):
 					ctx._append_diag(
-						Diagnostic(
+						_chk_diag(
 							message="Void value is not allowed as a method argument",
 							severity="error",
 							span=getattr(kw.value, "loc", getattr(expr, "loc", Span())),
@@ -2060,7 +2374,7 @@ class Checker:
 				el_ty = ctx.infer(el)
 				if is_void(el_ty):
 					ctx._append_diag(
-						Diagnostic(
+						_chk_diag(
 							message="Void value is not allowed in an array literal",
 							severity="error",
 							span=getattr(el, "loc", getattr(expr, "loc", Span())),
@@ -2077,7 +2391,7 @@ class Checker:
 			cond_ty = ctx.infer(stmt.cond)
 			if cond_ty is not None and cond_ty != self._bool_type:
 				ctx._append_diag(
-					Diagnostic(
+					_chk_diag(
 						message="if condition must be Bool",
 						severity="error",
 						span=getattr(stmt.cond, "loc", getattr(stmt, "loc", Span())),
@@ -2103,7 +2417,7 @@ class Checker:
 			fn_is_void = is_void(ret_tid)
 			if stmt.value is None and ret_tid is not None and not fn_is_void:
 				ctx._append_diag(
-					Diagnostic(
+					_chk_diag(
 						message="non-void function must return a value",
 						severity="error",
 						span=getattr(stmt, "loc", Span()),
@@ -2111,7 +2425,7 @@ class Checker:
 				)
 			if stmt.value is not None and fn_is_void:
 				ctx._append_diag(
-					Diagnostic(
+					_chk_diag(
 						message="cannot return a value from a Void function",
 						severity="error",
 						span=getattr(stmt.value, "loc", getattr(stmt, "loc", Span())),
@@ -2126,7 +2440,7 @@ class Checker:
 				decl_ty = self._resolve_typeexpr(stmt.declared_type_expr, module_id=mod)
 			if is_void(decl_ty):
 				ctx._append_diag(
-					Diagnostic(
+					_chk_diag(
 						message="cannot declare a binding of type Void",
 						severity="error",
 						span=getattr(stmt, "loc", Span()),
@@ -2135,7 +2449,7 @@ class Checker:
 			val_ty = ctx.infer(stmt.value)
 			if is_void(val_ty):
 				ctx._append_diag(
-					Diagnostic(
+					_chk_diag(
 						message="cannot bind a Void value",
 						severity="error",
 						span=getattr(stmt.value, "loc", getattr(stmt, "loc", Span())),
@@ -2147,7 +2461,7 @@ class Checker:
 			val_ty = ctx.infer(stmt.value)
 			if is_void(val_ty):
 				ctx._append_diag(
-					Diagnostic(
+					_chk_diag(
 						message="cannot assign a Void value",
 						severity="error",
 						span=getattr(stmt.value, "loc", getattr(stmt, "loc", Span())),
@@ -2215,7 +2529,7 @@ class Checker:
 				if hasattr(H, "HLiteralString") and isinstance(fexpr, getattr(H, "HLiteralString")):
 					continue
 				ctx._append_diag(
-					Diagnostic(
+					_chk_diag(
 						message="exception field value must be a DiagnosticValue or primitive literal",
 						severity="error",
 						span=getattr(fexpr, "loc", getattr(stmt.value, "loc", Span())),
@@ -2233,10 +2547,11 @@ class Checker:
 
 	def build_type_env_from_ssa(
 		self,
-		ssa_funcs: Mapping[str, "SsaFunc"],
-		signatures: Mapping[str, FnSignature],
+		ssa_funcs: Mapping[FunctionId, "SsaFunc"],
+		signatures: Mapping[FunctionId, FnSignature],
 		*,
-		can_throw_by_name: Mapping[str, bool] | None = None,
+		can_throw_by_id: Mapping[FunctionId, bool] | None = None,
+		diagnostics: list[Diagnostic] | None = None,
 	) -> Optional["CheckerTypeEnv"]:
 		"""
 		Assign TypeIds to SSA values using checker signatures and simple heuristics.
@@ -2255,11 +2570,12 @@ class Checker:
 		  *effective* can-throw bit so calls/returns are typed as the internal ABI
 		  `FnResult<T, Error>` only when a function actually can throw.
 
-		Pass `can_throw_by_name={fn_name: bool}` (usually from `FnInfo`) to keep
+		Pass `can_throw_by_id={FunctionId: bool}` (usually from `FnInfo`) to keep
 		type inference aligned with the checker without mutating signatures.
 
 		Returns None if no types were assigned.
 		"""
+		self._ensure_core_types()
 		from lang2.driftc.checker.type_env_impl import CheckerTypeEnv
 		from lang2.driftc.stage2 import (
 			LoadLocal,
@@ -2295,11 +2611,11 @@ class Checker:
 			ArrayCap,
 			StringLen,
 		)
-		signatures_by_display_name = self._sigs_by_display_name
-		value_types: Dict[tuple[str, str], TypeId] = {}
+		value_types: Dict[tuple[FunctionId, str], TypeId] = {}
+		reported_return_mismatch: set[tuple[FunctionId, str]] = set()
 
 		# Helper to fetch a mapped type with Unknown fallback.
-		def ty_for(fn: str, val: str) -> TypeId:
+		def ty_for(fn: FunctionId, val: str) -> TypeId:
 			return value_types.get((fn, val), self._unknown_type)
 
 		def is_void_tid(tid: TypeId | None) -> bool:
@@ -2312,292 +2628,377 @@ class Checker:
 
 		# Seed parameter types from signatures when available so callers and returns
 		# see concrete types for params immediately.
-		for fn_name, ssa in ssa_funcs.items():
-			sig = signatures.get(fn_name)
+		for fn_id, ssa in ssa_funcs.items():
+			sig = signatures.get(fn_id)
 			if sig and sig.param_type_ids and ssa.func.params:
-				for param_name, ty_id in zip(ssa.func.params, sig.param_type_ids):
-					if ty_id is not None:
-						value_types[(fn_name, param_name)] = ty_id
-
-			changed = True
-			# Fixed-point with a small iteration cap.
-			for _ in range(5):
-				if not changed:
-					break
-				changed = False
-				for fn_name, ssa in ssa_funcs.items():
-					sig = signatures.get(fn_name)
-					fn_return_parts: tuple[TypeId, TypeId] | None = None
-					fn_is_void = False
-
-					# Decide can-throw for typing purposes.
-					# - Prefer the checker-provided effective mapping when available.
-					# - Otherwise fall back to any explicit signature flag (legacy).
-					fn_is_can_throw = (
-						can_throw_by_name.get(fn_name, False)
-						if can_throw_by_name is not None
-						else bool(sig.declared_can_throw) if sig else False
+				if len(ssa.func.params) != len(sig.param_type_ids) and diagnostics is not None:
+					diagnostics.append(
+						_chk_diag(
+							message=(
+								"internal: SSA param arity does not match signature for "
+								f"{function_symbol(fn_id)} (ssa {len(ssa.func.params)} vs sig {len(sig.param_type_ids)})"
+							),
+							severity="error",
+						)
 					)
+				else:
+					for param_name, ty_id in zip(ssa.func.params, sig.param_type_ids):
+						if ty_id is not None:
+							value_types[(fn_id, param_name)] = ty_id
 
-					if sig and sig.return_type_id is not None:
-						# Surface return type is `T`. If the function is can-throw, the
-						# internal ABI return is `FnResult<T, Error>`.
-						fn_is_void = self._type_table.is_void(sig.return_type_id)
-						if fn_is_can_throw:
-							fn_return_parts = (sig.return_type_id, sig.error_type_id or self._error_type)
-						else:
-							# Legacy: older tests used FnResult as a surface return type.
-							td = self._type_table.get(sig.return_type_id)
-							if td.kind is TypeKind.FNRESULT and len(td.param_types) == 2:
-								fn_return_parts = (td.param_types[0], td.param_types[1])
+		changed = True
+		# Fixed-point with a small iteration cap across all functions.
+		for _ in range(5):
+			if not changed:
+				break
+			changed = False
+			for fn_id, ssa in ssa_funcs.items():
+				sig = signatures.get(fn_id)
+				fn_return_parts: tuple[TypeId, TypeId] | None = None
+				fn_is_void = False
 
-					for block in ssa.func.blocks.values():
-						for instr in block.instructions:
-							dest = getattr(instr, "dest", None)
-							if isinstance(instr, StoreLocal):
-								# Memory locals (address-taken) remain as StoreLocal even after SSA.
-								src_ty = ty_for(fn_name, instr.value)
-								if src_ty != self._unknown_type and value_types.get((fn_name, instr.local)) != src_ty:
-									value_types[(fn_name, instr.local)] = src_ty
-									changed = True
-							elif isinstance(instr, LoadLocal) and dest is not None:
-								# Propagate local type to the load destination.
-								local_ty = value_types.get((fn_name, instr.local))
-								if local_ty is not None and value_types.get((fn_name, dest)) != local_ty:
-									value_types[(fn_name, dest)] = local_ty
-									changed = True
-							elif isinstance(instr, AddrOfLocal) and dest is not None:
-								# Taking an address yields a reference type.
-								local_ty = value_types.get((fn_name, instr.local))
-								if local_ty is not None:
-									ref_ty = (
-										self._type_table.ensure_ref_mut(local_ty)
-										if getattr(instr, "is_mut", False)
-										else self._type_table.ensure_ref(local_ty)
-									)
-									if value_types.get((fn_name, dest)) != ref_ty:
-										value_types[(fn_name, dest)] = ref_ty
-										changed = True
-							elif isinstance(instr, AddrOfField) and dest is not None:
-								# Address-of field yields a reference to the field type.
+				# Decide can-throw for typing purposes.
+				# - Prefer the checker-provided effective mapping when available.
+				# - Otherwise fall back to any explicit signature flag (legacy).
+				if can_throw_by_id is not None:
+					if fn_id in can_throw_by_id:
+						fn_is_can_throw = can_throw_by_id[fn_id]
+					else:
+						if diagnostics is not None:
+							diagnostics.append(
+								_chk_diag(
+									message=(
+										"internal: missing can-throw classification for "
+										f"{function_symbol(fn_id)}"
+									),
+									severity="error",
+								)
+							)
+						# Conservative: treat missing classification as can-throw.
+						fn_is_can_throw = True
+				else:
+					fn_is_can_throw = bool(sig.declared_can_throw) if sig else False
+
+				if sig and sig.return_type_id is not None:
+					# Surface return type is `T`. If the function is can-throw, the
+					# internal ABI return is `FnResult<T, Error>`.
+					fn_is_void = self._type_table.is_void(sig.return_type_id)
+					if fn_is_can_throw:
+						fn_return_parts = (sig.return_type_id, sig.error_type_id or self._error_type)
+					else:
+						# Legacy: older tests used FnResult as a surface return type.
+						td = self._type_table.get(sig.return_type_id)
+						if td.kind is TypeKind.FNRESULT and len(td.param_types) == 2:
+							fn_return_parts = (td.param_types[0], td.param_types[1])
+
+				for block_name, block in ssa.func.blocks.items():
+					for instr in block.instructions:
+						dest = getattr(instr, "dest", None)
+						if isinstance(instr, StoreLocal):
+							# Memory locals (address-taken) remain as StoreLocal even after SSA.
+							src_ty = ty_for(fn_id, instr.value)
+							if src_ty != self._unknown_type and value_types.get((fn_id, instr.local)) != src_ty:
+								value_types[(fn_id, instr.local)] = src_ty
+								changed = True
+						elif isinstance(instr, LoadLocal) and dest is not None:
+							# Propagate local type to the load destination.
+							local_ty = value_types.get((fn_id, instr.local))
+							if local_ty is not None and value_types.get((fn_id, dest)) != local_ty:
+								value_types[(fn_id, dest)] = local_ty
+								changed = True
+						elif isinstance(instr, AddrOfLocal) and dest is not None:
+							# Taking an address yields a reference type.
+							local_ty = value_types.get((fn_id, instr.local))
+							if local_ty is not None:
 								ref_ty = (
-									self._type_table.ensure_ref_mut(instr.field_ty)
+									self._type_table.ensure_ref_mut(local_ty)
 									if getattr(instr, "is_mut", False)
-									else self._type_table.ensure_ref(instr.field_ty)
+									else self._type_table.ensure_ref(local_ty)
 								)
-								if value_types.get((fn_name, dest)) != ref_ty:
-									value_types[(fn_name, dest)] = ref_ty
+								if value_types.get((fn_id, dest)) != ref_ty:
+									value_types[(fn_id, dest)] = ref_ty
 									changed = True
-							elif isinstance(instr, LoadRef) and dest is not None:
-								# Deref load result type is the element TypeId carried by the MIR.
-								if value_types.get((fn_name, dest)) != instr.inner_ty:
-									value_types[(fn_name, dest)] = instr.inner_ty
-									changed = True
-							elif isinstance(instr, StoreRef):
-								# Stores do not define a value; no typing needed.
-								pass
-							elif isinstance(instr, ConstructVariant) and dest is not None:
-								# Constructing a variant yields the declared variant TypeId.
-								if value_types.get((fn_name, dest)) != instr.variant_ty:
-									value_types[(fn_name, dest)] = instr.variant_ty
-									changed = True
-							elif isinstance(instr, VariantTag) and dest is not None:
-								# Variant tags are compared as integers in v1; use Uint for the tag.
-								if value_types.get((fn_name, dest)) != self._uint_type:
-									value_types[(fn_name, dest)] = self._uint_type
-									changed = True
-							elif isinstance(instr, VariantGetField) and dest is not None:
-								# Extracting a field yields the field TypeId carried by the MIR.
-								if value_types.get((fn_name, dest)) != instr.field_ty:
-									value_types[(fn_name, dest)] = instr.field_ty
-									changed = True
-							if isinstance(instr, ConstInt) and dest is not None:
-								if (fn_name, dest) not in value_types:
-									value_types[(fn_name, dest)] = self._int_type
-									changed = True
-							elif isinstance(instr, ConstBool) and dest is not None:
-								if (fn_name, dest) not in value_types:
-									value_types[(fn_name, dest)] = self._bool_type
-									changed = True
-							elif isinstance(instr, ConstString) and dest is not None:
-								if value_types.get((fn_name, dest)) != self._string_type:
-									value_types[(fn_name, dest)] = self._string_type
-									changed = True
-							elif isinstance(instr, FnPtrConst) and dest is not None:
-								params = list(instr.call_sig.param_types)
-								ret = instr.call_sig.user_ret_type
-								fn_ty = self._type_table.ensure_function(
-									"fn",
-									params,
-									ret,
-									can_throw=bool(instr.call_sig.can_throw),
-								)
-								if value_types.get((fn_name, dest)) != fn_ty:
-									value_types[(fn_name, dest)] = fn_ty
-									changed = True
-							elif isinstance(instr, StringLen) and dest is not None:
-								if value_types.get((fn_name, dest)) != self._uint_type:
-									value_types[(fn_name, dest)] = self._uint_type
-									changed = True
-							elif isinstance(instr, ArrayLen) and dest is not None:
-								if value_types.get((fn_name, dest)) != self._uint_type:
-									value_types[(fn_name, dest)] = self._uint_type
-									changed = True
-							elif isinstance(instr, ArrayCap) and dest is not None:
-								if value_types.get((fn_name, dest)) != self._uint_type:
-									value_types[(fn_name, dest)] = self._uint_type
-									changed = True
-							elif isinstance(instr, ArrayIndexLoad) and dest is not None:
-								if instr.elem_ty is not None and value_types.get((fn_name, dest)) != instr.elem_ty:
-									value_types[(fn_name, dest)] = instr.elem_ty
-									changed = True
-							elif isinstance(instr, ArrayLit) and dest is not None:
-								arr_ty = self._type_table.new_array(instr.elem_ty)
-								if value_types.get((fn_name, dest)) != arr_ty:
-									value_types[(fn_name, dest)] = arr_ty
-									changed = True
-							elif isinstance(instr, ConstructStruct) and dest is not None:
-								# Struct construction yields the nominal struct TypeId carried by MIR.
-								if value_types.get((fn_name, dest)) != instr.struct_ty:
-									value_types[(fn_name, dest)] = instr.struct_ty
-									changed = True
-							elif isinstance(instr, StructGetField) and dest is not None:
-								# Struct field access yields the field TypeId carried by MIR.
-								if value_types.get((fn_name, dest)) != instr.field_ty:
-									value_types[(fn_name, dest)] = instr.field_ty
-									changed = True
-							elif isinstance(instr, ConstructResultOk):
-								if dest is None:
-									continue
-								ok_ty = fn_return_parts[0] if fn_return_parts else ty_for(fn_name, instr.value)
-								err_ty = fn_return_parts[1] if fn_return_parts else self._error_type
-								dest_ty = self._type_table.ensure_fnresult(ok_ty, err_ty)
-								if value_types.get((fn_name, dest)) != dest_ty:
-									value_types[(fn_name, dest)] = dest_ty
-									changed = True
-							elif isinstance(instr, ConstructResultErr):
-								if dest is None:
-									continue
-								err_ty = ty_for(fn_name, instr.error)
-								ok_ty = fn_return_parts[0] if fn_return_parts else self._unknown_type
-								dest_ty = self._type_table.ensure_fnresult(ok_ty, err_ty)
-								if value_types.get((fn_name, dest)) != dest_ty:
-									value_types[(fn_name, dest)] = dest_ty
-									changed = True
-							elif isinstance(instr, ConstructError) and dest is not None:
-								if value_types.get((fn_name, dest)) != self._error_type:
-									value_types[(fn_name, dest)] = self._error_type
-									changed = True
-							elif isinstance(instr, ResultIsErr):
-								# result.is_err() -> Bool
-								if dest is not None and value_types.get((fn_name, dest)) != self._bool_type:
-									value_types[(fn_name, dest)] = self._bool_type
-									changed = True
-							elif isinstance(instr, ResultOk):
-								if dest is None:
-									continue
-								res_ty = ty_for(fn_name, instr.result)
-								if self._type_table.get(res_ty).kind is TypeKind.FNRESULT:
-									ok_ty, _err_ty = self._type_table.get(res_ty).param_types
-									dest_ty = ok_ty
+						elif isinstance(instr, AddrOfField) and dest is not None:
+							# Address-of field yields a reference to the field type.
+							ref_ty = (
+								self._type_table.ensure_ref_mut(instr.field_ty)
+								if getattr(instr, "is_mut", False)
+								else self._type_table.ensure_ref(instr.field_ty)
+							)
+							if value_types.get((fn_id, dest)) != ref_ty:
+								value_types[(fn_id, dest)] = ref_ty
+								changed = True
+						elif isinstance(instr, LoadRef) and dest is not None:
+							# Deref load result type is the element TypeId carried by the MIR.
+							if value_types.get((fn_id, dest)) != instr.inner_ty:
+								value_types[(fn_id, dest)] = instr.inner_ty
+								changed = True
+						elif isinstance(instr, StoreRef):
+							# Stores do not define a value; no typing needed.
+							pass
+						elif isinstance(instr, ConstructVariant) and dest is not None:
+							# Constructing a variant yields the declared variant TypeId.
+							if value_types.get((fn_id, dest)) != instr.variant_ty:
+								value_types[(fn_id, dest)] = instr.variant_ty
+								changed = True
+						elif isinstance(instr, VariantTag) and dest is not None:
+							# Variant tags are compared as integers in v1; use Uint for the tag.
+							if value_types.get((fn_id, dest)) != self._uint_type:
+								value_types[(fn_id, dest)] = self._uint_type
+								changed = True
+						elif isinstance(instr, VariantGetField) and dest is not None:
+							# Extracting a field yields the field TypeId carried by the MIR.
+							if value_types.get((fn_id, dest)) != instr.field_ty:
+								value_types[(fn_id, dest)] = instr.field_ty
+								changed = True
+						elif isinstance(instr, ConstInt) and dest is not None:
+							if (fn_id, dest) not in value_types:
+								value_types[(fn_id, dest)] = self._int_type
+								changed = True
+						elif isinstance(instr, ConstBool) and dest is not None:
+							if (fn_id, dest) not in value_types:
+								value_types[(fn_id, dest)] = self._bool_type
+								changed = True
+						elif isinstance(instr, ConstString) and dest is not None:
+							if value_types.get((fn_id, dest)) != self._string_type:
+								value_types[(fn_id, dest)] = self._string_type
+								changed = True
+						elif isinstance(instr, FnPtrConst) and dest is not None:
+							params = list(instr.call_sig.param_types)
+							ret = instr.call_sig.user_ret_type
+							fn_ty = self._type_table.ensure_function(
+								"fn",
+								params,
+								ret,
+								can_throw=bool(instr.call_sig.can_throw),
+							)
+							if value_types.get((fn_id, dest)) != fn_ty:
+								value_types[(fn_id, dest)] = fn_ty
+								changed = True
+						elif isinstance(instr, StringLen) and dest is not None:
+							if value_types.get((fn_id, dest)) != self._uint_type:
+								value_types[(fn_id, dest)] = self._uint_type
+								changed = True
+						elif isinstance(instr, ArrayLen) and dest is not None:
+							if value_types.get((fn_id, dest)) != self._uint_type:
+								value_types[(fn_id, dest)] = self._uint_type
+								changed = True
+						elif isinstance(instr, ArrayCap) and dest is not None:
+							if value_types.get((fn_id, dest)) != self._uint_type:
+								value_types[(fn_id, dest)] = self._uint_type
+								changed = True
+						elif isinstance(instr, ArrayIndexLoad) and dest is not None:
+							if instr.elem_ty is not None and value_types.get((fn_id, dest)) != instr.elem_ty:
+								value_types[(fn_id, dest)] = instr.elem_ty
+								changed = True
+						elif isinstance(instr, ArrayLit) and dest is not None:
+							arr_ty = self._type_table.new_array(instr.elem_ty)
+							if value_types.get((fn_id, dest)) != arr_ty:
+								value_types[(fn_id, dest)] = arr_ty
+								changed = True
+						elif isinstance(instr, ConstructStruct) and dest is not None:
+							# Struct construction yields the nominal struct TypeId carried by MIR.
+							if value_types.get((fn_id, dest)) != instr.struct_ty:
+								value_types[(fn_id, dest)] = instr.struct_ty
+								changed = True
+						elif isinstance(instr, StructGetField) and dest is not None:
+							# Struct field access yields the field TypeId carried by MIR.
+							if value_types.get((fn_id, dest)) != instr.field_ty:
+								value_types[(fn_id, dest)] = instr.field_ty
+								changed = True
+						elif isinstance(instr, ConstructResultOk):
+							if dest is None:
+								continue
+							ok_ty = fn_return_parts[0] if fn_return_parts else ty_for(fn_id, instr.value)
+							err_ty = fn_return_parts[1] if fn_return_parts else self._error_type
+							dest_ty = self._type_table.ensure_fnresult(ok_ty, err_ty)
+							if value_types.get((fn_id, dest)) != dest_ty:
+								value_types[(fn_id, dest)] = dest_ty
+								changed = True
+						elif isinstance(instr, ConstructResultErr):
+							if dest is None:
+								continue
+							err_ty = ty_for(fn_id, instr.error)
+							ok_ty = fn_return_parts[0] if fn_return_parts else self._unknown_type
+							dest_ty = self._type_table.ensure_fnresult(ok_ty, err_ty)
+							if value_types.get((fn_id, dest)) != dest_ty:
+								value_types[(fn_id, dest)] = dest_ty
+								changed = True
+						elif isinstance(instr, ConstructError) and dest is not None:
+							if value_types.get((fn_id, dest)) != self._error_type:
+								value_types[(fn_id, dest)] = self._error_type
+								changed = True
+						elif isinstance(instr, ResultIsErr):
+							# result.is_err() -> Bool
+							if dest is not None and value_types.get((fn_id, dest)) != self._bool_type:
+								value_types[(fn_id, dest)] = self._bool_type
+								changed = True
+						elif isinstance(instr, ResultOk):
+							if dest is None:
+								continue
+							res_ty = ty_for(fn_id, instr.result)
+							if self._type_table.get(res_ty).kind is TypeKind.FNRESULT:
+								ok_ty, _err_ty = self._type_table.get(res_ty).param_types
+								dest_ty = ok_ty
+							else:
+								dest_ty = self._unknown_type
+							if value_types.get((fn_id, dest)) != dest_ty:
+								value_types[(fn_id, dest)] = dest_ty
+								changed = True
+						elif isinstance(instr, ResultErr):
+							if dest is None:
+								continue
+							res_ty = ty_for(fn_id, instr.result)
+							if self._type_table.get(res_ty).kind is TypeKind.FNRESULT:
+								_ok_ty, err_ty = self._type_table.get(res_ty).param_types
+								dest_ty = err_ty
+							else:
+								dest_ty = self._unknown_type
+							if value_types.get((fn_id, dest)) != dest_ty:
+								value_types[(fn_id, dest)] = dest_ty
+								changed = True
+						elif isinstance(instr, Call) and dest is not None:
+							callee_id = instr.fn_id
+							callee_sig = signatures.get(callee_id)
+							if callee_sig is not None:
+								callee_can_throw = bool(instr.can_throw)
+								ok_tid = callee_sig.return_type_id or self._unknown_type
+								err_tid = callee_sig.error_type_id or self._error_type
+								if callee_can_throw:
+									dest_ty = self._type_table.ensure_fnresult(ok_tid, err_tid)
 								else:
-									dest_ty = self._unknown_type
-								if value_types.get((fn_name, dest)) != dest_ty:
-									value_types[(fn_name, dest)] = dest_ty
-									changed = True
-							elif isinstance(instr, ResultErr):
-								if dest is None:
-									continue
-								res_ty = ty_for(fn_name, instr.result)
-								if self._type_table.get(res_ty).kind is TypeKind.FNRESULT:
-									_ok_ty, err_ty = self._type_table.get(res_ty).param_types
-									dest_ty = err_ty
-								else:
-									dest_ty = self._unknown_type
-								if value_types.get((fn_name, dest)) != dest_ty:
-									value_types[(fn_name, dest)] = dest_ty
-									changed = True
-							elif isinstance(instr, Call) and dest is not None:
-								callee_sig = signatures.get(instr.fn)
-								if callee_sig is not None:
-									if callee_sig.return_type_id is None:
-										rt_id, err_id = self._resolve_signature_types(callee_sig)
-										callee_sig.return_type_id = rt_id
-										callee_sig.error_type_id = err_id
-									callee_can_throw = bool(getattr(instr, "can_throw", False))
-									if callee_can_throw:
-										ok_ty = callee_sig.return_type_id or self._unknown_type
-										err_ty = callee_sig.error_type_id or self._error_type
-										dest_ty = self._type_table.ensure_fnresult(ok_ty, err_ty)
-									else:
-										dest_ty = callee_sig.return_type_id or self._unknown_type
-										if is_void_tid(dest_ty):
-											continue
-								else:
-									dest_ty = self._unknown_type
-								if value_types.get((fn_name, dest)) != dest_ty:
-									value_types[(fn_name, dest)] = dest_ty
-									changed = True
-							elif isinstance(instr, CallIndirect) and dest is not None:
-								if instr.can_throw:
-									ok_ty = instr.user_ret_type or self._unknown_type
-									err_ty = self._error_type
-									dest_ty = self._type_table.ensure_fnresult(ok_ty, err_ty)
-								else:
-									dest_ty = instr.user_ret_type or self._unknown_type
+									dest_ty = ok_tid
 									if is_void_tid(dest_ty):
 										continue
-								if value_types.get((fn_name, dest)) != dest_ty:
-									value_types[(fn_name, dest)] = dest_ty
-									changed = True
-							elif isinstance(instr, AssignSSA):
-								if dest is None:
+							else:
+								dest_ty = self._unknown_type
+							if value_types.get((fn_id, dest)) != dest_ty:
+								value_types[(fn_id, dest)] = dest_ty
+								changed = True
+						elif isinstance(instr, CallIndirect) and dest is not None:
+							if instr.can_throw:
+								ok_ty = instr.user_ret_type or self._unknown_type
+								err_ty = self._error_type
+								dest_ty = self._type_table.ensure_fnresult(ok_ty, err_ty)
+							else:
+								dest_ty = instr.user_ret_type or self._unknown_type
+								if is_void_tid(dest_ty):
 									continue
-								src_ty = value_types.get((fn_name, instr.src))
-								if src_ty is not None and value_types.get((fn_name, dest)) != src_ty:
-									value_types[(fn_name, dest)] = src_ty
+							if value_types.get((fn_id, dest)) != dest_ty:
+								value_types[(fn_id, dest)] = dest_ty
+								changed = True
+						elif isinstance(instr, AssignSSA):
+							if dest is None:
+								continue
+							src_ty = value_types.get((fn_id, instr.src))
+							if src_ty is not None and value_types.get((fn_id, dest)) != src_ty:
+								value_types[(fn_id, dest)] = src_ty
+								changed = True
+						elif isinstance(instr, UnaryOpInstr):
+							if dest is None:
+								continue
+							operand_ty = ty_for(fn_id, instr.operand)
+							if value_types.get((fn_id, dest)) != operand_ty:
+								value_types[(fn_id, dest)] = operand_ty
+								changed = True
+						elif isinstance(instr, BinaryOpInstr):
+							if dest is None:
+								continue
+							left_ty = ty_for(fn_id, instr.left)
+							right_ty = ty_for(fn_id, instr.right)
+							# If both operands agree, propagate that type; otherwise fall back to Unknown.
+							dest_ty = left_ty if left_ty == right_ty else self._unknown_type
+							if value_types.get((fn_id, dest)) != dest_ty:
+								value_types[(fn_id, dest)] = dest_ty
+								changed = True
+						elif isinstance(instr, Phi):
+							if dest is None:
+								continue
+							incoming = [value_types.get((fn_id, v)) for v in instr.incoming.values()]
+							incoming = [t for t in incoming if t is not None]
+							if incoming and all(t == incoming[0] for t in incoming):
+								ty = incoming[0]
+								if value_types.get((fn_id, dest)) != ty:
+									value_types[(fn_id, dest)] = ty
 									changed = True
-							elif isinstance(instr, UnaryOpInstr):
-								if dest is None:
-									continue
-								operand_ty = ty_for(fn_name, instr.operand)
-								if value_types.get((fn_name, dest)) != operand_ty:
-									value_types[(fn_name, dest)] = operand_ty
-									changed = True
-							elif isinstance(instr, BinaryOpInstr):
-								if dest is None:
-									continue
-								left_ty = ty_for(fn_name, instr.left)
-								right_ty = ty_for(fn_name, instr.right)
-								# If both operands agree, propagate that type; otherwise fall back to Unknown.
-								dest_ty = left_ty if left_ty == right_ty else self._unknown_type
-								if value_types.get((fn_name, dest)) != dest_ty:
-									value_types[(fn_name, dest)] = dest_ty
-									changed = True
-							elif isinstance(instr, Phi):
-								if dest is None:
-									continue
-								incoming = [value_types.get((fn_name, v)) for v in instr.incoming.values()]
-								incoming = [t for t in incoming if t is not None]
-								if incoming and all(t == incoming[0] for t in incoming):
-									ty = incoming[0]
-									if value_types.get((fn_name, dest)) != ty:
-										value_types[(fn_name, dest)] = ty
-										changed = True
 
-						term = block.terminator
-						if hasattr(term, "value") and getattr(term, "value") is not None:
-							val = term.value
-							# Do not overwrite an existing concrete type; only seed a type for
-							# returns that have not been seen yet.
-							if (fn_name, val) not in value_types and not fn_is_void:
-								if fn_return_parts is not None:
-									ty = self._type_table.ensure_fnresult(fn_return_parts[0], fn_return_parts[1])
-								else:
-									ty = self._unknown_type
-								value_types[(fn_name, val)] = ty
+					term = block.terminator
+					if hasattr(term, "value") and getattr(term, "value") is not None:
+						val = term.value
+						# Seed return types even if they were previously Unknown.
+						if not fn_is_void:
+							existing = value_types.get((fn_id, val))
+							if fn_return_parts is not None:
+								desired = self._type_table.ensure_fnresult(fn_return_parts[0], fn_return_parts[1])
+							elif sig and sig.return_type_id is not None:
+								desired = sig.return_type_id
+							else:
+								desired = self._unknown_type
+							if existing is not None and existing != self._unknown_type and existing != desired:
+								if diagnostics is not None and (fn_id, val) not in reported_return_mismatch:
+									reported_return_mismatch.add((fn_id, val))
+									allow_int_uint = False
+									allow_fnresult_unknown_err = False
+									try:
+										existing_def = self._type_table.get(existing)
+										desired_def = self._type_table.get(desired)
+										if (
+											existing_def.kind is TypeKind.FNRESULT
+											and desired_def.kind is TypeKind.FNRESULT
+											and existing_def.param_types
+											and desired_def.param_types
+											and existing_def.param_types[0] == desired_def.param_types[0]
+										):
+											existing_err = existing_def.param_types[1]
+											desired_err = desired_def.param_types[1]
+											if (
+												self._type_table.get(existing_err).kind is TypeKind.UNKNOWN
+												and self._type_table.get(desired_err).kind is TypeKind.ERROR
+											):
+												allow_fnresult_unknown_err = True
+										if (
+											existing_def.kind is TypeKind.SCALAR
+											and desired_def.kind is TypeKind.SCALAR
+											and {existing_def.name, desired_def.name} <= {"Int", "Uint"}
+										):
+											allow_int_uint = True
+									except KeyError:
+										allow_int_uint = False
+									if allow_int_uint or allow_fnresult_unknown_err:
+										value_types[(fn_id, val)] = desired
+										changed = True
+										continue
+									diagnostics.append(
+										_chk_diag(
+											message=(
+												"internal: SSA return type does not match declared signature "
+												f"for {function_symbol(fn_id)} in {block_name} "
+												f"({existing} vs {desired})"
+											),
+											severity="error",
+										)
+									)
+								value_types[(fn_id, val)] = desired
+								changed = True
+							elif existing is None or existing == self._unknown_type:
+								value_types[(fn_id, val)] = desired
 								changed = True
 
 		if not value_types:
 			return None
 		return CheckerTypeEnv(self._type_table, value_types)
+
+	def build_type_env_from_ssa_by_id(
+		self,
+		ssa_funcs: Mapping[FunctionId, "SsaFunc"],
+		signatures_by_id: Mapping[FunctionId, FnSignature],
+		*,
+		can_throw_by_id: Mapping[FunctionId, bool] | None = None,
+		diagnostics: list[Diagnostic] | None = None,
+	) -> Optional["CheckerTypeEnv"]:
+		return self.build_type_env_from_ssa(
+			ssa_funcs,
+			signatures_by_id,
+			can_throw_by_id=can_throw_by_id,
+			diagnostics=diagnostics,
+		)

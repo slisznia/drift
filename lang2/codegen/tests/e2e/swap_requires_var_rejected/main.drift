@@ -1,6 +1,7 @@
+import std.mem as mem
 fn main() nothrow returns Int{
 	val a = 1;
 	val b = 2;
-	swap(a, b);
+	mem.swap(a, b);
 	return 0;
 }

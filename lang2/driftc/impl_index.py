@@ -14,6 +14,13 @@ else:
 	TraitKey = object  # type: ignore[misc]
 
 
+# Impl index diagnostics are typecheck-phase.
+def _impl_diag(*args, **kwargs):
+	if "phase" not in kwargs or kwargs.get("phase") is None:
+		kwargs["phase"] = "typecheck"
+	return Diagnostic(*args, **kwargs)
+
+
 @dataclass(frozen=True)
 class ImplMethodMeta:
 	fn_id: FunctionId
@@ -212,7 +219,7 @@ def find_impl_method_conflicts(
 			f"in modules {', '.join(repr(m) for m in mod_names)}"
 		)
 		span = ordered[0][1][0].method_loc or ordered[0][1][0].impl_loc
-		conflicts.append(Diagnostic(message=msg, severity="error", span=span))
+		conflicts.append(_impl_diag(message=msg, severity="error", span=span))
 	return conflicts
 
 

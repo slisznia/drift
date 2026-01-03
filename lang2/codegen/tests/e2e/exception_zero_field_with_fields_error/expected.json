@@ -1,6 +1,9 @@
 {
-  "exit_code": 1,
+  "description": "e2e: exception zero field with fields error",
   "diagnostics": [
-    { "message_contains": "declares no fields" }
-  ]
+    {
+      "message_contains": "declares no fields"
+    }
+  ],
+  "exit_code": 1
 }

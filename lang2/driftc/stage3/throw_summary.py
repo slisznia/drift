@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from typing import Dict, Set
 
 from .pre_analysis import MirAnalysisResult, MirPreAnalysis
+from lang2.driftc.core.function_id import FunctionId
 from lang2.driftc.stage2 import MirFunc
 
 
@@ -44,13 +45,13 @@ class ThrowSummaryBuilder:
 	re-running pre-analysis on every pass.
 	"""
 
-	def build(self, funcs: Dict[str, MirFunc], code_to_exc: Dict[int, str] | None = None) -> Dict[str, ThrowSummary]:
-		summaries: Dict[str, ThrowSummary] = {}
+	def build(self, funcs: Dict[FunctionId, MirFunc], code_to_exc: Dict[int, str] | None = None) -> Dict[FunctionId, ThrowSummary]:
+		summaries: Dict[FunctionId, ThrowSummary] = {}
 		analyzer = MirPreAnalysis(code_to_exc=code_to_exc)
 
-		for fname, func in funcs.items():
+		for fn_id, func in funcs.items():
 			res: MirAnalysisResult = analyzer.analyze(func)
-			summaries[fname] = ThrowSummary(
+			summaries[fn_id] = ThrowSummary(
 				constructs_error=bool(res.construct_error_sites),
 				exception_types=set(res.exception_types),
 				may_fail_sites=set(res.may_fail),

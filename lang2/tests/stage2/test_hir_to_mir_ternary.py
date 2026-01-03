@@ -6,7 +6,8 @@ HIR→MIR ternary lowering tests.
 
 from lang2.driftc import stage1 as H
 from lang2.driftc.stage1.normalize import normalize_hir
-from lang2.driftc.stage2 import MirBuilder, HIRToMIR
+from lang2.driftc.stage2 import HIRToMIR, make_builder
+from lang2.driftc.core.function_id import FunctionId
 
 
 def test_ternary_lowering_builds_diamond_cfg():
@@ -16,7 +17,7 @@ def test_ternary_lowering_builds_diamond_cfg():
 			H.HLet(name="x", value=H.HTernary(cond=H.HVar("c"), then_expr=H.HVar("a"), else_expr=H.HVar("b")))
 		]
 	)
-	b = MirBuilder(name="f_tern")
+	b = make_builder(FunctionId(module="main", name="f_tern", ordinal=0))
 	h2m = HIRToMIR(b)
 	h2m.lower_block(normalize_hir(hir))
 	func = b.func

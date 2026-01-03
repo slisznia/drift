@@ -25,7 +25,7 @@ def test_fnptr_const_emits_bitcast() -> None:
 		instructions=[],
 		terminator=Return(value="x"),
 	)
-	add1_mir = MirFunc(name="add1", params=["x"], locals=[], blocks={"entry": add1_block}, entry="entry")
+	add1_mir = MirFunc(fn_id=fn_id, name="add1", params=["x"], locals=[], blocks={"entry": add1_block}, entry="entry")
 	add1_ssa = MirToSSA().run(add1_mir)
 
 	main_block = BasicBlock(
@@ -44,19 +44,20 @@ def test_fnptr_const_emits_bitcast() -> None:
 		],
 		terminator=Return(value="res"),
 	)
-	main_mir = MirFunc(name="drift_main", params=[], locals=[], blocks={"entry": main_block}, entry="entry")
+	main_id = FunctionId(module="main", name="drift_main", ordinal=0)
+	main_mir = MirFunc(fn_id=main_id, name="drift_main", params=[], locals=[], blocks={"entry": main_block}, entry="entry")
 	main_ssa = MirToSSA().run(main_mir)
 
 	add1_sig = FnSignature(name="add1", param_type_ids=[int_ty], return_type_id=int_ty, declared_can_throw=False)
 	main_sig = FnSignature(name="drift_main", return_type_id=int_ty, declared_can_throw=False)
 	fn_infos = {
-		"add1": FnInfo(name="add1", declared_can_throw=False, return_type_id=int_ty, signature=add1_sig),
-		"drift_main": FnInfo(name="drift_main", declared_can_throw=False, return_type_id=int_ty, signature=main_sig),
+		fn_id: FnInfo(fn_id=fn_id, name="add1", declared_can_throw=False, return_type_id=int_ty, signature=add1_sig),
+		main_id: FnInfo(fn_id=main_id, name="drift_main", declared_can_throw=False, return_type_id=int_ty, signature=main_sig),
 	}
 
 	mod = lower_module_to_llvm(
-		funcs={"add1": add1_mir, "drift_main": main_mir},
-		ssa_funcs={"add1": add1_ssa, "drift_main": main_ssa},
+		funcs={fn_id: add1_mir, main_id: main_mir},
+		ssa_funcs={fn_id: add1_ssa, main_id: main_ssa},
 		fn_infos=fn_infos,
 		type_table=table,
 	)

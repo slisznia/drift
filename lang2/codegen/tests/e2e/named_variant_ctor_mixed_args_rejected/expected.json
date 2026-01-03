@@ -1,7 +1,10 @@
 {
-  "exit_code": 1,
-  "phase": "typecheck",
+  "description": "e2e: named variant ctor mixed args rejected",
   "diagnostics": [
-    { "message_contains": "does not allow mixing positional and named arguments" }
-  ]
+    {
+      "message_contains": "does not allow mixing positional and named arguments"
+    }
+  ],
+  "exit_code": 1,
+  "phase": "typecheck"
 }

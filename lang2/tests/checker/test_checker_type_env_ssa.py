@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from lang2.driftc.core.function_id import FunctionId
 from lang2.driftc.stage2 import (
 	BasicBlock,
 	BinaryOpInstr,
@@ -22,6 +23,7 @@ def test_checker_builds_type_env_from_ssa():
 		terminator=Return(value="r0"),
 	)
 	mir_func = MirFunc(
+		fn_id=FunctionId(module="main", name="f", ordinal=0),
 		name="f",
 		params=[],
 		locals=[],
@@ -30,13 +32,18 @@ def test_checker_builds_type_env_from_ssa():
 	)
 	ssa = MirToSSA().run(mir_func)
 
-	signatures = {"f": FnSignature(name="f", return_type="Int", declared_can_throw=True)}
-	checker = Checker(signatures=signatures)
-	checked = checker.check(["f"])
+	fn_id = FunctionId(module="main", name="f", ordinal=0)
+	signatures = {fn_id: FnSignature(name="f", return_type="Int", declared_can_throw=True)}
+	checker = Checker(
+		signatures_by_id=signatures,
+		hir_blocks_by_id={},
+		call_info_by_callsite_id={},
+	)
+	checked = checker.check_by_id([fn_id])
 
-	type_env = checker.build_type_env_from_ssa({"f": ssa}, signatures)
+	type_env = checker.build_type_env_from_ssa({fn_id: ssa}, signatures)
 	assert type_env is not None
-	ty = type_env.type_of_ssa_value("f", "r0")
+	ty = type_env.type_of_ssa_value(fn_id, "r0")
 	assert type_env.is_fnresult(ty)
 
 
@@ -54,6 +61,7 @@ def test_checker_types_basic_numeric_ops():
 		terminator=Return(value="sum"),
 	)
 	mir_func = MirFunc(
+		fn_id=FunctionId(module="main", name="add", ordinal=0),
 		name="add",
 		params=[],
 		locals=[],
@@ -62,13 +70,18 @@ def test_checker_types_basic_numeric_ops():
 	)
 	ssa = MirToSSA().run(mir_func)
 
-	signatures = {"add": FnSignature(name="add", return_type="Int")}
-	checker = Checker(signatures=signatures)
-	checker.check(["add"])
+	fn_id = FunctionId(module="main", name="add", ordinal=0)
+	signatures = {fn_id: FnSignature(name="add", return_type="Int")}
+	checker = Checker(
+		signatures_by_id=signatures,
+		hir_blocks_by_id={},
+		call_info_by_callsite_id={},
+	)
+	checker.check_by_id([fn_id])
 
-	type_env = checker.build_type_env_from_ssa({"add": ssa}, signatures)
+	type_env = checker.build_type_env_from_ssa({fn_id: ssa}, signatures)
 	assert type_env is not None
-	sum_ty = type_env.type_of_ssa_value("add", "sum")
+	sum_ty = type_env.type_of_ssa_value(fn_id, "sum")
 	# Sum should carry the scalar Int TypeId; this also proves BinaryOpInstr is handled.
 	int_td = checker._type_table.get(checker._int_type)
 	sum_td = checker._type_table.get(sum_ty)
@@ -87,13 +100,16 @@ def test_checker_type_env_ignores_void_calls():
 		],
 		terminator=Return(value=None),
 	)
-	mir_func = MirFunc(name="noop", params=[], locals=[], blocks={"entry": entry}, entry="entry")
+	mir_func = MirFunc(fn_id=FunctionId(module="main", name="noop", ordinal=0), name="noop", params=[], locals=[], blocks={"entry": entry}, entry="entry")
 	ssa = MirToSSA().run(mir_func)
 
+	fn_id = FunctionId(module="main", name="noop", ordinal=0)
 	checker = Checker(
-		signatures={"noop": FnSignature(name="noop", return_type_id=None, return_type="Void")},
+		signatures_by_id={fn_id: FnSignature(name="noop", return_type_id=None, return_type="Void")},
+		hir_blocks_by_id={},
+		call_info_by_callsite_id={},
 	)
-	checker.check(["noop"])
+	checker.check_by_id([fn_id])
 
-	type_env = checker.build_type_env_from_ssa({"noop": ssa}, checker._signatures)
-	assert type_env is None or ("noop", "t0") not in getattr(type_env, "_types", {})
+	type_env = checker.build_type_env_from_ssa({fn_id: ssa}, checker._signatures_by_id)
+	assert type_env is None or (fn_id, "t0") not in getattr(type_env, "_types", {})

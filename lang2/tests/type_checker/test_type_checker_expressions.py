@@ -5,7 +5,7 @@
 
 from lang2.driftc import stage1 as H
 from lang2.driftc.type_checker import TypeChecker
-from lang2.driftc.core.function_id import FunctionId
+from lang2.driftc.core.function_id import FunctionId, fn_name_key
 from lang2.driftc.core.types_core import TypeKind, TypeParamId, TypeTable
 from lang2.driftc.checker import FnSignature, TypeParam
 from lang2.driftc.method_registry import CallableRegistry, CallableSignature, Visibility, SelfMode
@@ -106,14 +106,37 @@ def test_call_return_type_uses_signature():
 	table = TypeTable()
 	tc = TypeChecker(table)
 	ret_ty = table.ensure_string()
-	sig = FnSignature(name="foo", return_type_id=ret_ty, param_type_ids=[table.ensure_int()])
+	fn_id = _fn_id("foo")
+	sig = FnSignature(
+		name="foo",
+		return_type_id=ret_ty,
+		param_type_ids=[table.ensure_int()],
+		declared_can_throw=False,
+	)
+	registry = CallableRegistry()
+	registry.register_free_function(
+		callable_id=1,
+		name="foo",
+		module_id=0,
+		visibility=Visibility.public(),
+		signature=CallableSignature(param_types=(table.ensure_int(),), result_type=ret_ty),
+		fn_id=fn_id,
+	)
 	block = H.HBlock(
 		statements=[
 			H.HLet(name="x", value=H.HLiteralInt(1), declared_type_expr=None, binding_id=1),
 			H.HExprStmt(expr=H.HCall(fn=H.HVar("foo"), args=[H.HVar("x", binding_id=1)])),
 		]
 	)
-	res = tc.check_function(_fn_id("c"), block, param_types=None, call_signatures={"foo": sig})
+	res = tc.check_function(
+		_fn_id("c"),
+		block,
+		param_types=None,
+		callable_registry=registry,
+		signatures_by_id={fn_id: sig},
+		visible_modules=(0,),
+		current_module=0,
+	)
 	assert res.diagnostics == []
 	assert ret_ty in res.typed_fn.expr_types.values()
 
@@ -124,12 +147,14 @@ def test_call_resolution_uses_registry_and_types():
 	int_ty = table.ensure_int()
 	ret_ty = table.ensure_string()
 	registry = CallableRegistry()
+	fn_id = _fn_id("foo")
 	registry.register_free_function(
 		callable_id=1,
 		name="foo",
 		module_id=0,
 		visibility=Visibility.public(),
 		signature=CallableSignature(param_types=(int_ty,), result_type=ret_ty),
+		fn_id=fn_id,
 	)
 	block = H.HBlock(
 		statements=[
@@ -142,6 +167,14 @@ def test_call_resolution_uses_registry_and_types():
 		block,
 		param_types={"x": int_ty},
 		callable_registry=registry,
+		signatures_by_id={
+			fn_id: FnSignature(
+				name="foo",
+				param_type_ids=[int_ty],
+				return_type_id=ret_ty,
+				declared_can_throw=False,
+			)
+		},
 		visible_modules=(0,),
 		current_module=0,
 	)
@@ -162,6 +195,7 @@ def test_call_with_explicit_type_args_instantiates_signature():
 		param_type_ids=[type_var],
 		type_params=[type_param],
 		module="main",
+		declared_can_throw=False,
 	)
 	registry = CallableRegistry()
 	registry.register_free_function(
@@ -212,6 +246,7 @@ def test_call_infers_type_args_from_args():
 		param_type_ids=[type_var],
 		type_params=[type_param],
 		module="main",
+		declared_can_throw=False,
 	)
 	registry = CallableRegistry()
 	registry.register_free_function(
@@ -253,6 +288,7 @@ def test_call_infers_type_args_from_expected_return_type():
 		param_type_ids=[],
 		type_params=[type_param],
 		module="main",
+		declared_can_throw=False,
 	)
 	registry = CallableRegistry()
 	registry.register_free_function(
@@ -295,6 +331,7 @@ def test_method_call_with_explicit_type_args_instantiates_signature():
 		return_type_id=type_var,
 		type_params=[type_param],
 		module="main",
+		declared_can_throw=False,
 	)
 	registry = CallableRegistry()
 	registry.register_inherent_method(
@@ -359,6 +396,7 @@ def test_method_type_args_skip_nongeneric_candidate():
 		return_type_id=table.ensure_int(),
 		type_params=[],
 		module="main",
+		declared_can_throw=False,
 	)
 	sig_gen = FnSignature(
 		name="m",
@@ -366,6 +404,7 @@ def test_method_type_args_skip_nongeneric_candidate():
 		return_type_id=tp_ty,
 		type_params=[tp],
 		module="main",
+		declared_can_throw=False,
 	)
 
 	registry = CallableRegistry()

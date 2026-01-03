@@ -1,8 +1,16 @@
 {
-  "exit_code": 1,
-  "phase": "parser",
-  "module_paths": ["r1", "r2", "."],
+  "description": "e2e: same basename different dirs",
   "diagnostics": [
-    { "phase": "parser", "message_contains": "multiple module roots provide module 'lib'" }
-  ]
+    {
+      "message_contains": "multiple module roots provide module 'lib'",
+      "phase": "parser"
+    }
+  ],
+  "exit_code": 1,
+  "module_paths": [
+    "r1",
+    "r2",
+    "."
+  ],
+  "phase": "parser"
 }

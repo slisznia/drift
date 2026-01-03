@@ -1,7 +1,11 @@
 {
-  "exit_code": 1,
-  "phase": "parser",
+  "description": "e2e: reexport const ambiguous import conflict",
   "diagnostics": [
-    { "phase": "parser", "message_contains": "ambiguous due to re-exports" }
-  ]
+    {
+      "message_contains": "ambiguous due to re-exports",
+      "phase": "parser"
+    }
+  ],
+  "exit_code": 1,
+  "phase": "parser"
 }

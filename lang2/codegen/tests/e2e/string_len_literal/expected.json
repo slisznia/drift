@@ -1,1 +1,6 @@
-{ "exit_code": 3, "stdout": "", "stderr": "" }
+{
+  "description": "e2e: string len literal",
+  "exit_code": 3,
+  "stderr": "",
+  "stdout": ""
+}

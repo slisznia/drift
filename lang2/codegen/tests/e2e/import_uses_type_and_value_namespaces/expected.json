@@ -1,5 +1,6 @@
 {
+  "description": "e2e: import uses type and value namespaces",
   "exit_code": 0,
-  "stdout": "",
-  "stderr": ""
+  "stderr": "",
+  "stdout": ""
 }

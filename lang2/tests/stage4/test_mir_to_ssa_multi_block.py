@@ -1,3 +1,4 @@
+from lang2.driftc.core.function_id import FunctionId
 # vim: set noexpandtab: -*- indent-tabs-mode: t -*-
 # author: Sławomir Liszniański; created: 2025-12-04
 r"""
@@ -39,6 +40,7 @@ def test_phi_placed_in_join_for_local_defined_in_branches():
 		terminator=Return(value="t0"),
 	)
 	func = MirFunc(
+		fn_id=FunctionId(module="main", name="f_phi", ordinal=0),
 		name="f_phi",
 		params=[],
 		locals=["x"],

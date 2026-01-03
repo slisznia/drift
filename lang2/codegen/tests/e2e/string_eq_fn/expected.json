@@ -1,5 +1,6 @@
 {
+  "description": "e2e: string eq fn",
   "exit_code": 0,
-  "stdout": "",
-  "stderr": ""
+  "stderr": "",
+  "stdout": ""
 }

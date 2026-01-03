@@ -1,1 +1,6 @@
-{ "exit_code": 0, "stdout": "hello, Drift\n", "stderr": "" }
+{
+  "description": "e2e: hello drift",
+  "exit_code": 0,
+  "stderr": "",
+  "stdout": "hello, Drift\n"
+}

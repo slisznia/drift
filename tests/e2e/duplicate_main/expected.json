@@ -1,11 +1,12 @@
 {
-  "mode": "compile",
-  "use_json": true,
-  "exit_code": 1,
+  "description": "e2e: duplicate main",
   "diagnostics": [
     {
-      "phase": "parser",
-      "message_contains": "duplicate function definition for 'main'"
+      "message_contains": "duplicate function definition for 'main'",
+      "phase": "parser"
     }
-  ]
+  ],
+  "exit_code": 1,
+  "mode": "compile",
+  "use_json": true
 }

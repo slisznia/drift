@@ -1,6 +1,6 @@
 {
+  "description": "e2e: borrow array elem mut",
   "exit_code": 2,
-  "stdout": "",
-  "stderr": ""
+  "stderr": "",
+  "stdout": ""
 }
-

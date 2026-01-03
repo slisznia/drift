@@ -4,6 +4,7 @@ End-to-end LLVM IR execution via lli (scalar + FnResult happy paths).
 
 from __future__ import annotations
 
+from lang2.driftc.core.function_id import FunctionId
 import os
 import shutil
 import subprocess
@@ -32,7 +33,7 @@ def _run_ir_and_get_exit(ir: str) -> int:
 	clang_bin: Optional[str] = os.environ.get("CLANG_BIN") or "clang-15"
 	clang = shutil.which(clang_bin) or shutil.which("clang")
 	if clang is None:
-		pytest.skip("clang not available")
+		raise RuntimeError("clang not available")
 
 	ir_path = BUILD_ROOT / "tmp.ll"
 	bin_path = BUILD_ROOT / "tmp.out"
@@ -64,14 +65,15 @@ def test_e2e_scalar_main_returns_42():
 		instructions=[ConstInt(dest="v", value=42)],
 		terminator=Return(value="v"),
 	)
-	mir = MirFunc(name="drift_main", params=[], locals=[], blocks={"entry": entry}, entry="entry")
+	fn_id = FunctionId(module="main", name="drift_main", ordinal=0)
+	mir = MirFunc(fn_id=fn_id, name="drift_main", params=[], locals=[], blocks={"entry": entry}, entry="entry")
 	ssa = MirToSSA().run(mir)
 
 	table = TypeTable()
 	int_ty = table.ensure_int()
-	fn_infos = {"drift_main": FnInfo(name="drift_main", declared_can_throw=False, return_type_id=int_ty)}
+	fn_infos = {fn_id: FnInfo(fn_id=fn_id, name="drift_main", declared_can_throw=False, return_type_id=int_ty)}
 
-	mod = lower_module_to_llvm({"drift_main": mir}, {"drift_main": ssa}, fn_infos)
+	mod = lower_module_to_llvm({fn_id: mir}, {fn_id: ssa}, fn_infos)
 	mod.emit_entry_wrapper("drift_main")
 	ir = mod.render()
 
@@ -89,16 +91,18 @@ def test_e2e_fnresult_callee_ok_path():
 		instructions=[ConstInt(dest="c0", value=1), ConstructResultOk(dest="cres", value="c0")],
 		terminator=Return(value="cres"),
 	)
-	callee_mir = MirFunc(name="callee", params=[], locals=[], blocks={"entry": callee_entry}, entry="entry")
+	callee_id = FunctionId(module="main", name="callee", ordinal=0)
+	callee_mir = MirFunc(fn_id=callee_id, name="callee", params=[], locals=[], blocks={"entry": callee_entry}, entry="entry")
 	callee_ssa = MirToSSA().run(callee_mir)
 
 	# drift_main: call callee, extract ok part, and return it.
 	main_entry = BasicBlock(
 		name="entry",
-		instructions=[Call(dest="mres", fn="callee", args=[], can_throw=True), ResultOk(dest="m0", result="mres")],
+		instructions=[Call(dest="mres", fn_id=callee_id, args=[], can_throw=True), ResultOk(dest="m0", result="mres")],
 		terminator=Return(value="m0"),
 	)
-	main_mir = MirFunc(name="drift_main", params=[], locals=[], blocks={"entry": main_entry}, entry="entry")
+	main_id = FunctionId(module="main", name="drift_main", ordinal=0)
+	main_mir = MirFunc(fn_id=main_id, name="drift_main", params=[], locals=[], blocks={"entry": main_entry}, entry="entry")
 	main_ssa = MirToSSA().run(main_mir)
 
 	table = TypeTable()
@@ -106,13 +110,13 @@ def test_e2e_fnresult_callee_ok_path():
 	err_ty = table.ensure_error()
 	fnresult_ty = table.new_fnresult(int_ty, err_ty)
 	fn_infos = {
-		"callee": FnInfo(name="callee", declared_can_throw=True, return_type_id=fnresult_ty, error_type_id=err_ty),
-		"drift_main": FnInfo(name="drift_main", declared_can_throw=False, return_type_id=int_ty),
+		callee_id: FnInfo(fn_id=callee_id, name="callee", declared_can_throw=True, return_type_id=fnresult_ty, error_type_id=err_ty),
+		main_id: FnInfo(fn_id=main_id, name="drift_main", declared_can_throw=False, return_type_id=int_ty),
 	}
 
 	mod = lower_module_to_llvm(
-		{"callee": callee_mir, "drift_main": main_mir},
-		{"callee": callee_ssa, "drift_main": main_ssa},
+		{callee_id: callee_mir, main_id: main_mir},
+		{callee_id: callee_ssa, main_id: main_ssa},
 		fn_infos,
 		type_table=table,
 	)

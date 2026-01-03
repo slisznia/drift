@@ -1,6 +1,7 @@
 {
-  "run": false,
-  "compile_error": "Expected type Int, got Bool",
   "args": [],
-  "env": {}
+  "compile_error": "Expected type Int, got Bool",
+  "description": "e2e: bad index",
+  "env": {},
+  "run": false
 }

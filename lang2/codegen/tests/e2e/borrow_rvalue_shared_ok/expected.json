@@ -1,6 +1,6 @@
 {
+  "description": "e2e: borrow rvalue shared ok",
   "exit_code": 0,
-  "stdout": "",
-  "stderr": ""
+  "stderr": "",
+  "stdout": ""
 }
-

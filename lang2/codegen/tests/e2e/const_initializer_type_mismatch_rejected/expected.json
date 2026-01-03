@@ -1,7 +1,11 @@
 {
-  "exit_code": 1,
-  "phase": "parser",
+  "description": "e2e: const initializer type mismatch rejected",
   "diagnostics": [
-    { "phase": "typecheck", "message_contains": "declared type does not match initializer value" }
-  ]
+    {
+      "message_contains": "declared type does not match initializer value",
+      "phase": "typecheck"
+    }
+  ],
+  "exit_code": 1,
+  "phase": "parser"
 }

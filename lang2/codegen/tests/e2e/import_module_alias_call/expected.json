@@ -1,6 +1,9 @@
 {
-  "module_paths": ["."],
+  "description": "e2e: import module alias call",
   "exit_code": 42,
-  "stdout": "",
-  "stderr": ""
+  "module_paths": [
+    "."
+  ],
+  "stderr": "",
+  "stdout": ""
 }

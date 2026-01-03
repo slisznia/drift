@@ -8,6 +8,7 @@ from pathlib import Path
 
 from lang2.driftc.core.types_core import TypeKind
 from lang2.driftc.parser import parse_drift_to_hir
+from lang2.driftc.test_helpers import assert_module_lowered_consistent
 
 
 def test_parse_array_types_in_signatures(tmp_path: Path):
@@ -23,16 +24,17 @@ fn takes(xs: Array<Int>) returns Int {
 }
 """
 	)
-	func_hirs, sigs, fn_ids_by_name, type_table, _exc_catalog, diagnostics = parse_drift_to_hir(src)
+	module, type_table, _exc_catalog, diagnostics = parse_drift_to_hir(src)
 	assert diagnostics == []
-	takes_ids = fn_ids_by_name.get("main::takes") or fn_ids_by_name.get("takes") or []
-	returns_ids = fn_ids_by_name.get("main::returns_array") or fn_ids_by_name.get("returns_array") or []
+	assert_module_lowered_consistent(module)
+	takes_ids = module.fn_ids_by_name.get("main::takes") or module.fn_ids_by_name.get("takes") or []
+	returns_ids = module.fn_ids_by_name.get("main::returns_array") or module.fn_ids_by_name.get("returns_array") or []
 	assert len(takes_ids) == 1
 	assert len(returns_ids) == 1
 
 	int_ty = type_table.new_scalar("Int")  # will get a fresh id; compare by name instead
-	array_param_ty = sigs[takes_ids[0]].param_type_ids[0]
-	array_ret_ty = sigs[returns_ids[0]].return_type_id
+	array_param_ty = module.signatures_by_id[takes_ids[0]].param_type_ids[0]
+	array_ret_ty = module.signatures_by_id[returns_ids[0]].return_type_id
 
 	array_def = type_table.get(array_param_ty)
 	assert array_def.kind is TypeKind.ARRAY
@@ -45,4 +47,4 @@ fn takes(xs: Array<Int>) returns Int {
 	assert type_table.get(elem_ty_ret).name == "Int"
 
 	# HIR is still produced for completeness.
-	assert {fid.name for fid in func_hirs} == {"takes", "returns_array"}
+	assert {fid.name for fid in module.func_hirs} == {"takes", "returns_array"}

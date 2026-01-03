@@ -7,11 +7,19 @@ from typing import Mapping
 from lang2.driftc.core.diagnostics import Diagnostic
 from lang2.driftc.core.span import Span
 from lang2.driftc.checker import FnSignature
+from lang2.driftc.core.function_id import FunctionId
 from lang2.driftc.method_registry import CallableDecl
 from lang2.driftc.method_resolver import MethodResolution
 from lang2.driftc.stage1 import closures as C
 from lang2.driftc.stage1.capture_discovery import discover_captures
 from lang2.driftc.stage1 import hir_nodes as H
+
+
+# Lambda validation diagnostics are typecheck-phase.
+def _lambda_diag(*args, **kwargs):
+	if "phase" not in kwargs or kwargs.get("phase") is None:
+		kwargs["phase"] = "typecheck"
+	return Diagnostic(*args, **kwargs)
 
 
 @dataclass
@@ -22,7 +30,7 @@ class LambdaValidationResult:
 def validate_lambdas_non_retaining(
 	node: H.HNode,
 	*,
-	signatures: Mapping[str, FnSignature] | None = None,
+	signatures_by_id: Mapping[FunctionId, FnSignature] | None = None,
 	call_resolutions: Mapping[int, object] | None = None,
 ) -> LambdaValidationResult:
 	"""
@@ -33,16 +41,16 @@ def validate_lambdas_non_retaining(
 	- passing to a callee param proven non-retaining
 	"""
 	diags: list[Diagnostic] = []
-	signatures = signatures or {}
+	signatures_by_id = signatures_by_id or {}
 	call_resolutions = call_resolutions or {}
 	method_sig_by_key: dict[tuple[int, str], FnSignature] = {}
-	for sig in signatures.values():
+	for sig in signatures_by_id.values():
 		if sig.is_method and sig.impl_target_type_id is not None:
 			method_sig_by_key[(sig.impl_target_type_id, sig.method_name or sig.name)] = sig
 
 	def _emit_error(span: Span) -> None:
 		diags.append(
-			Diagnostic(
+			_lambda_diag(
 				message="closures with borrowed captures are non-escaping in v0; only immediate invocation or proven non-retaining params are supported",
 				severity="error",
 				span=span,
@@ -64,17 +72,17 @@ def validate_lambdas_non_retaining(
 
 	def _resolve_sig_for_call(call: H.HExpr) -> FnSignature | None:
 		if isinstance(call, H.HCall):
-			if isinstance(call.fn, H.HVar):
-				sig = signatures.get(call.fn.name)
-				if sig is not None:
-					return sig
 			res = call_resolutions.get(call.node_id)
 			if isinstance(res, CallableDecl):
-				return signatures.get(res.name)
+				if res.fn_id is None:
+					return None
+				return signatures_by_id.get(res.fn_id)
 			return None
 		if isinstance(call, H.HMethodCall):
 			res = call_resolutions.get(call.node_id)
 			if isinstance(res, MethodResolution):
+				if res.decl.fn_id is not None:
+					return signatures_by_id.get(res.decl.fn_id)
 				impl_target = res.decl.impl_target_type_id
 				if impl_target is None:
 					return None

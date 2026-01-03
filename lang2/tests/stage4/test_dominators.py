@@ -11,6 +11,7 @@ Cases:
 
 from __future__ import annotations
 
+from lang2.driftc.core.function_id import FunctionId
 from lang2.driftc.stage2 import MirFunc, BasicBlock, Goto, IfTerminator
 from lang2.driftc.stage4 import DominatorAnalysis
 
@@ -19,7 +20,7 @@ def test_dominators_straight_line():
 	entry = BasicBlock(name="entry", instructions=[], terminator=Goto(target="b1"))
 	b1 = BasicBlock(name="b1", instructions=[], terminator=Goto(target="b2"))
 	b2 = BasicBlock(name="b2", instructions=[], terminator=None)
-	func = MirFunc(name="f", params=[], locals=[], blocks={"entry": entry, "b1": b1, "b2": b2}, entry="entry")
+	func = MirFunc(fn_id=FunctionId(module="main", name="f", ordinal=0), name="f", params=[], locals=[], blocks={"entry": entry, "b1": b1, "b2": b2}, entry="entry")
 	info = DominatorAnalysis().compute(func)
 	assert info.idom["entry"] is None
 	assert info.idom["b1"] == "entry"
@@ -36,6 +37,7 @@ def test_dominators_diamond():
 	else_b = BasicBlock(name="else", instructions=[], terminator=Goto(target="join"))
 	join = BasicBlock(name="join", instructions=[], terminator=None)
 	func = MirFunc(
+		fn_id=FunctionId(module="main", name="f", ordinal=0),
 		name="f",
 		params=[],
 		locals=[],
@@ -59,6 +61,7 @@ def test_dominators_loop_shape():
 	)
 	loop_exit = BasicBlock(name="loop_exit", instructions=[], terminator=None)
 	func = MirFunc(
+		fn_id=FunctionId(module="main", name="f", ordinal=0),
 		name="f",
 		params=[],
 		locals=[],

@@ -1,4 +1,5 @@
 {
-  "mode": "compile",
-  "compile_error": "call to can-error function ingest without error edges"
+  "compile_error": "call to can-error function ingest without error edges",
+  "description": "e2e: captures",
+  "mode": "compile"
 }

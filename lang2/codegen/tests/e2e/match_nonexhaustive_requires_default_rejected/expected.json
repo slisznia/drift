@@ -1,8 +1,10 @@
 {
-  "exit_code": 1,
-  "phase": "typecheck",
+  "description": "e2e: match nonexhaustive requires default rejected",
   "diagnostics": [
-    { "message_contains": "E-MATCH-NONEXHAUSTIVE" }
-  ]
+    {
+      "message_contains": "E-MATCH-NONEXHAUSTIVE"
+    }
+  ],
+  "exit_code": 1,
+  "phase": "typecheck"
 }
-

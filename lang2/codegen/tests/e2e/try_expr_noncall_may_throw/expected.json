@@ -1,5 +1,6 @@
 {
+  "description": "e2e: try expr noncall may throw",
   "exit_code": 0,
-  "stdout": "",
-  "stderr": ""
+  "stderr": "",
+  "stdout": ""
 }

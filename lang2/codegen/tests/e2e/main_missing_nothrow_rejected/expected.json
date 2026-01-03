@@ -1,6 +1,11 @@
 {
-  "phase": "parser",
+  "description": "e2e: main missing nothrow rejected",
+  "diagnostics": [
+    {
+      "message_contains": "entrypoint main must be declared nothrow",
+      "phase": "typecheck"
+    }
+  ],
   "exit_code": 1,
-  "stdout": "",
-  "stderr": "entrypoint main must be declared nothrow (uncaught exceptions are not supported yet)"
+  "use_driftc_json": false
 }

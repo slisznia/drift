@@ -13,6 +13,8 @@ from __future__ import annotations
 
 from typing import Protocol, Tuple, Any
 
+from lang2.driftc.core.function_id import FunctionId
+
 
 class TypeEnv(Protocol):
 	"""
@@ -23,7 +25,7 @@ class TypeEnv(Protocol):
 	use the provided helpers to reason about FnResult.
 	"""
 
-	def type_of_ssa_value(self, func_name: str, value_id: str) -> Any:
+	def type_of_ssa_value(self, func_id: FunctionId, value_id: str) -> Any:
 		"""Return the type of the given SSA value in the named function."""
 		...
 

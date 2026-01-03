@@ -1,5 +1,6 @@
 {
+  "description": "e2e: string array store read",
   "exit_code": 8,
-  "stdout": "",
-  "stderr": ""
+  "stderr": "",
+  "stdout": ""
 }

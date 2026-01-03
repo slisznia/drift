@@ -1,3 +1,4 @@
+from lang2.driftc.core.function_id import FunctionId
 # vim: set noexpandtab: -*- indent-tabs-mode: t -*-
 # author: Sławomir Liszniański; created: 2025-12-07
 """
@@ -41,11 +42,12 @@ def test_array_literal_and_index_ir_contains_alloc_and_load():
 		],
 		terminator=Return(value="t4"),
 	)
-	func = MirFunc(name="f", params=[], locals=[], blocks={"entry": block}, entry="entry")
+	fn_id = FunctionId(module="main", name="f", ordinal=0)
+	func = MirFunc(fn_id=fn_id, name="f", params=[], locals=[], blocks={"entry": block}, entry="entry")
 	ssa = MirToSSA().run(func)
 	sig = FnSignature(name="f", return_type_id=int_ty, param_type_ids=[])
-	fn_info = FnInfo(name="f", declared_can_throw=False, signature=sig, return_type_id=int_ty)
-	ir = lower_ssa_func_to_llvm(func, ssa, fn_info, {"f": fn_info})
+	fn_info = FnInfo(fn_id=fn_id, name="f", declared_can_throw=False, signature=sig, return_type_id=int_ty)
+	ir = lower_ssa_func_to_llvm(func, ssa, fn_info, {fn_id: fn_info})
 	assert "declare i8* @drift_alloc_array" in ir
 	assert "call i8* @drift_alloc_array" in ir
 	assert "drift_bounds_check_fail" in ir
@@ -68,11 +70,12 @@ def test_array_index_store_ir_contains_store():
 		],
 		terminator=Return(value="t1"),
 	)
-	func = MirFunc(name="f", params=[], locals=[], blocks={"entry": block}, entry="entry")
+	fn_id = FunctionId(module="main", name="f", ordinal=0)
+	func = MirFunc(fn_id=fn_id, name="f", params=[], locals=[], blocks={"entry": block}, entry="entry")
 	ssa = MirToSSA().run(func)
 	sig = FnSignature(name="f", return_type_id=int_ty, param_type_ids=[])
-	fn_info = FnInfo(name="f", declared_can_throw=False, signature=sig, return_type_id=int_ty)
-	ir = lower_ssa_func_to_llvm(func, ssa, fn_info, {"f": fn_info})
+	fn_info = FnInfo(fn_id=fn_id, name="f", declared_can_throw=False, signature=sig, return_type_id=int_ty)
+	ir = lower_ssa_func_to_llvm(func, ssa, fn_info, {fn_id: fn_info})
 	assert "drift_bounds_check_fail" in ir
 	assert "store i64 %t2" in ir
 	assert "sext" not in ir

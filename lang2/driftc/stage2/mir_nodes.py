@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import List, Dict, Optional, Union
 
+from lang2.driftc.core.function_id import FunctionId, function_symbol
 from lang2.driftc.core.types_core import TypeId
 from lang2.driftc.stage1 import UnaryOp, BinaryOp
 
@@ -476,7 +477,7 @@ class Call(MInstr):
 	dest = fn(args...) (plain function call; dest may be None for void returns).
 	"""
 	dest: Optional[ValueId]  # None for void calls
-	fn: str
+	fn_id: FunctionId
 	args: List[ValueId]
 	can_throw: bool
 
@@ -736,8 +737,15 @@ class MirFunc:
 	name: str
 	params: List[LocalId]
 	locals: List[LocalId]
+	fn_id: FunctionId
 	blocks: Dict[str, BasicBlock] = field(default_factory=dict)
 	entry: str = "entry"
+
+	def __post_init__(self) -> None:
+		if self.name != function_symbol(self.fn_id):
+			raise AssertionError(
+				f"MirFunc name '{self.name}' must match fn_id symbol '{function_symbol(self.fn_id)}'"
+			)
 
 
 __all__ = [

@@ -124,11 +124,12 @@ def resolve_program_signatures(
 			error_type_id = ret_def.param_types[1]
 
 		throws = _throws_from_decl(decl)
-		declared_can_throw = True if throws else None
-		if bool(getattr(decl, "declared_nothrow", False)):
-			declared_can_throw = False
-		elif declared_can_throw is None and ret_def.kind is TypeKind.FNRESULT:
-			declared_can_throw = True
+		declared_nothrow = bool(getattr(decl, "declared_nothrow", False))
+		# Surface ABI rule: nothrow is the only way to force a non-throwing ABI.
+		declared_can_throw = not declared_nothrow
+		# Note: throws_events are for validation only; they do not change ABI.
+		if declared_can_throw and error_type_id is None:
+			error_type_id = table.ensure_error()
 
 		is_method = bool(getattr(decl, "is_method", False))
 		self_mode = getattr(decl, "self_mode", None)

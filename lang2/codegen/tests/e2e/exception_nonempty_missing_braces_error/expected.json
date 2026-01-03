@@ -1,6 +1,9 @@
 {
-  "exit_code": 1,
+  "description": "e2e: exception nonempty missing braces error",
   "diagnostics": [
-    { "message_contains": "missing exception field" }
-  ]
+    {
+      "message_contains": "missing exception field"
+    }
+  ],
+  "exit_code": 1
 }

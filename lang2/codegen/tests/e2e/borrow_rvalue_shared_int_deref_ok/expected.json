@@ -1,2 +1,6 @@
-{ "exit_code": 3, "stdout": "", "stderr": "" }
-
+{
+  "description": "e2e: borrow rvalue shared int deref ok",
+  "exit_code": 3,
+  "stderr": "",
+  "stdout": ""
+}

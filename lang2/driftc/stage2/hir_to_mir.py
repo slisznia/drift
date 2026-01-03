@@ -31,7 +31,14 @@ from typing import List, Set, Mapping, Optional
 
 from lang2.driftc import stage1 as H
 from lang2.driftc.stage1 import closures as C
-from lang2.driftc.stage1.call_info import CallInfo, CallSig, CallTarget, CallTargetKind, call_abi_ret_type
+from lang2.driftc.stage1.call_info import (
+	CallInfo,
+	CallSig,
+	CallTarget,
+	CallTargetKind,
+	IntrinsicKind,
+	call_abi_ret_type,
+)
 from lang2.driftc.checker import FnSignature
 from lang2.driftc.core.function_id import FunctionId, function_symbol
 from lang2.driftc.core.span import Span
@@ -40,21 +47,8 @@ from lang2.driftc.core.type_resolve_common import resolve_opaque_type
 from lang2.driftc.core.generic_type_expr import GenericTypeExpr
 from lang2.driftc.core.iter_intrinsics import ensure_array_iter_struct, is_array_iter_struct
 from lang2.driftc.stage1.capture_discovery import discover_captures
+from lang2.driftc.stage1.closures import sort_captures
 from . import mir_nodes as M
-
-
-def _parse_function_symbol(sym: str) -> FunctionId:
-	base = sym
-	ordinal = 0
-	if "#" in sym:
-		base, ord_text = sym.rsplit("#", 1)
-		if ord_text.isdigit():
-			ordinal = int(ord_text)
-	if "::" in base:
-		module, name = base.split("::", 1)
-	else:
-		module, name = "main", base
-	return FunctionId(module=module, name=name, ordinal=ordinal)
 
 
 class MirBuilder:
@@ -72,7 +66,9 @@ class MirBuilder:
 	  - read out builder.func when done
 	"""
 
-	def __init__(self, name: str):
+	def __init__(self, name: str, *, fn_id: FunctionId):
+		if name != function_symbol(fn_id):
+			raise AssertionError(f"MirBuilder name '{name}' must match fn_id symbol '{function_symbol(fn_id)}'")
 		entry_block = M.BasicBlock(name="entry")
 		self.func = M.MirFunc(
 			name=name,
@@ -80,6 +76,7 @@ class MirBuilder:
 			locals=[],
 			blocks={"entry": entry_block},
 			entry="entry",
+			fn_id=fn_id,
 		)
 		self.extra_funcs: list[M.MirFunc] = []
 		self.block = entry_block
@@ -124,10 +121,37 @@ class MirBuilder:
 		block = M.BasicBlock(name=name)
 		self.func.blocks[name] = block
 		return block
-
 	def set_block(self, block: M.BasicBlock) -> None:
 		"""Switch the current insertion block."""
 		self.block = block
+
+
+def make_builder(fn_id: FunctionId) -> MirBuilder:
+	return MirBuilder(name=function_symbol(fn_id), fn_id=fn_id)
+
+
+@dataclass(frozen=True)
+class SynthSigSpec:
+	fn_id: FunctionId
+	sig: FnSignature
+	kind: str
+
+
+@dataclass(frozen=True)
+class HiddenLambdaSpec:
+	fn_id: FunctionId
+	origin_fn_id: FunctionId | None
+	lambda_expr: H.HLambda
+	param_names: list[str]
+	param_type_ids: list[TypeId]
+	return_type_id: TypeId
+	can_throw: bool
+	has_captures: bool
+	env_ty: TypeId | None
+	env_field_types: list[TypeId]
+	capture_map: dict[C.HCaptureKey, int]
+	capture_kinds: list[C.HCaptureKind]
+	lambda_capture_ref_is_value: bool
 
 
 class HIRToMIR:
@@ -160,11 +184,13 @@ class HIRToMIR:
 		type_table: Optional[TypeTable] = None,
 		exc_env: Mapping[str, int] | None = None,
 		param_types: Mapping[str, TypeId] | None = None,
-		signatures: Mapping[str, FnSignature] | None = None,
-		call_info_by_node_id: Mapping[int, CallInfo] | None = None,
+		signatures_by_id: Mapping[FunctionId, FnSignature] | None = None,
+		current_fn_id: FunctionId | None = None,
+		call_info_by_callsite_id: Mapping[int, CallInfo] | None = None,
 		call_resolutions: Mapping[int, object] | None = None,
-		can_throw_by_name: Mapping[str, bool] | None = None,
+		can_throw_by_id: Mapping[FunctionId, bool] | None = None,
 		return_type: TypeId | None = None,
+		typed_mode: bool = False,
 	):
 		"""
 		Create a lowering context.
@@ -202,22 +228,29 @@ class HIRToMIR:
 		self._opt_int = self._type_table.new_optional(self._int_type)
 		self._opt_bool = self._type_table.new_optional(self._bool_type)
 		self._opt_string = self._type_table.new_optional(self._string_type)
-		self._signatures = signatures or {}
-		self._call_info_by_node_id: dict[int, CallInfo] = dict(call_info_by_node_id) if call_info_by_node_id else {}
+		self._signatures_by_id = signatures_by_id or {}
+		self._current_fn_id = current_fn_id
+		self._call_info_by_callsite_id: dict[int, CallInfo] = (
+			dict(call_info_by_callsite_id) if call_info_by_callsite_id else {}
+		)
 		self._call_resolutions: dict[int, object] = dict(call_resolutions) if call_resolutions else {}
+		self._typed_mode = typed_mode
+		self._synth_sig_specs: list[SynthSigSpec] = []
+		self._hidden_lambda_specs: list[HiddenLambdaSpec] = []
 		# Best-effort can-throw classification for functions. This is intentionally
 		# separate from signatures: the surface language does not expose FnResult,
 		# and "can-throw" is an effect inferred from the body (or declared by a
 		# future `nothrow`/throws annotation).
-		self._can_throw_by_name: dict[str, bool] = dict(can_throw_by_name) if can_throw_by_name else {}
-		self._current_fn_can_throw: bool | None = self._can_throw_by_name.get(self.b.func.name)
+		self._can_throw_by_id: dict[FunctionId, bool] = dict(can_throw_by_id) if can_throw_by_id else {}
+		self._current_fn_can_throw: bool | None = self._can_throw_by_id.get(current_fn_id) if current_fn_id else None
 		self._ret_type = return_type
 		# Stage2 lowering is "assert-only" with respect to match pattern
 		# normalization: the typed checker is expected to populate
 		# `HMatchArm.binder_field_indices` once the scrutinee type is known.
 		# Cache the current function signature for defensive fallbacks in older
 		# unit tests that bypass the checker.
-		self._fn_sig = self._signatures.get(self.b.func.name)
+		self._fn_sig = self._signatures_by_id.get(current_fn_id) if current_fn_id else None
+		# Stage2 expects caller-provided FunctionId/signature wiring; no name-based fallback.
 		# Expected type hints for expression lowering.
 		#
 		# Stage2 does not consume the typed checker's per-expression type map yet;
@@ -241,6 +274,12 @@ class HIRToMIR:
 		# Names reserved for this function (params + locals).
 		self._reserved_names: set[str] = set(self.b.func.params)
 		self._local_binding_ids: set[int] = set()
+
+	def synth_sig_specs(self) -> list[SynthSigSpec]:
+		return list(self._synth_sig_specs)
+
+	def hidden_lambda_specs(self) -> list[HiddenLambdaSpec]:
+		return list(self._hidden_lambda_specs)
 
 	def _canonical_local(self, binding_id: int | None, fallback: str) -> str:
 		"""
@@ -358,7 +397,7 @@ class HIRToMIR:
 		"""
 		Best-effort can-throw flag for the current function.
 
-		Preferred source is `can_throw_by_name` computed by the checker. We keep
+		Preferred source is `can_throw_by_id` computed by the checker. We keep
 		a signature-based fallback only for legacy/unit tests that bypass the
 		checker in this stage.
 		"""
@@ -715,11 +754,15 @@ class HIRToMIR:
 		# For older unit tests that bypass the typed checker, we also accept an
 		# unqualified name and resolve it within the current module.
 		sym = expr.name
-		candidates: list[str] = [sym]
-		if "::" not in sym:
-			fn_name = getattr(self.b.func, "name", "")
-			mod = fn_name.split("::")[0] if "::" in fn_name else "main"
-			candidates.append(f"{mod}::{sym}")
+		candidates: list[str] = []
+		if expr.module_id is not None:
+			candidates.append(f"{expr.module_id}::{sym}")
+		else:
+			candidates.append(sym)
+			if "::" not in sym:
+				fn_name = getattr(self.b.func, "name", "")
+				mod = fn_name.split("::")[0] if "::" in fn_name else "main"
+				candidates.append(f"{mod}::{sym}")
 		for cand in candidates:
 			cv = self._type_table.lookup_const(cand)
 			if cv is None:
@@ -935,6 +978,82 @@ class HIRToMIR:
 		else:
 			raise NotImplementedError("len(x): unsupported argument type")
 
+	def _lower_intrinsic_call_expr(
+		self,
+		expr: H.HCall,
+		intrinsic: IntrinsicKind,
+		*,
+		info: CallInfo | None = None,
+	) -> M.ValueId:
+		if intrinsic is IntrinsicKind.SWAP:
+			raise AssertionError("swap(...) used in expression context (checker bug)")
+		if intrinsic is IntrinsicKind.REPLACE:
+			if getattr(expr, "kwargs", None):
+				raise AssertionError("replace(...) does not accept keyword arguments (checker bug)")
+			if len(expr.args) != 2:
+				raise AssertionError("replace(...) arity mismatch reached MIR lowering (checker bug)")
+			place_expr = expr.args[0]
+			new_expr = expr.args[1]
+			if not (hasattr(H, "HPlaceExpr") and isinstance(place_expr, getattr(H, "HPlaceExpr"))):
+				raise AssertionError("replace(place, v): non-canonical place reached MIR lowering (normalize/typechecker bug)")
+			ptr, inner_ty = self._lower_addr_of_place(place_expr, is_mut=True)
+			old_val = self.b.new_temp()
+			self.b.emit(M.LoadRef(dest=old_val, ptr=ptr, inner_ty=inner_ty))
+			new_val = self.lower_expr(new_expr)
+			self.b.emit(M.StoreRef(ptr=ptr, value=new_val, inner_ty=inner_ty))
+			self._local_types[old_val] = inner_ty
+			return old_val
+		if intrinsic is IntrinsicKind.BYTE_LENGTH:
+			name = intrinsic.value
+			if getattr(expr, "kwargs", None):
+				raise AssertionError(f"{name}(...) does not accept keyword arguments (checker bug)")
+			if len(expr.args) != 1:
+				raise AssertionError(f"{name}(...) arity mismatch reached MIR lowering (checker bug)")
+			arg_expr = expr.args[0]
+			arg_val = self.lower_expr(arg_expr)
+			arg_ty = None
+			if info is not None and info.sig.param_types:
+				arg_ty = info.sig.param_types[0]
+			if arg_ty is None or self._type_table.get(arg_ty).kind is TypeKind.UNKNOWN:
+				raise AssertionError(f"{name}(x): missing argument type in CallInfo (checker bug)")
+			dest = self.b.new_temp()
+			self._lower_len(arg_ty, arg_val, dest)
+			self._local_types[dest] = self._uint_type
+			return dest
+		if intrinsic is IntrinsicKind.STRING_EQ:
+			if getattr(expr, "kwargs", None):
+				raise AssertionError("string_eq(...) does not accept keyword arguments (checker bug)")
+			if len(expr.args) != 2:
+				raise AssertionError("string_eq(...) arity mismatch reached MIR lowering (checker bug)")
+			if info is None or len(info.sig.param_types) < 2:
+				raise AssertionError("string_eq(...) missing CallInfo types (checker bug)")
+			if info.sig.param_types[0] != self._string_type or info.sig.param_types[1] != self._string_type:
+				raise AssertionError("string_eq requires String operands (checker bug)")
+			l_expr, r_expr = expr.args
+			l_val = self.lower_expr(l_expr)
+			r_val = self.lower_expr(r_expr)
+			dest = self.b.new_temp()
+			self.b.emit(M.StringEq(dest=dest, left=l_val, right=r_val))
+			self._local_types[dest] = self._bool_type
+			return dest
+		if intrinsic is IntrinsicKind.STRING_CONCAT:
+			if getattr(expr, "kwargs", None):
+				raise AssertionError("string_concat(...) does not accept keyword arguments (checker bug)")
+			if len(expr.args) != 2:
+				raise AssertionError("string_concat(...) arity mismatch reached MIR lowering (checker bug)")
+			if info is None or len(info.sig.param_types) < 2:
+				raise AssertionError("string_concat(...) missing CallInfo types (checker bug)")
+			if info.sig.param_types[0] != self._string_type or info.sig.param_types[1] != self._string_type:
+				raise AssertionError("string_concat requires String operands (checker bug)")
+			l_expr, r_expr = expr.args
+			l_val = self.lower_expr(l_expr)
+			r_val = self.lower_expr(r_expr)
+			dest = self.b.new_temp()
+			self.b.emit(M.StringConcat(dest=dest, left=l_val, right=r_val))
+			self._local_types[dest] = self._string_type
+			return dest
+		raise AssertionError(f"unknown intrinsic '{intrinsic.value}' reached MIR lowering (checker bug)")
+
 	# Stubs for unhandled expressions
 	def _visit_expr_HCall(self, expr: H.HCall) -> M.ValueId:
 		"""
@@ -944,7 +1063,7 @@ class HIRToMIR:
 		if isinstance(expr.fn, H.HLambda):
 			return self._lower_lambda_immediate_call(expr.fn, expr.args)
 		if hasattr(H, "HQualifiedMember") and isinstance(expr.fn, getattr(H, "HQualifiedMember")):
-			info = self._call_info_by_node_id.get(expr.node_id)
+			info = self._call_info_for_expr_optional(expr)
 			if info is None:
 				info = self._call_info_from_ufcs(expr)
 			if info is not None and info.target.kind is CallTargetKind.INDIRECT:
@@ -1030,6 +1149,52 @@ class HIRToMIR:
 			return dest
 		if isinstance(expr.fn, H.HVar):
 			name = expr.fn.name
+			info = self._call_info_for_expr_optional(expr)
+			if info is not None and info.target.kind is CallTargetKind.INTRINSIC:
+				intrinsic = info.target.intrinsic
+				if intrinsic is None:
+					raise AssertionError("intrinsic call missing name (typecheck/call-info bug)")
+				return self._lower_intrinsic_call_expr(expr, intrinsic, info=info)
+			if info is not None and info.target.kind is CallTargetKind.INDIRECT:
+				expected = self._current_expected_type()
+				if expected is not None and self._type_table.get(expected).kind is TypeKind.VARIANT:
+					inst = self._type_table.get_variant_instance(expected)
+					if inst is not None and name in inst.arms_by_name:
+						info = None
+				if info is not None:
+					cur_mod = self._current_module_name()
+					fn_module = getattr(expr.fn, "module_id", None)
+					if isinstance(fn_module, str):
+						struct_ty = self._type_table.get_nominal(kind=TypeKind.STRUCT, module_id=fn_module, name=name)
+					else:
+						struct_ty = self._type_table.get_nominal(kind=TypeKind.STRUCT, module_id=cur_mod, name=name) or self._type_table.find_unique_nominal_by_name(
+							kind=TypeKind.STRUCT, name=name
+						)
+					if struct_ty is not None:
+						info = None
+			if info is not None:
+				if getattr(expr, "kwargs", None):
+					cur_mod = self._current_module_name()
+					fn_module = getattr(expr.fn, "module_id", None)
+					if isinstance(fn_module, str):
+						struct_ty = self._type_table.get_nominal(kind=TypeKind.STRUCT, module_id=fn_module, name=name)
+					else:
+						struct_ty = self._type_table.get_nominal(kind=TypeKind.STRUCT, module_id=cur_mod, name=name) or self._type_table.find_unique_nominal_by_name(
+							kind=TypeKind.STRUCT, name=name
+						)
+					if struct_ty is None:
+						raise AssertionError("keyword arguments reached MIR lowering for a normal call (checker bug)")
+					info = None
+				if info is not None:
+					result = self._lower_call_with_info(expr, info)
+					if result is None:
+						raise AssertionError("Void-returning call used in expression context (checker bug)")
+					if info.sig.can_throw:
+						ok_tid = info.sig.user_ret_type
+						def emit_call() -> M.ValueId:
+							return result
+						return self._lower_can_throw_call_value(emit_call=emit_call, ok_ty=ok_tid)
+					return result
 			# Variant constructor call in expression position.
 			#
 			# MVP rule: constructor calls require an expected variant type from
@@ -1075,42 +1240,20 @@ class HIRToMIR:
 						self.b.emit(M.ConstructVariant(dest=dest, variant_ty=expected, ctor=name, args=arg_vals))
 						self._local_types[dest] = expected
 						return dest
-			# swap/replace are place-manipulation builtins, not normal calls.
-			#
-			# They exist to support safe extraction/exchange without creating
-			# moved-from "holes" in containers. Stage1 canonicalizes their place
-			# operands to `HPlaceExpr`.
-			if name == "swap" and len(expr.args) == 2:
-				raise AssertionError("swap(...) used in expression context (checker bug)")
-			if name == "replace" and len(expr.args) == 2:
-				if getattr(expr, "kwargs", None):
-					raise AssertionError("replace(...) does not accept keyword arguments (checker bug)")
-				place_expr = expr.args[0]
-				new_expr = expr.args[1]
-				if not (hasattr(H, "HPlaceExpr") and isinstance(place_expr, getattr(H, "HPlaceExpr"))):
-					raise AssertionError("replace(place, v): non-canonical place reached MIR lowering (normalize/typechecker bug)")
-				ptr, inner_ty = self._lower_addr_of_place(place_expr, is_mut=True)
-				old_val = self.b.new_temp()
-				self.b.emit(M.LoadRef(dest=old_val, ptr=ptr, inner_ty=inner_ty))
-				new_val = self.lower_expr(new_expr)
-				self.b.emit(M.StoreRef(ptr=ptr, value=new_val, inner_ty=inner_ty))
-				self._local_types[old_val] = inner_ty
-				return old_val
 			# Struct constructor: `Point(1, 2)` constructs a struct value.
 			#
 			# This only triggers when there is no function signature for the same
 			# name (to avoid ambiguity in older tests).
 			struct_ty: TypeId | None = None
 			cur_mod = self._current_module_name()
-			if "::" in name:
-				parts = name.split("::")
-				if len(parts) == 2:
-					struct_ty = self._type_table.get_nominal(kind=TypeKind.STRUCT, module_id=parts[0], name=parts[1])
+			fn_module = getattr(expr.fn, "module_id", None)
+			if isinstance(fn_module, str):
+				struct_ty = self._type_table.get_nominal(kind=TypeKind.STRUCT, module_id=fn_module, name=name)
 			else:
 				struct_ty = self._type_table.get_nominal(kind=TypeKind.STRUCT, module_id=cur_mod, name=name) or self._type_table.find_unique_nominal_by_name(
 					kind=TypeKind.STRUCT, name=name
 				)
-			if struct_ty is not None and name not in self._signatures:
+			if struct_ty is not None:
 				struct_def = self._type_table.get(struct_ty)
 				if struct_def.kind is not TypeKind.STRUCT:
 					raise AssertionError("struct schema name resolved to non-STRUCT TypeId (checker bug)")
@@ -1141,45 +1284,6 @@ class HIRToMIR:
 				arg_vals = [v for v in ordered if v is not None]
 				dest = self.b.new_temp()
 				self.b.emit(M.ConstructStruct(dest=dest, struct_ty=struct_ty, args=arg_vals))
-				return dest
-			# Builtin byte_length/len(x) for String/Array.
-			if name in ("len", "byte_length") and len(expr.args) == 1:
-				if getattr(expr, "kwargs", None):
-					raise AssertionError(f"{name}(...) does not accept keyword arguments (checker bug)")
-				arg_expr = expr.args[0]
-				arg_val = self.lower_expr(arg_expr)
-				arg_ty = self._infer_expr_type(arg_expr)
-				if arg_ty is None:
-					raise NotImplementedError(f"{name}(x): unable to infer argument type")
-				dest = self.b.new_temp()
-				self._lower_len(arg_ty, arg_val, dest)
-				self._local_types[dest] = self._uint_type
-				return dest
-			# string_eq(a,b)
-			if name == "string_eq" and len(expr.args) == 2:
-				if getattr(expr, "kwargs", None):
-					raise AssertionError("string_eq(...) does not accept keyword arguments (checker bug)")
-				l_expr, r_expr = expr.args
-				l_val = self.lower_expr(l_expr)
-				r_val = self.lower_expr(r_expr)
-				if self._infer_expr_type(l_expr) != self._string_type or self._infer_expr_type(r_expr) != self._string_type:
-					raise NotImplementedError("string_eq requires String operands")
-				dest = self.b.new_temp()
-				self.b.emit(M.StringEq(dest=dest, left=l_val, right=r_val))
-				self._local_types[dest] = self._bool_type
-				return dest
-			# string_concat(a,b)
-			if name == "string_concat" and len(expr.args) == 2:
-				if getattr(expr, "kwargs", None):
-					raise AssertionError("string_concat(...) does not accept keyword arguments (checker bug)")
-				l_expr, r_expr = expr.args
-				l_val = self.lower_expr(l_expr)
-				r_val = self.lower_expr(r_expr)
-				if self._infer_expr_type(l_expr) != self._string_type or self._infer_expr_type(r_expr) != self._string_type:
-					raise NotImplementedError("string_concat requires String operands")
-				dest = self.b.new_temp()
-				self.b.emit(M.StringConcat(dest=dest, left=l_val, right=r_val))
-				self._local_types[dest] = self._string_type
 				return dest
 		if not isinstance(expr.fn, H.HVar):
 			raise NotImplementedError("Only direct function-name calls are supported in MIR lowering")
@@ -1221,16 +1325,20 @@ class HIRToMIR:
 		lambda body marks the hidden lambda as can-throw so we never lower throws
 		to `unreachable` in the hidden function.
 		"""
+		if getattr(lam, "can_throw_effective", None) is not None:
+			return bool(getattr(lam, "can_throw_effective"))
+		if self._typed_mode:
+			raise AssertionError("lambda missing can_throw_effective (checker bug)")
 		def expr_can_throw(expr: H.HExpr) -> bool:
 			if isinstance(expr, H.HCall):
-				info = self._call_info_by_node_id.get(expr.node_id)
+				info = self._call_info_for_expr_optional(expr)
 				if info is not None and info.sig.can_throw:
 					return True
 				if isinstance(expr.fn, H.HLambda):
 					return self._lambda_can_throw(expr.fn)
 				return any(expr_can_throw(a) for a in expr.args)
 			if isinstance(expr, H.HMethodCall):
-				info = self._call_info_by_node_id.get(expr.node_id)
+				info = self._call_info_for_expr_optional(expr)
 				if info is not None:
 					if info.sig.can_throw:
 						return True
@@ -1243,7 +1351,7 @@ class HIRToMIR:
 					return True
 				return any(expr_can_throw(a) for a in expr.args)
 			if isinstance(expr, H.HInvoke):
-				info = self._call_info_by_node_id.get(expr.node_id)
+				info = self._call_info_for_expr_optional(expr)
 				if info is not None and info.sig.can_throw:
 					return True
 				if isinstance(expr.callee, H.HLambda):
@@ -1331,6 +1439,9 @@ class HIRToMIR:
 		"""Lower an immediate-call lambda via env + hidden function."""
 		if not lam.captures:
 			discover_captures(lam)
+		if lam.captures:
+			# Ensure deterministic capture ordering for env layout and slots.
+			lam.captures = sort_captures(lam.captures)
 
 		lambda_id = self._lambda_counter
 		self._lambda_counter += 1
@@ -1388,35 +1499,24 @@ class HIRToMIR:
 			self.b.emit(M.AddrOfLocal(dest=env_ptr, local=env_local, is_mut=False))
 		arg_vals = [self.lower_expr(a) for a in args]
 
-		hidden_name = f"__lambda_{self.b.func.name.replace('::', '_')}_{lambda_id}"
-		hidden_builder = MirBuilder(hidden_name)
-		hidden_lower = HIRToMIR(
-			hidden_builder,
-			type_table=self._type_table,
-			signatures=self._signatures,
-			call_info_by_node_id=self._call_info_by_node_id,
-			can_throw_by_name={**self._can_throw_by_name, hidden_name: can_throw},
-			return_type=declared_ret_type or self._type_table.ensure_unknown(),
-		)
-		hidden_lower._lambda_capture_ref_is_value = getattr(lam, "explicit_captures", None) is None
-		hidden_env_local = "__env"
+		if self._current_fn_id is not None:
+			base_name = self._current_fn_id.name
+			base_ord = self._current_fn_id.ordinal
+			hidden_name = f"__lambda_{base_name}_{base_ord}_{lambda_id}"
+		else:
+			base = self.b.func.name.replace("::", "_").replace("#", "_")
+			hidden_name = f"__lambda_{base}_{lambda_id}"
+		hidden_fn_id = FunctionId(module=mod, name=hidden_name, ordinal=0)
+		hidden_symbol = function_symbol(hidden_fn_id)
+		lambda_capture_ref_is_value = getattr(lam, "explicit_captures", None) is None
+		hidden_env_local = f"__env_{lambda_id}"
 		param_type_ids: list[TypeId] = []
 		param_names: list[str] = []
 		if has_captures:
-			hidden_builder.func.params.append(hidden_env_local)
-			hidden_lower._lambda_env_local = hidden_env_local
-			hidden_lower._lambda_env_ty = env_ty
-			hidden_lower._lambda_env_field_types = list(env_field_types)
-			hidden_lower._lambda_capture_slots = dict(capture_map)
-			hidden_lower._lambda_capture_kinds = list(capture_kinds)
 			param_type_ids.append(self._type_table.ensure_ref(env_ty))
 			param_names.append(hidden_env_local)
 		for p in lam.params:
-			if getattr(p, "binding_id", None) is not None:
-				hidden_lower._binding_names[int(p.binding_id)] = p.name
-			p_local = hidden_lower._canonical_local(getattr(p, "binding_id", None), p.name)
-			hidden_builder.func.params.append(p_local)
-			param_names.append(p_local)
+			param_names.append(p.name)
 			ptype = None
 			if getattr(p, "type", None) is not None:
 				try:
@@ -1424,7 +1524,6 @@ class HIRToMIR:
 				except Exception:
 					ptype = None
 			if ptype is not None:
-				hidden_lower._local_types[p_local] = ptype
 				param_type_ids.append(ptype)
 			else:
 				param_type_ids.append(unknown)
@@ -1432,50 +1531,58 @@ class HIRToMIR:
 		ret_type: TypeId | None = declared_ret_type
 		if lam.body_expr is not None:
 			if ret_type is None:
-				ret_type = hidden_lower._infer_expr_type(lam.body_expr)
-			ret_val = hidden_lower.lower_expr(lam.body_expr)
-			hidden_builder.set_terminator(M.Return(value=ret_val))
+				ret_type = self._infer_expr_type(lam.body_expr)
 		elif lam.body_block is not None:
-			self._seed_lambda_locals_for_inference(hidden_lower, lam.body_block)
+			self._seed_lambda_locals_for_inference(self, lam.body_block)
 			if lam.body_block.statements:
 				last_stmt = lam.body_block.statements[-1]
 				if isinstance(last_stmt, H.HExprStmt):
 					if ret_type is None:
-						ret_type = hidden_lower._infer_expr_type(last_stmt.expr)
+						ret_type = self._infer_expr_type(last_stmt.expr)
 				elif isinstance(last_stmt, H.HReturn) and last_stmt.value is not None:
 					if ret_type is None:
-						ret_type = hidden_lower._infer_expr_type(last_stmt.value)
-			ret_val = self._lower_lambda_block(hidden_lower, lam.body_block)
-			if hidden_builder.block.terminator is None:
-				if ret_val is None:
-					raise NotImplementedError("lambda block must end with a value or return")
-				hidden_builder.set_terminator(M.Return(value=ret_val))
+						ret_type = self._infer_expr_type(last_stmt.value)
 		else:
 			raise AssertionError("lambda missing body reached lowering (bug)")
 		if ret_type is None:
 			ret_type = unknown
-		self._signatures[hidden_name] = FnSignature(
-			name=hidden_name,
+		hidden_sig = FnSignature(
+			name=hidden_symbol,
 			param_type_ids=param_type_ids,
 			param_names=param_names,
 			return_type_id=ret_type,
 			declared_can_throw=can_throw,
 			module=mod,
 		)
-		if not hasattr(self.b, "extra_funcs"):
-			self.b.extra_funcs = []
-		self.b.extra_funcs.append(hidden_builder.func)
+		self._synth_sig_specs.append(SynthSigSpec(hidden_fn_id, hidden_sig, "hidden_lambda"))
+		self._hidden_lambda_specs.append(
+			HiddenLambdaSpec(
+				fn_id=hidden_fn_id,
+				origin_fn_id=self._current_fn_id,
+				lambda_expr=lam,
+				param_names=list(param_names),
+				param_type_ids=list(param_type_ids),
+				return_type_id=ret_type,
+				can_throw=bool(can_throw),
+				has_captures=has_captures,
+				env_ty=env_ty,
+				env_field_types=list(env_field_types),
+				capture_map=dict(capture_map),
+				capture_kinds=list(capture_kinds),
+				lambda_capture_ref_is_value=lambda_capture_ref_is_value,
+			)
+		)
 
 		call_args = [env_ptr] + arg_vals if has_captures else arg_vals
 		if can_throw:
 			ok_ty = ret_type or unknown
 			def emit_call() -> M.ValueId:
 				dest = self.b.new_temp()
-				self.b.emit(M.Call(dest=dest, fn=hidden_name, args=call_args, can_throw=True))
+				self.b.emit(M.Call(dest=dest, fn_id=hidden_fn_id, args=call_args, can_throw=True))
 				return dest
 			return self._lower_can_throw_call_value(emit_call=emit_call, ok_ty=ok_ty)
 		dest = self.b.new_temp()
-		self.b.emit(M.Call(dest=dest, fn=hidden_name, args=call_args, can_throw=False))
+		self.b.emit(M.Call(dest=dest, fn_id=hidden_fn_id, args=call_args, can_throw=False))
 		return dest
 
 	def _lower_lambda_block(self, lower: "HIRToMIR", block: H.HBlock) -> M.ValueId | None:
@@ -1956,33 +2063,44 @@ class HIRToMIR:
 		# - Can-throw calls must still be checked so Err paths route into the try
 		#   dispatch (or propagate out of the function) even when the Ok value is
 		#   ignored.
-		if isinstance(stmt.expr, H.HCall) and isinstance(stmt.expr.fn, H.HVar):
-			if stmt.expr.fn.name == "swap" and len(stmt.expr.args) == 2:
-				a_expr = stmt.expr.args[0]
-				b_expr = stmt.expr.args[1]
-				if not (
-					hasattr(H, "HPlaceExpr")
-					and isinstance(a_expr, getattr(H, "HPlaceExpr"))
-					and isinstance(b_expr, getattr(H, "HPlaceExpr"))
-				):
-					raise AssertionError("swap(a, b): non-canonical place reached MIR lowering (normalize/typechecker bug)")
-				a_ptr, a_ty = self._lower_addr_of_place(a_expr, is_mut=True)
-				b_ptr, b_ty = self._lower_addr_of_place(b_expr, is_mut=True)
-				if a_ty != b_ty:
-					raise AssertionError("swap(a, b) reached MIR lowering with mismatched types (checker bug)")
-				a_val = self.b.new_temp()
-				b_val = self.b.new_temp()
-				self.b.emit(M.LoadRef(dest=a_val, ptr=a_ptr, inner_ty=a_ty))
-				self.b.emit(M.LoadRef(dest=b_val, ptr=b_ptr, inner_ty=b_ty))
-				self.b.emit(M.StoreRef(ptr=a_ptr, value=b_val, inner_ty=a_ty))
-				self.b.emit(M.StoreRef(ptr=b_ptr, value=a_val, inner_ty=b_ty))
+		if isinstance(stmt.expr, H.HCall):
+			info = self._call_info_for_expr_optional(stmt.expr)
+			if info is not None and info.target.kind is CallTargetKind.INTRINSIC:
+				intrinsic = info.target.intrinsic
+				if intrinsic is None:
+					raise AssertionError("intrinsic call missing name (typecheck/call-info bug)")
+				if intrinsic is IntrinsicKind.SWAP:
+					if len(stmt.expr.args) != 2:
+						raise AssertionError("swap(a, b): arity mismatch reached MIR lowering (checker bug)")
+					a_expr = stmt.expr.args[0]
+					b_expr = stmt.expr.args[1]
+					if not (
+						hasattr(H, "HPlaceExpr")
+						and isinstance(a_expr, getattr(H, "HPlaceExpr"))
+						and isinstance(b_expr, getattr(H, "HPlaceExpr"))
+					):
+						raise AssertionError(
+							"swap(a, b): non-canonical place reached MIR lowering (normalize/typechecker bug)"
+						)
+					a_ptr, a_ty = self._lower_addr_of_place(a_expr, is_mut=True)
+					b_ptr, b_ty = self._lower_addr_of_place(b_expr, is_mut=True)
+					if a_ty != b_ty:
+						raise AssertionError("swap(a, b) reached MIR lowering with mismatched types (checker bug)")
+					a_val = self.b.new_temp()
+					b_val = self.b.new_temp()
+					self.b.emit(M.LoadRef(dest=a_val, ptr=a_ptr, inner_ty=a_ty))
+					self.b.emit(M.LoadRef(dest=b_val, ptr=b_ptr, inner_ty=b_ty))
+					self.b.emit(M.StoreRef(ptr=a_ptr, value=b_val, inner_ty=a_ty))
+					self.b.emit(M.StoreRef(ptr=b_ptr, value=a_val, inner_ty=b_ty))
+					return
+				self.lower_expr(stmt.expr)
 				return
 		if (
 			isinstance(stmt.expr, H.HCall)
 			and hasattr(H, "HQualifiedMember")
 			and isinstance(stmt.expr.fn, getattr(H, "HQualifiedMember"))
 		):
-			info = self._call_info_by_node_id.get(stmt.expr.node_id)
+			info = self._call_info_for_expr_optional(stmt.expr)
 			if info is not None:
 				if info.sig.can_throw:
 					fnres_val = self._lower_call_with_info(stmt.expr, info)
@@ -1997,7 +2115,7 @@ class HIRToMIR:
 					self._lower_call_with_info(stmt.expr, info)
 					return
 		if isinstance(stmt.expr, H.HCall):
-			info = self._call_info_by_node_id.get(stmt.expr.node_id)
+			info = self._call_info_for_expr_optional(stmt.expr)
 			if info is not None:
 				if info.sig.can_throw:
 					fnres_val = self._lower_call(expr=stmt.expr)
@@ -2012,7 +2130,7 @@ class HIRToMIR:
 					self._lower_call(expr=stmt.expr)
 					return
 		if isinstance(stmt.expr, H.HInvoke):
-			info = self._call_info_by_node_id.get(stmt.expr.node_id)
+			info = self._call_info_for_expr_optional(stmt.expr)
 			if info is not None:
 				if info.sig.can_throw:
 					fnres_val = self._lower_invoke(expr=stmt.expr)
@@ -2031,7 +2149,7 @@ class HIRToMIR:
 			# expression semantics:
 			# - can-throw calls in statement position must be "checked" and propagate,
 			# - Void-returning calls in statement position should not produce a value.
-			info = self._call_info_by_node_id.get(stmt.expr.node_id)
+			info = self._call_info_for_expr_optional(stmt.expr)
 			if info is None:
 				self.lower_expr(stmt.expr)
 				return
@@ -2612,38 +2730,39 @@ class HIRToMIR:
 			return first
 		return self._unknown_type
 
-	def _return_type_for_name(self, name: str) -> TypeId | None:
-		"""Look up a return TypeId for a given function/method name when available."""
-		sig = self._signatures.get(name)
-		if sig and sig.return_type_id is not None:
-			return sig.return_type_id
-		# Try display-name matches (method_name).
-		for cand in self._signatures.values():
-			if cand.method_name == name and cand.return_type_id is not None:
-				return cand.return_type_id
+	def _call_info_for_expr_optional(self, expr: H.HExpr) -> CallInfo | None:
+		csid = getattr(expr, "callsite_id", None)
+		if isinstance(csid, int):
+			return self._call_info_by_callsite_id.get(csid)
 		return None
 
 	def _call_info_for(self, expr: H.HCall) -> CallInfo:
-		info = self._call_info_by_node_id.get(expr.node_id)
+		info = self._call_info_for_expr_optional(expr)
 		if info is None:
-			raise AssertionError(f"missing call info for HCall node_id={expr.node_id} (typecheck/call-info bug)")
+			raise AssertionError(
+				f"missing call info for HCall callsite_id={getattr(expr, 'callsite_id', None)} (typecheck/call-info bug)"
+			)
 		return info
 
 	def _call_info_for_method(self, expr: H.HMethodCall) -> CallInfo:
-		info = self._call_info_by_node_id.get(expr.node_id)
+		info = self._call_info_for_expr_optional(expr)
 		if info is None:
-			raise AssertionError(f"missing call info for HMethodCall node_id={expr.node_id} (typecheck/call-info bug)")
+			raise AssertionError(
+				f"missing call info for HMethodCall callsite_id={getattr(expr, 'callsite_id', None)} (typecheck/call-info bug)"
+			)
 		return info
 
 	def _call_info_for_invoke(self, expr: H.HInvoke) -> CallInfo:
-		info = self._call_info_by_node_id.get(expr.node_id)
+		info = self._call_info_for_expr_optional(expr)
 		if info is None:
-			raise AssertionError(f"missing call info for HInvoke node_id={expr.node_id} (typecheck/call-info bug)")
+			raise AssertionError(
+				f"missing call info for HInvoke callsite_id={getattr(expr, 'callsite_id', None)} (typecheck/call-info bug)"
+			)
 		return info
 
 	def _call_returns_void(self, expr: H.HExpr) -> bool:
 		if isinstance(expr, H.HCall):
-			info = self._call_info_by_node_id.get(expr.node_id)
+			info = self._call_info_for_expr_optional(expr)
 			if info is not None:
 				if info.sig.can_throw:
 					# Can-throw calls return an internal FnResult value, even when the
@@ -2651,73 +2770,30 @@ class HIRToMIR:
 					return False
 				return self._type_table.is_void(info.sig.user_ret_type)
 		if isinstance(expr, H.HMethodCall):
-			info = self._call_info_by_node_id.get(expr.node_id)
+			info = self._call_info_for_expr_optional(expr)
 			if info is not None:
 				if info.sig.can_throw:
 					return False
 				return self._type_table.is_void(info.sig.user_ret_type)
 		if isinstance(expr, H.HInvoke):
-			info = self._call_info_by_node_id.get(expr.node_id)
+			info = self._call_info_for_expr_optional(expr)
 			if info is not None:
 				if info.sig.can_throw:
 					return False
 				return self._type_table.is_void(info.sig.user_ret_type)
 		return False
 
-	def _resolve_method_symbol(self, receiver_ty: TypeId, method_name: str) -> tuple[str, str] | None:
-		"""
-		Resolve an inherent method call to a concrete function symbol.
-
-		Stage2 lowering does not have access to the full callable registry used by
-		the typed checker, but for codegen we still need a deterministic lowering
-		of `obj.method(...)` into a plain function call.
-
-		We resolve by:
-		- the receiver's nominal (struct) TypeId, and
-		- `FnSignature.is_method`, `FnSignature.method_name`, and `FnSignature.impl_target_type_id`.
-
-		Returns `(symbol_name, self_mode)` where `symbol_name` is the canonical
-		function key in `self._signatures` (e.g. `Point::move_by`) and `self_mode`
-		is one of {"value","ref","ref_mut"}.
-		"""
-		td = self._type_table.get(receiver_ty)
-		recv_base = receiver_ty
-		if td.kind is TypeKind.REF and td.param_types:
-			recv_base = td.param_types[0]
-		candidates: list[tuple[str, str]] = []
-		recv_name = self._type_table.get(recv_base).name
-		for sym, sig in self._signatures.items():
-			if not getattr(sig, "is_method", False):
-				continue
-			decl_name = getattr(sig, "method_name", None)
-			if decl_name != method_name:
-				continue
-			impl_tid = getattr(sig, "impl_target_type_id", None)
-			if impl_tid is None:
-				raise AssertionError(
-					f"missing impl_target_type_id for method signature '{sym}' (upstream bug)"
-				)
-			if impl_tid != recv_base:
-				continue
-			mode = getattr(sig, "self_mode", None)
-			if mode is None:
-				raise AssertionError(f"missing self_mode for method signature '{sym}' (upstream bug)")
-			candidates.append((sym, mode))
-		if not candidates:
-			return None
-		if len(candidates) > 1:
-			raise AssertionError(
-				f"ambiguous method call '{method_name}' on receiver type '{self._type_table.get(recv_base).name}' (checker must disambiguate)"
-			)
-		return candidates[0]
-
 	def _lower_call(self, expr: H.HCall) -> M.ValueId | None:
+		# Invariant: all direct calls from HIR must have CallInfo and produce MIR
+		# Call instructions with an explicit can_throw flag.
 		info = self._call_info_for(expr)
+		if info.target.kind is CallTargetKind.INTRINSIC:
+			raise AssertionError("intrinsic call reached _lower_call (typecheck/call-info bug)")
 		if info.target.kind is CallTargetKind.INDIRECT:
 			return self._lower_indirect_call(expr.fn, expr.args, info)
 		if info.target.kind is not CallTargetKind.DIRECT or not info.target.symbol:
 			raise AssertionError("call missing direct CallTarget (typecheck/call-info bug)")
-		target_sym = function_symbol(info.target.symbol)
+		target_fn_id = info.target.symbol
 		if not isinstance(expr.fn, H.HVar):
 			raise NotImplementedError("Only direct function-name calls are supported in MIR lowering")
 		arg_vals = [self.lower_expr(a) for a in expr.args]
@@ -2725,39 +2801,45 @@ class HIRToMIR:
 		# surface ok type is Void.
 		if info.sig.can_throw:
 			dest = self.b.new_temp()
-			self.b.emit(M.Call(dest=dest, fn=target_sym, args=arg_vals, can_throw=True))
+			self.b.emit(M.Call(dest=dest, fn_id=target_fn_id, args=arg_vals, can_throw=True))
 			self._local_types[dest] = call_abi_ret_type(info.sig, self._type_table)
 			return dest
 		if self._type_table.is_void(info.sig.user_ret_type):
-			self.b.emit(M.Call(dest=None, fn=target_sym, args=arg_vals, can_throw=False))
+			self.b.emit(M.Call(dest=None, fn_id=target_fn_id, args=arg_vals, can_throw=False))
 			return None
 		dest = self.b.new_temp()
-		self.b.emit(M.Call(dest=dest, fn=target_sym, args=arg_vals, can_throw=False))
+		self.b.emit(M.Call(dest=dest, fn_id=target_fn_id, args=arg_vals, can_throw=False))
 		self._local_types[dest] = info.sig.user_ret_type
 		return dest
 
 	def _lower_call_with_info(self, expr: H.HCall, info: CallInfo) -> M.ValueId | None:
+		if info.target.kind is CallTargetKind.INTRINSIC:
+			raise AssertionError("intrinsic call reached _lower_call_with_info (typecheck/call-info bug)")
 		if info.target.kind is CallTargetKind.INDIRECT:
 			return self._lower_indirect_call(expr.fn, expr.args, info)
 		if info.target.kind is not CallTargetKind.DIRECT or not info.target.symbol:
 			raise AssertionError("call missing direct CallTarget (typecheck/call-info bug)")
-		target_sym = function_symbol(info.target.symbol)
+		target_fn_id = info.target.symbol
 		arg_vals = [self.lower_expr(a) for a in expr.args]
 		if info.sig.can_throw:
 			dest = self.b.new_temp()
-			self.b.emit(M.Call(dest=dest, fn=target_sym, args=arg_vals, can_throw=True))
+			self.b.emit(M.Call(dest=dest, fn_id=target_fn_id, args=arg_vals, can_throw=True))
 			self._local_types[dest] = call_abi_ret_type(info.sig, self._type_table)
 			return dest
 		if self._type_table.is_void(info.sig.user_ret_type):
-			self.b.emit(M.Call(dest=None, fn=target_sym, args=arg_vals, can_throw=False))
+			self.b.emit(M.Call(dest=None, fn_id=target_fn_id, args=arg_vals, can_throw=False))
 			return None
 		dest = self.b.new_temp()
-		self.b.emit(M.Call(dest=dest, fn=target_sym, args=arg_vals, can_throw=False))
+		self.b.emit(M.Call(dest=dest, fn_id=target_fn_id, args=arg_vals, can_throw=False))
 		self._local_types[dest] = info.sig.user_ret_type
 		return dest
 
-	def _call_info_from_resolution(self, node_id: int) -> CallInfo | None:
-		res = self._call_resolutions.get(node_id)
+	def _call_info_from_resolution(self, expr: H.HExpr) -> CallInfo | None:
+		if self._typed_mode:
+			raise AssertionError(
+				"call_resolutions-based CallInfo is not allowed in typed mode (typecheck/call-info bug)"
+			)
+		res = self._call_resolutions.get(expr.node_id)
 		decl = getattr(res, "decl", None)
 		if decl is None:
 			return None
@@ -2771,10 +2853,7 @@ class HIRToMIR:
 		result_type = getattr(res, "result_type", None) or getattr(sig, "result_type", None)
 		if result_type is None:
 			return None
-		call_can_throw = True
-		target_name = function_symbol(target_fn_id)
-		if target_name in self._can_throw_by_name:
-			call_can_throw = bool(self._can_throw_by_name[target_name])
+		call_can_throw = bool(self._can_throw_by_id.get(target_fn_id, True))
 		info = CallInfo(
 			target=CallTarget.direct(target_fn_id),
 			sig=CallSig(
@@ -2783,11 +2862,13 @@ class HIRToMIR:
 				can_throw=bool(call_can_throw),
 			),
 		)
-		self._call_info_by_node_id[node_id] = info
+		csid = getattr(expr, "callsite_id", None)
+		if isinstance(csid, int):
+			self._call_info_by_callsite_id[csid] = info
 		return info
 
 	def _call_info_from_ufcs(self, expr: H.HCall) -> CallInfo | None:
-		info = self._call_info_from_resolution(expr.node_id)
+		info = self._call_info_from_resolution(expr)
 		if info is not None:
 			return info
 		return None
@@ -2863,8 +2944,9 @@ class HIRToMIR:
 		info = self._call_info_for_method(expr)
 		if info.target.kind is not CallTargetKind.DIRECT or not info.target.symbol:
 			raise AssertionError("method call missing direct CallTarget (typecheck/call-info bug)")
-		symbol_name = function_symbol(info.target.symbol)
-		sig = self._signatures.get(symbol_name)
+		target_fn_id = info.target.symbol
+		symbol_name = function_symbol(target_fn_id)
+		sig = self._signatures_by_id.get(target_fn_id)
 		if sig is None or sig.self_mode is None:
 			raise AssertionError(f"missing method signature/self_mode for '{symbol_name}' (typecheck bug)")
 		self_mode = sig.self_mode
@@ -2906,54 +2988,16 @@ class HIRToMIR:
 		# Can-throw calls always return an internal FnResult carrier value.
 		if info.sig.can_throw:
 			dest = self.b.new_temp()
-			self.b.emit(M.Call(dest=dest, fn=symbol_name, args=arg_vals, can_throw=True))
+			self.b.emit(M.Call(dest=dest, fn_id=target_fn_id, args=arg_vals, can_throw=True))
 			return dest, info
 
 		if self._type_table.is_void(info.sig.user_ret_type):
-			self.b.emit(M.Call(dest=None, fn=symbol_name, args=arg_vals, can_throw=False))
+			self.b.emit(M.Call(dest=None, fn_id=target_fn_id, args=arg_vals, can_throw=False))
 			return None, info
 
 		dest = self.b.new_temp()
-		self.b.emit(M.Call(dest=dest, fn=symbol_name, args=arg_vals, can_throw=False))
+		self.b.emit(M.Call(dest=dest, fn_id=target_fn_id, args=arg_vals, can_throw=False))
 		return dest, info
-
-	def _return_typeid_for_callee(self, name: str) -> TypeId | None:
-		"""
-		Return the declared return TypeId for a callee by name when available.
-
-		This is the *surface* return type (`T` in `returns T`), not the internal
-		ABI return type. When the callee is can-throw, the compiler still treats
-		this as the ok payload type.
-		"""
-		sig = self._signatures.get(name)
-		if sig and sig.return_type_id is not None:
-			return sig.return_type_id
-		for cand in self._signatures.values():
-			if cand.method_name == name and cand.return_type_id is not None:
-				return cand.return_type_id
-		return None
-
-	def _callee_is_can_throw(self, name: str) -> bool:
-		"""
-		Best-effort can-throw classification for a callee.
-
-		In lang2 v1, "can-throw" is an effect on a function, not a surface return
-		type. The checker computes a can-throw map; we treat that as the source of
-		truth when present and fall back to signature hints in legacy tests.
-		"""
-		if name in self._can_throw_by_name:
-			return bool(self._can_throw_by_name[name])
-		sig = self._signatures.get(name)
-		if sig is None:
-			for cand in self._signatures.values():
-				if cand.method_name == name:
-					sig = cand
-					break
-		if sig is not None and sig.declared_can_throw is not None:
-			return bool(sig.declared_can_throw)
-		# Legacy fallback: old surface model treated FnResult returns as can-throw.
-		rt = self._return_typeid_for_callee(name)
-		return rt is not None and self._type_table.get(rt).kind is TypeKind.FNRESULT
 
 	def _lower_can_throw_call_value(
 		self,
@@ -3088,6 +3132,9 @@ class HIRToMIR:
 		if isinstance(expr, H.HCall) and hasattr(H, "HQualifiedMember") and isinstance(expr.fn, getattr(H, "HQualifiedMember")):
 			return self._infer_qualified_ctor_variant_type(expr.fn, expr.args)
 		if isinstance(expr, H.HCall) and isinstance(expr.fn, H.HVar):
+			info = self._call_info_for_expr_optional(expr)
+			if info is not None:
+				return info.sig.user_ret_type
 			name = expr.fn.name
 			# Struct constructor call: result is the struct TypeId.
 			struct_ty: TypeId | None = None
@@ -3102,9 +3149,6 @@ class HIRToMIR:
 				)
 			if struct_ty is not None:
 				return struct_ty
-			sig_ret = self._return_type_for_name(name)
-			if sig_ret is not None:
-				return sig_ret
 			if name == "string_concat":
 				return self._string_type
 			if name == "string_eq":
@@ -3116,7 +3160,7 @@ class HIRToMIR:
 					if td.kind is TypeKind.ARRAY or (td.kind is TypeKind.SCALAR and td.name == "String"):
 						return self._uint_type
 		if isinstance(expr, H.HInvoke):
-			info = self._call_info_by_node_id.get(expr.node_id)
+			info = self._call_info_for_expr_optional(expr)
 			if info is not None:
 				return info.sig.user_ret_type
 		if isinstance(expr, H.HFnPtrConst):
@@ -3279,6 +3323,9 @@ class HIRToMIR:
 				if ty_def.kind is TypeKind.ARRAY and ty_def.param_types:
 					return ty_def.param_types[0]
 		if isinstance(expr, H.HMethodCall):
+			info = self._call_info_for_expr_optional(expr)
+			if info is not None:
+				return info.sig.user_ret_type
 			# Iterator protocol intrinsics (see `_visit_expr_HMethodCall`).
 			if expr.method_name == "iter" and not expr.args:
 				recv_ty = self._infer_expr_type(expr.receiver)
@@ -3299,9 +3346,6 @@ class HIRToMIR:
 					if opt_base is None:
 						return None
 					return self._type_table.ensure_instantiated(opt_base, [elem_ty])
-			ret = self._return_type_for_name(expr.method_name)
-			if ret is not None:
-				return ret
 			recv_ty = self._infer_expr_type(expr.receiver)
 			if recv_ty is not None:
 				recv_def = self._type_table.get(recv_ty)

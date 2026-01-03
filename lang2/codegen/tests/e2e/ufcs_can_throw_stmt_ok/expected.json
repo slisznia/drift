@@ -1,1 +1,6 @@
-{ "exit_code": 2, "stdout": "", "stderr": "" }
+{
+  "description": "e2e: ufcs can throw stmt ok",
+  "exit_code": 2,
+  "stderr": "",
+  "stdout": ""
+}

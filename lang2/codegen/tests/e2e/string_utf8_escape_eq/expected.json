@@ -1,5 +1,6 @@
 {
+  "description": "e2e: string utf8 escape eq",
   "exit_code": 0,
-  "stdout": "",
-  "stderr": ""
+  "stderr": "",
+  "stdout": ""
 }

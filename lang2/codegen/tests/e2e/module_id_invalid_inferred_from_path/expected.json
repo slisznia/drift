@@ -1,6 +1,15 @@
 {
+  "description": "e2e: module id invalid inferred from path",
+  "diagnostics": [
+    {
+      "message_contains": "invalid module id",
+      "phase": "parser"
+    }
+  ],
   "exit_code": 1,
-  "phase": "parser",
-  "module_paths": ["src", "."],
-  "diagnostics": [{ "phase": "parser", "message_contains": "invalid module id" }]
+  "module_paths": [
+    "src",
+    "."
+  ],
+  "phase": "parser"
 }

@@ -1,6 +1,10 @@
 {
-  "exit_code": 1,
+  "description": "e2e: borrow reborrow mut requires mut ref rejected",
   "diagnostics": [
-    { "phase": "typecheck", "message_contains": "cannot take &mut through *p unless p is a mutable reference" }
-  ]
+    {
+      "message_contains": "cannot take &mut through *p unless p is a mutable reference",
+      "phase": "typecheck"
+    }
+  ],
+  "exit_code": 1
 }

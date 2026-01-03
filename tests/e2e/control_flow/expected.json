@@ -1,6 +1,7 @@
 {
-  "mode": "compile",
-  "compile_error": null,
   "args": [],
-  "env": {}
+  "compile_error": null,
+  "description": "e2e: control flow",
+  "env": {},
+  "mode": "compile"
 }

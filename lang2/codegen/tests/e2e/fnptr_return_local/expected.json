@@ -1,1 +1,6 @@
-{ "exit_code": 3, "stdout": "", "stderr": "" }
+{
+  "description": "e2e: fnptr return local",
+  "exit_code": 3,
+  "stderr": "",
+  "stdout": ""
+}

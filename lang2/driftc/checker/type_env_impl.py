@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Mapping, Tuple
 
+from lang2.driftc.core.function_id import FunctionId
 from lang2.driftc.core.types_protocol import TypeEnv
 from lang2.driftc.core.types_core import TypeId, TypeKind, TypeTable
 
@@ -19,17 +20,17 @@ class CheckerTypeEnv(TypeEnv):
 	"""
 	TypeEnv implementation backed by the checker's TypeTable.
 
-	`value_types` maps (function name, SSA value id) -> TypeId. Stage4 treats
+	`value_types` maps (function id, SSA value id) -> TypeId. Stage4 treats
 	TypeIds as opaque; `is_fnresult`/`fnresult_parts` consult the TypeTable.
 	"""
 
-	def __init__(self, table: TypeTable, value_types: Mapping[tuple[str, str], TypeId]) -> None:
+	def __init__(self, table: TypeTable, value_types: Mapping[tuple[FunctionId, str], TypeId]) -> None:
 		self._table = table
-		self._value_types: Dict[tuple[str, str], TypeId] = dict(value_types)
+		self._value_types: Dict[tuple[FunctionId, str], TypeId] = dict(value_types)
 
-	def type_of_ssa_value(self, func_name: str, value_id: str) -> TypeId:
+	def type_of_ssa_value(self, func_id: FunctionId, value_id: str) -> TypeId:
 		"""Return the TypeId for a given SSA value."""
-		return self._value_types[(func_name, value_id)]
+		return self._value_types[(func_id, value_id)]
 
 	def is_fnresult(self, ty: Any) -> bool:
 		"""

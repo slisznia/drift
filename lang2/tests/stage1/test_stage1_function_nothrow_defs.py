@@ -13,10 +13,10 @@ def test_stage1_function_def_nothrow_sets_declared_can_throw(tmp_path: Path) -> 
 fn add1(x: Int) nothrow returns Int { return x + 1; }
 """
 	)
-	func_hirs, sigs, fn_ids_by_name, _table, _exc_catalog, diagnostics = parse_drift_to_hir(src)
+	module, _table, _exc_catalog, diagnostics = parse_drift_to_hir(src)
 	assert diagnostics == []
-	fn_ids = fn_ids_by_name.get("main::add1") or fn_ids_by_name.get("add1") or []
+	fn_ids = module.fn_ids_by_name.get("main::add1") or module.fn_ids_by_name.get("add1") or []
 	assert len(fn_ids) == 1
-	sig = sigs[fn_ids[0]]
+	sig = module.signatures_by_id[fn_ids[0]]
 	assert sig.declared_can_throw is False
-	assert {fid.name for fid in func_hirs} == {"add1"}
+	assert {fid.name for fid in module.func_hirs} == {"add1"}

@@ -1,7 +1,10 @@
 {
-  "exit_code": 1,
+  "description": "e2e: bad lvalue assignment",
   "diagnostics": [
-    { "phase": "typecheck", "message_contains": "assignment target must be an addressable place" }
-  ]
+    {
+      "message_contains": "assignment target must be an addressable place",
+      "phase": "typecheck"
+    }
+  ],
+  "exit_code": 1
 }
-

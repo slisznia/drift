@@ -1,1 +1,6 @@
-{ "exit_code": 30, "stdout": "", "stderr": "" }
+{
+  "description": "e2e: try event catch expr",
+  "exit_code": 30,
+  "stderr": "",
+  "stdout": ""
+}

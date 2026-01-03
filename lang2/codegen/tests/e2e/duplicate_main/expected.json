@@ -1,6 +1,15 @@
 {
-  "phase": "parser",
+  "description": "e2e: duplicate main",
+  "diagnostics": [
+    {
+      "message_contains": "duplicate entry point definition for 'main'",
+      "phase": "typecheck"
+    },
+    {
+      "message_contains": "previous definition of 'main' is here",
+      "phase": "typecheck"
+    }
+  ],
   "exit_code": 1,
-  "stdout": "",
-  "stderr": "duplicate entry point definition for 'main'\nprevious definition of 'main' is here"
+  "use_driftc_json": false
 }

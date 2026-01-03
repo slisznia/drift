@@ -1,6 +1,14 @@
 {
-  "exit_code": 1,
+  "description": "e2e: swap type mismatch rejected",
+  "dev_allow_reserved_namespaces": true,
   "diagnostics": [
-    { "phase": "typecheck", "message_contains": "swap requires both places to have the same type" }
+    {
+      "message_contains": "cannot infer type arguments for 'swap': conflicting constraints",
+      "phase": "typecheck"
+    }
+  ],
+  "exit_code": 1,
+  "module_paths": [
+    "."
   ]
 }

@@ -1,1 +1,6 @@
-{ "exit_code": 0, "stdout": "", "stderr": "" }
+{
+  "description": "e2e: nothrow def try catch ok",
+  "exit_code": 0,
+  "stderr": "",
+  "stdout": ""
+}

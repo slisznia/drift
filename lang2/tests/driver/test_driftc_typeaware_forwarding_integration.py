@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from lang2.driftc import stage1 as H
 from lang2.driftc.driftc import compile_stubbed_funcs
+from lang2.driftc.core.function_id import function_symbol
 from lang2.test_support import make_signatures
 
 
@@ -41,6 +42,6 @@ def test_typeaware_fnresult_forwarding_passes_with_checker_type_env():
 		return_checked=True,
 	)
 
-	assert fn_name in mir_funcs
+	assert any(function_symbol(fn_id) == fn_name for fn_id in mir_funcs)
 	assert checked.type_env is not None
 	assert checked.diagnostics == []

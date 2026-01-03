@@ -24,6 +24,13 @@ BOOL_TRUE: BoolExpr = ("true", None)
 BOOL_FALSE: BoolExpr = ("false", None)
 
 
+# Linked-world diagnostics are package-phase.
+def _link_diag(*args, **kwargs):
+	if "phase" not in kwargs or kwargs.get("phase") is None:
+		kwargs["phase"] = "package"
+	return Diagnostic(*args, **kwargs)
+
+
 @dataclass
 class AtomInterner:
 	"""Map canonical atom keys to compact ids."""
@@ -273,7 +280,7 @@ def merge_trait_worlds(worlds: Iterable[TraitWorld]) -> TraitWorld:
 				continue
 			if _trait_def_key(existing) != _trait_def_key(tr):
 				merged.diagnostics.append(
-					Diagnostic(
+					_link_diag(
 						message=f"conflicting trait definition for '{_trait_key_str(key)}'",
 						severity="error",
 						span=Span.from_loc(getattr(tr, "loc", None)),
@@ -287,7 +294,7 @@ def merge_trait_worlds(worlds: Iterable[TraitWorld]) -> TraitWorld:
 				continue
 			if _trait_expr_key(existing) != _trait_expr_key(req):
 				merged.diagnostics.append(
-					Diagnostic(
+					_link_diag(
 						message=f"conflicting require clause for '{fn_key}'",
 						severity="error",
 						span=Span.from_loc(getattr(req, "loc", None)),
@@ -300,7 +307,7 @@ def merge_trait_worlds(worlds: Iterable[TraitWorld]) -> TraitWorld:
 				continue
 			if _trait_expr_key(existing) != _trait_expr_key(req):
 				merged.diagnostics.append(
-					Diagnostic(
+					_link_diag(
 						message=f"conflicting require clause for '{_type_key_str(ty_key)}'",
 						severity="error",
 						span=Span.from_loc(getattr(req, "loc", None)),
@@ -313,7 +320,7 @@ def merge_trait_worlds(worlds: Iterable[TraitWorld]) -> TraitWorld:
 				existing_impl = merged.impls[existing_id]
 				if _impl_method_keys(existing_impl.methods) != _impl_method_keys(impl.methods):
 					merged.diagnostics.append(
-						Diagnostic(
+						_link_diag(
 							message=(
 								f"conflicting impl for trait '{_trait_key_str(impl.trait)}' "
 								f"on '{_type_key_str(impl.target)}'"

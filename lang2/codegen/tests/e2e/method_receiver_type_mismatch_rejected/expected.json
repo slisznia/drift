@@ -1,6 +1,10 @@
 {
-  "exit_code": 1,
+  "description": "e2e: method receiver type mismatch rejected",
   "diagnostics": [
-    { "phase": "typecheck", "message_contains": "receiver type for method" }
-  ]
+    {
+      "message_contains": "receiver type for method",
+      "phase": "typecheck"
+    }
+  ],
+  "exit_code": 1
 }

@@ -1,7 +1,13 @@
 {
-  "exit_code": 1,
+  "description": "e2e: import ambiguous symbol due to glob",
   "diagnostics": [
-    { "phase": "parser", "message_contains": "import alias" }
+    {
+      "message_contains": "import alias",
+      "phase": "parser"
+    }
   ],
-  "module_paths": ["."]
+  "exit_code": 1,
+  "module_paths": [
+    "."
+  ]
 }

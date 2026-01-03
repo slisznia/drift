@@ -1,11 +1,12 @@
 {
-  "exit_code": 1,
+  "description": "e2e: qualified ctor dup type args rejected",
   "diagnostics": [
     {
-      "phase": "parser",
-      "message_contains": "E-PARSE-QMEM-DUP-TYPEARGS",
+      "column": 43,
       "line": 7,
-      "column": 43
+      "message_contains": "E-PARSE-QMEM-DUP-TYPEARGS",
+      "phase": "parser"
     }
-  ]
+  ],
+  "exit_code": 1
 }

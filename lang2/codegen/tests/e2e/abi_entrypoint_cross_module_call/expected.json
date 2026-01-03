@@ -1,7 +1,9 @@
 {
+  "description": "e2e: abi entrypoint cross module call",
   "exit_code": 42,
-  "stdout": "",
+  "module_paths": [
+    "."
+  ],
   "stderr": "",
-  "module_paths": ["."]
+  "stdout": ""
 }
-

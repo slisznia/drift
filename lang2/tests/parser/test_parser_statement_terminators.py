@@ -9,7 +9,7 @@ from lang2.driftc.parser import parse_drift_to_hir
 def _parse_with_diagnostics(src: str, tmp_path: Path):
 	path = tmp_path / "terminators.drift"
 	path.write_text(src)
-	_func_hirs, _sigs, _fn_ids_by_name, _type_table, _exc_catalog, diagnostics = parse_drift_to_hir(path)
+	_module, _type_table, _exc_catalog, diagnostics = parse_drift_to_hir(path)
 	return diagnostics
 
 

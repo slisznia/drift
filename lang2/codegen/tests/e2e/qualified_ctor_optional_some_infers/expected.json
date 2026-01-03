@@ -1,1 +1,6 @@
-{ "exit_code": 42, "stdout": "", "stderr": "" }
+{
+  "description": "e2e: qualified ctor optional some infers",
+  "exit_code": 42,
+  "stderr": "",
+  "stdout": ""
+}

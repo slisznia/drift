@@ -7,6 +7,7 @@ from lang2.driftc import stage1 as H
 from lang2.driftc.core.function_id import FunctionId
 from lang2.driftc.core.types_core import TypeTable
 from lang2.driftc.method_registry import CallableRegistry, CallableSignature, Visibility
+from lang2.driftc.checker import FnSignature
 from lang2.driftc.type_checker import TypeChecker
 
 
@@ -34,12 +35,27 @@ def test_call_resolution_respects_function_throw_mode():
 	fn_can_throw = table.ensure_function("fn", [int_ty], int_ty, can_throw=True)
 
 	registry = CallableRegistry()
+	takes_nothrow_id = FunctionId(module="main", name="takes", ordinal=0)
+	takes_can_throw_id = FunctionId(module="main", name="takes", ordinal=1)
+	sig_nothrow = FnSignature(
+		name="takes",
+		param_type_ids=[fn_nothrow],
+		return_type_id=bool_ty,
+		declared_can_throw=False,
+	)
+	sig_can_throw = FnSignature(
+		name="takes",
+		param_type_ids=[fn_can_throw],
+		return_type_id=int_ty,
+		declared_can_throw=False,
+	)
 	registry.register_free_function(
 		callable_id=1,
 		name="takes",
 		module_id=0,
 		visibility=Visibility.public(),
 		signature=CallableSignature(param_types=(fn_nothrow,), result_type=bool_ty),
+		fn_id=takes_nothrow_id,
 	)
 	registry.register_free_function(
 		callable_id=2,
@@ -47,6 +63,7 @@ def test_call_resolution_respects_function_throw_mode():
 		module_id=0,
 		visibility=Visibility.public(),
 		signature=CallableSignature(param_types=(fn_can_throw,), result_type=int_ty),
+		fn_id=takes_can_throw_id,
 	)
 
 	call = H.HCall(fn=H.HVar("takes"), args=[H.HVar("g")])
@@ -56,6 +73,7 @@ def test_call_resolution_respects_function_throw_mode():
 		block,
 		param_types={"g": fn_nothrow},
 		callable_registry=registry,
+		signatures_by_id={takes_nothrow_id: sig_nothrow, takes_can_throw_id: sig_can_throw},
 		visible_modules=(0,),
 		current_module=0,
 	)
@@ -74,12 +92,27 @@ def test_call_resolution_respects_function_throw_mode_can_throw():
 	fn_can_throw = table.ensure_function("fn", [int_ty], int_ty, can_throw=True)
 
 	registry = CallableRegistry()
+	takes_nothrow_id = FunctionId(module="main", name="takes", ordinal=0)
+	takes_can_throw_id = FunctionId(module="main", name="takes", ordinal=1)
+	sig_nothrow = FnSignature(
+		name="takes",
+		param_type_ids=[fn_nothrow],
+		return_type_id=bool_ty,
+		declared_can_throw=False,
+	)
+	sig_can_throw = FnSignature(
+		name="takes",
+		param_type_ids=[fn_can_throw],
+		return_type_id=int_ty,
+		declared_can_throw=False,
+	)
 	registry.register_free_function(
 		callable_id=1,
 		name="takes",
 		module_id=0,
 		visibility=Visibility.public(),
 		signature=CallableSignature(param_types=(fn_nothrow,), result_type=bool_ty),
+		fn_id=takes_nothrow_id,
 	)
 	registry.register_free_function(
 		callable_id=2,
@@ -87,6 +120,7 @@ def test_call_resolution_respects_function_throw_mode_can_throw():
 		module_id=0,
 		visibility=Visibility.public(),
 		signature=CallableSignature(param_types=(fn_can_throw,), result_type=int_ty),
+		fn_id=takes_can_throw_id,
 	)
 
 	call = H.HCall(fn=H.HVar("takes"), args=[H.HVar("g")])
@@ -96,6 +130,7 @@ def test_call_resolution_respects_function_throw_mode_can_throw():
 		block,
 		param_types={"g": fn_can_throw},
 		callable_registry=registry,
+		signatures_by_id={takes_nothrow_id: sig_nothrow, takes_can_throw_id: sig_can_throw},
 		visible_modules=(0,),
 		current_module=0,
 	)

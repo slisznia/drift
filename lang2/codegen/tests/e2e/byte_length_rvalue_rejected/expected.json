@@ -1,0 +1,11 @@
+{
+  "description": "e2e: byte length rvalue rejected",
+  "diagnostics": [
+    {
+      "message_contains": "borrow requires an addressable place; bind to a local first",
+      "phase": "typecheck"
+    }
+  ],
+  "exit_code": 1,
+  "use_driftc_json": false
+}

@@ -1,6 +1,7 @@
 {
-  "mode": "run",
-  "compile_error": "call to can-error function may_fail without error edges",
   "args": [],
-  "env": {}
+  "compile_error": "call to can-error function may_fail without error edges",
+  "description": "e2e: call plain can error",
+  "env": {},
+  "mode": "run"
 }

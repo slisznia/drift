@@ -1,1 +1,6 @@
-{ "exit_code": 9, "stdout": "", "stderr": "" }
+{
+  "description": "e2e: return ref param via local ok",
+  "exit_code": 9,
+  "stderr": "",
+  "stdout": ""
+}

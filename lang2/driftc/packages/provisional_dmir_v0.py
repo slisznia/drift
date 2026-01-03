@@ -21,7 +21,7 @@ from enum import Enum
 from typing import Any, Mapping
 
 from lang2.driftc.checker import FnSignature
-from lang2.driftc.core.function_id import function_id_to_obj, function_symbol, parse_function_symbol
+from lang2.driftc.core.function_id import FunctionId, function_id_to_obj, function_symbol, parse_function_symbol
 from lang2.driftc.core.generic_type_expr import GenericTypeExpr
 from lang2.driftc.core.span import Span
 from lang2.driftc.core.types_core import TypeDef, TypeId, TypeParamId, TypeTable
@@ -885,19 +885,35 @@ def encode_module_payload_v0(
 	}
 
 
-def decode_mir_funcs(mir_funcs_obj: Mapping[str, Any]) -> dict[str, Any]:
+def decode_mir_funcs(
+	mir_funcs_obj: Mapping[str, Any],
+	*,
+	name_to_fn_id: Mapping[str, object] | None = None,
+) -> dict[FunctionId, Any]:
 	"""
 	Decode `mir_funcs` as encoded by `encode_module_payload_v0`.
 
 	This returns a dict of `name -> M.MirFunc` objects (stage2 dataclasses).
 	"""
 	from lang2.driftc.stage2 import mir_nodes as M  # local import to avoid heavy import at module init
+	from lang2.driftc.core import function_id as fn_id_mod  # local import
+	from lang2.driftc.core.function_id import function_id_to_obj  # local import
 
-	dc = build_dataclass_registry(M)
+	dc = build_dataclass_registry(M, fn_id_mod)
 	enums = build_enum_registry(M)
-	out: dict[str, Any] = {}
+	out: dict[FunctionId, Any] = {}
 	for name, obj in mir_funcs_obj.items():
-		out[str(name)] = from_jsonable(obj, dataclasses_by_name=dc, enums_by_name=enums)
+		if isinstance(obj, dict) and "fn_id" not in obj:
+			if name_to_fn_id is None or name not in name_to_fn_id:
+				raise ValueError(f"missing fn_id for mir func '{name}' in package payload")
+			fn_id_obj = function_id_to_obj(name_to_fn_id[name])
+			obj = dict(obj)
+			obj["fn_id"] = fn_id_obj
+		decoded = from_jsonable(obj, dataclasses_by_name=dc, enums_by_name=enums)
+		fn_id = getattr(decoded, "fn_id", None)
+		if fn_id is None:
+			raise ValueError(f"decoded mir func missing fn_id for '{name}'")
+		out[fn_id] = decoded
 	return out
 
 

@@ -1,1 +1,10 @@
-{"exit_code": 0, "stdout": "", "stderr": "", "args": ["foo", "bar"]}
+{
+  "args": [
+    "foo",
+    "bar"
+  ],
+  "description": "e2e: main argv content",
+  "exit_code": 0,
+  "stderr": "",
+  "stdout": ""
+}

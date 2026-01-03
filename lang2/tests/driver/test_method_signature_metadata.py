@@ -50,9 +50,9 @@ fn main() nothrow returns Int{
 		assert sig.self_mode is not None
 
 	# Single-file path.
-	_hirs2, sigs2, _fn_ids_by_name2, _tt2, _exc2, diags2 = parse_drift_files_to_hir([src])
+	module2, _tt2, _exc2, diags2 = parse_drift_files_to_hir([src])
 	assert not diags2
-	methods2 = [s for s in sigs2.values() if getattr(s, "is_method", False)]
+	methods2 = [s for s in module2.signatures_by_id.values() if getattr(s, "is_method", False)]
 	assert methods2
 	for sig in methods2:
 		assert sig.impl_target_type_id is not None

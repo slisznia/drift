@@ -1,5 +1,6 @@
 {
+  "description": "e2e: nested rethrow outer specific",
   "exit_code": 0,
-  "stdout": "innerouter",
-  "stderr": ""
+  "stderr": "",
+  "stdout": "innerouter"
 }

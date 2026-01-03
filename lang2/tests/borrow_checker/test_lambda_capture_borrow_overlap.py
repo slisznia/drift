@@ -12,14 +12,14 @@ from lang2.driftc.type_checker import TypeChecker
 def _borrow_diags(src: str, *, tmp_path: Path) -> list[object]:
 	path = tmp_path / "main.drift"
 	path.write_text(src)
-	func_hirs, sigs, _fn_ids_by_name, type_table, _exc_env, diagnostics = parse_drift_to_hir(path)
+	module, type_table, _exc_env, diagnostics = parse_drift_to_hir(path)
 	assert diagnostics == []
-	fn_ids = _fn_ids_by_name.get("main") or []
+	fn_ids = module.fn_ids_by_name.get("main") or []
 	assert len(fn_ids) == 1
 	fn_id = fn_ids[0]
-	block = normalize_hir(func_hirs[fn_id])
+	block = normalize_hir(module.func_hirs[fn_id])
 	tc = TypeChecker(type_table)
-	sig = sigs.get(fn_id)
+	sig = module.signatures_by_id.get(fn_id)
 	param_types = {}
 	if sig and sig.param_names and sig.param_type_ids:
 		param_types = {name: ty for name, ty in zip(sig.param_names, sig.param_type_ids)}
@@ -28,10 +28,9 @@ def _borrow_diags(src: str, *, tmp_path: Path) -> list[object]:
 		block,
 		param_types=param_types,
 		return_type=sig.return_type_id if sig is not None else None,
-		call_signatures=None,
 	)
 	assert res.diagnostics == []
-	bc = BorrowChecker.from_typed_fn(res.typed_fn, type_table=type_table, signatures=None, enable_auto_borrow=True)
+	bc = BorrowChecker.from_typed_fn(res.typed_fn, type_table=type_table, signatures_by_id=None, enable_auto_borrow=True)
 	return bc.check_block(res.typed_fn.body)
 
 

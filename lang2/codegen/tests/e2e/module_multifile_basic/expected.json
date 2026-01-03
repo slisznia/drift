@@ -1,6 +1,6 @@
 {
+  "description": "e2e: module multifile basic",
   "exit_code": 42,
-  "stdout": "",
-  "stderr": ""
+  "stderr": "",
+  "stdout": ""
 }
-

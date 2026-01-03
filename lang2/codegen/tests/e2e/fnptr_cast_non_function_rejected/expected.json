@@ -1,6 +1,10 @@
 {
-  "exit_code": 1,
+  "description": "e2e: fnptr cast non function rejected",
   "diagnostics": [
-    { "phase": "typecheck", "message_contains": "only supported for function types" }
-  ]
+    {
+      "message_contains": "only supported for function types",
+      "phase": "typecheck"
+    }
+  ],
+  "exit_code": 1
 }

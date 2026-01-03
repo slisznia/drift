@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from lang2.driftc import stage1 as H
 from lang2.driftc.driftc import compile_stubbed_funcs
+from lang2.driftc.core.function_id import function_symbol
 from lang2.driftc.core.types_core import TypeTable
 from lang2.test_support import build_exception_catalog, make_signatures
 
@@ -33,6 +34,6 @@ def test_compile_stubbed_funcs_builds_ssa_and_type_env():
 		return_checked=True,
 	)
 
-	assert "f" in mir_funcs
+	assert any(function_symbol(fn_id) == "f" for fn_id in mir_funcs)
 	assert not checked.diagnostics, f"unexpected diagnostics: {checked.diagnostics}"
 	assert checked.type_env is not None

@@ -1,2 +1,6 @@
-{ "exit_code": 41, "stdout": "", "stderr": "" }
-
+{
+  "description": "e2e: borrow array disjoint write ok",
+  "exit_code": 41,
+  "stderr": "",
+  "stdout": ""
+}

@@ -1,7 +1,14 @@
 {
-  "exit_code": 1,
+  "description": "e2e: qualified ctor unknown ctor rejected",
   "diagnostics": [
-    { "phase": "typecheck", "message_contains": "E-QMEM-NO-CTOR" },
-    { "phase": "typecheck", "message_contains": "Available constructors:" }
-  ]
+    {
+      "message_contains": "E-QMEM-NO-CTOR",
+      "phase": "typecheck"
+    },
+    {
+      "message_contains": "Available constructors:",
+      "phase": "typecheck"
+    }
+  ],
+  "exit_code": 1
 }

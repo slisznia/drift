@@ -1,6 +1,14 @@
 {
-  "exit_code": 1,
+  "description": "e2e: replace after move rejected",
+  "dev_allow_reserved_namespaces": true,
   "diagnostics": [
-    { "phase": "borrowcheck", "message_contains": "use after move of 'x'" }
+    {
+      "message_contains": "use after move of 'x'",
+      "phase": "borrowcheck"
+    }
+  ],
+  "exit_code": 1,
+  "module_paths": [
+    "."
   ]
 }

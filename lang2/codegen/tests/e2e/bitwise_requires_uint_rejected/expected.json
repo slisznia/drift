@@ -1,7 +1,10 @@
 {
-  "exit_code": 1,
-  "phase": "typecheck",
+  "description": "e2e: bitwise requires uint rejected",
   "diagnostics": [
-    { "message_contains": "bitwise operators require Uint operands" }
-  ]
+    {
+      "message_contains": "bitwise operators require Uint operands"
+    }
+  ],
+  "exit_code": 1,
+  "phase": "typecheck"
 }

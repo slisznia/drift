@@ -1,5 +1,6 @@
 {
+  "description": "e2e: zero field shorthand nested rethrow",
   "exit_code": 0,
-  "stdout": "handled",
-  "stderr": ""
+  "stderr": "",
+  "stdout": "handled"
 }

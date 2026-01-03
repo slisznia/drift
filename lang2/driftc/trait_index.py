@@ -12,6 +12,13 @@ from lang2.driftc.method_registry import ModuleId
 from lang2.driftc.traits.world import TraitDef, TraitKey, TraitWorld
 
 
+# Trait index diagnostics are typecheck-phase.
+def _trait_diag(*args, **kwargs):
+	if "phase" not in kwargs or kwargs.get("phase") is None:
+		kwargs["phase"] = "typecheck"
+	return Diagnostic(*args, **kwargs)
+
+
 @dataclass(frozen=True)
 class TraitMethodSig:
 	trait: TraitKey
@@ -180,7 +187,7 @@ def validate_trait_scopes(
 				continue
 			seen_scope.add(trait_key)
 			diags.append(
-				Diagnostic(
+				_trait_diag(
 					message=(
 						f"trait '{_trait_label(trait_key)}' in scope for module '{mod_name}' "
 						"does not exist in the trait index (scope)"
@@ -206,7 +213,7 @@ def validate_trait_scopes(
 		}
 		mod_list = ", ".join(sorted(modules)) if modules else "<unknown>"
 		diags.append(
-			Diagnostic(
+			_trait_diag(
 				message=(
 					f"trait '{_trait_label(trait_key)}' referenced by impls in modules {mod_list} "
 					"does not exist in the trait index (impls)"

@@ -1,5 +1,6 @@
 {
+  "description": "e2e: fnresult ok",
   "exit_code": 1,
-  "stdout": "",
-  "stderr": ""
+  "stderr": "",
+  "stdout": ""
 }

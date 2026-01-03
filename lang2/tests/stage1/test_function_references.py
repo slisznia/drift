@@ -5,6 +5,7 @@ from lang2.driftc import stage1 as H
 from lang2.driftc.checker import FnSignature
 from lang2.driftc.core.function_id import FunctionId, FunctionRefKind
 from lang2.driftc.core.types_core import TypeTable, TypeKind
+from lang2.driftc.method_registry import CallableRegistry, CallableSignature, Visibility
 from lang2.driftc.parser.ast import TypeExpr
 from lang2.driftc.type_checker import TypeChecker
 
@@ -13,6 +14,25 @@ def _fn_type_expr(param_names: list[str], ret_name: str, *, nothrow: bool | None
 	args = [TypeExpr(name=p) for p in param_names]
 	args.append(TypeExpr(name=ret_name))
 	return TypeExpr(name="fn", args=args, fn_throws=(not bool(nothrow)))
+
+def _build_registry(sigs: dict[FunctionId, FnSignature], module_id: int = 0) -> CallableRegistry:
+	registry = CallableRegistry()
+	callable_id = 1
+	for fn_id, sig in sigs.items():
+		if sig.is_method:
+			continue
+		if sig.param_type_ids is None or sig.return_type_id is None:
+			continue
+		registry.register_free_function(
+			callable_id=callable_id,
+			name=fn_id.name,
+			module_id=module_id,
+			visibility=Visibility.public(),
+			signature=CallableSignature(param_types=tuple(sig.param_type_ids), result_type=sig.return_type_id),
+			fn_id=fn_id,
+		)
+		callable_id += 1
+	return registry
 
 
 def test_typed_function_reference_emits_fnptr_const() -> None:
@@ -35,11 +55,14 @@ def test_typed_function_reference_emits_fnptr_const() -> None:
 			),
 		]
 	)
+	registry = _build_registry({fn_id_add1: add1_sig})
 	res = TypeChecker(table).check_function(
 		fn_id_main,
 		block,
-		call_signatures={"add1": [add1_sig]},
+		callable_registry=registry,
 		signatures_by_id={fn_id_add1: add1_sig},
+		visible_modules=(0,),
+		current_module=0,
 	)
 	assert not res.diagnostics
 	let_stmt = next(stmt for stmt in block.statements if isinstance(stmt, H.HLet))
@@ -68,14 +91,16 @@ def test_ambiguous_function_reference_requires_annotation() -> None:
 		declared_can_throw=False,
 	)
 	block = H.HBlock(statements=[H.HLet(name="f", value=H.HVar("foo"))])
+	fn_id_int = FunctionId(module="main", name="foo", ordinal=0)
+	fn_id_str = FunctionId(module="main", name="foo", ordinal=1)
+	registry = _build_registry({fn_id_int: foo_int, fn_id_str: foo_str})
 	res = TypeChecker(table).check_function(
 		fn_id_main,
 		block,
-		call_signatures={"foo": [foo_int, foo_str]},
-		signatures_by_id={
-			FunctionId(module="main", name="foo", ordinal=0): foo_int,
-			FunctionId(module="main", name="foo", ordinal=1): foo_str,
-		},
+		callable_registry=registry,
+		signatures_by_id={fn_id_int: foo_int, fn_id_str: foo_str},
+		visible_modules=(0,),
+		current_module=0,
 	)
 	assert any("ambiguous function reference 'foo'" in d.message for d in res.diagnostics)
 
@@ -101,11 +126,14 @@ def test_exported_function_reference_is_can_throw() -> None:
 			),
 		]
 	)
+	registry = _build_registry({fn_id_id: id_sig})
 	res = TypeChecker(table).check_function(
 		fn_id_main,
 		block,
-		call_signatures={"id": [id_sig]},
+		callable_registry=registry,
 		signatures_by_id={fn_id_id: id_sig},
+		visible_modules=(0,),
+		current_module=0,
 	)
 	let_stmt = next(stmt for stmt in block.statements if isinstance(stmt, H.HLet))
 	assert isinstance(let_stmt.value, H.HFnPtrConst)
@@ -138,11 +166,14 @@ def test_nothrow_value_coerces_to_can_throw_with_thunk() -> None:
 			),
 		]
 	)
+	registry = _build_registry({fn_id_add1: add1_sig})
 	res = TypeChecker(table).check_function(
 		fn_id_main,
 		block,
-		call_signatures={"add1": [add1_sig]},
+		callable_registry=registry,
 		signatures_by_id={fn_id_add1: add1_sig},
+		visible_modules=(0,),
+		current_module=0,
 	)
 	assert not res.diagnostics
 	let_stmt = next(stmt for stmt in block.statements if isinstance(stmt, H.HLet))
@@ -168,7 +199,10 @@ def test_captureless_lambda_coerces_to_fn_pointer() -> None:
 			),
 		]
 	)
-	res = TypeChecker(table).check_function(fn_id_main, block, call_signatures={}, signatures_by_id={})
+	res = TypeChecker(table).check_function(
+		fn_id_main,
+		block,
+	)
 	assert not res.diagnostics
 	let_stmt = next(stmt for stmt in block.statements if isinstance(stmt, H.HLet))
 	assert isinstance(let_stmt.value, H.HFnPtrConst)
@@ -193,7 +227,10 @@ def test_capturing_lambda_rejected_for_fn_pointer() -> None:
 			),
 		]
 	)
-	res = TypeChecker(table).check_function(fn_id_main, block, call_signatures={}, signatures_by_id={})
+	res = TypeChecker(table).check_function(
+		fn_id_main,
+		block,
+	)
 	assert any("capturing lambdas cannot be coerced" in d.message for d in res.diagnostics)
 
 
@@ -215,6 +252,7 @@ def test_cast_function_reference_disambiguates_overload() -> None:
 		return_type_id=float_ty,
 		declared_can_throw=False,
 	)
+	registry = _build_registry({fn_id_abs_i: abs_int, fn_id_abs_f: abs_float})
 	block = H.HBlock(
 		statements=[
 			H.HLet(
@@ -229,8 +267,10 @@ def test_cast_function_reference_disambiguates_overload() -> None:
 	res = TypeChecker(table).check_function(
 		FunctionId(module="main", name="main", ordinal=0),
 		block,
-		call_signatures={"abs": [abs_int, abs_float]},
+		callable_registry=registry,
 		signatures_by_id={fn_id_abs_i: abs_int, fn_id_abs_f: abs_float},
+		visible_modules=(0,),
+		current_module=0,
 	)
 	assert not res.diagnostics
 	let_stmt = next(stmt for stmt in block.statements if isinstance(stmt, H.HLet))
@@ -256,6 +296,7 @@ def test_cast_function_reference_reports_no_match() -> None:
 		return_type_id=float_ty,
 		declared_can_throw=False,
 	)
+	registry = _build_registry({fn_id_abs_i: abs_int, fn_id_abs_f: abs_float})
 	block = H.HBlock(
 		statements=[
 			H.HLet(
@@ -270,8 +311,10 @@ def test_cast_function_reference_reports_no_match() -> None:
 	res = TypeChecker(table).check_function(
 		FunctionId(module="main", name="main", ordinal=0),
 		block,
-		call_signatures={"abs": [abs_int, abs_float]},
+		callable_registry=registry,
 		signatures_by_id={fn_id_abs_i: abs_int, fn_id_abs_f: abs_float},
+		visible_modules=(0,),
+		current_module=0,
 	)
 	assert any("cannot cast function 'abs'" in d.message and "no overload matches" in d.message for d in res.diagnostics)
 	assert any("candidates:" in note for d in res.diagnostics for note in (d.notes or []))
@@ -287,6 +330,7 @@ def test_cast_function_reference_throw_mode_note() -> None:
 		return_type_id=int_ty,
 		declared_can_throw=False,
 	)
+	registry = _build_registry({fn_id_abs_i: abs_int})
 	block = H.HBlock(
 		statements=[
 			H.HLet(
@@ -301,8 +345,10 @@ def test_cast_function_reference_throw_mode_note() -> None:
 	res = TypeChecker(table).check_function(
 		FunctionId(module="main", name="main", ordinal=0),
 		block,
-		call_signatures={"abs": [abs_int]},
+		callable_registry=registry,
 		signatures_by_id={fn_id_abs_i: abs_int},
+		visible_modules=(0,),
+		current_module=0,
 	)
 	assert any("throw-mode differs" in note for d in res.diagnostics for note in (d.notes or []))
 
@@ -325,7 +371,5 @@ def test_cast_rejects_non_function_target() -> None:
 	res = TypeChecker(table).check_function(
 		fn_id_main,
 		block,
-		call_signatures={},
-		signatures_by_id={},
 	)
 	assert any("cast<T>(...) is only supported for function types" in d.message for d in res.diagnostics)

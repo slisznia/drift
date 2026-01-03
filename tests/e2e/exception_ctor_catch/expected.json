@@ -1,5 +1,6 @@
 {
-  "mode": "run",
+  "description": "e2e: exception ctor catch",
   "exit_code": 0,
+  "mode": "run",
   "stdout": "caught\n"
 }

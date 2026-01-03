@@ -1,1 +1,6 @@
-{ "exit_code": 0, "stdout": "world\n", "stderr": "" }
+{
+  "description": "e2e: array string",
+  "exit_code": 0,
+  "stderr": "",
+  "stdout": "world\n"
+}

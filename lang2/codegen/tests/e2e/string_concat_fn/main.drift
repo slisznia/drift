@@ -1,4 +1,8 @@
 fn main() nothrow returns Int{
     val s = string_concat("foo", "bar");
-    return byte_length(s);
+    val n = byte_length(s);
+    if n == 6 {
+        return 6;
+    }
+    return 0;
 }

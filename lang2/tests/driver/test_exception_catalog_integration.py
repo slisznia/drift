@@ -10,16 +10,16 @@ from lang2.driftc.parser import parse_drift_to_hir
 def _compile_source(src: str, tmp_path: Path):
 	path = tmp_path / "main.drift"
 	path.write_text(src)
-	func_hirs, signatures, fn_ids_by_name, type_table, exc_catalog, diagnostics = parse_drift_to_hir(path)
+	module, type_table, exc_catalog, diagnostics = parse_drift_to_hir(path)
 	assert diagnostics == []
 	mir_funcs, checked = compile_stubbed_funcs(
-		func_hirs=func_hirs,
-		signatures=signatures,
+		func_hirs=module.func_hirs,
+		signatures=module.signatures_by_id,
 		exc_env=exc_catalog,
 		type_table=type_table,
 		return_checked=True,
 	)
-	return mir_funcs, checked, fn_ids_by_name
+	return mir_funcs, checked, module.fn_ids_by_name
 
 
 def test_catch_unknown_event_reports_diagnostic(tmp_path: Path) -> None:
@@ -77,4 +77,4 @@ fn main() returns Int {
 		if len(qualified) == 1:
 			main_ids = fn_ids_by_name.get(qualified[0]) or []
 	assert len(main_ids) == 1
-	assert function_symbol(main_ids[0]) in mir_funcs
+	assert any(function_symbol(fn_id) == function_symbol(main_ids[0]) for fn_id in mir_funcs)

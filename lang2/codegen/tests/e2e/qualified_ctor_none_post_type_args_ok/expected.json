@@ -1,2 +1,6 @@
-{ "exit_code": 2, "stdout": "", "stderr": "" }
-
+{
+  "description": "e2e: qualified ctor none post type args ok",
+  "exit_code": 2,
+  "stderr": "",
+  "stdout": ""
+}

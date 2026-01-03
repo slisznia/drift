@@ -1,0 +1,11 @@
+module std.mem
+
+export { swap, replace }
+
+pub fn swap<T>(a: T, b: T) nothrow returns Void {
+	return;
+}
+
+pub fn replace<T>(place: T, value: T) nothrow returns T {
+	return place;
+}

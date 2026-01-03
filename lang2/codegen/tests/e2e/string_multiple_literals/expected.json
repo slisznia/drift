@@ -1,5 +1,6 @@
 {
+  "description": "e2e: string multiple literals",
   "exit_code": 0,
-  "stdout": "",
-  "stderr": ""
+  "stderr": "",
+  "stdout": ""
 }

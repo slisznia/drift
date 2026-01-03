@@ -24,10 +24,10 @@ def _build_add1(table: TypeTable) -> tuple[MirFunc, object, FnInfo, FunctionRefI
 		instructions=[],
 		terminator=Return(value="x"),
 	)
-	add1_mir = MirFunc(name="add1", params=["x"], locals=[], blocks={"entry": add1_block}, entry="entry")
+	add1_mir = MirFunc(fn_id=fn_id, name="add1", params=["x"], locals=[], blocks={"entry": add1_block}, entry="entry")
 	add1_ssa = MirToSSA().run(add1_mir)
 	add1_sig = FnSignature(name="add1", param_type_ids=[int_ty], return_type_id=int_ty, declared_can_throw=False)
-	add1_info = FnInfo(name="add1", declared_can_throw=False, return_type_id=int_ty, signature=add1_sig)
+	add1_info = FnInfo(fn_id=fn_id, name="add1", declared_can_throw=False, return_type_id=int_ty, signature=add1_sig)
 	return add1_mir, add1_ssa, add1_info, fn_ref, call_sig
 
 
@@ -43,15 +43,16 @@ def test_fnptr_return_type_lowering() -> None:
 		instructions=[FnPtrConst(dest="fp", fn_ref=fn_ref, call_sig=call_sig)],
 		terminator=Return(value="fp"),
 	)
-	make_mir = MirFunc(name="make", params=[], locals=[], blocks={"entry": make_block}, entry="entry")
+	make_id = FunctionId(module="main", name="make", ordinal=0)
+	make_mir = MirFunc(fn_id=make_id, name="make", params=[], locals=[], blocks={"entry": make_block}, entry="entry")
 	make_ssa = MirToSSA().run(make_mir)
 	make_sig = FnSignature(name="make", return_type_id=fn_ty, declared_can_throw=False)
-	make_info = FnInfo(name="make", declared_can_throw=False, return_type_id=fn_ty, signature=make_sig)
+	make_info = FnInfo(fn_id=make_id, name="make", declared_can_throw=False, return_type_id=fn_ty, signature=make_sig)
 
 	mod = lower_module_to_llvm(
-		funcs={"add1": add1_mir, "make": make_mir},
-		ssa_funcs={"add1": add1_ssa, "make": make_ssa},
-		fn_infos={"add1": add1_info, "make": make_info},
+		funcs={add1_info.fn_id: add1_mir, make_id: make_mir},
+		ssa_funcs={add1_info.fn_id: add1_ssa, make_id: make_ssa},
+		fn_infos={add1_info.fn_id: add1_info, make_id: make_info},
 		type_table=table,
 	)
 	ir = mod.render()
@@ -75,15 +76,16 @@ def test_fnptr_return_fnresult_ok_payload() -> None:
 		],
 		terminator=Return(value="res"),
 	)
-	make_mir = MirFunc(name="make", params=[], locals=[], blocks={"entry": make_block}, entry="entry")
+	make_id = FunctionId(module="main", name="make", ordinal=0)
+	make_mir = MirFunc(fn_id=make_id, name="make", params=[], locals=[], blocks={"entry": make_block}, entry="entry")
 	make_ssa = MirToSSA().run(make_mir)
 	make_sig = FnSignature(name="make", return_type_id=fn_ty, declared_can_throw=True)
-	make_info = FnInfo(name="make", declared_can_throw=True, return_type_id=fn_ty, signature=make_sig)
+	make_info = FnInfo(fn_id=make_id, name="make", declared_can_throw=True, return_type_id=fn_ty, signature=make_sig)
 
 	mod = lower_module_to_llvm(
-		funcs={"add1": add1_mir, "make": make_mir},
-		ssa_funcs={"add1": add1_ssa, "make": make_ssa},
-		fn_infos={"add1": add1_info, "make": make_info},
+		funcs={add1_info.fn_id: add1_mir, make_id: make_mir},
+		ssa_funcs={add1_info.fn_id: add1_ssa, make_id: make_ssa},
+		fn_infos={add1_info.fn_id: add1_info, make_id: make_info},
 		type_table=table,
 	)
 	ir = mod.render()

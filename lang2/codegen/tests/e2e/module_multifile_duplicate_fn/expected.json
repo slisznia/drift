@@ -1,10 +1,10 @@
 {
-  "exit_code": 1,
+  "description": "e2e: module multifile duplicate fn",
   "diagnostics": [
     {
-      "phase": "parser",
-      "message_contains": "duplicate function definition"
+      "message_contains": "duplicate function definition",
+      "phase": "parser"
     }
-  ]
+  ],
+  "exit_code": 1
 }
-

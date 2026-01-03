@@ -1,6 +1,9 @@
 {
-  "exit_code": 1,
+  "description": "e2e: trait cross module trait not in scope",
   "diagnostics": [
-    { "message_contains": "no matching method 'show'" }
-  ]
+    {
+      "message_contains": "no matching method 'show'"
+    }
+  ],
+  "exit_code": 1
 }

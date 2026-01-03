@@ -1,2 +1,6 @@
-{ "exit_code": 33, "stdout": "", "stderr": "" }
-
+{
+  "description": "e2e: method move by implicit self",
+  "exit_code": 33,
+  "stderr": "",
+  "stdout": ""
+}

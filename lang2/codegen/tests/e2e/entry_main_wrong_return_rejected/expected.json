@@ -1,6 +1,11 @@
 {
-  "phase": "parser",
+  "description": "e2e: entry main wrong return rejected",
+  "diagnostics": [
+    {
+      "message_contains": "entrypoint main must return Int",
+      "phase": "typecheck"
+    }
+  ],
   "exit_code": 1,
-  "stdout": "",
-  "stderr": "entrypoint main must return Int"
+  "use_driftc_json": false
 }

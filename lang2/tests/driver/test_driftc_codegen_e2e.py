@@ -22,7 +22,7 @@ def _run_ir_with_clang(ir: str) -> int:
 	"""Compile the provided LLVM IR with clang and return the process exit code."""
 	clang = shutil.which("clang-15") or shutil.which("clang")
 	if clang is None:
-		pytest.skip("clang not available")
+		raise RuntimeError("clang not available")
 
 	BUILD_ROOT.mkdir(parents=True, exist_ok=True)
 	ir_path = BUILD_ROOT / "ir.ll"

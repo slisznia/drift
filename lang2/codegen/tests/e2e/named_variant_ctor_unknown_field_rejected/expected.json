@@ -1,7 +1,10 @@
 {
-  "exit_code": 1,
-  "phase": "typecheck",
+  "description": "e2e: named variant ctor unknown field rejected",
   "diagnostics": [
-    { "message_contains": "unknown field 'z' for constructor 'P'" }
-  ]
+    {
+      "message_contains": "unknown field 'z' for constructor 'P'"
+    }
+  ],
+  "exit_code": 1,
+  "phase": "typecheck"
 }

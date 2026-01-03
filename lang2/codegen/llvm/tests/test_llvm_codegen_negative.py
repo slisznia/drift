@@ -4,6 +4,7 @@ Negative/backend guardrail tests.
 
 from __future__ import annotations
 
+from lang2.driftc.core.function_id import FunctionId
 import pytest
 
 from lang2.codegen.llvm import lower_ssa_func_to_llvm
@@ -35,6 +36,7 @@ def test_branch_condition_must_be_bool():
 	then_block = BasicBlock(name="then", instructions=[ConstInt(dest="t0", value=1)], terminator=Return(value="t0"))
 	else_block = BasicBlock(name="else", instructions=[ConstInt(dest="t1", value=2)], terminator=Return(value="t1"))
 	mir = MirFunc(
+		fn_id=FunctionId(module="main", name="f", ordinal=0),
 		name="f",
 		params=[],
 		locals=[],
@@ -45,10 +47,11 @@ def test_branch_condition_must_be_bool():
 
 	table = TypeTable()
 	int_ty = table.new_scalar("Int")
-	fn_info = FnInfo(name="f", declared_can_throw=False, return_type_id=int_ty)
+	fn_id = FunctionId(module="main", name="f", ordinal=0)
+	fn_info = FnInfo(fn_id=fn_id, name="f", declared_can_throw=False, return_type_id=int_ty)
 
 	with pytest.raises(NotImplementedError, match="branch condition must be bool"):
-		lower_ssa_func_to_llvm(mir, ssa, fn_info, {"f": fn_info}, type_table=table)
+		lower_ssa_func_to_llvm(mir, ssa, fn_info, {fn_id: fn_info}, type_table=table)
 
 
 def test_non_can_throw_returning_fnresult_rejected():
@@ -63,15 +66,16 @@ def test_non_can_throw_returning_fnresult_rejected():
 		],
 		terminator=Return(value="res"),
 	)
-	mir = MirFunc(name="f", params=[], locals=[], blocks={"entry": entry}, entry="entry")
+	mir = MirFunc(fn_id=FunctionId(module="main", name="f", ordinal=0), name="f", params=[], locals=[], blocks={"entry": entry}, entry="entry")
 	ssa = MirToSSA().run(mir)
 
 	table = TypeTable()
 	int_ty = table.new_scalar("Int")
-	fn_info = FnInfo(name="f", declared_can_throw=False, return_type_id=int_ty)
+	fn_id = FunctionId(module="main", name="f", ordinal=0)
+	fn_info = FnInfo(fn_id=fn_id, name="f", declared_can_throw=False, return_type_id=int_ty)
 
 	with pytest.raises(NotImplementedError, match="FnResult construction in non-can-throw function"):
-		lower_ssa_func_to_llvm(mir, ssa, fn_info, {"f": fn_info}, type_table=table)
+		lower_ssa_func_to_llvm(mir, ssa, fn_info, {fn_id: fn_info}, type_table=table)
 
 
 def test_can_throw_fnresult_with_unsupported_ok_type_is_rejected():
@@ -92,12 +96,13 @@ def test_can_throw_fnresult_with_unsupported_ok_type_is_rejected():
 		],
 		terminator=Return(value="res"),
 	)
-	mir = MirFunc(name="f", params=[], locals=[], blocks={"entry": entry}, entry="entry")
+	mir = MirFunc(fn_id=FunctionId(module="main", name="f", ordinal=0), name="f", params=[], locals=[], blocks={"entry": entry}, entry="entry")
 	ssa = MirToSSA().run(mir)
-	fn_info = FnInfo(name="f", declared_can_throw=True, return_type_id=fnresult_ty, error_type_id=err_ty)
+	fn_id = FunctionId(module="main", name="f", ordinal=0)
+	fn_info = FnInfo(fn_id=fn_id, name="f", declared_can_throw=True, return_type_id=fnresult_ty, error_type_id=err_ty)
 
 	with pytest.raises(NotImplementedError, match="FnResult ok type Array_Int is not supported"):
-		lower_ssa_func_to_llvm(mir, ssa, fn_info, {"f": fn_info}, type_table=table)
+		lower_ssa_func_to_llvm(mir, ssa, fn_info, {fn_id: fn_info}, type_table=table)
 
 
 def test_string_binaryop_unsupported():
@@ -111,12 +116,13 @@ def test_string_binaryop_unsupported():
 		],
 		terminator=Return(value="t2"),
 	)
-	mir = MirFunc(name="f", params=[], locals=["t0", "t1", "t2"], blocks={"entry": entry}, entry="entry")
+	mir = MirFunc(fn_id=FunctionId(module="main", name="f", ordinal=0), name="f", params=[], locals=["t0", "t1", "t2"], blocks={"entry": entry}, entry="entry")
 	ssa = MirToSSA().run(mir)
 
 	table = TypeTable()
 	int_ty = table.new_scalar("Int")
-	fn_info = FnInfo(name="f", declared_can_throw=False, return_type_id=int_ty)
+	fn_id = FunctionId(module="main", name="f", ordinal=0)
+	fn_info = FnInfo(fn_id=fn_id, name="f", declared_can_throw=False, return_type_id=int_ty)
 
 	with pytest.raises(NotImplementedError, match="string binary op"):
-		lower_ssa_func_to_llvm(mir, ssa, fn_info, {"f": fn_info}, type_table=table)
+		lower_ssa_func_to_llvm(mir, ssa, fn_info, {fn_id: fn_info}, type_table=table)

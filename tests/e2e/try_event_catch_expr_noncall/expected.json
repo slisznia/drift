@@ -1,6 +1,7 @@
 {
-  "mode": "run",
-  "compile_error": "supports call attempts only",
   "args": [],
-  "env": {}
+  "compile_error": "supports call attempts only",
+  "description": "e2e: try event catch expr noncall",
+  "env": {},
+  "mode": "run"
 }

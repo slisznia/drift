@@ -1,5 +1,6 @@
 {
+  "description": "e2e: string concat fn",
   "exit_code": 6,
-  "stdout": "",
-  "stderr": ""
+  "stderr": "",
+  "stdout": ""
 }

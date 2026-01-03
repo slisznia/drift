@@ -156,7 +156,11 @@ class PlaceCanonicalizeRewriter:
 			# Builtins that operate on *places* should receive canonical `HPlaceExpr`
 			# operands so downstream passes never have to reconstruct lvalues from
 			# arbitrary expression trees.
-			if isinstance(fn, H.HVar) and fn.name in ("swap", "replace"):
+			if (
+				isinstance(fn, H.HVar)
+				and fn.name in ("swap", "replace")
+				and getattr(fn, "module_id", None) == "std.mem"
+			):
 				# swap(a, b): both operands are place contexts.
 				if fn.name == "swap" and len(new_args) >= 2:
 					pa = place_expr_from_lvalue_expr(new_args[0])

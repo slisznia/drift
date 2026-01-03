@@ -1,6 +1,9 @@
 {
+  "description": "e2e: same module method no try ok",
   "exit_code": 2,
-  "stdout": "",
+  "module_paths": [
+    "."
+  ],
   "stderr": "",
-  "module_paths": ["."]
+  "stdout": ""
 }

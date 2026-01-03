@@ -1,7 +1,9 @@
 {
+  "description": "e2e: abi entrypoint cross module throw catch",
   "exit_code": 0,
-  "stdout": "",
+  "module_paths": [
+    "."
+  ],
   "stderr": "",
-  "module_paths": ["."]
+  "stdout": ""
 }
-

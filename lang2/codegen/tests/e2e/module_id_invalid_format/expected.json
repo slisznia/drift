@@ -1,5 +1,11 @@
 {
+  "description": "e2e: module id invalid format",
+  "diagnostics": [
+    {
+      "message_contains": "invalid module id",
+      "phase": "parser"
+    }
+  ],
   "exit_code": 1,
-  "phase": "parser",
-  "diagnostics": [{ "phase": "parser", "message_contains": "invalid module id" }]
+  "phase": "parser"
 }

@@ -1,6 +1,10 @@
 {
-  "exit_code": 1,
+  "description": "e2e: qualified ctor nonvariant base rejected",
   "diagnostics": [
-    { "phase": "typecheck", "message_contains": "E-QMEM-NONVARIANT" }
-  ]
+    {
+      "message_contains": "E-QMEM-NONVARIANT",
+      "phase": "typecheck"
+    }
+  ],
+  "exit_code": 1
 }

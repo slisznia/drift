@@ -1,0 +1,7 @@
+{
+  "description": "e2e: std mem swap replace",
+  "dev_allow_reserved_namespaces": true,
+  "exit_code": 4,
+  "stderr": "",
+  "stdout": ""
+}

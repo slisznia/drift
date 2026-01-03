@@ -1,5 +1,6 @@
 {
+  "description": "e2e: scalar main",
   "exit_code": 42,
-  "stdout": "",
-  "stderr": ""
+  "stderr": "",
+  "stdout": ""
 }

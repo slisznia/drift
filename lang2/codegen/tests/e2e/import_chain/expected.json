@@ -1,5 +1,6 @@
 {
+  "description": "e2e: import chain",
   "exit_code": 42,
-  "stdout": "",
-  "stderr": ""
+  "stderr": "",
+  "stdout": ""
 }

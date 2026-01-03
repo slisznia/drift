@@ -4,6 +4,7 @@ Control-flow lowering smoke tests (diamonds).
 
 from __future__ import annotations
 
+from lang2.driftc.core.function_id import FunctionId
 from lang2.codegen.llvm import lower_ssa_func_to_llvm
 from lang2.driftc.checker import FnInfo
 from lang2.driftc.stage2 import (
@@ -23,6 +24,7 @@ from lang2.driftc.core.types_core import TypeTable
 
 def _int_fn_info(name: str, can_throw: bool, table: TypeTable) -> FnInfo:
 	return FnInfo(
+		fn_id=FunctionId(module="main", name=name, ordinal=0),
 		name=name,
 		declared_can_throw=can_throw,
 		return_type_id=table.new_scalar("Int"),
@@ -55,6 +57,7 @@ def test_if_else_phi_lowering():
 	)
 
 	mir = MirFunc(
+		fn_id=FunctionId(module="main", name="if_phi", ordinal=0),
 		name="if_phi",
 		params=[],
 		locals=["x"],
@@ -69,8 +72,9 @@ def test_if_else_phi_lowering():
 	ssa = MirToSSA().run(mir)
 
 	table = TypeTable()
+	fn_id = FunctionId(module="main", name="if_phi", ordinal=0)
 	fn_info = _int_fn_info("if_phi", False, table)
-	ir = lower_ssa_func_to_llvm(mir, ssa, fn_info, {"if_phi": fn_info})
+	ir = lower_ssa_func_to_llvm(mir, ssa, fn_info, {fn_id: fn_info})
 
 	assert "br i1 %cond, label %then, label %else" in ir
 	assert "phi i64" in ir

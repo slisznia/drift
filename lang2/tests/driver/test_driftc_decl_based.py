@@ -8,6 +8,7 @@ from dataclasses import dataclass
 
 from lang2.driftc import stage1 as H
 from lang2.driftc.driftc import compile_stubbed_funcs
+from lang2.driftc.core.function_id import function_symbol
 from lang2.driftc.core.types_core import TypeTable
 from lang2.test_support import (
 	build_exception_catalog,
@@ -59,15 +60,15 @@ def test_driver_accepts_decl_based_signatures_and_catalog():
 		return_checked=True,
 	)
 
-	assert set(mir_funcs.keys()) == {"f_can", "g_plain"}
+	assert {function_symbol(fn_id) for fn_id in mir_funcs.keys()} == {"f_can", "g_plain"}
 	assert checked.diagnostics == []
 
-	f_info = checked.fn_infos["f_can"]
+	f_info = next(info for info in checked.fn_infos_by_id.values() if info.name == "f_can")
 	assert f_info.declared_can_throw is True
 	assert f_info.declared_events == frozenset({"m:EvtA"})
 	assert f_info.return_type_id is not None
 
-	g_info = checked.fn_infos["g_plain"]
+	g_info = next(info for info in checked.fn_infos_by_id.values() if info.name == "g_plain")
 	# Unannotated functions default to can-throw; nothrow must be explicit.
 	assert g_info.declared_can_throw is True
 	assert g_info.declared_events is None
@@ -94,7 +95,7 @@ def test_driver_reports_decl_based_mismatch_diagnostics():
 	type_table = TypeTable()
 	type_table.exception_schemas = {"m:EvtX": ("m:EvtX", [])}
 
-	mir_funcs, checked = compile_stubbed_funcs(
+	_, checked = compile_stubbed_funcs(
 		func_hirs=hirs,
 		signatures=signatures,
 		exc_env=exc_catalog,
@@ -103,7 +104,6 @@ def test_driver_reports_decl_based_mismatch_diagnostics():
 		return_checked=True,
 	)
 
-	assert "g_plain" in mir_funcs
 	assert checked.diagnostics, "expected diagnostics for throw mismatch"
 	msgs = [d.message for d in checked.diagnostics]
-	assert any("non-can-throw" in m or "can-throw" in m for m in msgs)
+	assert any("declared nothrow but may throw" in m for m in msgs)

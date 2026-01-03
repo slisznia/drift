@@ -5,30 +5,48 @@ Exercises the checker stub's signature inference and catch-arm validation.
 from __future__ import annotations
 
 from lang2.driftc.checker import Checker, FnSignature
+from lang2.driftc.core.function_id import FunctionId
 from lang2.driftc.checker.catch_arms import CatchArmInfo
 import pytest
 
 
 def test_checker_infers_fnresult_and_declared_events_from_signature():
 	"""Checker should infer can-throw + declared events from FnSignature."""
-	signatures = {
-		"f": FnSignature(name="f", return_type=("FnResult", "Ok", "Err"), throws_events=("EvtA", "EvtB")),
-	}
-	checked = Checker(signatures=signatures).check(["f"])
+	from lang2.driftc.core.types_core import TypeTable
 
-	info = checked.fn_infos["f"]
+	table = TypeTable()
+	err_ty = table.ensure_error()
+	ok_ty = table.ensure_int()
+	fnresult_ty = table.ensure_fnresult(ok_ty, err_ty)
+	fn_id = FunctionId(module="main", name="f", ordinal=0)
+	signatures = {
+		fn_id: FnSignature(
+			name="f",
+			return_type=("FnResult", "Ok", "Err"),
+			throws_events=("EvtA", "EvtB"),
+			param_type_ids=[],
+			return_type_id=fnresult_ty,
+			error_type_id=err_ty,
+		),
+	}
+	checked = Checker(
+		signatures_by_id=signatures,
+		hir_blocks_by_id={},
+		call_info_by_callsite_id={},
+		type_table=table,
+	).check_by_id([fn_id])
+
+	info = checked.fn_infos_by_id[fn_id]
 	assert info.declared_can_throw is True
 	assert info.declared_events == frozenset({"EvtA", "EvtB"})
 	assert info.return_type == ("FnResult", "Ok", "Err")
-	# TypeIds should be assigned for FnResult/err side.
-	assert info.return_type_id is not None
-	assert info.error_type_id is not None
 	assert checked.diagnostics == []
 
 
 def test_checker_validates_catch_arms_and_accumulates_diagnostics():
 	"""Checker should run catch-arm validation and accumulate diagnostics."""
-	signatures = {"f": FnSignature(name="f", return_type="Int")}
+	fn_id = FunctionId(module="main", name="f", ordinal=0)
+	signatures = {fn_id: FnSignature(name="f", return_type="Int")}
 	# Provide a minimal HIR with invalid catch arms so the checker discovers them.
 	from lang2.driftc import stage1 as H  # local import to avoid circular test deps
 
@@ -43,9 +61,14 @@ def test_checker_validates_catch_arms_and_accumulates_diagnostics():
 			)
 		]
 	)
-	checker = Checker(signatures=signatures, exception_catalog={"m:Evt": 1}, hir_blocks={"f": hir})
+	checker = Checker(
+		signatures_by_id=signatures,
+		hir_blocks_by_id={fn_id: hir},
+		call_info_by_callsite_id={},
+		exception_catalog={"m:Evt": 1},
+	)
 
-	checked = checker.check(["f"])
+	checked = checker.check_by_id([fn_id])
 
 	assert checked.diagnostics, "expected diagnostics for invalid catch arms"
 	msgs = [diag.message for diag in checked.diagnostics]
@@ -55,14 +78,29 @@ def test_checker_validates_catch_arms_and_accumulates_diagnostics():
 
 def test_checker_method_call_missing_callinfo_is_bug():
 	"""Method calls require CallInfo when provided to the checker."""
+	from lang2.driftc.core.function_id import FunctionId
 	from lang2.driftc import stage1 as H
 
 	hir = H.HBlock(
 		statements=[
-			H.HExprStmt(expr=H.HMethodCall(receiver=H.HVar("p"), method_name="bump", args=[])),
+			H.HExprStmt(
+				expr=H.HMethodCall(
+					receiver=H.HVar("p"),
+					method_name="bump",
+					args=[],
+				)
+			),
 		]
 	)
-	signatures = {"main": FnSignature(name="main", return_type="Int")}
-	checker = Checker(signatures=signatures, hir_blocks={"main": hir}, call_info_by_name={"main": {}})
-	with pytest.raises(AssertionError, match=r"missing CallInfo for method call"):
-		checker.check(["main"])
+	hir.statements[0].expr.node_id = 1
+	fn_id = FunctionId(module="main", name="main", ordinal=0)
+	signatures = {fn_id: FnSignature(name="main", return_type="Int")}
+	checker = Checker(
+		signatures_by_id=signatures,
+		hir_blocks_by_id={fn_id: hir},
+		call_info_by_callsite_id={fn_id: {}},
+	)
+	checked = checker.check_by_id([fn_id])
+	assert any(
+		diag.code == "E_INTERNAL_MISSING_CALLINFO" for diag in checked.diagnostics
+	), "expected missing CallInfo diagnostic"

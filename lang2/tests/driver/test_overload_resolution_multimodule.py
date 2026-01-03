@@ -18,7 +18,7 @@ def _write_file(path: Path, content: str) -> None:
 
 
 def _callable_name(fn_id: FunctionId) -> str:
-	return fn_id.name if fn_id.module == "main" else f"{fn_id.module}::{fn_id.name}"
+	return fn_id.name
 
 
 def _build_registry(signatures: dict[FunctionId, object]) -> tuple[CallableRegistry, dict[object, int]]:

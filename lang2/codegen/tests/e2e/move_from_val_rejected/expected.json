@@ -1,7 +1,10 @@
 {
-  "exit_code": 1,
+  "description": "e2e: move from val rejected",
   "diagnostics": [
-    { "phase": "typecheck", "message_contains": "move requires an owned mutable binding" }
-  ]
+    {
+      "message_contains": "move requires an owned mutable binding",
+      "phase": "typecheck"
+    }
+  ],
+  "exit_code": 1
 }
-

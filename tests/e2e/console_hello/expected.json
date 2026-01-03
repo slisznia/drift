@@ -1,9 +1,10 @@
 {
-  "mode": "run",
-  "compile_error": null,
-  "exit_code": 0,
-  "stdout": "ok\n",
-  "stderr": "",
   "args": [],
-  "env": {}
+  "compile_error": null,
+  "description": "e2e: console hello",
+  "env": {},
+  "exit_code": 0,
+  "mode": "run",
+  "stderr": "",
+  "stdout": "ok\n"
 }

@@ -124,9 +124,8 @@ def _typed_method_with_retain(fn_id: FunctionId, *, self_name: str, param_name: 
 def _analyze_signatures(
 	signatures_by_id: dict[FunctionId, FnSignature],
 	typed_fns: dict[FunctionId, TypedFn],
-) -> dict[str, FnSignature]:
-	analyze_non_retaining_params(typed_fns, signatures_by_id)
-	return {sig.name: sig for sig in signatures_by_id.values()}
+) -> dict[FunctionId, FnSignature]:
+	return analyze_non_retaining_params(typed_fns, signatures_by_id)
 
 
 def test_lambda_in_call_arg_allowed_for_nonretaining_param() -> None:
@@ -136,7 +135,19 @@ def test_lambda_in_call_arg_allowed_for_nonretaining_param() -> None:
 	signatures_by_id = {fn_id: FnSignature(name="f", param_names=["f"])}
 	typed_fns = {fn_id: _typed_fn_with_direct_call(fn_id, param_name="f")}
 	signatures = _analyze_signatures(signatures_by_id, typed_fns)
-	res = validate_lambdas_non_retaining(call, signatures=signatures)
+	assign_node_ids(call)
+	call_resolutions = {
+		call.node_id: CallableDecl(
+			callable_id=1,
+			name="f",
+			kind=CallableKind.FREE_FUNCTION,
+			module_id=0,
+			visibility=Visibility.public(),
+			signature=CallableSignature(param_types=(), result_type=0),
+			fn_id=fn_id,
+		)
+	}
+	res = validate_lambdas_non_retaining(call, signatures_by_id=signatures, call_resolutions=call_resolutions)
 	assert res.diagnostics == []
 
 
@@ -185,7 +196,12 @@ def test_lambda_inside_place_projection_rejected() -> None:
 	assert any("only immediate invocation" in d.message for d in res.diagnostics)
 
 
-def _method_resolution(method_name: str, *, impl_target_type_id: int = 1) -> MethodResolution:
+def _method_resolution(
+	method_name: str,
+	*,
+	impl_target_type_id: int = 1,
+	fn_id: FunctionId | None = None,
+) -> MethodResolution:
 	decl = CallableDecl(
 		callable_id=1,
 		name=method_name,
@@ -195,6 +211,7 @@ def _method_resolution(method_name: str, *, impl_target_type_id: int = 1) -> Met
 		signature=CallableSignature(param_types=(), result_type=0),
 		impl_id=1,
 		impl_target_type_id=impl_target_type_id,
+		fn_id=fn_id,
 	)
 	return MethodResolution(decl=decl, receiver_autoborrow=None)
 
@@ -215,8 +232,8 @@ def test_lambda_in_method_call_arg_allowed_for_nonretaining_param() -> None:
 	typed_fns = {fn_id: _typed_method_with_direct_call(fn_id, self_name="self", param_name="f")}
 	signatures = _analyze_signatures(signatures_by_id, typed_fns)
 	assign_node_ids(call)
-	call_resolutions = {call.node_id: _method_resolution("for_each", impl_target_type_id=1)}
-	res = validate_lambdas_non_retaining(call, signatures=signatures, call_resolutions=call_resolutions)
+	call_resolutions = {call.node_id: _method_resolution("for_each", impl_target_type_id=1, fn_id=fn_id)}
+	res = validate_lambdas_non_retaining(call, signatures_by_id=signatures, call_resolutions=call_resolutions)
 	assert res.diagnostics == []
 
 
@@ -236,15 +253,15 @@ def test_lambda_in_method_call_arg_rejected_when_retaining() -> None:
 	typed_fns = {fn_id: _typed_method_with_retain(fn_id, self_name="self", param_name="f")}
 	signatures = _analyze_signatures(signatures_by_id, typed_fns)
 	assign_node_ids(call)
-	call_resolutions = {call.node_id: _method_resolution("for_each", impl_target_type_id=1)}
-	res = validate_lambdas_non_retaining(call, signatures=signatures, call_resolutions=call_resolutions)
+	call_resolutions = {call.node_id: _method_resolution("for_each", impl_target_type_id=1, fn_id=fn_id)}
+	res = validate_lambdas_non_retaining(call, signatures_by_id=signatures, call_resolutions=call_resolutions)
 	assert any("only immediate invocation" in d.message for d in res.diagnostics)
 
 
 def test_lambda_in_method_call_arg_rejected_when_unresolved() -> None:
 	lam = H.HLambda(params=[], body_expr=H.HVar(name="x", binding_id=1), body_block=None)
 	call = H.HMethodCall(receiver=H.HVar(name="xs"), method_name="for_each", args=[lam], kwargs=[])
-	res = validate_lambdas_non_retaining(call, signatures={}, call_resolutions={})
+	res = validate_lambdas_non_retaining(call, signatures_by_id={}, call_resolutions={})
 	assert any("only immediate invocation" in d.message for d in res.diagnostics)
 
 

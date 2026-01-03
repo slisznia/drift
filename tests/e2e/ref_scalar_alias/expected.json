@@ -1,5 +1,6 @@
 {
-  "mode": "run",
+  "description": "e2e: ref scalar alias",
   "exit_code": 6,
+  "mode": "run",
   "stdout": ""
 }

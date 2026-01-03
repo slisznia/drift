@@ -1,1 +1,6 @@
-{ "exit_code": 11, "stdout": "", "stderr": "" }
+{
+  "description": "e2e: closures shadowing",
+  "exit_code": 11,
+  "stderr": "",
+  "stdout": ""
+}

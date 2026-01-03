@@ -5,11 +5,12 @@ from pathlib import Path
 
 from lang2.driftc import stage1 as H
 from lang2.driftc.checker import FnSignature
-from lang2.driftc.core.function_id import FunctionId
+from lang2.driftc.core.function_id import FunctionId, fn_name_key
 from lang2.driftc.core.types_core import TypeTable, TypeKind
+from lang2.driftc.method_registry import CallableRegistry, CallableSignature, Visibility
 from lang2.driftc.parser import parse_drift_to_hir
 from lang2.driftc.stage1.call_info import CallTargetKind, call_abi_ret_type
-from lang2.driftc.stage1.node_ids import assign_node_ids
+from lang2.driftc.stage1.node_ids import assign_node_ids, assign_callsite_ids, validate_callsite_ids
 from lang2.driftc.type_checker import TypeChecker
 
 
@@ -45,6 +46,27 @@ def _collect_node_ids(block: H.HBlock) -> set[int]:
 	def walk(obj: object) -> None:
 		if isinstance(obj, H.HNode):
 			ids.add(obj.node_id)
+		for field in getattr(obj, "__dataclass_fields__", {}) or {}:
+			val = getattr(obj, field, None)
+			if isinstance(val, list):
+				for item in val:
+					walk(item)
+			else:
+				walk(val)
+
+	walk(block)
+	return ids
+
+
+def _collect_callsite_ids(block: H.HBlock) -> list[int]:
+	assign_callsite_ids(block)
+	ids: list[int] = []
+
+	def walk(obj: object) -> None:
+		if isinstance(obj, (H.HCall, H.HMethodCall, H.HInvoke)):
+			callsite_id = getattr(obj, "callsite_id", None)
+			if callsite_id is not None:
+				ids.append(int(callsite_id))
 		for field in getattr(obj, "__dataclass_fields__", {}) or {}:
 			val = getattr(obj, field, None)
 			if isinstance(val, list):
@@ -153,6 +175,20 @@ def _collect_invokes(block: H.HBlock) -> list[H.HInvoke]:
 	return invokes
 
 
+def test_callsite_ids_assigned_and_dense() -> None:
+	block = H.HBlock(
+		statements=[
+			H.HExprStmt(expr=H.HCall(fn=H.HVar("foo"), args=[H.HLiteralInt(1)])),
+			H.HExprStmt(expr=H.HMethodCall(receiver=H.HVar("x"), method_name="bar", args=[])),
+			H.HReturn(value=H.HInvoke(callee=H.HVar("f"), args=[H.HLiteralInt(2)])),
+		]
+	)
+	ids = sorted(_collect_callsite_ids(block))
+	assert ids == [0, 1, 2]
+	assign_callsite_ids(block)
+	validate_callsite_ids(block)
+
+
 def test_node_ids_deterministic(tmp_path: Path) -> None:
 	path = tmp_path / "main.drift"
 	_write_file(
@@ -162,10 +198,10 @@ fn foo(x: Int) returns Int { return x + 1; }
 fn bar() returns Int { return foo(1) + foo(2); }
 """,
 	)
-	funcs1, _sigs1, _fn_ids1, _table1, _excs1, _diags1 = parse_drift_to_hir(path)
-	funcs2, _sigs2, _fn_ids2, _table2, _excs2, _diags2 = parse_drift_to_hir(path)
-	block1 = next(iter(funcs1.values()))
-	block2 = next(iter(funcs2.values()))
+	mod1, _table1, _excs1, _diags1 = parse_drift_to_hir(path)
+	mod2, _table2, _excs2, _diags2 = parse_drift_to_hir(path)
+	block1 = next(iter(mod1.func_hirs.values()))
+	block2 = next(iter(mod2.func_hirs.values()))
 	assert _dump_node_ids(block1) == _dump_node_ids(block2)
 
 
@@ -180,17 +216,34 @@ def test_typed_tables_keyed_by_node_id() -> None:
 		]
 	)
 	fn_id = FunctionId(module="main", name="main", ordinal=0)
+	fn_id_f = FunctionId(module="main", name="f", ordinal=0)
 	sig = FnSignature(name="f", param_type_ids=[int_ty], return_type_id=int_ty, declared_can_throw=False)
-	res = tc.check_function(fn_id, block, call_signatures={"f": [sig]})
+	registry = CallableRegistry()
+	registry.register_free_function(
+		callable_id=1,
+		name="f",
+		module_id=0,
+		visibility=Visibility.public(),
+		signature=CallableSignature(param_types=(int_ty,), result_type=int_ty),
+		fn_id=fn_id_f,
+	)
+	res = tc.check_function(
+		fn_id,
+		block,
+		callable_registry=registry,
+		signatures_by_id={fn_id_f: sig},
+		visible_modules=(0,),
+	)
 	node_ids = _collect_node_ids(block)
+	callsite_ids = set(_collect_callsite_ids(block))
 	for key in res.typed_fn.expr_types.keys():
 		assert key in node_ids
 	for key in res.typed_fn.binding_for_var.keys():
 		assert key in node_ids
 	for key in res.typed_fn.call_resolutions.keys():
 		assert key in node_ids
-	for key in res.typed_fn.call_info_by_node_id.keys():
-		assert key in node_ids
+	for key in res.typed_fn.call_info_by_callsite_id.keys():
+		assert key in callsite_ids
 
 
 def test_call_info_emitted_for_direct_calls() -> None:
@@ -209,19 +262,58 @@ def test_call_info_emitted_for_direct_calls() -> None:
 		]
 	)
 	fn_id = FunctionId(module="main", name="main", ordinal=0)
-	signatures = {
-		"abs": [FnSignature(name="abs", param_type_ids=[int_ty], return_type_id=int_ty, declared_can_throw=False)],
-		"foo": [FnSignature(name="foo", param_type_ids=[int_ty], return_type_id=int_ty, declared_can_throw=False)],
-		"bar": [FnSignature(name="bar", param_type_ids=[int_ty], return_type_id=int_ty, declared_can_throw=False)],
+	fn_id_abs = FunctionId(module="main", name="abs", ordinal=0)
+	fn_id_foo = FunctionId(module="main", name="foo", ordinal=0)
+	fn_id_bar = FunctionId(module="main", name="bar", ordinal=0)
+	signatures_by_id = {
+		fn_id_abs: FnSignature(name="abs", param_type_ids=[int_ty], return_type_id=int_ty, declared_can_throw=False),
+		fn_id_foo: FnSignature(name="foo", param_type_ids=[int_ty], return_type_id=int_ty, declared_can_throw=False),
+		fn_id_bar: FnSignature(name="bar", param_type_ids=[int_ty], return_type_id=int_ty, declared_can_throw=False),
 	}
-	res = tc.check_function(fn_id, block, call_signatures=signatures)
+	registry = CallableRegistry()
+	registry.register_free_function(
+		callable_id=1,
+		name="abs",
+		module_id=0,
+		visibility=Visibility.public(),
+		signature=CallableSignature(param_types=(int_ty,), result_type=int_ty),
+		fn_id=fn_id_abs,
+	)
+	registry.register_free_function(
+		callable_id=2,
+		name="foo",
+		module_id=0,
+		visibility=Visibility.public(),
+		signature=CallableSignature(param_types=(int_ty,), result_type=int_ty),
+		fn_id=fn_id_foo,
+	)
+	registry.register_free_function(
+		callable_id=3,
+		name="bar",
+		module_id=0,
+		visibility=Visibility.public(),
+		signature=CallableSignature(param_types=(int_ty,), result_type=int_ty),
+		fn_id=fn_id_bar,
+	)
+	res = tc.check_function(
+		fn_id,
+		block,
+		callable_registry=registry,
+		signatures_by_id=signatures_by_id,
+		visible_modules=(0,),
+	)
 	calls = _collect_direct_calls(block)
 	assert calls
+	expected_ids = {
+		"abs": fn_id_abs,
+		"foo": fn_id_foo,
+		"bar": fn_id_bar,
+	}
 	for call in calls:
-		info = res.typed_fn.call_info_by_node_id.get(call.node_id)
+		info = res.typed_fn.call_info_by_callsite_id.get(call.callsite_id)
 		assert info is not None
 		assert info.target.kind is CallTargetKind.DIRECT
-		assert info.target.symbol
+		assert info.target.symbol == expected_ids.get(call.fn.name)
 
 
 def test_call_info_emitted_for_invoke() -> None:
@@ -234,12 +326,13 @@ def test_call_info_emitted_for_invoke() -> None:
 			H.HExprStmt(expr=H.HInvoke(callee=H.HVar("fp"), args=[H.HLiteralInt(1)])),
 		]
 	)
+	assign_callsite_ids(block)
 	fn_id = FunctionId(module="main", name="main", ordinal=0)
 	res = tc.check_function(fn_id, block, param_types={"fp": fn_ty})
 	invokes = _collect_invokes(block)
 	assert invokes
 	for call in invokes:
-		info = res.typed_fn.call_info_by_node_id.get(call.node_id)
+		info = res.typed_fn.call_info_by_callsite_id.get(call.callsite_id)
 		assert info is not None
 		assert info.target.kind is CallTargetKind.INDIRECT
 
@@ -271,14 +364,39 @@ def test_call_sig_abi_return_type() -> None:
 			H.HExprStmt(expr=H.HCall(fn=H.HVar("may_throw"), args=[H.HLiteralInt(2)])),
 		]
 	)
-	signatures = {
-		"nothrow": [FnSignature(name="nothrow", param_type_ids=[int_ty], return_type_id=int_ty, declared_can_throw=False)],
-		"may_throw": [FnSignature(name="may_throw", param_type_ids=[int_ty], return_type_id=int_ty, declared_can_throw=True)],
+	fn_id_nothrow = FunctionId(module="main", name="nothrow", ordinal=0)
+	fn_id_throw = FunctionId(module="main", name="may_throw", ordinal=0)
+	signatures_by_id = {
+		fn_id_nothrow: FnSignature(name="nothrow", param_type_ids=[int_ty], return_type_id=int_ty, declared_can_throw=False),
+		fn_id_throw: FnSignature(name="may_throw", param_type_ids=[int_ty], return_type_id=int_ty, declared_can_throw=True),
 	}
-	res = tc.check_function(fn_id, block, call_signatures=signatures)
+	registry = CallableRegistry()
+	registry.register_free_function(
+		callable_id=1,
+		name="nothrow",
+		module_id=0,
+		visibility=Visibility.public(),
+		signature=CallableSignature(param_types=(int_ty,), result_type=int_ty),
+		fn_id=fn_id_nothrow,
+	)
+	registry.register_free_function(
+		callable_id=2,
+		name="may_throw",
+		module_id=0,
+		visibility=Visibility.public(),
+		signature=CallableSignature(param_types=(int_ty,), result_type=int_ty),
+		fn_id=fn_id_throw,
+	)
+	res = tc.check_function(
+		fn_id,
+		block,
+		callable_registry=registry,
+		signatures_by_id=signatures_by_id,
+		visible_modules=(0,),
+	)
 	calls = {call.fn.name: call for call in _collect_direct_calls(block)}
-	info_no = res.typed_fn.call_info_by_node_id[calls["nothrow"].node_id]
-	info_yes = res.typed_fn.call_info_by_node_id[calls["may_throw"].node_id]
+	info_no = res.typed_fn.call_info_by_callsite_id[calls["nothrow"].callsite_id]
+	info_yes = res.typed_fn.call_info_by_callsite_id[calls["may_throw"].callsite_id]
 	assert call_abi_ret_type(info_no.sig, table) == int_ty
 	abi_yes = call_abi_ret_type(info_yes.sig, table)
 	assert table.get(abi_yes).kind is TypeKind.FNRESULT

@@ -30,7 +30,7 @@ from typing import Iterable, Optional
 
 from lang2.driftc.parser import parse_drift_to_hir, parse_drift_files_to_hir, parse_drift_workspace_to_hir
 from lang2.driftc.module_lowered import flatten_modules
-from lang2.driftc.driftc import compile_to_llvm_ir_for_tests
+from lang2.driftc.driftc import compile_to_llvm_ir_for_tests, ReservedNamespacePolicy
 from lang2.driftc.core.function_id import function_symbol
 from lang2.drift_core.runtime import get_runtime_sources
 
@@ -43,7 +43,7 @@ def _run_ir_with_clang(ir: str, build_dir: Path, argv: list[str] | None = None) 
 	"""Compile the provided LLVM IR with clang and return (exit, stdout, stderr)."""
 	clang = shutil.which("clang-15") or shutil.which("clang")
 	if clang is None:
-		return -999, "", "clang not available"
+		return 1, "", "clang not available"
 
 	build_dir.mkdir(parents=True, exist_ok=True)
 	ir_path = build_dir / "ir.ll"
@@ -96,12 +96,13 @@ def _run_case(case_dir: Path) -> str:
 	expected = json.loads(expected_path.read_text())
 	if expected.get("skip"):
 		return "skipped (marked)"
+	allow_reserved = bool(expected.get("dev_allow_reserved_namespaces", False))
 	module_paths = expected.get("module_paths") or []
 	module_args: list[str] = []
 	for mp in module_paths:
 		module_args.extend(["-M", str(case_dir / mp)])
 	# Compile-error path: delegate to driftc --json for structured diags.
-	if expected.get("diagnostics"):
+	if expected.get("diagnostics") and expected.get("use_driftc_json", True):
 		def _match_diag_span(exp: dict, d: dict) -> bool:
 			# Optional span assertions for diagnostics emitted via driftc --json.
 			#
@@ -124,6 +125,8 @@ def _run_case(case_dir: Path) -> str:
 			*[str(p) for p in drift_files],
 			"--json",
 		]
+		if allow_reserved:
+			cmd.insert(3, "--dev")
 		res = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True)
 		try:
 			payload = json.loads(res.stdout)
@@ -154,10 +157,10 @@ def _run_case(case_dir: Path) -> str:
 	# import resolution behavior is consistent:
 	# - missing module imports are diagnosed,
 	# - multi-file modules and multi-module cases share the same entry path.
+	allow_reserved = bool(expected.get("dev_allow_reserved_namespaces", False))
 	modules, type_table, exception_catalog, module_exports, module_deps, parse_diags = parse_drift_workspace_to_hir(
 		drift_files,
 		module_paths=[case_dir / mp for mp in module_paths] or None,
-		enforce_entrypoint=True,
 	)
 	func_hirs, signatures, fn_ids_by_name = flatten_modules(modules)
 	expected_phase = expected.get("phase")
@@ -177,18 +180,10 @@ def _run_case(case_dir: Path) -> str:
 			return "FAIL (parser phase stderr mismatch)"
 		return "ok"
 
-	# Require exactly one user-facing main. Prefer a zero-arg Int main; if a single
-	# param main exists, assume it's Array<String> and let the backend emit the
-	# argv wrapper.
-	main_ids = fn_ids_by_name.get("main") or []
-	if not main_ids:
-		qualified = [name for name in fn_ids_by_name.keys() if name.endswith("::main")]
-		if len(qualified) == 1:
-			main_ids = fn_ids_by_name.get(qualified[0]) or []
-	if len(main_ids) != 1:
-		return "FAIL (must define exactly one fn main)"
-	entry = function_symbol(main_ids[0])
-	main_sig = signatures.get(main_ids[0])
+	main_ids = [fn_id for fn_id, sig in signatures.items() if fn_id.name == "main" and not sig.is_method]
+	main_id = main_ids[0] if len(main_ids) == 1 else None
+	entry = function_symbol(main_id) if main_id is not None else "main"
+	main_sig = signatures.get(main_id) if main_id is not None else None
 	needs_argv = False
 	if main_sig and main_sig.param_type_ids and len(main_sig.param_type_ids) == 1 and type_table is not None:
 		param_ty = main_sig.param_type_ids[0]
@@ -198,6 +193,11 @@ def _run_case(case_dir: Path) -> str:
 			if elem_def.name == "String":
 				needs_argv = True
 	try:
+		reserved_policy = (
+			ReservedNamespacePolicy.ALLOW_DEV
+			if allow_reserved
+			else ReservedNamespacePolicy.ENFORCE
+		)
 		ir, checked = compile_to_llvm_ir_for_tests(
 			func_hirs=func_hirs,
 			signatures=signatures,
@@ -206,6 +206,8 @@ def _run_case(case_dir: Path) -> str:
 			type_table=type_table,
 			module_exports=module_exports,
 			module_deps=module_deps,
+			enforce_entrypoint=True,
+			reserved_namespace_policy=reserved_policy,
 		)
 	except Exception as err:  # pragma: no cover - defensive for negative e2e cases
 		expected_diags = expected.get("diagnostics", [])
@@ -222,10 +224,18 @@ def _run_case(case_dir: Path) -> str:
 	checked_diags = getattr(checked, "diagnostics", [])
 	expected_diags = expected.get("diagnostics")
 	if expected_diags is not None:
+		expected_phase = expected.get("phase", "typecheck")
+		expected_exit = expected.get("exit_code", 1)
+		diag_has_error = any(getattr(d, "severity", None) == "error" for d in checked_diags)
+		if expected_exit != (1 if diag_has_error else 0):
+			return f"FAIL (expected exit {expected_exit} but diagnostics imply exit {1 if diag_has_error else 0})"
 		for exp in expected_diags:
 			msg_sub = exp.get("message_contains")
+			phase = exp.get("phase", expected_phase)
 			match_found = False
 			for d in checked_diags:
+				if phase is not None and getattr(d, "phase", None) != phase:
+					continue
 				if msg_sub is not None and msg_sub not in d.message:
 					continue
 				match_found = True
@@ -248,6 +258,8 @@ def _run_case(case_dir: Path) -> str:
 			phase = exp.get("phase", expected_phase)
 			match_found = False
 			for d in checked.diagnostics:
+				if phase is not None and getattr(d, "phase", None) != phase:
+					continue
 				if msg_sub is not None and msg_sub not in d.message:
 					continue
 				match_found = True
@@ -261,8 +273,8 @@ def _run_case(case_dir: Path) -> str:
 	if needs_argv and not run_args:
 		return "FAIL (argv main requires args in expected.json)"
 	exit_code, stdout, stderr = _run_ir_with_clang(ir, build_dir, argv=run_args)
-	if exit_code == -999:
-		return "skipped (clang not available)"
+	if exit_code != 0 and stderr == "clang not available":
+		return "FAIL (clang not available)"
 
 	if checked.diagnostics:
 		actual_exit = 1
@@ -352,6 +364,7 @@ def main(argv: Iterable[str] | None = None) -> int:
 		case_dirs = [d for d in case_dirs if d.name in names]
 
 	failures: list[tuple[Path, str]] = []
+	skipped: set[str] = set()
 	if args.jobs == "auto":
 		cpu_count = os.cpu_count() or 1
 		jobs = max(1, cpu_count - 1)
@@ -370,6 +383,8 @@ def main(argv: Iterable[str] | None = None) -> int:
 			print(f"{case_dir.name}: {status}")
 			if status.startswith("FAIL"):
 				failures.append((case_dir, status))
+			elif status.startswith("skipped"):
+				skipped.add(case_dir.name)
 	else:
 		if args.work_size < 1:
 			print(f"invalid --work-size value: {args.work_size} (must be >= 1)", file=sys.stderr)
@@ -395,18 +410,24 @@ def main(argv: Iterable[str] | None = None) -> int:
 						print(f"{case_dir.name}: {status}")
 						if status.startswith("FAIL"):
 							failures.append((case_dir, status))
+						elif status.startswith("skipped"):
+							skipped.add(case_dir.name)
 						next_idx += 1
 				for case_dir in case_dirs[next_idx:]:
 					status = results.get(case_dir.name, "FAIL (missing result)")
 					print(f"{case_dir.name}: {status}")
 					if status.startswith("FAIL"):
 						failures.append((case_dir, status))
+					elif status.startswith("skipped"):
+						skipped.add(case_dir.name)
 			else:
 				for fut in as_completed(futures):
 					for name, status in fut.result():
 						print(f"{name}: {status}")
 						if status.startswith("FAIL"):
 							failures.append((case_root / name, status))
+						elif status.startswith("skipped"):
+							skipped.add(name)
 
 	if failures:
 		for case, status in failures:
@@ -418,10 +439,16 @@ def main(argv: Iterable[str] | None = None) -> int:
 		elapsed = time.monotonic() - start_time
 		total = len(case_dirs)
 		failed = len(failures)
-		passed = total - failed
+		skipped_count = len(skipped)
+		passed = total - failed - skipped_count
 		print("============[ SUMMARY ]=============", file=sys.stderr)
-		print(f"Tests: {total} ({passed} successful, {failed} failed)", file=sys.stderr)
+		print(f"Tests: {total} ({passed} successful, {skipped_count} skipped, {failed} failed)", file=sys.stderr)
 		print(f"Elapsed: {elapsed:.2f} seconds", file=sys.stderr)
+		if skipped:
+			print("Skipped tests:", file=sys.stderr)
+			for case_dir in case_dirs:
+				if case_dir.name in skipped:
+					print(case_dir.name, file=sys.stderr)
 	return exit_code
 
 

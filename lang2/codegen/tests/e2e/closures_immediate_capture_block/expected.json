@@ -1,1 +1,6 @@
-{ "exit_code": 12, "stdout": "", "stderr": "" }
+{
+  "description": "e2e: closures immediate capture block",
+  "exit_code": 12,
+  "stderr": "",
+  "stdout": ""
+}

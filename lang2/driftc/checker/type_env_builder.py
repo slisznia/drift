@@ -12,16 +12,17 @@ from __future__ import annotations
 
 from typing import Dict, Mapping
 
-from lang2.driftc.checker import CheckedProgram, FnSignature
+from lang2.driftc.checker import CheckedProgramById, FnSignature
+from lang2.driftc.core.function_id import FunctionId
 from lang2.driftc.checker.type_env_impl import CheckerTypeEnv
 from lang2.driftc.stage4 import SsaFunc
 from lang2.driftc.core.types_core import TypeTable, TypeId
 
 
 def build_minimal_checker_type_env(
-	checked: CheckedProgram,
-	ssa_funcs: Mapping[str, SsaFunc],
-	signatures: Mapping[str, FnSignature],
+	checked: CheckedProgramById,
+	ssa_funcs: Mapping[FunctionId, SsaFunc],
+	signatures_by_id: Mapping[FunctionId, FnSignature],
 	table: TypeTable | None = None,
 ) -> CheckerTypeEnv | None:
 	"""
@@ -32,18 +33,18 @@ def build_minimal_checker_type_env(
 	if none is provided).
 	"""
 	table = table or checked.type_table or TypeTable()
-	value_types: Dict[tuple[str, str], TypeId] = {}
+	value_types: Dict[tuple[FunctionId, str], TypeId] = {}
 
-	for fn_name, fn_info in checked.fn_infos.items():
+	for fn_id, fn_info in checked.fn_infos_by_id.items():
 		if not fn_info.declared_can_throw:
 			continue
-		sig = signatures.get(fn_name)
+		sig = signatures_by_id.get(fn_id)
 		if sig is None or sig.return_type_id is None:
 			continue
 		# Surface return types are `T`; can-throw ABI returns `FnResult<T, Error>`.
 		err_tid = sig.error_type_id or table.ensure_error()
 		fnres_tid = table.ensure_fnresult(sig.return_type_id, err_tid)
-		ssa = ssa_funcs.get(fn_name)
+		ssa = ssa_funcs.get(fn_id)
 		if ssa is None:
 			continue
 		for block in ssa.func.blocks.values():
@@ -51,7 +52,7 @@ def build_minimal_checker_type_env(
 			val = getattr(term, "value", None)
 			if val is None:
 				continue
-			value_types[(fn_name, val)] = fnres_tid
+			value_types[(fn_id, val)] = fnres_tid
 
 	if not value_types:
 		return None

@@ -17,6 +17,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, List, Mapping, Optional, Set
 
+from lang2.driftc.core.function_id import FunctionId, function_symbol
 from lang2.driftc.core.diagnostics import Diagnostic
 from lang2.driftc.stage3 import ThrowSummary
 from lang2.driftc.stage2 import MirFunc, Return, ConstructResultOk, ConstructResultErr
@@ -53,16 +54,16 @@ def _report(msg: str, diagnostics: Optional[List[Diagnostic]]) -> None:
 	will pass a diagnostics sink so we do not throw here.
 	"""
 	if diagnostics is not None:
-		diagnostics.append(Diagnostic(message=msg, severity="error", span=None))
+		diagnostics.append(Diagnostic(message=msg, severity="error", phase="throwcheck", span=None))
 	else:
 		raise RuntimeError(msg)
 
 
 def build_func_throw_info(
-	summaries: Dict[str, ThrowSummary],
-	declared_can_throw: Dict[str, bool],
-	fn_infos: Mapping[str, "FnInfo"] | None = None,  # type: ignore[name-defined]
-) -> Dict[str, FuncThrowInfo]:
+	summaries: Dict[FunctionId, ThrowSummary],
+	declared_can_throw: Dict[FunctionId, bool],
+	fn_infos: Mapping[FunctionId, "FnInfo"] | None = None,  # type: ignore[name-defined]
+) -> Dict[FunctionId, FuncThrowInfo]:
 	"""
 	Combine ThrowSummary facts with declaration intent.
 
@@ -70,14 +71,14 @@ def build_func_throw_info(
 	`declared_can_throw`: function name -> whether its signature allows throwing (FnResult/throws)
 	`fn_infos`: optional mapping of function name -> FnInfo with return_type_id populated by the checker
 	"""
-	out: Dict[str, FuncThrowInfo] = {}
-	for fname, summary in summaries.items():
+	out: Dict[FunctionId, FuncThrowInfo] = {}
+	for fn_id, summary in summaries.items():
 		return_ty: Optional[TypeId] = None
 		decl_events: Optional[Set[str]] = None
 		inferred: bool = summary.constructs_error or bool(summary.may_fail_sites)
 		explicit_decl = False
 		if fn_infos is not None:
-			fn_info = fn_infos.get(fname)
+			fn_info = fn_infos.get(fn_id)
 			if fn_info is not None:
 				return_ty = fn_info.return_type_id
 				# Checker inference understands try/catch structure. For explicit
@@ -90,7 +91,7 @@ def build_func_throw_info(
 					inferred_flag = getattr(fn_info, "inferred_may_throw", None)
 					if inferred_flag is None:
 						raise RuntimeError(
-							f"BUG: missing inferred_may_throw for explicit nothrow function {fname}"
+							f"BUG: missing inferred_may_throw for explicit nothrow function {function_symbol(fn_id)}"
 						)
 					inferred = bool(inferred_flag)
 				else:
@@ -101,12 +102,12 @@ def build_func_throw_info(
 					explicit_decl = bool(getattr(sig, "throws_events", ())) or getattr(sig, "declared_can_throw", None) is not None
 				if getattr(fn_info, "declared_events", None) is not None:
 					decl_events = set(fn_info.declared_events)  # type: ignore[arg-type]
-		out[fname] = FuncThrowInfo(
+		out[fn_id] = FuncThrowInfo(
 			constructs_error=summary.constructs_error,
 			exception_types=set(summary.exception_types),
 			may_fail_sites=set(summary.may_fail_sites),
 			# call_sites are currently informational only; invariants are value-based.
-			declared_can_throw=declared_can_throw.get(fname, False),
+			declared_can_throw=declared_can_throw.get(fn_id, False),
 			return_type_id=return_ty,
 			declared_events=decl_events,
 			inferred_may_throw=inferred,
@@ -116,7 +117,7 @@ def build_func_throw_info(
 
 
 def enforce_can_throw_invariants(
-	func_infos: Dict[str, FuncThrowInfo],
+	func_infos: Dict[FunctionId, FuncThrowInfo],
 	diagnostics: Optional[List[Diagnostic]] = None,
 ) -> None:
 	"""
@@ -125,19 +126,19 @@ def enforce_can_throw_invariants(
 	    (ConstructError/throw). Calls alone are not treated as failing in v1.
 	More invariants (e.g., Returns carry FnResult) are layered in other helpers.
 	"""
-	for fname, info in func_infos.items():
+	for fn_id, info in func_infos.items():
 		if info.constructs_error and info.inferred_may_throw and not info.declared_can_throw:
 			# Stay lenient when no explicit throw intent was declared on the signature.
 			if not info.has_explicit_throw_decl:
 				continue
 			_report(
-				msg=f"function {fname} constructs an Error but is not declared can-throw",
+				msg=f"function {function_symbol(fn_id)} constructs an Error but is not declared can-throw",
 				diagnostics=diagnostics,
 			)
 
 
 def enforce_can_throw_signature_shape(
-	func_infos: Dict[str, FuncThrowInfo],
+	func_infos: Dict[FunctionId, FuncThrowInfo],
 	type_env: TypeEnv | None,
 	diagnostics: Optional[List[Diagnostic]] = None,
 ) -> None:
@@ -153,7 +154,7 @@ def enforce_can_throw_signature_shape(
 	if type_env is None:
 		return
 	table = getattr(type_env, "_table", None)
-	for fname, info in func_infos.items():
+	for fn_id, info in func_infos.items():
 		if not info.declared_can_throw:
 			continue
 		ok_ty = info.return_type_id
@@ -170,7 +171,7 @@ def enforce_can_throw_signature_shape(
 				_report(
 					msg=(
 						f"internal error: TypeEnv does not recognize FnResult type for "
-						f"can-throw function {fname}"
+						f"can-throw function {function_symbol(fn_id)}"
 					),
 					diagnostics=diagnostics,
 				)
@@ -180,7 +181,7 @@ def enforce_can_throw_signature_shape(
 			if err_def.kind is not TypeKind.ERROR:
 				_report(
 					msg=(
-						f"function {fname} is can-throw but internal FnResult error type "
+						f"function {function_symbol(fn_id)} is can-throw but internal FnResult error type "
 						f"is {err_def.name}, expected Error"
 					),
 					diagnostics=diagnostics,
@@ -188,8 +189,8 @@ def enforce_can_throw_signature_shape(
 
 
 def enforce_return_shape_for_can_throw(
-	func_infos: Dict[str, FuncThrowInfo],
-	funcs: Dict[str, MirFunc],
+	func_infos: Dict[FunctionId, FuncThrowInfo],
+	funcs: Dict[FunctionId, MirFunc],
 	diagnostics: Optional[List[Diagnostic]] = None,
 ) -> None:
 	"""
@@ -200,10 +201,10 @@ def enforce_return_shape_for_can_throw(
 	This is a lightweight check; a richer type-aware check can later ensure that the
 	returned value is actually a FnResult constructed via ConstructResultOk/Err.
 	"""
-	for fname, info in func_infos.items():
+	for fn_id, info in func_infos.items():
 		if not info.declared_can_throw:
 			continue
-		fn = funcs.get(fname)
+		fn = funcs.get(fn_id)
 		if fn is None:
 			continue
 		for block in fn.blocks.values():
@@ -211,7 +212,7 @@ def enforce_return_shape_for_can_throw(
 			if isinstance(term, Return) and term.value is None:
 				_report(
 					msg=(
-						f"function {fname} is declared can-throw but has a bare return in block "
+						f"function {function_symbol(fn_id)} is declared can-throw but has a bare return in block "
 						f"{block.name}"
 					),
 					diagnostics=diagnostics,
@@ -219,8 +220,8 @@ def enforce_return_shape_for_can_throw(
 
 
 def enforce_fnresult_returns_for_can_throw(
-	func_infos: Dict[str, FuncThrowInfo],
-	funcs: Dict[str, MirFunc],
+	func_infos: Dict[FunctionId, FuncThrowInfo],
+	funcs: Dict[FunctionId, MirFunc],
 	diagnostics: Optional[List[Diagnostic]] = None,
 ) -> None:
 	"""
@@ -237,10 +238,10 @@ def enforce_fnresult_returns_for_can_throw(
 	  - Returning a FnResult parameter or local that aliases a FnResult will fail
 	    this check until a type-aware pass replaces it.
 	"""
-	for fname, info in func_infos.items():
+	for fn_id, info in func_infos.items():
 		if not info.declared_can_throw:
 			continue
-		fn = funcs.get(fname)
+		fn = funcs.get(fn_id)
 		if fn is None:
 			continue
 		for block in fn.blocks.values():
@@ -261,7 +262,7 @@ def enforce_fnresult_returns_for_can_throw(
 			if not found:
 				_report(
 					msg=(
-						f"function {fname} is declared can-throw but return in block {block.name} "
+						f"function {function_symbol(fn_id)} is declared can-throw but return in block {block.name} "
 						f"does not return a FnResult (no ConstructResultOk/Err defines {return_val})"
 					),
 					diagnostics=diagnostics,
@@ -269,8 +270,8 @@ def enforce_fnresult_returns_for_can_throw(
 
 
 def enforce_fnresult_returns_typeaware(
-	func_infos: Dict[str, FuncThrowInfo],
-	ssa_funcs: Dict[str, "SsaFunc"],  # type: ignore[name-defined]
+	func_infos: Dict[FunctionId, FuncThrowInfo],
+	ssa_funcs: Dict[FunctionId, "SsaFunc"],  # type: ignore[name-defined]
 	type_env: TypeEnv,
 	diagnostics: Optional[List[Diagnostic]] = None,
 ) -> None:
@@ -283,8 +284,8 @@ def enforce_fnresult_returns_typeaware(
 	`FnResult<_, Error>` according to the type environment. Error/Ok parts are
 	not inspected yet.
 	"""
-	for fname, info in func_infos.items():
-		ssa_fn = ssa_funcs.get(fname)
+	for fn_id, info in func_infos.items():
+		ssa_fn = ssa_funcs.get(fn_id)
 		if ssa_fn is None:
 			continue
 		fn_type_error = None
@@ -297,11 +298,11 @@ def enforce_fnresult_returns_typeaware(
 		for block in ssa_fn.func.blocks.values():
 			term = block.terminator
 			if isinstance(term, Return) and term.value is not None:
-				ty = type_env.type_of_ssa_value(fname, term.value)
+				ty = type_env.type_of_ssa_value(fn_id, term.value)
 				if info.declared_can_throw:
 					if not type_env.is_fnresult(ty):
 						fn_type_error = (
-							f"function {fname} is declared can-throw but return in block "
+							f"function {function_symbol(fn_id)} is declared can-throw but return in block "
 							f"{block.name} has non-FnResult type {ty!r}"
 						)
 						break
@@ -310,7 +311,7 @@ def enforce_fnresult_returns_typeaware(
 						if (actual_ok, actual_err) != decl_ok_err:
 							exp_ok, exp_err = decl_ok_err
 							fn_type_error = (
-								f"function {fname} returns FnResult with mismatched parts in block "
+								f"function {function_symbol(fn_id)} returns FnResult with mismatched parts in block "
 								f"{block.name}: expected ({exp_ok!r}, {exp_err!r}) but got "
 								f"({actual_ok!r}, {actual_err!r})"
 							)
@@ -318,7 +319,7 @@ def enforce_fnresult_returns_typeaware(
 				else:
 					if type_env.is_fnresult(ty):
 						fn_type_error = (
-							f"function {fname} is not declared can-throw but returns FnResult "
+							f"function {function_symbol(fn_id)} is not declared can-throw but returns FnResult "
 							f"in block {block.name}; declare FnResult/throws or adjust the signature"
 						)
 						break
@@ -335,13 +336,13 @@ def enforce_fnresult_returns_typeaware(
 								pass
 							else:
 								fn_type_error = (
-									f"function {fname} returns value of type {ty!r} in block {block.name} "
+									f"function {function_symbol(fn_id)} returns value of type {ty!r} in block {block.name} "
 									f"but signature return type is {info.return_type_id!r}"
 								)
 								break
 						else:
 							fn_type_error = (
-								f"function {fname} returns value of type {ty!r} in block {block.name} "
+								f"function {function_symbol(fn_id)} returns value of type {ty!r} in block {block.name} "
 								f"but signature return type is {info.return_type_id!r}"
 							)
 							break
@@ -350,20 +351,20 @@ def enforce_fnresult_returns_typeaware(
 
 
 def enforce_declared_events_superset(
-	func_infos: Dict[str, FuncThrowInfo],
+	func_infos: Dict[FunctionId, FuncThrowInfo],
 	diagnostics: Optional[List[Diagnostic]] = None,
 ) -> None:
 	"""
 	Ensure thrown events are a subset of the declared event set (when provided).
 	"""
-	for fname, info in func_infos.items():
+	for fn_id, info in func_infos.items():
 		if info.declared_events is None:
 			continue
 		extra = info.exception_types - info.declared_events
 		if extra:
 			_report(
 				msg=(
-					f"function {fname} declares throws {sorted(info.declared_events)!r} "
+					f"function {function_symbol(fn_id)} declares throws {sorted(info.declared_events)!r} "
 					f"but throws additional events {sorted(extra)!r}"
 				),
 				diagnostics=diagnostics,
@@ -371,14 +372,14 @@ def enforce_declared_events_superset(
 
 
 def run_throw_checks(
-	funcs: Dict[str, MirFunc],
-	summaries: Dict[str, ThrowSummary],
-	declared_can_throw: Dict[str, bool],
-	ssa_funcs: Dict[str, "SsaFunc"] | None = None,  # type: ignore[name-defined]
+	funcs: Dict[FunctionId, MirFunc],
+	summaries: Dict[FunctionId, ThrowSummary],
+	declared_can_throw: Dict[FunctionId, bool],
+	ssa_funcs: Dict[FunctionId, "SsaFunc"] | None = None,  # type: ignore[name-defined]
 	type_env: TypeEnv | None = None,
-	fn_infos: Mapping[str, "FnInfo"] | None = None,  # type: ignore[name-defined]
+	fn_infos: Mapping[FunctionId, "FnInfo"] | None = None,  # type: ignore[name-defined]
 	diagnostics: Optional[List[Diagnostic]] = None,
-) -> Dict[str, FuncThrowInfo]:
+) -> Dict[FunctionId, FuncThrowInfo]:
 	"""
 	Convenience wrapper to build FuncThrowInfo and run all stage4 throw invariants.
 

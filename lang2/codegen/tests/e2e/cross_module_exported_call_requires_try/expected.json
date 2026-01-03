@@ -1,7 +1,13 @@
 {
-  "exit_code": 1,
-  "module_paths": ["."],
+  "description": "e2e: cross module exported call requires try",
   "diagnostics": [
-    { "phase": "typecheck", "message_contains": "declared nothrow but may throw" }
+    {
+      "message_contains": "declared nothrow but may throw",
+      "phase": "typecheck"
+    }
+  ],
+  "exit_code": 1,
+  "module_paths": [
+    "."
   ]
 }

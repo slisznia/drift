@@ -78,7 +78,7 @@ from .mir_nodes import (
 	BasicBlock,
 	MirFunc,
 )
-from .hir_to_mir import MirBuilder, HIRToMIR
+from .hir_to_mir import MirBuilder, HIRToMIR, make_builder
 
 __all__ = [
 	"MNode",
@@ -147,5 +147,6 @@ __all__ = [
 	"BasicBlock",
 	"MirFunc",
 	"MirBuilder",
+	"make_builder",
 	"HIRToMIR",
 ]

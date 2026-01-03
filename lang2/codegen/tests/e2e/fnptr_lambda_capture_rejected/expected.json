@@ -1,6 +1,10 @@
 {
-  "exit_code": 1,
+  "description": "e2e: fnptr lambda capture rejected",
   "diagnostics": [
-    { "phase": "typecheck", "message_contains": "capturing lambdas cannot be coerced" }
-  ]
+    {
+      "message_contains": "capturing lambdas cannot be coerced",
+      "phase": "typecheck"
+    }
+  ],
+  "exit_code": 1
 }

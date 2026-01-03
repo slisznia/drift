@@ -29,8 +29,7 @@ def test_call_type_mismatch_reports_diagnostic():
 		type_table=table,
 		return_checked=True,
 	)
-	assert mir_funcs  # ensure pipeline ran
-	assert any("argument 0 to f has type" in d.message for d in checked.diagnostics)
+	assert any("no matching overload for function 'f'" in d.message for d in checked.diagnostics)
 
 
 def test_call_type_match_has_no_diagnostic():

@@ -1,6 +1,10 @@
 {
-  "exit_code": 1,
+  "description": "e2e: fnptr ambiguous function ref",
   "diagnostics": [
-    { "phase": "typecheck", "message_contains": "ambiguous function reference 'abs'" }
-  ]
+    {
+      "message_contains": "ambiguous function reference 'abs'",
+      "phase": "typecheck"
+    }
+  ],
+  "exit_code": 1
 }

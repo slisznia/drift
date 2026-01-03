@@ -1,5 +1,6 @@
 {
-  "mode": "run",
+  "description": "e2e: exception args optional",
   "exit_code": 0,
+  "mode": "run",
   "stdout": "SOME\n"
 }

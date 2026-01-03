@@ -1,6 +1,9 @@
 {
-  "exit_code": 1,
+  "description": "e2e: rethrow outside catch error",
   "diagnostics": [
-    { "message_contains": "rethrow is only valid inside a catch block" }
-  ]
+    {
+      "message_contains": "rethrow is only valid inside a catch block"
+    }
+  ],
+  "exit_code": 1
 }

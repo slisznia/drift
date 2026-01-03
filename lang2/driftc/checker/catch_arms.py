@@ -17,6 +17,13 @@ from lang2.driftc.core.diagnostics import Diagnostic
 from lang2.driftc.core.span import Span
 
 
+# Catch-arm diagnostics are typecheck-phase.
+def _catch_diag(*args, **kwargs):
+	if "phase" not in kwargs or kwargs.get("phase") is None:
+		kwargs["phase"] = "typecheck"
+	return Diagnostic(*args, **kwargs)
+
+
 @dataclass
 class CatchArmInfo:
 	"""Syntactic info about a catch arm (event FQN and optional source loc)."""
@@ -43,7 +50,7 @@ def _report(
 ) -> None:
 	"""Append a diagnostic if provided, otherwise raise RuntimeError."""
 	if diagnostics is not None:
-		diagnostics.append(Diagnostic(message=msg, severity="error", span=span, notes=notes or []))
+		diagnostics.append(_catch_diag(message=msg, severity="error", span=span, notes=notes or []))
 	else:
 		raise RuntimeError(msg)
 
@@ -73,9 +80,10 @@ def validate_catch_arms(
 			if catch_all_seen:
 				notes = [f"first catch-all is here: {_format_span(catch_all_span)}"] if catch_all_span else None
 				_report("multiple catch-all arms are not allowed", diagnostics, arm.span, notes=notes)
-			catch_all_seen = True
-			catch_all_idx = idx
-			catch_all_span = arm.span
+			if not catch_all_seen:
+				catch_all_seen = True
+				catch_all_idx = idx
+				catch_all_span = arm.span
 		else:
 			if arm.event_fqn in seen_events:
 				prev_span = event_spans.get(arm.event_fqn)

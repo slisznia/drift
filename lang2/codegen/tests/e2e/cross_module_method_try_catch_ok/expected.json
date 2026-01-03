@@ -1,6 +1,9 @@
 {
+  "description": "e2e: cross module method try catch ok",
   "exit_code": 2,
-  "stdout": "",
+  "module_paths": [
+    "."
+  ],
   "stderr": "",
-  "module_paths": ["."]
+  "stdout": ""
 }

@@ -4,6 +4,7 @@ Type-aware invariant: non-can-throw functions must not return FnResult.
 
 from __future__ import annotations
 
+from lang2.driftc.core.function_id import FunctionId
 from lang2.driftc.core.diagnostics import Diagnostic
 from lang2.driftc.stage2 import MirFunc, BasicBlock, Return
 from lang2.driftc.stage4.throw_checks import FuncThrowInfo, enforce_fnresult_returns_typeaware
@@ -14,11 +15,12 @@ def test_non_can_throw_returning_fnresult_is_rejected():
 	"""
 	Even on typed paths, a non-can-throw function returning FnResult should fail.
 	"""
-	fn_name = "f_plain"
+	fn_id = FunctionId(module="main", name="f_plain", ordinal=0)
 	ssa_return_val = "ret"
 	ssa_func = SimpleNamespace(
 		func=MirFunc(
-			name=fn_name,
+			fn_id=fn_id,
+			name=fn_id.name,
 			params=[],
 			locals=[],
 			blocks={
@@ -34,10 +36,10 @@ def test_non_can_throw_returning_fnresult_is_rejected():
 
 	# Tag the return value as FnResult in the TypeEnv.
 	env = SimpleTypeEnv()
-	env.set_ssa_type(fn_name, ssa_return_val, ("Int", "Error"))
+	env.set_ssa_type(fn_id, ssa_return_val, ("Int", "Error"))
 
 	func_infos = {
-		fn_name: FuncThrowInfo(
+		fn_id: FuncThrowInfo(
 			constructs_error=False,
 			exception_types=set(),
 			may_fail_sites=set(),
@@ -48,7 +50,7 @@ def test_non_can_throw_returning_fnresult_is_rejected():
 	diagnostics: list[Diagnostic] = []
 	enforce_fnresult_returns_typeaware(
 		func_infos=func_infos,
-		ssa_funcs={fn_name: ssa_func},
+		ssa_funcs={fn_id: ssa_func},
 		type_env=env,
 		diagnostics=diagnostics,
 	)

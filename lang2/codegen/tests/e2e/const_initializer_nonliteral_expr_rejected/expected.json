@@ -1,7 +1,11 @@
 {
-  "exit_code": 1,
-  "phase": "parser",
+  "description": "e2e: const initializer nonliteral expr rejected",
   "diagnostics": [
-    { "phase": "typecheck", "message_contains": "initializer must be a compile-time literal" }
-  ]
+    {
+      "message_contains": "initializer must be a compile-time literal",
+      "phase": "typecheck"
+    }
+  ],
+  "exit_code": 1,
+  "phase": "parser"
 }

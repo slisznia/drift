@@ -1,5 +1,11 @@
 {
+  "description": "e2e: module header duplicate",
+  "diagnostics": [
+    {
+      "message_contains": "duplicate `module ...` declaration",
+      "phase": "parser"
+    }
+  ],
   "exit_code": 1,
-  "phase": "parser",
-  "diagnostics": [{ "phase": "parser", "message_contains": "duplicate `module ...` declaration" }]
+  "phase": "parser"
 }

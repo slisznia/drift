@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from lang2.driftc.core.function_id import function_symbol
+from lang2.driftc.core.function_id import fn_name_key
 from lang2.driftc.parser import parse_drift_to_hir
 from lang2.driftc.test_helpers import build_linked_world
 from lang2.driftc.type_checker import TypeChecker
@@ -11,14 +11,18 @@ from lang2.driftc.traits.enforce import collect_used_type_keys, enforce_struct_r
 
 
 def _typecheck_all(src: Path):
-	func_hirs, sigs, _fn_ids_by_name, type_table, _exc_catalog, diagnostics = parse_drift_to_hir(src)
+	module, type_table, _exc_catalog, diagnostics = parse_drift_to_hir(src)
 	assert diagnostics == []
 	linked_world, require_env = build_linked_world(type_table)
 	type_checker = TypeChecker(type_table=type_table)
 	typed_fns = {}
-	call_signatures = {function_symbol(fid): s for fid, s in sigs.items() if not s.is_method}
-	for fn_id, hir_block in func_hirs.items():
-		sig = sigs.get(fn_id)
+	call_signatures = {
+		fn_name_key(fid.module, fid.name): s
+		for fid, s in module.signatures_by_id.items()
+		if not s.is_method
+	}
+	for fn_id, hir_block in module.func_hirs.items():
+		sig = module.signatures_by_id.get(fn_id)
 		param_types = {}
 		if sig and sig.param_names and sig.param_type_ids:
 			param_types = {pname: pty for pname, pty in zip(sig.param_names, sig.param_type_ids) if pty is not None}
@@ -27,7 +31,6 @@ def _typecheck_all(src: Path):
 			hir_block,
 			param_types=param_types,
 			return_type=sig.return_type_id if sig is not None else None,
-			call_signatures=call_signatures,
 			callable_registry=None,
 			linked_world=linked_world,
 			require_env=require_env,
@@ -36,7 +39,7 @@ def _typecheck_all(src: Path):
 		)
 		assert result.diagnostics == []
 		typed_fns[fn_id] = result.typed_fn
-	return func_hirs, sigs, type_table, typed_fns
+	return module.func_hirs, module.signatures_by_id, type_table, typed_fns
 
 
 def test_struct_require_enforced_when_used(tmp_path: Path) -> None:

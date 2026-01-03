@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Mapping, Tuple
 
+from lang2.driftc.core.function_id import FunctionId
 from lang2.driftc.core.types_protocol import TypeEnv
 from lang2.driftc.core.types_core import TypeTable, TypeKind
 from lang2.driftc.stage4.ssa import SsaFunc
@@ -38,16 +39,16 @@ class SimpleTypeEnv(TypeEnv):
 	"""
 
 	def __init__(self) -> None:
-		# Map (function name, SSA value id) -> opaque type handle.
-		self._types: Dict[tuple[str, str], Any] = {}
+		# Map (function id, SSA value id) -> opaque type handle.
+		self._types: Dict[tuple[FunctionId, str], Any] = {}
 
-	def set_ssa_type(self, func_name: str, value_id: str, ty: Any) -> None:
+	def set_ssa_type(self, func_id: FunctionId, value_id: str, ty: Any) -> None:
 		"""Install a type handle for the given SSA value (used in tests)."""
-		self._types[(func_name, value_id)] = ty
+		self._types[(func_id, value_id)] = ty
 
-	def type_of_ssa_value(self, func_name: str, value_id: str) -> Any:
+	def type_of_ssa_value(self, func_id: FunctionId, value_id: str) -> Any:
 		"""Return the previously stored type for `value_id` in `func_name`."""
-		return self._types[(func_name, value_id)]
+		return self._types[(func_id, value_id)]
 
 	def is_fnresult(self, ty: Any) -> bool:
 		"""
@@ -75,12 +76,12 @@ class InferredTypeEnv(TypeEnv):
 	types when incoming values agree.
 	"""
 
-	def __init__(self, types: Mapping[tuple[str, str], Any]) -> None:
-		self._types: Dict[tuple[str, str], Any] = dict(types)
+	def __init__(self, types: Mapping[tuple[FunctionId, str], Any]) -> None:
+		self._types: Dict[tuple[FunctionId, str], Any] = dict(types)
 
-	def type_of_ssa_value(self, func_name: str, value_id: str) -> Any:
+	def type_of_ssa_value(self, func_id: FunctionId, value_id: str) -> Any:
 		"""Return the inferred type for an SSA value (raises KeyError if unknown)."""
-		return self._types[(func_name, value_id)]
+		return self._types[(func_id, value_id)]
 
 	def is_fnresult(self, ty: Any) -> bool:
 		return _is_fnresult_type(ty)
@@ -98,8 +99,8 @@ class InferredTypeEnv(TypeEnv):
 
 
 def build_type_env_from_ssa(
-	ssa_funcs: Mapping[str, SsaFunc],
-	signatures: Mapping[str, FnSignature] | None = None,
+	ssa_funcs: Mapping[FunctionId, SsaFunc],
+	signatures: Mapping[FunctionId, FnSignature] | None = None,
 	type_table: TypeTable | None = None,
 ) -> InferredTypeEnv:
 	"""
@@ -109,7 +110,7 @@ def build_type_env_from_ssa(
 	to can-throw callees (internal ABI returns FnResult). Propagates types
 	through AssignSSA and simple Phi nodes when incoming types agree.
 	"""
-	types: Dict[tuple[str, str], Any] = {}
+	types: Dict[tuple[FunctionId, str], Any] = {}
 	sig_map = signatures or {}
 
 	def is_void(ty: Any) -> bool:
@@ -136,54 +137,54 @@ def build_type_env_from_ssa(
 		err_ty = sig.error_type_id if sig.error_type_id is not None else None
 		return ("FnResult", ok_ty, err_ty)
 
-	for fname, ssa in ssa_funcs.items():
+	for fn_id, ssa in ssa_funcs.items():
 		# Seed parameter types from signatures when available so downstream
 		# instructions (AssignSSA, Return) see concrete types for params.
-		sig = sig_map.get(fname)
+		sig = sig_map.get(fn_id)
 		if sig and sig.param_type_ids and ssa.func.params:
 			for param_name, ty_id in zip(ssa.func.params, sig.param_type_ids):
 				if ty_id is not None:
-					types[(fname, param_name)] = ty_id
+					types[(fn_id, param_name)] = ty_id
 
 		# First pass: recognize direct FnResult constructions, call results from
 		# known signatures, and propagate via AssignSSA/Phi when obvious.
 		for block in ssa.func.blocks.values():
 			for instr in block.instructions:
 				if isinstance(instr, (ConstructResultOk, ConstructResultErr)):
-					types[(fname, instr.dest)] = ("FnResult", None, None)
+					types[(fn_id, instr.dest)] = ("FnResult", None, None)
 				elif isinstance(instr, Call) and instr.dest is not None:
-					sig = sig_map.get(instr.fn)
+					sig = sig_map.get(instr.fn_id)
 					if sig is not None:
 						if sig.declared_can_throw:
-							types[(fname, instr.dest)] = fnresult_from_signature(sig)
+							types[(fn_id, instr.dest)] = fnresult_from_signature(sig)
 						else:
 							ret_ty = sig.return_type_id if sig.return_type_id is not None else sig.return_type
 							if is_void(ret_ty):
 								continue
-								types[(fname, instr.dest)] = ret_ty
+								types[(fn_id, instr.dest)] = ret_ty
 				elif isinstance(instr, AssignSSA):
-					src_ty = types.get((fname, instr.src))
+					src_ty = types.get((fn_id, instr.src))
 					if src_ty is not None:
-						types[(fname, instr.dest)] = src_ty
+						types[(fn_id, instr.dest)] = src_ty
 				elif isinstance(instr, Phi):
-					incoming_tys = {types.get((fname, val)) for val in instr.incoming.values()}
+					incoming_tys = {types.get((fn_id, val)) for val in instr.incoming.values()}
 					incoming_tys.discard(None)
 					if len(incoming_tys) == 1:
-						types[(fname, instr.dest)] = incoming_tys.pop()
+						types[(fn_id, instr.dest)] = incoming_tys.pop()
 
 		# Second pass: if the function is can-throw (internal ABI returns FnResult)
 		# and a return value is missing a type, seed it from the signature so
 		# type-aware throw checks have something to work with even when inference
 		# failed.
-		fn_sig = sig_map.get(fname)
+		fn_sig = sig_map.get(fn_id)
 		if fn_sig and fn_sig.declared_can_throw:
 			ret_ty = fnresult_from_signature(fn_sig)
 			for block in ssa.func.blocks.values():
 				term = block.terminator
 				if hasattr(term, "value") and getattr(term, "value") is not None:
 					val = term.value
-					if (fname, val) not in types:
-						types[(fname, val)] = ret_ty
+					if (fn_id, val) not in types:
+						types[(fn_id, val)] = ret_ty
 
 	return InferredTypeEnv(types)
 

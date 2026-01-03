@@ -1,7 +1,10 @@
 {
-  "exit_code": 1,
-  "phase": "typecheck",
+  "description": "e2e: named variant ctor missing field rejected",
   "diagnostics": [
-    { "message_contains": "missing field 'y' for constructor 'P'" }
-  ]
+    {
+      "message_contains": "missing field 'y' for constructor 'P'"
+    }
+  ],
+  "exit_code": 1,
+  "phase": "typecheck"
 }

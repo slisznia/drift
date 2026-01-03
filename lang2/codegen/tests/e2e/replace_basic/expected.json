@@ -1,1 +1,10 @@
-{ "exit_code": 79, "stdout": "", "stderr": "" }
+{
+  "description": "e2e: replace basic",
+  "dev_allow_reserved_namespaces": true,
+  "exit_code": 79,
+  "module_paths": [
+    "."
+  ],
+  "stderr": "",
+  "stdout": ""
+}

@@ -4,12 +4,13 @@ from __future__ import annotations
 import pytest
 
 import lang2.driftc.stage1.hir_nodes as H
-from lang2.driftc.stage2 import HIRToMIR, MirBuilder, mir_nodes as M
+from lang2.driftc.stage2 import HIRToMIR, mir_nodes as M, make_builder
+from lang2.driftc.core.function_id import FunctionId, function_symbol
 from lang2.driftc.core.types_core import TypeTable
 
 
 def test_lambda_immediate_call_lowered_inline_with_param_and_capture() -> None:
-	builder = MirBuilder("main")
+	builder = make_builder(FunctionId(module="main", name="main", ordinal=0))
 	type_table = TypeTable()
 	lower = HIRToMIR(builder, type_table=type_table)
 	# let x = 1; (outer capture)
@@ -32,17 +33,18 @@ def test_lambda_immediate_call_lowered_inline_with_param_and_capture() -> None:
 	assert any(isinstance(i, M.ConstructStruct) for i in instrs)
 	call_instrs = [i for i in instrs if isinstance(i, M.Call)]
 	assert call_instrs
-	assert call_instrs[-1].fn.startswith("__lambda_")
-	assert getattr(builder, "extra_funcs", [])
-	hidden = builder.extra_funcs[0]
-	assert hidden.params and hidden.params[0] == "__env"
-	hidden_instrs = hidden.blocks["entry"].instructions
-	assert any(isinstance(i, M.StructGetField) for i in hidden_instrs)
-	assert any(isinstance(i, M.BinaryOpInstr) and i.op is H.BinaryOp.ADD for i in hidden_instrs)
+	assert function_symbol(call_instrs[-1].fn_id).split("::")[-1].startswith("__lambda_")
+	specs = lower.hidden_lambda_specs()
+	assert specs
+	spec = specs[0]
+	assert spec.has_captures is True
+	assert spec.param_names and spec.param_names[0].startswith("__env_")
+	assert spec.capture_map
+	assert len(spec.capture_map) == len(lambda_expr.captures)
 
 
 def test_lambda_block_body_returns_trailing_expr() -> None:
-	builder = MirBuilder("main")
+	builder = make_builder(FunctionId(module="main", name="main", ordinal=0))
 	type_table = TypeTable()
 	lower = HIRToMIR(builder, type_table=type_table)
 	block_body = H.HBlock(statements=[H.HExprStmt(expr=H.HLiteralInt(7))])
@@ -50,13 +52,15 @@ def test_lambda_block_body_returns_trailing_expr() -> None:
 	call_expr = H.HCall(fn=lambda_expr, args=[], kwargs=[])
 	lower.lower_block(H.HBlock(statements=[H.HExprStmt(expr=call_expr)]))
 
-	assert getattr(builder, "extra_funcs", [])
-	hidden = builder.extra_funcs[-1]
-	assert isinstance(hidden.blocks["entry"].terminator, M.Return)
+	specs = lower.hidden_lambda_specs()
+	assert specs
+	assert specs[0].has_captures is False
+	assert not specs[0].capture_map
+	assert not specs[0].param_names or not specs[0].param_names[0].startswith("__env_")
 
 
 def test_lambda_block_body_explicit_return_is_respected() -> None:
-	builder = MirBuilder("main")
+	builder = make_builder(FunctionId(module="main", name="main", ordinal=0))
 	type_table = TypeTable()
 	lower = HIRToMIR(builder, type_table=type_table)
 	block_body = H.HBlock(statements=[H.HReturn(value=H.HLiteralInt(3))])
@@ -64,5 +68,8 @@ def test_lambda_block_body_explicit_return_is_respected() -> None:
 	call_expr = H.HCall(fn=lambda_expr, args=[], kwargs=[])
 	lower.lower_block(H.HBlock(statements=[H.HExprStmt(expr=call_expr)]))
 
-	hidden = builder.extra_funcs[-1]
-	assert isinstance(hidden.blocks["entry"].terminator, M.Return)
+	specs = lower.hidden_lambda_specs()
+	assert specs
+	assert specs[0].has_captures is False
+	assert not specs[0].capture_map
+	assert not specs[0].param_names or not specs[0].param_names[0].startswith("__env_")

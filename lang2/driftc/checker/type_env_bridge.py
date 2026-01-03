@@ -14,6 +14,7 @@ from typing import Dict, Mapping
 
 from lang2.driftc.checker import FnSignature
 from lang2.driftc.checker.type_env_impl import CheckerTypeEnv
+from lang2.driftc.core.function_id import FunctionId
 from lang2.driftc.stage4 import SsaFunc
 from lang2.driftc.core.types_core import TypeId, TypeTable
 from lang2.driftc.core.types_env_impl import InferredTypeEnv
@@ -21,8 +22,8 @@ from lang2.driftc.core.types_env_impl import InferredTypeEnv
 
 def build_checker_type_env_from_inferred(
 	inferred: InferredTypeEnv,
-	ssa_funcs: Mapping[str, SsaFunc],
-	signatures: Mapping[str, FnSignature] | None = None,
+	ssa_funcs: Mapping[FunctionId, SsaFunc],
+	signatures: Mapping[FunctionId, FnSignature] | None = None,
 ) -> CheckerTypeEnv:
 	"""
 	Wrap an InferredTypeEnv (SSA + signature-based) into a CheckerTypeEnv.
@@ -70,15 +71,15 @@ def build_checker_type_env_from_inferred(
 		cache[opaque] = ty_id
 		return ty_id
 
-	value_types: Dict[tuple[str, str], TypeId] = {}
-	for fn_name, ssa in ssa_funcs.items():
+	value_types: Dict[tuple[FunctionId, str], TypeId] = {}
+	for fn_id, ssa in ssa_funcs.items():
 		for block in ssa.func.blocks.values():
 			for idx, instr in enumerate(block.instructions):
-				key = (fn_name, getattr(instr, "dest", None))
+				key = (fn_id, getattr(instr, "dest", None))
 				if key[1] is None:
 					continue
 				try:
-					opaque = inferred.type_of_ssa_value(fn_name, key[1])
+					opaque = inferred.type_of_ssa_value(fn_id, key[1])
 				except KeyError:
 					continue
 				value_types[key] = intern(opaque)
@@ -86,10 +87,10 @@ def build_checker_type_env_from_inferred(
 			if hasattr(term, "value") and getattr(term, "value") is not None:
 				val = term.value
 				try:
-					opaque = inferred.type_of_ssa_value(fn_name, val)
+					opaque = inferred.type_of_ssa_value(fn_id, val)
 				except KeyError:
 					continue
-				value_types[(fn_name, val)] = intern(opaque)
+				value_types[(fn_id, val)] = intern(opaque)
 
 	return CheckerTypeEnv(table, value_types)
 

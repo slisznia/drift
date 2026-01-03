@@ -17,6 +17,8 @@ from __future__ import annotations
 
 from lang2.driftc import stage1 as H
 from lang2.driftc.checker import Checker, FnSignature
+from lang2.driftc.core.function_id import FunctionId
+from lang2.driftc.core.types_core import TypeTable
 
 
 def test_uncaught_throw_infers_can_throw_without_diagnostic():
@@ -31,10 +33,20 @@ def test_uncaught_throw_infers_can_throw_without_diagnostic():
 			]
 		)
 	}
-	signatures = {"f": FnSignature(name="f", return_type="Int")}
-	checker = Checker(signatures=signatures, hir_blocks=func_hirs, exception_catalog={"m:Boom": 1})
-	checked = checker.check(["f"])
-	assert checked.fn_infos["f"].declared_can_throw is True
+	table = TypeTable()
+	int_ty = table.ensure_int()
+	table.exception_schemas = {"m:Boom": ("m:Boom", [])}
+	signatures = {"f": FnSignature(name="f", param_type_ids=[], return_type_id=int_ty)}
+	fn_id = FunctionId(module="main", name="f", ordinal=0)
+	checker = Checker(
+		signatures_by_id={fn_id: signatures["f"]},
+		hir_blocks_by_id={fn_id: func_hirs["f"]},
+		call_info_by_callsite_id={},
+		exception_catalog={"m:Boom": 1},
+		type_table=table,
+	)
+	checked = checker.check_by_id([fn_id])
+	assert checked.fn_infos_by_id[fn_id].declared_can_throw is True
 	assert not checked.diagnostics
 
 
@@ -50,9 +62,19 @@ def test_explicit_nothrow_rejects_uncaught_throw_with_span():
 			]
 		)
 	}
-	signatures = {"f": FnSignature(name="f", return_type="Int", declared_can_throw=False)}
-	checker = Checker(signatures=signatures, hir_blocks=func_hirs, exception_catalog={"m:Boom": 1})
-	checked = checker.check(["f"])
+	table = TypeTable()
+	int_ty = table.ensure_int()
+	table.exception_schemas = {"m:Boom": ("m:Boom", [])}
+	signatures = {"f": FnSignature(name="f", param_type_ids=[], return_type_id=int_ty, declared_can_throw=False)}
+	fn_id = FunctionId(module="main", name="f", ordinal=0)
+	checker = Checker(
+		signatures_by_id={fn_id: signatures["f"]},
+		hir_blocks_by_id={fn_id: func_hirs["f"]},
+		call_info_by_callsite_id={},
+		exception_catalog={"m:Boom": 1},
+		type_table=table,
+	)
+	checked = checker.check_by_id([fn_id])
 	msgs = [d.message for d in checked.diagnostics]
 	assert any("declared nothrow but may throw" in m for m in msgs)
 	assert any(getattr(d, "span", None) is not None for d in checked.diagnostics)

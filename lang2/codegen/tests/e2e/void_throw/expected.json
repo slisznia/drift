@@ -1,1 +1,6 @@
-{ "exit_code": 1, "stdout": "ok\nerr\n", "stderr": "" }
+{
+  "description": "e2e: void throw",
+  "exit_code": 1,
+  "stderr": "",
+  "stdout": "ok\nerr\n"
+}

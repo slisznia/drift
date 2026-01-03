@@ -1,1 +1,6 @@
-{ "exit_code": 0, "stdout": "i=10 b=true s=x f=1.25E0\n{}\n", "stderr": "" }
+{
+  "description": "e2e: fstring basic",
+  "exit_code": 0,
+  "stderr": "",
+  "stdout": "i=10 b=true s=x f=1.25E0\n{}\n"
+}

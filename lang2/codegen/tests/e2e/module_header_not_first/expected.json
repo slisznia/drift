@@ -1,5 +1,11 @@
 {
+  "description": "e2e: module header not first",
+  "diagnostics": [
+    {
+      "message_contains": "must be the first top-level declaration",
+      "phase": "parser"
+    }
+  ],
   "exit_code": 1,
-  "phase": "parser",
-  "diagnostics": [{ "phase": "parser", "message_contains": "must be the first top-level declaration" }]
+  "phase": "parser"
 }

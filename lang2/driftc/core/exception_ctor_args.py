@@ -21,6 +21,13 @@ from dataclasses import dataclass
 from typing import List, Optional, Sequence, Tuple
 
 from lang2.driftc.core.diagnostics import Diagnostic
+
+# Exception constructor diagnostics are typecheck-phase.
+def _ex_diag(*args, **kwargs):
+	if "phase" not in kwargs or kwargs.get("phase") is None:
+		kwargs["phase"] = "typecheck"
+	return Diagnostic(*args, **kwargs)
+
 from lang2.driftc.core.span import Span
 
 @dataclass(frozen=True)
@@ -72,7 +79,7 @@ def resolve_exception_ctor_args(
 
 	if declared_fields is None:
 		diagnostics.append(
-			Diagnostic(
+			_ex_diag(
 				message=f"unknown exception event '{event_fqn}'",
 				severity="error",
 				span=span,
@@ -87,7 +94,7 @@ def resolve_exception_ctor_args(
 			# arguments is a schema mismatch.
 			arg_span = pos_args[0][1] if pos_args else kw_args[0].name_span
 			diagnostics.append(
-				Diagnostic(
+				_ex_diag(
 					message=f"exception '{event_fqn}' declares no fields; no arguments are allowed",
 					severity="error",
 					span=arg_span,
@@ -97,7 +104,7 @@ def resolve_exception_ctor_args(
 
 	if len(pos_args) > len(declared):
 		diagnostics.append(
-			Diagnostic(
+			_ex_diag(
 				message=f"too many positional arguments for exception '{event_fqn}'",
 				severity="error",
 				span=pos_args[len(declared)][1],
@@ -119,7 +126,7 @@ def resolve_exception_ctor_args(
 		name = kw.name
 		if name not in declared:
 			diagnostics.append(
-				Diagnostic(
+				_ex_diag(
 					message=f"unknown exception field '{name}' for '{event_fqn}'",
 					severity="error",
 					span=kw.name_span,
@@ -128,7 +135,7 @@ def resolve_exception_ctor_args(
 			continue
 		if name in assigned:
 			diagnostics.append(
-				Diagnostic(
+				_ex_diag(
 					message=f"duplicate exception field '{name}' for '{event_fqn}'",
 					severity="error",
 					span=kw.name_span,
@@ -143,7 +150,7 @@ def resolve_exception_ctor_args(
 	missing = [f for f in declared if f not in assigned]
 	if missing:
 		diagnostics.append(
-			Diagnostic(
+			_ex_diag(
 				message=f"missing exception field(s) for '{event_fqn}': {', '.join(missing)}",
 				severity="error",
 				span=span,

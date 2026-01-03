@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from lang2.driftc.core.function_id import FunctionId
 import pytest
 
 from lang2.driftc.stage2 import BasicBlock, MirFunc, Return
@@ -15,11 +16,12 @@ def test_fnresult_forwarding_passes_with_type_env():
 	With SSA + TypeEnv supplied, a can-throw function returning a forwarded
 	FnResult value should pass (structural check is skipped in typed mode).
 	"""
-	fn_name = "f_forward_typed"
+	fn_id = FunctionId(module="main", name="f_forward_typed", ordinal=0)
 	# MIR: directly return parameter p0 (already a FnResult).
 	entry = BasicBlock(name="entry", instructions=[], terminator=Return(value="p0"))
 	mir_func = MirFunc(
-		name=fn_name,
+		fn_id=fn_id,
+		name=fn_id.name,
 		params=[],
 		locals=[],
 		blocks={"entry": entry},
@@ -30,16 +32,16 @@ def test_fnresult_forwarding_passes_with_type_env():
 
 	tenv = SimpleTypeEnv()
 	# Tag p0 as a FnResult
-	tenv.set_ssa_type(fn_name, "p0", ("Int", "Error"))
+	tenv.set_ssa_type(fn_id, "p0", ("Int", "Error"))
 
-	summaries = ThrowSummaryBuilder().build({fn_name: mir_func}, code_to_exc={})
+	summaries = ThrowSummaryBuilder().build({fn_id: mir_func}, code_to_exc={})
 
 	# Should not raise: type-aware path allows forwarding/aliasing of FnResult.
 	run_throw_checks(
-		{fn_name: mir_func},
+		{fn_id: mir_func},
 		summaries,
-		declared_can_throw={fn_name: True},
-		ssa_funcs={fn_name: ssa_func},
+		declared_can_throw={fn_id: True},
+		ssa_funcs={fn_id: ssa_func},
 		type_env=tenv,
 	)
 
@@ -49,22 +51,23 @@ def test_fnresult_forwarding_still_rejected_without_types():
 	Structural guard remains for untyped paths: forwarding without ConstructResultOk/Err
 	is rejected when SSA/TypeEnv are not supplied.
 	"""
-	fn_name = "f_forward_untyped"
+	fn_id = FunctionId(module="main", name="f_forward_untyped", ordinal=0)
 	entry = BasicBlock(name="entry", instructions=[], terminator=Return(value="p0"))
 	mir_func = MirFunc(
-		name=fn_name,
+		fn_id=fn_id,
+		name=fn_id.name,
 		params=[],
 		locals=[],
 		blocks={"entry": entry},
 		entry="entry",
 	)
-	summaries = ThrowSummaryBuilder().build({fn_name: mir_func}, code_to_exc={})
+	summaries = ThrowSummaryBuilder().build({fn_id: mir_func}, code_to_exc={})
 
 	with pytest.raises(RuntimeError):
 		run_throw_checks(
-			{fn_name: mir_func},
+			{fn_id: mir_func},
 			summaries,
-			declared_can_throw={fn_name: True},
+			declared_can_throw={fn_id: True},
 			ssa_funcs=None,
 			type_env=None,
 		)

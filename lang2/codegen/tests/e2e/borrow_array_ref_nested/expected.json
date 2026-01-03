@@ -1,6 +1,6 @@
 {
+  "description": "e2e: borrow array ref nested",
   "exit_code": 2,
-  "stdout": "",
-  "stderr": ""
+  "stderr": "",
+  "stdout": ""
 }
-

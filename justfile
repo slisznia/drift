@@ -179,7 +179,8 @@ lang2-borrow-test:
 stage-for-review:
 	#!/usr/bin/env bash
 	staged_dir=staged
-	COMBINED_NAME="combined_$(date +'%d%H%M%S').txt"
+	TODAY=$(date +'%Y-%m-%dT%H-%M-%S%Z')
+	COMBINED_NAME="combined_${TODAY}.txt"
 	rm -rf "$staged_dir"
 	mkdir -p "$staged_dir"
 	rm -f combined_*
@@ -190,6 +191,14 @@ stage-for-review:
 	done
 	mapfile -d '' files < <(find "$staged_dir/" -type f -print0 | sort -z)
 	{
+		echo "[==== AGENT INSTRUCTIONS ====]"
+		echo "Role: Act as a production-compiler reviewer for Drift."
+		echo "Primary constraints (in order): (1) semantic correctness + soundness, (2) adherence to and inspiration from: the Drift language spec (if you don't have it ask for it), modern languages like Rust, Java's Project Loom and POSIX C whenever our lang-spec is undrespecified, (3) determinism + reproducibility, (4) diagnostics quality/stability, (5) maintainability/extensibility, (6) performance (no hidden big-O or allocation cliffs)."
+		echo "Review requirements: For each change/claim, verify against invariants, spec rules, and edge cases; when unsure (missing spec context), say exactly what can’t be verified and what assumption you’re making."
+		echo "Output: Report only issues, risks, or better long-term alternatives. You can include Drift code snippets or pseudo code to illustrate solutions. If no issues, output “Reviewed and found no material issues to resolve.” and (optionally) a one-line checklist of what you verified. "
+		echo "Decision rule: If multiple solutions exist, recommend the cleanest long-term design even if it’s more work; avoid speculative refactors unless requested. Don't say: If you want a “clean long-term alternative” - we positively want only "clean long-term", provide the plan for executing it. "
+		echo "Style: concise, technical, no fluff."
+		echo "Date: ${TODAY}"
 		echo "[==== FILE LIST ====]"
 		printf '%s\n' "${files[@]}"
 		echo

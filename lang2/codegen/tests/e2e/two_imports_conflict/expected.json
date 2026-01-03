@@ -1,7 +1,11 @@
 {
-  "phase": "parser",
-  "exit_code": 1,
+  "description": "e2e: two imports conflict",
   "diagnostics": [
-    { "phase": "parser", "message_contains": "import alias 'm' conflicts" }
-  ]
+    {
+      "message_contains": "import alias 'm' conflicts",
+      "phase": "parser"
+    }
+  ],
+  "exit_code": 1,
+  "phase": "parser"
 }
