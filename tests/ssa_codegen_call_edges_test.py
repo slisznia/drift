@@ -24,7 +24,7 @@ def _find_clang() -> str | None:
 
 
 def _build_callee() -> mir.Function:
-    """callee(flag): returns {0, null} on flag==0, else {1, err_ptr}."""
+    """callee(flag): -> {0, null} on flag==0, else {1, err_ptr}."""
     entry = mir.BasicBlock(name="bb_entry", params=[mir.Param("_flag", INT)])
     entry.instructions.append(mir.Const(dest="_zero", type=INT, value=0))
     entry.instructions.append(mir.Binary(dest="_is_zero", op="==", left="_flag", right="_zero"))
@@ -69,7 +69,7 @@ def _build_callee() -> mir.Function:
 
 
 def _build_throwing_callee() -> mir.Function:
-    """callee_throw(flag): returns {0, null} on flag==0, else throw err."""
+    """callee_throw(flag): -> {0, null} on flag==0, else throw err."""
     entry = mir.BasicBlock(name="bb_entry", params=[mir.Param("_flag", INT)])
     entry.instructions.append(mir.Const(dest="_zero", type=INT, value=0))
     entry.instructions.append(mir.Binary(dest="_is_zero", op="==", left="_flag", right="_zero"))

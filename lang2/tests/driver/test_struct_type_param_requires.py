@@ -133,15 +133,15 @@ def test_struct_type_param_require_satisfied(tmp_path: Path) -> None:
 		"""
 module main
 
-trait Show { fn show(self: Self) returns Int }
+trait Show { fn show(self: Self) -> Int }
 
 implement Show for Int {
-	pub fn show(self: Int) returns Int { return 0; }
+	pub fn show(self: Int) -> Int { return 0; }
 }
 
 pub struct Box<T> require T is main.Show { value: T }
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	val b: Box<Int> = Box<type Int>(1);
 	return 0;
 }
@@ -156,15 +156,15 @@ def test_struct_type_param_require_unsatisfied(tmp_path: Path) -> None:
 		"""
 module main
 
-trait Show { fn show(self: Self) returns Int }
+trait Show { fn show(self: Self) -> Int }
 
 implement Show for Int {
-	pub fn show(self: Int) returns Int { return 0; }
+	pub fn show(self: Int) -> Int { return 0; }
 }
 
 pub struct Box<T> require T is main.Show { value: T }
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	val b: Box<String> = Box<type String>("s");
 	return 0;
 }
@@ -180,19 +180,19 @@ def test_impl_require_filters_candidates(tmp_path: Path) -> None:
 		"""
 module main
 
-trait Hashable { fn hash(self: Self) returns Int }
+trait Hashable { fn hash(self: Self) -> Int }
 
 implement Hashable for Int {
-	pub fn hash(self: Int) returns Int { return 0; }
+	pub fn hash(self: Int) -> Int { return 0; }
 }
 
 pub struct Box<T> { value: T }
 
 implement<T> Hashable for Box<T> require T is Hashable {
-	pub fn hash(self: Box<T>) returns Int { return 1; }
+	pub fn hash(self: Box<T>) -> Int { return 1; }
 }
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	val b: Box<String> = Box<type String>("s");
 	return Hashable::hash(b);
 }

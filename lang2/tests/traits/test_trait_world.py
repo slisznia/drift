@@ -10,10 +10,10 @@ from lang2.driftc.traits.world import build_trait_world
 def test_trait_world_collects_traits_and_impls_with_qualified_heads() -> None:
 	prog = p.parse_program(
 		"""
-trait Debuggable { fn fmt(self: Int) returns String }
+trait Debuggable { fn fmt(self: Int) -> String }
 
-implement Debuggable for a.Point { fn fmt(self: a.Point) returns String { return ""; } }
-implement Debuggable for b.Point { fn fmt(self: b.Point) returns String { return ""; } }
+implement Debuggable for a.Point { fn fmt(self: a.Point) -> String { return ""; } }
+implement Debuggable for b.Point { fn fmt(self: b.Point) -> String { return ""; } }
 """
 	)
 	world = build_trait_world(prog)
@@ -36,7 +36,7 @@ struct File require Self is Missing { }
 def test_trait_world_allows_unqualified_trait_in_struct_require() -> None:
 	prog = p.parse_program(
 		"""
-trait Debuggable { fn fmt(self: Int) returns String }
+trait Debuggable { fn fmt(self: Int) -> String }
 struct File require Self is Debuggable { }
 """
 	)
@@ -47,10 +47,10 @@ struct File require Self is Debuggable { }
 def test_trait_world_rejects_overlapping_impls_for_same_head() -> None:
 	prog = p.parse_program(
 		"""
-trait Debuggable { fn fmt(self: Int) returns String }
+trait Debuggable { fn fmt(self: Int) -> String }
 
-implement Debuggable for Box<T> { fn fmt(self: Box<T>) returns String { return ""; } }
-implement Debuggable for Box<U> { fn fmt(self: Box<U>) returns String { return ""; } }
+implement Debuggable for Box<T> { fn fmt(self: Box<T>) -> String { return ""; } }
+implement Debuggable for Box<U> { fn fmt(self: Box<U>) -> String { return ""; } }
 """
 	)
 	world = build_trait_world(prog)
@@ -60,9 +60,9 @@ implement Debuggable for Box<U> { fn fmt(self: Box<U>) returns String { return "
 def test_trait_world_rejects_self_in_function_require() -> None:
 	prog = p.parse_program(
 		"""
-trait Debuggable { fn fmt(self: Int) returns String }
+trait Debuggable { fn fmt(self: Int) -> String }
 
-fn use_file() returns Int require Self is Debuggable { return 0; }
+fn use_file() -> Int require Self is Debuggable { return 0; }
 """
 	)
 	world = build_trait_world(prog)
@@ -73,9 +73,9 @@ def test_trait_world_lowers_fn_require_subjects_to_typeparam_ids(tmp_path) -> No
 	src = tmp_path / "main.drift"
 	src.write_text(
 		"""
-trait Debuggable { fn fmt(self: Int) returns String }
+trait Debuggable { fn fmt(self: Int) -> String }
 
-fn use<T>(x: T) returns Int require T is Debuggable { return 0; }
+fn use<T>(x: T) -> Int require T is Debuggable { return 0; }
 """
 	)
 	module, table, _excs, diagnostics = parse_drift_to_hir(src)

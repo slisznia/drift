@@ -10,7 +10,7 @@ module a.b
 export { foo, Bar, c.d.* }
 import c.d as cd
 
-pub fn foo() returns Int { return 1; }
+pub fn foo() -> Int { return 1; }
 pub struct Bar { }
 """
 	prog = parse_program(source)

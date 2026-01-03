@@ -1,1 +1,1 @@
-fn b() returns Int { return 2; }
+fn b() -> Int { return 2; }

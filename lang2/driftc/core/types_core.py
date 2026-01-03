@@ -852,15 +852,12 @@ class TypeTable:
 
 	def ensure_function(
 		self,
-		name: str,
 		param_types: List[TypeId],
 		return_type: TypeId,
 		*,
 		can_throw: bool,
 	) -> TypeId:
 		"""Return a stable shared function TypeId, creating it once."""
-		if name != "fn":
-			raise ValueError("function type name must be 'fn'")
 		if not hasattr(self, "_function_cache"):
 			self._function_cache = {}  # type: ignore[attr-defined]
 		key = (bool(can_throw), tuple(param_types), return_type)
@@ -876,14 +873,13 @@ class TypeTable:
 
 	def new_function(
 		self,
-		name: str,
 		param_types: List[TypeId],
 		return_type: TypeId,
 		*,
 		can_throw: bool = True,
 	) -> TypeId:
-		"""Register a function type (name + params + return + throw mode)."""
-		return self.ensure_function(name, param_types, return_type, can_throw=can_throw)
+		"""Register a function type (params + return + throw mode)."""
+		return self.ensure_function(param_types, return_type, can_throw=can_throw)
 
 	def new_array(self, elem: TypeId) -> TypeId:
 		"""Register an Array<elem> type."""

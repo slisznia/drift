@@ -1,6 +1,6 @@
 exception MyError(msg: String)
 
-fn main() returns Int {
+fn main() -> Int {
   try {
     throw MyError("boom")
   } catch e {

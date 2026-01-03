@@ -38,13 +38,13 @@ struct DriftString drift_string_from_cstr(const char* cstr);
 // Allocate a DriftString from a byte slice (ptr,len); copies the data and appends a NUL.
 struct DriftString drift_string_from_utf8_bytes(const char* data, drift_size_t len);
 
-// Concatenate two strings; returns a new owned DriftString.
+// Concatenate two strings; -> a new owned DriftString.
 struct DriftString drift_string_concat(struct DriftString a, struct DriftString b);
 
 // Free the heap buffer of a DriftString; safe to call on zeroed structs.
 void drift_string_free(struct DriftString s);
 
-// Convert DriftString to a null-terminated C string for printing; returns owned char* the caller must free.
+// Convert DriftString to a null-terminated C string for printing; -> owned char* the caller must free.
 char* drift_string_to_cstr(struct DriftString s);
 ```
 

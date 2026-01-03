@@ -2,7 +2,7 @@ module main
 
 exception E()
 
-fn run() returns Int {
+fn run() -> Int {
     try {
         try {
             throw E();
@@ -15,7 +15,7 @@ fn run() returns Int {
     return 0;
 }
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
     try run() catch { return 0; }
     return 0;
 }

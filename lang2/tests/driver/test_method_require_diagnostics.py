@@ -131,16 +131,16 @@ def test_method_require_failure_reports_obligation(tmp_path: Path) -> None:
 		Path("m/lib.drift"): """
 module m
 
-pub trait Hashable { fn hash(self: Self) returns Int }
+pub trait Hashable { fn hash(self: Self) -> Int }
 
 implement Hashable for Int {
-	pub fn hash(self: Int) returns Int { return 0; }
+	pub fn hash(self: Int) -> Int { return 0; }
 }
 
 pub struct Box<T> { value: T }
 
 implement<T> Hashable for Box<T> require T is Hashable {
-	pub fn hash(self: Box<T>) returns Int { return 1; }
+	pub fn hash(self: Box<T>) -> Int { return 1; }
 }
 
 export { Hashable, Box }
@@ -151,7 +151,7 @@ module main
 import m
 use trait m.Hashable
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	val b: m.Box<String> = m.Box<type String>("s");
 	return b.hash();
 }

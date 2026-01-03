@@ -1,9 +1,9 @@
 # vim: set noexpandtab: -*- indent-tabs-mode: t -*-
 """
-Can-throw inference tests (surface `returns T`, internal FnResult ABI).
+Can-throw inference tests (surface `-> T`, internal FnResult ABI).
 
 lang2 does not expose `FnResult` as a surface type. A function can still be
-"can-throw" (it may throw exceptions) while declaring `returns T`. The compiler
+"can-throw" (it may throw exceptions) while declaring `-> T`. The compiler
 tracks this as an effect and lowers can-throw functions to an internal
 `FnResult<T, Error>` ABI.
 

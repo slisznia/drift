@@ -90,9 +90,9 @@ def _check_main(src: str, tmp_path: Path):
 def test_infer_underdetermined_return_only(tmp_path: Path) -> None:
 	result = _check_main(
 		"""
-fn make<T>() returns T { return 0; }
+fn make<T>() -> T { return 0; }
 
-fn main() returns Int {
+fn main() -> Int {
 	val x = make();
 	return 0;
 }
@@ -106,9 +106,9 @@ fn main() returns Int {
 def test_infer_conflicting_args(tmp_path: Path) -> None:
 	result = _check_main(
 		"""
-fn pair<T>(a: T, b: T) returns Int { return 0; }
+fn pair<T>(a: T, b: T) -> Int { return 0; }
 
-fn main() returns Int {
+fn main() -> Int {
 	return pair(1, "s");
 }
 """,
@@ -123,9 +123,9 @@ def test_infer_expected_return_succeeds(tmp_path: Path) -> None:
 		"""
 struct Box<T> { value: T }
 
-fn make<T>() returns Box<T> { return Box<type T>(0); }
+fn make<T>() -> Box<T> { return Box<type T>(0); }
 
-fn main() returns Int {
+fn main() -> Int {
 	val x: Box<Int> = make();
 	return 0;
 }
@@ -141,10 +141,10 @@ def test_infer_method_missing_param(tmp_path: Path) -> None:
 struct Box<T> { value: T }
 
 implement<T> Box<T> {
-	pub fn convert<U>(self: Box<T>) returns Box<U> { return self; }
+	pub fn convert<U>(self: Box<T>) -> Box<U> { return self; }
 }
 
-fn main() returns Int {
+fn main() -> Int {
 	val b: Box<Int> = Box<type Int>(1);
 	b.convert();
 	return 0;
@@ -160,7 +160,7 @@ def test_infer_ctor_field_conflict_notes(tmp_path: Path) -> None:
 		"""
 struct Pair<T> { a: T, b: T }
 
-fn main() returns Int {
+fn main() -> Int {
 	val p = Pair(a = 1, b = "s");
 	return 0;
 }

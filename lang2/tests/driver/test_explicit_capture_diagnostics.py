@@ -37,7 +37,7 @@ def test_explicit_capture_missing_root_reports_driver_diag(
 	source = """
 module m_main
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	val x = 1;
 	val y = 2;
 	return (| | captures(copy x) => { return y; })();
@@ -55,7 +55,7 @@ def test_explicit_capture_duplicate_root_reports_driver_diag(
 	source = """
 module m_main
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	val x = 1;
 	return (| | captures(x, x) => { return 0; })();
 }
@@ -72,7 +72,7 @@ def test_explicit_capture_param_collision_reports_driver_diag(
 	source = """
 module m_main
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	val x = 1;
 	return (|x: Int| captures(x) => { return x; })(1);
 }
@@ -89,7 +89,7 @@ def test_explicit_capture_shared_write_requires_mut_capture(
 	source = """
 module m_main
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	var x = 1;
 	return (| | captures(x) => { x += 1; return 0; })();
 }
@@ -106,7 +106,7 @@ def test_explicit_capture_borrow_escape_via_store_reports_driver_diag(
 	source = """
 module m_main
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	var x = 1;
 	val f = | | captures(&mut x) => { return 0; };
 	return 0;
@@ -124,12 +124,12 @@ def test_explicit_capture_borrow_escape_via_return_reports_driver_diag(
 	source = """
 module m_main
 
-fn make() returns Int {
+fn make() -> Int {
 	var x = 1;
 	return | | captures(&x) => { return 0; };
 }
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	return 0;
 }
 """
@@ -145,11 +145,11 @@ def test_explicit_capture_borrow_escape_via_call_reports_driver_diag(
 	source = """
 module m_main
 
-fn sink<T>(cb: T) returns Int {
+fn sink<T>(cb: T) -> Int {
 	return 0;
 }
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	var x = 1;
 	return sink(| | captures(&x) => { return 0; });
 }
@@ -166,7 +166,7 @@ def test_explicit_capture_value_escape_allowed(
 	source = """
 module m_main
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	val x = 1;
 	val f = | | captures(copy x) => { return x; };
 	return 0;
@@ -185,7 +185,7 @@ module m_main
 
 struct Box { value: Int }
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	val b = Box(value = 1);
 	val f = | | captures(copy b) => { return 0; };
 	return 0;

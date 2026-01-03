@@ -25,7 +25,7 @@ def test_prelude_default_enables_println(tmp_path: Path, capsys: pytest.CaptureF
 	source = """
 module m_main
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	println("ok");
 	return 0;
 }
@@ -41,7 +41,7 @@ def test_no_prelude_rejects_unqualified_println(tmp_path: Path, capsys: pytest.C
 	source = """
 module m_main
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	println("ok");
 	return 0;
 }
@@ -61,7 +61,7 @@ module m_main
 
 import lang.core as core
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	core.println("ok");
 	return 0;
 }

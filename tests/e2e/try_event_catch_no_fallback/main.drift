@@ -3,12 +3,12 @@ import std.console.out
 exception MyEventA(msg: String)
 exception MyEventB(msg: String)
 
-fn throw_b() returns Int {
+fn throw_b() -> Int {
   // Event code 2 (second exception) will not match the first catch arm.
   throw drift_error_new_dummy(2, "payload", "")
 }
 
-fn do_inner() returns Int {
+fn do_inner() -> Int {
   try {
     throw_b()
   } catch MyEventA(e) {
@@ -19,7 +19,7 @@ fn do_inner() returns Int {
   return 1
 }
 
-fn main() returns Int {
+fn main() -> Int {
   try {
     do_inner()
   } catch err {

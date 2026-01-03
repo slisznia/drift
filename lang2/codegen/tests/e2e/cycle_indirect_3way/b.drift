@@ -1,5 +1,5 @@
 module b
 import c as c
 export { bfn }
-pub fn bfn() returns Int { return c.cfn(); }
+pub fn bFn() -> Int { return c.cFn(); }
 

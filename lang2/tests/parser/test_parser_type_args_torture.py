@@ -60,7 +60,7 @@ def _stmt_exprs(stmt):
 
 def _parse_main(body: str):
 	src = f"""
-fn main() returns Int {{
+fn main() -> Int {{
 {body}
 }}
 """
@@ -92,7 +92,7 @@ def test_qualified_member_legacy_post_args_not_treated_as_type_args() -> None:
 		p.parse_program(
 			"""
 variant Optional<T> { Some(value: T), None }
-fn main() returns Int { return Optional::None<Int>(); }
+fn main() -> Int { return Optional::None<Int>(); }
 """
 		)
 
@@ -136,7 +136,7 @@ def test_qualified_member_generics_pre_and_post() -> None:
 	prog = p.parse_program(
 		"""
 variant Optional<T> { Some(value: T), None }
-fn main() returns Int { return Optional<Int>::None(); }
+fn main() -> Int { return Optional<Int>::None(); }
 """
 	)
 	stmt = prog.functions[0].body.statements[0]
@@ -150,7 +150,7 @@ fn main() returns Int { return Optional<Int>::None(); }
 	prog = p.parse_program(
 		"""
 variant Optional<T> { Some(value: T), None }
-fn main() returns Int { return Optional::None<type Int>(); }
+fn main() -> Int { return Optional::None<type Int>(); }
 """
 	)
 	stmt = prog.functions[0].body.statements[0]
@@ -163,7 +163,7 @@ def test_qualified_member_generics_nested_and_whitespace() -> None:
 	prog = p.parse_program(
 		"""
 variant Optional<T> { Some(value: T), None }
-fn main() returns Int { return Optional < Array<Array<String>> > :: None ( ); }
+fn main() -> Int { return Optional < Array<Array<String>> > :: None ( ); }
 """
 	)
 	stmt = prog.functions[0].body.statements[0]
@@ -175,7 +175,7 @@ fn main() returns Int { return Optional < Array<Array<String>> > :: None ( ); }
 	prog = p.parse_program(
 		"""
 variant Optional<T> { Some(value: T), None }
-	fn main() returns Int { return Optional :: None < type Array<Array<String> > > ( ); }
+	fn main() -> Int { return Optional :: None < type Array<Array<String> > > ( ); }
 """
 	)
 	stmt = prog.functions[0].body.statements[0]
@@ -196,7 +196,7 @@ variant Optional<T> { Some(value: T), None }
 def test_duplicate_type_args_rejected(expr: str) -> None:
 	src = f"""
 variant Optional<T> {{ Some(value: T), None }}
-fn main() returns Int {{ {expr} }}
+fn main() -> Int {{ {expr} }}
 """
 	with pytest.raises(QualifiedMemberParseError) as exc:
 		p.parse_program(src)
@@ -216,7 +216,7 @@ def test_type_marker_only_in_call_suffix() -> None:
 	assert not any(_calls_with_type_args(expr) for expr in exprs)
 
 	with pytest.raises(UnexpectedInput):
-		p.parse_program("fn main() returns Int { return foo(<type Int>); }")
+		p.parse_program("fn main() -> Int { return foo(<type Int>); }")
 
 	prog = _parse_main("return foo(bar < baz > qux);")
 	exprs = list(_stmt_exprs(prog.functions[0].body.statements[0]))
@@ -234,7 +234,7 @@ def test_type_marker_only_in_call_suffix() -> None:
 	],
 )
 def test_call_type_args_error_shapes(expr: str) -> None:
-	src = f"fn main() returns Int {{ {expr} }}"
+	src = f"fn main() -> Int {{ {expr} }}"
 	with pytest.raises(UnexpectedInput):
 		p.parse_program(src)
 
@@ -248,6 +248,6 @@ def test_call_type_args_error_shapes(expr: str) -> None:
 	],
 )
 def test_no_turbofish_anywhere(expr: str) -> None:
-	src = f"fn main() returns Int {{ {expr} }}"
+	src = f"fn main() -> Int {{ {expr} }}"
 	with pytest.raises(UnexpectedInput):
 		p.parse_program(src)

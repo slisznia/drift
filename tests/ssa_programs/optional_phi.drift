@@ -1,4 +1,4 @@
-fn choose(flag: Bool) returns Int {
+fn choose(flag: Bool) -> Int {
     var opt: Optional[Int] = drift_optional_int_none()
     if flag {
         opt = drift_optional_int_some(1)

@@ -44,6 +44,7 @@ class Located:
 
 @dataclass
 class TypeExpr:
+	# Function types are represented as name="fn" internally; surface spelling is `Fn(...) -> T`.
 	name: str
 	args: List["TypeExpr"] = field(default_factory=list)
 	fn_throws: bool = True

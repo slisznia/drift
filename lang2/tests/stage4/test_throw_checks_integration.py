@@ -106,7 +106,7 @@ def test_can_throw_try_catch_and_return_ok_shape():
 def test_can_throw_fnresult_forwarding_currently_rejected():
 	"""
 	Structural FnResult check still rejects forwarding/aliasing:
-	a can-throw function that returns a value not produced by ConstructResultOk/Err
+	a can-throw function that -> a value not produced by ConstructResultOk/Err
 	should fail for now (type-aware checks will relax this later).
 	"""
 	# MIR: entry -> return param "p" (no ConstructResultOk/Err defines it).
@@ -130,7 +130,7 @@ def test_can_throw_fnresult_forwarding_currently_rejected():
 
 def test_can_throw_without_throw_and_ok_return_passes():
 	"""
-	A can-throw function that never throws but returns a ConstructResultOk value
+	A can-throw function that never throws but -> a ConstructResultOk value
 	should clear all invariants.
 	"""
 	entry = M.BasicBlock(

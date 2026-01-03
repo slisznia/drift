@@ -19,11 +19,26 @@ def test_pretty_function_type_name():
 	table = TypeTable()
 	tc = TypeChecker(table)
 	int_ty = table.ensure_int()
-	fn_nothrow = table.ensure_function("fn", [int_ty], int_ty, can_throw=False)
-	fn_can_throw = table.ensure_function("fn", [int_ty], int_ty, can_throw=True)
+	fn_nothrow = table.ensure_function([int_ty], int_ty, can_throw=False)
+	fn_can_throw = table.ensure_function([int_ty], int_ty, can_throw=True)
 
-	assert tc._pretty_type_name(fn_nothrow, current_module="main") == "fn(Int) nothrow returns Int"
-	assert tc._pretty_type_name(fn_can_throw, current_module="main") == "fn(Int) returns Int"
+	assert tc._pretty_type_name(fn_nothrow, current_module="main") == "Fn(Int) nothrow -> Int"
+	assert tc._pretty_type_name(fn_can_throw, current_module="main") == "Fn(Int) -> Int"
+
+
+def test_function_type_identity_includes_throw_mode():
+	table = TypeTable()
+	int_ty = table.ensure_int()
+	fn_nothrow = table.ensure_function([int_ty], int_ty, can_throw=False)
+	fn_nothrow_2 = table.ensure_function([int_ty], int_ty, can_throw=False)
+	fn_can_throw = table.ensure_function([int_ty], int_ty, can_throw=True)
+	fn_can_throw_2 = table.ensure_function([int_ty], int_ty, can_throw=True)
+
+	assert fn_nothrow == fn_nothrow_2
+	assert fn_can_throw == fn_can_throw_2
+	assert fn_nothrow != fn_can_throw
+	assert table.get(fn_nothrow).fn_throws is False
+	assert table.get(fn_can_throw).fn_throws is True
 
 
 def test_call_resolution_respects_function_throw_mode():
@@ -31,8 +46,8 @@ def test_call_resolution_respects_function_throw_mode():
 	tc = TypeChecker(table)
 	int_ty = table.ensure_int()
 	bool_ty = table.ensure_bool()
-	fn_nothrow = table.ensure_function("fn", [int_ty], int_ty, can_throw=False)
-	fn_can_throw = table.ensure_function("fn", [int_ty], int_ty, can_throw=True)
+	fn_nothrow = table.ensure_function([int_ty], int_ty, can_throw=False)
+	fn_can_throw = table.ensure_function([int_ty], int_ty, can_throw=True)
 
 	registry = CallableRegistry()
 	takes_nothrow_id = FunctionId(module="main", name="takes", ordinal=0)
@@ -88,8 +103,8 @@ def test_call_resolution_respects_function_throw_mode_can_throw():
 	tc = TypeChecker(table)
 	int_ty = table.ensure_int()
 	bool_ty = table.ensure_bool()
-	fn_nothrow = table.ensure_function("fn", [int_ty], int_ty, can_throw=False)
-	fn_can_throw = table.ensure_function("fn", [int_ty], int_ty, can_throw=True)
+	fn_nothrow = table.ensure_function([int_ty], int_ty, can_throw=False)
+	fn_can_throw = table.ensure_function([int_ty], int_ty, can_throw=True)
 
 	registry = CallableRegistry()
 	takes_nothrow_id = FunctionId(module="main", name="takes", ordinal=0)

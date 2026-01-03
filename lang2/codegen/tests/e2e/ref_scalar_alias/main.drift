@@ -1,16 +1,16 @@
 module m
 
-fn bump(x: &mut Int) nothrow returns Void {
+fn bump(x: &mut Int) nothrow -> Void {
 	*x = *x + 1;
 }
 
-fn bump_if(cond: Bool, x: &mut Int) nothrow returns Void {
+fn bump_if(cond: Bool, x: &mut Int) nothrow -> Void {
 	if cond {
 		*x = *x + 1;
 	}
 }
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	var c: Int = 0;
 
 	// Unconditional bumps should both be visible through the same slot.

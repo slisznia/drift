@@ -58,7 +58,7 @@ def _run_ir_and_get_exit(ir: str) -> int:
 
 def test_e2e_scalar_main_returns_42():
 	"""
-	Drift_main returns Int 42; wrapper truncates to i32; lli exit code should be 42.
+	Drift_main -> Int 42; wrapper truncates to i32; lli exit code should be 42.
 	"""
 	entry = BasicBlock(
 		name="entry",
@@ -83,7 +83,7 @@ def test_e2e_scalar_main_returns_42():
 
 def test_e2e_fnresult_callee_ok_path():
 	"""
-	Can-throw callee returns Ok(1); drift_main calls it and returns the ok value.
+	Can-throw callee -> Ok(1); drift_main calls it and -> the ok value.
 	"""
 	# callee: FnResult.Ok(1)
 	callee_entry = BasicBlock(

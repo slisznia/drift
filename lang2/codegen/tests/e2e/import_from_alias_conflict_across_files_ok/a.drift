@@ -2,6 +2,6 @@ module main
 import lib as lib
 
 
-fn a() returns Int {
+fn a() -> Int {
 	return lib.add(1, 2);
 }

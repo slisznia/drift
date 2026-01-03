@@ -3,11 +3,11 @@ import std.console.out
 exception A()
 exception B()
 
-fn fire() returns Void {
+fn fire() -> Void {
   throw B()
 }
 
-fn main() returns Int {
+fn main() -> Int {
   try {
     fire()
   } catch A(e) {

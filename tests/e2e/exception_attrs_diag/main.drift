@@ -2,12 +2,12 @@ import std.console.out
 
 exception SqlErr(code: Int, msg: String)
 
-fn raise_sql(code: Int) returns Void {
+fn raise_sql(code: Int) -> Void {
     val code_val = code
     throw SqlErr(code = code_val, msg = "bad")
 }
 
-fn main() returns Int {
+fn main() -> Int {
   val forty_two: Int = 42
   try {
     raise_sql(forty_two)

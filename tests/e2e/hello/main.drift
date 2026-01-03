@@ -1,3 +1,3 @@
-fn main() returns Int {
+fn main() -> Int {
   return 0
 }

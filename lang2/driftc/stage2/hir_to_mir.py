@@ -669,8 +669,8 @@ class HIRToMIR:
 				params_s = ", ".join(_format_type_expr(a) for a in params)
 				ret_s = _format_type_expr(ret)
 				if can_throw:
-					return f"fn({params_s}) returns {ret_s}"
-				return f"fn({params_s}) nothrow returns {ret_s}"
+					return f"Fn({params_s}) -> {ret_s}"
+				return f"Fn({params_s}) nothrow -> {ret_s}"
 			base = name if isinstance(name, str) else "<type>"
 			if isinstance(module_id, str) and module_id:
 				base = f"{module_id}.{base}"
@@ -2037,7 +2037,7 @@ class HIRToMIR:
 
 		MIR requires every basic block to end with a terminator. For the entry
 		function body, we also want a production-safe invariant:
-		  - `returns Void` functions may omit an explicit `return;` and will get an
+		  - `-> Void` functions may omit an explicit `return;` and will get an
 		    implicit return.
 		  - non-Void functions must end in an explicit return (checker responsibility).
 		"""
@@ -2051,7 +2051,7 @@ class HIRToMIR:
 		if not can_throw:
 			self.b.set_terminator(M.Return(value=None))
 			return
-		# Can-throw `returns Void` lowers to FnResult<Void, Error>.
+		# Can-throw `-> Void` lowers to FnResult<Void, Error>.
 		res_val = self.b.new_temp()
 		self.b.emit(M.ConstructResultOk(dest=res_val, value=None))
 		self.b.set_terminator(M.Return(value=res_val))
@@ -2301,7 +2301,7 @@ class HIRToMIR:
 			self.b.set_terminator(M.Return(value=val))
 			return
 
-		# Can-throw function: surface `returns T` lowers to an internal
+		# Can-throw function: surface `-> T` lowers to an internal
 		# `FnResult<T, Error>` return. Wrap normal returns into Ok.
 		if fn_is_void:
 			if stmt.value is not None:
@@ -3165,7 +3165,6 @@ class HIRToMIR:
 				return info.sig.user_ret_type
 		if isinstance(expr, H.HFnPtrConst):
 			return self._type_table.ensure_function(
-				"fn",
 				list(expr.call_sig.param_types),
 				expr.call_sig.user_ret_type,
 				can_throw=bool(expr.call_sig.can_throw),

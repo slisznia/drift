@@ -1,9 +1,9 @@
 exception DiskError(code: String)
 
-fn fail() returns Void {
+fn fail() -> Void {
 	throw DiskError(code = "ENOENT")
 }
 
-fn main() returns Void {
+fn main() -> Void {
 	fail()
 }

@@ -5,7 +5,7 @@ variant Optional<T> {
 	None,
 }
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	val x: Optional<Int> = None();
 	// Non-exhaustive match without `default` is rejected in MVP.
 	val y = match x{

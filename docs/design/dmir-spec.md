@@ -135,7 +135,7 @@ Backends are free to lower this value-based semantic model to error edges intern
   - `struct DriftFrame { const char* module; const char* file; uint32_t line; const char* func; };` — optional backtrace frames captured at error-construction / propagation sites (module IDs flow from the module declaration; file/line/func stay for debugging).
   - `struct DriftError { const char* event; const char* domain; struct DriftErrorAttr* attrs; size_t attr_count; struct DriftFrame* frames; size_t frame_count; void* ctx; void (*free_fn)(struct DriftError*); };`
 - `domain` is an optional namespace for the event (e.g., `net`, `net.ip6`, `io.fs`); if absent, it may be `NULL`. Exception definitions can supply a default domain; throw sites may override via a `domain` kwarg; builtin/runtime errors use a fixed domain (e.g., `runtime`).
-- Ownership: constructors allocate `DriftError` on the heap; ownership passes via `Result` values. Handlers either propagate the pointer by returning `Err(err)` or free exactly once via `free_fn(err)` (or a standard `error_free(err)` entry point). Uncaught errors are freed at the top-level entry after reporting.
+- Ownership: constructors allocate `DriftError` on the heap; ownership passes via `Result` values. Handlers either propagate the pointer by returning `Err(err)` or free exactly once via `free_Fn(err)` (or a standard `error_free(err)` entry point). Uncaught errors are freed at the top-level entry after reporting.
 - Canonicalization: attrs may be stored in deterministic order; strings are null-terminated; the struct alignment/layout is fixed for signing/backcompat. No external C libraries are required; the header is self-contained and C-ABI safe. Logging/serialization is implementation-defined and not part of the ABI.
 - `Missing` is a lookup sentinel in the language; attrs/locals stored in `DriftError` should be `Null` or concrete values, not `Missing`.
 - Helper APIs (C ABI): `error_new(event, domain, attrs, attr_count, frames, frame_count) -> Error*`, `error_to_cstr(Error*) -> const char*` (preformatted diagnostic stored in the error), `error_free(Error*)`. The `error_to_cstr` result is owned by the error object, valid until `error_free`, and must not be freed by callers (thread-safe to read; no static buffer).
@@ -168,7 +168,7 @@ val fallback = try parse(input) catch { default_value }
 ```
 DMIR:
 ```
-let _r1 = parse(input)                 // returns Result<T, Error>
+let _r1 = parse(input)                 // -> Result<T, Error>
 let fallback = if result_is_ok(_r1) {  // conceptually: inspect Result
   result_unwrap_ok(_r1)
 } else {
@@ -241,7 +241,7 @@ package manifest metadata.
 ### Example 1: ternary call
 Surface:
 ```drift
-fn pick(cond: Bool) returns Int64 {
+fn pick(cond: Bool) -> Int64 {
     return cond ? a() : b()
 }
 ```
@@ -291,14 +291,14 @@ Surface:
 exception Invalid(kind: String)
 struct Point { x: Int64, y: Int64 }
 
-fn make(cond: Bool) returns Point {
+fn make(cond: Bool) -> Point {
     val p = try build(cond) catch { Point(x = 0, y = 0) }
     return p
 }
 ```
 DMIR:
 ```
-let r = build(cond)            // returns Result<Point, Error>
+let r = build(cond)            // -> Result<Point, Error>
 let p = if result_is_ok(r) {
   result_unwrap_ok(r)
 } else {

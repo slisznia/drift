@@ -16,7 +16,7 @@ module foo.bar
 
 exception EvtA(code: Int)
 
-fn main() returns Int { return 0; }
+fn main() -> Int { return 0; }
 """
 	)
 	_module, _type_table, exc_catalog, diagnostics = parse_drift_to_hir(src)
@@ -32,7 +32,7 @@ def test_duplicate_exception_reports_diagnostic(tmp_path: Path) -> None:
 exception Boom(msg: String)
 exception Boom(code: Int)
 
-fn main() returns Int { return 0; }
+fn main() -> Int { return 0; }
 """
 	)
 	_module, _type_table, _exc_catalog, diagnostics = parse_drift_to_hir(src)
@@ -54,7 +54,7 @@ def test_exception_code_collision_reports_diagnostic(tmp_path: Path, monkeypatch
 exception Boom(msg: String)
 exception Zoom(code: Int)
 
-fn main() returns Int { return 0; }
+fn main() -> Int { return 0; }
 """
 	)
 	_module, _type_table, exc_catalog, diagnostics = parse_drift_to_hir(src)

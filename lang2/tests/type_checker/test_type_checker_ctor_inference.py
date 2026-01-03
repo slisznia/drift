@@ -34,7 +34,7 @@ def _check_main(src: str, tmp_path: Path) -> list:
 def test_ctor_infers_from_expected_type_in_let(tmp_path: Path) -> None:
 	diags = _check_main(
 		"""
-fn main() returns Int {
+fn main() -> Int {
 	val x: Optional<Int> = Optional::None();
 	return 0;
 }
@@ -47,7 +47,7 @@ fn main() returns Int {
 def test_ctor_infers_from_expected_return_type(tmp_path: Path) -> None:
 	diags = _check_main(
 		"""
-fn main() returns Optional<Int> {
+fn main() -> Optional<Int> {
 	return Optional::None();
 }
 """,
@@ -59,7 +59,7 @@ fn main() returns Optional<Int> {
 def test_ctor_missing_expected_type_is_error(tmp_path: Path) -> None:
 	diags = _check_main(
 		"""
-fn main() returns Int {
+fn main() -> Int {
 	val x = Optional::None();
 	return 0;
 }

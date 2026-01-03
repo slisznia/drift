@@ -283,10 +283,10 @@ def test_method_resolution_failure_reports_diagnostic(tmp_path):
 	src.write_text(
 		"""
 implement Point {
-    fn m(self: &Point) returns Int { return 1; }
+    fn m(self: &Point) -> Int { return 1; }
 }
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
     val x = 1;
     return x.m(); // no such method on Int;
 }
@@ -317,10 +317,10 @@ import m_box
 
 export { Show }
 
-pub trait Show { fn show(self: m_box.Box) returns Int }
+pub trait Show { fn show(self: m_box.Box) -> Int }
 
 implement Show for m_box.Box {
-	pub fn show(self: m_box.Box) returns Int { return self.value; }
+	pub fn show(self: m_box.Box) -> Int { return self.value; }
 }
 """,
 	)
@@ -334,7 +334,7 @@ import m_trait as t
 
 use trait t.Show
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	val b: m_box.Box = m_box.Box(value = 1);
 	try {
 		return b.show();
@@ -370,10 +370,10 @@ import m_box
 
 export { Show }
 
-pub trait Show { fn show(self: m_box.Box) returns Int }
+pub trait Show { fn show(self: m_box.Box) -> Int }
 
 implement Show for m_box.Box {
-	pub fn show(self: m_box.Box) returns Int { return self.value + 1; }
+	pub fn show(self: m_box.Box) -> Int { return self.value + 1; }
 }
 """,
 	)
@@ -385,7 +385,7 @@ module m_main
 import m_box
 import m_trait
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	val b: m_box.Box = m_box.Box(value = 1);
 	return try m_trait.Show::show(b) catch { 0 };
 }
@@ -405,11 +405,11 @@ module main
 pub struct Box { value: Int }
 
 implement Box {
-	pub fn f(self: &Box) returns Int { return 1; }
-	pub fn f(self: &mut Box) returns Int { return 2; }
+	pub fn f(self: &Box) -> Int { return 1; }
+	pub fn f(self: &mut Box) -> Int { return 2; }
 }
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	var b: Box = Box(value = 1);
 	return b.f();
 }
@@ -431,11 +431,11 @@ module main
 pub struct Box { value: Int }
 
 implement Box {
-	pub fn g(self: &mut Box) returns Int { return 1; }
-	pub fn g(self: Box) returns Int { return 2; }
+	pub fn g(self: &mut Box) -> Int { return 1; }
+	pub fn g(self: Box) -> Int { return 2; }
 }
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	var b: Box = Box(value = 1);
 	return b.g();
 }
@@ -456,14 +456,14 @@ module main
 
 pub struct Box { value: Int }
 
-pub fn make() returns Box { return Box(value = 1); }
+pub fn make() -> Box { return Box(value = 1); }
 
 implement Box {
-	pub fn h(self: &Box) returns Int { return 1; }
-	pub fn h(self: Box) returns Int { return 2; }
+	pub fn h(self: &Box) -> Int { return 1; }
+	pub fn h(self: Box) -> Int { return 2; }
 }
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	return make().h();
 }
 """.lstrip(),
@@ -484,18 +484,18 @@ module main
 pub struct Box { value: Int }
 pub struct Item { value: Int }
 
-pub trait Debuggable { fn debug(self: &Self) returns String; }
-pub trait Printable require Self is Debuggable { fn show(self: &Self) returns String; }
+pub trait Debuggable { fn debug(self: &Self) -> String; }
+pub trait Printable require Self is Debuggable { fn show(self: &Self) -> String; }
 
-implement Debuggable for Item { fn debug(self: &Item) returns String { return "d"; } }
-implement Printable for Item { fn show(self: &Item) returns String { return "p"; } }
+implement Debuggable for Item { fn debug(self: &Item) -> String { return "d"; } }
+implement Printable for Item { fn show(self: &Item) -> String { return "p"; } }
 
 implement Box {
-	pub fn f<T>(self: Box, x: T) returns Int require T is Debuggable { return 1; }
-	pub fn f<T>(self: Box, x: T) returns Int require T is Printable { return 2; }
+	pub fn f<T>(self: Box, x: T) -> Int require T is Debuggable { return 1; }
+	pub fn f<T>(self: Box, x: T) -> Int require T is Printable { return 2; }
 }
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	val b: Box = Box(value = 1);
 	val it: Item = Item(value = 1);
 	return b.f(it);
@@ -523,18 +523,18 @@ module main
 pub struct Box { value: Int }
 pub struct Item { value: Int }
 
-pub trait A { fn a(self: &Self) returns Int; }
-pub trait B { fn b(self: &Self) returns Int; }
+pub trait A { fn a(self: &Self) -> Int; }
+pub trait B { fn b(self: &Self) -> Int; }
 
-implement A for Item { fn a(self: &Item) returns Int { return 1; } }
-implement B for Item { fn b(self: &Item) returns Int { return 2; } }
+implement A for Item { fn a(self: &Item) -> Int { return 1; } }
+implement B for Item { fn b(self: &Item) -> Int { return 2; } }
 
 implement Box {
-	pub fn f<T>(self: Box, x: T) returns Int require T is A { return 1; }
-	pub fn f<T>(self: Box, x: T) returns Int require T is B { return 2; }
+	pub fn f<T>(self: Box, x: T) -> Int require T is A { return 1; }
+	pub fn f<T>(self: Box, x: T) -> Int require T is B { return 2; }
 }
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	val b: Box = Box(value = 1);
 	val it: Item = Item(value = 1);
 	return b.f(it);
@@ -555,12 +555,12 @@ export { Box, Item, Debuggable, Printable, Show }
 pub struct Box<T> { value: T }
 pub struct Item { value: Int }
 
-pub trait Debuggable { fn debug(self: &Self) returns String; }
-pub trait Printable require Self is Debuggable { fn show(self: &Self) returns String; }
-pub trait Show { fn show(self: &Self) returns Int; }
+pub trait Debuggable { fn debug(self: &Self) -> String; }
+pub trait Printable require Self is Debuggable { fn show(self: &Self) -> String; }
+pub trait Show { fn show(self: &Self) -> Int; }
 
-implement Debuggable for Item { fn debug(self: &Item) returns String { return "d"; } }
-implement Printable for Item { fn show(self: &Item) returns String { return "p"; } }
+implement Debuggable for Item { fn debug(self: &Item) -> String { return "d"; } }
+implement Printable for Item { fn show(self: &Item) -> String { return "p"; } }
 """,
 	)
 	_write_file(
@@ -571,7 +571,7 @@ module m_impl_a
 import m_lib
 
 implement<T> m_lib.Show for m_lib.Box<T> require T is m_lib.Debuggable {
-	pub fn show(self: &m_lib.Box<T>) returns Int { return 1; }
+	pub fn show(self: &m_lib.Box<T>) -> Int { return 1; }
 }
 """,
 	)
@@ -583,7 +583,7 @@ module m_impl_b
 import m_lib
 
 implement<T> m_lib.Show for m_lib.Box<T> require T is m_lib.Printable {
-	pub fn show(self: &m_lib.Box<T>) returns Int { return 2; }
+	pub fn show(self: &m_lib.Box<T>) -> Int { return 2; }
 }
 """,
 	)
@@ -598,7 +598,7 @@ import m_impl_b
 
 use trait m_lib.Show
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	val it: m_lib.Item = m_lib.Item(value = 1);
 	val b: m_lib.Box<m_lib.Item> = m_lib.Box(value = it);
 	return b.show();

@@ -11,7 +11,7 @@ def test_stage1_parse_function_type_literals(tmp_path: Path) -> None:
 	src = tmp_path / "main.drift"
 	src.write_text(
 		"""
-fn takes(f: fn(Int) returns Int, g: fn(Int) nothrow returns Int) returns Void {
+fn takes(f: Fn(Int) -> Int, g: Fn(Int) nothrow -> Int) -> Void {
 	return;
 }
 """

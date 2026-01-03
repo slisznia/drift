@@ -2,11 +2,11 @@ module m
 
 exception Boom()
 
-fn foo() returns Int {
+fn foo() -> Int {
 	throw Boom();
 }
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	try foo() catch {
 		print("caught");
 	}

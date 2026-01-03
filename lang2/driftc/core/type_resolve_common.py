@@ -100,7 +100,7 @@ def resolve_opaque_type(
 			]
 			ret_id = resolve_opaque_type(args[-1], table, module_id=origin_mod, type_params=type_params)
 			can_throw = _raw_can_throw(raw)
-			return table.ensure_function("fn", param_ids, ret_id, can_throw=can_throw)
+			return table.ensure_function(param_ids, ret_id, can_throw=can_throw)
 		if name == "Array":
 			elem = resolve_opaque_type(args[0] if args else None, table, module_id=origin_mod, type_params=type_params)
 			return table.new_array(elem)

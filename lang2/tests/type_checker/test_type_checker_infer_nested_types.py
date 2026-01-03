@@ -57,9 +57,9 @@ def test_infer_type_args_from_nested_struct_arg(tmp_path: Path) -> None:
 		"""
 struct Box<T> { value: T }
 
-fn id<T>(x: Box<T>) returns T { return x.value; }
+fn id<T>(x: Box<T>) -> T { return x.value; }
 
-fn main() returns Int {
+fn main() -> Int {
 	val b: Box<Int> = Box<type Int>(1);
 	return id(b);
 }
@@ -74,9 +74,9 @@ def test_infer_type_args_from_double_nested_struct(tmp_path: Path) -> None:
 		"""
 struct Box<T> { value: T }
 
-fn inner<T>(x: Box<Box<T>>) returns T { return x.value.value; }
+fn inner<T>(x: Box<Box<T>>) -> T { return x.value.value; }
 
-fn main() returns Int {
+fn main() -> Int {
 	val inner_box: Box<Int> = Box<type Int>(1);
 	val outer_box: Box<Box<Int>> = Box<type Box<Int>>(inner_box);
 	return inner(outer_box);

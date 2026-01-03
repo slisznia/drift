@@ -1,10 +1,10 @@
 exception MyError(a: String)
 
-fn make_error() returns Void {
+fn make_error() -> Void {
   throw MyError(a = "AA")
 }
 
-fn main() returns Int {
+fn main() -> Int {
   try {
     make_error()
   } catch e {

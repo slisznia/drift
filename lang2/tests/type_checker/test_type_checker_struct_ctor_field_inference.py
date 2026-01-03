@@ -49,7 +49,7 @@ def test_struct_ctor_infers_from_fields(tmp_path: Path) -> None:
 		"""
 struct Box<T> { value: T }
 
-fn main() returns Int {
+fn main() -> Int {
 	val b = Box(1);
 	return b.value;
 }
@@ -71,7 +71,7 @@ def test_struct_ctor_field_conflict_is_error(tmp_path: Path) -> None:
 		"""
 struct Pair<T> { a: T, b: T }
 
-fn main() returns Int {
+fn main() -> Int {
 	val p = Pair(1, "s");
 	return 0;
 }

@@ -1,8 +1,8 @@
 module main
 import a as a
 
-fn main() nothrow returns Int{
-	val fp: fn(Int) returns Int = a.id;
+fn main() nothrow -> Int{
+	val fp: Fn(Int) -> Int = a.id;
 	val y: Int = try fp(1) catch { 0 };
 	return y;
 }

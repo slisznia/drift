@@ -13,7 +13,7 @@ from lang2.driftc.core.types_env_impl import SimpleTypeEnv
 
 def _build_simple_mir_fn(name: str, ret_value: str) -> MirFunc:
 	"""
-	Build a single-block MIR function that returns `ret_value` produced
+	Build a single-block MIR function that -> `ret_value` produced
 	by ConstructResultOk. Used to exercise the type-aware throw check.
 	"""
 	entry = BasicBlock(

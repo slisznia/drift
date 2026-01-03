@@ -119,14 +119,14 @@ def test_impl_target_concrete_args_match_correct_impl(tmp_path: Path) -> None:
 struct Box<T> { value: T }
 
 implement Box<Int> {
-	fn tag(self: Box<Int>) returns String { return "int"; }
+	fn tag(self: Box<Int>) -> String { return "int"; }
 }
 
 implement Box<String> {
-	fn tag(self: Box<String>) returns String { return "str"; }
+	fn tag(self: Box<String>) -> String { return "str"; }
 }
 
-fn main() returns String {
+fn main() -> String {
 	val b: Box<Int> = Box<type Int>(1);
 	val c: Box<String> = Box<type String>("s");
 	val x = b.tag();
@@ -156,10 +156,10 @@ def test_impl_missing_for_concrete_args_reports_error(tmp_path: Path) -> None:
 struct Box<T> { value: T }
 
 implement Box<Int> {
-	fn tag(self: Box<Int>) returns String { return "int"; }
+	fn tag(self: Box<Int>) -> String { return "int"; }
 }
 
-fn main() returns String {
+fn main() -> String {
 	val b: Box<Bool> = Box<type Bool>(false);
 	return b.tag();
 }
@@ -175,14 +175,14 @@ def test_impl_ambiguity_is_error(tmp_path: Path) -> None:
 struct Box<T> { value: T }
 
 implement<T> Box<T> {
-	fn tag(self: Box<T>) returns String { return "gen"; }
+	fn tag(self: Box<T>) -> String { return "gen"; }
 }
 
 implement Box<Int> {
-	fn tag(self: Box<Int>) returns String { return "int"; }
+	fn tag(self: Box<Int>) -> String { return "int"; }
 }
 
-fn main() returns String {
+fn main() -> String {
 	val b: Box<Int> = Box<type Int>(1);
 	return b.tag();
 }
@@ -198,14 +198,14 @@ def test_impls_without_method_name_do_not_ambiguous(tmp_path: Path) -> None:
 struct Box<T> { value: T }
 
 implement Box<Int> {
-	fn a(self: Box<Int>) returns Int { return self.value; }
+	fn a(self: Box<Int>) -> Int { return self.value; }
 }
 
 implement Box<Int> {
-	fn b(self: Box<Int>) returns Int { return self.value; }
+	fn b(self: Box<Int>) -> Int { return self.value; }
 }
 
-fn main() returns Int {
+fn main() -> Int {
 	val b: Box<Int> = Box<type Int>(1);
 	return b.a();
 }
@@ -221,10 +221,10 @@ def test_impl_and_method_generics_layered(tmp_path: Path) -> None:
 struct Box<T> { value: T }
 
 implement<T> Box<T> {
-	fn wrap<U>(self: Box<T>, u: U) returns Box<T> { return self; }
+	fn wrap<U>(self: Box<T>, u: U) -> Box<T> { return self; }
 }
 
-fn main() returns Int {
+fn main() -> Int {
 	val b: Box<Int> = Box<type Int>(1);
 	val r = b.wrap("s");
 	return r.value;
@@ -248,10 +248,10 @@ def test_impl_nested_pattern_matches_receiver(tmp_path: Path) -> None:
 struct Box<T> { value: T }
 
 implement<T> Box<Array<T>> {
-	fn inner(self: Box<Array<T>>) returns T { return self.value[0]; }
+	fn inner(self: Box<Array<T>>) -> T { return self.value[0]; }
 }
 
-fn main() returns Int {
+fn main() -> Int {
 	val b: Box<Array<Int>> = Box<type Array<Int>>([1, 2]);
 	return b.inner();
 }
@@ -271,10 +271,10 @@ def test_impl_nested_pattern_no_match(tmp_path: Path) -> None:
 struct Box<T> { value: T }
 
 implement<T> Box<Array<T>> {
-	fn inner(self: Box<Array<T>>) returns T { return self.value[0]; }
+	fn inner(self: Box<Array<T>>) -> T { return self.value[0]; }
 }
 
-fn main() returns Int {
+fn main() -> Int {
 	val b: Box<Int> = Box<type Int>(1);
 	return b.inner();
 }
@@ -290,14 +290,14 @@ def test_impl_nested_pattern_ambiguity(tmp_path: Path) -> None:
 struct Box<T> { value: T }
 
 implement<T> Box<Array<T>> {
-	fn inner(self: Box<Array<T>>) returns T { return self.value[0]; }
+	fn inner(self: Box<Array<T>>) -> T { return self.value[0]; }
 }
 
 implement Box<Array<Int>> {
-	fn inner(self: Box<Array<Int>>) returns Int { return self.value[0]; }
+	fn inner(self: Box<Array<Int>>) -> Int { return self.value[0]; }
 }
 
-fn main() returns Int {
+fn main() -> Int {
 	val b: Box<Array<Int>> = Box<type Array<Int>>([1, 2]);
 	return b.inner();
 }

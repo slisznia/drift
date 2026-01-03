@@ -10,7 +10,7 @@ from lang2.driftc.parser.ast import Binary, Call, LetStmt, ReturnStmt, TypeApp, 
 def test_parse_generic_function_def() -> None:
 	prog = p.parse_program(
 		"""
-fn id<T, U>(value: T, other: U) returns T {
+fn id<T, U>(value: T, other: U) -> T {
 	return value;
 }
 """
@@ -23,8 +23,8 @@ fn id<T, U>(value: T, other: U) returns T {
 def test_parse_call_with_type_args() -> None:
 	prog = p.parse_program(
 		"""
-fn id<T>(value: T) returns T { return value; }
-fn main() returns Int {
+fn id<T>(value: T) -> T { return value; }
+fn main() -> Int {
 	return id<type Int>(1);
 }
 """
@@ -39,8 +39,8 @@ fn main() returns Int {
 def test_parse_call_type_args_requires_marker() -> None:
 	prog = p.parse_program(
 		"""
-fn id<T>(value: T) returns T { return value; }
-fn main() returns Int {
+fn id<T>(value: T) -> T { return value; }
+fn main() -> Int {
 	return id<Int>(1);
 }
 """
@@ -53,8 +53,8 @@ fn main() returns Int {
 def test_parse_type_app_reference() -> None:
 	prog = p.parse_program(
 		"""
-fn id<T>(value: T) returns T { return value; }
-fn main() returns Int {
+fn id<T>(value: T) -> T { return value; }
+fn main() -> Int {
 	val f = id<type Int>;
 	return f(1);
 }
@@ -72,8 +72,8 @@ def test_parse_type_app_duplicate_rejected() -> None:
 	with pytest.raises(p.QualifiedMemberParseError) as excinfo:
 		p.parse_program(
 			"""
-fn id<T>(value: T) returns T { return value; }
-fn main() returns Int {
+fn id<T>(value: T) -> T { return value; }
+fn main() -> Int {
 	return id<type Int><type String>(1);
 }
 """
@@ -89,7 +89,7 @@ def test_parse_trait_method_type_params() -> None:
 	prog = p.parse_program(
 		"""
 trait Show {
-	fn show<T>(self: &Self, value: T) returns Int;
+	fn show<T>(self: &Self, value: T) -> Int;
 }
 """
 	)

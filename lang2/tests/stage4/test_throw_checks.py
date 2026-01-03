@@ -170,7 +170,7 @@ def test_return_shape_enforced_for_can_throw():
 
 
 def test_fnresult_return_shape_enforced_for_can_throw():
-	"""FnResult invariant should reject returns not produced by ConstructResultOk/Err."""
+	"""FnResult invariant should reject -> not produced by ConstructResultOk/Err."""
 	fn_id = FunctionId(module="main", name="k", ordinal=0)
 	summaries = {
 		fn_id: ThrowSummary(

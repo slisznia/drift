@@ -1,4 +1,4 @@
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
     val s0 = "a\"b\\c";
     return 0;
 }

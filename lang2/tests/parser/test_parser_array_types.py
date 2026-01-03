@@ -15,11 +15,11 @@ def test_parse_array_types_in_signatures(tmp_path: Path):
 	src = tmp_path / "main.drift"
 	src.write_text(
 		"""
-fn takes(xs: Array<Int>) returns Int {
+fn takes(xs: Array<Int>) -> Int {
     return xs[0];
 }
 
-	fn returns_array() returns Array<Int> {
+	fn returns_array() -> Array<Int> {
     return [1, 2, 3];
 }
 """

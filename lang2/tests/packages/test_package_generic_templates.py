@@ -20,7 +20,7 @@ module main
 
 import lib
 
-fn main() nothrow returns Int {
+fn main() nothrow -> Int {
 	return 0;
 }
 """.lstrip(),
@@ -32,7 +32,7 @@ module lib
 
 export { id }
 
-pub fn id<T>(x: T) nothrow returns T {
+pub fn id<T>(x: T) nothrow -> T {
 	return x;
 }
 """.lstrip(),
@@ -44,7 +44,7 @@ module lib
 
 export { need }
 
-pub fn need<T>(x: T) nothrow returns Int require T is Copy {
+pub fn need<T>(x: T) nothrow -> Int require T is Copy {
 	return 1;
 }
 """.lstrip(),
@@ -57,17 +57,17 @@ module lib
 struct Box<T> { value: T }
 
 implement<T> Box<T> {
-	pub fn get<U>(self: &Box, value: U) returns U {
+	pub fn get<U>(self: &Box, value: U) -> U {
 		return value;
 	}
 }
 
 pub trait Show {
-	fn show<U>(self: &Self, value: U) returns Int;
+	fn show<U>(self: &Self, value: U) -> Int;
 }
 
 implement<T> Show for Box<T> {
-	pub fn show<U>(self: &Box, value: U) returns Int {
+	pub fn show<U>(self: &Box, value: U) -> Int {
 		return 1;
 	}
 }

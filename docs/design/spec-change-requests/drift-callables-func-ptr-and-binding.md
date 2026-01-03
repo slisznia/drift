@@ -11,7 +11,7 @@ This document captures the decisions around **function values**, **static vs dyn
 * Provide **ergonomic callbacks** (functions, methods, bound methods, partial application).
 * Preserve the **two worlds rule**:
 
-  * `fn(...) [nothrow] returns ...` = **function pointers** (no captures, always safe to retain).
+  * `Fn(...) [nothrow] -> ...` = **function pointers** (no captures, always safe to retain).
   * `Callable` / `CallableDyn` = **may capture** (subject to retaining/non-retaining analysis).
 * Keep **ABI correctness** for can-throw calls (FnResult-style ABI).
 * Avoid dual truths: the compiler must keep a **single authoritative source** for:
@@ -30,7 +30,7 @@ This document captures the decisions around **function values**, **static vs dyn
 
 ## 2. Core value kinds
 
-### 2.1 Function pointers: `fn(P...) [nothrow] returns R`
+### 2.1 Function pointers: `Fn(P...) [nothrow] -> R`
 
 A function pointer is a **thin pointer** to code, with a fully known signature.
 
@@ -48,7 +48,7 @@ Throw-mode:
   * NOTHROW: returns `R`
   * CAN_THROW: returns `FnResult<R, Error>` (canonical `Error` TypeId)
 
-### 2.2 Static callables: `Callable<fn(P...) [nothrow] returns R>`
+### 2.2 Static callables: `Callable<Fn(P...) [nothrow] -> R>`
 
 A static callable is a **concrete type** (usually a struct) that implements a trait/interface for a specific signature.
 
@@ -57,7 +57,7 @@ Properties:
 * May capture values (receiver, bound args, remap tables).
 * Calls are statically dispatched when monomorphized; can inline.
 
-### 2.3 Dynamic callables: `CallableDyn<fn(P...) [nothrow] returns R>`
+### 2.3 Dynamic callables: `CallableDyn<Fn(P...) [nothrow] -> R>`
 
 A dynamic callable is a **type-erased callable** used for:
 
@@ -83,8 +83,8 @@ Unbound method references do not capture a receiver; they are compatible with `f
 
 Example conceptual shape:
 
-* method `S.inc(self: &S, x: Int) nothrow returns Int`
-* unbound reference type: `fn(&S, Int) nothrow returns Int`
+* method `S.inc(self: &S, x: Int) nothrow -> Int`
+* unbound reference type: `Fn(&S, Int) nothrow -> Int`
 
 Ergonomics:
 
@@ -109,7 +109,7 @@ This keeps the two-worlds rule clean:
 Decision:
 
 * `bind` is a **standard library** feature, not compiler magic.
-* It returns a concrete type implementing `Callable<fn(P...) [nothrow] returns R>`.
+* It returns a concrete type implementing `Callable<Fn(P...) [nothrow] -> R>`.
 
 Basic form:
 
@@ -208,7 +208,7 @@ Decision:
 
 Thunk shape (conceptual):
 
-* `thunk(args...) returns FnResult<R, Error> { return Ok(target(args...)) }`
+* `thunk(args...) -> FnResult<R, Error> { return Ok(target(args...)) }`
 
 Implementation hint:
 
@@ -233,7 +233,7 @@ Implementation hint:
    * Define `Callable<Sig>` trait + `CallableDyn<Sig>` representation.
 2. **Unbound method references**
 
-   * Resolve `S.method` as a function value of type `fn(&S, ...) returns ...`.
+   * Resolve `S.method` as a function value of type `Fn(&S, ...) -> ...`.
 3. **`bind` library**
 
    * Implement bind objects as concrete structs implementing `Callable<Sig>`.
@@ -259,7 +259,7 @@ Implementation hint:
 
 ## 8. Summary of pinned choices
 
-* `bind` returns **static**: `Callable<fn(P...) [nothrow] returns R>`
+* `bind` returns **static**: `Callable<Fn(P...) [nothrow] -> R>`
 * Dynamic callable creation is explicit:
 
   * `std.callable<Sig>(c)` → owned (may box)

@@ -13,11 +13,11 @@ def _get_return_expr(prog, fn_index: int):
 def test_parse_qualified_member_type_args_pre_and_post() -> None:
 	prog = p.parse_program(
 		"""
-fn pre() returns Optional[Int] {
+fn pre() -> Optional[Int] {
 	return Optional < Int > :: None ( );
 }
 
-fn post() returns Optional[Int] {
+fn post() -> Optional[Int] {
 	return Optional :: None < type Int > ( );
 }
 """
@@ -44,11 +44,11 @@ fn post() returns Optional[Int] {
 def test_parse_qualified_member_type_args_no_whitespace() -> None:
 	prog = p.parse_program(
 		"""
-fn pre() returns Optional[Int] {
+fn pre() -> Optional[Int] {
 	return Optional<Int>::None();
 }
 
-fn post() returns Optional[Int] {
+fn post() -> Optional[Int] {
 	return Optional::None<type Int>();
 }
 """
@@ -75,7 +75,7 @@ fn post() returns Optional[Int] {
 def test_parse_qualified_member_type_app_reference() -> None:
 	prog = p.parse_program(
 		"""
-fn main() returns Int {
+fn main() -> Int {
 	val f = Optional::None<type Int>;
 	return 0;
 }

@@ -95,7 +95,7 @@ Recommended MVP spec subset:
 The compiler must lower any f-string to one standard-library function call (stable ABI at the Drift level):
 
 ```
-std.fmt.interpolate(parts: Array<String>, holes: Array<std.fmt.Hole>) returns String
+std.fmt.interpolate(parts: Array<String>, holes: Array<std.fmt.Hole>) -> String
 ```
 
 Where `parts.len == holes.len + 1`.
@@ -229,7 +229,7 @@ Create `std.fmt`:
 
 - `struct Hole { value: FmtValue, spec: String }`
 - `variant FmtValue { Bool(...), Int(...), Uint(...), Float(...), String(...) }`
-- `fn interpolate(parts: Array<String>, holes: Array<Hole>) returns String`
+- `fn interpolate(parts: Array<String>, holes: Array<Hole>) -> String`
 
 Implementation should:
 

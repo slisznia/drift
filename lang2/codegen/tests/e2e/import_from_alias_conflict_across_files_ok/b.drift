@@ -2,6 +2,6 @@ module main
 import lib as lib
 
 
-fn b() returns Int {
+fn b() -> Int {
 	return lib.sub(10, 3);
 }

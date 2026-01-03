@@ -138,7 +138,7 @@ module {module_id}
 
 export {{ add }}
 
-pub fn add(a: Int, b: Int) nothrow returns Int {{
+pub fn add(a: Int, b: Int) nothrow -> Int {{
 	return a + b;
 }}
 """.lstrip(),
@@ -169,7 +169,7 @@ module {module_id}
 
 export {{ main }}
 
-pub fn main() nothrow returns Int {{
+pub fn main() nothrow -> Int {{
 	return 0;
 }}
 """.lstrip(),
@@ -203,7 +203,7 @@ export {{ S }}
 pub struct S(x: Int);
 
 implement S {{
-	pub fn main(self: &S) nothrow returns Int {{
+	pub fn main(self: &S) nothrow -> Int {{
 		return 0;
 	}}
 }}
@@ -235,11 +235,11 @@ module {module_id}
 
 export {{ add }}
 
-pub fn add(a: Int, b: Int) nothrow returns Int {{
+pub fn add(a: Int, b: Int) nothrow -> Int {{
 	return a + b;
 }}
 
-fn hidden() returns Int {{
+fn hidden() -> Int {{
 	return 1;
 }}
 """.lstrip(),
@@ -270,11 +270,11 @@ module {module_id}
 
 export {{ add }}
 
-pub fn add(a: Int, b: Int) nothrow returns Int {{
+pub fn add(a: Int, b: Int) nothrow -> Int {{
 	return a + b;
 }}
 
-pub fn hidden() returns Int {{
+pub fn hidden() -> Int {{
 	return 1;
 }}
 """.lstrip(),
@@ -312,7 +312,7 @@ module {core_id}
 
 export {{ add }}
 
-pub fn add(a: Int, b: Int) nothrow returns Int {{
+pub fn add(a: Int, b: Int) nothrow -> Int {{
 	return a + b;
 }}
 """.lstrip(),
@@ -383,7 +383,7 @@ export {{ Point }}
 
 pub struct Point {{ x: Int, y: Int }}
 
-fn make() returns Point {{
+fn make() -> Point {{
 	return Point(x = 1, y = 2);
 }}
 """.lstrip(),
@@ -422,7 +422,7 @@ export {{ Point, make }}
 
 pub struct Point {{ x: Int, y: Int }}
 
-pub fn make() nothrow returns Point {{
+pub fn make() nothrow -> Point {{
 	return Point(x = 1, y = 0);
 }}
 """.lstrip(),
@@ -454,7 +454,7 @@ def _emit_optional_variant_pkg(
 ) -> Path:
 	"""
 	Emit a package that exports a generic `variant Optional<T>` and a function
-	that returns `Optional<Int>`.
+	that -> `Optional<Int>`.
 
 	This is used to validate package TypeTable linking for variants.
 	"""
@@ -482,7 +482,7 @@ pub variant Optional<T> {{
 {arms}
 }}
 
-pub fn foo() nothrow returns Optional<Int> {{
+pub fn foo() nothrow -> Optional<Int> {{
 	return Some(41);
 }}
 """.lstrip(),
@@ -521,7 +521,7 @@ export {{ Boom }}
 
 pub exception Boom(a: Int, b: String);
 
-fn dummy() nothrow returns Int {{
+fn dummy() nothrow -> Int {{
 	return 0;
 }}
 """.lstrip(),
@@ -618,7 +618,7 @@ module main
 
 import lib as lib
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	return try lib.add(40, 2) catch { 0 };
 }
 """.lstrip(),
@@ -630,7 +630,7 @@ module lib
 
 export { add }
 
-pub fn add(a: Int, b: Int) nothrow returns Int {
+pub fn add(a: Int, b: Int) nothrow -> Int {
 	return a + b;
 }
 """.lstrip(),
@@ -684,7 +684,7 @@ module main
 import acme.liba as liba
 import acme.optb as optb
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	try {
 		val x = liba.add(40, 2);
 		val y: optb.Optional<Int> = optb.foo();
@@ -751,7 +751,7 @@ module main
 import acme.liba as liba
 import acme.optb as optb
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	try {
 		val x = liba.add(40, 2);
 		val y: optb.Optional<Int> = optb.foo();
@@ -821,7 +821,7 @@ import acme.geom as g
 import acme.liba as liba
 import acme.opt as opt
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	try {
 		val p: g.Point = g.make();
 		val o: opt.Optional<g.Point> = Some(p);
@@ -874,7 +874,7 @@ module main
 
 import lib as lib
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	return try lib.add(40, 2) catch { 0 };
 }
 """.lstrip(),
@@ -886,7 +886,7 @@ module lib
 
 export { add }
 
-pub fn add(a: Int, b: Int) nothrow returns Int {
+pub fn add(a: Int, b: Int) nothrow -> Int {
 	return a + b;
 }
 """.lstrip(),
@@ -922,7 +922,7 @@ module lib
 
 export { add }
 
-pub fn add(a: Int, b: Int) nothrow returns Int {
+pub fn add(a: Int, b: Int) nothrow -> Int {
 	return a + b;
 }
 """.lstrip(),
@@ -962,7 +962,7 @@ module lib
 
 export { add }
 
-pub fn add(a: Int, b: Int) nothrow returns Int {
+pub fn add(a: Int, b: Int) nothrow -> Int {
 	return a + b;
 }
 """.lstrip(),
@@ -995,7 +995,7 @@ module lib
 
 export { add }
 
-pub fn add(a: Int, b: Int) nothrow returns Int {
+pub fn add(a: Int, b: Int) nothrow -> Int {
 	return a + b;
 }
 """.lstrip(),
@@ -1028,7 +1028,7 @@ module lib
 
 export { add }
 
-pub fn add(a: Int, b: Int) nothrow returns Int {
+pub fn add(a: Int, b: Int) nothrow -> Int {
 	return a + b;
 }
 """.lstrip(),
@@ -1088,7 +1088,7 @@ module lib
 
 export {{ add }}
 
-pub fn add(a: Int, b: Int) nothrow returns Int {{
+pub fn add(a: Int, b: Int) nothrow -> Int {{
 	return a + b + {n};
 }}
 """.lstrip(),
@@ -1115,7 +1115,7 @@ module main
 
 import lib as lib
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	return try lib.add(40, 2) catch { 0 };
 }
 """.lstrip(),
@@ -1149,7 +1149,7 @@ export { S, make }
 
 pub struct S(x: Int);
 
-pub fn make() nothrow returns S {
+pub fn make() nothrow -> S {
 	return S(x = 42);
 }
 """.lstrip(),
@@ -1176,7 +1176,7 @@ module main
 
 import lib as lib
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	try {
 		val s: lib.S = lib.make();
 		return s.x;
@@ -1209,7 +1209,7 @@ def test_driftc_rejects_dependency_main_entrypoint(tmp_path: Path, capsys: pytes
 		"""
 module main
 
-fn main() nothrow returns Int {
+fn main() nothrow -> Int {
 	return 0;
 }
 """.lstrip(),
@@ -1240,7 +1240,7 @@ def test_driftc_allows_dependency_method_named_main(tmp_path: Path) -> None:
 		"""
 module main
 
-fn main() nothrow returns Int {
+fn main() nothrow -> Int {
 	return 0;
 }
 """.lstrip(),
@@ -1279,7 +1279,7 @@ module {module_id}
 
 export {{ add }}
 
-pub fn add(a: Int, b: Int) nothrow returns Int {{
+pub fn add(a: Int, b: Int) nothrow -> Int {{
 	return a + b;
 }}
 """.lstrip(),
@@ -1304,7 +1304,7 @@ pub fn add(a: Int, b: Int) nothrow returns Int {{
 		"""
 module main
 
-fn main() nothrow returns Int {
+fn main() nothrow -> Int {
 	return 0;
 }
 """.lstrip(),
@@ -1341,7 +1341,7 @@ def test_driftc_rejects_unsigned_reserved_namespace_package(
 		"""
 module main
 
-fn main() nothrow returns Int {
+fn main() nothrow -> Int {
 	return 0;
 }
 """.lstrip(),
@@ -1357,7 +1357,7 @@ module {module_id}
 
 export {{ add }}
 
-pub fn add(a: Int, b: Int) nothrow returns Int {{
+pub fn add(a: Int, b: Int) nothrow -> Int {{
 	return a + b;
 }}
 """.lstrip(),
@@ -1432,7 +1432,7 @@ module {module_id}
 
 export {{ add }}
 
-pub fn add(a: Int, b: Int) nothrow returns Int {{
+pub fn add(a: Int, b: Int) nothrow -> Int {{
 	return a + b;
 }}
 """.lstrip(),
@@ -1458,7 +1458,7 @@ pub fn add(a: Int, b: Int) nothrow returns Int {{
 		"""
 module main
 
-fn main() nothrow returns Int {
+fn main() nothrow -> Int {
 	return 0;
 }
 """.lstrip(),
@@ -1534,7 +1534,7 @@ def test_driftc_dev_core_trust_requires_dev_flag(
 		"""
 module main
 
-fn main() nothrow returns Int {
+fn main() nothrow -> Int {
 	return 0;
 }
 """.lstrip(),
@@ -1566,11 +1566,11 @@ module lib
 
 export { add }
 
-pub fn add(a: Int, b: Int) nothrow returns Int {
+pub fn add(a: Int, b: Int) nothrow -> Int {
 	return a + b;
 }
 
-fn unused() nothrow returns Int {
+fn unused() nothrow -> Int {
 	return 999;
 }
 """.lstrip(),
@@ -1597,7 +1597,7 @@ module main
 
 import lib as lib
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	return try lib.add(40, 2) catch { 0 };
 }
 """.lstrip(),
@@ -1643,7 +1643,7 @@ module lib
 
 export { add }
 
-pub fn add(a: Int, b: Int) nothrow returns Int {
+pub fn add(a: Int, b: Int) nothrow -> Int {
 	return a + b;
 }
 """.lstrip(),
@@ -1672,7 +1672,7 @@ module main
 
 import lib as lib
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	return try lib.add(40, 2) catch { 0 };
 }
 """.lstrip(),
@@ -1698,7 +1698,7 @@ def test_driftc_missing_explicit_trust_store_is_reported_as_diagnostic(tmp_path:
 		"""
 module main
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	return 0;
 }
 """.lstrip(),
@@ -1736,7 +1736,7 @@ module main
 
 import acme.lib as lib
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	return try lib.add(40, 2) catch { 0 };
 }
 """.lstrip(),
@@ -1841,7 +1841,7 @@ module main
 
 import acme.badmod as badmod
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	return 0;
 }
 """.lstrip(),
@@ -1881,7 +1881,7 @@ module main
 
 import acme.lib as lib
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	return try lib.add(40, 2) catch { 0 };
 }
 """.lstrip(),
@@ -1918,7 +1918,7 @@ module main
 
 import acme.lib as lib
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	return try lib.add(40, 2) catch { 0 };
 }
 """.lstrip(),
@@ -1956,7 +1956,7 @@ module main
 
 import acme.lib as lib
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	return try lib.add(40, 2) catch { 0 };
 }
 """.lstrip(),
@@ -2001,7 +2001,7 @@ module main
 
 import acme.lib as lib
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	return try lib.add(40, 2) catch { 0 };
 }
 """.lstrip(),
@@ -2040,7 +2040,7 @@ module main
 
 import acme.lib as lib
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	return try lib.add(40, 2) catch { 0 };
 }
 """.lstrip(),
@@ -2079,7 +2079,7 @@ module main
 
 import acme.lib as lib
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	return try lib.add(40, 2) catch { 0 };
 }
 """.lstrip(),
@@ -2124,7 +2124,7 @@ module main
 
 import acme.lib as lib
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	return try lib.add(40, 2) catch { 0 };
 }
 """.lstrip(),
@@ -2196,7 +2196,7 @@ module main
 
 import acme.lib as lib
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	return try lib.add(40, 2) catch { 0 };
 }
 """.lstrip(),
@@ -2253,7 +2253,7 @@ module main
 
 import acme.lib as lib
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	return try lib.add(40, 2) catch { 0 };
 }
 """.lstrip(),
@@ -2316,7 +2316,7 @@ module main
 
 import acme.lib as lib
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	return try lib.add(40, 2) catch { 0 };
 }
 """.lstrip(),
@@ -2355,7 +2355,7 @@ module main
 
 import acme.lib as lib
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	return try lib.add(40, 2) catch { 0 };
 }
 """.lstrip(),
@@ -2394,7 +2394,7 @@ module main
 
 import acme.lib as lib
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	return try lib.add(40, 2) catch { 0 };
 }
 """.lstrip(),
@@ -2427,7 +2427,7 @@ module lib
 
 export { add }
 
-pub fn add(a: Int, b: Int) nothrow returns Int {
+pub fn add(a: Int, b: Int) nothrow -> Int {
 	return a + b;
 }
 """.lstrip(),
@@ -2465,7 +2465,7 @@ module main
 
 import lib as lib
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	return try lib.add(40, 2) catch { 0 };
 }
 """.lstrip(),
@@ -2497,7 +2497,7 @@ module main
 
 import acme.opt as opt
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	try {
 		val x: opt.Optional<Int> = opt.foo();
 		val y = match x {
@@ -2547,7 +2547,7 @@ variant Optional<T> {
 	Extra
 }
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	return 0;
 }
 """.lstrip(),
@@ -2584,7 +2584,7 @@ def test_driftc_rejects_variant_schema_collision_between_packages(tmp_path: Path
 		"""
 module main
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	return 0;
 }
 """.lstrip(),
@@ -2621,7 +2621,7 @@ module main
 
 import acme.hidden as hidden
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	return hidden.hidden();
 }
 """.lstrip(),
@@ -2657,7 +2657,7 @@ module main
 
 import acme.hiddenpub as hidden
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	return hidden.hidden();
 }
 """.lstrip(),
@@ -2694,7 +2694,7 @@ module main
 
 import acme.api as api
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	return try api.add(40, 2) catch { 0 };
 }
 """.lstrip(),
@@ -2727,7 +2727,7 @@ module main
 
 import acme.consts as consts
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	return consts.ANSWER;
 }
 """.lstrip(),
@@ -2764,7 +2764,7 @@ module main
 
 import acme.point as point
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	val p: point.Point = point.make();
 	return p.x;
 }
@@ -2803,7 +2803,7 @@ module main
 import a.geom as ag
 import b.geom as bg
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	try {
 		val p1: ag.Point = ag.make();
 		val p2: bg.Point = bg.make();
@@ -2903,7 +2903,7 @@ module main
 
 import acme.badiface as badiface
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	return try badiface.add(40, 2) catch { 0 };
 }
 """.lstrip(),
@@ -2987,7 +2987,7 @@ module main
 
 import acme.badiface2 as badiface2
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	return try badiface2.add(40, 2) catch { 0 };
 }
 """.lstrip(),
@@ -3076,7 +3076,7 @@ module main
 
 import acme.badiface3 as badiface3
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	return try badiface3.add(40, 2) catch { 0 };
 }
 """.lstrip(),
@@ -3158,7 +3158,7 @@ module main
 
 import acme.badexc as badexc
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	return 0;
 }
 """.lstrip(),
@@ -3239,7 +3239,7 @@ module main
 
 import acme.badvar as badvar
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	val o: badvar.Optional<Int> = None;
 	return 0;
 }
@@ -3279,12 +3279,12 @@ export { Point }
 pub struct Point { x: Int }
 
 pub implement Point {
-	fn move_by(self: &mut Point, dx: Int) returns Void {
+	fn move_by(self: &mut Point, dx: Int) -> Void {
 		self->x += dx;
 	}
 }
 
-fn dummy() nothrow returns Int { return 0; }
+fn dummy() nothrow -> Int { return 0; }
 """.lstrip(),
 	)
 	pkg_path = tmp_path / "m.dmp"
@@ -3381,7 +3381,7 @@ fn dummy() nothrow returns Int { return 0; }
 		"""
 module main
 
-fn main() nothrow returns Int{ return 0 }
+fn main() nothrow -> Int{ return 0 }
 """.lstrip(),
 	)
 	rc, payload = _run_driftc_json(
@@ -3411,7 +3411,7 @@ module lib
 
 export { add }
 
-pub fn add(a: Int, b: Int) nothrow returns Int {
+pub fn add(a: Int, b: Int) nothrow -> Int {
 	return a + b;
 }
 """.lstrip(),
@@ -3440,7 +3440,7 @@ module main
 
 import lib as lib
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	return try lib.add(40, 2) catch { 0 };
 }
 """.lstrip(),

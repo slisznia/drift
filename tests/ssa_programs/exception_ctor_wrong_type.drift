@@ -1,6 +1,6 @@
 exception E(a: Int)
 
-fn main() returns Int {
+fn main() -> Int {
   throw E(a = "x")
   return 0
 }

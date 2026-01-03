@@ -4,4 +4,4 @@ import m_box
 
 export { Show }
 
-pub trait Show { fn show(self: m_box.Box) returns Int }
+pub trait Show { fn show(self: m_box.Box) -> Int }

@@ -14,7 +14,7 @@ def _int_table():
 
 def test_fnptr_return_nothrow_rejects_can_throw():
 	table, int_ty = _int_table()
-	fnptr_nothrow = table.ensure_function("fn", [int_ty], int_ty, can_throw=False)
+	fnptr_nothrow = table.ensure_function([int_ty], int_ty, can_throw=False)
 	func_hirs = {
 		"boom": H.HBlock(statements=[H.HReturn(value=H.HLiteralInt(value=1))]),
 		"make_bad": H.HBlock(statements=[H.HReturn(value=H.HVar(name="boom"))]),
@@ -39,7 +39,7 @@ def test_fnptr_return_nothrow_rejects_can_throw():
 
 def test_fnptr_return_can_throw_allows_nothrow():
 	table, int_ty = _int_table()
-	fnptr_can_throw = table.ensure_function("fn", [int_ty], int_ty, can_throw=True)
+	fnptr_can_throw = table.ensure_function([int_ty], int_ty, can_throw=True)
 	func_hirs = {
 		"add1": H.HBlock(statements=[H.HReturn(value=H.HLiteralInt(value=1))]),
 		"make_ok": H.HBlock(statements=[H.HReturn(value=H.HVar(name="add1"))]),

@@ -1,5 +1,5 @@
 module main
 
-fn helper() nothrow returns Int {
+fn helper() nothrow -> Int {
 	return 0;
 }

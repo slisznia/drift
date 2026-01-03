@@ -178,8 +178,8 @@ def _type_expr_to_str(typ: parser_ast.TypeExpr) -> str:
 		params_s = ", ".join(_type_expr_to_str(a) for a in params)
 		ret_s = _type_expr_to_str(ret) if ret is not None else "<unknown>"
 		if typ.can_throw():
-			return f"fn({params_s}) returns {ret_s}"
-		return f"fn({params_s}) nothrow returns {ret_s}"
+			return f"Fn({params_s}) -> {ret_s}"
+		return f"Fn({params_s}) nothrow -> {ret_s}"
 	if not typ.args:
 		return typ.name
 	args = ", ".join(_type_expr_to_str(a) for a in typ.args)
@@ -218,8 +218,8 @@ def _type_expr_key_str(typ: parser_ast.TypeExpr) -> str:
 		params_s = ", ".join(_type_expr_key_str(a) for a in params)
 		ret_s = _type_expr_key_str(ret) if ret is not None else "<unknown>"
 		if typ.can_throw():
-			return f"fn({params_s}) returns {ret_s}"
-		return f"fn({params_s}) nothrow returns {ret_s}"
+			return f"Fn({params_s}) -> {ret_s}"
+		return f"Fn({params_s}) nothrow -> {ret_s}"
 	if not (getattr(typ, "args", []) or []):
 		return base
 	args = ", ".join(_type_expr_key_str(a) for a in getattr(typ, "args", []) or [])
@@ -697,7 +697,7 @@ def _typeexpr_uses_internal_fnresult(typ: parser_ast.TypeExpr) -> bool:
 
 	`FnResult<T, Error>` is an internal ABI carrier used by lang2 for can-throw
 	functions. It is not a surface type in the Drift language: user code should
-	write `returns T` and use exceptions/try/catch for control flow.
+	write `-> T` and use exceptions/try/catch for control flow.
 	"""
 	if typ.name == "FnResult":
 		return True
@@ -717,7 +717,7 @@ def _report_internal_fnresult_in_surface_type(
 	diagnostics.append(
 		_diagnostic(
 			f"{kind} '{symbol}' uses internal-only type 'FnResult' in a surface annotation; "
-			"write `returns T` and use exceptions/try-catch instead",
+			"write `-> T` and use exceptions/try-catch instead",
 			loc,
 		)
 	)

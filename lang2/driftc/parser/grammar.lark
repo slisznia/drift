@@ -78,7 +78,8 @@ BAR: "|"
 EQUAL: "="
 CARET: "^"
 TILDE: "~"
-RETURNS.2: /returns\b/
+FN_KW.2: /fn\b/
+FN_TYPE.2: /Fn\b/
 BANG: "!"
 IF.2: /if\b/
 ELSE.2: /else\b/
@@ -137,8 +138,8 @@ pub_item: PUB (func_def | const_def | struct_def | exception_def | variant_def |
 # - consts are values (not types) and may be exported/imported like functions.
 const_def: CONST NAME COLON type_expr EQUAL expr TERMINATOR
 
-func_def: "fn" ident type_params? "(" [params] ")" NOTHROW? return_sig require_clause? block
-return_sig: RETURNS type_expr
+func_def: FN_KW ident type_params? "(" [params] ")" NOTHROW? return_sig require_clause? block
+return_sig: ARROW type_expr
 
 params: param (COMMA param)*
 param: ident COLON type_expr
@@ -152,13 +153,15 @@ implement_item: PUB func_def -> implement_func_pub
 trait_def: TRAIT NAME require_clause? trait_body
 trait_body: "{" (trait_item | TERMINATOR)* "}"
 trait_item: trait_method_sig TERMINATOR*
-trait_method_sig: "fn" ident type_params? "(" [params] ")" return_sig
+trait_method_sig: FN_KW ident type_params? "(" [params] ")" return_sig
 
 type_expr: ref_type
          | fn_type
          | base_type
 
-fn_type: "fn" "(" [type_expr (COMMA type_expr)*] ")" NOTHROW? return_sig
+fn_type: FN_TYPE "(" [type_expr (COMMA type_expr)*] ")" fn_return
+fn_return: NOTHROW? ARROW type_expr
+// Function types are not chainable; nesting is always via the return type.
 
 ref_type: AMP MUT? type_expr
 // Base (nominal) type reference.
@@ -419,7 +422,7 @@ primary: literal
 cast_expr: CAST LT type_expr GT "(" expr ")"
 
 lambda_expr: BAR lambda_params? BAR lambda_captures? lambda_returns? FATARROW lambda_body
-lambda_returns: RETURNS type_expr
+lambda_returns: ARROW type_expr
 lambda_params: lambda_param (COMMA lambda_param)*
 lambda_param: NAME (COLON type_expr)?
 lambda_captures: CAPTURES "(" [lambda_capture_list] ")"

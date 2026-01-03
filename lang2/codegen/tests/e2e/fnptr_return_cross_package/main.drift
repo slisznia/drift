@@ -1,9 +1,9 @@
 module main
 import acme.lib as lib
 
-fn fallback(x: Int) nothrow returns Int { return x; }
+fn fallback(x: Int) nothrow -> Int { return x; }
 
-fn main() nothrow returns Int {
-	val fp: fn(Int) nothrow returns Int = try lib.make() catch { fallback };
+fn main() nothrow -> Int {
+	val fp: Fn(Int) nothrow -> Int = try lib.make() catch { fallback };
 	return fp(1);
 }

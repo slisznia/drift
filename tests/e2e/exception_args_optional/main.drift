@@ -2,11 +2,11 @@ import std.console.out
 
 exception OptErr(a: String, b: String)
 
-fn raise_opt() returns Void {
+fn raise_opt() -> Void {
     throw OptErr(a = "alpha", b = "beta")
 }
 
-fn main() returns Int {
+fn main() -> Int {
     try {
         raise_opt()
     } catch OptErr(e) {

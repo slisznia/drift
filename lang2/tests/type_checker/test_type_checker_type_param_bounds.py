@@ -80,15 +80,15 @@ def _enforce_fn_requires(tc: TypeChecker, typed_fn: object, sigs: dict[FunctionI
 def test_type_param_bound_satisfied(tmp_path: Path) -> None:
 	tc, res, sigs, fn_id = _typecheck_fn(
 		"""
-trait Show { fn show(self: Self) returns Int }
+trait Show { fn show(self: Self) -> Int }
 
 implement Show for Int {
-	pub fn show(self: Int) returns Int { return self; }
+	pub fn show(self: Int) -> Int { return self; }
 }
 
-fn f<T>(x: T) returns Int require T is Show { return 0; }
+fn f<T>(x: T) -> Int require T is Show { return 0; }
 
-fn main() returns Int { return f<type Int>(1); }
+fn main() -> Int { return f<type Int>(1); }
 """,
 		tmp_path,
 		"main",
@@ -101,11 +101,11 @@ fn main() returns Int { return f<type Int>(1); }
 def test_type_param_bound_unsatisfied(tmp_path: Path) -> None:
 	tc, res, sigs, fn_id = _typecheck_fn(
 		"""
-trait Show { fn show(self: Self) returns Int }
+trait Show { fn show(self: Self) -> Int }
 
-fn f<T>(x: T) returns Int require T is Show { return 0; }
+fn f<T>(x: T) -> Int require T is Show { return 0; }
 
-fn main() returns Int { return f<type String>("s"); }
+fn main() -> Int { return f<type String>("s"); }
 """,
 		tmp_path,
 		"main",
@@ -117,17 +117,17 @@ fn main() returns Int { return f<type String>("s"); }
 def test_type_param_bounds_with_guard_is_decidable(tmp_path: Path) -> None:
 	tc, res, sigs, fn_id = _typecheck_fn(
 		"""
-trait Show { fn show(self: Self) returns Int }
+trait Show { fn show(self: Self) -> Int }
 
 implement Show for Int {
-	pub fn show(self: Int) returns Int { return self; }
+	pub fn show(self: Int) -> Int { return self; }
 }
 
-fn f<T>(x: T) returns Int require T is Show {
+fn f<T>(x: T) -> Int require T is Show {
 	if T is Show { return 1; } else { return 2; }
 }
 
-fn main() returns Int { return f<type Int>(1); }
+fn main() -> Int { return f<type Int>(1); }
 """,
 		tmp_path,
 		"f",
@@ -138,15 +138,15 @@ fn main() returns Int { return f<type Int>(1); }
 def test_type_param_bound_inferred_success(tmp_path: Path) -> None:
 	tc, res, sigs, fn_id = _typecheck_fn(
 		"""
-trait Show { fn show(self: Self) returns Int }
+trait Show { fn show(self: Self) -> Int }
 
 implement Show for Int {
-	pub fn show(self: Int) returns Int { return self; }
+	pub fn show(self: Int) -> Int { return self; }
 }
 
-fn f<T>(x: T) returns Int require T is Show { return 0; }
+fn f<T>(x: T) -> Int require T is Show { return 0; }
 
-fn main() returns Int { return f(1); }
+fn main() -> Int { return f(1); }
 """,
 		tmp_path,
 		"main",
@@ -157,16 +157,16 @@ fn main() returns Int { return f(1); }
 def test_type_param_bounds_multiple_one_fails(tmp_path: Path) -> None:
 	tc, res, sigs, fn_id = _typecheck_fn(
 		"""
-trait A { fn a(self: Self) returns Int }
-trait B { fn b(self: Self) returns Int }
+trait A { fn a(self: Self) -> Int }
+trait B { fn b(self: Self) -> Int }
 
 implement A for Int {
-	pub fn a(self: Int) returns Int { return self; }
+	pub fn a(self: Int) -> Int { return self; }
 }
 
-fn f<T>(x: T) returns Int require T is A, T is B { return 0; }
+fn f<T>(x: T) -> Int require T is A, T is B { return 0; }
 
-fn main() returns Int { return f<type Int>(1); }
+fn main() -> Int { return f<type Int>(1); }
 """,
 		tmp_path,
 		"main",

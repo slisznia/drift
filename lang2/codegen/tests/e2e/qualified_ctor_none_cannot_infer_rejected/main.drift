@@ -3,7 +3,7 @@ variant Optional<T> {
 	None,
 }
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	val x = Optional::None();
 	return 0;
 }

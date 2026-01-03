@@ -3,7 +3,7 @@ variant Optional<T> {
 	None,
 }
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	val x = Optional::Some(41);
 	val y = match x{
 	Some(v) => { v + 1 },

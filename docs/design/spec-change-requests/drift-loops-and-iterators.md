@@ -30,13 +30,13 @@ Iteration traits live in the standard library:
 module std.iter
 
 trait Iterator<Item> {
-    fn next(self: &mut Self) returns Optional<Item>
+    fn next(self: &mut Self) -> Optional<Item>
 }
 
 trait Iterable<Item, Iter>
     require Iter is Iterator<Item>
 {
-    fn iter(self) returns Iter
+    fn iter(self) -> Iter
 }
 ````
 
@@ -67,7 +67,7 @@ The main spec (Chapter 8) will state explicitly:
 
 ```drift
 trait Iterator<Item> {
-    fn next(self: &mut Self) returns Optional<T>
+    fn next(self: &mut Self) -> Optional<T>
 }
 ```
 
@@ -83,7 +83,7 @@ trait Iterator<Item> {
 trait Iterable<Item, Iter>
     require Iter is Iterator<Item>
 {
-    fn iter(self) returns Iter
+    fn iter(self) -> Iter
 }
 ```
 
@@ -217,7 +217,7 @@ This is enabled by:
 
 ```drift
 implement<T> Iterable<T, ArrayIter<T>> for Array<T> {
-    fn iter(self) returns ArrayIter<T> {
+    fn iter(self) -> ArrayIter<T> {
         return ArrayIter(data = self, index = 0)
     }
 }
@@ -237,7 +237,7 @@ This is enabled by:
 
 ```drift
 implement<T> Iterable<&T, ArrayRefIter<T>> for &Array<T> {
-    fn iter(self) returns ArrayRefIter<T> {
+    fn iter(self) -> ArrayRefIter<T> {
         return ArrayRefIter { data = self, index = 0 }
     }
 }
@@ -252,7 +252,7 @@ struct ArrayRefIter<T> {
 }
 
 implement<T> Iterator<&T> for ArrayRefIter<T> {
-    fn next(self: &mut self) returns Optional<&T> {
+    fn next(self: &mut self) -> Optional<&T> {
         if self.index >= self.data.len() { return None }
         val r = &self.data[self.index]
         self.index += 1
@@ -308,7 +308,7 @@ struct ArrayIter<T> {
 }
 
 implement<T> Iterator<T> for ArrayIter<T> {
-    fn next(self: &mut self) returns T? {
+    fn next(self: &mut self) -> T? {
         if self.index >= self.data.len() {
             return None
         }
@@ -328,7 +328,7 @@ struct ArrayRefIter<T> {
 }
 
 implement<T> Iterator<&T> for ArrayRefIter<T> {
-    fn next(self: &mut self) returns Optional<&T> {
+    fn next(self: &mut self) -> Optional<&T> {
         if self.index >= self.data.len() {
             return None
         }
@@ -466,7 +466,7 @@ Otherwise, `for pattern in expr` is ill-typed.
      trait Iterable<Item, Iter>
          require Iter is Iterator<Item>
      {
-         fn iter(self) returns Iter
+         fn iter(self) -> Iter
      }
      ```
 

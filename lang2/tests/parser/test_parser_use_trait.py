@@ -11,7 +11,7 @@ module m_main
 
 use trait m_traits.Show
 
-fn main() returns Int { return 0; }
+fn main() -> Int { return 0; }
 """
 	)
 	assert len(prog.used_traits) == 1

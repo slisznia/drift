@@ -106,10 +106,10 @@ def test_method_infers_from_receiver_and_arg(tmp_path: Path) -> None:
 struct Box<T> { value: T }
 
 implement<T> Box<T> {
-	fn apply<U>(self: Box<T>, u: U) returns U { return u; }
+	fn apply<U>(self: Box<T>, u: U) -> U { return u; }
 }
 
-fn main() returns String {
+fn main() -> String {
 	val b: Box<Int> = Box<type Int>(1);
 	val s: String = b.apply("s");
 	return s;
@@ -130,10 +130,10 @@ def test_method_infers_from_expected_return_type(tmp_path: Path) -> None:
 struct Box<T> { value: T }
 
 implement<T> Box<T> {
-	fn none<U>(self: Box<T>) returns Optional<U> { return Optional::None(); }
+	fn none<U>(self: Box<T>) -> Optional<U> { return Optional::None(); }
 }
 
-fn main() returns Optional<Int> {
+fn main() -> Optional<Int> {
 	val b: Box<Int> = Box<type Int>(1);
 	val x: Optional<Int> = b.none();
 	return x;

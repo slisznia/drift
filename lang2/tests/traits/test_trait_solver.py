@@ -10,9 +10,9 @@ from lang2.driftc.traits.world import TraitKey, TypeKey, build_trait_world
 def test_solver_proves_simple_impl() -> None:
 	prog = p.parse_program(
 		"""
-trait Debuggable { fn fmt(self: Int) returns String }
+trait Debuggable { fn fmt(self: Int) -> String }
 struct File { }
-implement Debuggable for File { fn fmt(self: File) returns String { return ""; } }
+implement Debuggable for File { fn fmt(self: File) -> String { return ""; } }
 """
 	)
 	world = build_trait_world(prog)
@@ -25,7 +25,7 @@ implement Debuggable for File { fn fmt(self: File) returns String { return ""; }
 def test_solver_refutes_missing_impl_for_concrete_type() -> None:
 	prog = p.parse_program(
 		"""
-trait Debuggable { fn fmt(self: Int) returns String }
+trait Debuggable { fn fmt(self: Int) -> String }
 struct File { }
 """
 	)
@@ -39,10 +39,10 @@ struct File { }
 def test_solver_impl_require_blocks_proof_when_missing() -> None:
 	prog = p.parse_program(
 		"""
-trait A { fn a(self: Int) returns Int }
-trait B { fn b(self: Int) returns Int }
+trait A { fn a(self: Int) -> Int }
+trait B { fn b(self: Int) -> Int }
 struct File { }
-implement A for File require Self is B { fn a(self: File) returns Int { return 0; } }
+implement A for File require Self is B { fn a(self: File) -> Int { return 0; } }
 """
 	)
 	world = build_trait_world(prog)
@@ -55,7 +55,7 @@ implement A for File require Self is B { fn a(self: File) returns Int { return 0
 def test_solver_not_is_unknown_without_subst() -> None:
 	prog = p.parse_program(
 		"""
-trait A { fn a(self: Int) returns Int }
+trait A { fn a(self: Int) -> Int }
 """
 	)
 	world = build_trait_world(prog)
@@ -75,7 +75,7 @@ trait A { fn a(self: Int) returns Int }
 def test_solver_not_is_proved_for_concrete_missing_impl() -> None:
 	prog = p.parse_program(
 		"""
-trait A { fn a(self: Int) returns Int }
+trait A { fn a(self: Int) -> Int }
 struct File { }
 """
 	)
@@ -97,7 +97,7 @@ struct File { }
 def test_solver_assumptions_short_circuit() -> None:
 	prog = p.parse_program(
 		"""
-trait A { fn a(self: Int) returns Int }
+trait A { fn a(self: Int) -> Int }
 """
 	)
 	world = build_trait_world(prog)

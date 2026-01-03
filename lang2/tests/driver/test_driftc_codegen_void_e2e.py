@@ -47,8 +47,8 @@ def _run_ir_with_clang(ir: str) -> int:
 def test_driftc_codegen_void_call_in_main():
 	"""
 	Full pipeline: Void-returning callee, called from drift_main, should emit
-	dest-less call and `ret void` for the callee while main still returns Int.
-	Exit code proves main kept its Int path (returns 3).
+	dest-less call and `ret void` for the callee while main still -> Int.
+	Exit code proves main kept its Int path (-> 3).
 	"""
 	table = None
 	void_ty = None

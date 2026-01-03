@@ -29,7 +29,7 @@ def test_export_non_pub_rejected(tmp_path: Path) -> None:
 		"""
 module m
 
-fn helper() returns Int { return 0; }
+fn helper() -> Int { return 0; }
 export { helper }
 """,
 	)
@@ -60,7 +60,7 @@ def test_export_star_collision_rejected(tmp_path: Path) -> None:
 		"""
 module a
 
-pub fn x() returns Int { return 1; }
+pub fn x() -> Int { return 1; }
 export { x }
 """,
 	)
@@ -70,7 +70,7 @@ export { x }
 		"""
 module b
 
-pub fn x() returns Int { return 2; }
+pub fn x() -> Int { return 2; }
 export { x }
 """,
 	)
@@ -95,7 +95,7 @@ def test_export_star_explicit_collision_rejected(tmp_path: Path) -> None:
 		"""
 module a
 
-pub fn x() returns Int { return 1; }
+pub fn x() -> Int { return 1; }
 export { x }
 """,
 	)
@@ -105,7 +105,7 @@ export { x }
 		"""
 module m
 
-pub fn x() returns Int { return 2; }
+pub fn x() -> Int { return 2; }
 export { a.*, x }
 """,
 	)

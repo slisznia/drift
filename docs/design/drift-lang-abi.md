@@ -173,7 +173,7 @@ Any Drift function visible outside a compilation unit **must** use the exported 
 For:
 
 ```drift
-fn f(x: Int) returns T
+fn f(x: Int) -> T
 ```
 
 the exported ABI is always:

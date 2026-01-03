@@ -111,9 +111,9 @@ def test_overload_by_arity_picks_matching_signature(tmp_path: Path) -> None:
 	resolved_id, sigs, type_table = _resolve_main_call(
 		tmp_path,
 		"""
-fn f() returns Int { return 1; }
-fn f(x: Int) returns Int { return x; }
-fn main() returns Int { return f(1); }
+fn f() -> Int { return 1; }
+fn f(x: Int) -> Int { return x; }
+fn main() -> Int { return f(1); }
 """,
 	)
 	expected_param_types = [_type_id_for_name(type_table, "Int")]
@@ -129,9 +129,9 @@ def test_overload_by_param_type_picks_matching_signature(tmp_path: Path) -> None
 	resolved_id, sigs, type_table = _resolve_main_call(
 		tmp_path,
 		"""
-fn g(x: Int) returns Int { return x; }
-fn g(x: String) returns Int { return 1; }
-fn main() returns Int { return g("hi"); }
+fn g(x: Int) -> Int { return x; }
+fn g(x: String) -> Int { return 1; }
+fn main() -> Int { return g("hi"); }
 """,
 	)
 	expected_param_types = [_type_id_for_name(type_table, "String")]
@@ -146,10 +146,10 @@ fn main() returns Int { return g("hi"); }
 def test_overload_require_rejects_when_unmet(tmp_path: Path) -> None:
 	src = """
 struct S { }
-trait A { fn a(self: S) returns Int }
-fn h<T>(x: T) returns Int require T is A { return 1; }
-fn h(x: Int) returns Int { return x; }
-fn main(x: S) returns Int { return h(x); }
+trait A { fn a(self: S) -> Int }
+fn h<T>(x: T) -> Int require T is A { return 1; }
+fn h(x: Int) -> Int { return x; }
+fn main(x: S) -> Int { return h(x); }
 """
 	src_path = tmp_path / "overload_require_reject.drift"
 	src_path.write_text(src)
@@ -186,9 +186,9 @@ def test_overload_type_arg_count_selects_matching_candidate(tmp_path: Path) -> N
 	resolved_id, sigs, _type_table = _resolve_main_call(
 		tmp_path,
 		"""
-fn f<T>(x: T) returns T { return x; }
-fn f<T, U>(x: T, y: U) returns T { return x; }
-fn main() returns Int { return f<type Int, String>(1, "s"); }
+fn f<T>(x: T) -> T { return x; }
+fn f<T, U>(x: T, y: U) -> T { return x; }
+fn main() -> Int { return f<type Int, String>(1, "s"); }
 """,
 	)
 	expected = next(
@@ -205,16 +205,16 @@ def test_overload_require_prefers_trait_dependency(tmp_path: Path) -> None:
 		"""
 struct S { }
 
-trait Debuggable { fn debug(self: &Self) returns String; }
-trait Printable require Self is Debuggable { fn show(self: &Self) returns String; }
+trait Debuggable { fn debug(self: &Self) -> String; }
+trait Printable require Self is Debuggable { fn show(self: &Self) -> String; }
 
-implement Debuggable for S { fn debug(self: &S) returns String { return "d"; } }
-implement Printable for S { fn show(self: &S) returns String { return "p"; } }
+implement Debuggable for S { fn debug(self: &S) -> String { return "d"; } }
+implement Printable for S { fn show(self: &S) -> String { return "p"; } }
 
-fn f<T>(x: T) returns Int require T is Debuggable { return 1; }
-fn f<T>(x: T) returns Int require T is Printable { return 2; }
+fn f<T>(x: T) -> Int require T is Debuggable { return 1; }
+fn f<T>(x: T) -> Int require T is Printable { return 2; }
 
-fn main(x: S) returns Int { return f(x); }
+fn main(x: S) -> Int { return f(x); }
 """,
 	)
 	linked_world, _require_env = build_linked_world(type_table)
@@ -228,16 +228,16 @@ def test_overload_require_incomparable_is_ambiguous(tmp_path: Path) -> None:
 	src = """
 struct S { }
 
-trait A { fn a(self: &Self) returns Int; }
-trait B { fn b(self: &Self) returns Int; }
+trait A { fn a(self: &Self) -> Int; }
+trait B { fn b(self: &Self) -> Int; }
 
-implement A for S { fn a(self: &S) returns Int { return 1; } }
-implement B for S { fn b(self: &S) returns Int { return 2; } }
+implement A for S { fn a(self: &S) -> Int { return 1; } }
+implement B for S { fn b(self: &S) -> Int { return 2; } }
 
-fn f<T>(x: T) returns Int require T is A { return 1; }
-fn f<T>(x: T) returns Int require T is B { return 2; }
+fn f<T>(x: T) -> Int require T is A { return 1; }
+fn f<T>(x: T) -> Int require T is B { return 2; }
 
-fn main(x: S) returns Int { return f(x); }
+fn main(x: S) -> Int { return f(x); }
 """
 	src_path = tmp_path / "overload_require_incomparable.drift"
 	src_path.write_text(src)
@@ -270,8 +270,8 @@ fn main(x: S) returns Int { return f(x); }
 
 def test_overload_dedupes_duplicate_candidates(tmp_path: Path) -> None:
 	src = """
-fn f(x: Int) returns Int { return x; }
-fn main() returns Int { return f(1); }
+fn f(x: Int) -> Int { return x; }
+fn main() -> Int { return f(1); }
 """
 	src_path = tmp_path / "overload_dedupe.drift"
 	src_path.write_text(src)

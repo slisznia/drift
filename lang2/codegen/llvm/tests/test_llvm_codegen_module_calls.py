@@ -16,7 +16,7 @@ def test_module_lowering_non_throwing_call():
 	"""
 	Lower two non-throwing functions and ensure the call uses i64 ABI.
 	"""
-	# callee: returns 7
+	# callee: -> 7
 	callee_entry = BasicBlock(
 		name="entry",
 		instructions=[ConstInt(dest="c0", value=7)],
@@ -26,7 +26,7 @@ def test_module_lowering_non_throwing_call():
 	callee_mir = MirFunc(fn_id=callee_id, name="callee", params=[], locals=[], blocks={"entry": callee_entry}, entry="entry")
 	callee_ssa = MirToSSA().run(callee_mir)
 
-	# drift_main: calls callee, returns its result
+	# drift_main: calls callee, -> its result
 	main_entry = BasicBlock(
 		name="entry",
 		instructions=[Call(dest="m0", fn_id=callee_id, args=[], can_throw=False)],
@@ -59,7 +59,7 @@ def test_module_lowering_can_throw_callee_call():
 	"""
 	Lower a can-throw callee and ensure caller uses FnResult ABI.
 	"""
-	# callee: returns FnResult.Ok(1)
+	# callee: -> FnResult.Ok(1)
 	callee_entry = BasicBlock(
 		name="entry",
 		instructions=[ConstInt(dest="c0", value=1), ConstructResultOk(dest="cres", value="c0")],

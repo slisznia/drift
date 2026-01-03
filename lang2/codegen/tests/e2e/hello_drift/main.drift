@@ -1,4 +1,4 @@
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	println("hello, Drift");
 	return 0;
 }

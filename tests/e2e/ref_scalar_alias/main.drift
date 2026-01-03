@@ -1,16 +1,16 @@
 import std.console.out
 
-fn bump(x: &mut Int) returns Void {
+fn bump(x: &mut Int) -> Void {
   x = x + 1
 }
 
-fn bump_if(cond: Bool, x: &mut Int) returns Void {
+fn bump_if(cond: Bool, x: &mut Int) -> Void {
   if cond {
     x = x + 1
   }
 }
 
-fn main() returns Int {
+fn main() -> Int {
   var c: Int = 0
 
   // Unconditional bumps should both be visible through the same slot.

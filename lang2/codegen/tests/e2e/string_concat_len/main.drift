@@ -1,4 +1,4 @@
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
     val s = "foo" + "bar";
     return s.len;
 }

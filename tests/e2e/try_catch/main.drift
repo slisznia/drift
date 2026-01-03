@@ -1,13 +1,13 @@
 import std.console.out
 
-fn might_fail(x: Int) returns Int {
+fn might_fail(x: Int) -> Int {
   if x != 0 {
     throw drift_error_new_dummy(x, "payload", "")
   }
   return x
 }
 
-fn main() returns Int {
+fn main() -> Int {
   try {
     out.writeln("before")
     might_fail(1)

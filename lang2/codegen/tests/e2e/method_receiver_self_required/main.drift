@@ -3,14 +3,14 @@ module m
 struct Point(x: Int)
 
 implement Point {
-	fn bump(this: &mut Point) returns Void {
+	fn bump(this: &mut Point) -> Void {
 		// Spec: the receiver must be spelled as the first parameter named `self`.
 		// This method is intentionally invalid.
 		this->x += 1;
 	}
 }
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	var p: Point = Point(1);
 	p.bump();
 	return p.x;

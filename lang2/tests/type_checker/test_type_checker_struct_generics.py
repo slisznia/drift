@@ -36,7 +36,7 @@ def test_struct_generic_ctor_and_field_access(tmp_path: Path) -> None:
 		"""
 struct Box<T> { value: T }
 
-fn main() returns Int {
+fn main() -> Int {
 	val b: Box<Int> = Box<type Int>(1);
 	return b.value;
 }
@@ -52,10 +52,10 @@ def test_generic_impl_method_substitutes_receiver_params(tmp_path: Path) -> None
 struct Box<T> { value: T }
 
 implement<T> Box<T> {
-	fn get(self: Box<T>) returns T { return self.value; }
+	fn get(self: Box<T>) -> T { return self.value; }
 }
 
-fn main() returns Int {
+fn main() -> Int {
 	val b: Box<Int> = Box<type Int>(1);
 	return b.get();
 }

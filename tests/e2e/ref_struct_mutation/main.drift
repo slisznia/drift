@@ -5,11 +5,11 @@ struct Point {
   y: Int
 }
 
-fn bump_x(p: &mut Point) returns Void {
+fn bump_x(p: &mut Point) -> Void {
   p.x = p.x + 1
 }
 
-fn main() returns Int {
+fn main() -> Int {
   var p: Point = Point(x = 0, y = 0)
   p.x = 41
   p.y = 9

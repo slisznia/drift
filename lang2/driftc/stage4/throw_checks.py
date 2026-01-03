@@ -145,7 +145,7 @@ def enforce_can_throw_signature_shape(
 	"""
 	Defend the internal can-throw ABI shape using TypeEnv when available.
 
-	lang2 surface signatures use `returns T` even for can-throw functions; the
+	lang2 surface signatures use `-> T` even for can-throw functions; the
 	internal ABI lowers can-throw functions to return `FnResult<T, Error>`.
 	This helper verifies that `FnResult` types can be constructed and that the
 	error side is the canonical `Error` type (when we have access to the shared

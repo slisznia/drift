@@ -194,8 +194,8 @@ def test_node_ids_deterministic(tmp_path: Path) -> None:
 	_write_file(
 		path,
 		"""
-fn foo(x: Int) returns Int { return x + 1; }
-fn bar() returns Int { return foo(1) + foo(2); }
+fn foo(x: Int) -> Int { return x + 1; }
+fn bar() -> Int { return foo(1) + foo(2); }
 """,
 	)
 	mod1, _table1, _excs1, _diags1 = parse_drift_to_hir(path)
@@ -320,7 +320,7 @@ def test_call_info_emitted_for_invoke() -> None:
 	table = TypeTable()
 	tc = TypeChecker(table)
 	int_ty = table.ensure_int()
-	fn_ty = table.ensure_function("fn", [int_ty], int_ty, can_throw=False)
+	fn_ty = table.ensure_function([int_ty], int_ty, can_throw=False)
 	block = H.HBlock(
 		statements=[
 			H.HExprStmt(expr=H.HInvoke(callee=H.HVar("fp"), args=[H.HLiteralInt(1)])),
@@ -341,7 +341,7 @@ def test_invoke_rejects_kwargs() -> None:
 	table = TypeTable()
 	tc = TypeChecker(table)
 	int_ty = table.ensure_int()
-	fn_ty = table.ensure_function("fn", [int_ty], int_ty, can_throw=False)
+	fn_ty = table.ensure_function([int_ty], int_ty, can_throw=False)
 	call = H.HInvoke(
 		callee=H.HVar("fp"),
 		args=[],

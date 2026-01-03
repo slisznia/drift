@@ -615,7 +615,7 @@ def import_type_tables_and_build_typeid_maps(pkg_tt_objs: list[Mapping[str, Any]
 			pts = [key_to_host[x] for x in k[2]]
 			if not pts:
 				raise ValueError("invalid function type key (no return type)")
-			key_to_host[k] = host.ensure_function("fn", pts[:-1], pts[-1], can_throw=can_throw)
+			key_to_host[k] = host.ensure_function(pts[:-1], pts[-1], can_throw=can_throw)
 		elif tag == "inst":
 			base_tid = key_to_host[k[1]]
 			args = [key_to_host[x] for x in list(k[2])]

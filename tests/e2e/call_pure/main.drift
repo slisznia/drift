@@ -1,8 +1,8 @@
-fn add_one(x: Int) returns Int {
+fn add_one(x: Int) -> Int {
   return x + 1
 }
 
-fn main() returns Int {
+fn main() -> Int {
   val r: Int = add_one(41)
   return r
 }

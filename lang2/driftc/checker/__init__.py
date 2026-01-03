@@ -596,7 +596,7 @@ class Checker:
 		# Can-throw inference (fixed point, intra-module).
 		#
 		# The surface language does not expose `FnResult` as a type. Instead, a
-		# function either returns normally (`returns T`) or may throw (exceptional
+		# function either returns normally (`-> T`) or may throw (exceptional
 		# control flow). Internally, codegen lowers can-throw functions to return
 		# `FnResult<T, Error>` as an ABI carrier.
 		#
@@ -2767,7 +2767,6 @@ class Checker:
 							params = list(instr.call_sig.param_types)
 							ret = instr.call_sig.user_ret_type
 							fn_ty = self._type_table.ensure_function(
-								"fn",
 								params,
 								ret,
 								can_throw=bool(instr.call_sig.can_throw),

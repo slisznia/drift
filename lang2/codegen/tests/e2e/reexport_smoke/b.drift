@@ -2,4 +2,4 @@ module b
 
 export { add }
 
-pub fn add(a: Int, b: Int) returns Int { return a + b; }
+pub fn add(a: Int, b: Int) -> Int { return a + b; }

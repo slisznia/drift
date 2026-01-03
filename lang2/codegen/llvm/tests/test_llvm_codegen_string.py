@@ -2,7 +2,7 @@ from lang2.driftc.core.function_id import FunctionId
 # vim: set noexpandtab: -*- indent-tabs-mode: t -*-
 # author: Sławomir Liszniański; created: 2025-12-10
 """
-LLVM lowering for String literals and returns.
+LLVM lowering for String literals and ->.
 """
 
 from lang2.driftc.checker import FnInfo, FnSignature

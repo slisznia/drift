@@ -1,11 +1,11 @@
 struct Point(x: Int, y: Int)
 
-fn inc_x(p: &mut Point) nothrow returns Void {
+fn inc_x(p: &mut Point) nothrow -> Void {
 	val rx = &mut (*p).x;
 	*rx = *rx + 1;
 }
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	var p = Point(41, 0);
 	inc_x(&mut p);
 	return p.x;

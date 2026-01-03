@@ -5,7 +5,7 @@ variant Optional<T> {
 	None,
 }
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	// Constructor calls require an expected variant type in MVP.
 	val x = Some(1);
 	return 0;

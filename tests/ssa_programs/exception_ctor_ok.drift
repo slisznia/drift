@@ -1,5 +1,5 @@
 exception E(a: String)
 
-fn main() returns Int {
+fn main() -> Int {
   throw E(a = "x")
 }

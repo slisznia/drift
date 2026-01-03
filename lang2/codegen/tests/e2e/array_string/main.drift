@@ -1,4 +1,4 @@
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	val msgs = ["hello", "world"];
 	val idx: Int = 1;
 	println(msgs[idx]);

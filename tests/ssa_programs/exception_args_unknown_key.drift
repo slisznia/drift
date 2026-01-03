@@ -1,10 +1,10 @@
 exception MyError(a: String)
 
-fn raise_it() returns Void {
+fn raise_it() -> Void {
   throw MyError(a = "AA")
 }
 
-fn main() returns Int {
+fn main() -> Int {
   try {
     raise_it()
   } catch MyError(e) {

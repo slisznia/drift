@@ -34,7 +34,7 @@ def _build_add1(table: TypeTable) -> tuple[MirFunc, object, FnInfo, FunctionRefI
 def test_fnptr_return_type_lowering() -> None:
 	table = TypeTable()
 	int_ty = table.ensure_int()
-	fn_ty = table.ensure_function("fn", [int_ty], int_ty, can_throw=False)
+	fn_ty = table.ensure_function([int_ty], int_ty, can_throw=False)
 
 	add1_mir, add1_ssa, add1_info, fn_ref, call_sig = _build_add1(table)
 
@@ -64,7 +64,7 @@ def test_fnptr_return_type_lowering() -> None:
 def test_fnptr_return_fnresult_ok_payload() -> None:
 	table = TypeTable()
 	int_ty = table.ensure_int()
-	fn_ty = table.ensure_function("fn", [int_ty], int_ty, can_throw=False)
+	fn_ty = table.ensure_function([int_ty], int_ty, can_throw=False)
 
 	add1_mir, add1_ssa, add1_info, fn_ref, call_sig = _build_add1(table)
 

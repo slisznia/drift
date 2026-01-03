@@ -1,11 +1,11 @@
 import std.console.out
 
-fn banner() returns String {
+fn banner() -> String {
   val base: String = "var bindings opt into future mutation"
   return base
 }
 
-fn main() returns Int {
+fn main() -> Int {
   var counter: Int = 0
   counter = counter + 1
   out.writeln(banner())

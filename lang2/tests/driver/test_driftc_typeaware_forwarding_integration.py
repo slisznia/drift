@@ -14,10 +14,10 @@ def test_typeaware_fnresult_forwarding_passes_with_checker_type_env():
 	"""
 	A can-throw function can call another can-throw function and return the ok
 	value. Internally this is FnResult plumbing, but surface signatures stay
-	`returns T`.
+	`-> T`.
 	"""
 	fn_name = "f_forward"
-	# HIR: function calls a can-throw callee and returns the value.
+	# HIR: function calls a can-throw callee and -> the value.
 	hir = H.HBlock(
 		statements=[
 			H.HLet(name="x", value=H.HCall(fn=H.HVar(name="callee"), args=[])),

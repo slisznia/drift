@@ -173,7 +173,7 @@ For C APIs that use explicit fixed widths (e.g., `uint32_t len`), the recommende
   // lang.abi.zlib
 
   extern "C"
-  fn crc32(seed: Uint32, data: ref Uint8, len: Uint32) returns Uint32
+  fn crc32(seed: Uint32, data: ref Uint8, len: Uint32) -> Uint32
 ````
 
 * Provide a higher-level wrapper in a public module (e.g., `std.zlib`) that uses `Size`, `String`, or container types:
@@ -181,14 +181,14 @@ For C APIs that use explicit fixed widths (e.g., `uint32_t len`), the recommende
   ```drift
   // std.zlib
 
-  fn narrow_size_to_u32(len: Size) returns Uint32 {
+  fn narrow_size_to_u32(len: Size) -> Uint32 {
       if len > Uint32::MAX {
           throw Error("len-too-large", code = "zlib.len.out_of_range")
       }
       return cast(len)
   }
 
-  fn crc32(seed: Uint32, buf: ByteBuffer) returns Uint32 {
+  fn crc32(seed: Uint32, buf: ByteBuffer) -> Uint32 {
       val len32: Uint32 = narrow_size_to_u32(buf.len())
       return lang.abi.zlib.crc32(seed, buf.as_slice().data_ptr(), len32)
   }
@@ -233,12 +233,12 @@ These aliases introduce intent (`Bits32` as “32-bit bitmask”) without changi
 `std.bits` exposes simple helper functions for common operations:
 
 ```drift
-fn set(mask: Bits32, flags: Bits32) returns Bits32
-fn clear(mask: Bits32, flags: Bits32) returns Bits32
-fn toggle(mask: Bits32, flags: Bits32) returns Bits32
+fn set(mask: Bits32, flags: Bits32) -> Bits32
+fn clear(mask: Bits32, flags: Bits32) -> Bits32
+fn toggle(mask: Bits32, flags: Bits32) -> Bits32
 
-fn has_all(mask: Bits32, flags: Bits32) returns Bool
-fn has_any(mask: Bits32, flags: Bits32) returns Bool
+fn has_all(mask: Bits32, flags: Bits32) -> Bool
+fn has_any(mask: Bits32, flags: Bits32) -> Bool
 ```
 
 Implementations are straightforward wrappers over bitwise operators:
@@ -258,7 +258,7 @@ Generic versions may be provided via a `BitMask<T>` trait implemented for `Uint8
 ```drift
 import std.bits
 
-fn has_read_permission(perms: Bits32) returns Bool {
+fn has_read_permission(perms: Bits32) -> Bool {
     return bits.has_any(perms, READ)
 }
 ```
@@ -278,7 +278,7 @@ These are small but keep the story coherent:
    - Replace that phrasing with “`Int` is the default integer type”.
    - Leave explicit `Int64` uses that are clearly examples or domain-specific.
 
-2. **Where `Int64` is used for lengths or indices** (e.g., `fn len(self: &ByteBuffer) returns Int64`):
+2. **Where `Int64` is used for lengths or indices** (e.g., `fn len(self: &ByteBuffer) -> Int64`):
 
    - Update signatures to return `Size` instead of `Int64`.
    - If you don’t want to churn all the code snippets at once, at least update the *normative* text as in §2 above so it’s clear that `Size` is the canonical type.

@@ -11,7 +11,7 @@ def test_fstring_unbalanced_brace_reports_diagnostic(tmp_path: Path) -> None:
 		"""
 module m
 
-fn main() returns Int {
+fn main() -> Int {
 	println(f"{");
 	return 0;
 }
@@ -28,7 +28,7 @@ def test_fstring_empty_hole_reports_diagnostic(tmp_path: Path) -> None:
 		"""
 module m
 
-fn main() returns Int {
+fn main() -> Int {
 	println(f"{}");
 	return 0;
 }
@@ -45,7 +45,7 @@ def test_fstring_nested_braces_in_spec_reports_diagnostic(tmp_path: Path) -> Non
 		"""
 module m
 
-fn main() returns Int {
+fn main() -> Int {
 	println(f"{1:{x}}");
 	return 0;
 }

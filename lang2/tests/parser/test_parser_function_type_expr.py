@@ -8,7 +8,7 @@ from lang2.driftc.parser import ast as parser_ast
 def test_parser_builds_function_type_exprs() -> None:
 	prog = p.parse_program(
 		"""
-fn takes(f: fn(Int, String) returns Bool, g: fn(Int) nothrow returns Int) returns Void {
+fn takes(f: Fn(Int, String) -> Bool, g: Fn(Int) nothrow -> Int) -> Void {
 	return;
 }
 """

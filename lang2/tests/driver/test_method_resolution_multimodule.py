@@ -203,7 +203,7 @@ export { Box }
 pub struct Box<T> { value: T }
 
 implement<T> Box<T> {
-	pub fn tag(self: Box<T>) returns Int { return 1; }
+	pub fn tag(self: Box<T>) -> Int { return 1; }
 }
 """,
 		Path("m_main/main.drift"): """
@@ -211,7 +211,7 @@ module m_main
 
 import m_box
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	val b: m_box.Box<Int> = m_box.Box<type Int>(1);
 	return b.tag();
 }
@@ -243,7 +243,7 @@ module m_a
 import m_types
 
 implement m_types.Box<Int> {
-	pub fn tag(self: m_types.Box<Int>) returns Int { return 1; }
+	pub fn tag(self: m_types.Box<Int>) -> Int { return 1; }
 }
 """,
 		Path("m_b/lib.drift"): """
@@ -252,7 +252,7 @@ module m_b
 import m_types
 
 implement m_types.Box<Int> {
-	pub fn tag(self: m_types.Box<Int>) returns Int { return 2; }
+	pub fn tag(self: m_types.Box<Int>) -> Int { return 2; }
 }
 """,
 		Path("m_main/main.drift"): """
@@ -262,7 +262,7 @@ import m_types
 import m_a
 import m_b
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	val b: m_types.Box<Int> = m_types.Box<type Int>(1);
 	return b.tag();
 }
@@ -340,7 +340,7 @@ module m_a
 import m_types
 
 implement m_types.Box<Int> {
-	pub fn tag(self: m_types.Box<Int>) returns Int { return 1; }
+	pub fn tag(self: m_types.Box<Int>) -> Int { return 1; }
 }
 """,
 		Path("m_b/lib.drift"): """
@@ -349,7 +349,7 @@ module m_b
 import m_types
 
 implement m_types.Box<Int> {
-	pub fn tag(self: m_types.Box<Int>) returns Int { return 2; }
+	pub fn tag(self: m_types.Box<Int>) -> Int { return 2; }
 }
 """,
 		Path("m_main/main.drift"): """
@@ -358,7 +358,7 @@ module m_main
 import m_types
 import m_a
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	val b: m_types.Box<Int> = m_types.Box<type Int>(1);
 	return b.tag();
 }
@@ -390,7 +390,7 @@ module m_impl
 import m_box
 
 implement m_box.Box<Int> {
-	pub fn tag(self: m_box.Box<Int>) returns Int { return 2; }
+	pub fn tag(self: m_box.Box<Int>) -> Int { return 2; }
 }
 """,
 		Path("m_main/main.drift"): """
@@ -399,10 +399,10 @@ module m_main
 import m_box
 
 implement m_box.Box<Int> {
-	pub fn tag(self: m_box.Box<Int>) returns Int { return 1; }
+	pub fn tag(self: m_box.Box<Int>) -> Int { return 1; }
 }
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	val b: m_box.Box<Int> = m_box.Box<type Int>(1);
 	return b.tag();
 }
@@ -434,7 +434,7 @@ module m_impl
 import m_types
 
 implement m_types.Box<Int> {
-	fn tag(self: m_types.Box<Int>) returns Int { return 1; }
+	fn tag(self: m_types.Box<Int>) -> Int { return 1; }
 }
 """,
 		Path("m_main/main.drift"): """
@@ -443,7 +443,7 @@ module m_main
 import m_types
 import m_impl
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	val b: m_types.Box<Int> = m_types.Box<type Int>(1);
 	return b.tag();
 }
@@ -511,7 +511,7 @@ module m_impl
 import m_box
 
 implement<T> m_box.Box<Array<T>> {
-	pub fn inner(self: m_box.Box<Array<T>>) returns T { return self.value[0]; }
+	pub fn inner(self: m_box.Box<Array<T>>) -> T { return self.value[0]; }
 }
 """,
 		Path("m_main/main.drift"): """
@@ -520,7 +520,7 @@ module m_main
 import m_box
 import m_impl
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	val b: m_box.Box<Array<Int>> = m_box.Box<type Array<Int>>([1, 2]);
 	return b.inner();
 }
@@ -547,11 +547,11 @@ export { Box }
 pub struct Box<T> { value: T }
 
 implement Box<Int> {
-	pub fn tag(self: Box<Int>) returns Int { return 1; }
+	pub fn tag(self: Box<Int>) -> Int { return 1; }
 }
 
 implement Box<Int> {
-	pub fn tag(self: Box<Int>) returns Int { return 2; }
+	pub fn tag(self: Box<Int>) -> Int { return 2; }
 }
 """,
 	}
@@ -596,7 +596,7 @@ pub const MARK_A: Int = 1;
 export { MARK_A }
 
 implement m_types.Box {
-	pub fn tag(self: m_types.Box) returns Int { return 1; }
+	pub fn tag(self: m_types.Box) -> Int { return 1; }
 }
 """,
 		Path("m_impl_b/lib.drift"): """
@@ -609,7 +609,7 @@ pub const MARK_B: Int = 2;
 export { MARK_B }
 
 implement m_types.Box {
-	pub fn tag(self: m_types.Box) returns Int { return 2; }
+	pub fn tag(self: m_types.Box) -> Int { return 2; }
 }
 """,
 		Path("m_api/lib.drift"): """
@@ -623,7 +623,7 @@ module m_main
 import m_api
 import m_types
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	val b: m_types.Box = m_types.Box(value = 1);
 	return b.tag();
 }
@@ -655,7 +655,7 @@ export { Point }
 pub struct Point { x: Int }
 
 implement Point {
-\tpub fn bump(self: Point) nothrow returns Int { return self.x + 1; }
+\tpub fn bump(self: Point) nothrow -> Int { return self.x + 1; }
 }
 """,
 		Path("mod_b/main.drift"): """
@@ -663,7 +663,7 @@ module mod_b
 
 import mod_a as A
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 \tval p = A.Point(x = 1);
 \treturn try p.bump() catch { 0 };
 }
@@ -766,8 +766,8 @@ export { Box }
 pub struct Box<T> { value: T }
 
 implement Box<Int> {
-	pub fn tag(self: Box<Int>) returns Int { return 1; }
-	pub fn tag(self: Box<Int>, label: String) returns Int { return 2; }
+	pub fn tag(self: Box<Int>) -> Int { return 1; }
+	pub fn tag(self: Box<Int>, label: String) -> Int { return 2; }
 }
 """,
 	}

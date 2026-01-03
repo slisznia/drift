@@ -258,13 +258,13 @@ module m_box
 pub struct Box<T> { value: T }
 
 pub trait Show {
-	fn show(self: Self) returns Int
+	fn show(self: Self) -> Int
 }
 
 export { Box, Show }
 
 implement Show for Box<Int> {
-	pub fn show(self: Box<Int>) returns Int { return self.value; }
+	pub fn show(self: Box<Int>) -> Int { return self.value; }
 }
 """,
 		Path("m_main.drift"): """
@@ -273,7 +273,7 @@ module m_main
 import m_box as box
 use trait box.Show
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	val b: box.Box<Int> = box.Box<type Int>(1);
 	return b.show();
 }
@@ -298,13 +298,13 @@ module m_box
 pub struct Box<T> { value: T }
 
 pub trait MapOne {
-	fn map<U>(self: &Self, x: U) returns U
+	fn map<U>(self: &Self, x: U) -> U
 }
 
 export { Box, MapOne }
 
 implement<T> MapOne for Box<T> {
-	pub fn map<U>(self: &Box<T>, x: U) returns U { return x; }
+	pub fn map<U>(self: &Box<T>, x: U) -> U { return x; }
 }
 """,
 		Path("m_main.drift"): """
@@ -313,7 +313,7 @@ module m_main
 import m_box as box
 use trait box.MapOne
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	val b: box.Box<Int> = box.Box<type Int>(1);
 	val a: Int = b.map(1);
 	val s: String = b.map("x");
@@ -356,13 +356,13 @@ module m_box
 pub struct Box<T> { value: T }
 
 pub trait Show {
-	fn show(self: Box<Int>) returns Int
+	fn show(self: Box<Int>) -> Int
 }
 
 export { Box, Show }
 
 implement Show for Box<Int> {
-	pub fn show(self: Box<Int>) returns Int { return self.value; }
+	pub fn show(self: Box<Int>) -> Int { return self.value; }
 }
 """,
 		Path("m_main.drift"): """
@@ -370,7 +370,7 @@ module m_main
 
 import m_box as box
 
-	fn main() nothrow returns Int{
+	fn main() nothrow -> Int{
 		val b: box.Box<Int> = box.Box<type Int>(1);
 		return b.show();
 	}
@@ -394,7 +394,7 @@ pub struct Box<T> { value: T }
 export { Box }
 
 implement Box<Int> {
-	pub fn tag(self: Box<Int>) returns Int { return 1; }
+	pub fn tag(self: Box<Int>) -> Int { return 1; }
 }
 """,
 		Path("m_trait.drift"): """
@@ -403,13 +403,13 @@ module m_trait
 import m_box
 
 pub trait Tag {
-	fn tag(self: m_box.Box<Int>) returns Int
+	fn tag(self: m_box.Box<Int>) -> Int
 }
 
 export { Tag }
 
 implement Tag for m_box.Box<Int> {
-	pub fn tag(self: m_box.Box<Int>) returns Int { return 2; }
+	pub fn tag(self: m_box.Box<Int>) -> Int { return 2; }
 }
 """,
 		Path("m_main.drift"): """
@@ -419,7 +419,7 @@ import m_box
 import m_trait
 use trait m_trait.Tag
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	val b: m_box.Box<Int> = m_box.Box<type Int>(1);
 	return b.tag();
 }
@@ -450,13 +450,13 @@ module m_a
 import m_box
 
 pub trait Show {
-	fn show(self: m_box.Box<Int>) returns Int
+	fn show(self: m_box.Box<Int>) -> Int
 }
 
 export { Show }
 
 implement Show for m_box.Box<Int> {
-	pub fn show(self: m_box.Box<Int>) returns Int { return 1; }
+	pub fn show(self: m_box.Box<Int>) -> Int { return 1; }
 }
 """,
 		Path("m_b.drift"): """
@@ -465,13 +465,13 @@ module m_b
 import m_box
 
 pub trait Show {
-	fn show(self: m_box.Box<Int>) returns Int
+	fn show(self: m_box.Box<Int>) -> Int
 }
 
 export { Show }
 
 implement Show for m_box.Box<Int> {
-	pub fn show(self: m_box.Box<Int>) returns Int { return 2; }
+	pub fn show(self: m_box.Box<Int>) -> Int { return 2; }
 }
 """,
 		Path("m_main.drift"): """
@@ -483,7 +483,7 @@ import m_b
 use trait m_a.Show
 use trait m_b.Show
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	val b: m_box.Box<Int> = m_box.Box<type Int>(1);
 	return b.show();
 }
@@ -512,21 +512,21 @@ module m_trait
 import m_box
 
 pub trait Hashable {
-	fn hash(self: Int) returns Int
+	fn hash(self: Int) -> Int
 }
 
 export { Hashable, Show }
 
 implement Hashable for Int {
-	pub fn hash(self: Int) returns Int { return self; }
+	pub fn hash(self: Int) -> Int { return self; }
 }
 
 pub trait Show {
-	fn show(self: m_box.Box<String>) returns Int
+	fn show(self: m_box.Box<String>) -> Int
 }
 
 implement Show for m_box.Box<String> require String is Hashable {
-	pub fn show(self: m_box.Box<String>) returns Int { return 0; }
+	pub fn show(self: m_box.Box<String>) -> Int { return 0; }
 }
 """,
 		Path("m_main.drift"): """
@@ -536,7 +536,7 @@ import m_box
 import m_trait
 use trait m_trait.Show
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	val b: m_box.Box<String> = m_box.Box<type String>("s");
 	return b.show();
 }
@@ -566,7 +566,7 @@ module m_trait
 import m_box
 
 pub trait Show {
-	fn show(self: m_box.Box<Int>) returns Int
+	fn show(self: m_box.Box<Int>) -> Int
 }
 
 export { Show }
@@ -578,7 +578,7 @@ import m_box
 import m_trait
 
 implement m_trait.Show for m_box.Box<Int> {
-	fn show(self: m_box.Box<Int>) returns Int { return 1; }
+	fn show(self: m_box.Box<Int>) -> Int { return 1; }
 }
 """,
 		Path("m_main.drift"): """
@@ -589,7 +589,7 @@ import m_trait
 import m_impl
 use trait m_trait.Show
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	val b: m_box.Box<Int> = m_box.Box<type Int>(1);
 	return b.show();
 }
@@ -619,7 +619,7 @@ module m_trait
 import m_box
 
 pub trait Show {
-	fn show(self: m_box.Box<Int>) returns Int
+	fn show(self: m_box.Box<Int>) -> Int
 }
 
 export { Show }
@@ -631,7 +631,7 @@ import m_box
 import m_trait
 
 implement m_trait.Show for m_box.Box<Int> {
-	pub fn show(self: m_box.Box<Int>) returns Int { return 1; }
+	pub fn show(self: m_box.Box<Int>) -> Int { return 1; }
 }
 """,
 		Path("m_b.drift"): """
@@ -641,7 +641,7 @@ import m_box
 import m_trait
 
 implement m_trait.Show for m_box.Box<Int> {
-	pub fn show(self: m_box.Box<Int>) returns Int { return 2; }
+	pub fn show(self: m_box.Box<Int>) -> Int { return 2; }
 }
 """,
 		Path("m_main.drift"): """
@@ -653,7 +653,7 @@ import m_a
 import m_b
 use trait m_trait.Show
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	val b: m_box.Box<Int> = m_box.Box<type Int>(1);
 	return b.show();
 }
@@ -675,11 +675,11 @@ module m_trait
 export { Show }
 
 pub trait Show {
-	fn show(self: Self) returns Int
+	fn show(self: Self) -> Int
 }
 
 implement Show for Int {
-	pub fn show(self: Int) returns Int { return self; }
+	pub fn show(self: Int) -> Int { return self; }
 }
 """,
 		Path("m_main.drift"): """
@@ -687,9 +687,9 @@ module m_main
 
 import m_trait
 
-fn f<T>(x: T) returns Int require T is m_trait.Show { return x.show(); }
+fn f<T>(x: T) -> Int require T is m_trait.Show { return x.show(); }
 
-fn main() nothrow returns Int{ return f<type Int>(1); }
+fn main() nothrow -> Int{ return f<type Int>(1); }
 """,
 	}
 	result = _typecheck_named_fn(
@@ -708,11 +708,11 @@ module m_trait
 export { Show }
 
 pub trait Show {
-	fn show(self: Self) returns Int
+	fn show(self: Self) -> Int
 }
 
 implement Show for Int {
-	pub fn show(self: Int) returns Int { return self; }
+	pub fn show(self: Int) -> Int { return self; }
 }
 """,
 		Path("m_main.drift"): """
@@ -721,9 +721,9 @@ module m_main
 import m_trait
 use trait m_trait.Show
 
-fn f<T>(x: T) returns Int require T is m_trait.Show { return x.show(); }
+fn f<T>(x: T) -> Int require T is m_trait.Show { return x.show(); }
 
-fn main() nothrow returns Int{ return f<type Int>(1); }
+fn main() nothrow -> Int{ return f<type Int>(1); }
 """,
 	}
 	result = _typecheck_named_fn(
@@ -740,11 +740,11 @@ module m_trait
 export { Show }
 
 pub trait Show {
-	fn show(self: Self) returns Int
+	fn show(self: Self) -> Int
 }
 
 implement Show for Int {
-	pub fn show(self: Int) returns Int { return self; }
+	pub fn show(self: Int) -> Int { return self; }
 }
 """,
 		Path("m_main.drift"): """
@@ -753,9 +753,9 @@ module m_main
 import m_trait
 use trait m_trait.Show
 
-fn f<T>(x: T) returns Int require T is m_trait.Show { return x.show(); }
+fn f<T>(x: T) -> Int require T is m_trait.Show { return x.show(); }
 
-fn main() nothrow returns Int{ return f<type String>("s"); }
+fn main() nothrow -> Int{ return f<type String>("s"); }
 """,
 	}
 	_, result, _sigs, _deps, _ids, _types, _trait_scope = _resolve_main_block(
@@ -782,13 +782,13 @@ module m_trait
 import m_box
 
 pub trait Show {
-	fn show(self: m_box.Box<Int>) returns Int
+	fn show(self: m_box.Box<Int>) -> Int
 }
 
 export { Show }
 
 implement Show for m_box.Box<Int> {
-	pub fn show(self: m_box.Box<Int>) returns Int { return self.value; }
+	pub fn show(self: m_box.Box<Int>) -> Int { return self.value; }
 }
 """,
 		Path("m_main.drift"): """
@@ -797,7 +797,7 @@ module m_main
 import m_box
 import m_trait
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	val b: m_box.Box<Int> = m_box.Box<type Int>(1);
 	return m_trait.Show::show(b);
 }
@@ -824,13 +824,13 @@ module m_a
 import m_box
 
 pub trait Show {
-	fn show(self: m_box.Box<Int>) returns Int
+	fn show(self: m_box.Box<Int>) -> Int
 }
 
 export { Show }
 
 implement Show for m_box.Box<Int> {
-	pub fn show(self: m_box.Box<Int>) returns Int { return 1; }
+	pub fn show(self: m_box.Box<Int>) -> Int { return 1; }
 }
 """,
 		Path("m_b.drift"): """
@@ -839,13 +839,13 @@ module m_b
 import m_box
 
 pub trait Show {
-	fn show(self: m_box.Box<Int>) returns Int
+	fn show(self: m_box.Box<Int>) -> Int
 }
 
 export { Show }
 
 implement Show for m_box.Box<Int> {
-	pub fn show(self: m_box.Box<Int>) returns Int { return 2; }
+	pub fn show(self: m_box.Box<Int>) -> Int { return 2; }
 }
 """,
 		Path("m_main.drift"): """
@@ -855,7 +855,7 @@ import m_box
 import m_a
 import m_b
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	val b: m_box.Box<Int> = m_box.Box<type Int>(1);
 	return m_a.Show::show(b);
 }
@@ -882,7 +882,7 @@ module m_trait
 import m_box
 
 pub trait Show {
-	fn show(self: m_box.Box<Int>) returns Int
+	fn show(self: m_box.Box<Int>) -> Int
 }
 
 export { Show }
@@ -894,7 +894,7 @@ import m_box
 import m_trait
 
 implement m_trait.Show for m_box.Box<Int> {
-	fn show(self: m_box.Box<Int>) returns Int { return 1; }
+	fn show(self: m_box.Box<Int>) -> Int { return 1; }
 }
 """,
 		Path("m_main.drift"): """
@@ -904,7 +904,7 @@ import m_box
 import m_trait
 import m_impl
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	val b: m_box.Box<Int> = m_box.Box<type Int>(1);
 	return m_trait.Show::show(b);
 }
@@ -933,21 +933,21 @@ module m_trait
 import m_box
 
 pub trait Hashable {
-	fn hash(self: Int) returns Int
+	fn hash(self: Int) -> Int
 }
 
 export { Hashable, Show }
 
 implement Hashable for Int {
-	pub fn hash(self: Int) returns Int { return self; }
+	pub fn hash(self: Int) -> Int { return self; }
 }
 
 pub trait Show {
-	fn show(self: m_box.Box<String>) returns Int
+	fn show(self: m_box.Box<String>) -> Int
 }
 
 implement Show for m_box.Box<String> require String is Hashable {
-	pub fn show(self: m_box.Box<String>) returns Int { return 0; }
+	pub fn show(self: m_box.Box<String>) -> Int { return 0; }
 }
 """,
 		Path("m_main.drift"): """
@@ -956,7 +956,7 @@ module m_main
 import m_box
 import m_trait
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	val b: m_box.Box<String> = m_box.Box<type String>("s");
 	return m_trait.Show::show(b);
 }
@@ -977,7 +977,7 @@ def test_ufcs_requires_exported_trait(tmp_path: Path) -> None:
 module m_trait
 
 pub trait Show {
-	fn show(self: Self) returns Int
+	fn show(self: Self) -> Int
 }
 """,
 		Path("m_main.drift"): """
@@ -985,7 +985,7 @@ module m_main
 
 import m_trait
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	return m_trait.Show::show(1);
 }
 """,
@@ -1016,7 +1016,7 @@ import m_box
 
 export { Show }
 
-pub trait Show { fn show(self: m_box.Box<Int>) returns Int }
+pub trait Show { fn show(self: m_box.Box<Int>) -> Int }
 """,
 		Path("m_impl/lib.drift"): """
 module m_impl
@@ -1025,7 +1025,7 @@ import m_box
 import m_trait as t
 
 implement t.Show for m_box.Box<Int> {
-	pub fn show(self: m_box.Box<Int>) returns Int { return 1; }
+	pub fn show(self: m_box.Box<Int>) -> Int { return 1; }
 }
 """,
 	}
@@ -1070,7 +1070,7 @@ import m_box
 
 export { Show }
 
-pub trait Show { fn show(self: m_box.Box<Int>) returns Int }
+pub trait Show { fn show(self: m_box.Box<Int>) -> Int }
 """,
 		Path("m_main/main.drift"): """
 module m_main
@@ -1080,7 +1080,7 @@ import m_traits as t
 
 use trait t.Show
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	val b: m_box.Box<Int> = m_box.Box<type Int>(1);
 	return b.show();
 }

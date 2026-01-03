@@ -108,7 +108,7 @@ def test_overloads_across_files_in_module(tmp_path: Path) -> None:
 		"""
 module m
 
-fn f(x: Int) returns Int { return x + 1; }
+fn f(x: Int) -> Int { return x + 1; }
 """,
 	)
 	_write_file(
@@ -116,7 +116,7 @@ fn f(x: Int) returns Int { return x + 1; }
 		"""
 module m
 
-fn f(x: String) returns Int { return 2; }
+fn f(x: String) -> Int { return 2; }
 """,
 	)
 	_write_file(
@@ -124,7 +124,7 @@ fn f(x: String) returns Int { return 2; }
 		"""
 module m
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
     val a: Int = f(1);
     val b: Int = f("hi");
     return a + b;

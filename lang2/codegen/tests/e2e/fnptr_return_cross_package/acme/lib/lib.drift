@@ -2,6 +2,6 @@ module acme.lib
 
 export { make }
 
-pub fn g(x: Int) nothrow returns Int { return x + 1; }
+pub fn g(x: Int) nothrow -> Int { return x + 1; }
 
-pub fn make() returns fn(Int) nothrow returns Int { return g; }
+pub fn make() -> Fn(Int) nothrow -> Int { return g; }

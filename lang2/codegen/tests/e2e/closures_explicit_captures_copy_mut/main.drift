@@ -1,11 +1,11 @@
 module main
 
-fn bump(p: &mut Int, by: Int) nothrow returns Int {
+fn bump(p: &mut Int, by: Int) nothrow -> Int {
 	*p += by;
 	return *p;
 }
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	var x = 5;
 	val i = 2;
 	return (| | captures(copy i, &mut x) => { return bump(x, i); })();

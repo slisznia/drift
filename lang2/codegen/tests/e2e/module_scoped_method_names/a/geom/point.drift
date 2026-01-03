@@ -5,12 +5,12 @@ export { Point, make }
 pub struct Point { x: Int, y: Int }
 
 implement Point {
-	pub fn move_by(self: &mut Point, dx: Int, dy: Int) returns Void {
+	pub fn move_by(self: &mut Point, dx: Int, dy: Int) -> Void {
 		self->x += dx;
 		self->y += dy;
 	}
 }
 
-pub fn make() returns Point {
+pub fn make() -> Point {
 	return Point(x = 1, y = 0);
 }

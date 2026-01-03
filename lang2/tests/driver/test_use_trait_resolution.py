@@ -33,7 +33,7 @@ module m_traits
 
 export { Show }
 
-pub trait Show { fn show(self: Int) returns Int }
+pub trait Show { fn show(self: Int) -> Int }
 """,
 		Path("m_main/main.drift"): """
 module m_main
@@ -42,7 +42,7 @@ import m_traits as t
 
 use trait t.Show
 
-fn main() nothrow returns Int{ return 0; }
+fn main() nothrow -> Int{ return 0; }
 """,
 	}
 	_func_hirs, _sigs, _fn_ids_by_name, _type_table, _exc_catalog, module_exports, _deps, diagnostics = _parse_workspace(
@@ -60,7 +60,7 @@ module m_traits
 
 export { Show }
 
-pub trait Show { fn show(self: Int) returns Int }
+pub trait Show { fn show(self: Int) -> Int }
 """,
 		Path("m_main/main.drift"): """
 module m_main
@@ -69,7 +69,7 @@ import m_traits
 
 use trait m_traits.Missing
 
-fn main() nothrow returns Int{ return 0; }
+fn main() nothrow -> Int{ return 0; }
 """,
 	}
 	*_rest, diagnostics = _parse_workspace(tmp_path, files)
@@ -83,7 +83,7 @@ def test_use_trait_requires_export(tmp_path: Path) -> None:
 		Path("m_traits/lib.drift"): """
 module m_traits
 
-pub trait Show { fn show(self: Int) returns Int }
+pub trait Show { fn show(self: Int) -> Int }
 """,
 		Path("m_main/main.drift"): """
 module m_main
@@ -92,7 +92,7 @@ import m_traits
 
 use trait m_traits.Show
 
-fn main() nothrow returns Int{ return 0; }
+fn main() nothrow -> Int{ return 0; }
 """,
 	}
 	*_rest, diagnostics = _parse_workspace(tmp_path, files)
@@ -110,14 +110,14 @@ module m_traits
 
 export { Show }
 
-pub trait Show { fn show(self: Int) returns Int }
+pub trait Show { fn show(self: Int) -> Int }
 """,
 		Path("m_main/main.drift"): """
 module m_main
 
 use trait missing.Show
 
-fn main() nothrow returns Int{ return 0; }
+fn main() nothrow -> Int{ return 0; }
 """,
 	}
 	*_rest, diagnostics = _parse_workspace(tmp_path, files)

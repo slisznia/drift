@@ -46,22 +46,22 @@ module acme.vec
 export { Vec, Show }
 
 pub trait Show {
-	fn show(self: &Self) returns Int
+	fn show(self: &Self) -> Int
 }
 
 implement Show for Int {
-	pub fn show(self: &Int) returns Int { return 1; }
+	pub fn show(self: &Int) -> Int { return 1; }
 }
 
 pub struct Vec<T> require T is Show { value: T }
 
 implement<T> Vec<T> {
-	pub fn len(self: &Vec<T>) returns Int { return 1; }
-	pub fn push(self: &mut Vec<T>, value: T) returns Void { return; }
+	pub fn len(self: &Vec<T>) -> Int { return 1; }
+	pub fn push(self: &mut Vec<T>, value: T) -> Void { return; }
 }
 
 implement<T> Show for Vec<T> {
-	pub fn show(self: &Vec<T>) returns Int { return 1; }
+	pub fn show(self: &Vec<T>) -> Int { return 1; }
 }
 """.lstrip(),
 	)
@@ -75,7 +75,7 @@ use trait vec.Show
 
 export { run }
 
-pub fn run() returns Int{
+pub fn run() -> Int{
 	var v: vec.Vec<Int> = vec.Vec<type Int>(value = 1);
 	v.push(2);
 	val a: Int = v.len();

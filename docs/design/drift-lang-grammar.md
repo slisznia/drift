@@ -45,7 +45,7 @@ PubItem      ::= "pub" (FnDef | ConstDef | StructDef | ExceptionDef | VariantDef
 
 ConstDef     ::= "const" NAME ":" Ty "=" Expr TERMINATOR
 FnDef        ::= "fn" Ident TypeParams? "(" Params? ")" ReturnSig RequireClause? Block
-ReturnSig    ::= "nothrow"? "returns" Ty
+ReturnSig    ::= "nothrow"? "->" Ty
 Params       ::= Param ("," Param)*
 Param        ::= Ident ":" Ty
 
@@ -89,14 +89,17 @@ Types:
 ```
 Ty           ::= RefType | FnType | BaseType
 RefType      ::= "&" "mut"? Ty
-FnType       ::= "fn" "(" (Ty ("," Ty)*)? ")" ReturnSig
+FnType       ::= "Fn" "(" (Ty ("," Ty)*)? ")" FnReturn
+FnReturn     ::= "nothrow"? "->" Ty
 BaseType     ::= NAME "." NAME TypeArgs? | NAME TypeArgs?
 TypeArgs     ::= "[" Ty ("," Ty)* "]" | "<" Ty ("," Ty)* ">"
 TypeParams   ::= "<" NAME ("," NAME)* ">"
 ```
 
 Notes:
-- `nothrow`, when present, appears immediately before `returns` in `ReturnSig` for both `FnDef` and `FnType`. `returns T nothrow` is invalid.
+- `nothrow`, when present, appears immediately before `->` in `ReturnSig` for `FnDef`. `-> T nothrow` is invalid.
+- `nothrow`, when present, appears immediately before `->` in `FnReturn`. `-> T nothrow` is invalid.
+- Function types are not chainable; nesting is in the return type. `Fn(A) -> Fn(B) -> C` parses as `Fn(A) -> (Fn(B) -> C)`, and the other grouping is `Fn(Fn(A) -> Fn(B)) -> C`.
 
 Statements and blocks:
 ```
@@ -212,7 +215,7 @@ ExprList     ::= Expr ("," Expr)*
 CastExpr     ::= "cast" "<" Ty ">" "(" Expr ")"
 
 LambdaExpr   ::= "|" LambdaParams? "|" LambdaCaptures? LambdaReturns? "=>" LambdaBody
-LambdaReturns ::= "returns" Ty
+LambdaReturns ::= "->" Ty
 LambdaParams ::= LambdaParam ("," LambdaParam)*
 LambdaParam  ::= NAME (":" Ty)?
 LambdaCaptures ::= "captures" "(" (LambdaCaptureItem ("," LambdaCaptureItem)*)? ")"

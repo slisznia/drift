@@ -6,16 +6,16 @@ struct Counter {
     value: Int
 }
 
-fn new_box(c: &mut Counter) returns Box {
+fn new_box(c: &mut Counter) -> Box {
     c.value = c.value + 1
     return Box(id = c.value)
 }
 
-fn use_box(self: Box, a: Int, b: Int) returns Int {
+fn use_box(self: Box, a: Int, b: Int) -> Int {
     return a + b
 }
 
-fn main() returns Int {
+fn main() -> Int {
     var counter: Counter = Counter(value = 0)
     val result = new_box(&mut counter).use_box(.id, .id)
     if counter.value == 1 {

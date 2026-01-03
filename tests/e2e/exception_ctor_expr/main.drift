@@ -2,7 +2,7 @@ import std.console.out
 
 exception InvalidPayload(payload: String)
 
-fn ingest(line: String) returns Int {
+fn ingest(line: String) -> Int {
   if line == "" {
     throw InvalidPayload(payload = line)
   }
@@ -10,7 +10,7 @@ fn ingest(line: String) returns Int {
   return 0
 }
 
-fn might_throw(line: String) returns Int {
+fn might_throw(line: String) -> Int {
   val rc = try ingest(line) catch InvalidPayload(e) {
     out.writeln("expr caught");
     val payload = e.attrs["payload"].as_string().unwrap_or("<missing>")
@@ -20,7 +20,7 @@ fn might_throw(line: String) returns Int {
   return rc
 }
 
-fn main() returns Int {
+fn main() -> Int {
   val a: Int = try might_throw("ok") catch InvalidPayload(e) { 9; };
   val b: Int = try might_throw("") catch InvalidPayload(e) { 1; };
   return a + b

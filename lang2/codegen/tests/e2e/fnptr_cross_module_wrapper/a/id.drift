@@ -2,6 +2,6 @@ module a
 
 export { id }
 
-pub fn id(x: Int) nothrow returns Int {
+pub fn id(x: Int) nothrow -> Int {
 	return x;
 }

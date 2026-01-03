@@ -45,7 +45,7 @@ pub const MARK: Int = 1;
 export { MARK }
 
 implement m_types.Box {
-	pub fn tag(self: m_types.Box) returns Int { return 1; }
+	pub fn tag(self: m_types.Box) -> Int { return 1; }
 }
 """,
 	)
@@ -57,7 +57,7 @@ module m_impl_c
 import m_types
 
 implement m_types.Box {
-	pub fn tag(self: m_types.Box) returns Int { return 2; }
+	pub fn tag(self: m_types.Box) -> Int { return 2; }
 }
 """,
 	)
@@ -77,7 +77,7 @@ module m_main
 import m_a
 import m_impl_c
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	return 0;
 }
 """,
@@ -112,10 +112,10 @@ import m_types
 
 export { Show }
 
-pub trait Show { fn show(self: m_types.Box) returns Int }
+pub trait Show { fn show(self: m_types.Box) -> Int }
 
 implement Show for m_types.Box {
-	pub fn show(self: m_types.Box) returns Int { return self.value; }
+	pub fn show(self: m_types.Box) -> Int { return self.value; }
 }
 """,
 	)
@@ -137,7 +137,7 @@ import m_types
 
 use trait m_api.Show
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	val b: m_types.Box = m_types.Box(value = 1);
 	try {
 		return b.show();

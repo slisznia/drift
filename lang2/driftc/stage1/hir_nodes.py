@@ -322,7 +322,7 @@ class HFnPtrConst(HExpr):
 	Function pointer constant (resolved symbol + call signature).
 
 	This node is introduced by the type checker when a name expression is used
-	as a function value (e.g., `val f: fn(...) = abs`).
+	as a function value (e.g., `val f: Fn(...) -> T = abs`).
 	"""
 	fn_ref: FunctionRefId
 	call_sig: "CallSig"

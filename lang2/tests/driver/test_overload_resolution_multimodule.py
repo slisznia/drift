@@ -118,8 +118,8 @@ module a
 
 export { f }
 
-pub fn f(x: Int) returns Int { return x + 1; }
-pub fn f(x: String) returns Int { return 2; }
+pub fn f(x: Int) -> Int { return x + 1; }
+pub fn f(x: String) -> Int { return 2; }
 """,
 	)
 	_write_file(
@@ -129,7 +129,7 @@ module b
 
 import a
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
     val r1: Int = a.f(1);
     val r2: Int = a.f("hi");
     return r1 + r2;

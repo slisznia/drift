@@ -2,11 +2,11 @@ module m
 
 exception MyErr()
 
-fn may_fail(x: Int) returns Int {
+fn may_fail(x: Int) -> Int {
 	throw MyErr();
 }
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	val v: Int = try (may_fail(1) + 2) catch { 0 };
 	return v;
 }

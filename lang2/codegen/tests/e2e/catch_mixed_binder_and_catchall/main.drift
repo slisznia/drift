@@ -3,11 +3,11 @@ module main
 exception A()
 exception B()
 
-fn fail() returns Int {
+fn fail() -> Int {
 	throw A();
 }
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
     try fail() catch A(e) {
         print("a");
     } catch {

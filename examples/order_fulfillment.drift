@@ -8,11 +8,11 @@ struct Order {
 	quantity: Int64
 }
 
-fn verify(order: Order) returns Bool {
+fn verify(order: Order) -> Bool {
 	return order.quantity > 0 and order.sku != ""
 }
 
-fn ship(order: Order) returns Void {
+fn ship(order: Order) -> Void {
 	out.writeln("debug-start")
 	out.writeln(verify(order))
 	if verify(order) {
@@ -25,7 +25,7 @@ fn ship(order: Order) returns Void {
 	}
 }
 
-fn main() returns Void {
+fn main() -> Void {
 	var order: Order = Order(id = 42, sku = "DRIFT-1", quantity = 1)
 	ship(order->)
 }

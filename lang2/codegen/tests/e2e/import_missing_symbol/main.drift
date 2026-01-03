@@ -2,4 +2,4 @@ module main
 import lib as lib
 
 
-fn main() nothrow returns Int{ return lib.nope; }
+fn main() nothrow -> Int{ return lib.nope; }

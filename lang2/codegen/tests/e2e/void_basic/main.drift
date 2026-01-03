@@ -1,9 +1,9 @@
-fn log() nothrow returns Void {
+fn log() nothrow -> Void {
 	println("hello");
 	return;
 }
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	log();
 	return 7;
 }

@@ -97,9 +97,9 @@ module {module_id}
 
 export {{ id, Show }}
 pub trait Show {{
-	fn show(self: Self) returns Int;
+	fn show(self: Self) -> Int;
 }}
-pub fn id<T>(x: T) nothrow returns T{require_clause} {{
+pub fn id<T>(x: T) nothrow -> T{require_clause} {{
 	{body};
 }}
 """.lstrip(),
@@ -132,12 +132,12 @@ export {{ Box, make }}
 
 pub struct Box<T> {{ value: T }}
 
-pub fn make() returns Box<Int> {{
+pub fn make() -> Box<Int> {{
 	return Box<type Int>(1);
 }}
 
 implement<T> Box<T> {{
-	pub fn tag(self: Box<T>) returns Int {{
+	pub fn tag(self: Box<T>) -> Int {{
 		return 1;
 	}}
 }}
@@ -171,12 +171,12 @@ export {{ Box, make }}
 
 pub struct Box<T> {{ value: T }}
 
-pub fn make() returns Box<Int> {{
+pub fn make() -> Box<Int> {{
 	return Box<type Int>(1);
 }}
 
 implement<T> Box<T> {{
-	pub fn get(self: Box<T>) returns Int {{
+	pub fn get(self: Box<T>) -> Int {{
 		return 1;
 	}}
 }}
@@ -210,12 +210,12 @@ export {{ Box, make }}
 
 pub struct Box<T> {{ value: T }}
 
-pub fn make() returns Box<Int> {{
+pub fn make() -> Box<Int> {{
 	return Box<type Int>(1);
 }}
 
 implement<T> Box<T> {{
-	pub fn id<U>(self: &Box<T>, value: U) returns U {{
+	pub fn id<U>(self: &Box<T>, value: U) -> U {{
 		return value;
 	}}
 }}
@@ -248,24 +248,24 @@ module {module_id}
 export {{ Box, make, Show, Debuggable }}
 
 pub trait Debuggable {{
-	fn debug(self: Self) returns Int
+	fn debug(self: Self) -> Int
 }}
 
 pub trait Show {{
-	fn show(self: Self) returns Int
+	fn show(self: Self) -> Int
 }}
 
 pub struct Box<T> {{ value: T }}
 
 implement Debuggable for Int {{
-	pub fn debug(self: Int) returns Int {{ return self; }}
+	pub fn debug(self: Int) -> Int {{ return self; }}
 }}
 
 implement<T> Show for Box<T> require T is Debuggable {{
-	pub fn show(self: Box<T>) returns Int {{ return 7; }}
+	pub fn show(self: Box<T>) -> Int {{ return 7; }}
 }}
 
-pub fn make() returns Box<Int> {{
+pub fn make() -> Box<Int> {{
 	return Box<type Int>(1);
 }}
 """.lstrip(),
@@ -327,9 +327,9 @@ def test_instantiation_index_marks_comdat_linkonce(tmp_path: Path) -> None:
 		"""
 module main
 
-fn id<T>(x: T) nothrow returns T { return x; }
+fn id<T>(x: T) nothrow -> T { return x; }
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	return id<type Int>(1);
 }
 """.lstrip(),
@@ -366,7 +366,7 @@ module main
 
 import acme.gen as gen
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	return try gen.id<type Int>(1) catch { 0 };
 }
 """.lstrip(),
@@ -404,7 +404,7 @@ import acme.req as req
 
 struct Bad { value: Int }
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	try {
 		req.id<type Bad>(Bad(1));
 		return 0;
@@ -451,7 +451,7 @@ module acme.a
 import acme.common as common
 export { a }
 
-pub fn a() returns Int {
+pub fn a() -> Int {
 	return common.id<type Int>(1);
 }
 """.lstrip(),
@@ -490,7 +490,7 @@ module acme.b
 import acme.common as common
 export { b }
 
-pub fn b() returns Int {
+pub fn b() -> Int {
 	return common.id<type Int>(2);
 }
 """.lstrip(),
@@ -535,7 +535,7 @@ module main
 import acme.a as a
 import acme.b as b
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	return try (a.a() + b.b()) catch { 0 };
 }
 """.lstrip(),
@@ -586,7 +586,7 @@ module acme.user_a
 import acme.lib as lib
 export { run_a }
 
-pub fn run_a() returns Int {
+pub fn run_a() -> Int {
 	return lib.id(1);
 }
 """.lstrip(),
@@ -599,7 +599,7 @@ module acme.user_b
 import acme.lib as lib
 export { run_b }
 
-pub fn run_b() returns Int {
+pub fn run_b() -> Int {
 	return lib.id(2);
 }
 """.lstrip(),
@@ -649,7 +649,7 @@ module acme.user
 import acme.box as box
 export { run }
 
-pub fn run() returns Int {
+pub fn run() -> Int {
 	val b: box.Box<Int> = box.make();
 	return b.tag();
 }
@@ -697,7 +697,7 @@ module acme.user
 import acme.box as box
 export { run }
 
-pub fn run() returns Int {
+pub fn run() -> Int {
 	val b: box.Box<Int> = box.make();
 	return b.get();
 }
@@ -746,7 +746,7 @@ module acme.user_a
 import acme.box as box
 export { run_a }
 
-pub fn run_a() returns Int {
+pub fn run_a() -> Int {
 	val b: box.Box<Int> = box.make();
 	return b.id(1);
 }
@@ -760,7 +760,7 @@ module acme.user_b
 import acme.box as box
 export { run_b }
 
-pub fn run_b() returns String {
+pub fn run_b() -> String {
 	val b: box.Box<Int> = box.make();
 	return b.id("x");
 }
@@ -817,7 +817,7 @@ import acme.box as box
 export { run }
 use trait box.Show
 
-pub fn run() returns Int {
+pub fn run() -> Int {
 	val b: box.Box<Int> = box.make();
 	return b.show();
 }
@@ -866,7 +866,7 @@ import acme.box as box
 export { run_a }
 use trait box.Show
 
-pub fn run_a() returns Int {
+pub fn run_a() -> Int {
 	val b: box.Box<Int> = box.make();
 	return b.show();
 }
@@ -881,7 +881,7 @@ import acme.box as box
 export { run_b }
 use trait box.Show
 
-pub fn run_b() returns Int {
+pub fn run_b() -> Int {
 	val b: box.Box<Int> = box.make();
 	return b.show();
 }

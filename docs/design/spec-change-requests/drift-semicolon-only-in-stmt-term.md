@@ -167,7 +167,7 @@ Add driver tests that lock the behavior:
 1. **Missing semicolon in block is an error**
 
 ```drift
-fn main() nothrow returns Int {
+fn main() nothrow -> Int {
 	val a: Int = 1
 	return a;
 }
@@ -181,7 +181,7 @@ Assert:
 2. **Compound statements do not accept trailing semicolons**
 
 ```drift
-fn main() nothrow returns Int {
+fn main() nothrow -> Int {
 	while true { break; };
 	return 0;
 }
@@ -195,7 +195,7 @@ Assert:
 3. **Match arms require commas**
 
 ```drift
-fn main() nothrow returns Int {
+fn main() nothrow -> Int {
 	val y: Int = match 1 {
 		0 => { 10 }
 		_ => { 20 },
@@ -212,7 +212,7 @@ Assert:
 4. **Expression match and statement match both work**
 
 ```drift
-fn main() nothrow returns Int {
+fn main() nothrow -> Int {
 	val y: Int = match 1 { 0 => { 10 }, _ => { 20 }, };
 	match y { 10 => { }, _ => { }, }
 	return y;
@@ -226,7 +226,7 @@ Assert:
 5. **ValueBlock final expression stays expression-only**
 
 ```drift
-fn main() nothrow returns Int {
+fn main() nothrow -> Int {
 	val x: Int = try foo() catch { log("x"); 0 };
 	return x;
 }

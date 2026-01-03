@@ -31,7 +31,7 @@ This mirrors Rust’s core idea (errors are values), while allowing more ergonom
 ```drift
 exception InvalidOrder(order_id: Int64)
 
-fn ship(order: Order) returns Void {
+fn ship(order: Order) -> Void {
     if !verify(order) {
         throw InvalidOrder(order_id = order.id)
     }

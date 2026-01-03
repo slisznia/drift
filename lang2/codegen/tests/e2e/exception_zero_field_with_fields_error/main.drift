@@ -2,6 +2,6 @@ module m
 
 exception Timeout()
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
     throw Timeout(x = 1);
 }

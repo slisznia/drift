@@ -55,7 +55,7 @@ def test_ssa_check_smoke(tmp_path: Path) -> None:
         tmp_path,
         "main.drift",
         "import std.console.out\n"
-        "fn main() returns Int {\n"
+        "fn main() -> Int {\n"
         "  out.writeln(\"hi from ssa\")\n"
         "  val rc: Int = 0\n"
         "  return rc\n"
@@ -68,7 +68,7 @@ def test_ssa_check_control_flow(tmp_path: Path) -> None:
         tmp_path,
         "control.drift",
         "import std.console.out\n"
-        "fn main() returns Int {\n"
+        "fn main() -> Int {\n"
         "  var i: Int = 0\n"
         "  while i < 3 {\n"
         "    if i == 1 {\n"
@@ -87,11 +87,11 @@ def test_ssa_check_try_catch(tmp_path: Path) -> None:
         tmp_path,
         "try_catch.drift",
         "import std.console.out\n"
-        "fn might_fail(x: Int) returns Int {\n"
+        "fn might_fail(x: Int) -> Int {\n"
         "  if x != 0 { throw drift_error_new_dummy(x, \"payload\", \"\"); }\n"
         "  return x\n"
         "}\n"
-        "fn main() returns Int {\n"
+        "fn main() -> Int {\n"
         "  try {\n"
         "    out.writeln(\"before\")\n"
         "    might_fail(1)\n"

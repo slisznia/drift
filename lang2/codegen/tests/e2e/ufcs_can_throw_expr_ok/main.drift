@@ -3,22 +3,22 @@ module main
 exception Fail()
 
 trait Boom {
-	fn boom_value(self: &Self) returns Int
+	fn boom_value(self: &Self) -> Int
 }
 
 struct S(x: Int)
 
 implement Boom for S {
-	fn boom_value(self: &S) returns Int {
+	fn boom_value(self: &S) -> Int {
 		throw Fail();
 	}
 }
 
-fn use_value(s: &S) returns Int {
+fn use_value(s: &S) -> Int {
 	return Boom::boom_value(s);
 }
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	val s: S = S(1);
 	val r: &S = &s;
 	val x: Int = try use_value(r) catch { 3 };

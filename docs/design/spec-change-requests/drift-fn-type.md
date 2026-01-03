@@ -2,16 +2,16 @@
 
 **Status:** proposed  
 **Audience:** parser/compiler, spec authors  
-**Primary goal:** replace the current *function-type* syntax (`fn(...) returns T`) with a clearer, non-repetitive type form using `Fn` and `->`.
+**Primary goal:** replace the current *function-type* syntax (`fn(...) -> T`) with a clearer, non-repetitive type form using `Fn` and `->`.
 
 ---
 
 ## 1. Summary
 
-Today Drift uses `fn` both for **function declarations** and **function types**. Function types are written with a nested `returns` keyword, which becomes noisy when returning functions:
+Today Drift uses `fn` both for **function declarations** and **function types**. Function types repeat `fn` and the return arrow, which becomes noisy when returning functions:
 
 ```drift
-fn my_fun(x: Int) returns fn (x: Int) returns Int { ... }  // noisy
+fn my_fun(x: Int) -> Fn(Int) -> Int { ... }  // noisy
 ```
 
 This change introduces a dedicated *type constructor*:
@@ -29,7 +29,7 @@ Key rule: **function-type parameters are type-only** (no names), even if ordinar
 ## 2. Motivation
 
 ### 2.1. Readability for nested function types
-`returns` repeats at each nesting level and quickly becomes hard to scan. `Fn(...) -> T` stays compact and conventional.
+`->` repeats at each nesting level and quickly becomes hard to scan. `Fn(...) -> T` stays compact and conventional.
 
 ### 2.2. Cleaner grammar and diagnostics
 Using a distinct type constructor avoids overloading `fn` in type position and improves parse anchors and error recovery.
@@ -41,7 +41,7 @@ Using a distinct type constructor avoids overloading `fn` in type position and i
 
 ## 3. Non-goals
 
-- This change **does not** alter function declaration return syntax (`returns Ty`) in this revision.
+- This change **does not** alter function declaration return syntax (already `-> Ty`).
 - This change **does not** change lambda syntax or callable traits/interfaces.
 - This change **does not** introduce named parameters in function types (explicitly rejected).
 
@@ -65,6 +65,8 @@ val g: Fn(Int, Bool) -> String = pick;
 val h: Fn(Fn(Int) -> Int) -> Int = higher_order;
 ```
 
+Associativity note: `Fn(A) -> Fn(B) -> C` parses as `Fn(A) -> (Fn(B) -> C)` because `->` only appears inside a single `FnType`. The other grouping must be written explicitly as `Fn(Fn(A) -> Fn(B)) -> C`.
+
 ### 4.2. (Optional in this change) `nothrow` on function types
 To preserve current expressiveness (since function types currently use `ReturnSig`), allow:
 
@@ -76,7 +78,7 @@ If included, the rule mirrors existing ordering constraints for `ReturnSig`:
 - `nothrow` (if present) appears **before** the return arrow.
 - `Fn(Int) -> Int nothrow` is invalid.
 
-If you want to keep this change smaller, you can defer `nothrow` on function types; but then you must update places that currently rely on `fn(...) nothrow returns T` in type position (notably `cast<...>` examples in the spec).
+If you want to keep this change smaller, you can defer `nothrow` on function types; but then you must update places that currently rely on `Fn(...) nothrow -> T` in type position (notably `cast<...>` examples in the spec).
 
 ---
 
@@ -90,7 +92,7 @@ From the authoritative grammar, types are currently:
 ```ebnf
 Ty           ::= RefType | FnType | BaseType
 FnType       ::= "fn" "(" (Ty ("," Ty)*)? ")" ReturnSig
-ReturnSig    ::= "nothrow"? "returns" Ty
+ReturnSig    ::= "nothrow"? "->" Ty
 ```
 
 and function declarations are:
@@ -131,7 +133,7 @@ Option B (transition): keep old `fn(...) ReturnSig` as a **deprecated alias** fo
 ## 6. Lexical / keyword considerations
 
 ### 6.1. Is `Fn` a keyword?
-To make parsing and tooling predictable, treat `Fn` as a **reserved keyword in type position**.
+To make parsing and tooling predictable, treat `Fn` as a **reserved keyword** (like `Int`/`String`) and disallow it as an identifier in all positions. In type position, `Fn` must appear as `Fn(...) -> T` (bare `Fn` is invalid).
 
 Implementation choices:
 
@@ -153,7 +155,7 @@ No new punctuation is introduced (the grammar already lists `->` as a token). If
 These are examples and explanatory sections that should be updated to match the new syntax.
 
 ### 7.1. `cast<T>(expr)` examples for function types
-The spec currently demonstrates function-type casts using the old `fn(...) nothrow returns T` type literal. Update to:
+The spec currently demonstrates function-type casts using the old `Fn(...) nothrow -> T` type literal. Update to:
 
 ```drift
 val f = cast<Fn(Int) nothrow -> Int>(abs);
@@ -162,19 +164,19 @@ val f = cast<Fn(Int) nothrow -> Int>(abs);
 (If you choose to defer `nothrow` on function types, then either remove `nothrow` from this example or provide a different disambiguation story.)
 
 ### 7.2. Closure/callable chapters
-Any text referring to “function pointers are written as `fn(Args...) returns R`” should be revised to “`Fn(Args...) -> R`”, while keeping `fn` as the declaration keyword.
+Any text referring to “function pointers are written as `Fn(Args...) -> R`” should be revised to “`Fn(Args...) -> R`”, while keeping `fn` as the declaration keyword.
 
 ---
 
 ## 8. Migration plan
 
 1. **Parser:** accept `Fn(...) -> T` immediately.
-2. **Transition (recommended):** accept the old `fn(...) returns T` type form with a deprecation warning for one cycle.
+2. **Transition (recommended):** accept the old `Fn(...) -> T` type form with a deprecation warning for one cycle.
 3. **Formatter:** normalize function types to `Fn(...) -> T`.
 4. **After transition:** remove the old form and make it a hard parse error with a clear diagnostic and fix-it.
 
 Suggested diagnostic text:
-- `E-SYNTAX-FNTYPE-OLD: function types use 'Fn(...) -> T' (not 'fn(...) returns T')`
+- `E-SYNTAX-FNTYPE-OLD: function types use 'Fn(...) -> T' (not 'Fn(...) -> T')`
 
 ---
 
@@ -210,12 +212,12 @@ These should be rejected in *type* position:
 
 Before:
 ```drift
-fn my_fun(x: Int) returns fn(Int) returns Int { ... }
-val f = cast<fn(Int) nothrow returns Int>(abs);
+fn my_fun(x: Int) -> Fn(Int) -> Int { ... }
+val f = cast<Fn(Int) nothrow -> Int>(abs);
 ```
 
 After:
 ```drift
-fn my_fun(x: Int) returns Fn(Int) -> Int { ... }
+fn my_fun(x: Int) -> Fn(Int) -> Int { ... }
 val f = cast<Fn(Int) nothrow -> Int>(abs);
 ```

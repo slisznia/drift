@@ -1,8 +1,8 @@
-fn takes(a: &Int, b: &mut Int) returns Int {
+fn takes(a: &Int, b: &mut Int) -> Int {
 	return 0;
 }
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	var x = 0;
 	takes(&x, &mut x);
 	return 0;

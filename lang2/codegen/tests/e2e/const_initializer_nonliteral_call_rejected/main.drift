@@ -1,9 +1,9 @@
 module main
 
-fn foo() returns Int { return 1; }
+fn foo() -> Int { return 1; }
 
 const X: Int = foo();
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	return 0;
 }

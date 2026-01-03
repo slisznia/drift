@@ -4,7 +4,7 @@ export { boom }
 
 exception Boom()
 
-pub fn boom() returns Int {
+pub fn boom() -> Int {
 	throw Boom();
 }
 

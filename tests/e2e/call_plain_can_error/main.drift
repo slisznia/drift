@@ -1,11 +1,11 @@
-fn may_fail(flag: Int) returns Int {
+fn may_fail(flag: Int) -> Int {
   if flag != 0 {
     throw drift_error_new_dummy(flag, "payload", "")
   }
   return 0
 }
 
-fn main() returns Int {
+fn main() -> Int {
   val x = may_fail(1)
   return x
 }

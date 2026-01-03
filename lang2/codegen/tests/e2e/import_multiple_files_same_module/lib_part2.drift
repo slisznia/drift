@@ -2,5 +2,5 @@ module lib
 
 export { b }
 
-pub fn b() returns Int { return 2; }
+pub fn b() -> Int { return 2; }
 

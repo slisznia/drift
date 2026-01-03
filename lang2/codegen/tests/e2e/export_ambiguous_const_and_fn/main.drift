@@ -2,8 +2,8 @@ module main
 
 pub const X: Int = 1;
 
-pub fn X() returns Int { return 2; }
+pub fn X() -> Int { return 2; }
 
 export { X }
 
-fn main() nothrow returns Int{ return 0; }
+fn main() nothrow -> Int{ return 0; }

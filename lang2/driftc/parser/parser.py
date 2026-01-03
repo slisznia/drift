@@ -367,6 +367,9 @@ class QualifiedTypeArgInserter:
         impl_typeparam_depth = 0
         struct_header = False
         fn_header = False
+        fn_sig = False
+        lambda_pending = False
+        lambda_sig = False
         allowed_in_type_args = {
             # Type refs.
             "NAME",
@@ -384,7 +387,7 @@ class QualifiedTypeArgInserter:
             "LSQB",
             "RSQB",
         }
-        type_mode_start = {"COLON", "RETURNS", "FOR"}
+        type_mode_start = {"COLON", "FOR"}
         type_mode_end = {
             "COMMA",
             "LPAR",
@@ -590,10 +593,37 @@ class QualifiedTypeArgInserter:
                 yield _emit(token)
                 continue
 
-            if tt == "FN":
+            if tt == "FN_KW":
                 fn_header = True
+                fn_sig = True
                 yield _emit(token)
                 continue
+
+            if tt == "BAR":
+                prev_tt = recent[-1].type if recent else None
+                lambda_start_prev = {
+                    None,
+                    "LPAR",
+                    "LBRACE",
+                    "COMMA",
+                    "EQUAL",
+                    "COLON",
+                    "TERMINATOR",
+                    "RETURN",
+                    "IF",
+                    "ELSE",
+                    "WHILE",
+                    "FOR",
+                    "TRY",
+                    "MATCH",
+                    "PIPE_FWD",
+                    "PIPE_REV",
+                }
+                if lambda_pending:
+                    lambda_pending = False
+                    lambda_sig = True
+                elif prev_tt in lambda_start_prev:
+                    lambda_pending = True
 
             if type_mode:
                 if tt in {"LT", "TYPE_LT", "QUAL_TYPE_LT"}:
@@ -634,8 +664,12 @@ class QualifiedTypeArgInserter:
                     yield from _emit_pre_type_args(token)
                     continue
             yield _emit(token)
-            if tt in type_mode_start:
+            if tt in type_mode_start or (tt == "ARROW" and (fn_sig or lambda_sig)):
                 type_mode_next = True
+            if tt == "FATARROW":
+                lambda_sig = False
+            if tt in {"LBRACE", "TERMINATOR"}:
+                fn_sig = False
             continue
 
 
@@ -990,6 +1024,8 @@ def _build_trait_method_sig(tree: Tree) -> TraitMethodSig:
 	loc = _loc(tree)
 	children = list(tree.children)
 	idx = 0
+	if idx < len(children) and isinstance(children[idx], Token) and children[idx].type == "FN_KW":
+		idx += 1
 	name_token = _unwrap_ident(children[idx])
 	idx += 1
 	type_params: list[str] = []
@@ -1041,6 +1077,8 @@ def _build_function(tree: Tree) -> FunctionDef:
 	loc = _loc(tree)
 	children = list(tree.children)
 	idx = 0
+	if idx < len(children) and isinstance(children[idx], Token) and children[idx].type == "FN_KW":
+		idx += 1
 	name_token = _unwrap_ident(children[idx])
 	idx += 1
 	orig_name = name_token.value
@@ -1287,13 +1325,15 @@ def _build_type_expr(tree: Tree) -> TypeExpr:
 	name = _name(tree)
 	if name == "fn_type":
 		param_nodes = [child for child in tree.children if isinstance(child, Tree) and _name(child) == "type_expr"]
-		ret_node = next((child for child in tree.children if isinstance(child, Tree) and _name(child) == "return_sig"), None)
+		ret_node = next((child for child in tree.children if isinstance(child, Tree) and _name(child) == "fn_return"), None)
 		ret_type_node = None
 		if ret_node is not None:
 			ret_type_node = next((c for c in ret_node.children if isinstance(c, Tree)), None)
 		params = [_build_type_expr(t) for t in param_nodes]
 		ret = _build_type_expr(ret_type_node) if ret_type_node is not None else TypeExpr(name="<unknown>")
-		is_nothrow = any(isinstance(child, Token) and child.type == "NOTHROW" for child in tree.children)
+		is_nothrow = False
+		if ret_node is not None:
+			is_nothrow = any(isinstance(child, Token) and child.type == "NOTHROW" for child in ret_node.children)
 		fn_throws = not is_nothrow
 		return TypeExpr(name="fn", args=[*params, ret], fn_throws=fn_throws)
 	if name == "ref_type":

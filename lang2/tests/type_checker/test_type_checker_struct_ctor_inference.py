@@ -36,7 +36,7 @@ def test_struct_ctor_infers_from_expected_type_in_let(tmp_path: Path) -> None:
 		"""
 struct Box<T> { value: T }
 
-fn main() returns Int {
+fn main() -> Int {
 	val b: Box<Int> = Box(1);
 	return b.value;
 }
@@ -51,7 +51,7 @@ def test_struct_ctor_infers_from_expected_return_type(tmp_path: Path) -> None:
 		"""
 struct Box<T> { value: T }
 
-fn main() returns Box<Int> {
+fn main() -> Box<Int> {
 	return Box(1);
 }
 """,
@@ -65,7 +65,7 @@ def test_struct_ctor_missing_expected_type_is_error(tmp_path: Path) -> None:
 		"""
 struct Box<T> { }
 
-fn main() returns Int {
+fn main() -> Int {
 	val b = Box();
 	return 0;
 }

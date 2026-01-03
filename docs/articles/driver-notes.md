@@ -9,7 +9,7 @@ The old `drift.py` entrypoint has been deleted. To run programs, use the SSA/LLV
 ## Language surface supported
 
 - `val` / `var` bindings with optional `^capture` metadata (no re-assignment yet). Type annotations are optional when the right-hand expression determines the type.
-- Functions with typed parameters/returns (using the `returns` keyword).
+- Functions with typed parameters/return types (using `->` return syntax).
 - Expressions with literals (`Int64`, `Float64`, `String`, `Bool`), arithmetic/logic operators, and function calls.
 - Array literals `[expr, ...]` that produce `Array<T>` values (all elements must share a type, and empty literals are not supported yet).
 - Square-bracket indexing for reads (`val first = nums[0]`) and writes (`nums[1] = 42`) when the binding is declared with `var`.

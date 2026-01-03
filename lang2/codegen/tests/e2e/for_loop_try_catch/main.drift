@@ -2,14 +2,14 @@ module main
 
 exception Boom()
 
-fn maybe_boom(x: Int) returns Int {
+fn maybe_boom(x: Int) -> Int {
 	if x == 2 {
 		throw Boom();
 	}
 	return x;
 }
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	val xs = [1, 2, 3];
 	var sum: Int = 0;
 

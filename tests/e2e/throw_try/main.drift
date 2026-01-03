@@ -1,6 +1,6 @@
 import std.console.out
 
-fn may_throw(flag: Int) returns Int {
+fn may_throw(flag: Int) -> Int {
   if flag == 0 {
     return 0
   } else {
@@ -8,7 +8,7 @@ fn may_throw(flag: Int) returns Int {
   }
 }
 
-fn main() returns Int {
+fn main() -> Int {
   try {
     may_throw(1)
   } catch err {

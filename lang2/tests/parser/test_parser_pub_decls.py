@@ -9,18 +9,18 @@ def test_parse_pub_top_level_decls() -> None:
 		"""
 module m
 
-pub fn f() returns Int { return 0; }
-fn g() returns Int { return 1; }
+pub fn f() -> Int { return 0; }
+fn g() -> Int { return 1; }
 
 pub const ANSWER: Int = 1;
 
 pub struct S { }
 pub exception Boom()
 pub variant Opt<T> { Some(value: T), None }
-pub trait Debuggable { fn fmt(self: Int) returns Int }
+pub trait Debuggable { fn fmt(self: Int) -> Int }
 
 pub implement S {
-	pub fn tag(self: S) returns Int { return 0; }
+	pub fn tag(self: S) -> Int { return 0; }
 }
 """
 	)

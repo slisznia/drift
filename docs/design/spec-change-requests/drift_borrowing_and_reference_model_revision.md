@@ -98,7 +98,7 @@ This is the core behavior change that unlocks simpler iteration and less special
 For a function:
 
 ```drift
-fn f(x: T) returns R { ... }
+fn f(x: T) -> R { ... }
 ```
 
 Call rules stay as defined in the ownership chapter: 
@@ -118,8 +118,8 @@ There is **no borrow path** into a `T` parameter. If you want borrowing, you mus
 For a function:
 
 ```drift
-fn g(x: &T) returns R
-fn h(x: &mut T) returns R
+fn g(x: &T) -> R
+fn h(x: &mut T) -> R
 ```
 
 New global call rules:
@@ -161,17 +161,17 @@ Example:
 struct Point { x: Int64, y: Int64 }
 
 implement Point {
-	fn move_by(&mut self, dx: Int64, dy: Int64) returns Void {
+	fn move_by(&mut self, dx: Int64, dy: Int64) -> Void {
 		self.x += dx
 		self.y += dy
 	}
 
-	fn norm(&self) returns Float64 {
+	fn norm(&self) -> Float64 {
 		return (self.x * self.x + self.y * self.y).to_float().sqrt()
 	}
 
-	fn into_polar(self) returns Polar {
-		// consumes Point, returns Polar
+	fn into_polar(self) -> Polar {
+		// consumes Point, -> Polar
 		...
 	}
 }
@@ -200,8 +200,8 @@ This enables patterns like:
 
 ```drift
 implement<T> Array<T> {
-	fn iter(&self) returns ArrayRefIter<T> { ... }        // borrowed iterator
-	fn iter(self) returns ArrayOwningIter<T> { ... }      // owning iterator
+	fn iter(&self) -> ArrayRefIter<T> { ... }        // borrowed iterator
+	fn iter(self) -> ArrayOwningIter<T> { ... }      // owning iterator
 }
 ```
 
@@ -227,7 +227,7 @@ To avoid lifetime confusion, the spec must explicitly state:
 Examples:
 
 ```drift
-fn log_order(o: &Order) returns Void { ... }
+fn log_order(o: &Order) -> Void { ... }
 
 log_order(make_order())   // ❌ error: cannot borrow from temporary
 log_order(order->)        // ❌ error: cannot borrow from moved value
@@ -271,7 +271,7 @@ Update signatures using `ref` / `ref mut`:
 
 * `fn len(self: ref ByteBuffer)` → `fn len(self: &ByteBuffer)`. 
 * `fn clear(self: ref mut ByteBuffer)` → `fn clear(self: &mut ByteBuffer)`.
-* `fn ref_at(self: ref Array<T>, ...) returns ref T` → `fn ref_at(self: &Array<T>, ...) returns &T`. 
+* `fn ref_at(self: ref Array<T>, ...) -> ref T` → `fn ref_at(self: &Array<T>, ...) -> &T`. 
 
 Update `ByteSlice` / `MutByteSlice` descriptions to talk in terms of `&ByteSlice` / `&MutByteSlice` when describing API receivers. 
 
@@ -435,7 +435,7 @@ With this model in place, iteration becomes straightforward:
 
   ```drift
   trait Iterator<Item> {
-      fn next(&mut self) returns Option<Item>
+      fn next(&mut self) -> Option<Item>
   }
   ```
 
@@ -443,8 +443,8 @@ With this model in place, iteration becomes straightforward:
 
   ```drift
   implement<T> Array<T> {
-      fn iter(&self) returns ArrayRefIter<T> { ... }
-      fn iter(self) returns ArrayOwningIter<T> { ... }
+      fn iter(&self) -> ArrayRefIter<T> { ... }
+      fn iter(self) -> ArrayOwningIter<T> { ... }
   }
   ```
 

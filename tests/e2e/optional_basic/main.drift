@@ -1,6 +1,6 @@
 import std.console.out
 
-fn main() returns Int {
+fn main() -> Int {
     val some = drift_optional_int_some(41)
     val none = drift_optional_int_none()
 

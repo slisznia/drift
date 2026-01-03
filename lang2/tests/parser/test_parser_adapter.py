@@ -22,7 +22,7 @@ def test_parse_simple_return(tmp_path: Path):
 	src = tmp_path / "main.drift"
 	src.write_text(
 		"""
-fn main() returns Int {
+fn main() -> Int {
     return 42;
 }
 """
@@ -46,7 +46,7 @@ def test_parse_float_literal(tmp_path: Path):
 	src = tmp_path / "main.drift"
 	src.write_text(
 		"""
-	fn main() returns Float {
+	fn main() -> Float {
 	    return 1.25;
 	}
 	"""
@@ -86,7 +86,7 @@ def test_invalid_float_literals_produce_diagnostics(tmp_path: Path, lit: str):
 	These should be rejected as normal parser diagnostics (not hard crashes).
 	"""
 	src = tmp_path / "main.drift"
-	src.write_text(f"fn main() returns Float {{ return {lit}; }}\n")
+	src.write_text(f"fn main() -> Float {{ return {lit}; }}\n")
 	_module, _type_table, _exc_catalog, diagnostics = parse_drift_to_hir(src)
 	assert diagnostics, f"expected diagnostics for invalid float literal {lit!r}"
 	assert any(d.severity == "error" for d in diagnostics)
@@ -97,12 +97,12 @@ def test_parse_fnresult_ok(tmp_path: Path):
 	FnResult is an internal ABI carrier in lang2, not a surface type.
 
 	The parser should accept the syntax (so we can diagnose it with spans), but
-	should emit an error diagnostic instructing users to write `returns T`.
+	should emit an error diagnostic instructing users to write `-> T`.
 	"""
 	src = tmp_path / "main.drift"
 	src.write_text(
 		"""
-fn callee() returns FnResult<Int, Error> {
+fn callee() -> FnResult<Int, Error> {
     return 1;
 }
 """
@@ -116,7 +116,7 @@ def test_parse_ok_as_attr_stays_call(tmp_path: Path):
 	src = tmp_path / "main.drift"
 	src.write_text(
 		"""
-fn main() returns Int {
+fn main() -> Int {
     return ns.Ok(1);
 }
 """
@@ -143,7 +143,7 @@ module m
 
 exception Boom()
 
-fn main() returns Int {
+fn main() -> Int {
     throw Boom();
 }
 """
@@ -163,7 +163,7 @@ def test_parse_raise_expr_maps_to_throw(tmp_path: Path):
 	src = tmp_path / "main.drift"
 	src.write_text(
 		"""
-fn main() returns Int {
+fn main() -> Int {
     raise err_val;
 }
 """
@@ -185,7 +185,7 @@ def test_implement_header_rejects_reference_target(tmp_path: Path):
 	src.write_text(
 		"""
 implement &Point {
-    fn move(self: &Point) returns Void { return; }
+    fn move(self: &Point) -> Void { return; }
 }
 """
 	)
@@ -198,7 +198,7 @@ def test_parse_while_stmt_lowering(tmp_path: Path):
 	src = tmp_path / "main.drift"
 	src.write_text(
 		"""
-fn main() returns Int {
+fn main() -> Int {
     while true {
         return 1;
     }
@@ -223,7 +223,7 @@ def test_fnresult_typeids_are_resolved(tmp_path: Path):
 	src = tmp_path / "main.drift"
 	src.write_text(
 		"""
-fn drift_main() returns Int {
+fn drift_main() -> Int {
     return 1;
 }
 """
@@ -243,7 +243,7 @@ def test_nonescaping_param_annotation_is_syntax_error(tmp_path: Path):
 	src = tmp_path / "main.drift"
 	src.write_text(
 		"""
-fn apply(nonescaping f: Int, x: Int) returns Int {
+fn apply(nonescaping f: Int, x: Int) -> Int {
     return x;
 }
 """
@@ -256,8 +256,8 @@ def test_duplicate_function_definition_reports_diagnostic(tmp_path: Path) -> Non
 	src = tmp_path / "main.drift"
 	src.write_text(
 		"""
-fn main() returns Int { return 0; }
-fn main() returns Int { return 1; }
+fn main() -> Int { return 0; }
+fn main() -> Int { return 1; }
 """
 	)
 	module, _type_table, _exc_catalog, diagnostics = parse_drift_to_hir(src)

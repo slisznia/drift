@@ -1,6 +1,6 @@
 import std.console.out
 
-fn main() returns Int {
+fn main() -> Int {
   out.writeln("hi from ssa")
   val rc: Int = 0
   return rc

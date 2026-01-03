@@ -2,7 +2,7 @@ import std.console.out
 
 exception InvalidPayload(payload: String)
 
-fn ingest(line: String) returns Void {
+fn ingest(line: String) -> Void {
   val ^raw: String as "ingest.payload" = line
 
   if line == "" {
@@ -12,7 +12,7 @@ fn ingest(line: String) returns Void {
   }
 }
 
-fn main() returns Int {
+fn main() -> Int {
   ingest("alpha")
   ingest("")
   return 0

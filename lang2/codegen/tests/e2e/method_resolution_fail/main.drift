@@ -1,10 +1,10 @@
 module m
 
 implement Int {
-	fn bump(self: &mut Int) returns Void { }
+	fn bump(self: &mut Int) -> Void { }
 }
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	val flag = false;
 	flag.bump(); // no method for Bool.
 	return 0;

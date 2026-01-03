@@ -64,10 +64,10 @@ def test_require_filters_out_unmet_overload(tmp_path: Path) -> None:
 	src = tmp_path / "main.drift"
 	src.write_text(
 		"""
-trait A { fn a(self: Int) returns Int }
+trait A { fn a(self: Int) -> Int }
 struct S { }
-fn f<T>(x: T) returns Int require T is A { return 1; }
-fn main(x: S) returns Int { return f(x); }
+fn f<T>(x: T) -> Int require T is A { return 1; }
+fn main(x: S) -> Int { return f(x); }
 	"""
 	)
 	res = _typecheck_main_with_registry(src)

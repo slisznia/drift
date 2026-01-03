@@ -2,6 +2,6 @@ module m
 
 exception InvalidOrder(code: String)
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
     throw InvalidOrder();
 }

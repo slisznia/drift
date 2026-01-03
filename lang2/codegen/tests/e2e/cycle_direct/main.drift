@@ -1,4 +1,4 @@
 module main
 import a as a
-fn main() nothrow returns Int{ return a.afn(); }
+fn main() nothrow -> Int{ return a.aFn(); }
 

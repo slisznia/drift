@@ -2,10 +2,10 @@ module std.mem
 
 export { swap, replace }
 
-pub fn swap<T>(a: T, b: T) nothrow returns Void {
+pub fn swap<T>(a: T, b: T) nothrow -> Void {
 	return;
 }
 
-pub fn replace<T>(place: T, value: T) nothrow returns T {
+pub fn replace<T>(place: T, value: T) nothrow -> T {
 	return place;
 }

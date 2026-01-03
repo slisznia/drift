@@ -1,6 +1,6 @@
 import std.console.out
 
-fn main() returns Int {
+fn main() -> Int {
   var i: Int = 0
   while i < 3 {
     if i == 1 {

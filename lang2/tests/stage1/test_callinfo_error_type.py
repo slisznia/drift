@@ -34,15 +34,15 @@ def test_call_abi_error_type_is_canonical_across_modules(tmp_path: Path) -> None
 	mod_a.write_text(
 		"""
 module a
-fn boom() returns Int { return 1; }
-fn main() returns Int { return boom(); }
+fn boom() -> Int { return 1; }
+fn main() -> Int { return boom(); }
 """.lstrip()
 	)
 	mod_b.write_text(
 		"""
 module b
-fn boom() returns Int { return 2; }
-fn main() returns Int { return boom(); }
+fn boom() -> Int { return 2; }
+fn main() -> Int { return boom(); }
 """.lstrip()
 	)
 

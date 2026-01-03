@@ -4,6 +4,6 @@ pub struct Point(x: Int, y: Int);
 
 export { Point, make }
 
-pub fn make() returns Point {
+pub fn make() -> Point {
 	return Point(x = 1, y = 2);
 }

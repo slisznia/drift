@@ -217,7 +217,7 @@ def lower_module_to_llvm(
 	# - If the function is not can-throw, the wrapper returns a `FnResult<ok, Error>`
 	#   with `is_err=false` and `err=null`.
 	#
-	# This preserves the language semantics ("returns T") while making the
+	# This preserves the language semantics ("-> T") while making the
 	# module interface uniformly boundary-shaped.
 	# Driver-level renames (e.g. argv wrapper name) must not affect call-site
 	# binding decisions. Keep them separate from export wrapper renames.
@@ -562,7 +562,7 @@ class LlvmModuleBuilder:
 
 	def emit_argv_entry_wrapper(self, user_main: str, array_type: str) -> None:
 		"""
-		Emit an OS entry for `main(argv: Array<String>) returns Int`.
+		Emit an OS entry for `main(argv: Array<String>) -> Int`.
 
 		Builds Array<String> via the runtime helper and truncates the i64 Int
 		result to i32 for the process exit code.
@@ -1431,7 +1431,7 @@ class _FuncBuilder:
 			ok_llty, fnres_llty = self._fnresult_types_for_current_fn()
 			self.value_types[dest] = fnres_llty
 			if instr.value is None:
-				# Surface `return;` in a can-throw `returns Void` function: there is no
+				# Surface `return;` in a can-throw `-> Void` function: there is no
 				# user-level ok payload. We synthesize a dummy i8 slot value for the
 				# internal FnResult ok field.
 				if ok_llty != "i8":
@@ -2236,7 +2236,7 @@ class _FuncBuilder:
 		Return (ok, err) TypeIds for the internal can-throw ABI of a function.
 
 		Important: `FnResult` is an *internal* carrier type in lang2. Surface
-		signatures still declare `returns T`, and can-throw is an effect tracked
+		signatures still declare `-> T`, and can-throw is an effect tracked
 		separately (via `FnInfo.declared_can_throw`). Codegen lowers can-throw
 		functions to return `FnResult<T, Error>`, deriving `T` from the signature's
 		`return_type_id` and `Error` from the shared TypeTable.

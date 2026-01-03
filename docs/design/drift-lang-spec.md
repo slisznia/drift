@@ -58,8 +58,8 @@ Drift expressions largely follow a C-style surface with explicit ownership rules
 - String byte length is exposed via `byte_length(s: &String) -> Uint` (UTF‑8 code units, not characters); a future `char_length` may count user-visible characters.
 - Empty strings may be written as `""` or `String.EMPTY`. A convenience helper `is_empty(s: String) -> Bool` checks `byte_length(s) == 0`.
 - Program entry (v1): exactly one `main` function, returning `Int`, **declared `nothrow`**, with one of two signatures:
-  - `fn main() nothrow returns Int`
-  - `fn main(argv: Array<String>) nothrow returns Int` (argv includes the program name at index 0). The runtime builds `argv` and calls this `main`; no drift_main indirection in user code.
+  - `fn main() nothrow -> Int`
+  - `fn main(argv: Array<String>) nothrow -> Int` (argv includes the program name at index 0). The runtime builds `argv` and calls this `main`; no drift_main indirection in user code.
   - `main` is only allowed in the **root package**; dependency packages must not define a `main`.
 
 ### 2.x. Receiver placeholder (`.foo`, `.foo(...)`)
@@ -85,7 +85,7 @@ Semantics:
 `cast<T>(expr)` is an explicit, compile-time checked cast. In v1, `cast` is **strict** and supported only for function types; it is primarily used to disambiguate overloads when taking a function reference:
 
 ```drift
-val f = cast<fn(Int) nothrow returns Int>(abs);
+val f = cast<Fn(Int) nothrow -> Int>(abs);
 ```
 
 No thunking or adapter insertion occurs in this build; other cast targets are rejected.
@@ -215,7 +215,7 @@ val greeting = "hello";
 
 /* Multi-line
    block comment */;
-fn example() returns Void { ... }
+fn example() -> Void { ... }
 ```
 
 Block comments may span multiple lines but do not nest. Comments are ignored by the parser, so indentation/terminator rules treat them as whitespace.
@@ -231,15 +231,15 @@ module lang.core
 
 /// Writes UTF-8 text to the process standard output.
 /// Does not append a newline.
-fn print(text: String) returns Void
+fn print(text: String) -> Void
 
 /// Writes UTF-8 text to the process standard output,
 /// then appends a single '\n'.
-fn println(text: String) returns Void
+fn println(text: String) -> Void
 
 /// Writes UTF-8 text to the process standard error,
 /// then appends a single '\n'.
-fn eprintln(text: String) returns Void
+fn eprintln(text: String) -> Void
 ```
 
 Notes:
@@ -370,13 +370,13 @@ Using `self: T` makes the method **consume** the receiver: the caller transfers 
 This is the right design when the API intent is ownership-taking, for example:
 
 - **Conversions**: returning a new owned representation without cloning.
-  - `fn into_bytes(self: String) returns Array<Uint>`
+  - `fn into_bytes(self: String) -> Array<Uint>`
 - **Resource finalization**: preventing accidental use-after-close.
-  - `fn close(self: File) returns Void`
+  - `fn close(self: File) -> Void`
 - **Builders that "finish"**: ensuring the partially-built value is not reused.
-  - `fn build(self: Builder) returns Product`
+  - `fn build(self: Builder) -> Product`
 - **Draining/extracting owned internals** from move-only types.
-  - `fn into_iter(self: Vec<T>) returns VecIter<T>`
+  - `fn into_iter(self: Vec<T>) -> VecIter<T>`
 
 If a method does not need ownership, prefer borrowed receivers (`&T` / `&mut T`) so callers can keep using the original value.
 
@@ -483,7 +483,7 @@ var f = open("log.txt");
 var g = f; // ❌ cannot copy move-only type; use a move
 var h = move f; // ✅ move ownership
 
-fn use_file(x: File) returns Void { ... }
+fn use_file(x: File) -> Void { ... }
 
 use_file(f); // ❌ copy required
 use_file(move f); // ✅ move into the call
@@ -520,7 +520,7 @@ If a move-only type wants to offer a deliberate, potentially expensive duplicate
 struct Buffer { data: ByteBuffer }   // move-only
 
 implement Buffer {
-    fn clone(self: &Buffer) returns Buffer {
+    fn clone(self: &Buffer) -> Buffer {
         return Buffer(data = self.data.copy());
     }
 }
@@ -539,7 +539,7 @@ This pattern distinguishes cheap, implicit copies (`Copy`) from explicit, potent
 ```drift
 struct Job { id: Int }
 
-fn process(job: Job) returns Void {
+fn process(job: Job) -> Void {
     print("processing job ", job.id);
 }
 
@@ -557,7 +557,7 @@ process(j); // ❌ error: j was moved
 ```drift
 struct File { /* non-copyable handle */ }
 
-fn upload(f: File) returns Void {
+fn upload(f: File) -> Void {
     print("sending file");
 }
 
@@ -571,7 +571,7 @@ upload(f); // ❌ cannot copy non-copyable type
 ### 4.8. Example — borrowing instead of moving
 
 ```drift
-fn inspect(f: &File) returns Void {
+fn inspect(f: &File) -> Void {
     print("just reading header");
 }
 
@@ -585,7 +585,7 @@ upload(move f); // later move ownership away
 ### 4.9. Example — mut borrow vs move
 
 ```drift
-fn fill(f: &mut File) returns Void { /* writes data */ }
+fn fill(f: &mut File) -> Void { /* writes data */ }
 
 var f = File();
 fill(f); // auto-borrows &mut f
@@ -599,12 +599,12 @@ Borrow lifetimes are scoped to braces; once the borrow ends, moving is allowed a
 ### 4.10. Example — move return values
 
 ```drift
-fn open(name: String) returns File {
+fn open(name: String) -> File {
     val f = File();
     return move f; // move to caller
 }
 
-fn example() returns Void {
+fn example() -> Void {
     var f = open("log.txt");
 }
 ```
@@ -616,7 +616,7 @@ Ownership flows *out* of the function; RAII ensures destruction if not returned.
 ### 4.11. Example — composition of moves
 
 ```drift
-fn take(a: Array<Job>) returns Void { /* consumes array */ }
+fn take(a: Array<Job>) -> Void { /* consumes array */ }
 
 var jobs = Array<Job>();
 jobs.push(Job(id = 1));
@@ -676,15 +676,15 @@ A trait defines a set of functions that a type must provide to be considered cap
 
 ```drift
 trait Clonable {
-    fn clone(self) returns Self
+    fn clone(self) -> Self
 }
 
 trait Debuggable {
-    fn fmt(self) returns String
+    fn fmt(self) -> String
 }
 
 trait Destructible {
-    fn destroy(self) returns Void
+    fn destroy(self) -> Void
 }
 ```
 
@@ -706,7 +706,7 @@ An implementation attaches the capability to a type.
 struct Point { x: Int64, y: Int64 }
 
 implement Debuggable for Point {
-    fn fmt(self) returns String {
+    fn fmt(self) -> String {
         return "(" + self.x.to_string() + ", " + self.y.to_string() + ")";
     }
 }
@@ -726,7 +726,7 @@ struct Box<T> { value: T }
 implement Debuggable for Box<T>
     require T is Debuggable
 {
-    fn fmt(self) returns String {
+    fn fmt(self) -> String {
         return self.value.fmt();
     }
 }
@@ -793,7 +793,7 @@ Functions may restrict their usage to specific capabilities:
 ```drift
 fn clone_twice<T>
     require T is Clonable
-(value: T) returns (T, T) {
+(value: T) -> (T, T) {
     val a = value.clone();
     val b = value.clone();
     return (a, b);
@@ -806,7 +806,7 @@ More than one requirement may be listed:
 fn print_both<T, U>
     require T is Debuggable,
             U is Debuggable
-(t: T, u: U) returns Void {
+(t: T, u: U) -> Void {
     println(t.fmt());
     println(u.fmt());
 }
@@ -847,7 +847,7 @@ Example:
 import m_traits as t
 use trait t.Show
 
-fn f<T>(x: T) returns Int require T is t.Show {
+fn f<T>(x: T) -> Int require T is t.Show {
     return x.show();
 }
 ```
@@ -859,7 +859,7 @@ fn f<T>(x: T) returns Int require T is t.Show {
 Trait guards allow functions to adapt behavior based on whether a type implements a trait.
 
 ```drift
-fn log_value<T>(value: T) returns Void {
+fn log_value<T>(value: T) -> Void {
     if T is Debuggable {
         println("[dbg] " + value.fmt());
     } else {
@@ -880,7 +880,7 @@ Semantics:
 ### 5.8. Multiple trait conditions
 
 ```drift
-fn log_value<T>(value: T) returns Void {
+fn log_value<T>(value: T) -> Void {
     if T is Debuggable and T is Serializable {
         ...;
     } else if T is Debuggable {
@@ -909,7 +909,7 @@ Trait requirements and guards allow boolean trait expressions:
 Example:
 
 ```drift
-fn clone_if_possible<T>(value: T) returns T {
+fn clone_if_possible<T>(value: T) -> T {
     if T is Copyable {
         return value; // implicit copy
     } else if T is Clonable {
@@ -932,7 +932,7 @@ Traits themselves may declare capabilities they depend upon:
 trait Printable
     require Self is Debuggable, Self is Displayable
 {
-    fn print(self) returns String {
+    fn print(self) -> String {
         return self.fmt();
     }
 }
@@ -948,7 +948,7 @@ Destruction is expressed as a trait:
 
 ```drift
 trait Destructible {
-    fn destroy(self) returns Void
+    fn destroy(self) -> Void
 }
 ```
 
@@ -962,7 +962,7 @@ struct OwnedMySql
 }
 
 implement Destructible for OwnedMySql {
-    fn destroy(self) returns Void {
+    fn destroy(self) -> Void {
         if !self.handle.is_null() {
             mysql_close(self.handle);
         }
@@ -987,11 +987,11 @@ Functions may overload based on trait requirements:
 ```drift
 fn save<T>
     require T is Serializable
-(value: T) returns ByteBuffer {
+(value: T) -> ByteBuffer {
     return value.serialize();
 }
 
-fn save<T>(value: T) returns ByteBuffer {
+fn save<T>(value: T) -> ByteBuffer {
     return reflect::dump(value);
 }
 ```
@@ -1010,7 +1010,7 @@ Rules:
 
 ```drift
 trait Debuggable {
-    fn fmt(self) returns String
+    fn fmt(self) -> String
 }
 ```
 
@@ -1020,7 +1020,7 @@ trait Debuggable {
 
 ```drift
 implement Debuggable for File {
-    fn fmt(self) returns String { ... }
+    fn fmt(self) -> String { ... }
 }
 ```
 
@@ -1040,7 +1040,7 @@ struct Cache<K, V>
 ```drift
 fn print<T>
     require T is Debuggable
-(v: T) returns Void { ... }
+(v: T) -> Void { ... }
 ```
 
 #### 5.13.5. Trait-guarded logic
@@ -1063,7 +1063,7 @@ Exceptions and `^`-captured locals rely on a dedicated diagnostic trait:
 
 ```drift
 trait Diagnostic {
-    fn to_diag(self) returns DiagnosticValue
+    fn to_diag(self) -> DiagnosticValue
 }
 ```
 
@@ -1092,13 +1092,13 @@ variant DiagnosticValue {
 Library helpers (non-throwing):
 
 ```drift
-fn kind(self: &DiagnosticValue) returns String        // optional helper
-fn get(self: &DiagnosticValue, field: String) returns DiagnosticValue
-fn index(self: &DiagnosticValue, idx: Int) returns DiagnosticValue
-fn as_string(self: &DiagnosticValue) returns Optional<String>
-fn as_int(self: &DiagnosticValue) returns Optional<Int64>
-fn as_bool(self: &DiagnosticValue) returns Optional<Bool>
-fn as_float(self: &DiagnosticValue) returns Optional<Float64>
+fn kind(self: &DiagnosticValue) -> String        // optional helper
+fn get(self: &DiagnosticValue, field: String) -> DiagnosticValue
+fn index(self: &DiagnosticValue, idx: Int) -> DiagnosticValue
+fn as_string(self: &DiagnosticValue) -> Optional<String>
+fn as_int(self: &DiagnosticValue) -> Optional<Int64>
+fn as_bool(self: &DiagnosticValue) -> Optional<Bool>
+fn as_float(self: &DiagnosticValue) -> Optional<Float64>
 ```
 
 Rules:
@@ -1206,9 +1206,9 @@ Interfaces define a set of functions callable on any implementing type.
 
 ```drift
 interface OutputStream {
-    fn write(self: &OutputStream, bytes: ByteSlice) returns Void
-    fn writeln(self: &OutputStream, text: String) returns Void
-    fn flush(self: &OutputStream) returns Void
+    fn write(self: &OutputStream, bytes: ByteSlice) -> Void
+    fn writeln(self: &OutputStream, text: String) -> Void
+    fn flush(self: &OutputStream) -> Void
 }
 ```
 
@@ -1240,13 +1240,13 @@ Example:
 struct Point { x: Int64, y: Int64 }
 
 implement Point {
-    fn move_by(self: &mut Point, dx: Int64, dy: Int64) returns Void {
+    fn move_by(self: &mut Point, dx: Int64, dy: Int64) -> Void {
         self.x += dx;
         self.y += dy;
     }
 }
 
-fn translate(p: &mut Point, dx: Int64, dy: Int64) returns Void {
+fn translate(p: &mut Point, dx: Int64, dy: Int64) -> Void {
     p.x += dx;
     p.y += dy;
 }
@@ -1271,15 +1271,15 @@ struct File {
 }
 
 implement OutputStream for File {
-    fn write(self: &File, bytes: ByteSlice) returns Void {
+    fn write(self: &File, bytes: ByteSlice) -> Void {
         sys_write(self.fd, bytes);
     }
 
-    fn writeln(self: &File, text: String) returns Void {
+    fn writeln(self: &File, text: String) -> Void {
         self.write((text + "\n").to_bytes());
     }
 
-    fn flush(self: &File) returns Void {
+    fn flush(self: &File) -> Void {
         sys_flush(self.fd);
     }
 }
@@ -1301,7 +1301,7 @@ Interfaces may be used anywhere that types may appear.
 #### 6.5.1. Parameters
 
 ```drift
-fn write_header(out: OutputStream) returns Void {
+fn write_header(out: OutputStream) -> Void {
     println("=== header ===");
 }
 ```
@@ -1309,7 +1309,7 @@ fn write_header(out: OutputStream) returns Void {
 #### 6.5.2. Return values
 
 ```drift
-fn open_log(path: String) returns OutputStream {
+fn open_log(path: String) -> OutputStream {
     var f = File.open(path);
     return f; // implicit upcast: File → OutputStream
 }
@@ -1381,7 +1381,7 @@ The two systems are orthogonal by design.
 
 ```drift
 interface Shape {
-    fn area(self: &Shape) returns Float64
+    fn area(self: &Shape) -> Float64
 }
 ```
 
@@ -1392,13 +1392,13 @@ struct Circle { radius: Float64 }
 struct Rect   { w: Float64, h: Float64 }
 
 implement Shape for Circle {
-    fn area(self: &Circle) returns Float64 {
+    fn area(self: &Circle) -> Float64 {
         return 3.14159265 * self.radius * self.radius;
     }
 }
 
 implement Shape for Rect {
-    fn area(self: &Rect) returns Float64 {
+    fn area(self: &Rect) -> Float64 {
         return self.w * self.h;
     }
 }
@@ -1407,7 +1407,7 @@ implement Shape for Rect {
 #### 6.8.3. Usage
 
 ```drift
-fn total_area(shapes: Array<Shape>) returns Float64 {
+fn total_area(shapes: Array<Shape>) -> Float64 {
     var acc: Float64 = 0.0;
     var i = 0;
     while i < shapes.len() {
@@ -1435,7 +1435,7 @@ Interface values follow Drift ownership and move semantics.
 ### 6.10. Moving
 
 ```drift
-fn consume(out: OutputStream) returns Void {
+fn consume(out: OutputStream) -> Void {
     println("consumed");
 }
 ```
@@ -1465,9 +1465,9 @@ No double‑destroy is possible because `destroy(self)` consumes the value.
 A type may implement several interfaces:
 
 ```drift
-interface Readable  { fn read(self: &Readable) returns ByteBuffer }
-interface Writable  { fn write(self: &Writable, b: ByteSlice) returns Void }
-interface Duplex    { fn close(self: &Duplex) returns Void }
+interface Readable  { fn read(self: &Readable) -> ByteBuffer }
+interface Writable  { fn write(self: &Writable, b: ByteSlice) -> Void }
+interface Duplex    { fn close(self: &Duplex) -> Void }
 
 struct Stream { ... }
 
@@ -1487,15 +1487,15 @@ Layout stability: if interface inheritance is used, parent entries (including th
 These systems complement each other:
 
 ```drift
-trait Debuggable { fn fmt(self) returns String }
+trait Debuggable { fn fmt(self) -> String }
 
 interface DebugSink {
-    fn write_debug(self: &DebugSink, msg: String) returns Void
+    fn write_debug(self: &DebugSink, msg: String) -> Void
 }
 
 fn log_value<T>
     require T is Debuggable
-(val: T, sink: DebugSink) returns Void {
+(val: T, sink: DebugSink) -> Void {
     sink.write_debug(val.fmt());
 }
 ```
@@ -1512,7 +1512,7 @@ This pattern is central to building logging, serialization, and plugin systems.
 Interface method calls participate in normal exception propagation:
 
 ```drift
-fn dump(src: InputStream, dst: OutputStream) returns Void {
+fn dump(src: InputStream, dst: OutputStream) -> Void {
     var buf = ByteBuffer.with_capacity(4096);
     loop {
         buf.clear();
@@ -1682,8 +1682,8 @@ Drift treats functions in the module interface as **can-throw entry points**:
 
 - Every exported function is allowed to fail and therefore participates in the standard `Result<T, Error>` model.
 - At the ABI level, exported Drift functions are always compiled using the **error-aware calling convention**:
-  - `fn f(...) returns T` → ABI returns `Result<T, Error>` encoded as `{T, Error*}`.
-  - `fn f(...) returns Void` → ABI returns `Result<Void, Error>` encoded as `Error*`.
+  - `fn f(...) -> T` → ABI -> `Result<T, Error>` encoded as `{T, Error*}`.
+  - `fn f(...) -> Void` → ABI -> `Result<Void, Error>` encoded as `Error*`.
 - Internal helpers (non-exported functions) may use more aggressive internal optimizations for error handling, but their exact calling convention is not visible across module boundaries.
 
 Import resolution (Section 7.1) only considers **exported** symbols:
@@ -1798,7 +1798,7 @@ try {
 ## 9. Reserved keywords and operators
 
 Keywords and literals are reserved and cannot be used as identifiers (functions, variables, modules, structs, exceptions, etc.):  
-`fn`, `val`, `var`, `returns`, `nothrow`, `if`, `else`, `while`, `break`, `continue`, `try`, `catch`, `throw`, `raise`, `return`, `exception`, `import`, `module`, `implement`, `pub`, `type`, `cast`, `true`, `false`, `not`, `and`, `or`, plus language/FFI/legacy keywords (`auto`, `pragma`, `bool`, `int`, `float`, `string`, `void`, `abstract`, `assert`, `boolean`, `byte`, `case`, `char`, `class`, `const`, `default`, `do`, `double`, `enum`, `extends`, `final`, `finally`, `for`, `goto`, `instanceof`, `interface`, `long`, `native`, `new`, `package`, `private`, `protected`, `public`, `short`, `static`, `strictfp`, `super`, `switch`, `synchronized`, `this`, `throws`, `transient`, `volatile`).
+`fn`, `Fn`, `val`, `var`, `nothrow`, `if`, `else`, `while`, `break`, `continue`, `try`, `catch`, `throw`, `raise`, `return`, `exception`, `import`, `module`, `implement`, `pub`, `type`, `cast`, `true`, `false`, `not`, `and`, `or`, plus language/FFI/legacy keywords (`auto`, `pragma`, `bool`, `int`, `float`, `string`, `void`, `abstract`, `assert`, `boolean`, `byte`, `case`, `char`, `class`, `const`, `default`, `do`, `double`, `enum`, `extends`, `final`, `finally`, `for`, `goto`, `instanceof`, `interface`, `long`, `native`, `new`, `package`, `private`, `protected`, `public`, `short`, `static`, `strictfp`, `super`, `switch`, `synchronized`, `this`, `throws`, `transient`, `volatile`).
 
 **Operator tokens (reserved):** `+`, `-`, `*`, `/`, `%`, `==`, `!=`, `<`, `<=`, `>`, `>=`, `and`, `or`, `not`, `? :`, `|>` (pipeline), `<<`, `>>`, indexing brackets `[]`, and member access `.`. These participate in precedence/associativity rules; identifiers cannot reuse them.
 
@@ -1911,7 +1911,7 @@ Exhaustiveness rules (v1):
 - With `default`, any subset of constructors may be listed.
 
 ```drift
-fn describe(result: Result<Int, String>) returns String {
+fn describe(result: Result<Int, String>) -> String {
     return match result {
         Ok(value) => { "ok: " + value.to_string() },
         Err(error) => { "error: " + error },
@@ -1938,7 +1938,7 @@ variant LookupResult<T> {
     Error(err: DbError)
 }
 
-fn describe_lookup(id: Int64, r: LookupResult<String>) returns String {
+fn describe_lookup(id: Int64, r: LookupResult<String>) -> String {
     return match r {
         Found(value) => { "Record " + id.to_string() + ": " + value },
         Missing      => { "No record for id " + id.to_string() },
@@ -1967,7 +1967,7 @@ variant PairOrError<T, E> {
     Error(error: E)
 }
 
-fn make_pair(x: Int, y: Int) returns PairOrError<Int, String> {
+fn make_pair(x: Int, y: Int) -> PairOrError<Int, String> {
     if x == y {
         return Error("values must differ");
     }
@@ -1980,7 +1980,7 @@ parameters and be instantiated explicitly. Call-site type arguments require
 the `type` marker to avoid ambiguity with comparisons:
 
 ```drift
-fn id<T>(value: T) returns T { return value }
+fn id<T>(value: T) -> T { return value }
 val x = id<type Int>(1);
 ```
 
@@ -2029,14 +2029,14 @@ match qty {
 
 There is no safe-navigation operator (`?.`). Access requires explicit pattern matching or helper combinators built atop `Optional<T>`.
 
-### 11.4. Parameters & returns
+### 11.4. Parameters & return types
 
 - A parameter of type `T` cannot receive `None()`.
 - Use `Optional<T>` for “maybe” values.
-- Returning `None()` from a function declared `: T` is a compile error.
+- Returning `None()` from a function declared `-> T` is a compile error.
 
 ```drift
-fn find_sku(id: Int64) returns Optional<String> { /* ... */ }
+fn find_sku(id: Int64) -> Optional<String> { /* ... */ }
 
 val sku = find_sku(42);
 match sku {
@@ -2065,16 +2065,16 @@ struct Order {
     quantity: Int64
 }
 
-fn find_order(id: Int64) returns Optional<Order> {
+fn find_order(id: Int64) -> Optional<Order> {
     if id == 42 { return Some(Order(id = 42, sku = "DRIFT-1", quantity = 1)); }
     return None();
 }
 
-fn ship(o: Order) returns Void {
+fn ship(o: Order) -> Void {
     println("shipping " + o.sku + " id=" + o.id);
 }
 
-fn example() returns Void {
+fn example() -> Void {
     val maybe_order = find_order(42);
 
     match maybe_order {
@@ -2093,7 +2093,7 @@ Helper methods/combinators on `Optional<T>` (e.g. `is_some`, `unwrap_or`) are ex
 `lang.array` is the standard module for homogeneous sequences. It exposes the generic type `Array<T>` plus builder helpers and the binary-centric `ByteBuffer`. `Array` is always in scope for type annotations, so you can write:
 
 ```drift
-fn example() returns Void {
+fn example() -> Void {
     val names: Array<String> = ["Bob", "Alice", "Ada"];
     println("names ready");
 }
@@ -2156,22 +2156,22 @@ val from_utf8 = ByteBuffer.from_string("drift");
 
 Core operations:
 
-- `fn len(self: &ByteBuffer) returns Uint` — number of initialized bytes.
-- `fn capacity(self: &ByteBuffer) returns Uint` — reserved storage.
-- `fn clear(self: &mut ByteBuffer) returns Void` — resets `len` to zero without freeing.
-- `fn push(self: &mut ByteBuffer, b: Byte) returns Void`
-- `fn extend(self: &mut ByteBuffer, slice: ByteSlice) returns Void`
-- `fn as_slice(self: &ByteBuffer) returns ByteSlice`
-- `fn slice(self: &ByteBuffer, start: Uint, len: Uint) returns ByteSlice`
-- `fn as_mut_slice(self: &mut ByteBuffer) returns MutByteSlice`
-- `fn reserve(self: &mut ByteBuffer, additional: Uint) returns Void`
+- `fn len(self: &ByteBuffer) -> Uint` — number of initialized bytes.
+- `fn capacity(self: &ByteBuffer) -> Uint` — reserved storage.
+- `fn clear(self: &mut ByteBuffer) -> Void` — resets `len` to zero without freeing.
+- `fn push(self: &mut ByteBuffer, b: Byte) -> Void`
+- `fn extend(self: &mut ByteBuffer, slice: ByteSlice) -> Void`
+- `fn as_slice(self: &ByteBuffer) -> ByteSlice`
+- `fn slice(self: &ByteBuffer, start: Uint, len: Uint) -> ByteSlice`
+- `fn as_mut_slice(self: &mut ByteBuffer) -> MutByteSlice`
+- `fn reserve(self: &mut ByteBuffer, additional: Uint) -> Void`
 
 `ByteSlice`/`MutByteSlice` are lightweight descriptors (`{ ptr, len }`). They do not own memory; borrow rules ensure the referenced storage stays alive for the duration of the borrow. `MutByteSlice` provides exclusive access, so you cannot obtain a second mutable slice while one is active.
 
 Typical I/O pattern:
 
 ```drift
-fn copy_stream(src: InputStream, dst: OutputStream) returns Void {
+fn copy_stream(src: InputStream, dst: OutputStream) -> Void {
     var scratch = ByteBuffer.with_capacity(4096);
 
     loop {
@@ -2185,7 +2185,7 @@ fn copy_stream(src: InputStream, dst: OutputStream) returns Void {
 }
 ```
 
-`read` writes into the provided mutable slice and returns the number of bytes initialized; `slice` then produces a read-only view of that prefix without copying. FFI helpers in `lang.abi` can also manufacture `ByteSlice`/`MutByteSlice` wrappers around raw pointers for zero-copy interop.
+`read` writes into the provided mutable slice and -> the number of bytes initialized; `slice` then produces a read-only view of that prefix without copying. FFI helpers in `lang.abi` can also manufacture `ByteSlice`/`MutByteSlice` wrappers around raw pointers for zero-copy interop.
 
 
 ### 12.2. Indexing, mutation, and borrowing
@@ -2194,11 +2194,11 @@ fn copy_stream(src: InputStream, dst: OutputStream) returns Void {
 To avoid copying and allow other APIs to operate on a specific slot, `Array<T>` exposes helper methods:
 
 ```drift
-fn ref_at(self: &Array<T>, index: Int) returns &T
-fn ref_mut_at(self: &mut Array<T>, index: Int) returns &mut T
+fn ref_at(self: &Array<T>, index: Int) -> &T
+fn ref_mut_at(self: &mut Array<T>, index: Int) -> &mut T
 ```
 
-- `ref_at` borrows the array immutably and returns an immutable `&T` to element `index`. Multiple `ref_at` calls may coexist, and the array remains usable for other reads while the borrow lives.
+- `ref_at` borrows the array immutably and -> an immutable `&T` to element `index`. Multiple `ref_at` calls may coexist, and the array remains usable for other reads while the borrow lives.
 - `ref_mut_at` requires an exclusive `&mut Array<T>` borrow and yields an exclusive `&mut T`. While the returned reference lives, no other borrows of the same element (or the array) are allowed; this enforces the usual aliasing rules.
 
 Bounds checks mirror simple indexing: out-of-range indices raise `IndexError(container = "Array", index = i)`. These APIs make it easy to hand a callee a view of part of the array—e.g., pass `ref_mut_at` into a mutator function that expects `&mut T`—without copying the element or exposing the entire container.
@@ -2275,7 +2275,7 @@ A type `C` may accept array literals by implementing:
 
 ```drift
 interface FromArrayLiteral<Element> {
-    static fn from_array_literal(items: Array<Element>) returns Self
+    static fn from_array_literal(items: Array<Element>) -> Self
 }
 ```
 
@@ -2294,7 +2294,7 @@ Map literals use a similar interface:
 
 ```drift
 interface FromMapLiteral<Key, Value> {
-    static fn from_map_literal(entries: Array<(Key, Value)>) returns Self
+    static fn from_map_literal(entries: Array<(Key, Value)>) -> Self
 }
 ```
 
@@ -2307,13 +2307,13 @@ The prelude wires literals to the default collections:
 
 ```drift
 implement<T> FromArrayLiteral<T> for Array<T> {
-    static fn from_array_literal(items: Array<T>) returns Array<T> {
+    static fn from_array_literal(items: Array<T>) -> Array<T> {
         return items;
     }
 }
 
 implement<K, V> FromMapLiteral<K, V> for Map<K, V> {
-    static fn from_map_literal(entries: Array<(K, V)>) returns Map<K, V> {
+    static fn from_map_literal(entries: Array<(K, V)>) -> Map<K, V> {
         val m = Map<K, V>();
         for (k, v) in entries {
             m.insert(k, v);
@@ -2326,7 +2326,7 @@ implement<K, V> FromMapLiteral<K, V> for Map<K, V> {
 This keeps “hello world” code terse:
 
 ```drift
-fn main() nothrow returns Int {
+fn main() nothrow -> Int {
     println("hello, world");
     return 0;
 }
@@ -2346,7 +2346,7 @@ Custom containers can opt in by providing their own implementations:
 struct SmallVec<T> { /* ... */ }
 
 implement<T> FromArrayLiteral<T> for SmallVec<T> {
-    static fn from_array_literal(items: Array<T>) returns SmallVec<T> {
+    static fn from_array_literal(items: Array<T>) -> SmallVec<T> {
         var sv = SmallVec<T>();
         for v in items { sv.push(v) }
         return sv;
@@ -2406,7 +2406,7 @@ Drift’s exception system is designed to:
 - `catch m:Evt` lowers to `if err.event_code == hash_v1(fqn)`; matching is by code, derived from the resolved FQN with the `:` delimiter.
 - `event_code == 0` is reserved for **unknown/unmapped** events (e.g., absent catalog entry); user-defined events must never deliberately use code 0.
 - Collisions detected during compilation are fatal within the build; if/when multi-module linking is introduced, collision handling must remain deterministic.
-- `event_fqn()` returns the stored canonical FQN string label for logging/telemetry; it is never used for control flow or matching.
+- `event_fqn()` -> the stored canonical FQN string label for logging/telemetry; it is never used for control flow or matching.
 
 ---
 
@@ -2620,10 +2620,10 @@ Unwinding, when used, is an **implementation strategy only** and must preserve t
 
 Drift distinguishes **can-throw** functions from **non-throwing** ones and enforces the contract statically:
 
-- **Can-throw is an effect, not a type.** Surface signatures remain `fn f(...) returns T`. A function is considered can-throw when its body may throw (via `throw`/`rethrow` or uncaught calls to other can-throw functions). A function may be declared **nothrow** with `fn f(...) nothrow returns T { ... }`; this is a compile-time constraint that forbids escaping throws.
-- **Non-throwing invariants.** A non-throwing function must not use `throw`/`raise`/`rethrow`, must not construct an `Error`, and must not allow an exception to escape. It may call can-throw functions only if it handles failures locally (e.g., via `try/catch`) and still returns a plain `T`. Violations are compile-time errors tied to the source span of the offending statement/expression.
+- **Can-throw is an effect, not a type.** Surface signatures remain `fn f(...) -> T`. A function is considered can-throw when its body may throw (via `throw`/`rethrow` or uncaught calls to other can-throw functions). A function may be declared **nothrow** with `fn f(...) nothrow -> T { ... }`; this is a compile-time constraint that forbids escaping throws.
+- **Non-throwing invariants.** A non-throwing function must not use `throw`/`raise`/`rethrow`, must not construct an `Error`, and must not allow an exception to escape. It may call can-throw functions only if it handles failures locally (e.g., via `try/catch`) and still -> a plain `T`. Violations are compile-time errors tied to the source span of the offending statement/expression.
 - **Can-throw invariants.** A can-throw function may throw and may call other can-throw functions without local handling; exceptions propagate to the nearest enclosing `try/catch` or to the caller.
-- **ABI clarity.** The compiler lowers can-throw functions to the internal `Result<T, Error>` calling convention for codegen/ABI purposes (not a surface-level type). Non-throwing functions use plain returns internally; exported functions always use the `Result<T, Error>` ABI at module boundaries. Mixing conventions within a single call boundary is rejected rather than silently coerced.
+- **ABI clarity.** The compiler lowers can-throw functions to the internal `Result<T, Error>` calling convention for codegen/ABI purposes (not a surface-level type). Non-throwing functions use plain -> internally; exported functions always use the `Result<T, Error>` ABI at module boundaries. Mixing conventions within a single call boundary is rejected rather than silently coerced.
 
 These rules keep the error model explicit, prevent accidental unwinding from non-throwing code, and make cross-module ABIs predictable.
 
@@ -2683,8 +2683,8 @@ This distinction becomes especially clear in pipelines (`|>`), where each stage 
 
 | Role | Parameter type | Return type | Ownership semantics | Typical usage |
 |------|----------------|--------------|---------------------|----------------|
-| **Mutator** | `&mut T` | `Void` or `T` | Borrows an existing `T` mutably and optionally returns it. Ownership stays with the caller. | In-place modification, e.g. `fill`, `tune`. |
-| **Transformer** | `T` | `U` (often `T`) | Consumes its input and returns a new owned value. Ownership transfers into the call and out again. | `compress`, `clone`, `serialize`. |
+| **Mutator** | `&mut T` | `Void` or `T` | Borrows an existing `T` mutably and optionally -> it. Ownership stays with the caller. | In-place modification, e.g. `fill`, `tune`. |
+| **Transformer** | `T` | `U` (often `T`) | Consumes its input and -> a new owned value. Ownership transfers into the call and out again. | `compress`, `clone`, `serialize`. |
 | **Finalizer / Sink** | `T` | `Void` | Consumes the value completely. Ownership ends here; the resource is destroyed or released at function return. | `finalize`, `close`, `free`, `commit`. |
 
 ### 15.2. Pipeline behavior
@@ -2693,9 +2693,9 @@ The pipeline operator `|>` is **ownership-aware**.
 It is left-associative and automatically determines how each stage interacts based on the callee’s parameter type:
 
 ```drift
-fn fill(f: &mut File) returns Void { /* mutate */ }
-fn tune(f: &mut File) returns Void { /* mutate */ }
-fn finalize(f: File) returns Void { /* consume */ }
+fn fill(f: &mut File) -> Void { /* mutate */ }
+fn tune(f: &mut File) -> Void { /* mutate */ }
+fn finalize(f: File) -> Void { /* consume */ }
 
 open("x")
   |> fill      // borrows mutably; File stays alive
@@ -2791,15 +2791,15 @@ module lang.abi
 struct RawBuffer { /* opaque */ }
 struct Layout { size: Int, align: Int }
 
-@intrinsic fn size_of<T>() returns Int;
-@intrinsic fn align_of<T>() returns Int;
+@intrinsic fn size_of<T>() -> Int;
+@intrinsic fn align_of<T>() -> Int;
 
-@unsafe fn alloc(layout: Layout) returns RawBuffer;
-@unsafe fn realloc(buf: RawBuffer, old: Layout, new: Layout) returns RawBuffer;
-@unsafe fn dealloc(buf: RawBuffer, layout: Layout) returns Void;
+@unsafe fn alloc(layout: Layout) -> RawBuffer;
+@unsafe fn realloc(buf: RawBuffer, old: Layout, new: Layout) -> RawBuffer;
+@unsafe fn dealloc(buf: RawBuffer, layout: Layout) -> Void;
 ```
 
-- `alloc` returns uninitialized storage for a layout.
+- `alloc` -> uninitialized storage for a layout.
 - `realloc` resizes an existing allocation, preserving contents when possible.
 - `dealloc` releases storage.
 
@@ -2943,8 +2943,8 @@ Containers rely on `lang.abi::RawBuffer` for contiguous storage, but the public 
 ```drift
 struct RawBuffer<T> { /* opaque */ }
 
-fn capacity(self: &RawBuffer<T>) returns Size
-fn slot_at(self: &RawBuffer<T>, i: Size) returns Slot<T> @unsafe
+fn capacity(self: &RawBuffer<T>) -> Size
+fn slot_at(self: &RawBuffer<T>, i: Size) -> Slot<T> @unsafe
 fn reallocate(self: &mut RawBuffer<T>, new_cap: Size) @unsafe
 ```
 
@@ -2984,20 +2984,20 @@ For C APIs that use explicit fixed widths (e.g., `uint32_t len`), a recommended 
 ```drift
 // lang.abi.zlib
 extern "C"
-fn crc32(seed: Uint32, data: &Uint8, len: Uint32) returns Uint32
+fn crc32(seed: Uint32, data: &Uint8, len: Uint32) -> Uint32
 ```
 
 - High-level wrapper in `std.*` using `Size`/containers:
 
 ```drift
-fn narrow_size_to_u32(len: Size) returns Uint32 {
+fn narrow_size_to_u32(len: Size) -> Uint32 {
     if len > Uint32::MAX {
         throw Error("len-too-large", code = "zlib.len.out_of_range");
     }
     return cast(len);
 }
 
-fn crc32(seed: Uint32, buf: ByteBuffer) returns Uint32 {
+fn crc32(seed: Uint32, buf: ByteBuffer) -> Uint32 {
     val len32: Uint32 = narrow_size_to_u32(buf.len());
     return lang.abi.zlib.crc32(seed, buf.as_slice().data_ptr(), len32);
 }
@@ -3019,9 +3019,9 @@ Only `lang.abi` knows how to construct these handles from actual addresses. Exam
 import lang.abi as abi
 
 extern "C" struct Point { x: Int32, y: Int32 }
-extern "C" fn draw(points: abi.Slice<Point>) returns Int32
+extern "C" fn draw(points: abi.Slice<Point>) -> Int32
 
-fn render(points: Array<Point>) returns Int32 {
+fn render(points: Array<Point>) -> Int32 {
     return draw(points.as_slice()); // no raw pointers in user code
 }
 ```
@@ -3031,7 +3031,7 @@ fn render(points: Array<Point>) returns Int32 {
 - Only **non-capturing** functions may cross the C ABI as callbacks; they are exported/imported as thin `extern "C"` function pointers. This matches C’s model and keeps the ABI predictable.
 - Capturing closures are **not** auto-wrapped for C. If state is needed, authors must build it explicitly (e.g., a struct of state plus a manual trampoline taking `void*`), and manage allocation/freeing on the C side; the language runtime does not box captures for C callbacks.
 - Drift-side code calling into C APIs that accept only a bare function pointer must provide a non-capturing function; APIs that also accept a user-data pointer can be targeted later with an explicit `ctx`+trampoline pattern, but that is a deliberate, manual choice.
-- Callbacks returned **from** C are treated as opaque `extern "C"` function pointers (cdecl). If the C API also returns a `ctx`/userdata pointer, it is modeled as a pair `{fn_ptr, ctx_ptr}` but remains **borrowed**: Drift does not free or drop it unless the API explicitly transfers ownership. Wrappers must:
+- Callbacks returned **from** C are treated as opaque `extern "C"` function pointers (cdecl). If the C API also -> a `ctx`/userdata pointer, it is modeled as a pair `{fn_ptr, ctx_ptr}` but remains **borrowed**: Drift does not free or drop it unless the API explicitly transfers ownership. Wrappers must:
   - enforce the C calling convention,
   - reject null pointers (or fail fast if invoked),
   - prevent Drift exceptions from crossing into C (catch and convert to a Drift error),
@@ -3062,9 +3062,9 @@ builder.finish();
 import lang.abi as abi
 
 extern "C" struct Buf { data: abi.CPtr<U8>, len: Int32 }
-extern "C" fn send(buf: abi.Slice<U8>) returns Int32
+extern "C" fn send(buf: abi.Slice<U8>) -> Int32
 
-fn transmit(bytes: Array<U8>) returns Int32 {
+fn transmit(bytes: Array<U8>) -> Int32 {
     return send(bytes.as_slice());
 }
 ```
@@ -3089,9 +3089,9 @@ In this revision, Drift guarantees only a minimal console surface via `lang.core
 (auto-imported):
 
 ```drift
-fn print(text: String) returns Void      // stdout, no trailing newline
-fn println(text: String) returns Void    // stdout, appends '\n'
-fn eprintln(text: String) returns Void   // stderr, appends '\n'
+fn print(text: String) -> Void      // stdout, no trailing newline
+fn println(text: String) -> Void    // stdout, appends '\n'
+fn eprintln(text: String) -> Void   // stderr, appends '\n'
 ```
 
 These write UTF-8 text to the process standard output/error. They do not format
@@ -3129,7 +3129,7 @@ val t = conc.spawn(| | => compute_answer());
 val ans = t.join();
 ```
 
-Spawn operations return a handle whose `join()` parks the caller until completion. Joining a failed thread returns a `JoinError` encapsulating the thrown `Error`.
+Spawn operations return a handle whose `join()` parks the caller until completion. Joining a failed thread -> a `JoinError` encapsulating the thrown `Error`.
 
 #### 19.2.1. Custom executors
 
@@ -3211,7 +3211,7 @@ Drift ships with a shared default reactor (epoll/kqueue/IOCP depending on platfo
 ### 19.6. Virtual thread lifecycle
 
 - Each virtual thread owns an independent call stack; RAII semantics run normally when the thread exits.
-- `join()` returns either the thread’s result or a `JoinError` capturing the propagated `Error`.
+- `join()` -> either the thread’s result or a `JoinError` capturing the propagated `Error`.
 - Parking/unparking is transparent to user code.
 - `Send`/`Sync` trait bounds govern which values may move across threads or be shared by reference.
 
@@ -3222,10 +3222,10 @@ At the bottom layer the runtime exposes a minimal intrinsic surface to the stand
 ```drift
 module lang.thread
 
-@intrinsic fn vt_spawn(entry: fn() returns Void, exec: ExecutorHandle);
-@intrinsic fn vt_park() returns Void;
-@intrinsic fn vt_unpark(thread: VirtualThreadHandle) returns Void;
-@intrinsic fn current_executor() returns ExecutorHandle;
+@intrinsic fn vt_spawn(entry: Fn() -> Void, exec: ExecutorHandle);
+@intrinsic fn vt_park() -> Void;
+@intrinsic fn vt_unpark(thread: VirtualThreadHandle) -> Void;
+@intrinsic fn current_executor() -> ExecutorHandle;
 
 @intrinsic fn register_io(fd: Int, interest: IOEvent, thread: VirtualThreadHandle);
 @intrinsic fn register_timer(when: Timestamp, thread: VirtualThreadHandle);
@@ -3451,13 +3451,13 @@ Drift code interacts with such plugins by:
    // Example: plugin FFI surface
    extern "C" struct PluginApi {
        version: Uint32,
-       init: extern "C" fn() returns Int32,
-       shutdown: extern "C" fn() returns Int32,
-       do_work: extern "C" fn(handle: PluginHandle, req: &RequestC, resp: &mut ResponseC) returns Int32
+       init: extern "C" Fn() -> Int32,
+       shutdown: extern "C" Fn() -> Int32,
+       do_work: extern "C" Fn(handle: PluginHandle, req: &RequestC, resp: &mut ResponseC) -> Int32
    }
 
    extern "C"
-   fn plugin_get_api(expected_version: Uint32) returns &PluginApi
+   fn plugin_get_api(expected_version: Uint32) -> &PluginApi
    ```
 
 2. Writing a **static Drift module** that wraps this C API in normal Drift functions and types:
@@ -3466,10 +3466,10 @@ Drift code interacts with such plugins by:
    module host.plugins.example
 
    export {
-       fn do_work(req: Request) returns Result<Response, Error>
+       fn do_work(req: Request) -> Result<Response, Error>
    }
 
-   fn do_work(req: Request) returns Result<Response, Error> {
+   fn do_work(req: Request) -> Result<Response, Error> {
        // call into the .so via FFI, map Int32 error codes to Drift Error, etc.
    }
    ```
@@ -3492,9 +3492,9 @@ Example:
 
 ```drift
 extern "C"
-fn plugin_do_work(api: &PluginApi, req: &RequestC, resp: &mut ResponseC) returns Int32
+fn plugin_do_work(api: &PluginApi, req: &RequestC, resp: &mut ResponseC) -> Int32
 
-fn do_work(req: Request) returns Result<Response, Error> {
+fn do_work(req: Request) -> Result<Response, Error> {
     var req_c = to_c_request(req);
     var resp_c = ResponseC.zero();
 
@@ -3524,12 +3524,12 @@ Drift treats callables as **traits first**, with an optional dynamic wrapper whe
 
 Drift distinguishes two callable worlds:
 
-- **Non-capturing callables**: function pointers (`fn(Args...) returns R`) and interface references (dynamic dispatch). These do not capture environment and may be stored/returned freely.
+- **Non-capturing callables**: function pointers (`Fn(Args...) -> R`) and interface references (dynamic dispatch). These do not capture environment and may be stored/returned freely.
 - **Capturing closures**: lambda literals produce compiler-synthesized closure values (code + environment). Closures may capture by `copy`/`move` (escaping) or by borrow (non-escaping).
 
 Parameter choice follows this split:
 
-- Use `fn(Args...) returns R` when only non-capturing callables are allowed.
+- Use `Fn(Args...) -> R` when only non-capturing callables are allowed.
 - Use a generic type with `require F is Callable<Args, R>` to accept capturing or non-capturing callables.
 
 ### 22.1. Surface syntax
@@ -3543,8 +3543,8 @@ Parameter choice follows this split:
 #### 22.1.1. Optional lambda return types
 
 - Default: lambda return type is inferred from the body.
-- Optional: `|params| returns Ty => ...` pins the return type; the checker enforces the body is assignable to `Ty`.
-- Block-bodied lambdas return a value from a trailing expression (`{ expr }`) when allowed, otherwise `return` statements govern the result. If `returns Ty` is present, the body must produce a value.
+- Optional: `|params| -> Ty => ...` pins the return type; the checker enforces the body is assignable to `Ty`.
+- Block-bodied lambdas return a value from a trailing expression (`{ expr }`) when allowed, otherwise `return` statements govern the result. If `-> Ty` is present, the body must produce a value.
 
 ### 22.2. Capture modes (current revision)
 
@@ -3635,46 +3635,46 @@ with only `copy`/`move` captures may escape.
 
 Callable traits are compiler-provided and not user-implementable. The compiler
 synthesizes closure types for lambdas and provides appropriate callable impls.
-Every `fn(Args...) returns R` is implicitly `Callable<Args, R>` (and may also
+Every `Fn(Args...) -> R` is implicitly `Callable<Args, R>` (and may also
 implement `CallableMut`/`CallableOnce`). The reverse coercion is not automatic;
-capturing closures do not coerce to `fn(...)` unless proven non-capturing.
+capturing closures do not coerce to `Fn(...)` unless proven non-capturing.
 
 Closures automatically implement one or more callable traits based on how they use their environment:
 
 ```drift
 trait Callable<Args, R> {
-    fn call(self: &Self, args: Args) returns R
+    fn call(self: &Self, args: Args) -> R
 }
 
 trait CallableMut<Args, R> {
-    fn call(self: &mut Self, args: Args) returns R
+    fn call(self: &mut Self, args: Args) -> R
 }
 
 trait CallableOnce<Args, R> {
-    fn call(self: Self, args: Args) returns R
+    fn call(self: Self, args: Args) -> R
 }
 ```
 
 - Pure/non-mutating closures implement `Callable` and `CallableOnce`.
 - Mutating closures implement `CallableMut` and `CallableOnce`.
 - Closures that move out of their captures implement **only** `CallableOnce`.
-- Non-capturing `fn(...)` functions may implement all three traits.
+- Non-capturing `Fn(...)` functions may implement all three traits.
 
 Generics use these traits for zero-cost, monomorphized dispatch:
 
 ```drift
-fn apply_twice<F>(f: F, x: Int) returns Int
+fn apply_twice<F>(f: F, x: Int) -> Int
     require F is Callable<(Int), Int> {
     return f.call(x) + f.call(x);
 }
 
-fn accumulate<F>(f: &mut F, xs: Array<Int>) returns Void
+fn accumulate<F>(f: &mut F, xs: Array<Int>) -> Void
     require F is CallableMut<(Int), Void> {
     var i = 0;
     while i < xs.len() { f.call(xs[i]); i = i + 1 }
 }
 
-fn run_once<F>(f: F) returns Int
+fn run_once<F>(f: F) -> Int
     require F is CallableOnce<Void, Int> {
     return f.call();
 }
@@ -3688,10 +3688,10 @@ When you need runtime dispatch, use an explicit interface:
 
 ```drift
 interface CallableDyn<Args, R> {
-    fn call(self: &CallableDyn<Args, R>, args: Args) returns R
+    fn call(self: &CallableDyn<Args, R>, args: Args) -> R
 }
 
-fn erase<F, Args, R>(f: F) returns CallableDyn<Args, R>
+fn erase<F, Args, R>(f: F) -> CallableDyn<Args, R>
     require F is Callable<Args, R> {
     // implementation-defined boxing/adaptation
 }
@@ -3702,7 +3702,7 @@ Erasure is explicit; the default callable path remains trait-based static dispat
 ### 22.6. ABI and interop notes
 
 - Closures are ordinary Drift values and can cross Drift module/plugin boundaries like any other value.
-- Capturing closures are **not** automatically wrapped for C ABIs. To interoperate with C callbacks, use a thin (non-capturing) function pointer or build an explicit `{ void* ctx, fn(ctx, …) }` trampoline; see `lang.abi` for guidance.
+- Capturing closures are **not** automatically wrapped for C ABIs. To interoperate with C callbacks, use a thin (non-capturing) function pointer or build an explicit `{ void* ctx, Fn(ctx, …) }` trampoline; see `lang.abi` for guidance.
 Borrow captures were rejected in earlier revisions; in this revision they are supported under the non-escaping closure rules above and participate in the borrow checker.
 
 
@@ -3711,7 +3711,7 @@ Borrow captures were rejected in earlier revisions; in this revision they are su
 ```drift
 struct Job { id: Int }
 
-fn process(job: Job) returns Void {
+fn process(job: Job) -> Void {
     println("processing job " + job.id.to_string());
 }
 

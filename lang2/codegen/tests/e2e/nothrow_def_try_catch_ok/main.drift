@@ -2,15 +2,15 @@ module main
 
 exception Boom()
 
-fn boom() returns Int {
+fn boom() -> Int {
 	throw Boom();
 }
 
-fn safe() nothrow returns Int {
+fn safe() nothrow -> Int {
 	val x: Int = try boom() catch { 0 };
 	return x;
 }
 
-fn main() nothrow returns Int {
+fn main() nothrow -> Int {
 	return safe();
 }

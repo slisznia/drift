@@ -1,3 +1,3 @@
-fn bad(opt: Optional[Int]) returns Int {
+fn bad(opt: Optional[Int]) -> Int {
     return opt.unwrap_or("x")
 }

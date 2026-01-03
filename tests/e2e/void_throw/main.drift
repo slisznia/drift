@@ -1,6 +1,6 @@
 import std.console.out
 
-fn maybe_fail(flag: Int) returns Void {
+fn maybe_fail(flag: Int) -> Void {
   if flag == 0 {
     return
   } else {
@@ -8,7 +8,7 @@ fn maybe_fail(flag: Int) returns Void {
   }
 }
 
-fn main() returns Int {
+fn main() -> Int {
   // Success path (err = null).
   try {
     maybe_fail(0)

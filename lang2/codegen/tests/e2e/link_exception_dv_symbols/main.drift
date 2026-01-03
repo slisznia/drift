@@ -2,11 +2,11 @@ module main
 
 exception E(n: Int, s: String, b: Bool)
 
-fn fail() returns Int {
+fn fail() -> Int {
 	throw E(n = 1, s = "x", b = false);
 }
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
     try fail() catch err {
         print("ok");
     }

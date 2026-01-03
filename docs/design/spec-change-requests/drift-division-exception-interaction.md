@@ -100,8 +100,8 @@ To integrate cleanly with existing `nothrow` and CallInfo/ABI machinery:
 
 Lower `/` and `%` to compiler-known intrinsic calls:
 
-- `intrinsic.int_div(a, b) returns Int` with `CallSig.can_throw = true`
-- `intrinsic.int_mod(a, b) returns Int` with `CallSig.can_throw = true`
+- `intrinsic.int_div(a, b) -> Int` with `CallSig.can_throw = true`
+- `intrinsic.int_mod(a, b) -> Int` with `CallSig.can_throw = true`
 
 (Names illustrative; actual intrinsic naming is an implementation detail.)
 
@@ -116,7 +116,7 @@ Lower `/` and `%` to compiler-known intrinsic calls:
 ### Optimization allowance
 
 When the compiler proves the divisor is nonzero, it may lower to a non-throwing operation or intrinsic:
-- e.g., `intrinsic.int_div_nz(a, b) returns Int` with `can_throw = false`
+- e.g., `intrinsic.int_div_nz(a, b) -> Int` with `can_throw = false`
 
 This is an optimization and does not change surface semantics.
 
@@ -181,8 +181,8 @@ If the spec does not have an intrinsics section, keep the intrinsic model as “
 ### Explicit checked/unchecked variants
 To support performance-sensitive code, consider standard library functions:
 
-- `checked_div(a, b) returns Result<Int>` (or equivalent)
-- `unchecked_div(a, b) returns Int` (may trap/UB; explicitly outside the “throwing” model)
+- `checked_div(a, b) -> Result<Int>` (or equivalent)
+- `unchecked_div(a, b) -> Int` (may trap/UB; explicitly outside the “throwing” model)
 - similarly for modulo
 
 No commitment required now, but reserving names and intent prevents future ambiguity.

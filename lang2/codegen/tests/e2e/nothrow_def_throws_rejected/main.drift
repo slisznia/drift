@@ -2,10 +2,10 @@ module main
 
 exception Boom()
 
-fn bad() nothrow returns Int {
+fn bad() nothrow -> Int {
 	throw Boom();
 }
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	return 0;
 }

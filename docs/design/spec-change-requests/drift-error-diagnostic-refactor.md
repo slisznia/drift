@@ -74,15 +74,15 @@ variant DiagnosticValue {
 
 ```drift
 implement DiagnosticValue {
-    fn kind(self: &DiagnosticValue) returns String   // optional helper
+    fn kind(self: &DiagnosticValue) -> String   // optional helper
 
-    fn get(self: &DiagnosticValue, field: String) returns DiagnosticValue
-    fn index(self: &DiagnosticValue, idx: Int) returns DiagnosticValue
+    fn get(self: &DiagnosticValue, field: String) -> DiagnosticValue
+    fn index(self: &DiagnosticValue, idx: Int) -> DiagnosticValue
 
-    fn as_string(self: &DiagnosticValue) returns Optional<String>
-    fn as_int(self: &DiagnosticValue) returns Optional<Int64>
-    fn as_bool(self: &DiagnosticValue) returns Optional<Bool>
-    fn as_float(self: &DiagnosticValue) returns Optional<Float64>
+    fn as_string(self: &DiagnosticValue) -> Optional<String>
+    fn as_int(self: &DiagnosticValue) -> Optional<Int64>
+    fn as_bool(self: &DiagnosticValue) -> Optional<Bool>
+    fn as_float(self: &DiagnosticValue) -> Optional<Float64>
 }
 ```
 
@@ -103,7 +103,7 @@ Rewrite §5.13.7:
 
 ```drift
 trait Diagnostic {
-    fn to_diag(self) returns DiagnosticValue
+    fn to_diag(self) -> DiagnosticValue
 }
 ```
 
@@ -234,7 +234,7 @@ Replace with:
 ### **§14.5.4 Accessing attributes**
 
 ```drift
-fn attrs(self: &Error) returns Map<String, DiagnosticValue]
+fn attrs(self: &Error) -> Map<String, DiagnosticValue]
 ```
 
 Uniform model; no dot-shortcuts; no typed arg keys.

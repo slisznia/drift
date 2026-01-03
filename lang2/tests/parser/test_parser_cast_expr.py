@@ -8,8 +8,8 @@ from lang2.driftc.parser import parser as p
 def test_parser_cast_expr_builds_cast_node() -> None:
 	prog = p.parse_program(
 		"""
-fn main() returns Int {
-	val f = cast<fn(Int) nothrow returns Int>(abs);
+fn main() -> Int {
+	val f = cast<Fn(Int) nothrow -> Int>(abs);
 	return 0;
 }
 """

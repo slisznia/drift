@@ -37,15 +37,15 @@ module mod_a
 
 export { id }
 
-pub fn id(x: Int) returns Int { return x; }
+pub fn id(x: Int) -> Int { return x; }
 """,
 		Path("mod_b/main.drift"): """
 module mod_b
 
 import mod_a as A
 
-fn main() nothrow returns Int{
-\tval fp: fn(Int) returns Int = A.id;
+fn main() nothrow -> Int{
+\tval fp: Fn(Int) -> Int = A.id;
 \treturn 0;
 }
 """,

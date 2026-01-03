@@ -1,7 +1,7 @@
 exception Foo(msg: String)
 exception Bar(msg: String)
 
-fn boom(x: Int) returns Int {
+fn boom(x: Int) -> Int {
   if x == 1 {
     throw Foo(msg = "foo")
   }
@@ -11,7 +11,7 @@ fn boom(x: Int) returns Int {
   return x
 }
 
-fn main() returns Int {
+fn main() -> Int {
   val a: Int = try boom(1) catch Foo(e) { 10; } catch { -1; }
   val b: Int = try boom(2) catch Foo(e) { 10; } catch { -2; }
   return a + b

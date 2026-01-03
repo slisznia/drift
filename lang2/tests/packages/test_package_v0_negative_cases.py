@@ -23,7 +23,7 @@ module lib
 
 export { add }
 
-pub fn add(a: Int, b: Int) returns Int {
+pub fn add(a: Int, b: Int) -> Int {
 	return a + b
 }
 """.lstrip(),
@@ -51,7 +51,7 @@ module lib
 
 export {{ add }}
 
-fn add(a: Int, b: Int) returns Int {{
+fn add(a: Int, b: Int) -> Int {{
 	return a + b + {n}
 }}
 """.lstrip(),
@@ -67,7 +67,7 @@ module main
 
 import lib as lib
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	return lib.add(40, 2)
 }
 """.lstrip(),
@@ -86,7 +86,7 @@ module lib
 
 export { f }
 
-pub fn f() returns Float {
+pub fn f() -> Float {
 	return 1.0
 }
 """.lstrip(),
@@ -103,7 +103,7 @@ module main
 
 import lib as lib
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	val x = lib.f()
 	return 0
 }

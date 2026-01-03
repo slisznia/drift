@@ -1,8 +1,8 @@
-fn bad() returns &Int {
+fn bad() -> &Int {
 	var x = 1;
 	return &x;
 }
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	return 0;
 }

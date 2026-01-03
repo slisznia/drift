@@ -27,13 +27,13 @@ module m
 struct Point(x: Int, y: Int)
 
 implement Point {
-	fn move_by(self: &mut Point, dx: Int, dy: Int) returns Void {
+	fn move_by(self: &mut Point, dx: Int, dy: Int) -> Void {
 		self->x += dx;
 		self->y += dy;
 	}
 }
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	return 0;
 }
 """.lstrip(),

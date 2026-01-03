@@ -16,7 +16,7 @@ def _parse_with_diagnostics(src: str, tmp_path: Path):
 def test_missing_semicolon_between_statements_reports_diagnostic(tmp_path: Path) -> None:
 	diagnostics = _parse_with_diagnostics(
 		"""
-fn main() returns Int {
+fn main() -> Int {
 	val x = 1
 	val y = 2;
 	return y;
@@ -30,7 +30,7 @@ fn main() returns Int {
 def test_missing_semicolon_after_return_reports_diagnostic(tmp_path: Path) -> None:
 	diagnostics = _parse_with_diagnostics(
 		"""
-fn main() returns Int {
+fn main() -> Int {
 	return 0
 }
 """,

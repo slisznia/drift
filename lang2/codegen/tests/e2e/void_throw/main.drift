@@ -2,14 +2,14 @@ module m
 
 exception Boom()
 
-fn maybe_fail(flag: Int) returns Void {
+fn maybe_fail(flag: Int) -> Void {
 	if flag == 0 {
 		return;
 	}
 	throw Boom();
 }
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	// Success path.
 	try {
 		maybe_fail(0);

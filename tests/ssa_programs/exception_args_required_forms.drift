@@ -1,10 +1,10 @@
 exception ReqErr(a: String, b: String)
 
-fn make_error() returns Void {
+fn make_error() -> Void {
   throw ReqErr(a = "aa", b = "bb")
 }
 
-fn main() returns Int {
+fn main() -> Int {
   try {
     make_error()
   } catch ReqErr(e) {

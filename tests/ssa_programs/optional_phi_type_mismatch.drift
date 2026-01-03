@@ -1,4 +1,4 @@
-fn bad(flag: Bool) returns Int {
+fn bad(flag: Bool) -> Int {
     var opt: Optional[Int] = drift_optional_int_some(1)
     if flag {
         opt = drift_optional_int_some(2)

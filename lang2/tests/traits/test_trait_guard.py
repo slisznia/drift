@@ -45,10 +45,10 @@ def test_trait_guard_keeps_true_branch_only(tmp_path: Path) -> None:
 	src = tmp_path / "main.drift"
 	src.write_text(
 		"""
-trait A { fn a(self: Int) returns Int }
+trait A { fn a(self: Int) -> Int }
 struct S { }
-implement A for S { fn a(self: S) returns Int { return 0; } }
-fn main(x: S) returns Int {
+implement A for S { fn a(self: S) -> Int { return 0; } }
+fn main(x: S) -> Int {
 	if x is A { return 1; } else { return unknown; }
 }
 """
@@ -61,9 +61,9 @@ def test_trait_guard_keeps_false_branch_only(tmp_path: Path) -> None:
 	src = tmp_path / "main.drift"
 	src.write_text(
 		"""
-trait A { fn a(self: Int) returns Int }
+trait A { fn a(self: Int) -> Int }
 struct S { }
-fn main(x: S) returns Int {
+fn main(x: S) -> Int {
 	if x is A { return unknown; } else { return 2; }
 }
 """
@@ -76,9 +76,9 @@ def test_trait_guard_undecidable_is_error(tmp_path: Path) -> None:
 	src = tmp_path / "main.drift"
 	src.write_text(
 		"""
-trait A { fn a(self: Int) returns Int }
+trait A { fn a(self: Int) -> Int }
 struct S { }
-fn main(x: S) returns Int {
+fn main(x: S) -> Int {
 	if T is A { return 1; } else { return 2; }
 }
 """

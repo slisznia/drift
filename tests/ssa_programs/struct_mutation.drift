@@ -4,7 +4,7 @@ struct Counter {
   count: Int
 }
 
-fn main() returns Int {
+fn main() -> Int {
   var c: Counter = Counter(count = 0)
   c.count = c.count + 1
   c.count = c.count + 1

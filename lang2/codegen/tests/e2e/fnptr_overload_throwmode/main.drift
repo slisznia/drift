@@ -2,24 +2,24 @@ module main
 
 exception Boom()
 
-fn pick(f: fn(Int) nothrow returns Int) nothrow returns Int {
+fn pick(f: Fn(Int) nothrow -> Int) nothrow -> Int {
 	return 1;
 }
 
-fn pick(f: fn(Int) returns Int) nothrow returns Int {
+fn pick(f: Fn(Int) -> Int) nothrow -> Int {
 	return 2;
 }
 
-fn add1(x: Int) nothrow returns Int {
+fn add1(x: Int) nothrow -> Int {
 	return x + 1;
 }
 
-fn boom(x: Int) returns Int {
+fn boom(x: Int) -> Int {
 	throw Boom();
 }
 
-fn main() nothrow returns Int {
-	val a = pick(cast<fn(Int) nothrow returns Int>(add1));
-	val b = pick(cast<fn(Int) returns Int>(boom));
+fn main() nothrow -> Int {
+	val a = pick(cast<Fn(Int) nothrow -> Int>(add1));
+	val b = pick(cast<Fn(Int) -> Int>(boom));
 	return a + b;
 }

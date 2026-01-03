@@ -2,4 +2,4 @@ module main
 import a as a
 
 
-fn main() nothrow returns Int{ return try a.afn() catch { 0 }; }
+fn main() nothrow -> Int{ return try a.aFn() catch { 0 }; }

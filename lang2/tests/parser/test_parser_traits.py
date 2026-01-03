@@ -9,7 +9,7 @@ def test_parse_trait_def_with_require_and_method() -> None:
 	prog = p.parse_program(
 		"""
 trait Debuggable require Self is Printable {
-	fn fmt(self: Int) returns String
+	fn fmt(self: Int) -> String
 }
 """
 	)
@@ -26,7 +26,7 @@ def test_parse_struct_and_function_require_clauses() -> None:
 		"""
 struct File require Self is Destructible { }
 
-fn use_file() returns Int require T is Debuggable {
+fn use_file() -> Int require T is Debuggable {
 	return 0;
 }
 """
@@ -40,7 +40,7 @@ fn use_file() returns Int require T is Debuggable {
 def test_parse_trait_guard_in_if_stmt() -> None:
 	prog = p.parse_program(
 		"""
-fn main() returns Int {
+fn main() -> Int {
 	if T is Debuggable or not T is Printable { return 1; } else { return 2; }
 }
 """

@@ -111,10 +111,10 @@ module std.concurrent
 struct ThreadHandle<T>
     // opaque
 {
-    fn join(self: &mut ThreadHandle<T>) returns T
+    fn join(self: &mut ThreadHandle<T>) -> T
 }
 
-fn spawn<F, R>(f: F) returns ThreadHandle<R>
+fn spawn<F, R>(f: F) -> ThreadHandle<R>
     where F is Callable<(), R>, F is Send, R is Send
 ```
 
@@ -123,19 +123,19 @@ Usage:
 ```drift
 import std.concurrent as conc
 
-fn worker(id: Int) returns Int {
+fn worker(id: Int) -> Int {
     // Simulate work
     std.concurrent.sleep(Duration::millis(10))
     return id * 2
 }
 
-fn main() returns Int {
+fn main() -> Int {
     val handles = Array<conc.ThreadHandle<Int>>()
 
     var i = 0
     while i < 10 {
         let id = i
-        handles.push(conc.spawn(fn () returns Int {
+        handles.push(conc.spawn(fn () -> Int {
             return worker(id)
         }))
         i = i + 1
@@ -163,7 +163,7 @@ struct Scope {
     // opaque
 }
 
-fn scope<F>(body: F) returns Void
+fn scope<F>(body: F) -> Void
     where F is Callable<(Scope), Void>, F is Send
 ```
 
@@ -172,15 +172,15 @@ Usage:
 ```drift
 import std.concurrent as conc
 
-fn main() returns Int {
+fn main() -> Int {
     var total = 0
 
-    conc.scope(fn (s: conc.Scope) returns Void {
-        val h1 = s.spawn(fn () returns Int {
+    conc.scope(fn (s: conc.Scope) -> Void {
+        val h1 = s.spawn(fn () -> Int {
             std.concurrent.sleep(Duration::millis(100))
             return 1
         })
-        val h2 = s.spawn(fn () returns Int {
+        val h2 = s.spawn(fn () -> Int {
             std.concurrent.sleep(Duration::millis(50))
             return 2
         })
@@ -213,11 +213,11 @@ struct TcpStream {
     // opaque
 }
 
-fn listen(addr: String, port: Int) returns TcpListener
-fn accept(self: &TcpListener) returns TcpStream
-fn read(self: &TcpStream, buf: &mut [Byte]) returns Int
-fn write(self: &TcpStream, buf: &[Byte]) returns Int
-fn close(self: &mut TcpStream) returns Void
+fn listen(addr: String, port: Int) -> TcpListener
+fn accept(self: &TcpListener) -> TcpStream
+fn read(self: &TcpStream, buf: &mut [Byte]) -> Int
+fn write(self: &TcpStream, buf: &[Byte]) -> Int
+fn close(self: &mut TcpStream) -> Void
 ```
 
 Usage:
@@ -226,7 +226,7 @@ Usage:
 import std.net
 import std.concurrent as conc
 
-fn handle_client(mut conn: std.net.TcpStream) returns Void {
+fn handle_client(mut conn: std.net.TcpStream) -> Void {
     var buf = ByteArray::with_capacity(4096)
     loop {
         let n = conn.read(&mut buf)
@@ -242,12 +242,12 @@ fn handle_client(mut conn: std.net.TcpStream) returns Void {
     conn.close()
 }
 
-fn main() returns Int {
+fn main() -> Int {
     let listener = std.net.listen("0.0.0.0", 8080)
 
     loop {
         let conn = listener.accept()
-        conc.spawn(fn () returns Void {
+        conc.spawn(fn () -> Void {
             handle_client(conn)
         })
     }
@@ -267,13 +267,13 @@ module std.concurrent
 
 struct Duration { /* ... */ }
 
-fn sleep(d: Duration) returns Void
+fn sleep(d: Duration) -> Void
 ```
 
 Usage:
 
 ```drift
-fn delayed_message(ms: Int) returns Void {
+fn delayed_message(ms: Int) -> Void {
     std.concurrent.sleep(Duration::millis(ms))
     std.io.println("done")
 }
@@ -304,19 +304,19 @@ struct VThreadHandle { /* ... */ }
 struct ExecutorHandle { /* ... */ }
 
 // Spawn a new virtual thread on the current executor.
-extern fn vt_spawn(entry: fn(), exec: ExecutorHandle) returns VThreadHandle
+extern fn vt_spawn(entry: Fn(), exec: ExecutorHandle) -> VThreadHandle
 
 // Park the current virtual thread, yielding the carrier thread.
-extern fn vt_park() returns Void
+extern fn vt_park() -> Void
 
 // Unpark a specific virtual thread.
-extern fn vt_unpark(handle: VThreadHandle) returns Void
+extern fn vt_unpark(handle: VThreadHandle) -> Void
 
 // Get handle to the current VT.
-extern fn current_vthread() returns VThreadHandle
+extern fn current_vthread() -> VThreadHandle
 
 // Get handle to the current executor.
-extern fn current_executor() returns ExecutorHandle
+extern fn current_executor() -> ExecutorHandle
 ```
 
 Normative requirements:
@@ -337,10 +337,10 @@ Normative requirements:
 module lang.thread
 
 // Register interest in I/O readiness for fd and associate a VT to be unparked.
-extern fn register_io(fd: Int, events: Int, vt: VThreadHandle) returns Int
+extern fn register_io(fd: Int, events: Int, vt: VThreadHandle) -> Int
 
 // Register a timer; VT is unparked when deadline elapses.
-extern fn register_timer(deadline_ms: Uint64, vt: VThreadHandle) returns Int
+extern fn register_timer(deadline_ms: Uint64, vt: VThreadHandle) -> Int
 ```
 
 Here, `events` is a bitmask corresponding to epoll events (e.g., `EPOLLIN`, `EPOLLOUT`). `deadline_ms` is a monotonic time in milliseconds (or other chosen unit).
@@ -367,14 +367,14 @@ Internal shape (not public):
 ```drift
 module runtime.io
 
-fn block_on_io<F, R>(op: F) returns R
+fn block_on_io<F, R>(op: F) -> R
     where F is Callable<(), R>
 ```
 
 Logic (Drift pseudocode over intrinsics):
 
 ```drift
-fn block_on_io<F, R>(op: F) returns R
+fn block_on_io<F, R>(op: F) -> R
     where F is Callable<(), R>
 {
     // Fast path: not on a virtual thread.
@@ -417,8 +417,8 @@ struct TcpStream {
     // other metadata
 }
 
-fn read(self: &TcpStream, buf: &mut [Byte]) returns Int {
-    return runtime.io.block_on_io(fn () returns Int {
+fn read(self: &TcpStream, buf: &mut [Byte]) -> Int {
+    return runtime.io.block_on_io(fn () -> Int {
         let n = runtime.syscall.read_nonblocking(self.fd, buf)
         if n.is_would_block {
             return IoWouldBlock::from_fd(self.fd, EPOLLIN)
@@ -790,12 +790,12 @@ struct Executor {
 }
 
 impl ExecutorPolicy {
-    fn new() returns ExecutorPolicy
-    fn min_threads(self: &mut ExecutorPolicy, n: Int) returns &mut ExecutorPolicy
-    fn max_threads(self: &mut ExecutorPolicy, n: Int) returns &mut ExecutorPolicy
-    fn queue_limit(self: &mut ExecutorPolicy, n: Int) returns &mut ExecutorPolicy
-    fn on_saturation_return_busy(self: &mut ExecutorPolicy) returns &mut ExecutorPolicy
-    fn build(self: ExecutorPolicy) returns Executor
+    fn new() -> ExecutorPolicy
+    fn min_threads(self: &mut ExecutorPolicy, n: Int) -> &mut ExecutorPolicy
+    fn max_threads(self: &mut ExecutorPolicy, n: Int) -> &mut ExecutorPolicy
+    fn queue_limit(self: &mut ExecutorPolicy, n: Int) -> &mut ExecutorPolicy
+    fn on_saturation_return_busy(self: &mut ExecutorPolicy) -> &mut ExecutorPolicy
+    fn build(self: ExecutorPolicy) -> Executor
 }
 ```
 
@@ -817,7 +817,7 @@ High-level behavior:
 Drift example:
 
 ```drift
-fn main() returns Int {
+fn main() -> Int {
     let policy = std.concurrent.ExecutorPolicy::new()
         .min_threads(1)
         .max_threads(std.sys.num_cpus())

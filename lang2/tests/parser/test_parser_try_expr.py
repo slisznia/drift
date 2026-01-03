@@ -8,7 +8,7 @@ from lang2.driftc.parser import parser as p
 def test_parser_try_expr_binds_catch_after_binary() -> None:
 	prog = p.parse_program(
 		"""
-fn main() returns Int {
+fn main() -> Int {
 	val x = try 1 + 2 catch { 0 };
 	return x;
 }

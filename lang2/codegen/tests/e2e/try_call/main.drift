@@ -2,14 +2,14 @@ module m
 
 exception Boom()
 
-fn may_fail(flag: Int) returns Int {
+fn may_fail(flag: Int) -> Int {
 	if flag == 0 {
 		return 41;
 	}
 	throw Boom();
 }
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	val y: Int = try may_fail(0) catch { 0 };
 	if y == 41 {
 		println("ok");

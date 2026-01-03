@@ -39,7 +39,7 @@ def test_driver_accepts_decl_based_signatures_and_catalog():
 	signatures = signatures_from_decl_nodes(decls)
 	exc_catalog = exception_catalog_from_decls(decls)
 
-	# HIR bodies: can-throw function throws; plain function returns an int.
+	# HIR bodies: can-throw function throws; plain function -> an int.
 	hirs = {
 		"f_can": H.HBlock(
 			statements=[

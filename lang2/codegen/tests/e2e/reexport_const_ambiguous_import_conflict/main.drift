@@ -2,6 +2,6 @@ module main
 import b as b
 
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	return b.ANSWER;
 }

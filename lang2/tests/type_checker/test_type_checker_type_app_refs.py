@@ -73,8 +73,8 @@ def test_type_app_reference_produces_callable_type(tmp_path: Path) -> None:
 	src = tmp_path / "type_app_ref.drift"
 	src.write_text(
 		"""
-fn id<T>(value: T) returns T { return value; }
-fn main() returns Int {
+fn id<T>(value: T) -> T { return value; }
+fn main() -> Int {
 	val f = id<type Int>;
 	return f(1);
 }
@@ -121,7 +121,7 @@ def test_qualified_member_type_app_reference(tmp_path: Path) -> None:
 	src = tmp_path / "type_app_qmem.drift"
 	src.write_text(
 		"""
-fn main() returns Int {
+fn main() -> Int {
 	val f = Optional::None<type Int>;
 	return 0;
 }
@@ -162,7 +162,7 @@ def test_prequalified_member_reference_with_base_args(tmp_path: Path) -> None:
 	src = tmp_path / "type_app_qmem_pre.drift"
 	src.write_text(
 		"""
-fn main() returns Int {
+fn main() -> Int {
 	val f = Optional<Int>::None;
 	val x: Optional<Int> = f();
 	return 0;
@@ -211,7 +211,7 @@ def test_qualified_member_without_args_is_not_value(tmp_path: Path) -> None:
 	src = tmp_path / "type_app_qmem_bare.drift"
 	src.write_text(
 		"""
-fn main() returns Int {
+fn main() -> Int {
 	val f = Optional::None;
 	return 0;
 }
@@ -243,8 +243,8 @@ def test_function_value_call_rejects_type_args(tmp_path: Path) -> None:
 	src = tmp_path / "type_app_fn_val.drift"
 	src.write_text(
 		"""
-fn id<T>(value: T) returns T { return value; }
-fn main() returns Int {
+fn id<T>(value: T) -> T { return value; }
+fn main() -> Int {
 	val f = id<type Int>;
 	return f<type Int>(1);
 }

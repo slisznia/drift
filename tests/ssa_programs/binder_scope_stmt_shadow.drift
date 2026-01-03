@@ -1,10 +1,10 @@
 exception MyError(msg: String)
 
-fn may_fail() returns Int {
+fn may_fail() -> Int {
   throw drift_error_new_dummy(1, "msg", "")
 }
 
-fn main() returns Int {
+fn main() -> Int {
   var e: Int = 5
   try {
     may_fail()

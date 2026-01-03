@@ -535,7 +535,7 @@ class ConstructResultOk(MInstr):
 	Construct FnResult.Ok(value).
 
 	In the surface language, functions may be "can-throw" (exceptional control
-	flow) while still declaring `returns T`. Internally, the compiler lowers
+	flow) while still declaring `-> T`. Internally, the compiler lowers
 	can-throw functions to return `FnResult<T, Error>`.
 
 	For `T = Void`, there is no surface value to carry. In that case `value`

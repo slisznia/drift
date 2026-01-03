@@ -231,8 +231,8 @@ class TypeChecker:
 			params = ", ".join(self._pretty_type_name(t, current_module=current_module) for t in param_types)
 			ret = self._pretty_type_name(ret_type, current_module=current_module)
 			if td.can_throw():
-				return f"fn({params}) returns {ret}"
-			return f"fn({params}) nothrow returns {ret}"
+				return f"Fn({params}) -> {ret}"
+			return f"Fn({params}) nothrow -> {ret}"
 		if td.param_types:
 			args = ", ".join(self._pretty_type_name(t, current_module=current_module) for t in td.param_types)
 			return f"{name}<{args}>"
@@ -1223,7 +1223,7 @@ class TypeChecker:
 				is_extern = bool(getattr(sig, "is_extern", False))
 				kind = FunctionRefKind.WRAPPER if (is_exported or is_extern) else FunctionRefKind.IMPL
 				fn_ref = FunctionRefId(fn_id=fn_id, kind=kind, has_wrapper=is_exported)
-				fn_ty = self.type_table.ensure_function("fn", params, ret, can_throw=bool(can_throw))
+				fn_ty = self.type_table.ensure_function(params, ret, can_throw=bool(can_throw))
 				return _FnRefResolution(fn_ref=fn_ref, call_sig=call_sig, fn_type=fn_ty)
 
 			for fn_id, sig in fn_candidates:
@@ -1231,7 +1231,7 @@ class TypeChecker:
 				if cs is None:
 					continue
 				params, ret, can_throw = cs
-				cand_ty = self.type_table.ensure_function("fn", params, ret, can_throw=bool(can_throw))
+				cand_ty = self.type_table.ensure_function(params, ret, can_throw=bool(can_throw))
 				candidate_labels.append(self._pretty_type_name(cand_ty, current_module=current_module_name))
 				if expected_fn is None:
 					continue
@@ -1278,7 +1278,7 @@ class TypeChecker:
 					params, ret, _can_throw = cs
 					thunk_ref = _ensure_ok_wrap_thunk(chosen_fn_id, params, ret)
 					call_sig = CallSig(param_types=tuple(params), user_ret_type=ret, can_throw=True)
-					fn_ty = self.type_table.ensure_function("fn", params, ret, can_throw=True)
+					fn_ty = self.type_table.ensure_function(params, ret, can_throw=True)
 					return _FnRefResolution(fn_ref=thunk_ref, call_sig=call_sig, fn_type=fn_ty)
 				if diag_mode == "cast":
 					pretty = self._pretty_type_name(expected_type, current_module=current_module_name)
@@ -3109,7 +3109,7 @@ class TypeChecker:
 					return record_expr(expr, self._unknown)
 				inst_return = inst_res.inst_return
 
-				return record_expr(expr, self.type_table.new_function("fn", list(inst_res.inst_params), inst_res.inst_return))
+				return record_expr(expr, self.type_table.new_function(list(inst_res.inst_params), inst_res.inst_return))
 
 			if hasattr(H, "HTypeApp") and isinstance(expr, getattr(H, "HTypeApp")):
 				call_type_args_span = None
@@ -3178,7 +3178,7 @@ class TypeChecker:
 
 						if len(viable) == 1:
 							decl, params, ret = viable[0]
-							return record_expr(expr, self.type_table.new_function("fn", params, ret))
+							return record_expr(expr, self.type_table.new_function(params, ret))
 						if saw_registry_only:
 							diagnostics.append(
 								_tc_diag(
@@ -3408,7 +3408,7 @@ class TypeChecker:
 						return record_expr(expr, self._unknown)
 					inst_return = inst_res.inst_return
 
-					return record_expr(expr, self.type_table.new_function("fn", list(inst_res.inst_params), inst_res.inst_return))
+					return record_expr(expr, self.type_table.new_function(list(inst_res.inst_params), inst_res.inst_return))
 
 				diagnostics.append(
 					_tc_diag(
@@ -4047,7 +4047,6 @@ class TypeChecker:
 					can_throw = _lambda_can_throw(lam, call_info_by_callsite_id)
 					lam.can_throw_effective = bool(can_throw)
 					fn_ty = self.type_table.ensure_function(
-						"fn",
 						lambda_param_types,
 						call_ret,
 						can_throw=bool(can_throw),
@@ -6250,7 +6249,7 @@ class TypeChecker:
 				if callee_def.kind in (TypeKind.CALLABLE, TypeKind.CALLABLE_DYN):
 					diagnostics.append(
 						_tc_diag(
-							message="calling Callable values is not supported yet; use fn(...) values in MVP",
+							message="calling Callable values is not supported yet; use Fn(...) values in MVP",
 							severity="error",
 							span=getattr(expr, "loc", Span()),
 						)

@@ -105,3 +105,11 @@
 - CallInfo/MIR invariants tightened: every M.Call has explicit can_throw; stage2 rejects call_resolutions in typed mode.
 - TemplateHIR-v0 import path removed in CLI (hard error); import boundary is structured IDs only.
 - byte_length now takes &String with lvalue auto-borrow; rvalue borrow rejected; entrypoint main remains nothrow Int.
+## 2026-01-03 – Return arrow + Fn types migration
+- Replaced `returns` with `->` across the surface language (parser, docs, examples, and tests) and adopted `Fn(...) -> T` for function types, including lambda return annotations.
+- Updated parser/token handling to recognize `Fn` type constructors and `->` return signatures, with type-mode heuristics adjusted accordingly.
+- Modernized the legacy grammar to use `move` and `->` member-through-ref; removed the old `->` as move operator.
+- Added regression tests for `->` member access inside function bodies and lambda return annotations.
+- Added a deterministic function-type throw-mode identity test and aligned pretty-printers/diagnostic strings with the new syntax.
+- Tightened function-type construction APIs (`ensure_function`/`new_function`) to avoid string-typed constructor names and updated all call sites.
+- Aligned the legacy grammar with `Fn` types, `nothrow` returns, and the `|>` pipeline token.

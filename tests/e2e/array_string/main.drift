@@ -1,6 +1,6 @@
 import std.console.out
 
-fn main() returns Int {
+fn main() -> Int {
   val msgs = ["hello", "world"]
   val idx: Int = 1
   out.writeln(msgs[idx])

@@ -1,8 +1,8 @@
-fn bad() returns Void {
+fn bad() -> Void {
 	return 1;
 }
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	bad();
 	return 0;
 }

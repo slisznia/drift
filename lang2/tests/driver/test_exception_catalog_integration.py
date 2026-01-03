@@ -29,11 +29,11 @@ module main
 
 exception Boom()
 
-fn boom() returns Int {
+fn boom() -> Int {
     throw Boom();
 }
 
-fn main() returns Int {
+fn main() -> Int {
     try {
         boom();
     } catch Unknown(e) {
@@ -54,11 +54,11 @@ module main
 
 exception Boom(msg: String)
 
-fn boom() returns Int {
+fn boom() -> Int {
     throw Boom(msg = "boom");
 }
 
-fn main() returns Int {
+fn main() -> Int {
     try {
         boom();
     } catch Boom(e) {

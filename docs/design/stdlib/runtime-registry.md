@@ -37,45 +37,45 @@ struct GlobalRegistry
 struct ThreadLocalRegistry
 
 // The global registry instance (process-wide).
-fn global_registry() returns &GlobalRegistry
+fn global_registry() -> &GlobalRegistry
 
 // The thread-local registry instance (per-thread).
-fn thread_local() returns &ThreadLocalRegistry
+fn thread_local() -> &ThreadLocalRegistry
 
 // Convenience forwarders for the global registry.
-fn get<T: Unborrowed + Send + Sync>() returns Optional<&T>
-fn set<T: Unborrowed + Send + Sync>(value: T) returns Optional<&T>
-fn contains<T: Unborrowed + Send + Sync>() returns Bool
+fn get<T: Unborrowed + Send + Sync>() -> Optional<&T>
+fn set<T: Unborrowed + Send + Sync>(value: T) -> Optional<&T>
+fn contains<T: Unborrowed + Send + Sync>() -> Bool
 // Traps if missing (does not throw).
-fn expect<T: Unborrowed + Send + Sync>(msg: String) returns &T
+fn expect<T: Unborrowed + Send + Sync>(msg: String) -> &T
 
 // Convenience I/O wrappers (trap if the console is not registered).
-fn print(msg: String) returns Void
-fn println(msg: String) returns Void
-fn eprint(msg: String) returns Void
-fn eprintln(msg: String) returns Void
+fn print(msg: String) -> Void
+fn println(msg: String) -> Void
+fn eprint(msg: String) -> Void
+fn eprintln(msg: String) -> Void
 
 implement GlobalRegistry {
     // Inserts `value` if no value for `T` exists. Returns the existing value
     // when present.
-    fn set<T: Unborrowed + Send + Sync>(value: T) returns Optional<&T>
+    fn set<T: Unborrowed + Send + Sync>(value: T) -> Optional<&T>
 
     // Returns a shared reference to the stored value, if present.
-    fn get<T: Unborrowed + Send + Sync>() returns Optional<&T>
+    fn get<T: Unborrowed + Send + Sync>() -> Optional<&T>
 
     // Convenience: whether a value for `T` exists.
-    fn contains<T: Unborrowed + Send + Sync>() returns Bool
+    fn contains<T: Unborrowed + Send + Sync>() -> Bool
 
-    // Convenience: returns the value or traps with `msg`.
-    fn expect<T: Unborrowed + Send + Sync>(msg: String) returns &T
+    // Convenience: -> the value or traps with `msg`.
+    fn expect<T: Unborrowed + Send + Sync>(msg: String) -> &T
 }
 
 implement ThreadLocalRegistry {
     // Same semantics as GlobalRegistry, but per-thread.
-    fn set<T: Unborrowed>(value: T) returns Optional<&T>
-    fn get<T: Unborrowed>() returns Optional<&T>
-    fn contains<T: Unborrowed>() returns Bool
-    fn expect<T: Unborrowed>(msg: String) returns &T
+    fn set<T: Unborrowed>(value: T) -> Optional<&T>
+    fn get<T: Unborrowed>() -> Optional<&T>
+    fn contains<T: Unborrowed>() -> Bool
+    fn expect<T: Unborrowed>(msg: String) -> &T
 }
 ```
 
@@ -112,11 +112,11 @@ Global config (immutable):
 ```drift
 struct AppConfig { port: Int, mode: String }
 
-fn init(cfg: AppConfig) returns Void {
+fn init(cfg: AppConfig) -> Void {
     std.runtime.set<AppConfig>(cfg);
 }
 
-fn port() returns Int {
+fn port() -> Int {
     return std.runtime.get<AppConfig>()?.port ?? 0;
 }
 ```
@@ -124,11 +124,11 @@ fn port() returns Int {
 Global counter (mutable):
 
 ```drift
-fn init_counter() returns Void {
+fn init_counter() -> Void {
     std.runtime.set<Mutex<Int>>(Mutex.new(0));
 }
 
-fn bump() returns Int {
+fn bump() -> Int {
     val m = std.runtime.get<Mutex<Int>>()?;
     return m.lock(|n| { *n = *n + 1; *n });
 }
@@ -137,7 +137,7 @@ fn bump() returns Int {
 Multiple values per type (store a container):
 
 ```drift
-fn init_cache() returns Void {
+fn init_cache() -> Void {
     std.runtime.set<Map<String, Int>>(Map.new());
 }
 ```
@@ -145,7 +145,7 @@ fn init_cache() returns Void {
 Thread-local scratch:
 
 ```drift
-fn init_tls() returns Void {
+fn init_tls() -> Void {
     std.runtime.thread_local().set<Array<Int>>(Array.new());
 }
 ```
@@ -155,7 +155,7 @@ Console helper (global registry):
 ```drift
 import std.runtime as rt;
 
-fn main() nothrow returns Int {
+fn main() nothrow -> Int {
     rt.println("hello");
     return 0;
 }

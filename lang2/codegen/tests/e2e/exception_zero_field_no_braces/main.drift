@@ -2,11 +2,11 @@ module main
 
 exception Timeout()
 
-fn fail() returns Int {
+fn fail() -> Int {
 	throw Timeout();
 }
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
     try fail() catch err {
         // handled
     }

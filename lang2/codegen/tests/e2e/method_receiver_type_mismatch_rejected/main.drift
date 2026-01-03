@@ -4,12 +4,12 @@ struct Point(x: Int)
 struct Other(x: Int)
 
 implement Point {
-	fn bad(self: &mut Other) returns Void {
+	fn bad(self: &mut Other) -> Void {
 		// Intentionally invalid: receiver type does not match the implement target.
 		self->x += 1;
 	}
 }
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	return 0;
 }

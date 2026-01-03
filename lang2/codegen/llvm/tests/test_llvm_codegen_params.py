@@ -22,13 +22,13 @@ def _int_and_string_types():
 
 
 def _fn_type(table: TypeTable, int_ty: int, *, can_throw: bool) -> int:
-    return table.ensure_function("fn", [int_ty], int_ty, can_throw=can_throw)
+    return table.ensure_function([int_ty], int_ty, can_throw=can_throw)
 
 
 def test_int_param_header_and_call():
     table, int_ty, _ = _int_and_string_types()
 
-    # add(x: Int, y: Int) returns Int { return x }
+    # add(x: Int, y: Int) -> Int { return x }
     add_block = BasicBlock(name="entry", instructions=[], terminator=Return(value="x"))
     add_id = FunctionId(module="main", name="add", ordinal=0)
     add = MirFunc(fn_id=add_id, name="add", params=["x", "y"], locals=[], blocks={"entry": add_block}, entry="entry")
@@ -36,7 +36,7 @@ def test_int_param_header_and_call():
     add_sig = FnSignature(name="add", param_type_ids=[int_ty, int_ty], return_type_id=int_ty)
     add_info = FnInfo(fn_id=add_id, name="add", declared_can_throw=False, signature=add_sig, return_type_id=int_ty)
 
-    # main() returns Int { return add(1, 2) }
+    # main() -> Int { return add(1, 2) }
     main_block = BasicBlock(
         name="entry",
         instructions=[
@@ -68,7 +68,7 @@ def test_int_param_header_and_call():
 def test_mixed_int_string_params_and_return():
     table, int_ty, str_ty = _int_and_string_types()
 
-    # combine(x: Int, s: String) returns String { return s }
+    # combine(x: Int, s: String) -> String { return s }
     comb_block = BasicBlock(name="entry", instructions=[], terminator=Return(value="s"))
     comb_id = FunctionId(module="main", name="combine", ordinal=0)
     comb = MirFunc(fn_id=comb_id, name="combine", params=["x", "s"], locals=[], blocks={"entry": comb_block}, entry="entry")
@@ -76,7 +76,7 @@ def test_mixed_int_string_params_and_return():
     comb_sig = FnSignature(name="combine", param_type_ids=[int_ty, str_ty], return_type_id=str_ty)
     comb_info = FnInfo(fn_id=comb_id, name="combine", declared_can_throw=False, signature=comb_sig, return_type_id=str_ty)
 
-    # main() returns String { return combine(1, "abc") }
+    # main() -> String { return combine(1, "abc") }
     main_block = BasicBlock(
         name="entry",
         instructions=[
@@ -110,7 +110,7 @@ def test_fnptr_param_headers():
     fnptr_nothrow = _fn_type(table, int_ty, can_throw=False)
     fnptr_throwing = _fn_type(table, int_ty, can_throw=True)
 
-    # apply(f: fn(Int) nothrow returns Int, x: Int) returns Int { return x }
+    # apply(f: Fn(Int) nothrow -> Int, x: Int) -> Int { return x }
     apply_block = BasicBlock(name="entry", instructions=[], terminator=Return(value="x"))
     apply_id = FunctionId(module="main", name="apply", ordinal=0)
     apply = MirFunc(fn_id=apply_id, name="apply", params=["f", "x"], locals=[], blocks={"entry": apply_block}, entry="entry")
@@ -118,7 +118,7 @@ def test_fnptr_param_headers():
     apply_sig = FnSignature(name="apply", param_type_ids=[fnptr_nothrow, int_ty], return_type_id=int_ty)
     apply_info = FnInfo(fn_id=apply_id, name="apply", declared_can_throw=False, signature=apply_sig, return_type_id=int_ty)
 
-    # apply_ct(f: fn(Int) returns Int, x: Int) returns Int { return x }
+    # apply_ct(f: Fn(Int) -> Int, x: Int) -> Int { return x }
     apply_ct_block = BasicBlock(name="entry", instructions=[], terminator=Return(value="x"))
     apply_ct_id = FunctionId(module="main", name="apply_ct", ordinal=0)
     apply_ct = MirFunc(fn_id=apply_ct_id, name="apply_ct", params=["f", "x"], locals=[], blocks={"entry": apply_ct_block}, entry="entry")

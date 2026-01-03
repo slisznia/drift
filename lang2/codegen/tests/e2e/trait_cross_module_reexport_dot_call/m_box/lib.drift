@@ -4,6 +4,6 @@ export { Box, make_box }
 
 pub struct Box { value: Int }
 
-pub fn make_box(value: Int) returns Box {
+pub fn make_box(value: Int) -> Box {
 	return Box(value = value);
 }

@@ -46,9 +46,9 @@ def test_struct_require_enforced_when_used(tmp_path: Path) -> None:
 	src = tmp_path / "main.drift"
 	src.write_text(
 		"""
-trait A { fn a(self: Int) returns Int }
+trait A { fn a(self: Int) -> Int }
 struct S require Self is A { }
-fn main(x: S) returns Int { return 0; }
+fn main(x: S) -> Int { return 0; }
 """
 	)
 	_func_hirs, sigs, type_table, typed_fns = _typecheck_all(src)
@@ -62,10 +62,10 @@ def test_struct_require_satisfied(tmp_path: Path) -> None:
 	src = tmp_path / "main.drift"
 	src.write_text(
 		"""
-trait A { fn a(self: Int) returns Int }
+trait A { fn a(self: Int) -> Int }
 struct S require Self is A { }
-implement A for S { fn a(self: S) returns Int { return 0; } }
-fn main(x: S) returns Int { return 0; }
+implement A for S { fn a(self: S) -> Int { return 0; } }
+fn main(x: S) -> Int { return 0; }
 """
 	)
 	_func_hirs, sigs, type_table, typed_fns = _typecheck_all(src)
@@ -79,10 +79,10 @@ def test_fn_require_enforced_at_call(tmp_path: Path) -> None:
 	src = tmp_path / "main.drift"
 	src.write_text(
 		"""
-trait A { fn a(self: Int) returns Int }
+trait A { fn a(self: Int) -> Int }
 struct S { }
-fn f<T>(x: T) returns Int require T is A { return 0; }
-fn main(x: S) returns Int { return f(x); }
+fn f<T>(x: T) -> Int require T is A { return 0; }
+fn main(x: S) -> Int { return f(x); }
 """
 	)
 	_func_hirs, sigs, type_table, typed_fns = _typecheck_all(src)
@@ -103,11 +103,11 @@ def test_fn_require_satisfied_at_call(tmp_path: Path) -> None:
 	src = tmp_path / "main.drift"
 	src.write_text(
 		"""
-trait A { fn a(self: Int) returns Int }
+trait A { fn a(self: Int) -> Int }
 struct S { }
-implement A for S { fn a(self: S) returns Int { return 0; } }
-fn f<T>(x: T) returns Int require T is A { return 0; }
-fn main(x: S) returns Int { return f(x); }
+implement A for S { fn a(self: S) -> Int { return 0; } }
+fn f<T>(x: T) -> Int require T is A { return 0; }
+fn main(x: S) -> Int { return f(x); }
 """
 	)
 	_func_hirs, sigs, type_table, typed_fns = _typecheck_all(src)

@@ -2,6 +2,6 @@ module main
 import lib as lib
 
 
-fn lib.add() returns Int { return 0; }
-fn main() nothrow returns Int{ return lib.add(); }
+fn lib.add() -> Int { return 0; }
+fn main() nothrow -> Int{ return lib.add(); }
 

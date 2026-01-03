@@ -5,7 +5,7 @@ struct Point {
   y: Int
 }
 
-fn main() returns Int {
+fn main() -> Int {
   var p: Point = Point(x = 1, y = 2)
   p.z = 3
   return 0

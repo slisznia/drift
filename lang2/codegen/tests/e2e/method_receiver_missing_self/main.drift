@@ -4,11 +4,11 @@ struct Point(x: Int)
 
 implement Point {
 	// Intentionally invalid: method is missing the receiver parameter.
-	fn bump() returns Void {
+	fn bump() -> Void {
 		// body irrelevant
 	}
 }
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	return 0;
 }

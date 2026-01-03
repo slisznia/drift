@@ -30,10 +30,10 @@ module std.mem
 
 export { swap, replace }
 
-pub fn swap<T>(a: T, b: T) nothrow returns Void {
+pub fn swap<T>(a: T, b: T) nothrow -> Void {
 }
 
-pub fn replace<T>(place: T, value: T) nothrow returns T {
+pub fn replace<T>(place: T, value: T) nothrow -> T {
 	return place;
 }
 """.lstrip(),
@@ -48,7 +48,7 @@ def test_swap_requires_import(tmp_path: Path, capsys: pytest.CaptureFixture[str]
 		"""
 module main
 
-fn main() nothrow returns Int {
+fn main() nothrow -> Int {
 	var x: Int = 1;
 	var y: Int = 2;
 	swap(x, y);
@@ -73,7 +73,7 @@ module main
 
 import std.mem as mem
 
-fn main() nothrow returns Int {
+fn main() nothrow -> Int {
 	var x: Int = 1;
 	var y: Int = 2;
 	val r = &x;

@@ -57,7 +57,7 @@ Drift is a systems programming language focused on deterministic resource manage
 ### Hello Drift
 
 ```drift
-fn main() returns Int {
+fn main() -> Int {
     println("hello, drift")
     return 0
 }
@@ -69,13 +69,13 @@ fn main() returns Int {
 struct Point { x: Int64, y: Int64 }
 
 implement Point {
-    fn move_by(self: &mut Point, dx: Int64, dy: Int64) returns Void {
+    fn move_by(self: &mut Point, dx: Int64, dy: Int64) -> Void {
         self.x += dx
         self.y += dy
     }
 }
 
-fn translate(p: &mut Point, dx: Int64, dy: Int64) returns Void {
+fn translate(p: &mut Point, dx: Int64, dy: Int64) -> Void {
     p.x += dx
     p.y += dy
 }
@@ -84,7 +84,7 @@ fn translate(p: &mut Point, dx: Int64, dy: Int64) returns Void {
 ### Collection literals with type inference
 
 ```drift
-fn numbers() returns Array<Int64> {
+fn numbers() -> Array<Int64> {
     val xs = [1, 2, 3]          // inferred Array<Int64>
     var ys: Array<Int64> = [4, 5, 6]
     ys[1] = 42                 // requires `var`
@@ -97,10 +97,10 @@ fn numbers() returns Array<Int64> {
 ```drift
 import std.concurrent as conc
 
-fn main() returns Void {
-    conc.scope(fn(scope: conc.Scope) returns Void {
-        val user = scope.spawn(fn() returns User { load_user(42) })
-        val data = scope.spawn(fn() returns Data { fetch_data() })
+fn main() -> Void {
+    conc.scope(Fn(scope: conc.Scope) -> Void {
+        val user = scope.spawn(Fn() -> User { load_user(42) })
+        val data = scope.spawn(Fn() -> Data { fetch_data() })
         render(user.join(), data.join())
     })
 }

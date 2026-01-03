@@ -48,7 +48,7 @@ def _run_ir_with_clang(ir: str) -> int:
 def test_driftc_codegen_scalar_main():
 	"""
 	Full pipeline smoke: HIR -> MIR -> SSA -> LLVM -> clang.
-	fn drift_main() returns Int { return 42; } should exit with code 42.
+	fn drift_main() -> Int { return 42; } should exit with code 42.
 	"""
 	func_hirs = {
 		"drift_main": H.HBlock(statements=[H.HReturn(value=H.HLiteralInt(value=42))])
@@ -64,7 +64,7 @@ def test_driftc_codegen_can_throw_callee_ok():
 	"""
 	Full pipeline smoke with a can-throw callee returning 1.
 
-	Surface language uses `returns T` even for can-throw functions; the can-throw
+	Surface language uses `-> T` even for can-throw functions; the can-throw
 	ABI carrier (FnResult) is internal. `drift_main` stays non-can-throw and
 	handles failures locally via a try/catch expression, returning the ok value
 	on success.

@@ -54,7 +54,7 @@ def _typed_fn_with_retain(fn_id: FunctionId, *, param_name: str, binding_id: int
 def test_fn_param_typeid_callable_direct_invoke() -> None:
 	table = TypeTable()
 	int_ty = table.ensure_int()
-	fn_ty = table.ensure_function("fn", [int_ty], int_ty, can_throw=False)
+	fn_ty = table.ensure_function([int_ty], int_ty, can_throw=False)
 	fn_id = FunctionId(module="main", name="takes_fp", ordinal=0)
 	sig = FnSignature(name="takes_fp", param_type_ids=[fn_ty], return_type_id=int_ty)
 	typed_fns = {fn_id: _typed_fn_with_direct_invoke(fn_id, param_name="f")}
@@ -84,7 +84,7 @@ def test_fn_param_raw_ref_wrapped_callable(ref_name: str) -> None:
 def test_fn_param_retain_marks_false() -> None:
 	table = TypeTable()
 	int_ty = table.ensure_int()
-	fn_ty = table.ensure_function("fn", [int_ty], int_ty, can_throw=False)
+	fn_ty = table.ensure_function([int_ty], int_ty, can_throw=False)
 	fn_id = FunctionId(module="main", name="takes_fp", ordinal=0)
 	sig = FnSignature(name="takes_fp", param_type_ids=[fn_ty], return_type_id=int_ty)
 	typed_fns = {fn_id: _typed_fn_with_retain(fn_id, param_name="f")}

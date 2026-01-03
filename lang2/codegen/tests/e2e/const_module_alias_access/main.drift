@@ -2,6 +2,6 @@ module main
 
 import lib as x
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	return x.ANSWER;
 }

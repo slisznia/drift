@@ -5,12 +5,12 @@ variant Optional<T> {
 	None,
 }
 
-fn foo() nothrow returns Optional<Int> {
+fn foo() nothrow -> Optional<Int> {
 	// Constructor calls require an expected type; return type provides it.
 	return Some(41);
 }
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	val x: Optional<Int> = foo();
 	val y = match x{
 	Some(v) => { v + 1 },

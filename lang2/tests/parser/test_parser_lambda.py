@@ -24,7 +24,7 @@ def test_parse_lambda_block_body() -> None:
 
 
 def test_parse_lambda_with_returns_expr_body() -> None:
-	expr = p._parse_expr_fragment("|x: Int| returns Int => x")
+	expr = p._parse_expr_fragment("|x: Int| -> Int => x")
 	assert isinstance(expr, Lambda)
 	assert expr.params and expr.params[0].name == "x"
 	assert expr.ret_type is not None
@@ -36,8 +36,8 @@ def test_parse_lambda_with_returns_expr_body() -> None:
 def test_parse_lambda_with_returns_block_body() -> None:
 	prog = p.parse_program(
 		"""
-fn main() returns Int {
-    return (|x: Int| returns Int => { return x; })(1);
+fn main() -> Int {
+    return (|x: Int| -> Int => { return x; })(1);
 }
 """
 	)

@@ -1,11 +1,11 @@
 struct Point(x: Int, y: Int)
 
-fn bad(p: &Point) returns Void {
+fn bad(p: &Point) -> Void {
 	val rx = &mut (*p).x;
 	*rx = *rx + 1;
 }
 
-fn main() nothrow returns Int{
+fn main() nothrow -> Int{
 	var p = Point(0, 0);
 	bad(&p);
 	return 0;
