@@ -136,7 +136,7 @@ def _emit_lib_pkg(tmp_path: Path, *, module_id: str = "acme.lib") -> Path:
 		f"""
 module {module_id}
 
-export {{ add }}
+export {{ add }};
 
 pub fn add(a: Int, b: Int) nothrow -> Int {{
 	return a + b;
@@ -167,7 +167,7 @@ def _emit_main_pkg(tmp_path: Path, *, module_id: str = "dep", package_id: str = 
 		f"""
 module {module_id}
 
-export {{ main }}
+export {{ main }};
 
 pub fn main() nothrow -> Int {{
 	return 0;
@@ -198,7 +198,7 @@ def _emit_main_method_pkg(tmp_path: Path, *, module_id: str = "dep", package_id:
 		f"""
 module {module_id}
 
-export {{ S }}
+export {{ S }};
 
 pub struct S(x: Int);
 
@@ -233,7 +233,7 @@ def _emit_hidden_fn_pkg(tmp_path: Path, *, module_id: str = "acme.hidden") -> Pa
 		f"""
 module {module_id}
 
-export {{ add }}
+export {{ add }};
 
 pub fn add(a: Int, b: Int) nothrow -> Int {{
 	return a + b;
@@ -268,7 +268,7 @@ def _emit_pub_hidden_fn_pkg(tmp_path: Path, *, module_id: str = "acme.hiddenpub"
 		f"""
 module {module_id}
 
-export {{ add }}
+export {{ add }};
 
 pub fn add(a: Int, b: Int) nothrow -> Int {{
 	return a + b;
@@ -310,7 +310,7 @@ def _emit_star_reexport_pkg(
 		f"""
 module {core_id}
 
-export {{ add }}
+export {{ add }};
 
 pub fn add(a: Int, b: Int) nothrow -> Int {{
 	return a + b;
@@ -322,7 +322,7 @@ pub fn add(a: Int, b: Int) nothrow -> Int {{
 		f"""
 module {api_id}
 
-export {{ {core_id}.* }}
+export {{ {core_id}.* }};
 """.lstrip(),
 	)
 	pkg_path = tmp_path / "star.dmp"
@@ -350,7 +350,7 @@ def _emit_const_pkg(tmp_path: Path, *, module_id: str = "acme.consts") -> Path:
 		f"""
 module {module_id}
 
-export {{ ANSWER }}
+export {{ ANSWER }};
 
 pub const ANSWER: Int = 42;
 """.lstrip(),
@@ -379,7 +379,7 @@ def _emit_point_type_only_pkg(tmp_path: Path, *, module_id: str = "acme.point") 
 		f"""
 module {module_id}
 
-export {{ Point }}
+export {{ Point }};
 
 pub struct Point {{ x: Int, y: Int }}
 
@@ -418,7 +418,7 @@ def _emit_point_pkg(tmp_path: Path, *, module_id: str) -> Path:
 		f"""
 module {module_id}
 
-export {{ Point, make }}
+export {{ Point, make }};
 
 pub struct Point {{ x: Int, y: Int }}
 
@@ -476,7 +476,7 @@ def _emit_optional_variant_pkg(
 		f"""
 module {module_id}
 
-export {{ Optional, foo }}
+export {{ Optional, foo }};
 
 pub variant Optional<T> {{
 {arms}
@@ -517,7 +517,7 @@ is emitted into the package.
 		f"""
 module {module_id}
 
-export {{ Boom }}
+export {{ Boom }};
 
 pub exception Boom(a: Int, b: String);
 
@@ -616,7 +616,7 @@ def test_emit_package_is_deterministic(tmp_path: Path) -> None:
 		"""
 module main
 
-import lib as lib
+import lib as lib;
 
 fn main() nothrow -> Int{
 	return try lib.add(40, 2) catch { 0 };
@@ -628,7 +628,7 @@ fn main() nothrow -> Int{
 		"""
 module lib
 
-export { add }
+export { add };
 
 pub fn add(a: Int, b: Int) nothrow -> Int {
 	return a + b;
@@ -681,8 +681,8 @@ def test_emit_package_is_deterministic_with_permuted_package_roots(tmp_path: Pat
 		"""
 module main
 
-import acme.liba as liba
-import acme.optb as optb
+import acme.liba as liba;
+import acme.optb as optb;
 
 fn main() nothrow -> Int{
 	try {
@@ -748,8 +748,8 @@ def test_emit_package_is_deterministic_with_changed_package_filenames(tmp_path: 
 		"""
 module main
 
-import acme.liba as liba
-import acme.optb as optb
+import acme.liba as liba;
+import acme.optb as optb;
 
 fn main() nothrow -> Int{
 	try {
@@ -816,10 +816,10 @@ def test_emit_package_is_deterministic_with_three_packages_and_derived_types(tmp
 		"""
 module main
 
-import acme.geom as g
+import acme.geom as g;
 
-import acme.liba as liba
-import acme.opt as opt
+import acme.liba as liba;
+import acme.opt as opt;
 
 fn main() nothrow -> Int{
 	try {
@@ -872,7 +872,7 @@ def test_load_package_v0_round_trip(tmp_path: Path) -> None:
 		"""
 module main
 
-import lib as lib
+import lib as lib;
 
 fn main() nothrow -> Int{
 	return try lib.add(40, 2) catch { 0 };
@@ -884,7 +884,7 @@ fn main() nothrow -> Int{
 		"""
 module lib
 
-export { add }
+export { add };
 
 pub fn add(a: Int, b: Int) nothrow -> Int {
 	return a + b;
@@ -920,7 +920,7 @@ def test_load_package_rejects_bad_blob_hash(tmp_path: Path) -> None:
 		"""
 module lib
 
-export { add }
+export { add };
 
 pub fn add(a: Int, b: Int) nothrow -> Int {
 	return a + b;
@@ -960,7 +960,7 @@ def test_load_package_rejects_bad_manifest_hash(tmp_path: Path) -> None:
 		"""
 module lib
 
-export { add }
+export { add };
 
 pub fn add(a: Int, b: Int) nothrow -> Int {
 	return a + b;
@@ -993,7 +993,7 @@ def test_load_package_rejects_bad_toc_hash(tmp_path: Path) -> None:
 		"""
 module lib
 
-export { add }
+export { add };
 
 pub fn add(a: Int, b: Int) nothrow -> Int {
 	return a + b;
@@ -1026,7 +1026,7 @@ def test_load_package_rejects_duplicate_toc_blob_hash(tmp_path: Path) -> None:
 		"""
 module lib
 
-export { add }
+export { add };
 
 pub fn add(a: Int, b: Int) nothrow -> Int {
 	return a + b;
@@ -1086,7 +1086,7 @@ def test_driftc_rejects_duplicate_module_id_across_packages(tmp_path: Path) -> N
 			f"""
 module lib
 
-export {{ add }}
+export {{ add }};
 
 pub fn add(a: Int, b: Int) nothrow -> Int {{
 	return a + b + {n};
@@ -1113,7 +1113,7 @@ pub fn add(a: Int, b: Int) nothrow -> Int {{
 		"""
 module main
 
-import lib as lib
+import lib as lib;
 
 fn main() nothrow -> Int{
 	return try lib.add(40, 2) catch { 0 };
@@ -1145,7 +1145,7 @@ def test_driftc_can_consume_package_with_additional_types_via_type_table_linking
 		"""
 module lib
 
-export { S, make }
+export { S, make };
 
 pub struct S(x: Int);
 
@@ -1174,7 +1174,7 @@ pub fn make() nothrow -> S {
 		"""
 module main
 
-import lib as lib
+import lib as lib;
 
 fn main() nothrow -> Int{
 	try {
@@ -1277,7 +1277,7 @@ def test_driftc_rejects_duplicate_module_ids_across_packages(
 			f"""
 module {module_id}
 
-export {{ add }}
+export {{ add }};
 
 pub fn add(a: Int, b: Int) nothrow -> Int {{
 	return a + b;
@@ -1355,7 +1355,7 @@ fn main() nothrow -> Int {
 			f"""
 module {module_id}
 
-export {{ add }}
+export {{ add }};
 
 pub fn add(a: Int, b: Int) nothrow -> Int {{
 	return a + b;
@@ -1430,7 +1430,7 @@ def test_driftc_reserved_namespace_requires_core_trust_keys(
 		f"""
 module {module_id}
 
-export {{ add }}
+export {{ add }};
 
 pub fn add(a: Int, b: Int) nothrow -> Int {{
 	return a + b;
@@ -1564,7 +1564,7 @@ def test_package_embedding_includes_only_call_graph_closure(tmp_path: Path) -> N
 		"""
 module lib
 
-export { add }
+export { add };
 
 pub fn add(a: Int, b: Int) nothrow -> Int {
 	return a + b;
@@ -1595,7 +1595,7 @@ fn unused() nothrow -> Int {
 		"""
 module main
 
-import lib as lib
+import lib as lib;
 
 fn main() nothrow -> Int{
 	return try lib.add(40, 2) catch { 0 };
@@ -1641,7 +1641,7 @@ def test_driftc_rejects_unsigned_package_outside_allowlist(tmp_path: Path) -> No
 		"""
 module lib
 
-export { add }
+export { add };
 
 pub fn add(a: Int, b: Int) nothrow -> Int {
 	return a + b;
@@ -1670,7 +1670,7 @@ pub fn add(a: Int, b: Int) nothrow -> Int {
 		"""
 module main
 
-import lib as lib
+import lib as lib;
 
 fn main() nothrow -> Int{
 	return try lib.add(40, 2) catch { 0 };
@@ -1734,7 +1734,7 @@ def test_driftc_accepts_signed_package_when_required(tmp_path: Path, capsys: pyt
 		"""
 module main
 
-import acme.lib as lib
+import acme.lib as lib;
 
 fn main() nothrow -> Int{
 	return try lib.add(40, 2) catch { 0 };
@@ -1839,7 +1839,7 @@ def test_driftc_rejects_signature_missing_module_in_strict_mode(tmp_path: Path, 
 		"""
 module main
 
-import acme.badmod as badmod
+import acme.badmod as badmod;
 
 fn main() nothrow -> Int{
 	return 0;
@@ -1879,7 +1879,7 @@ def test_driftc_rejects_missing_sidecar_when_signatures_required(tmp_path: Path,
 		"""
 module main
 
-import acme.lib as lib
+import acme.lib as lib;
 
 fn main() nothrow -> Int{
 	return try lib.add(40, 2) catch { 0 };
@@ -1916,7 +1916,7 @@ def test_driftc_rejects_malformed_signature_sidecar_json(tmp_path: Path, capsys:
 		"""
 module main
 
-import acme.lib as lib
+import acme.lib as lib;
 
 fn main() nothrow -> Int{
 	return try lib.add(40, 2) catch { 0 };
@@ -1954,7 +1954,7 @@ def test_driftc_rejects_sidecar_package_sha_mismatch(tmp_path: Path, capsys: pyt
 		"""
 module main
 
-import acme.lib as lib
+import acme.lib as lib;
 
 fn main() nothrow -> Int{
 	return try lib.add(40, 2) catch { 0 };
@@ -1999,7 +1999,7 @@ def test_driftc_rejects_manifest_tamper_when_signatures_required(
 		"""
 module main
 
-import acme.lib as lib
+import acme.lib as lib;
 
 fn main() nothrow -> Int{
 	return try lib.add(40, 2) catch { 0 };
@@ -2038,7 +2038,7 @@ def test_driftc_rejects_sidecar_invalid_base64(tmp_path: Path, capsys: pytest.Ca
 		"""
 module main
 
-import acme.lib as lib
+import acme.lib as lib;
 
 fn main() nothrow -> Int{
 	return try lib.add(40, 2) catch { 0 };
@@ -2077,7 +2077,7 @@ def test_driftc_rejects_sidecar_wrong_sig_length(tmp_path: Path, capsys: pytest.
 		"""
 module main
 
-import acme.lib as lib
+import acme.lib as lib;
 
 fn main() nothrow -> Int{
 	return try lib.add(40, 2) catch { 0 };
@@ -2122,7 +2122,7 @@ def test_driftc_rejects_signed_package_when_kid_revoked(tmp_path: Path, capsys: 
 		"""
 module main
 
-import acme.lib as lib
+import acme.lib as lib;
 
 fn main() nothrow -> Int{
 	return try lib.add(40, 2) catch { 0 };
@@ -2194,7 +2194,7 @@ def test_driftc_accepts_if_any_signature_entry_is_valid(tmp_path: Path, capsys: 
 		"""
 module main
 
-import acme.lib as lib
+import acme.lib as lib;
 
 fn main() nothrow -> Int{
 	return try lib.add(40, 2) catch { 0 };
@@ -2251,7 +2251,7 @@ def test_driftc_rejects_valid_signature_when_kid_not_trusted(tmp_path: Path, cap
 		"""
 module main
 
-import acme.lib as lib
+import acme.lib as lib;
 
 fn main() nothrow -> Int{
 	return try lib.add(40, 2) catch { 0 };
@@ -2314,7 +2314,7 @@ def test_driftc_rejects_valid_signature_when_namespace_disallows_kid(tmp_path: P
 		"""
 module main
 
-import acme.lib as lib
+import acme.lib as lib;
 
 fn main() nothrow -> Int{
 	return try lib.add(40, 2) catch { 0 };
@@ -2353,7 +2353,7 @@ def test_driftc_rejects_sidecar_wrong_pubkey_length(tmp_path: Path, capsys: pyte
 		"""
 module main
 
-import acme.lib as lib
+import acme.lib as lib;
 
 fn main() nothrow -> Int{
 	return try lib.add(40, 2) catch { 0 };
@@ -2392,7 +2392,7 @@ def test_driftc_rejects_sidecar_invalid_pubkey_base64(tmp_path: Path, capsys: py
 		"""
 module main
 
-import acme.lib as lib
+import acme.lib as lib;
 
 fn main() nothrow -> Int{
 	return try lib.add(40, 2) catch { 0 };
@@ -2425,7 +2425,7 @@ def test_driftc_rejects_unsigned_package_without_manifest_marker(tmp_path: Path)
 		"""
 module lib
 
-export { add }
+export { add };
 
 pub fn add(a: Int, b: Int) nothrow -> Int {
 	return a + b;
@@ -2463,7 +2463,7 @@ pub fn add(a: Int, b: Int) nothrow -> Int {
 		"""
 module main
 
-import lib as lib
+import lib as lib;
 
 fn main() nothrow -> Int{
 	return try lib.add(40, 2) catch { 0 };
@@ -2495,7 +2495,7 @@ def test_driftc_can_consume_package_exporting_generic_variant_optional(tmp_path:
 		"""
 module main
 
-import acme.opt as opt
+import acme.opt as opt;
 
 fn main() nothrow -> Int{
 	try {
@@ -2619,7 +2619,7 @@ def test_driftc_rejects_import_of_non_exported_value_from_package(tmp_path: Path
 		"""
 module main
 
-import acme.hidden as hidden
+import acme.hidden as hidden;
 
 fn main() nothrow -> Int{
 	return hidden.hidden();
@@ -2655,7 +2655,7 @@ def test_driftc_rejects_import_of_pub_but_not_exported_value_from_package(tmp_pa
 		"""
 module main
 
-import acme.hiddenpub as hidden
+import acme.hiddenpub as hidden;
 
 fn main() nothrow -> Int{
 	return hidden.hidden();
@@ -2692,7 +2692,7 @@ def test_driftc_can_consume_package_with_export_star(tmp_path: Path) -> None:
 		"""
 module main
 
-import acme.api as api
+import acme.api as api;
 
 fn main() nothrow -> Int{
 	return try api.add(40, 2) catch { 0 };
@@ -2725,7 +2725,7 @@ def test_driftc_allows_import_of_exported_const_from_package(tmp_path: Path, cap
 		"""
 module main
 
-import acme.consts as consts
+import acme.consts as consts;
 
 fn main() nothrow -> Int{
 	return consts.ANSWER;
@@ -2762,7 +2762,7 @@ def test_driftc_allows_import_of_exported_type_but_rejects_non_exported_value_fr
 		"""
 module main
 
-import acme.point as point
+import acme.point as point;
 
 fn main() nothrow -> Int{
 	val p: point.Point = point.make();
@@ -2800,8 +2800,8 @@ def test_driftc_allows_two_modules_with_same_struct_name_from_packages(tmp_path:
 		"""
 module main
 
-import a.geom as ag
-import b.geom as bg
+import a.geom as ag;
+import b.geom as bg;
 
 fn main() nothrow -> Int{
 	try {
@@ -2901,7 +2901,7 @@ def test_driftc_rejects_package_with_exported_value_missing_entrypoint_flag(tmp_
 		"""
 module main
 
-import acme.badiface as badiface
+import acme.badiface as badiface;
 
 fn main() nothrow -> Int{
 	return try badiface.add(40, 2) catch { 0 };
@@ -2985,7 +2985,7 @@ def test_driftc_rejects_package_with_exported_value_missing_interface_signature(
 		"""
 module main
 
-import acme.badiface2 as badiface2
+import acme.badiface2 as badiface2;
 
 fn main() nothrow -> Int{
 	return try badiface2.add(40, 2) catch { 0 };
@@ -3074,7 +3074,7 @@ def test_driftc_rejects_package_with_exports_mismatch_between_interface_and_payl
 		"""
 module main
 
-import acme.badiface3 as badiface3
+import acme.badiface3 as badiface3;
 
 fn main() nothrow -> Int{
 	return try badiface3.add(40, 2) catch { 0 };
@@ -3156,7 +3156,7 @@ Interface completeness: exported exceptions must have interface schema entries.
 		"""
 module main
 
-import acme.badexc as badexc
+import acme.badexc as badexc;
 
 fn main() nothrow -> Int{
 	return 0;
@@ -3237,7 +3237,7 @@ Interface completeness: exported variants must have interface schema entries.
 		"""
 module main
 
-import acme.badvar as badvar
+import acme.badvar as badvar;
 
 fn main() nothrow -> Int{
 	val o: badvar.Optional<Int> = None;
@@ -3274,7 +3274,7 @@ MVP guardrail: exported methods are forbidden.
 		"""
 module m
 
-export { Point }
+export { Point };
 
 pub struct Point { x: Int }
 
@@ -3409,7 +3409,7 @@ def test_driftc_require_signatures_rejects_unsigned_packages(tmp_path: Path) -> 
 		"""
 module lib
 
-export { add }
+export { add };
 
 pub fn add(a: Int, b: Int) nothrow -> Int {
 	return a + b;
@@ -3438,7 +3438,7 @@ pub fn add(a: Int, b: Int) nothrow -> Int {
 		"""
 module main
 
-import lib as lib
+import lib as lib;
 
 fn main() nothrow -> Int{
 	return try lib.add(40, 2) catch { 0 };

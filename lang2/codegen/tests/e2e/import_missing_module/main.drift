@@ -1,5 +1,5 @@
 module main
-import does_not_exist as does_not_exist
+import does_not_exist as does_not_exist;
 
 
 fn main() nothrow -> Int{ return 0; }

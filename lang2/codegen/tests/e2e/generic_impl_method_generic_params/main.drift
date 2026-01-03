@@ -1,0 +1,8 @@
+module main
+
+import m_box;
+
+fn main() nothrow -> Int {
+	val b: m_box.Box<String> = m_box.Box<type String>("x");
+	return b.wrap<type Int>(5);
+}

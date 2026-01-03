@@ -1,4 +1,4 @@
-import lib as x
+import lib as x;
 
 fn main() nothrow -> Int{
 	val p: x.Point = try x.make(40, 2) catch { x.Point(x = 0, y = 0) };

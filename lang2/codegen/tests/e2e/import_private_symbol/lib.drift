@@ -1,6 +1,6 @@
 module lib
 
-export { exposed }
+export { exposed };
 
 fn hidden() -> Int { return 1; }
 pub fn exposed() -> Int { return 2; }

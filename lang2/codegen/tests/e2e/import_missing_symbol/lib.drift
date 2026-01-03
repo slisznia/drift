@@ -1,6 +1,6 @@
 module lib
 
-export { ok }
+export { ok };
 
 pub fn ok() -> Int { return 1; }
 

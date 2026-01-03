@@ -28,7 +28,7 @@ def _write_require_modules(tmp_path: Path, *, import_impls: bool) -> list[Path]:
 		"""
 module lib
 
-export { Show, id }
+export { Show, id };
 
 pub trait Show {
 	fn show(self: Self) -> Int
@@ -44,7 +44,7 @@ pub fn id<T>(x: T) nothrow -> T require T is Show {
 		"""
 module types
 
-export { Bad }
+export { Bad };
 
 pub struct Bad { x: Int }
 """.lstrip(),
@@ -54,22 +54,22 @@ pub struct Bad { x: Int }
 		"""
 module impls
 
-import lib
-import types
+import lib;
+import types;
 
 implement lib.Show for types.Bad {
 	pub fn show(self: types.Bad) -> Int { return 0; }
 }
 """.lstrip(),
 	)
-	import_impls_line = "import impls\n" if import_impls else ""
+	import_impls_line = "import impls;\n" if import_impls else ""
 	_write_file(
 		mod_root / "main" / "main.drift",
 		f"""
 module main
 
-import lib
-import types
+import lib;
+import types;
 {import_impls_line}
 fn main() nothrow -> Int {{
 	try lib.id(types.Bad(x = 1)) catch {{

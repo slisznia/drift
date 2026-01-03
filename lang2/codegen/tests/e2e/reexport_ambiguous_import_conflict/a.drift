@@ -1,5 +1,5 @@
 module a
 
-export { foo }
+export { foo };
 
 pub fn foo() -> Int { return 1; }

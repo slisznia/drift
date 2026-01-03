@@ -18,7 +18,7 @@ def test_import_from_package_root_compiles_to_ir(tmp_path: Path) -> None:
 		"""
 module lib
 
-export { add }
+export { add };
 
 pub fn add(a: Int, b: Int) -> Int {
 	return a + b
@@ -35,7 +35,7 @@ pub fn add(a: Int, b: Int) -> Int {
 		"""
 module main
 
-import lib as lib
+import lib as lib;
 
 fn main() nothrow -> Int{
 	return lib.add(40, 2)

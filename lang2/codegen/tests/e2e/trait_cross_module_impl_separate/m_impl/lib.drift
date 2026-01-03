@@ -1,7 +1,7 @@
 module m_impl
 
-import m_box
-import m_trait
+import m_box;
+import m_trait;
 
 implement m_trait.Show for m_box.Box {
 	pub fn show(self: m_box.Box) -> Int { return self.value + 1; }

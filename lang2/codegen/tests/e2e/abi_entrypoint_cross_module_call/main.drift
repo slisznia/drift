@@ -1,5 +1,5 @@
 module main
-import acme.lib as lib
+import acme.lib as lib;
 
 
 fn main() nothrow -> Int{

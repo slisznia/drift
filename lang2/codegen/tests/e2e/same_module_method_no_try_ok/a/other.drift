@@ -1,6 +1,6 @@
 module a
 
-export { Other }
+export { Other };
 
 pub struct Other { x: Int }
 

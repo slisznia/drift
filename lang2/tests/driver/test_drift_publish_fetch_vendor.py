@@ -34,7 +34,7 @@ def test_phase5_e2e_smoke_dir_source(tmp_path: Path) -> None:
 		"""
 module lib
 
-export { add }
+export { add };
 
 pub fn add(a: Int, b: Int) -> Int {
 	return a + b;
@@ -148,7 +148,7 @@ def test_drift_publish_fetch_vendor_round_trip(tmp_path: Path) -> None:
 		"""
 module lib
 
-export { add }
+export { add };
 
 pub fn add(a: Int, b: Int) -> Int {
 	return a + b;
@@ -266,7 +266,7 @@ by (priority, source_id), not by file order or scan order.
 			f"""
 module lib
 
-export {{ add }}
+export {{ add }};
 
 pub fn add(a: Int, b: Int) -> Int {{
 	{lib_body}
@@ -348,7 +348,7 @@ def test_drift_fetch_rejects_ambiguous_identity_across_sources_unlocked(tmp_path
 		"""
 module lib
 
-export { add }
+export { add };
 
 pub fn add(a: Int, b: Int) -> Int {
 	return a + b;
@@ -410,7 +410,7 @@ def test_drift_fetch_json_success_is_strict_json_only(tmp_path: Path) -> None:
 		"""
 module lib
 
-export { add }
+export { add };
 
 pub fn add(a: Int, b: Int) -> Int {
 	return a + b;
@@ -473,7 +473,7 @@ def test_drift_fetch_json_failure_ambiguous_identity(tmp_path: Path) -> None:
 		"""
 module lib
 
-export { add }
+export { add };
 
 pub fn add(a: Int, b: Int) -> Int {
 	return a + b;
@@ -590,7 +590,7 @@ def test_drift_vendor_skips_bad_entries_and_refuses_lock_with_json_report(tmp_pa
 		"""
 module a
 
-export { add }
+export { add };
 
 pub fn add(x: Int, y: Int) -> Int {
 	return x + y;
@@ -602,7 +602,7 @@ pub fn add(x: Int, y: Int) -> Int {
 		"""
 module b
 
-export { add }
+export { add };
 
 pub fn add(x: Int, y: Int) -> Int {
 	return x + y + 1;
@@ -709,7 +709,7 @@ def test_drift_fetch_lock_mode_emits_structured_error_code_on_sha_mismatch(tmp_p
 		"""
 module lib
 
-export { add }
+export { add };
 
 pub fn add(a: Int, b: Int) -> Int {
 	return a + b;
@@ -782,7 +782,7 @@ def test_drift_fetch_rejects_sha_mismatch_between_index_and_bytes(tmp_path: Path
 		"""
 module lib
 
-export { add }
+export { add };
 
 pub fn add(a: Int, b: Int) -> Int {
 	return a + b;
@@ -842,7 +842,7 @@ def test_drift_fetch_rejects_identity_mismatch_in_index(tmp_path: Path) -> None:
 		"""
 module lib
 
-export { add }
+export { add };
 
 pub fn add(a: Int, b: Int) -> Int {
 	return a + b;
@@ -946,7 +946,7 @@ package id.
 			f"""
 module lib
 
-export {{ add }}
+export {{ add }};
 
 pub fn add(a: Int, b: Int) -> Int {{
 	{lib_body}

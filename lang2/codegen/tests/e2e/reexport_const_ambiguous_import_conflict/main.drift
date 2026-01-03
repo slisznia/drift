@@ -1,5 +1,5 @@
 module main
-import b as b
+import b as b;
 
 
 fn main() nothrow -> Int{

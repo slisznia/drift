@@ -95,7 +95,7 @@ def _emit_generic_pkg(tmp_path: Path, *, module_id: str, pkg_name: str, require:
 		f"""
 module {module_id}
 
-export {{ id, Show }}
+export {{ id, Show }};
 pub trait Show {{
 	fn show(self: Self) -> Int;
 }}
@@ -128,7 +128,7 @@ def _emit_box_pkg(tmp_path: Path, *, module_id: str, pkg_name: str) -> Path:
 		f"""
 module {module_id}
 
-export {{ Box, make }}
+export {{ Box, make }};
 
 pub struct Box<T> {{ value: T }}
 
@@ -167,7 +167,7 @@ def _emit_box_get_pkg(tmp_path: Path, *, module_id: str, pkg_name: str) -> Path:
 		f"""
 module {module_id}
 
-export {{ Box, make }}
+export {{ Box, make }};
 
 pub struct Box<T> {{ value: T }}
 
@@ -206,7 +206,7 @@ def _emit_box_id_pkg(tmp_path: Path, *, module_id: str, pkg_name: str) -> Path:
 		f"""
 module {module_id}
 
-export {{ Box, make }}
+export {{ Box, make }};
 
 pub struct Box<T> {{ value: T }}
 
@@ -245,7 +245,7 @@ def _emit_box_show_pkg(tmp_path: Path, *, module_id: str, pkg_name: str) -> Path
 		f"""
 module {module_id}
 
-export {{ Box, make, Show, Debuggable }}
+export {{ Box, make, Show, Debuggable }};
 
 pub trait Debuggable {{
 	fn debug(self: Self) -> Int
@@ -364,7 +364,7 @@ def test_instantiation_missing_template_reports_error(tmp_path: Path, capsys: py
 		"""
 module main
 
-import acme.gen as gen
+import acme.gen as gen;
 
 fn main() nothrow -> Int{
 	return try gen.id<type Int>(1) catch { 0 };
@@ -400,7 +400,7 @@ def test_instantiation_constraint_failure_reports_error(tmp_path: Path, capsys: 
 		"""
 module main
 
-import acme.req as req
+import acme.req as req;
 
 struct Bad { value: Int }
 
@@ -448,8 +448,8 @@ def test_instantiation_dedup_across_packages(tmp_path: Path) -> None:
 		"""
 module acme.a
 
-import acme.common as common
-export { a }
+import acme.common as common;
+export { a };
 
 pub fn a() -> Int {
 	return common.id<type Int>(1);
@@ -487,8 +487,8 @@ pub fn a() -> Int {
 		"""
 module acme.b
 
-import acme.common as common
-export { b }
+import acme.common as common;
+export { b };
 
 pub fn b() -> Int {
 	return common.id<type Int>(2);
@@ -532,8 +532,8 @@ pub fn b() -> Int {
 		"""
 module main
 
-import acme.a as a
-import acme.b as b
+import acme.a as a;
+import acme.b as b;
 
 fn main() nothrow -> Int{
 	return try (a.a() + b.b()) catch { 0 };
@@ -583,8 +583,8 @@ def test_generic_function_infers_type_args_across_modules(tmp_path: Path) -> Non
 		"""
 module acme.user_a
 
-import acme.lib as lib
-export { run_a }
+import acme.lib as lib;
+export { run_a };
 
 pub fn run_a() -> Int {
 	return lib.id(1);
@@ -596,8 +596,8 @@ pub fn run_a() -> Int {
 		"""
 module acme.user_b
 
-import acme.lib as lib
-export { run_b }
+import acme.lib as lib;
+export { run_b };
 
 pub fn run_b() -> Int {
 	return lib.id(2);
@@ -646,8 +646,8 @@ def test_impl_generic_method_instantiated_across_packages(tmp_path: Path) -> Non
 		"""
 module acme.user
 
-import acme.box as box
-export { run }
+import acme.box as box;
+export { run };
 
 pub fn run() -> Int {
 	val b: box.Box<Int> = box.make();
@@ -694,8 +694,8 @@ def test_impl_generic_method_infers_type_args_across_packages(tmp_path: Path) ->
 		"""
 module acme.user
 
-import acme.box as box
-export { run }
+import acme.box as box;
+export { run };
 
 pub fn run() -> Int {
 	val b: box.Box<Int> = box.make();
@@ -743,8 +743,8 @@ def test_impl_method_type_params_instantiated_across_packages(tmp_path: Path) ->
 		"""
 module acme.user_a
 
-import acme.box as box
-export { run_a }
+import acme.box as box;
+export { run_a };
 
 pub fn run_a() -> Int {
 	val b: box.Box<Int> = box.make();
@@ -757,8 +757,8 @@ pub fn run_a() -> Int {
 		"""
 module acme.user_b
 
-import acme.box as box
-export { run_b }
+import acme.box as box;
+export { run_b };
 
 pub fn run_b() -> String {
 	val b: box.Box<Int> = box.make();
@@ -813,9 +813,9 @@ def test_trait_generic_method_instantiated_across_packages(tmp_path: Path) -> No
 		"""
 module acme.user
 
-import acme.box as box
-export { run }
-use trait box.Show
+import acme.box as box;
+export { run };
+use trait box.Show;
 
 pub fn run() -> Int {
 	val b: box.Box<Int> = box.make();
@@ -862,9 +862,9 @@ def test_trait_generic_method_dedup_across_modules_in_package(tmp_path: Path) ->
 		"""
 module acme.user_a
 
-import acme.box as box
-export { run_a }
-use trait box.Show
+import acme.box as box;
+export { run_a };
+use trait box.Show;
 
 pub fn run_a() -> Int {
 	val b: box.Box<Int> = box.make();
@@ -877,9 +877,9 @@ pub fn run_a() -> Int {
 		"""
 module acme.user_b
 
-import acme.box as box
-export { run_b }
-use trait box.Show
+import acme.box as box;
+export { run_b };
+use trait box.Show;
 
 pub fn run_b() -> Int {
 	val b: box.Box<Int> = box.make();

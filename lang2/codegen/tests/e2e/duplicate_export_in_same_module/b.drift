@@ -1,6 +1,6 @@
 module m
 
-export { add }
+export { add };
 
 pub fn add() -> Int { return 2; }
 

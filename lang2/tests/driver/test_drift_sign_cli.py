@@ -24,7 +24,7 @@ def test_drift_sign_produces_sidecar_accepted_by_driftc(tmp_path: Path) -> None:
 		"""
 module lib
 
-export { add }
+export { add };
 
 pub fn add(a: Int, b: Int) -> Int {
 	return a + b;
@@ -108,7 +108,7 @@ pub fn add(a: Int, b: Int) -> Int {
 		"""
 module main
 
-import lib as lib
+import lib as lib;
 
 fn main() nothrow -> Int{
 	return try lib.add(40, 2) catch { 0 };

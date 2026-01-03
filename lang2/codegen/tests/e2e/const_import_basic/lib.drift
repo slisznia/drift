@@ -1,5 +1,5 @@
 module lib
 
-export { ANSWER }
+export { ANSWER };
 
 pub const ANSWER: Int = 42;

@@ -1,6 +1,6 @@
 module main
 
-import acme.point as ap
+import acme.point as ap;
 
 fn main() nothrow -> Int{
 	val p: ap.Point = try ap.make_point() catch { ap.Point(x = 0, y = 0) };

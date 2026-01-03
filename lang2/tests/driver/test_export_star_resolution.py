@@ -30,7 +30,7 @@ def test_export_non_pub_rejected(tmp_path: Path) -> None:
 module m
 
 fn helper() -> Int { return 0; }
-export { helper }
+export { helper };
 """,
 	)
 	messages = _parse_workspace(root)
@@ -45,7 +45,7 @@ def test_export_star_unknown_module_rejected(tmp_path: Path) -> None:
 		"""
 module m
 
-export { missing.* }
+export { missing.* };
 """,
 	)
 	messages = _parse_workspace(root)
@@ -61,7 +61,7 @@ def test_export_star_collision_rejected(tmp_path: Path) -> None:
 module a
 
 pub fn x() -> Int { return 1; }
-export { x }
+export { x };
 """,
 	)
 	_write_module(
@@ -71,7 +71,7 @@ export { x }
 module b
 
 pub fn x() -> Int { return 2; }
-export { x }
+export { x };
 """,
 	)
 	_write_module(
@@ -80,7 +80,7 @@ export { x }
 		"""
 module m
 
-export { a.*, b.* }
+export { a.*, b.* };
 """,
 	)
 	messages = _parse_workspace(root)
@@ -96,7 +96,7 @@ def test_export_star_explicit_collision_rejected(tmp_path: Path) -> None:
 module a
 
 pub fn x() -> Int { return 1; }
-export { x }
+export { x };
 """,
 	)
 	_write_module(
@@ -106,7 +106,7 @@ export { x }
 module m
 
 pub fn x() -> Int { return 2; }
-export { a.*, x }
+export { a.*, x };
 """,
 	)
 	messages = _parse_workspace(root)

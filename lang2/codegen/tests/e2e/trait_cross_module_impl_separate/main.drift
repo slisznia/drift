@@ -1,10 +1,10 @@
 module main
 
-import m_box
-import m_trait
-import m_impl
+import m_box;
+import m_trait;
+import m_impl;
 
-use trait m_trait.Show
+use trait m_trait.Show;
 
 fn main() nothrow -> Int{
 	val b: m_box.Box = try m_box.make_box(6) catch { m_box.Box(value = 0) };

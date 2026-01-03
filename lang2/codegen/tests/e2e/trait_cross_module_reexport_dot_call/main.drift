@@ -1,9 +1,9 @@
 module main
 
-import m_api
-import m_box
+import m_api;
+import m_box;
 
-use trait m_api.Show
+use trait m_api.Show;
 
 fn main() nothrow -> Int{
 	val b: m_box.Box = try m_box.make_box(5) catch { m_box.Box(value = 0) };

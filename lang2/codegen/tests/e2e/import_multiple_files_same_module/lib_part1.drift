@@ -1,6 +1,6 @@
 module lib
 
-export { a }
+export { a };
 
 pub fn a() -> Int { return 1; }
 

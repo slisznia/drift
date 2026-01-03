@@ -1,5 +1,5 @@
 module b
-import a as a
-export { bfn }
+import a as a;
+export { bfn };
 pub fn bFn() -> Int { return a.aFn(); }
 

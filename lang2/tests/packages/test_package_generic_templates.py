@@ -18,7 +18,7 @@ def test_package_includes_generic_templates(tmp_path: Path) -> None:
 		"""
 module main
 
-import lib
+import lib;
 
 fn main() nothrow -> Int {
 	return 0;
@@ -30,7 +30,7 @@ fn main() nothrow -> Int {
 		"""
 module lib
 
-export { id }
+export { id };
 
 pub fn id<T>(x: T) nothrow -> T {
 	return x;
@@ -42,7 +42,7 @@ pub fn id<T>(x: T) nothrow -> T {
 		"""
 module lib
 
-export { need }
+export { need };
 
 pub fn need<T>(x: T) nothrow -> Int require T is Copy {
 	return 1;

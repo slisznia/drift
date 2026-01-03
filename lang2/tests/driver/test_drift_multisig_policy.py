@@ -38,7 +38,7 @@ def test_driftc_accepts_sidecar_when_any_signature_valid_and_allowed(tmp_path: P
 		"""
 module lib
 
-export { add }
+export { add };
 
 pub fn add(a: Int, b: Int) -> Int {
 	return a + b;
@@ -127,7 +127,7 @@ pub fn add(a: Int, b: Int) -> Int {
 		"""
 module main
 
-import lib as lib
+import lib as lib;
 
 fn main() nothrow -> Int{
 	return try lib.add(40, 2) catch { 0 };

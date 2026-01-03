@@ -1,9 +1,9 @@
 module main
 
-import m_box
-import m_trait
+import m_box;
+import m_trait;
 
-use trait m_trait.Show
+use trait m_trait.Show;
 
 fn main() nothrow -> Int{
 	val b: m_box.Box = try m_box.make_box(8) catch { m_box.Box(value = 0) };

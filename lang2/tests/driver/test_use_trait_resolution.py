@@ -31,16 +31,16 @@ def test_use_trait_resolves_and_records_scope(tmp_path: Path) -> None:
 		Path("m_traits/lib.drift"): """
 module m_traits
 
-export { Show }
+export { Show };
 
 pub trait Show { fn show(self: Int) -> Int }
 """,
 		Path("m_main/main.drift"): """
 module m_main
 
-import m_traits as t
+import m_traits as t;
 
-use trait t.Show
+use trait t.Show;
 
 fn main() nothrow -> Int{ return 0; }
 """,
@@ -58,16 +58,16 @@ def test_use_trait_unknown_trait_is_error(tmp_path: Path) -> None:
 		Path("m_traits/lib.drift"): """
 module m_traits
 
-export { Show }
+export { Show };
 
 pub trait Show { fn show(self: Int) -> Int }
 """,
 		Path("m_main/main.drift"): """
 module m_main
 
-import m_traits
+import m_traits;
 
-use trait m_traits.Missing
+use trait m_traits.Missing;
 
 fn main() nothrow -> Int{ return 0; }
 """,
@@ -88,9 +88,9 @@ pub trait Show { fn show(self: Int) -> Int }
 		Path("m_main/main.drift"): """
 module m_main
 
-import m_traits
+import m_traits;
 
-use trait m_traits.Show
+use trait m_traits.Show;
 
 fn main() nothrow -> Int{ return 0; }
 """,
@@ -108,14 +108,14 @@ def test_use_trait_requires_import_alias(tmp_path: Path) -> None:
 		Path("m_traits/lib.drift"): """
 module m_traits
 
-export { Show }
+export { Show };
 
 pub trait Show { fn show(self: Int) -> Int }
 """,
 		Path("m_main/main.drift"): """
 module m_main
 
-use trait missing.Show
+use trait missing.Show;
 
 fn main() nothrow -> Int{ return 0; }
 """,

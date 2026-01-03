@@ -1,5 +1,5 @@
 module main
-import a as a
+import a as a;
 
 fn main() nothrow -> Int{
 	val fp: Fn(Int) -> Int = a.id;

@@ -42,7 +42,7 @@ def test_cross_module_exported_call_uses_wrapper_not_impl(tmp_path: Path) -> Non
 			[
 				"module acme.point",
 				"",
-				"export { Point, make_point }",
+				"export { Point, make_point };",
 				"",
 				"pub struct Point(x: Int, y: Int)",
 				"",
@@ -58,7 +58,7 @@ def test_cross_module_exported_call_uses_wrapper_not_impl(tmp_path: Path) -> Non
 			[
 				"module main",
 				"",
-				"import acme.point as ap",
+				"import acme.point as ap;",
 				"",
 				"fn main() nothrow -> Int {",
 				"\tval p: ap.Point = try ap.make_point() catch { ap.Point(x = 0, y = 0) };",

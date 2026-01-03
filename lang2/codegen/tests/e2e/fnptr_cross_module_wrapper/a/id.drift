@@ -1,6 +1,6 @@
 module a
 
-export { id }
+export { id };
 
 pub fn id(x: Int) nothrow -> Int {
 	return x;

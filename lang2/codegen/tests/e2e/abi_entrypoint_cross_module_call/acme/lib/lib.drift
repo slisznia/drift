@@ -1,6 +1,6 @@
 module acme.lib
 
-export { answer }
+export { answer };
 
 pub fn answer() -> Int {
 	return 42;

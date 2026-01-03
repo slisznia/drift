@@ -1,7 +1,7 @@
 module m_trait
 
-import m_box
+import m_box;
 
-export { Show }
+export { Show };
 
 pub trait Show { fn show(self: m_box.Box) -> Int }

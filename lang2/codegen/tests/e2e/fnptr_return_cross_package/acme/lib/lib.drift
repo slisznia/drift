@@ -1,6 +1,6 @@
 module acme.lib
 
-export { make }
+export { make };
 
 pub fn g(x: Int) nothrow -> Int { return x + 1; }
 

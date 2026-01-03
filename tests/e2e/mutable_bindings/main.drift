@@ -1,4 +1,4 @@
-import std.console.out
+import std.console.out;
 
 fn banner() -> String {
   val base: String = "var bindings opt into future mutation"

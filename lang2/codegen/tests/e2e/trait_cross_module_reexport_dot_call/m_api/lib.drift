@@ -1,5 +1,5 @@
 module m_api
 
-import m_impl
+import m_impl;
 
-export { m_impl.* }
+export { m_impl.* };

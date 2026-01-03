@@ -28,7 +28,7 @@ def _write_std_mem_modules(tmp_path: Path) -> list[Path]:
 		"""
 module std.mem
 
-export { swap, replace }
+export { swap, replace };
 
 pub fn swap<T>(a: T, b: T) nothrow -> Void {
 }
@@ -71,7 +71,7 @@ def test_std_mem_swap_is_intrinsic(tmp_path: Path, capsys: pytest.CaptureFixture
 		"""
 module main
 
-import std.mem as mem
+import std.mem as mem;
 
 fn main() nothrow -> Int {
 	var x: Int = 1;

@@ -1,6 +1,6 @@
 module lib
 
-export { PUBLIC }
+export { PUBLIC };
 
 const SECRET: Int = 1;
 pub const PUBLIC: Int = 2;

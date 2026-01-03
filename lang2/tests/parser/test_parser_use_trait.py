@@ -9,7 +9,7 @@ def test_parse_use_trait_records_trait_ref() -> None:
 		"""
 module m_main
 
-use trait m_traits.Show
+use trait m_traits.Show;
 
 fn main() -> Int { return 0; }
 """

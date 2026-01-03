@@ -1,0 +1,14 @@
+module m_impl
+
+import m_trait;
+
+export { use_show };
+
+implement m_trait.Show for Int {
+	fn show(self: Int) -> Int { return self; }
+}
+
+pub fn use_show<T>(v: T) nothrow -> Int require T is m_trait.Show {
+	val _ = v;
+	return 7;
+}

@@ -1,5 +1,5 @@
 module main
-import lib as lib
+import lib as lib;
 
 
 fn add() nothrow -> Int { return 0; }

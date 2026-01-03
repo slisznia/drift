@@ -1,0 +1,9 @@
+{
+  "description": "e2e: generic method on impl",
+  "exit_code": 5,
+  "module_paths": [
+    "."
+  ],
+  "stderr": "",
+  "stdout": ""
+}

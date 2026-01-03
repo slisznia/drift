@@ -36,7 +36,7 @@ def _emit_method_pkg(tmp_path: Path, *, module_id: str, package_id: str) -> Path
 		f"""
 module {module_id}
 
-export {{ S, make }}
+export {{ S, make }};
 
 pub struct S {{ x: Int }}
 
@@ -79,7 +79,7 @@ def _emit_method_fnparam_pkg(tmp_path: Path, *, module_id: str, package_id: str)
 		f"""
 module {module_id}
 
-export {{ S, make }}
+export {{ S, make }};
 
 pub struct S {{ x: Int }}
 
@@ -319,7 +319,7 @@ def test_cross_package_method_call_uses_wrapper_fn_id(tmp_path: Path) -> None:
 		"""
 module main
 
-import acme.pointm as P
+import acme.pointm as P;
 
 fn main() nothrow -> Int{
 \tval p = P.make();
@@ -428,7 +428,7 @@ def test_package_method_fn_param_signature_roundtrip(tmp_path: Path) -> None:
 		"""
 module main
 
-import acme.fnparam as P
+import acme.fnparam as P;
 
 fn add1(x: Int) nothrow -> Int { return x + 1; }
 

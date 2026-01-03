@@ -4,6 +4,6 @@ pub const X: Int = 1;
 
 pub fn X() -> Int { return 2; }
 
-export { X }
+export { X };
 
 fn main() nothrow -> Int{ return 0; }

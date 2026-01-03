@@ -1,5 +1,5 @@
 module other
 
-export { add }
+export { add };
 
 pub fn add() -> Int { return 2; }

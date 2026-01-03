@@ -59,7 +59,7 @@ def test_no_prelude_explicit_import_allows_println(tmp_path: Path, capsys: pytes
 	main_src = """
 module m_main
 
-import lang.core as core
+import lang.core as core;
 
 fn main() nothrow -> Int{
 	core.println("ok");

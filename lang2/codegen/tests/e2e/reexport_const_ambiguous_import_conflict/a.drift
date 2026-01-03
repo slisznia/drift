@@ -1,6 +1,6 @@
 module a
 
-export { ANSWER }
+export { ANSWER };
 
 pub const ANSWER: Int = 1;
 

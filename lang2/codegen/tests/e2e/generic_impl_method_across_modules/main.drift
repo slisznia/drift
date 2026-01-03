@@ -1,0 +1,8 @@
+module main
+
+import m_box as m_box;
+
+fn main() nothrow -> Int {
+	val b: m_box.Box<Int> = m_box.Box<type Int>(41);
+	return b.get();
+}

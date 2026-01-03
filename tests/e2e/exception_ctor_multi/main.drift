@@ -1,4 +1,4 @@
-import std.console.out
+import std.console.out;
 
 exception A()
 exception B()

@@ -1,5 +1,5 @@
 module b
 
-export { add }
+export { add };
 
 pub fn add(a: Int, b: Int) -> Int { return a + b; }

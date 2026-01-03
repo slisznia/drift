@@ -1,0 +1,9 @@
+{
+  "description": "e2e: generic struct with two instantiations in one module",
+  "exit_code": 42,
+  "module_paths": [
+    "."
+  ],
+  "stderr": "",
+  "stdout": ""
+}

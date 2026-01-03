@@ -1,6 +1,6 @@
 module acme.point
 
-export { Point, make_point }
+export { Point, make_point };
 
 pub struct Point(x: Int, y: Int);
 

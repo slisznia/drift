@@ -1,0 +1,9 @@
+module m_box
+
+export { Box };
+
+pub struct Box<T> { value: T }
+
+implement<T> Box<T> {
+	pub fn wrap<U>(self: Box<T>, v: U) nothrow -> U { return v; }
+}

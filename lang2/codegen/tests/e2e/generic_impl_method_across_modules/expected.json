@@ -1,0 +1,9 @@
+{
+  "description": "e2e: generic impl method across modules",
+  "exit_code": 41,
+  "module_paths": [
+    "."
+  ],
+  "stderr": "",
+  "stdout": ""
+}

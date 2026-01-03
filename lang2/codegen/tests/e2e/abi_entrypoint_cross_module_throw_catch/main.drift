@@ -1,5 +1,5 @@
 module main
-import acme.boom as boom
+import acme.boom as boom;
 
 
 fn main() nothrow -> Int{

@@ -1,5 +1,5 @@
 module b
-import a as a
+import a as a;
 
-export { a.* }
+export { a.* };
 

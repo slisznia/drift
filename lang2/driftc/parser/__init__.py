@@ -2629,7 +2629,7 @@ def parse_drift_workspace_to_hir(
 			Rewrite a syntactic member call `x.member(...)` when `x` is a module alias.
 
 			MVP surface rule (pinned):
-			  import lib as x
+			  import lib as x;
 			  x.foo(1, 2)   // call exported function foo from module lib
 			  x.Point(...)  // call struct constructor Point from module lib
 

@@ -1,4 +1,4 @@
-import std.console.out
+import std.console.out;
 
 fn maybe_fail(flag: Int) -> Void {
   if flag == 0 {

@@ -1,6 +1,6 @@
 module acme.boom
 
-export { boom }
+export { boom };
 
 exception Boom()
 

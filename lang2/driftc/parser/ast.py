@@ -579,8 +579,8 @@ class ExportStmt(Stmt):
 	Explicit export list for a module (MVP).
 
 	Syntax:
-	  export { foo, Bar, Baz }
-	  export { other.module.* }
+	  export { foo, Bar, Baz };
+	  export { other.module.* };
 	"""
 
 	loc: Located

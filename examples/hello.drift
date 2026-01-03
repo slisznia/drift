@@ -1,4 +1,4 @@
-import sys.console.out
+import sys.console.out;
 
 fn main() -> Void {
 	val greeting: String = "hello"

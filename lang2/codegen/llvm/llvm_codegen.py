@@ -103,6 +103,7 @@ from lang2.driftc.stage2 import (
 from lang2.driftc.stage4.ssa import SsaFunc
 from lang2.driftc.stage4.ssa import CfgKind
 from lang2.driftc.core.types_core import TypeKind, TypeTable, TypeId
+from lang2.driftc.core.xxhash64 import hash64
 
 # ABI type names
 DRIFT_ERROR_TYPE = "%DriftError"
@@ -375,7 +376,7 @@ class LlvmModuleBuilder:
 	_fnresult_ok_llty_by_type: Dict[str, str] = field(default_factory=dict)
 	_fnresult_unwrap_helpers: Dict[str, str] = field(default_factory=dict)
 	_struct_types_by_name: Dict[str, str] = field(default_factory=dict)
-	_variant_types_by_id: Dict[int, str] = field(default_factory=dict)
+	_variant_types_by_key: Dict[str, str] = field(default_factory=dict)
 
 	def __post_init__(self) -> None:
 		if DRIFT_SIZE_TYPE.startswith("%"):
@@ -409,7 +410,8 @@ class LlvmModuleBuilder:
 		Ensure a nominal struct TypeId is declared as a named LLVM type.
 
 		We declare structs lazily as they are encountered in signatures/IR, and we
-		cache by nominal type name so multiple functions share the same LLVM type.
+		cache by a stable, argument-sensitive type key so multiple instantiations
+		get distinct LLVM types.
 
 		Args:
 		  ty_id: TypeId of the struct (TypeKind.STRUCT).
@@ -424,7 +426,8 @@ class LlvmModuleBuilder:
 			raise AssertionError("ensure_struct_type called with non-STRUCT TypeId")
 		name = td.name
 		mod = td.module_id or ""
-		cache_key = f"{mod}::{name}"
+		type_key = type_table.type_key_string(ty_id)
+		cache_key = type_key
 		if cache_key in self._struct_types_by_name:
 			return self._struct_types_by_name[cache_key]
 		def _mangle(seg: str) -> str:
@@ -437,16 +440,25 @@ class LlvmModuleBuilder:
 			return "".join(out) if out else "main"
 		safe_mod = _mangle(mod)
 		safe_name = "".join(ch if (ch.isalnum() or ch == "_") else "_" for ch in name)
-		llvm_name = f"%Struct_{safe_mod}_{safe_name}"
+		suffix = f"{hash64(type_key.encode()):016x}"
+		llvm_name = f"%Struct_{safe_mod}_{safe_name}_{suffix}"
 		# Insert into cache before mapping fields to allow self-recursive pointer
 		# shapes like `struct Node { next: &Node }` to refer to the named type.
 		self._struct_types_by_name[cache_key] = llvm_name
-		field_lltys = [map_type(ft) for ft in td.param_types]
+		struct_inst = type_table.get_struct_instance(ty_id)
+		field_types = list(struct_inst.field_types) if struct_inst is not None else list(td.param_types)
+		field_lltys = [map_type(ft) for ft in field_types]
 		body = ", ".join(field_lltys) if field_lltys else ""
 		self.type_decls.append(f"{llvm_name} = type {{ {body} }}")
 		return llvm_name
 
-	def ensure_variant_type(self, ty_id: TypeId, *, payload_words: int) -> str:
+	def ensure_variant_type(
+		self,
+		ty_id: TypeId,
+		*,
+		payload_words: int,
+		type_table: TypeTable,
+	) -> str:
 		"""
 		Ensure a concrete variant TypeId is declared as a named LLVM type.
 
@@ -455,19 +467,34 @@ class LlvmModuleBuilder:
 		repeating literal struct types everywhere.
 
 		Internal representation (v1):
-		  %Variant_<id> = type { i8 tag, [7 x i8] pad, [payload_words x i64] payload }
+		  %Variant_<module>_<name>_<hash> = type { i8 tag, [7 x i8] pad, [payload_words x i64] payload }
 
 		The 7-byte pad ensures the payload begins at an 8-byte aligned offset,
 		which is sufficient for all currently supported field types (Int/Uint,
 		Float, pointers, DriftString, and aggregates built from those).
 		"""
-		if ty_id in self._variant_types_by_id:
-			return self._variant_types_by_id[ty_id]
+		type_key = type_table.type_key_string(ty_id)
+		if type_key in self._variant_types_by_key:
+			return self._variant_types_by_key[type_key]
+		td = type_table.get(ty_id)
+		mod = td.module_id or ""
+		name = td.name
+		def _mangle(seg: str) -> str:
+			out = []
+			for ch in seg:
+				if ch.isalnum() or ch == "_":
+					out.append(ch)
+				else:
+					out.append(f"_{ord(ch):02X}")
+			return "".join(out) if out else "main"
+		safe_mod = _mangle(mod)
+		safe_name = "".join(ch if (ch.isalnum() or ch == "_") else "_" for ch in name)
+		suffix = f"{hash64(type_key.encode()):016x}"
 		payload_words = max(1, int(payload_words))
-		name = f"%Variant_{ty_id}"
-		self._variant_types_by_id[ty_id] = name
-		self.type_decls.append(f"{name} = type {{ i8, [7 x i8], [{payload_words} x i64] }}")
-		return name
+		llvm_name = f"%Variant_{safe_mod}_{safe_name}_{suffix}"
+		self._variant_types_by_key[type_key] = llvm_name
+		self.type_decls.append(f"{llvm_name} = type {{ i8, [7 x i8], [{payload_words} x i64] }}")
+		return llvm_name
 
 	def fnresult_type(self, ok_key: str, ok_llty: str) -> str:
 		"""
@@ -1219,13 +1246,15 @@ class _FuncBuilder:
 			struct_def = self.type_table.get(instr.struct_ty)
 			if struct_def.kind is not TypeKind.STRUCT:
 				raise AssertionError("ConstructStruct with non-STRUCT TypeId (MIR bug)")
+			struct_inst = self.type_table.get_struct_instance(instr.struct_ty)
+			field_types = list(struct_inst.field_types) if struct_inst is not None else list(struct_def.param_types)
 			struct_llty = self._llvm_type_for_typeid(instr.struct_ty)
 			current = "undef"
-			if len(instr.args) != len(struct_def.param_types):
+			if len(instr.args) != len(field_types):
 				raise AssertionError("ConstructStruct arg/field length mismatch (MIR bug)")
-			if not struct_def.param_types:
+			if not field_types:
 				raise NotImplementedError("LLVM codegen v1: empty struct construction not supported yet")
-			for idx, (arg, field_ty) in enumerate(zip(instr.args, struct_def.param_types)):
+			for idx, (arg, field_ty) in enumerate(zip(instr.args, field_types)):
 				arg_val = self._map_value(arg)
 				field_llty = self._llvm_type_for_typeid(field_ty)
 				have = self.value_types.get(arg_val)
@@ -1233,7 +1262,7 @@ class _FuncBuilder:
 					raise NotImplementedError(
 						f"LLVM codegen v1: struct field {idx} type mismatch (have {have}, expected {field_llty})"
 					)
-				is_last = idx == len(struct_def.param_types) - 1
+				is_last = idx == len(field_types) - 1
 				tmp = self._map_value(instr.dest) if is_last else self._fresh("struct")
 				self.lines.append(
 					f"  {tmp} = insertvalue {struct_llty} {current}, {field_llty} {arg_val}, {idx}"
@@ -2020,7 +2049,7 @@ class _FuncBuilder:
 		Compute and cache the variant layout for a concrete TypeId.
 
 		The variant value type is declared as:
-		  %Variant_<id> = type { i8, [7 x i8], [payload_words x i64] }
+		  %Variant_<module>_<name>_<hash> = type { i8, [7 x i8], [payload_words x i64] }
 
 		Payload packing per constructor uses a literal struct type containing the
 		constructor's field storage types (Bool stored as i8).
@@ -2063,7 +2092,11 @@ class _FuncBuilder:
 				payload_struct_llty=payload_struct_llty,
 			)
 		payload_words = max(1, (max_payload_size + 7) // 8)
-		llvm_ty = self.module.ensure_variant_type(ty_id, payload_words=payload_words)
+		llvm_ty = self.module.ensure_variant_type(
+			ty_id,
+			payload_words=payload_words,
+			type_table=self.type_table,
+		)
 		layout = _VariantLayout(llvm_ty=llvm_ty, payload_words=payload_words, arms=arms)
 		self._variant_layouts[ty_id] = layout
 		return layout
@@ -2151,7 +2184,14 @@ class _FuncBuilder:
 		if self.type_table is None:
 			raise NotImplementedError("LLVM codegen v1: TypeTable required for FnResult lowering")
 		td = self.type_table.get(ty_id)
+		raw_key = self.type_table.type_key_string(ty_id)
+		def _safe_key(raw: str) -> str:
+			safe = "".join(ch if (ch.isalnum() or ch == "_") else "_" for ch in raw)
+			suffix = f"{hash64(raw.encode()):016x}"
+			return f"{safe}_{suffix}"
 		if td.kind is TypeKind.SCALAR:
+			if td.module_id is not None:
+				return _safe_key(raw_key)
 			return td.name
 		if td.kind is TypeKind.VOID:
 			return "Void"
@@ -2163,14 +2203,9 @@ class _FuncBuilder:
 			prefix = "RefMut" if td.ref_mut else "Ref"
 			return f"{prefix}_{inner_key}"
 		if td.kind is TypeKind.STRUCT:
-			mod = td.module_id or ""
-			safe_mod = "".join(ch if (ch.isalnum() or ch == "_") else "_" for ch in mod) or "main"
-			safe = "".join(ch if (ch.isalnum() or ch == "_") else "_" for ch in td.name)
-			return f"Struct_{safe_mod}_{safe}"
+			return _safe_key(raw_key)
 		if td.kind is TypeKind.VARIANT:
-			# Variant TypeIds are unique per instantiation; include the TypeId to
-			# avoid collisions between different instantiations with the same name.
-			return f"Variant_{ty_id}"
+			return _safe_key(raw_key)
 		if td.kind is TypeKind.FUNCTION:
 			if not td.param_types:
 				return "FnPtr_Unknown"

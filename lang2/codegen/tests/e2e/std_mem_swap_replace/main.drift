@@ -1,6 +1,6 @@
 module main
 
-import std.mem as mem
+import std.mem as mem;
 
 fn main() nothrow -> Int {
 	var a: Int = 1;

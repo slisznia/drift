@@ -143,13 +143,13 @@ implement<T> Hashable for Box<T> require T is Hashable {
 	pub fn hash(self: Box<T>) -> Int { return 1; }
 }
 
-export { Hashable, Box }
+export { Hashable, Box };
 """,
 		Path("main/main.drift"): """
 module main
 
-import m
-use trait m.Hashable
+import m;
+use trait m.Hashable;
 
 fn main() nothrow -> Int{
 	val b: m.Box<String> = m.Box<type String>("s");

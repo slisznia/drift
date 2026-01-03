@@ -751,6 +751,9 @@ def _build_program(tree: Tree) -> Program:
 		if not isinstance(child, Tree):
 			continue
 		kind = _name(child)
+		if kind == "item":
+			child = next((c for c in child.children if isinstance(c, Tree)), None) or child
+			kind = _name(child)
 		if kind == "module_decl":
 			if seen_non_module_item:
 				raise ModuleDeclError(

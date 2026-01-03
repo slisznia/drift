@@ -113,3 +113,9 @@
 - Added a deterministic function-type throw-mode identity test and aligned pretty-printers/diagnostic strings with the new syntax.
 - Tightened function-type construction APIs (`ensure_function`/`new_function`) to avoid string-typed constructor names and updated all call sites.
 - Aligned the legacy grammar with `Fn` types, `nothrow` returns, and the `|>` pipeline token.
+
+## 2026-01-04 – MVP polish: generics codegen stability + typed lowering
+- Added stable, argument-sensitive type keys (with hashed LLVM names) for struct/variant caching and FnResult keying to avoid cross-instantiation collisions.
+- Fixed struct constructor lowering to pass expected field types and record constructed struct types; tightened typed-mode rules (strict vs recover) and gated strict mode on error-free typechecking.
+- Hard-stopped codegen on typecheck errors to avoid partial MIR/SSA emission.
+- Added codegen e2e coverage for two instantiations of the same generic struct in one module.

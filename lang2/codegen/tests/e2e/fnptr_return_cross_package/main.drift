@@ -1,5 +1,5 @@
 module main
-import acme.lib as lib
+import acme.lib as lib;
 
 fn fallback(x: Int) nothrow -> Int { return x; }
 

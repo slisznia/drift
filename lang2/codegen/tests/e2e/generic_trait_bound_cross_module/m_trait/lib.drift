@@ -1,0 +1,7 @@
+module m_trait
+
+export { Show };
+
+pub trait Show {
+	fn show(self: Self) -> Int;
+}

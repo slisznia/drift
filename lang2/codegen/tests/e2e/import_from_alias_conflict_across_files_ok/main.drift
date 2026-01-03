@@ -1,6 +1,6 @@
 module main
 
-export { main }
+export { main };
 
 pub fn main() nothrow -> Int{
 	return (try a() catch { 0 }) + (try b() catch { 0 });

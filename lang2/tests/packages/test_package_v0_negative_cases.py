@@ -21,7 +21,7 @@ def test_load_package_rejects_bad_blob_hash(tmp_path: Path) -> None:
 		"""
 module lib
 
-export { add }
+export { add };
 
 pub fn add(a: Int, b: Int) -> Int {
 	return a + b
@@ -49,7 +49,7 @@ def test_driftc_rejects_duplicate_module_id_across_packages(tmp_path: Path) -> N
 			f"""
 module lib
 
-export {{ add }}
+export {{ add }};
 
 fn add(a: Int, b: Int) -> Int {{
 	return a + b + {n}
@@ -65,7 +65,7 @@ fn add(a: Int, b: Int) -> Int {{
 		"""
 module main
 
-import lib as lib
+import lib as lib;
 
 fn main() nothrow -> Int{
 	return lib.add(40, 2)
@@ -84,7 +84,7 @@ def test_driftc_rejects_type_table_fingerprint_mismatch(tmp_path: Path) -> None:
 		"""
 module lib
 
-export { f }
+export { f };
 
 pub fn f() -> Float {
 	return 1.0
@@ -101,7 +101,7 @@ pub fn f() -> Float {
 		"""
 module main
 
-import lib as lib
+import lib as lib;
 
 fn main() nothrow -> Int{
 	val x = lib.f()

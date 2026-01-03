@@ -12,7 +12,7 @@ def test_parse_export_single_name() -> None:
 	prog = p.parse_program(
 		"""
 module m
-export { a }
+export { a };
 """
 	)
 	assert len(prog.exports) == 1
@@ -25,7 +25,7 @@ def test_parse_export_multiple_names() -> None:
 	prog = p.parse_program(
 		"""
 module m
-export { a, b }
+export { a, b };
 """
 	)
 	assert len(prog.exports) == 1
@@ -39,6 +39,6 @@ def test_export_trailing_comma_rejected() -> None:
 		p.parse_program(
 			"""
 module m
-export { a, }
+export { a, };
 """
 		)

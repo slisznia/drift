@@ -1,4 +1,4 @@
-import std.console.out
+import std.console.out;
 
 fn may_fail_error(flag: Int) -> Int {
   if flag == 0 {

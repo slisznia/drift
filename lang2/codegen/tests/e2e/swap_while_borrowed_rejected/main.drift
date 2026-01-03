@@ -1,4 +1,4 @@
-import std.mem as mem
+import std.mem as mem;
 struct Point(x: Int, y: Int)
 
 fn main() nothrow -> Int{

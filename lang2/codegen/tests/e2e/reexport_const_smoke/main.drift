@@ -1,6 +1,6 @@
 module main
 
-import b as x
+import b as x;
 
 fn main() nothrow -> Int{
 	return x.ANSWER;

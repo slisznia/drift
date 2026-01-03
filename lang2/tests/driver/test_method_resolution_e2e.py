@@ -303,7 +303,7 @@ def test_cross_module_trait_dot_call_e2e(tmp_path: Path) -> None:
 		"""
 module m_box
 
-export { Box }
+export { Box };
 
 pub struct Box { value: Int }
 """,
@@ -313,9 +313,9 @@ pub struct Box { value: Int }
 		"""
 module m_trait
 
-import m_box
+import m_box;
 
-export { Show }
+export { Show };
 
 pub trait Show { fn show(self: m_box.Box) -> Int }
 
@@ -329,10 +329,10 @@ implement Show for m_box.Box {
 		"""
 module m_main
 
-import m_box
-import m_trait as t
+import m_box;
+import m_trait as t;
 
-use trait t.Show
+use trait t.Show;
 
 fn main() nothrow -> Int{
 	val b: m_box.Box = m_box.Box(value = 1);
@@ -356,7 +356,7 @@ def test_cross_module_trait_ufcs_e2e(tmp_path: Path) -> None:
 		"""
 module m_box
 
-export { Box }
+export { Box };
 
 pub struct Box { value: Int }
 """,
@@ -366,9 +366,9 @@ pub struct Box { value: Int }
 		"""
 module m_trait
 
-import m_box
+import m_box;
 
-export { Show }
+export { Show };
 
 pub trait Show { fn show(self: m_box.Box) -> Int }
 
@@ -382,8 +382,8 @@ implement Show for m_box.Box {
 		"""
 module m_main
 
-import m_box
-import m_trait
+import m_box;
+import m_trait;
 
 fn main() nothrow -> Int{
 	val b: m_box.Box = m_box.Box(value = 1);
@@ -550,7 +550,7 @@ def test_trait_impl_require_prefers_trait_dependency(tmp_path: Path) -> None:
 		"""
 module m_lib
 
-export { Box, Item, Debuggable, Printable, Show }
+export { Box, Item, Debuggable, Printable, Show };
 
 pub struct Box<T> { value: T }
 pub struct Item { value: Int }
@@ -568,7 +568,7 @@ implement Printable for Item { fn show(self: &Item) -> String { return "p"; } }
 		"""
 module m_impl_a
 
-import m_lib
+import m_lib;
 
 implement<T> m_lib.Show for m_lib.Box<T> require T is m_lib.Debuggable {
 	pub fn show(self: &m_lib.Box<T>) -> Int { return 1; }
@@ -580,7 +580,7 @@ implement<T> m_lib.Show for m_lib.Box<T> require T is m_lib.Debuggable {
 		"""
 module m_impl_b
 
-import m_lib
+import m_lib;
 
 implement<T> m_lib.Show for m_lib.Box<T> require T is m_lib.Printable {
 	pub fn show(self: &m_lib.Box<T>) -> Int { return 2; }
@@ -592,11 +592,11 @@ implement<T> m_lib.Show for m_lib.Box<T> require T is m_lib.Printable {
 		"""
 module main
 
-import m_lib
-import m_impl_a
-import m_impl_b
+import m_lib;
+import m_impl_a;
+import m_impl_b;
 
-use trait m_lib.Show
+use trait m_lib.Show;
 
 fn main() nothrow -> Int{
 	val it: m_lib.Item = m_lib.Item(value = 1);

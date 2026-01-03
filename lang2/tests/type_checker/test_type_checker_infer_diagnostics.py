@@ -135,6 +135,21 @@ fn main() -> Int {
 	assert result.diagnostics == []
 
 
+def test_explicit_type_args_resolve_underdetermined(tmp_path: Path) -> None:
+	result = _check_main(
+		"""
+fn make<T>() -> T { return 0; }
+
+fn main() -> Int {
+	val x = make<type Int>();
+	return 0;
+}
+""",
+		tmp_path,
+	)
+	assert result.diagnostics == []
+
+
 def test_infer_method_missing_param(tmp_path: Path) -> None:
 	result = _check_main(
 		"""

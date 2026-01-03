@@ -184,13 +184,14 @@ class HIRToMIR:
 		type_table: Optional[TypeTable] = None,
 		exc_env: Mapping[str, int] | None = None,
 		param_types: Mapping[str, TypeId] | None = None,
+		expr_types: Mapping[int, TypeId] | None = None,
 		signatures_by_id: Mapping[FunctionId, FnSignature] | None = None,
 		current_fn_id: FunctionId | None = None,
 		call_info_by_callsite_id: Mapping[int, CallInfo] | None = None,
 		call_resolutions: Mapping[int, object] | None = None,
 		can_throw_by_id: Mapping[FunctionId, bool] | None = None,
 		return_type: TypeId | None = None,
-		typed_mode: bool = False,
+		typed_mode: str | bool = False,
 	):
 		"""
 		Create a lowering context.
@@ -230,11 +231,17 @@ class HIRToMIR:
 		self._opt_string = self._type_table.new_optional(self._string_type)
 		self._signatures_by_id = signatures_by_id or {}
 		self._current_fn_id = current_fn_id
+		self._expr_types: dict[int, TypeId] = dict(expr_types) if expr_types else {}
 		self._call_info_by_callsite_id: dict[int, CallInfo] = (
 			dict(call_info_by_callsite_id) if call_info_by_callsite_id else {}
 		)
 		self._call_resolutions: dict[int, object] = dict(call_resolutions) if call_resolutions else {}
-		self._typed_mode = typed_mode
+		if isinstance(typed_mode, bool):
+			self._typed_mode = "strict" if typed_mode else "none"
+		else:
+			if typed_mode not in ("none", "strict", "recover"):
+				raise ValueError(f"unexpected typed_mode {typed_mode!r}")
+			self._typed_mode = typed_mode
 		self._synth_sig_specs: list[SynthSigSpec] = []
 		self._hidden_lambda_specs: list[HiddenLambdaSpec] = []
 		# Best-effort can-throw classification for functions. This is intentionally
@@ -253,11 +260,13 @@ class HIRToMIR:
 		# Stage2 expects caller-provided FunctionId/signature wiring; no name-based fallback.
 		# Expected type hints for expression lowering.
 		#
-		# Stage2 does not consume the typed checker's per-expression type map yet;
-		# instead, it threads "expected types" from obvious contexts (typed lets,
-		# returns, known call signatures) into expression lowering. This is
-		# necessary for MVP features that require context to resolve (e.g., variant
-		# constructors as unqualified identifiers).
+		# Stage2 can optionally consume the checker's per-expression type map.
+		#
+		# typed_mode == "strict": typecheck succeeded and expr_types contain no
+		# Unknown entries (Unknown is an internal error).
+		# typed_mode == "recover": expr_types may be partial; Unknown entries are
+		# ignored and lowering falls back to local inference.
+		# typed_mode == "none": expr_types are ignored.
 		self._expected_type_stack: list[TypeId | None] = [None]
 		# BindingId -> local name mapping (for shadowing-aware lowering).
 		self._binding_locals: dict[int, str] = {}
@@ -1245,20 +1254,34 @@ class HIRToMIR:
 			# This only triggers when there is no function signature for the same
 			# name (to avoid ambiguity in older tests).
 			struct_ty: TypeId | None = None
+			if self._typed_mode != "none":
+				candidate = self._expr_types.get(expr.node_id)
+				if candidate is not None:
+					if self._type_table.get(candidate).kind is TypeKind.UNKNOWN:
+						if self._typed_mode == "strict":
+							raise AssertionError("typed_mode strict: struct ctor has Unknown expr type")
+					else:
+						struct_ty = candidate
 			cur_mod = self._current_module_name()
 			fn_module = getattr(expr.fn, "module_id", None)
-			if isinstance(fn_module, str):
-				struct_ty = self._type_table.get_nominal(kind=TypeKind.STRUCT, module_id=fn_module, name=name)
-			else:
-				struct_ty = self._type_table.get_nominal(kind=TypeKind.STRUCT, module_id=cur_mod, name=name) or self._type_table.find_unique_nominal_by_name(
-					kind=TypeKind.STRUCT, name=name
-				)
+			if struct_ty is None:
+				if isinstance(fn_module, str):
+					struct_ty = self._type_table.get_nominal(kind=TypeKind.STRUCT, module_id=fn_module, name=name)
+				else:
+					struct_ty = self._type_table.get_nominal(kind=TypeKind.STRUCT, module_id=cur_mod, name=name) or self._type_table.find_unique_nominal_by_name(
+						kind=TypeKind.STRUCT, name=name
+					)
 			if struct_ty is not None:
 				struct_def = self._type_table.get(struct_ty)
 				if struct_def.kind is not TypeKind.STRUCT:
 					raise AssertionError("struct schema name resolved to non-STRUCT TypeId (checker bug)")
-				field_names = list(struct_def.field_names or [])
-				field_types = list(struct_def.param_types)
+				struct_inst = self._type_table.get_struct_instance(struct_ty)
+				if struct_inst is not None:
+					field_names = list(struct_inst.field_names)
+					field_types = list(struct_inst.field_types)
+				else:
+					field_names = list(struct_def.field_names or [])
+					field_types = list(struct_def.param_types)
 				if len(field_names) != len(field_types):
 					raise AssertionError("struct schema/type mismatch reached MIR lowering (checker bug)")
 
@@ -1270,7 +1293,7 @@ class HIRToMIR:
 				# Evaluate arguments left-to-right as written, but pass them in field order.
 				ordered: list[M.ValueId | None] = [None] * len(field_types)
 				for idx, arg_expr in enumerate(pos_args):
-					ordered[idx] = self.lower_expr(arg_expr)
+					ordered[idx] = self.lower_expr(arg_expr, expected_type=field_types[idx])
 				for kw in kw_pairs:
 					try:
 						field_idx = field_names.index(kw.name)
@@ -1278,12 +1301,13 @@ class HIRToMIR:
 						raise AssertionError("unknown struct ctor field reached MIR lowering (checker bug)") from err
 					if field_idx < len(pos_args) or ordered[field_idx] is not None:
 						raise AssertionError("duplicate struct ctor field reached MIR lowering (checker bug)")
-					ordered[field_idx] = self.lower_expr(kw.value)
+					ordered[field_idx] = self.lower_expr(kw.value, expected_type=field_types[field_idx])
 				if any(v is None for v in ordered):
 					raise AssertionError("missing struct ctor field reached MIR lowering (checker bug)")
 				arg_vals = [v for v in ordered if v is not None]
 				dest = self.b.new_temp()
 				self.b.emit(M.ConstructStruct(dest=dest, struct_ty=struct_ty, args=arg_vals))
+				self._local_types[dest] = struct_ty
 				return dest
 		if not isinstance(expr.fn, H.HVar):
 			raise NotImplementedError("Only direct function-name calls are supported in MIR lowering")
@@ -1327,7 +1351,7 @@ class HIRToMIR:
 		"""
 		if getattr(lam, "can_throw_effective", None) is not None:
 			return bool(getattr(lam, "can_throw_effective"))
-		if self._typed_mode:
+		if self._typed_mode == "strict":
 			raise AssertionError("lambda missing can_throw_effective (checker bug)")
 		def expr_can_throw(expr: H.HExpr) -> bool:
 			if isinstance(expr, H.HCall):
@@ -2835,7 +2859,7 @@ class HIRToMIR:
 		return dest
 
 	def _call_info_from_resolution(self, expr: H.HExpr) -> CallInfo | None:
-		if self._typed_mode:
+		if self._typed_mode != "none":
 			raise AssertionError(
 				"call_resolutions-based CallInfo is not allowed in typed mode (typecheck/call-info bug)"
 			)
@@ -3102,6 +3126,14 @@ class HIRToMIR:
 		This is intentionally conservative: it only returns a TypeId when the type
 		can be inferred locally (literals, some builtins, locals with known types).
 		"""
+		if self._expr_types and self._typed_mode != "none":
+			known = self._expr_types.get(expr.node_id)
+			if known is not None:
+				if self._type_table.get(known).kind is TypeKind.UNKNOWN:
+					if self._typed_mode == "strict":
+						raise AssertionError("typed_mode strict: Unknown expr type encountered")
+				else:
+					return known
 		if isinstance(expr, H.HLiteralInt):
 			return self._int_type
 		if isinstance(expr, H.HLiteralFloat):

@@ -14,7 +14,7 @@ from enum import Enum, auto
 from typing import Dict, List
 
 from lang2.driftc.core.generic_type_expr import GenericTypeExpr
-from lang2.driftc.core.function_id import FunctionId
+from lang2.driftc.core.function_id import FunctionId, function_symbol
 
 
 TypeId = int  # opaque handle into the TypeTable
@@ -951,6 +951,99 @@ class TypeTable:
 	def get(self, ty: TypeId) -> TypeDef:
 		"""Fetch the TypeDef for a given TypeId."""
 		return self._defs[ty]
+
+	def type_key_string(self, ty: TypeId) -> str:
+		"""
+		Build a stable, argument-sensitive key for a TypeId.
+
+		The key includes nominal identity (package/module/name), concrete type
+		arguments, ref mutability, and function throwness.
+		"""
+		stack: list[TypeId] = []
+		stack_index: dict[TypeId, int] = {}
+
+		def _nominal_label(td: TypeDef) -> str:
+			if td.module_id is None:
+				return td.name
+			return _qualify(td.name, td.module_id)
+
+		def _qualify(name: str, module_id: str | None) -> str:
+			if module_id is None:
+				return name
+			pkg = self.module_packages.get(module_id, self.package_id)
+			base = f"{module_id}.{name}"
+			if pkg:
+				return f"{pkg}::{base}"
+			return base
+
+		def _key(tid: TypeId) -> str:
+			if tid in stack_index:
+				td = self.get(tid)
+				idx = stack_index[tid]
+				return f"Rec{idx}@{_nominal_label(td)}"
+			stack_index[tid] = len(stack)
+			stack.append(tid)
+			try:
+				td = self.get(tid)
+				if td.kind is TypeKind.SCALAR:
+					if td.module_id is not None:
+						return _qualify(td.name, td.module_id)
+					return td.name
+				if td.kind is TypeKind.VOID:
+					return "Void"
+				if td.kind is TypeKind.ERROR:
+					return "Error"
+				if td.kind is TypeKind.DIAGNOSTICVALUE:
+					return "DiagnosticValue"
+				if td.kind is TypeKind.TYPEVAR and td.type_param_id is not None:
+					owner = function_symbol(td.type_param_id.owner)
+					return f"TypeVar<{owner}#{td.type_param_id.index}>"
+				if td.kind is TypeKind.REF and td.param_types:
+					inner = _key(td.param_types[0])
+					return f"{'RefMut' if td.ref_mut else 'Ref'}<{inner}>"
+				if td.kind is TypeKind.ARRAY and td.param_types:
+					inner = _key(td.param_types[0])
+					return f"Array<{inner}>"
+				if td.kind is TypeKind.OPTIONAL and td.param_types:
+					inner = _key(td.param_types[0])
+					return f"Optional<{inner}>"
+				if td.kind is TypeKind.FNRESULT and len(td.param_types) >= 2:
+					ok = _key(td.param_types[0])
+					err = _key(td.param_types[1])
+					return f"FnResult<{ok},{err}>"
+				if td.kind is TypeKind.FUNCTION:
+					if not td.param_types:
+						return "Fn<?>"
+					args = ",".join(_key(t) for t in td.param_types[:-1]) or "Void"
+					ret = _key(td.param_types[-1])
+					throw_tag = "throws" if td.fn_throws else "nothrow"
+					return f"Fn({args})->{ret}:{throw_tag}"
+				if td.kind is TypeKind.STRUCT:
+					module_id = td.module_id
+					inst = self.struct_instances.get(tid)
+					args = []
+					if inst is not None:
+						args = [_key(t) for t in inst.type_args]
+					base = _qualify(td.name, module_id)
+					if args:
+						return f"{base}<{','.join(args)}>"
+					return base
+				if td.kind is TypeKind.VARIANT:
+					module_id = td.module_id
+					inst = self.variant_instances.get(tid)
+					args = []
+					if inst is not None:
+						args = [_key(t) for t in inst.type_args]
+					base = _qualify(td.name, module_id)
+					if args:
+						return f"{base}<{','.join(args)}>"
+					return base
+				return td.kind.name
+			finally:
+				stack.pop()
+				stack_index.pop(tid, None)
+
+		return _key(ty)
 
 	def is_void(self, ty: TypeId) -> bool:
 		"""Return True when the TypeId refers to the canonical Void type."""

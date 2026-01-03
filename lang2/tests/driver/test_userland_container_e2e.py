@@ -43,7 +43,7 @@ def test_userland_vec_container_e2e(tmp_path: Path) -> None:
 		"""
 module acme.vec
 
-export { Vec, Show }
+export { Vec, Show };
 
 pub trait Show {
 	fn show(self: &Self) -> Int
@@ -70,10 +70,10 @@ implement<T> Show for Vec<T> {
 		"""
 module acme.app
 
-import acme.vec as vec
-use trait vec.Show
+import acme.vec as vec;
+use trait vec.Show;
 
-export { run }
+export { run };
 
 pub fn run() -> Int{
 	var v: vec.Vec<Int> = vec.Vec<type Int>(value = 1);

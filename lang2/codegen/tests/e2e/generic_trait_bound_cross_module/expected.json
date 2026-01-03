@@ -1,0 +1,9 @@
+{
+  "description": "e2e: generic trait bound across modules",
+  "exit_code": 7,
+  "module_paths": [
+    "."
+  ],
+  "stderr": "",
+  "stdout": ""
+}

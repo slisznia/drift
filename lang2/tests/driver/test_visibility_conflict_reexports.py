@@ -28,7 +28,7 @@ def test_conflict_detection_respects_reexport_visibility(tmp_path: Path, capsys:
 		"""
 module m_types
 
-export { Box }
+export { Box };
 
 pub struct Box { value: Int }
 """,
@@ -38,11 +38,11 @@ pub struct Box { value: Int }
 		"""
 module m_impl_b
 
-import m_types
+import m_types;
 
 pub const MARK: Int = 1;
 
-export { MARK }
+export { MARK };
 
 implement m_types.Box {
 	pub fn tag(self: m_types.Box) -> Int { return 1; }
@@ -54,7 +54,7 @@ implement m_types.Box {
 		"""
 module m_impl_c
 
-import m_types
+import m_types;
 
 implement m_types.Box {
 	pub fn tag(self: m_types.Box) -> Int { return 2; }
@@ -66,7 +66,7 @@ implement m_types.Box {
 		"""
 module m_a
 
-export { m_impl_b.* }
+export { m_impl_b.* };
 """,
 	)
 	_write_file(
@@ -74,8 +74,8 @@ export { m_impl_b.* }
 		"""
 module m_main
 
-import m_a
-import m_impl_c
+import m_a;
+import m_impl_c;
 
 fn main() nothrow -> Int{
 	return 0;
@@ -98,7 +98,7 @@ def test_trait_reexport_visibility_includes_impl_module(tmp_path: Path, capsys: 
 		"""
 module m_types
 
-export { Box }
+export { Box };
 
 pub struct Box { value: Int }
 """,
@@ -108,9 +108,9 @@ pub struct Box { value: Int }
 		"""
 module m_impl
 
-import m_types
+import m_types;
 
-export { Show }
+export { Show };
 
 pub trait Show { fn show(self: m_types.Box) -> Int }
 
@@ -124,7 +124,7 @@ implement Show for m_types.Box {
 		"""
 module m_api
 
-export { m_impl.* }
+export { m_impl.* };
 """,
 	)
 	_write_file(
@@ -132,10 +132,10 @@ export { m_impl.* }
 		"""
 module m_main
 
-import m_api
-import m_types
+import m_api;
+import m_types;
 
-use trait m_api.Show
+use trait m_api.Show;
 
 fn main() nothrow -> Int{
 	val b: m_types.Box = m_types.Box(value = 1);

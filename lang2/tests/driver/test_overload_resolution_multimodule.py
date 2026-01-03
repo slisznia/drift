@@ -116,7 +116,7 @@ def test_overloads_across_modules_with_qualified_calls(tmp_path: Path) -> None:
 		"""
 module a
 
-export { f }
+export { f };
 
 pub fn f(x: Int) -> Int { return x + 1; }
 pub fn f(x: String) -> Int { return 2; }
@@ -127,7 +127,7 @@ pub fn f(x: String) -> Int { return 2; }
 		"""
 module b
 
-import a
+import a;
 
 fn main() nothrow -> Int{
     val r1: Int = a.f(1);

@@ -35,14 +35,14 @@ def test_exported_function_reference_uses_wrapper_symbol(tmp_path: Path) -> None
 		Path("mod_a/lib.drift"): """
 module mod_a
 
-export { id }
+export { id };
 
 pub fn id(x: Int) -> Int { return x; }
 """,
 		Path("mod_b/main.drift"): """
 module mod_b
 
-import mod_a as A
+import mod_a as A;
 
 fn main() nothrow -> Int{
 \tval fp: Fn(Int) -> Int = A.id;

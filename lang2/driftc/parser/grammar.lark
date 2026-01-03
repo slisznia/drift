@@ -123,9 +123,9 @@ ident: NAME | MOVE | COPY
      | variant_def
      | trait_def
      | implement_def
-     | use_trait_stmt
-     | import_stmt
-     | export_stmt
+     | use_trait_stmt TERMINATOR
+     | import_stmt TERMINATOR
+     | export_stmt TERMINATOR
      | stmt
 
 pub_item: PUB (func_def | const_def | struct_def | exception_def | variant_def | trait_def | implement_def)

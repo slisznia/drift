@@ -1344,6 +1344,9 @@ def compile_stubbed_funcs(
 					trait_scope_by_module[mod] = scope
 	typed_fns_by_id: dict[FunctionId, object] = {}
 	type_diags: list[Diagnostic] = []
+	typecheck_ok_by_fn: dict[FunctionId, bool] = {}
+	def _has_error(diags: list[Diagnostic]) -> bool:
+		return any(getattr(d, "severity", None) == "error" for d in diags)
 	visible_module_names_by_name: dict[str, set[str]] = {}
 	prelude_modules: set[str] = set()
 	if prelude_enabled:
@@ -1441,6 +1444,7 @@ def compile_stubbed_funcs(
 			visibility_provenance=visibility_provenance_by_id,
 		)
 		type_diags.extend(result.diagnostics)
+		typecheck_ok_by_fn[fn_id] = not _has_error(result.diagnostics)
 		typed_fns_by_id[fn_id] = result.typed_fn
 	if type_checker.defaulted_phase_count() != 0:
 		raise AssertionError(
@@ -1894,6 +1898,12 @@ def compile_stubbed_funcs(
 		validate_entrypoint_main(signatures_by_id, shared_type_table, checked.diagnostics)
 	if type_diags:
 		checked.diagnostics.extend(type_diags)
+	if any(d.severity == "error" for d in checked.diagnostics):
+		if return_checked:
+			if return_ssa:
+				return {}, checked, None
+			return {}, checked
+		return {}
 	# Typed-mode guard: every call node must have callsite CallInfo coverage.
 	for fn_id, typed_fn in typed_fns_by_id.items():
 		block = getattr(typed_fn, "body", None)
@@ -1988,6 +1998,23 @@ def compile_stubbed_funcs(
 	mir_funcs_by_id: Dict[FunctionId, M.MirFunc] = {}
 	hidden_lambda_specs: list = []
 
+	def _typed_mode_for(typed_fn: object | None, type_table: TypeTable | None, typecheck_ok: bool) -> str:
+		if typed_fn is None:
+			return "recover"
+		if not typecheck_ok:
+			return "recover"
+		if type_table is None:
+			return "recover"
+		expr_types = getattr(typed_fn, "expr_types", None)
+		if not isinstance(expr_types, dict) or not expr_types:
+			return "recover"
+		for tid in expr_types.values():
+			if tid is None:
+				return "recover"
+			if type_table.get(tid).kind is TypeKind.UNKNOWN:
+				return "recover"
+		return "strict"
+
 	for fn_id, hir_norm in normalized_hirs_by_id.items():
 		builder = make_builder(fn_id)
 		sig = signatures_by_id.get(fn_id)
@@ -2004,13 +2031,18 @@ def compile_stubbed_funcs(
 				type_table=shared_type_table,
 				exc_env=exc_env,
 				param_types=param_types,
+				expr_types=getattr(typed_fns_by_id.get(fn_id), "expr_types", None),
 				signatures_by_id=signatures_by_id,
 				current_fn_id=fn_id,
 				call_info_by_callsite_id=getattr(typed_fns_by_id.get(fn_id), "call_info_by_callsite_id", {}),
 				call_resolutions=getattr(typed_fns_by_id.get(fn_id), "call_resolutions", {}),
 				can_throw_by_id=declared_by_id,
 				return_type=sig.return_type_id if sig is not None else None,
-				typed_mode=True,
+				typed_mode=_typed_mode_for(
+					typed_fns_by_id.get(fn_id),
+					shared_type_table,
+					typecheck_ok_by_fn.get(fn_id, False),
+				),
 			)
 			lower.lower_function_body(hir_norm)
 			for spec in lower.synth_sig_specs():
@@ -2341,12 +2373,13 @@ def compile_stubbed_funcs(
 			type_table=shared_type_table,
 			exc_env=exc_env,
 			param_types=param_types,
+			expr_types=getattr(hidden_typed_fn, "expr_types", None),
 			signatures_by_id=signatures_by_id,
 			current_fn_id=spec.fn_id,
 			call_info_by_callsite_id=hidden_typed_fn.call_info_by_callsite_id,
 			can_throw_by_id={**declared_by_id, spec.fn_id: bool(spec.can_throw)},
 			return_type=hidden_ret_type,
-			typed_mode=True,
+			typed_mode=_typed_mode_for(hidden_typed_fn, shared_type_table, not _has_error(hidden_typed.diagnostics)),
 		)
 		lower._lambda_capture_ref_is_value = spec.lambda_capture_ref_is_value
 		if spec.has_captures:
@@ -2467,12 +2500,13 @@ def compile_stubbed_funcs(
 			type_table=shared_type_table,
 			exc_env=exc_env,
 			param_types=param_types,
+			expr_types=getattr(lambda_typed_fn, "expr_types", None),
 			signatures_by_id=signatures_by_id,
 			current_fn_id=spec.fn_id,
 			call_info_by_callsite_id=lambda_typed_fn.call_info_by_callsite_id,
 			can_throw_by_id={**declared_by_id, spec.fn_id: bool(spec.can_throw)},
 			return_type=lambda_ret_type,
-			typed_mode=True,
+			typed_mode=_typed_mode_for(lambda_typed_fn, shared_type_table, not _has_error(lambda_result.diagnostics)),
 		)
 		for param in lam.params:
 			if getattr(param, "binding_id", None) is not None:
@@ -2634,6 +2668,26 @@ def compile_to_llvm_ir_for_tests(
 	_assert_all_phased(checked.diagnostics, context="compile_to_llvm_ir_for_tests")
 	if any(d.severity == "error" for d in checked.diagnostics):
 		return "", checked
+	# Drop generic templates from codegen; only concrete instantiations are emitted.
+	generic_templates = {
+		fn_id
+		for fn_id, sig in signatures_by_id.items()
+		if getattr(sig, "type_params", None) or getattr(sig, "impl_type_params", None)
+	}
+	if checked.type_table is not None:
+		for fn_id, info in checked.fn_infos_by_id.items():
+			sig = info.signature
+			if sig is None:
+				continue
+			param_ids = list(sig.param_type_ids or [])
+			if sig.return_type_id is not None:
+				param_ids.append(sig.return_type_id)
+			if any(checked.type_table.get(tid).kind is TypeKind.TYPEVAR for tid in param_ids):
+				generic_templates.add(fn_id)
+	if generic_templates:
+		mir_funcs = {fn_id: fn for fn_id, fn in mir_funcs.items() if fn_id not in generic_templates}
+		if ssa_funcs is not None:
+			ssa_funcs = {fn_id: fn for fn_id, fn in ssa_funcs.items() if fn_id not in generic_templates}
 
 	# Lower module to LLVM IR and append the OS entry wrapper when needed.
 	rename_map: dict[FunctionId, str] = {}

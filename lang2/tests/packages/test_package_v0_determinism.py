@@ -21,7 +21,7 @@ def test_emit_package_is_deterministic(tmp_path: Path) -> None:
 		"""
 module main
 
-import lib as lib
+import lib as lib;
 
 fn main() nothrow -> Int{
 	return lib.add(40, 2)
@@ -33,7 +33,7 @@ fn main() nothrow -> Int{
 		"""
 module lib
 
-export { add }
+export { add };
 
 pub fn add(a: Int, b: Int) -> Int {
 	return a + b

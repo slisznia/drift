@@ -1,5 +1,5 @@
 module b
 
-export { bFn }
+export { bFn };
 
 pub fn bFn() -> Int { return 42; }

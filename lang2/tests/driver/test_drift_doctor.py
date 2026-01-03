@@ -138,7 +138,7 @@ def test_drift_doctor_vendor_missing_artifact_deep(tmp_path: Path) -> None:
 		"""
 module lib
 
-export { add }
+export { add };
 
 pub fn add(a: Int, b: Int) -> Int {
 	return a + b;
@@ -230,7 +230,7 @@ def test_drift_doctor_cache_divergence_detected(tmp_path: Path) -> None:
 		"""
 module lib
 
-export { add }
+export { add };
 
 pub fn add(a: Int, b: Int) -> Int {
 	return a + b;
