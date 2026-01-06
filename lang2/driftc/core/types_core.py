@@ -337,6 +337,20 @@ class TypeTable:
 			ty_id = self._nominal[key]
 			td = self.get(ty_id)
 			if td.kind is TypeKind.STRUCT:
+				schema = self.struct_schemas.get(key)
+				if schema is not None:
+					_decl_name, decl_fields = schema
+					if list(field_names) != list(decl_fields):
+						raise ValueError(
+							f"struct '{module_id}::{name}' field list mismatch: "
+							f"{decl_fields} vs {field_names}"
+						)
+				base = self.struct_bases.get(ty_id)
+				if base is not None and list(base.type_params) != list(type_params):
+					raise ValueError(
+						f"struct '{module_id}::{name}' type params mismatch: "
+						f"{base.type_params} vs {type_params}"
+					)
 				return ty_id
 			raise ValueError(f"type name '{name}' already defined as {td.kind}")
 		unknown = self.ensure_unknown()
@@ -372,6 +386,13 @@ class TypeTable:
 			ty_id = self._nominal[key]
 			td = self.get(ty_id)
 			if td.kind is TypeKind.VARIANT:
+				schema = self.variant_schemas.get(ty_id)
+				if schema is not None:
+					if list(schema.type_params) != list(type_params) or list(schema.arms) != list(arms):
+						raise ValueError(
+							f"variant '{module_id}::{name}' schema mismatch: "
+							f"params {schema.type_params} vs {type_params}, arms {schema.arms} vs {arms}"
+						)
 				return ty_id
 			raise ValueError(f"type name '{name}' already defined as {td.kind}")
 		# Base variant type. Note: base is named; instantiations are not.
@@ -693,6 +714,15 @@ class TypeTable:
 			raise ValueError("define_struct_fields requires a STRUCT TypeId")
 		if len(field_types) != len(td.field_names):
 			raise ValueError("field_types length mismatch for struct definition")
+		if td.param_types:
+			existing = list(td.param_types)
+			if existing == list(field_types):
+				return
+			if not all(self.get(t).kind is TypeKind.UNKNOWN for t in existing):
+				raise ValueError(
+					f"struct '{td.module_id}::{td.name}' fields already defined: "
+					f"{existing} vs {field_types}"
+				)
 		self._defs[struct_id] = TypeDef(
 			kind=TypeKind.STRUCT,
 			name=td.name,
@@ -703,6 +733,14 @@ class TypeTable:
 		)
 		schema = self.struct_bases.get(struct_id)
 		if schema is not None and not schema.type_params:
+			inst = self.struct_instances.get(struct_id)
+			if inst is not None:
+				if list(inst.field_types) == list(field_types):
+					return
+				raise ValueError(
+					f"struct '{td.module_id}::{td.name}' instance fields mismatch: "
+					f"{inst.field_types} vs {field_types}"
+				)
 			self._define_struct_instance(
 				struct_id,
 				struct_id,
@@ -807,7 +845,12 @@ class TypeTable:
 		return self._dv_type  # type: ignore[attr-defined]
 
 	def new_optional(self, inner: TypeId) -> TypeId:
-		"""Register Optional<inner> as the builtin Optional<T> variant (cached)."""
+		"""
+		Register Optional<inner> as the builtin Optional<T> variant (cached).
+
+		Deprecated: prefer normal variant instantiation via get_variant_base +
+		declare_variant + ensure_instantiated.
+		"""
 		if not hasattr(self, "_optional_cache"):
 			self._optional_cache = {}  # type: ignore[attr-defined]
 		cache = getattr(self, "_optional_cache")  # type: ignore[attr-defined]

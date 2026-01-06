@@ -1,5 +1,17 @@
 # Drift development history
 
+## 2026-01-06
+- Optional consolidation: inventoried Optional-specific logic, locked arm order `None=0`/`Some=1`, and removed MIR OptionalIsSome/OptionalValue ops across stage2/ARC/codegen.
+- DiagnosticValue Optional ABI pivoted to out-params + bool return; removed DriftOptional* runtime structs; updated DVAs* lowering/tests; aligned DV ctor ABI (isize for int, i8 for bool) and eliminated uninitialized out-param loads.
+- Bool storage/value split hardened across structs/arrays/refs/FnResult/ABI boundaries, including FnResult ok `Bool` stored as i8 with encode/decode at ResultOk/ConstructResultOk.
+- Struct sizing/align now uses StructInstance field types; Byte seeded in builtin priming to stabilize TypeIds; StringCmp cast on 32-bit fixed (no invalid bitcast).
+- FnPtrConst now requires signature metadata and avoids unsafe fallback casts; ZeroValue pointer SSA handling restored after removing redundant bitcasts.
+- Array lowering: ArrayLit insertvalue fix, CopyValue insertion for Copy-but-not-bitcopy elements (String), Array<String> literal retain test added, and ZST arrays are asserted unsupported in codegen.
+- Optional base seeding now on-demand in stage2; Optional caches in checker/link/driver switched to canonical variant instantiation (no new_optional cache).
+- Iterator intrinsics: iterator struct layout is `&Array<T>, idx`, iter() auto-borrows Array places, next() accepts place receivers, inserts CopyValue for Copy elements, and guards negative idx before Uint conversion.
+- TypeTable declare_struct/declare_variant + define_struct_fields made idempotent with schema/field mismatch errors for determinism.
+- Stage2 iter/next misuse now recovers with Unknown in non-strict mode (asserts in strict), matching checker diagnostics.
+
 ## 2025-12-28
 - Added explicit prelude controls: `--no-prelude` disables implicit `lang.core` import, while explicit `import lang.core` still works via injected prelude exports; tests cover default/prelude-disabled behavior.
 - Updated prelude injection to be conditional on explicit imports when disabled, and wired prelude exports into the external export surface so module-qualified calls resolve deterministically.

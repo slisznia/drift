@@ -115,6 +115,24 @@ def _decode_generic_type_expr(obj: Any) -> GenericTypeExpr:
 	return GenericTypeExpr(name=name, args=args, param_index=param_index, module_id=module_id, fn_throws=fn_throws)
 
 
+def _ensure_optional_variant(table: TypeTable, inner: TypeId) -> TypeId:
+	opt_base = table.get_variant_base(module_id="lang.core", name="Optional")
+	if opt_base is None:
+		opt_base = table.declare_variant(
+			"lang.core",
+			"Optional",
+			["T"],
+			[
+				VariantArmSchema(name="None", fields=[]),
+				VariantArmSchema(
+					name="Some",
+					fields=[VariantFieldSchema(name="value", type_expr=GenericTypeExpr.param(0))],
+				),
+			],
+		)
+	return table.ensure_instantiated(opt_base, [inner])
+
+
 def decode_type_table_obj(obj: Mapping[str, Any]) -> DecodedTypeTable:
 	"""
 	Decode a `type_table` JSON object from a package payload.
@@ -605,7 +623,7 @@ def import_type_tables_and_build_typeid_maps(pkg_tt_objs: list[Mapping[str, Any]
 				_kind, kind_s, _pkg_id, mid, name = k
 				key_to_host[k] = host.require_nominal(kind=TypeKind[kind_s], module_id=(mid or None), name=name)
 		elif tag == "optional":
-			key_to_host[k] = host.new_optional(key_to_host[k[1]])
+			key_to_host[k] = _ensure_optional_variant(host, key_to_host[k[1]])
 		elif tag == "array":
 			key_to_host[k] = host.new_array(key_to_host[k[1]])
 		elif tag == "ref":

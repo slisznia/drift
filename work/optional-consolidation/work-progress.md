@@ -4,8 +4,8 @@
 Consolidate `Optional<T>` as a regular variant type, remove Optional-specific ABI/codegen paths, and rely on the generic variant lowering everywhere.
 
 ## Plan
-- [done] Inventory all Optional-specific logic (TypeKind.OPTIONAL, Optional ops, Optional ABI helpers) and map to variant equivalents.
-- [done] Lock Optional layout contract: `None` tag = 0, `Some(T)` tag = 1, stable arm order independent of surface listing.
+- [x] Inventory all Optional-specific logic (TypeKind.OPTIONAL, Optional ops, Optional ABI helpers) and map to variant equivalents.
+- [x] Lock Optional layout contract: `None` tag = 0, `Some(T)` tag = 1, stable arm order independent of surface listing.
 - [todo] Keep Optional as a surface type while removing Optional-specific IR kinds (lower to canonical `Variant` or `Named` that expands to variant).
 - [todo] Replace Optional-specific MIR/LLVM lowering with generic variant lowering (constructors, tests, match, copy/dup, ops).
 - [todo] Specify and enforce variant copy/dup/drop invariants (arm-wise copy/drop delegates to payload semantics; inactive arm has no payload).
@@ -44,3 +44,12 @@ Consolidate `Optional<T>` as a regular variant type, remove Optional-specific AB
   2026-01-05: Fixed ArrayLit to emit valid insertvalue into dest; restored ZeroValue pointer SSA emission.
   2026-01-05: ArrayLit now performs CopyValue for Copy-but-not-bitcopy elements; added Array<String> literal retain IR test.
   2026-01-05: FnResult Bool ok payload now stored as i8 with conversions in ConstructResultOk/ResultOk; Array<ZST> asserted in codegen.
+  2026-01-05: Stage2 now seeds Optional<T> variant base on demand (None/Some order) when missing in test harnesses.
+  2026-01-05: Stage2 DVAs* now uses Optional variant instantiation (no new_optional cache); added shared _optional_variant_type helper.
+  2026-01-05: Array iterator next() now uses _optional_variant_type and inserts CopyValue for Copy elements; updated iterator layout comments to &Array<T>.
+  2026-01-05: TypeTable declare_struct/declare_variant made idempotent on (module_id,name) with schema mismatch errors.
+  2026-01-05: Array iter intrinsic now auto-borrows Array<T> places; next() accepts place receivers and compares idx < len in Uint space.
+  2026-01-05: TypeChecker now validates iter()/next() receivers are addressable places; iterator next() guards negative idx before Uint conversion.
+  2026-01-06: Stage2 iter/next misuse now recovers with Unknown values in recover mode (asserts in strict).
+  2026-01-06: TypeChecker Optional cache now uses variant instantiation; package/link and driftc seeding no longer call new_optional.
+  2026-01-06: define_struct_fields made idempotent for identical field definitions (mismatch is a hard error).

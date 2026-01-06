@@ -75,7 +75,14 @@ from lang2.driftc.borrow_checker_pass import BorrowChecker
 from lang2.driftc.borrow_checker import PlaceBase, PlaceKind
 from lang2.driftc.core.diagnostics import Diagnostic
 from lang2.driftc.core.span import Span
-from lang2.driftc.core.types_core import TypeTable, TypeParamId, TypeKind
+from lang2.driftc.core.types_core import (
+	TypeTable,
+	TypeParamId,
+	TypeKind,
+	VariantArmSchema,
+	VariantFieldSchema,
+)
+from lang2.driftc.core.generic_type_expr import GenericTypeExpr
 from lang2.driftc.core.function_id import (
 	FunctionId,
 	function_id_from_obj,
@@ -3551,9 +3558,23 @@ def main(argv: list[str] | None = None) -> int:
 	type_table.ensure_error()
 	type_table.ensure_diagnostic_value()
 	# Keep derived Optional<T> ids stable across builds (package embedding).
-	type_table.new_optional(type_table.ensure_int())
-	type_table.new_optional(type_table.ensure_bool())
-	type_table.new_optional(type_table.ensure_string())
+	opt_base = type_table.get_variant_base(module_id="lang.core", name="Optional")
+	if opt_base is None:
+		opt_base = type_table.declare_variant(
+			"lang.core",
+			"Optional",
+			["T"],
+			[
+				VariantArmSchema(name="None", fields=[]),
+				VariantArmSchema(
+					name="Some",
+					fields=[VariantFieldSchema(name="value", type_expr=GenericTypeExpr.param(0))],
+				),
+			],
+		)
+	type_table.ensure_instantiated(opt_base, [type_table.ensure_int()])
+	type_table.ensure_instantiated(opt_base, [type_table.ensure_bool()])
+	type_table.ensure_instantiated(opt_base, [type_table.ensure_string()])
 
 	# Verify package TypeTable compatibility before importing signatures/IR.
 	# Build link-time TypeId maps for packages and import their type definitions

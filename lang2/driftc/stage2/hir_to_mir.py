@@ -42,7 +42,13 @@ from lang2.driftc.stage1.call_info import (
 from lang2.driftc.checker import FnSignature
 from lang2.driftc.core.function_id import FunctionId, function_symbol
 from lang2.driftc.core.span import Span
-from lang2.driftc.core.types_core import TypeKind, TypeTable, TypeId
+from lang2.driftc.core.types_core import (
+	TypeKind,
+	TypeTable,
+	TypeId,
+	VariantArmSchema,
+	VariantFieldSchema,
+)
 from lang2.driftc.core.type_resolve_common import resolve_opaque_type
 from lang2.driftc.core.generic_type_expr import GenericTypeExpr
 from lang2.driftc.core.iter_intrinsics import ensure_array_iter_struct, is_array_iter_struct
@@ -227,9 +233,6 @@ class HIRToMIR:
 		self._unknown_type = self._type_table.ensure_unknown()
 		self._void_type = self._type_table.ensure_void()
 		self._dv_type = self._type_table.ensure_diagnostic_value()
-		self._opt_int = self._type_table.new_optional(self._int_type)
-		self._opt_bool = self._type_table.new_optional(self._bool_type)
-		self._opt_string = self._type_table.new_optional(self._string_type)
 		self._signatures_by_id = signatures_by_id or {}
 		self._current_fn_id = current_fn_id
 		self._expr_types: dict[int, TypeId] = dict(expr_types) if expr_types else {}
@@ -1752,6 +1755,25 @@ class HIRToMIR:
 						self.b.emit(M.ConstructStruct(dest=dest, struct_ty=iter_ty, args=[recv_val, idx0]))
 						self._local_types[dest] = iter_ty
 						return dest
+				if recv_def.kind is TypeKind.ARRAY:
+					place_expr = None
+					if hasattr(H, "HPlaceExpr") and isinstance(expr.receiver, getattr(H, "HPlaceExpr")):
+						place_expr = expr.receiver
+					elif isinstance(expr.receiver, H.HVar):
+						place_expr = H.HPlaceExpr(base=expr.receiver, projections=[], loc=Span())
+					if place_expr is None:
+						return self._recover_unknown_value("iter() requires an addressable Array value in MVP (checker bug)")
+					recv_val, inner_ty = self._lower_addr_of_place(place_expr, is_mut=False)
+					if inner_ty != recv_ty:
+						raise AssertionError("iter() receiver place type mismatch (checker bug)")
+					iter_ty = self._ensure_array_iter_struct(recv_ty)
+					idx0 = self.b.new_temp()
+					self.b.emit(M.ConstInt(dest=idx0, value=0))
+					self._local_types[idx0] = self._int_type
+					dest = self.b.new_temp()
+					self.b.emit(M.ConstructStruct(dest=dest, struct_ty=iter_ty, args=[recv_val, idx0]))
+					self._local_types[dest] = iter_ty
+					return dest
 		if expr.method_name == "next" and not expr.args:
 			recv_ty = self._infer_expr_type(expr.receiver)
 			if recv_ty is not None and self._is_array_iter_struct(recv_ty):
@@ -1780,15 +1802,15 @@ class HIRToMIR:
 			dest = self.b.new_temp()
 			if expr.method_name == "as_int":
 				self.b.emit(M.DVAsInt(dest=dest, dv=dv_val))
-				self._local_types[dest] = self._opt_int
+				self._local_types[dest] = self._optional_variant_type(self._int_type)
 				return dest
 			if expr.method_name == "as_bool":
 				self.b.emit(M.DVAsBool(dest=dest, dv=dv_val))
-				self._local_types[dest] = self._opt_bool
+				self._local_types[dest] = self._optional_variant_type(self._bool_type)
 				return dest
 			if expr.method_name == "as_string":
 				self.b.emit(M.DVAsString(dest=dest, dv=dv_val))
-				self._local_types[dest] = self._opt_string
+				self._local_types[dest] = self._optional_variant_type(self._string_type)
 				return dest
 		result, info = self._lower_method_call(expr)
 		if result is None:
@@ -1805,9 +1827,34 @@ class HIRToMIR:
 		Ensure the internal `__ArrayIter_<T>` struct type exists for `Array<T>`.
 
 		Layout (compiler-private):
-		  struct __ArrayIter_<T> { arr: Array<T>, idx: Int }
+		  struct __ArrayIter_<T> { arr: &Array<T>, idx: Int }
 		"""
 		return ensure_array_iter_struct(array_ty, self._type_table)
+
+	def _optional_variant_type(self, inner_ty: TypeId) -> TypeId:
+		opt_base = self._type_table.get_variant_base(module_id="lang.core", name="Optional")
+		if opt_base is None:
+			opt_base = self._type_table.declare_variant(
+				"lang.core",
+				"Optional",
+				["T"],
+				[
+					VariantArmSchema(name="None", fields=[]),
+					VariantArmSchema(
+						name="Some",
+						fields=[VariantFieldSchema(name="value", type_expr=GenericTypeExpr.param(0))],
+					),
+				],
+		)
+		return self._type_table.ensure_instantiated(opt_base, [inner_ty])
+
+	def _recover_unknown_value(self, msg: str) -> M.ValueId:
+		if self._typed_mode == "strict":
+			raise AssertionError(msg)
+		dest = self.b.new_temp()
+		self.b.emit(M.ConstInt(dest=dest, value=0))
+		self._local_types[dest] = self._unknown_type
+		return dest
 
 	def _is_array_iter_struct(self, ty_id: TypeId) -> bool:
 		"""Return True if `ty_id` is an internal array-iterator struct TypeId."""
@@ -1822,13 +1869,18 @@ class HIRToMIR:
 
 		This is a compiler intrinsic (no trait dispatch yet).
 		"""
-		if not isinstance(receiver, H.HVar):
-			raise AssertionError("array iterator next() receiver must be a local variable (for-loop lowering bug)")
-		iter_name = receiver.name
-		self.b.ensure_local(iter_name)
-
-		iter_ptr = self.b.new_temp()
-		self.b.emit(M.AddrOfLocal(dest=iter_ptr, local=iter_name, is_mut=True))
+		place_expr = None
+		if hasattr(H, "HPlaceExpr") and isinstance(receiver, getattr(H, "HPlaceExpr")):
+			place_expr = receiver
+		elif isinstance(receiver, H.HVar):
+			place_expr = H.HPlaceExpr(base=receiver, projections=[], loc=Span())
+		if place_expr is None:
+			return self._recover_unknown_value(
+				"array iterator next() requires a mutable iterator place in MVP (checker bug)"
+			)
+		iter_ptr, place_ty = self._lower_addr_of_place(place_expr, is_mut=True)
+		if place_ty != iter_ty:
+			raise AssertionError("array iterator next() receiver type mismatch (checker bug)")
 
 		iter_def = self._type_table.get(iter_ty)
 		if iter_def.kind is not TypeKind.STRUCT or not iter_def.param_types or len(iter_def.param_types) != 2:
@@ -1859,10 +1911,7 @@ class HIRToMIR:
 		self.b.emit(M.LoadRef(dest=idx_val, ptr=idx_ptr, inner_ty=idx_ty))
 
 		# Ensure Optional<T> exists and instantiate Optional<elem>.
-		opt_base = self._type_table.get_variant_base(module_id="lang.core", name="Optional")
-		if opt_base is None:
-			raise AssertionError("Optional<T> variant base is missing (compiler bug)")
-		opt_ty = self._type_table.ensure_instantiated(opt_base, [elem_ty])
+		opt_ty = self._optional_variant_type(elem_ty)
 
 		# Hidden local to merge the Optional result.
 		#
@@ -1897,21 +1946,46 @@ class HIRToMIR:
 		then_block = self.b.new_block("array_next_some")
 		else_block = self.b.new_block("array_next_none")
 		join_block = self.b.new_block("array_next_join")
+		neg_block = self.b.new_block("array_next_neg")
+		cmp_block = self.b.new_block("array_next_cmp")
 
-		# Compare idx < len(arr)
+		# Guard against negative idx before converting to Uint.
+		zero = self.b.new_temp()
+		self.b.emit(M.ConstInt(dest=zero, value=0))
+		self._local_types[zero] = self._int_type
+		idx_neg = self.b.new_temp()
+		self.b.emit(M.BinaryOpInstr(dest=idx_neg, op=M.BinaryOp.LT, left=idx_val, right=zero))
+		self.b.set_terminator(M.IfTerminator(cond=idx_neg, then_target=neg_block.name, else_target=cmp_block.name))
+
+		self.b.set_block(neg_block)
+		self.b.set_terminator(M.Unreachable())
+
+		self.b.set_block(cmp_block)
+		# Compare idx < len(arr) in Uint space.
 		len_val = self.b.new_temp()
 		self.b.emit(M.ArrayLen(dest=len_val, array=arr_val))
-		len_int = self.b.new_temp()
-		self.b.emit(M.IntFromUint(dest=len_int, value=len_val))
-		self._local_types[len_int] = self._int_type
+		idx_u = self.b.new_temp()
+		self.b.emit(M.UintFromInt(dest=idx_u, value=idx_val))
+		self._local_types[idx_u] = self._uint_type
 		cmp = self.b.new_temp()
-		self.b.emit(M.BinaryOpInstr(dest=cmp, op=M.BinaryOp.LT, left=idx_val, right=len_int))
+		self.b.emit(M.BinaryOpInstr(dest=cmp, op=M.BinaryOp.LT, left=idx_u, right=len_val))
 		self.b.set_terminator(M.IfTerminator(cond=cmp, then_target=then_block.name, else_target=else_block.name))
 
 		# some branch
 		self.b.set_block(then_block)
 		elem_val = self.b.new_temp()
 		self.b.emit(M.ArrayIndexLoad(dest=elem_val, elem_ty=elem_ty, array=arr_val, index=idx_val))
+		if self._type_table.is_copy(elem_ty):
+			copy_val = self.b.new_temp()
+			self.b.emit(M.CopyValue(dest=copy_val, value=elem_val, ty=elem_ty))
+			self._local_types[copy_val] = elem_ty
+			elem_val = copy_val
+		else:
+			td = self._type_table.get(elem_ty)
+			if td.kind is not TypeKind.TYPEVAR:
+				return self._recover_unknown_value(
+					"array iterator next() requires Copy element type in MVP (checker bug)"
+				)
 		one = self.b.new_temp()
 		self.b.emit(M.ConstInt(dest=one, value=1))
 		self._local_types[one] = self._int_type
@@ -3512,11 +3586,11 @@ class HIRToMIR:
 				recv_def = self._type_table.get(recv_ty)
 				if recv_def.kind is TypeKind.DIAGNOSTICVALUE:
 					if expr.method_name == "as_int":
-						return self._opt_int
+						return self._optional_variant_type(self._int_type)
 					if expr.method_name == "as_bool":
-						return self._opt_bool
+						return self._optional_variant_type(self._bool_type)
 					if expr.method_name == "as_string":
-						return self._opt_string
+						return self._optional_variant_type(self._string_type)
 		if hasattr(H, "HTryExpr") and isinstance(expr, getattr(H, "HTryExpr")):
 			return self._infer_expr_type(expr.attempt)
 		return None

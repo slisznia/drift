@@ -52,7 +52,9 @@ def type_key_for_typeid(ty_id: TypeId, table: TypeTable) -> str:
 		param_id = td.type_param_id
 		if param_id is None:
 			return td.name
-		return f"Tv_{function_symbol(param_id.owner)}_{param_id.index}"
+		owner_mod = param_id.owner.module.replace("::", "_")
+		owner_name = param_id.owner.name.replace("::", "_")
+		return f"Tv_{owner_mod}_{owner_name}_{param_id.index}"
 	return td.kind.name
 
 
@@ -64,7 +66,7 @@ def ensure_array_iter_struct(array_ty: TypeId, table: TypeTable) -> TypeId:
 	  struct __ArrayIter_<T> { arr: &Array<T>, idx: Int }
 
 	The MIR lowering relies on this exact field order:
-	  - field 0: arr (Array<T>)
+	  - field 0: arr (&Array<T>)
 	  - field 1: idx (Int)
 	"""
 	td = table.get(array_ty)

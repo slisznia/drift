@@ -58,7 +58,16 @@ def _tc_diag(*args, **kwargs):
 	return Diagnostic(*args, **kwargs)
 
 from lang2.driftc.core.span import Span
-from lang2.driftc.core.types_core import TypeId, TypeTable, TypeKind, VariantInstance, VariantSchema, TypeParamId
+from lang2.driftc.core.types_core import (
+	TypeId,
+	TypeTable,
+	TypeKind,
+	VariantInstance,
+	VariantSchema,
+	TypeParamId,
+	VariantArmSchema,
+	VariantFieldSchema,
+)
 from lang2.driftc.core.function_id import (
 	FunctionId,
 	FunctionRefId,
@@ -219,9 +228,9 @@ class TypeChecker:
 		self._void = self.type_table.ensure_void()
 		self._error = self.type_table.ensure_error()
 		self._dv = self.type_table.ensure_diagnostic_value()
-		self._opt_int = self.type_table.new_optional(self._int)
-		self._opt_bool = self.type_table.new_optional(self._bool)
-		self._opt_string = self.type_table.new_optional(self._string)
+		self._opt_int = self._optional_variant_type(self._int)
+		self._opt_bool = self._optional_variant_type(self._bool)
+		self._opt_string = self._optional_variant_type(self._string)
 		self._unknown = self.type_table.ensure_unknown()
 		self._thunk_specs: dict[tuple[ThunkKind, FunctionId, tuple[TypeId, ...], TypeId], ThunkSpec] = {}
 		self._lambda_fn_specs: dict[FunctionId, LambdaFnSpec] = {}
@@ -236,6 +245,23 @@ class TypeChecker:
 
 	def defaulted_phase_count(self) -> int:
 		return self._defaulted_phase_count
+
+	def _optional_variant_type(self, inner_ty: TypeId) -> TypeId:
+		opt_base = self.type_table.get_variant_base(module_id="lang.core", name="Optional")
+		if opt_base is None:
+			opt_base = self.type_table.declare_variant(
+				"lang.core",
+				"Optional",
+				["T"],
+				[
+					VariantArmSchema(name="None", fields=[]),
+					VariantArmSchema(
+						name="Some",
+						fields=[VariantFieldSchema(name="value", type_expr=GenericTypeExpr.param(0))],
+					),
+				],
+			)
+		return self.type_table.ensure_instantiated(opt_base, [inner_ty])
 
 	def thunk_specs(self) -> list[ThunkSpec]:
 		return list(self._thunk_specs.values())
@@ -7150,8 +7176,44 @@ class TypeChecker:
 								target=_intrinsic_method_fn_id(expr.method_name),
 							)
 							return record_expr(expr, iter_ty)
+					if recv_def.kind is TypeKind.ARRAY:
+						is_place = (
+							(hasattr(H, "HPlaceExpr") and isinstance(expr.receiver, getattr(H, "HPlaceExpr")))
+							or isinstance(expr.receiver, H.HVar)
+						)
+						if not is_place:
+							diagnostics.append(
+								_tc_diag(
+									message="iter() requires an addressable Array value in MVP",
+									severity="error",
+									span=getattr(expr, "loc", Span()),
+								)
+							)
+							return record_expr(expr, self._unknown)
+						iter_ty = ensure_array_iter_struct(recv_ty, self.type_table)
+						param_ty = self.type_table.ensure_ref(recv_ty)
+						record_method_call_info(
+							expr,
+							param_types=[param_ty],
+							return_type=iter_ty,
+							can_throw=False,
+							target=_intrinsic_method_fn_id(expr.method_name),
+						)
+						return record_expr(expr, iter_ty)
 				if expr.method_name == "next" and not expr.args:
 					if is_array_iter_struct(recv_ty, self.type_table):
+						if not (
+							(hasattr(H, "HPlaceExpr") and isinstance(expr.receiver, getattr(H, "HPlaceExpr")))
+							or isinstance(expr.receiver, H.HVar)
+						):
+							diagnostics.append(
+								_tc_diag(
+									message="next() requires a mutable iterator place in MVP",
+									severity="error",
+									span=getattr(expr, "loc", Span()),
+								)
+							)
+							return record_expr(expr, self._unknown)
 						iter_def = self.type_table.get(recv_ty)
 						if not iter_def.param_types or len(iter_def.param_types) != 2:
 							diagnostics.append(
