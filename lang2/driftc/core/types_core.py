@@ -820,11 +820,11 @@ class TypeTable:
 				"Optional",
 				["T"],
 				[
+					VariantArmSchema(name="None", fields=[]),
 					VariantArmSchema(
 						name="Some",
 						fields=[VariantFieldSchema(name="value", type_expr=GenericTypeExpr.param(0))],
 					),
-					VariantArmSchema(name="None", fields=[]),
 				],
 			)
 		opt_id = self.ensure_instantiated(base, [inner])

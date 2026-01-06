@@ -91,7 +91,7 @@ def test_string_lt_lowered_via_string_cmp_and_zero_compare() -> None:
 	assert "call i32 @drift_string_cmp(%DriftString %s0, %DriftString %s1)" in ir
 	word_bits = struct.calcsize("P") * 8
 	if word_bits == 32:
-		assert "bitcast i32" in ir
+		assert "add %drift.isize" in ir
 	else:
 		assert "sext i32" in ir
 	assert "icmp slt %drift.isize" in ir

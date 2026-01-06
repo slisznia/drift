@@ -185,7 +185,7 @@ def test_export_wrapper_bool_return_uses_i8():
 
 	assert "define { i8, %DriftError* } @foo()" in ir
 	assert "define i1 @foo__impl()" in ir
-	assert "zext i1 %ok to i8" in ir
+	assert "zext i1 %ok to i8" not in ir
 
 
 def test_codegen_fnresult_ref_err_zero_ok_slot():

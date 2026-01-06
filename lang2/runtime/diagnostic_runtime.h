@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdint.h>
+#include <stdbool.h>
 #include <stddef.h>
 
 #ifdef __cplusplus
@@ -18,8 +19,14 @@ enum DriftDiagnosticTag {
     DV_OBJECT = 7,
 };
 
+typedef ptrdiff_t drift_isize;
+typedef size_t drift_usize;
+
+_Static_assert(sizeof(drift_isize) == sizeof(void*), "drift_isize must be pointer-sized");
+_Static_assert(sizeof(drift_usize) == sizeof(void*), "drift_usize must be pointer-sized");
+
 struct DriftString {
-    int64_t len;
+    drift_usize len;
     char* data;
 };
 
@@ -58,36 +65,11 @@ struct DriftDiagnosticValue {
 _Static_assert(sizeof(struct DriftDiagnosticValue) == 24, "DriftDiagnosticValue size mismatch");
 _Static_assert(_Alignof(struct DriftDiagnosticValue) == 8, "DriftDiagnosticValue alignment mismatch");
 
-struct DriftOptionalInt {
-    uint8_t is_some;
-    int64_t value;
-};
-
-struct DriftOptionalBool {
-    uint8_t is_some;
-    uint8_t value;
-};
-
-struct DriftOptionalFloat {
-    uint8_t is_some;
-    double value;
-};
-
-struct DriftOptionalString {
-    uint8_t is_some;
-    struct DriftString value;
-};
-
-static const struct DriftOptionalInt OPTIONAL_INT_NONE = {0, 0};
-static const struct DriftOptionalBool DRIFT_OPTIONAL_BOOL_NONE = {0, 0};
-static const struct DriftOptionalFloat DRIFT_OPTIONAL_FLOAT_NONE = {0, 0.0};
-static const struct DriftOptionalString OPTIONAL_STRING_NONE = {0, {0, NULL}};
-
 // Constructors
 struct DriftDiagnosticValue drift_dv_missing(void);
 struct DriftDiagnosticValue drift_dv_null(void);
 struct DriftDiagnosticValue drift_dv_bool(uint8_t value);
-struct DriftDiagnosticValue drift_dv_int(int64_t value);
+struct DriftDiagnosticValue drift_dv_int(drift_isize value);
 struct DriftDiagnosticValue drift_dv_float(double value);
 struct DriftDiagnosticValue drift_dv_string(struct DriftString value);
 struct DriftDiagnosticValue drift_dv_array(struct DriftDiagnosticValue* items, size_t len);
@@ -101,20 +83,16 @@ struct DriftDiagnosticValue drift_dv_index(struct DriftDiagnosticValue dv, size_
 uint8_t drift_dv_kind(struct DriftDiagnosticValue dv);
 
 // Conversions
-struct DriftOptionalInt drift_dv_as_int(const struct DriftDiagnosticValue* dv);
-struct DriftOptionalBool drift_dv_as_bool(const struct DriftDiagnosticValue* dv);
-struct DriftOptionalFloat drift_dv_as_float(const struct DriftDiagnosticValue* dv);
-struct DriftOptionalString drift_dv_as_string(const struct DriftDiagnosticValue* dv);
+bool drift_dv_as_int(const struct DriftDiagnosticValue* dv, drift_isize* out);
+bool drift_dv_as_bool(const struct DriftDiagnosticValue* dv, uint8_t* out);
+bool drift_dv_as_float(const struct DriftDiagnosticValue* dv, double* out);
+bool drift_dv_as_string(const struct DriftDiagnosticValue* dv, struct DriftString* out);
 
 // Primitive to_diag helpers (runtime equivalents of Diagnostic for primitives)
 struct DriftDiagnosticValue drift_diag_from_bool(uint8_t value);
-struct DriftDiagnosticValue drift_diag_from_int(int64_t value);
+struct DriftDiagnosticValue drift_diag_from_int(drift_isize value);
 struct DriftDiagnosticValue drift_diag_from_float(double value);
 struct DriftDiagnosticValue drift_diag_from_string(struct DriftString value);
-struct DriftDiagnosticValue drift_diag_from_optional_int(struct DriftOptionalInt opt);
-struct DriftDiagnosticValue drift_diag_from_optional_string(struct DriftOptionalString opt);
-struct DriftDiagnosticValue drift_diag_from_optional_bool(struct DriftOptionalBool opt);
-struct DriftDiagnosticValue drift_diag_from_optional_float(struct DriftOptionalFloat opt);
 
 // DV_MISSING must remain zero so codegen can treat zeroinitializer as the
 // canonical missing value when calling drift_dv_missing().

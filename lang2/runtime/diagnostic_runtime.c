@@ -1,6 +1,7 @@
 #include "diagnostic_runtime.h"
 #include <stdlib.h>
 #include <string.h>
+#include <stdbool.h>
 
 static struct DriftDiagnosticValue make_simple(uint8_t tag) {
     struct DriftDiagnosticValue dv;
@@ -20,7 +21,7 @@ struct DriftDiagnosticValue drift_dv_bool(uint8_t value) {
     return dv;
 }
 
-struct DriftDiagnosticValue drift_dv_int(int64_t value) {
+struct DriftDiagnosticValue drift_dv_int(drift_isize value) {
     struct DriftDiagnosticValue dv = make_simple(DV_INT);
     dv.data.int_value = value;
     return dv;
@@ -81,67 +82,48 @@ struct DriftDiagnosticValue drift_dv_index(struct DriftDiagnosticValue dv, size_
 
 uint8_t drift_dv_kind(struct DriftDiagnosticValue dv) { return dv.tag; }
 
-struct DriftOptionalInt drift_dv_as_int(const struct DriftDiagnosticValue* dv) {
+bool drift_dv_as_int(const struct DriftDiagnosticValue* dv, drift_isize* out) {
     if (!dv || dv->tag != DV_INT) {
-        return OPTIONAL_INT_NONE;
+        return false;
     }
-    struct DriftOptionalInt out = {1, dv->data.int_value};
-    return out;
+    if (out) {
+        *out = (drift_isize)dv->data.int_value;
+    }
+    return true;
 }
 
-struct DriftOptionalBool drift_dv_as_bool(const struct DriftDiagnosticValue* dv) {
+bool drift_dv_as_bool(const struct DriftDiagnosticValue* dv, uint8_t* out) {
     if (!dv || dv->tag != DV_BOOL) {
-        return DRIFT_OPTIONAL_BOOL_NONE;
+        return false;
     }
-    struct DriftOptionalBool out = {1, (uint8_t)(dv->data.bool_value ? 1 : 0)};
-    return out;
+    if (out) {
+        *out = (uint8_t)(dv->data.bool_value ? 1 : 0);
+    }
+    return true;
 }
 
-struct DriftOptionalFloat drift_dv_as_float(const struct DriftDiagnosticValue* dv) {
+bool drift_dv_as_float(const struct DriftDiagnosticValue* dv, double* out) {
     if (!dv || dv->tag != DV_FLOAT) {
-        return DRIFT_OPTIONAL_FLOAT_NONE;
+        return false;
     }
-    struct DriftOptionalFloat out = {1, dv->data.float_value};
-    return out;
+    if (out) {
+        *out = dv->data.float_value;
+    }
+    return true;
 }
 
-struct DriftOptionalString drift_dv_as_string(const struct DriftDiagnosticValue* dv) {
+bool drift_dv_as_string(const struct DriftDiagnosticValue* dv, struct DriftString* out) {
     if (!dv || dv->tag != DV_STRING) {
-        return OPTIONAL_STRING_NONE;
+        return false;
     }
-    struct DriftOptionalString out = {1, {dv->data.string_value.len, dv->data.string_value.data}};
-    return out;
+    if (out) {
+        out->len = (drift_usize)dv->data.string_value.len;
+        out->data = dv->data.string_value.data;
+    }
+    return true;
 }
 
 struct DriftDiagnosticValue drift_diag_from_bool(uint8_t value) { return drift_dv_bool(value); }
-struct DriftDiagnosticValue drift_diag_from_int(int64_t value) { return drift_dv_int(value); }
+struct DriftDiagnosticValue drift_diag_from_int(drift_isize value) { return drift_dv_int(value); }
 struct DriftDiagnosticValue drift_diag_from_float(double value) { return drift_dv_float(value); }
 struct DriftDiagnosticValue drift_diag_from_string(struct DriftString value) { return drift_dv_string(value); }
-
-struct DriftDiagnosticValue drift_diag_from_optional_int(struct DriftOptionalInt opt) {
-    if (!opt.is_some) {
-        return drift_dv_null();
-    }
-    return drift_dv_int(opt.value);
-}
-
-struct DriftDiagnosticValue drift_diag_from_optional_string(struct DriftOptionalString opt) {
-    if (!opt.is_some) {
-        return drift_dv_null();
-    }
-    return drift_dv_string(opt.value);
-}
-
-struct DriftDiagnosticValue drift_diag_from_optional_bool(struct DriftOptionalBool opt) {
-    if (!opt.is_some) {
-        return drift_dv_null();
-    }
-    return drift_dv_bool(opt.value);
-}
-
-struct DriftDiagnosticValue drift_diag_from_optional_float(struct DriftOptionalFloat opt) {
-    if (!opt.is_some) {
-        return drift_dv_null();
-    }
-    return drift_dv_float(opt.value);
-}

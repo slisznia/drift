@@ -9,9 +9,11 @@ from lang2.driftc.checker import FnInfo, FnSignature
 from lang2.driftc.core.types_core import TypeTable
 from lang2.driftc.stage2 import (
 	ArrayAlloc,
+	ArrayLit,
 	ArrayElemAssign,
 	ArrayElemInitUnchecked,
 	ArrayIndexLoad,
+	ArrayLen,
 	ArraySetLen,
 	BasicBlock,
 	CopyValue,
@@ -29,14 +31,16 @@ from lang2.codegen.llvm.test_utils import host_word_bits
 def _types():
     table = TypeTable()
     int_ty = table.new_scalar("Int")
+    uint_ty = table.new_scalar("Uint")
     str_ty = table.new_scalar("String")
     table._int_type = int_ty  # type: ignore[attr-defined]
+    table._uint_type = uint_ty  # type: ignore[attr-defined]
     table._string_type = str_ty  # type: ignore[attr-defined]
-    return table, int_ty, str_ty
+    return table, int_ty, uint_ty, str_ty
 
 
 def test_array_string_literal_and_index_ir():
-	table, int_ty, str_ty = _types()
+	table, int_ty, uint_ty, str_ty = _types()
 
 	block = BasicBlock(
 		name="entry",
@@ -83,8 +87,41 @@ def test_array_string_literal_and_index_ir():
 	assert "call %DriftString @drift_string_retain" in ir
 
 
+def test_array_string_lit_retains_elements():
+	table, int_ty, uint_ty, str_ty = _types()
+	arr_ty = table.new_array(str_ty)
+
+	block = BasicBlock(
+		name="entry",
+		instructions=[
+			ConstString(dest="t0", value="a"),
+			ConstString(dest="t1", value="bb"),
+			ArrayLit(dest="arr", elem_ty=str_ty, elements=["t0", "t1"]),
+			ArrayLen(dest="len", array="arr"),
+		],
+		terminator=Return(value="len"),
+	)
+	fn_id = FunctionId(module="main", name="main", ordinal=0)
+	func = MirFunc(
+		fn_id=fn_id,
+		name="main",
+		params=[],
+		locals=["t0", "t1", "arr", "len"],
+		blocks={"entry": block},
+		entry="entry",
+	)
+	ssa = MirToSSA().run(func)
+	sig = FnSignature(name="main", param_type_ids=[], return_type_id=uint_ty)
+	info = FnInfo(fn_id=fn_id, name="main", declared_can_throw=False, signature=sig, return_type_id=uint_ty)
+
+	mod = lower_module_to_llvm({fn_id: func}, {fn_id: ssa}, {fn_id: info}, type_table=table, word_bits=host_word_bits())
+	ir = mod.render()
+
+	assert "call %DriftString @drift_string_retain" in ir
+
+
 def test_array_string_store_ir():
-	table, int_ty, str_ty = _types()
+	table, int_ty, uint_ty, str_ty = _types()
 
 	block = BasicBlock(
 		name="entry",

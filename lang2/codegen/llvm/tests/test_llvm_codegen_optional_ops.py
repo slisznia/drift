@@ -107,7 +107,7 @@ def test_optional_ops_round_trip_payload():
 	assert "call %DriftDiagnosticValue @drift_dv_int" in ir
 	assert "call %DriftError* @drift_error_new_with_payload" in ir
 	assert "call void @__exc_attrs_get_dv" in ir
-	assert "call %DriftOptionalInt @drift_dv_as_int" in ir
+	assert "call i1 @drift_dv_as_int" in ir
 	assert "Variant_" in ir
 
 
@@ -190,5 +190,5 @@ def test_optional_ops_round_trip_string_payload():
 
 	assert "call %DriftError* @drift_error_new_with_payload" in ir
 	assert "call void @__exc_attrs_get_dv" in ir
-	assert "call %DriftOptionalString @drift_dv_as_string" in ir
+	assert "call i1 @drift_dv_as_string" in ir
 	assert "Variant_" in ir

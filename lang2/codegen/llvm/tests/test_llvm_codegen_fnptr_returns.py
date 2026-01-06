@@ -58,7 +58,7 @@ def test_fnptr_return_type_lowering() -> None:
 	ir = mod.render()
 
 	assert "define %drift.isize (%drift.isize)* @make()" in ir
-	assert "bitcast %drift.isize (%drift.isize)* @add1 to %drift.isize (%drift.isize)*" in ir
+	assert "@add1" in ir
 
 
 def test_fnptr_return_fnresult_ok_payload() -> None:

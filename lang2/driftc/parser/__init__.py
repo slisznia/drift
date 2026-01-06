@@ -154,6 +154,7 @@ def _prime_builtins(table: TypeTable) -> None:
 	table.ensure_unknown()
 	table.ensure_int()
 	table.ensure_uint()
+	table.ensure_byte()
 	table.ensure_bool()
 	table.ensure_float()
 	table.ensure_string()
@@ -3286,7 +3287,7 @@ def _lower_parsed_program_to_hir(
 	# user code declares its own `variant Optional<...>`.
 	#
 	# MVP contract:
-	#   variant Optional<T> { Some(value: T), None }
+	#   variant Optional<T> { None, Some(value: T) }
 	if not any(getattr(v, "name", None) == "Optional" for v in variant_defs) and type_table.get_variant_base(
 		module_id="lang.core", name="Optional"
 	) is None:
@@ -3295,11 +3296,11 @@ def _lower_parsed_program_to_hir(
 			"Optional",
 			["T"],
 			[
+				VariantArmSchema(name="None", fields=[]),
 				VariantArmSchema(
 					name="Some",
 					fields=[VariantFieldSchema(name="value", type_expr=GenericTypeExpr.param(0))],
 				),
-				VariantArmSchema(name="None", fields=[]),
 			],
 		)
 	# Declare all struct names first (placeholder field types) to support recursion.

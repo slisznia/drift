@@ -95,8 +95,6 @@ from lang2.driftc.stage2 import (
 	AddrOfField,
 	LoadRef,
 	StoreRef,
-	OptionalIsSome,
-	OptionalValue,
 	ResultErr,
 	ResultIsErr,
 	ResultOk,
@@ -167,9 +165,6 @@ def _llvm_comdat_sym(name: str) -> str:
 
 
 DRIFT_DV_TYPE = "%DriftDiagnosticValue"
-DRIFT_OPT_INT_TYPE = "%DriftOptionalInt"
-DRIFT_OPT_BOOL_TYPE = "%DriftOptionalBool"
-DRIFT_OPT_STRING_TYPE = "%DriftOptionalString"
 
 
 # Public API -------------------------------------------------------------------
@@ -338,7 +333,7 @@ def lower_module_to_llvm(
 
 		if info.declared_can_throw:
 			# Convert internal FnResult<ok, Error*> to boundary Result ABI.
-			fnres_llty = mod.fnresult_type(ok_key, ok_llty)
+			fnres_llty = mod.fnresult_type(ok_key, ok_llty, ok_typeid=ret_tid)
 			lines.append(f"  %res = call {fnres_llty} {_llvm_fn_sym(impl)}({args})")
 			if is_void_ret:
 				lines.append(f"  %err = extractvalue {fnres_llty} %res, 2")
@@ -435,6 +430,7 @@ class LlvmModuleBuilder:
 	array_string_type: Optional[str] = None
 	_fnresult_types_by_key: Dict[str, str] = field(default_factory=dict)
 	_fnresult_ok_llty_by_type: Dict[str, str] = field(default_factory=dict)
+	_fnresult_ok_typeid_by_type: Dict[str, TypeId] = field(default_factory=dict)
 	_fnresult_unwrap_helpers: Dict[str, str] = field(default_factory=dict)
 	_struct_types_by_name: Dict[str, str] = field(default_factory=dict)
 	_variant_types_by_key: Dict[str, str] = field(default_factory=dict)
@@ -451,9 +447,6 @@ class LlvmModuleBuilder:
 				f"{DRIFT_ERROR_TYPE} = type {{ {DRIFT_ERROR_CODE_TYPE}, {DRIFT_STRING_TYPE}, i8*, {DRIFT_USIZE_TYPE}, i8*, {DRIFT_USIZE_TYPE} }}",
 				f"{FNRESULT_INT_ERROR} = type {{ i1, {DRIFT_INT_TYPE}, {DRIFT_ERROR_PTR} }}",
 				f"{DRIFT_DV_TYPE} = type {{ i8, [7 x i8], [2 x i64] }}",
-				f"{DRIFT_OPT_INT_TYPE} = type {{ i8, {DRIFT_INT_TYPE} }}",
-				f"{DRIFT_OPT_BOOL_TYPE} = type {{ i8, i8 }}",
-				f"{DRIFT_OPT_STRING_TYPE} = type {{ i8, {DRIFT_STRING_TYPE} }}",
 				f"%DriftArrayHeader = type {{ {DRIFT_USIZE_TYPE}, {DRIFT_USIZE_TYPE}, i8* }}",
 			]
 		)
@@ -565,7 +558,7 @@ class LlvmModuleBuilder:
 		)
 		return llvm_name
 
-	def fnresult_type(self, ok_key: str, ok_llty: str) -> str:
+	def fnresult_type(self, ok_key: str, ok_llty: str, ok_typeid: TypeId | None = None) -> str:
 		"""
 		Return the LLVM struct type for FnResult<ok_llty, Error>.
 
@@ -585,7 +578,7 @@ class LlvmModuleBuilder:
 		if ok_key == "Void":
 			return self._declare_fnresult_named_type(ok_key, ok_llty, "%FnResult_Void_Error")
 		# Other supported ok payloads are emitted as named types lazily.
-		return self._declare_fnresult_named_type(ok_key, ok_llty)
+		return self._declare_fnresult_named_type(ok_key, ok_llty, ok_typeid=ok_typeid)
 
 	def fnresult_unwrap_ok_or_trap(self, ok_key: str, fnres_llty: str, ok_llty: str) -> str:
 		"""
@@ -619,7 +612,7 @@ class LlvmModuleBuilder:
 		self.funcs.append("\n".join(lines))
 		return name
 
-	def _declare_fnresult_named_type(self, ok_key: str, ok_llty: str, name: str | None = None) -> str:
+	def _declare_fnresult_named_type(self, ok_key: str, ok_llty: str, name: str | None = None, *, ok_typeid: TypeId | None = None) -> str:
 		"""Declare and cache a named FnResult type for the given ok payload."""
 		if ok_key in self._fnresult_types_by_key:
 			return self._fnresult_types_by_key[ok_key]
@@ -627,6 +620,8 @@ class LlvmModuleBuilder:
 		self.type_decls.append(f"{type_name} = type {{ i1, {ok_llty}, {DRIFT_ERROR_PTR} }}")
 		self._fnresult_types_by_key[ok_key] = type_name
 		self._fnresult_ok_llty_by_type[type_name] = ok_llty
+		if ok_typeid is not None:
+			self._fnresult_ok_typeid_by_type[type_name] = ok_typeid
 		return type_name
 
 	def emit_func(self, text: str) -> None:
@@ -757,12 +752,12 @@ class LlvmModuleBuilder:
 				[
 					f"declare void @__exc_attrs_get_dv({DRIFT_DV_TYPE}*, {DRIFT_ERROR_PTR}, {DRIFT_STRING_TYPE})",
 					f"declare {DRIFT_DV_TYPE} @drift_dv_missing()",
-					f"declare {DRIFT_DV_TYPE} @drift_dv_int(i64)",
-					f"declare {DRIFT_DV_TYPE} @drift_dv_bool(i1)",
+					f"declare {DRIFT_DV_TYPE} @drift_dv_int({DRIFT_INT_TYPE})",
+					f"declare {DRIFT_DV_TYPE} @drift_dv_bool(i8)",
 					f"declare {DRIFT_DV_TYPE} @drift_dv_string({DRIFT_STRING_TYPE})",
-					f"declare {DRIFT_OPT_INT_TYPE} @drift_dv_as_int({DRIFT_DV_TYPE}*)",
-					f"declare {DRIFT_OPT_BOOL_TYPE} @drift_dv_as_bool({DRIFT_DV_TYPE}*)",
-					f"declare {DRIFT_OPT_STRING_TYPE} @drift_dv_as_string({DRIFT_DV_TYPE}*)",
+					f"declare i1 @drift_dv_as_int({DRIFT_DV_TYPE}*, {DRIFT_INT_TYPE}*)",
+					f"declare i1 @drift_dv_as_bool({DRIFT_DV_TYPE}*, i8*)",
+					f"declare i1 @drift_dv_as_string({DRIFT_DV_TYPE}*, {DRIFT_STRING_TYPE}*)",
 					"",
 				]
 			)
@@ -1318,7 +1313,7 @@ class _FuncBuilder:
 			# Normalize to the compiler's Int carrier so downstream comparisons use
 			# the same integer pipeline as other BinaryOpInstr nodes.
 			if self.module.word_bits == 32:
-				self.lines.append(f"  {dest} = bitcast i32 {tmp} to {DRIFT_INT_TYPE}")
+				self.lines.append(f"  {dest} = add {DRIFT_INT_TYPE} {tmp}, 0")
 			else:
 				self.lines.append(f"  {dest} = sext i32 {tmp} to {DRIFT_INT_TYPE}")
 			self.value_types[dest] = DRIFT_INT_TYPE
@@ -1654,6 +1649,15 @@ class _FuncBuilder:
 			ok_llty = self.module._fnresult_ok_llty_by_type.get(fnres_llty)
 			if ok_llty is None:
 				raise NotImplementedError(f"LLVM codegen v1: unknown FnResult layout for {fnres_llty}")
+			ok_tid = self.module._fnresult_ok_typeid_by_type.get(fnres_llty)
+			if ok_tid is not None and self.type_table is not None:
+				ok_td = self.type_table.get(ok_tid)
+				if ok_td.kind is TypeKind.SCALAR and ok_td.name == "Bool":
+					raw = self._fresh("ok8")
+					self.lines.append(f"  {raw} = extractvalue {fnres_llty} {res}, 1")
+					self._bool_from_storage(raw, dest=dest)
+					self.value_types[dest] = "i1"
+					return
 			self.lines.append(f"  {dest} = extractvalue {fnres_llty} {res}, 1")
 			self.value_types[dest] = ok_llty
 		elif isinstance(instr, ResultErr):
@@ -1686,10 +1690,21 @@ class _FuncBuilder:
 				val = self._map_value(instr.value)
 				val_ty = self.value_types.get(val)
 				if val_ty is not None and val_ty != ok_llty:
-					raise NotImplementedError(
-						f"LLVM codegen v1: ok payload type mismatch for ConstructResultOk in {self.fn_info.name}: "
-						f"have {val_ty}, expected {ok_llty}"
-					)
+					ok_tid = self.module._fnresult_ok_typeid_by_type.get(fnres_llty)
+					if ok_tid is not None and self.type_table is not None:
+						ok_td = self.type_table.get(ok_tid)
+						if ok_td.kind is TypeKind.SCALAR and ok_td.name == "Bool" and ok_llty == "i8" and val_ty == "i1":
+							val = self._bool_to_storage(val)
+						else:
+							raise NotImplementedError(
+								f"LLVM codegen v1: ok payload type mismatch for ConstructResultOk in {self.fn_info.name}: "
+								f"have {val_ty}, expected {ok_llty}"
+							)
+					else:
+						raise NotImplementedError(
+							f"LLVM codegen v1: ok payload type mismatch for ConstructResultOk in {self.fn_info.name}: "
+							f"have {val_ty}, expected {ok_llty}"
+						)
 			tmp0 = self._fresh("ok0")
 			tmp1 = self._fresh("ok1")
 			err_zero = f"{DRIFT_ERROR_PTR} null"
@@ -1728,14 +1743,12 @@ class _FuncBuilder:
 			arg_val = self._map_value(instr.args[0])
 			arg_ty = self.value_types.get(arg_val)
 			if arg_ty == DRIFT_INT_TYPE:
-				int64_val = arg_val
-				if self.module.word_bits != 64:
-					int64_val = self._fresh("int64")
-					self.lines.append(f"  {int64_val} = sext {DRIFT_INT_TYPE} {arg_val} to i64")
-				self.lines.append(f"  {dest} = call {DRIFT_DV_TYPE} @drift_dv_int(i64 {int64_val})")
+				self.lines.append(f"  {dest} = call {DRIFT_DV_TYPE} @drift_dv_int({DRIFT_INT_TYPE} {arg_val})")
 				return
 			if arg_ty == "i1":
-				self.lines.append(f"  {dest} = call {DRIFT_DV_TYPE} @drift_dv_bool(i1 {arg_val})")
+				raw = self._fresh("bool8")
+				self.lines.append(f"  {raw} = zext i1 {arg_val} to i8")
+				self.lines.append(f"  {dest} = call {DRIFT_DV_TYPE} @drift_dv_bool(i8 {raw})")
 				return
 			if arg_ty == DRIFT_STRING_TYPE:
 				self.lines.append(f"  {dest} = call {DRIFT_DV_TYPE} @drift_dv_string({DRIFT_STRING_TYPE} {arg_val})")
@@ -1811,10 +1824,6 @@ class _FuncBuilder:
 			self.lines.append(f"  {loaded} = load {DRIFT_ERROR_TYPE}, {DRIFT_ERROR_PTR} {err_val}")
 			self.lines.append(f"  {dest} = extractvalue {DRIFT_ERROR_TYPE} {loaded}, 0")
 			self.value_types[dest] = DRIFT_ERROR_CODE_TYPE
-		elif isinstance(instr, OptionalIsSome):
-			raise NotImplementedError("LLVM codegen v1: OptionalIsSome is deprecated; Optional is lowered as a variant")
-		elif isinstance(instr, OptionalValue):
-			raise NotImplementedError("LLVM codegen v1: OptionalValue is deprecated; Optional is lowered as a variant")
 		elif isinstance(instr, (DVAsInt, DVAsBool, DVAsString)):
 			self.module.needs_dv_runtime = True
 			dest = self._map_value(instr.dest)
@@ -1823,57 +1832,86 @@ class _FuncBuilder:
 			self.lines.append(f"  {tmp_ptr} = alloca {DRIFT_DV_TYPE}")
 			self.lines.append(f"  store {DRIFT_DV_TYPE} {dv_val}, {DRIFT_DV_TYPE}* {tmp_ptr}")
 			if isinstance(instr, DVAsInt):
-				opt_val = self._fresh("opt_int")
+				out_ptr = self._fresh("out_int")
+				self.lines.append(f"  {out_ptr} = alloca {DRIFT_INT_TYPE}")
+				is_some = self._fresh("opt_some")
 				self.lines.append(
-					f"  {opt_val} = call {DRIFT_OPT_INT_TYPE} @drift_dv_as_int({DRIFT_DV_TYPE}* {tmp_ptr})"
+					f"  {is_some} = call i1 @drift_dv_as_int({DRIFT_DV_TYPE}* {tmp_ptr}, {DRIFT_INT_TYPE}* {out_ptr})"
 				)
-				is_some_raw = self._fresh("opt_some")
-				self.lines.append(f"  {is_some_raw} = extractvalue {DRIFT_OPT_INT_TYPE} {opt_val}, 0")
-				is_some = self._fresh("opt_some_i1")
-				self.lines.append(f"  {is_some} = icmp ne i8 {is_some_raw}, 0")
-				val = self._fresh("opt_val")
-				self.lines.append(f"  {val} = extractvalue {DRIFT_OPT_INT_TYPE} {opt_val}, 1")
 				opt_ty = self._optional_variant_type(self.int_type_id or self.type_table.ensure_int())
-				some_val = self._emit_variant_value(opt_ty, "Some", [val])
-				none_val = self._emit_variant_value(opt_ty, "None", [])
 				variant_llty = self._variant_layout(opt_ty).llvm_ty
-				self.lines.append(f"  {dest} = select i1 {is_some}, {variant_llty} {some_val}, {variant_llty} {none_val}")
+				some_block = self._fresh("dv_int_some")
+				none_block = self._fresh("dv_int_none")
+				done_block = self._fresh("dv_int_done")
+				self.lines.append(f"  br i1 {is_some}, label {some_block}, label {none_block}")
+				self.lines.append(f"{some_block[1:]}:")
+				val = self._fresh("opt_val")
+				self.lines.append(f"  {val} = load {DRIFT_INT_TYPE}, {DRIFT_INT_TYPE}* {out_ptr}")
+				some_val = self._emit_variant_value(opt_ty, "Some", [val])
+				self.lines.append(f"  br label {done_block}")
+				self.lines.append(f"{none_block[1:]}:")
+				none_val = self._emit_variant_value(opt_ty, "None", [])
+				self.lines.append(f"  br label {done_block}")
+				self.lines.append(f"{done_block[1:]}:")
+				self.lines.append(
+					f"  {dest} = phi {variant_llty} [ {some_val}, {some_block} ], [ {none_val}, {none_block} ]"
+				)
 				self.value_types[dest] = variant_llty
 			elif isinstance(instr, DVAsBool):
-				opt_val = self._fresh("opt_bool")
+				out_ptr = self._fresh("out_bool")
+				self.lines.append(f"  {out_ptr} = alloca i8")
+				is_some = self._fresh("opt_some")
 				self.lines.append(
-					f"  {opt_val} = call {DRIFT_OPT_BOOL_TYPE} @drift_dv_as_bool({DRIFT_DV_TYPE}* {tmp_ptr})"
+					f"  {is_some} = call i1 @drift_dv_as_bool({DRIFT_DV_TYPE}* {tmp_ptr}, i8* {out_ptr})"
 				)
-				is_some_raw = self._fresh("opt_some")
-				self.lines.append(f"  {is_some_raw} = extractvalue {DRIFT_OPT_BOOL_TYPE} {opt_val}, 0")
-				is_some = self._fresh("opt_some_i1")
-				self.lines.append(f"  {is_some} = icmp ne i8 {is_some_raw}, 0")
-				val_raw = self._fresh("opt_val_raw")
-				self.lines.append(f"  {val_raw} = extractvalue {DRIFT_OPT_BOOL_TYPE} {opt_val}, 1")
-				val = self._fresh("opt_val")
-				self.lines.append(f"  {val} = icmp ne i8 {val_raw}, 0")
 				opt_ty = self._optional_variant_type(self.bool_type_id or self.type_table.ensure_bool())
-				some_val = self._emit_variant_value(opt_ty, "Some", [val])
-				none_val = self._emit_variant_value(opt_ty, "None", [])
 				variant_llty = self._variant_layout(opt_ty).llvm_ty
-				self.lines.append(f"  {dest} = select i1 {is_some}, {variant_llty} {some_val}, {variant_llty} {none_val}")
+				some_block = self._fresh("dv_bool_some")
+				none_block = self._fresh("dv_bool_none")
+				done_block = self._fresh("dv_bool_done")
+				self.lines.append(f"  br i1 {is_some}, label {some_block}, label {none_block}")
+				self.lines.append(f"{some_block[1:]}:")
+				val_raw = self._fresh("opt_val_raw")
+				self.lines.append(f"  {val_raw} = load i8, i8* {out_ptr}")
+				val = self._bool_from_storage(val_raw)
+				some_val = self._emit_variant_value(opt_ty, "Some", [val])
+				self.lines.append(f"  br label {done_block}")
+				self.lines.append(f"{none_block[1:]}:")
+				none_val = self._emit_variant_value(opt_ty, "None", [])
+				self.lines.append(f"  br label {done_block}")
+				self.lines.append(f"{done_block[1:]}:")
+				self.lines.append(
+					f"  {dest} = phi {variant_llty} [ {some_val}, {some_block} ], [ {none_val}, {none_block} ]"
+				)
 				self.value_types[dest] = variant_llty
 			else:
-				opt_val = self._fresh("opt_str")
+				out_ptr = self._fresh("out_str")
+				self.lines.append(f"  {out_ptr} = alloca {DRIFT_STRING_TYPE}")
+				is_some = self._fresh("opt_some")
 				self.lines.append(
-					f"  {opt_val} = call {DRIFT_OPT_STRING_TYPE} @drift_dv_as_string({DRIFT_DV_TYPE}* {tmp_ptr})"
+					f"  {is_some} = call i1 @drift_dv_as_string({DRIFT_DV_TYPE}* {tmp_ptr}, {DRIFT_STRING_TYPE}* {out_ptr})"
 				)
-				is_some_raw = self._fresh("opt_some")
-				self.lines.append(f"  {is_some_raw} = extractvalue {DRIFT_OPT_STRING_TYPE} {opt_val}, 0")
-				is_some = self._fresh("opt_some_i1")
-				self.lines.append(f"  {is_some} = icmp ne i8 {is_some_raw}, 0")
-				val = self._fresh("opt_val")
-				self.lines.append(f"  {val} = extractvalue {DRIFT_OPT_STRING_TYPE} {opt_val}, 1")
 				opt_ty = self._optional_variant_type(self.string_type_id or self.type_table.ensure_string())
-				some_val = self._emit_variant_value(opt_ty, "Some", [val])
-				none_val = self._emit_variant_value(opt_ty, "None", [])
 				variant_llty = self._variant_layout(opt_ty).llvm_ty
-				self.lines.append(f"  {dest} = select i1 {is_some}, {variant_llty} {some_val}, {variant_llty} {none_val}")
+				some_block = self._fresh("dv_str_some")
+				none_block = self._fresh("dv_str_none")
+				done_block = self._fresh("dv_str_done")
+				self.lines.append(f"  br i1 {is_some}, label {some_block}, label {none_block}")
+				self.lines.append(f"{some_block[1:]}:")
+				val = self._fresh("opt_val")
+				self.lines.append(f"  {val} = load {DRIFT_STRING_TYPE}, {DRIFT_STRING_TYPE}* {out_ptr}")
+				self.module.needs_string_retain = True
+				owned = self._fresh("opt_owned")
+				self.lines.append(f"  {owned} = call {DRIFT_STRING_TYPE} @drift_string_retain({DRIFT_STRING_TYPE} {val})")
+				some_val = self._emit_variant_value(opt_ty, "Some", [owned])
+				self.lines.append(f"  br label {done_block}")
+				self.lines.append(f"{none_block[1:]}:")
+				none_val = self._emit_variant_value(opt_ty, "None", [])
+				self.lines.append(f"  br label {done_block}")
+				self.lines.append(f"{done_block[1:]}:")
+				self.lines.append(
+					f"  {dest} = phi {variant_llty} [ {some_val}, {some_block} ], [ {none_val}, {none_block} ]"
+				)
 				self.value_types[dest] = variant_llty
 		elif isinstance(instr, Phi):
 			# Already handled in _lower_phi.
@@ -2111,7 +2149,23 @@ class _FuncBuilder:
 			instr.call_sig.can_throw,
 		)
 		sym = function_ref_symbol(instr.fn_ref)
-		self.lines.append(f"  {dest} = bitcast {fn_ptr_ty} {_llvm_fn_sym(sym)} to {fn_ptr_ty}")
+		src_ptr_ty = None
+		callee_info = self.fn_infos.get(instr.fn_ref.fn_id)
+		if callee_info is not None and callee_info.signature is not None:
+			sig = callee_info.signature
+			if sig.param_type_ids is not None and sig.return_type_id is not None:
+				can_throw = bool(sig.declared_can_throw) if sig.declared_can_throw is not None else callee_info.declared_can_throw
+				src_ptr_ty = self._fn_ptr_lltype(list(sig.param_type_ids), sig.return_type_id, can_throw)
+		if src_ptr_ty == fn_ptr_ty:
+			self.value_map[instr.dest] = _llvm_fn_sym(sym)
+			self.value_types[_llvm_fn_sym(sym)] = fn_ptr_ty
+			self.value_types[dest] = fn_ptr_ty
+			return
+		if src_ptr_ty is None:
+			raise NotImplementedError(
+				f"LLVM codegen v1: missing signature metadata for fnptr const {sym}"
+			)
+		self.lines.append(f"  {dest} = bitcast {src_ptr_ty} {_llvm_fn_sym(sym)} to {fn_ptr_ty}")
 		self.value_types[dest] = fn_ptr_ty
 
 	def _resolve_call_target_symbol(self, fn_id: FunctionId, callee_info: FnInfo) -> tuple[str, bool]:
@@ -2298,7 +2352,9 @@ class _FuncBuilder:
 		if td.kind is TypeKind.STRUCT:
 			offset = 0
 			max_align = 1
-			for fty in td.param_types:
+			inst = self.type_table.get_struct_instance(ty_id)
+			field_types = inst.field_types if inst is not None else td.param_types
+			for fty in field_types:
 				fsz, fal = self._size_align_typeid(fty)
 				if fal > 1:
 					offset = ((offset + fal - 1) // fal) * fal
@@ -2396,7 +2452,10 @@ class _FuncBuilder:
 	def _optional_variant_type(self, inner_tid: TypeId) -> TypeId:
 		if self.type_table is None:
 			raise NotImplementedError("LLVM codegen v1: Optional lowering requires a TypeTable")
-		return self.type_table.new_optional(inner_tid)
+		base = self.type_table.get_variant_base(module_id="lang.core", name="Optional")
+		if base is None:
+			raise NotImplementedError("LLVM codegen v1: Optional<T> variant base is missing")
+		return self.type_table.ensure_instantiated(base, [inner_tid])
 
 	def _emit_variant_value(self, variant_ty: TypeId, ctor: str, args: list[str]) -> str:
 		layout = self._variant_layout(variant_ty)
@@ -2505,7 +2564,7 @@ class _FuncBuilder:
 						f"LLVM codegen v1: FnResult error type for {self.func.name} is {err_def.name}, expected Error"
 					)
 				ok_llty, ok_key = self._llvm_ok_type_for_typeid(ok_tid)
-				return self.module.fnresult_type(ok_key, ok_llty)
+				return self.module.fnresult_type(ok_key, ok_llty, ok_typeid=ok_tid)
 			if self.int_type_id is not None and ty_id == self.int_type_id:
 				return DRIFT_INT_TYPE
 			if self.float_type_id is not None and ty_id == self.float_type_id:
@@ -2587,7 +2646,7 @@ class _FuncBuilder:
 		if td.kind is TypeKind.SCALAR and td.name == "String":
 			return DRIFT_STRING_TYPE, key
 		if td.kind is TypeKind.SCALAR and td.name == "Bool":
-			return "i1", key
+			return "i8", key
 		if td.kind is TypeKind.SCALAR and td.name == "Byte":
 			return "i8", key
 		if td.kind is TypeKind.SCALAR and td.name == "Float":
@@ -2687,7 +2746,7 @@ class _FuncBuilder:
 		"""Return (ok_llty, fnresult_llty) for the given FnInfo."""
 		ok_tid, err_tid = self._fnresult_typeids_for_fn(info)
 		ok_llty, ok_key = self._llvm_ok_type_for_typeid(ok_tid)
-		fnres_llty = self.module.fnresult_type(ok_key, ok_llty)
+		fnres_llty = self.module.fnresult_type(ok_key, ok_llty, ok_typeid=ok_tid)
 		if self.type_table is not None:
 			err_def = self.type_table.get(err_tid)
 			if err_def.kind is not TypeKind.ERROR:
@@ -2707,10 +2766,16 @@ class _FuncBuilder:
 		"""Return a typed zero literal for the ok payload slot of a FnResult."""
 		if ok_llty == DRIFT_INT_TYPE:
 			return f"{DRIFT_INT_TYPE} 0"
+		if ok_llty == DRIFT_UINT_TYPE:
+			return f"{DRIFT_UINT_TYPE} 0"
+		if ok_llty == DRIFT_U64_TYPE:
+			return f"{DRIFT_U64_TYPE} 0"
 		if ok_llty == "i1":
 			return "i1 0"
 		if ok_llty == "i8":
 			return "i8 0"
+		if ok_llty == "double":
+			return "double 0.0"
 		if ok_llty.endswith("*"):
 			return f"{ok_llty} null"
 		# Structs/arrays and placeholder i8 can use zeroinitializer.
@@ -2767,8 +2832,8 @@ class _FuncBuilder:
 			self.value_types[dest] = "double"
 			return
 		if llty.endswith("*"):
-			# Typed pointer null. We use a bitcast to keep the pattern uniform.
-			self.lines.append(f"  {dest} = bitcast {llty} null to {llty}")
+			# Typed pointer null as an SSA value.
+			self.lines.append(f"  {dest} = select i1 1, {llty} null, {llty} null")
 			self.value_types[dest] = llty
 			return
 
@@ -2795,11 +2860,22 @@ class _FuncBuilder:
 			self.value_types[dest] = DRIFT_STRING_TYPE
 			return
 
-		if td.kind is TypeKind.STRUCT and td.param_types:
+		if td.kind is TypeKind.STRUCT:
+			inst = self.type_table.get_struct_instance(ty)
+			if inst is None:
+				raise NotImplementedError("LLVM codegen v1: struct zero requires instance metadata")
 			cur = "undef"
-			last_idx = len(td.param_types) - 1
-			for idx, fty in enumerate(td.param_types):
-				operand = self._zero_operand_for_typeid(fty)
+			last_idx = len(inst.field_types) - 1
+			for idx, fty in enumerate(inst.field_types):
+				store_llty = self._llvm_storage_type_for_typeid(fty)
+				if store_llty.endswith("*"):
+					operand = f"{store_llty} null"
+				elif store_llty == "double":
+					operand = "double 0.0"
+				elif store_llty.startswith("i"):
+					operand = f"{store_llty} 0"
+				else:
+					operand = f"{store_llty} zeroinitializer"
 				out = dest if idx == last_idx else self._fresh("zero_struct")
 				self.lines.append(f"  {out} = insertvalue {llty} {cur}, {operand}, {idx}")
 				cur = out
@@ -3014,9 +3090,17 @@ class _FuncBuilder:
 		self.lines.append(f"  {tmp1} = insertvalue {arr_llty} {tmp0}, {DRIFT_UINT_TYPE} {cap_const}, 1")
 		self.lines.append(f"  {tmp2} = insertvalue {arr_llty} {tmp1}, {elem_llty}* {tmp_data}, 2")
 		# Store elements
+		if self.type_table is None:
+			raise NotImplementedError("LLVM codegen v1: ArrayLit requires a TypeTable")
+		td = self.type_table.get(instr.elem_ty)
+		if not self.type_table.is_copy(instr.elem_ty) and td.kind is not TypeKind.VOID:
+			raise NotImplementedError("LLVM codegen v1: ArrayLit element type must be Copy in v1")
 		is_bool = self._is_bool_type(instr.elem_ty)
+		needs_copy = self.type_table.is_copy(instr.elem_ty) and not self.type_table.is_bitcopy(instr.elem_ty)
 		for idx, elem in enumerate(instr.elements):
 			elem_val = self._map_value(elem)
+			if needs_copy:
+				elem_val = self._emit_copy_value(instr.elem_ty, elem_val)
 			if is_bool:
 				elem_val = self._bool_to_storage(elem_val)
 			tmp_ptr = self._fresh("eltptr")
@@ -3024,9 +3108,7 @@ class _FuncBuilder:
 				f"  {tmp_ptr} = getelementptr inbounds {elem_llty}, {elem_llty}* {tmp_data}, {DRIFT_INT_TYPE} {idx}"
 			)
 			self.lines.append(f"  store {elem_llty} {elem_val}, {elem_llty}* {tmp_ptr}")
-		tmp3 = self._fresh("arrh3")
-		self.lines.append(f"  {tmp3} = insertvalue {arr_llty} {tmp2}, {DRIFT_UINT_TYPE} {count}, 0")
-		self.lines.append(f"  {dest} = {tmp3}")
+		self.lines.append(f"  {dest} = insertvalue {arr_llty} {tmp2}, {DRIFT_UINT_TYPE} {count}, 0")
 		self.value_types[dest] = arr_llty
 
 	def _lower_array_alloc(self, instr: ArrayAlloc) -> None:
@@ -3330,13 +3412,21 @@ class _FuncBuilder:
 				raise NotImplementedError("LLVM codegen v1: struct copy requires instance metadata")
 			current = "undef"
 			for idx, field_ty in enumerate(inst.field_types):
-				field_llty = self._llvm_type_for_typeid(field_ty)
-				field_val = self._fresh("copy_field")
-				self.lines.append(f"  {field_val} = extractvalue {llty} {value}, {idx}")
-				self.value_types[field_val] = field_llty
+				field_val_llty = self._llvm_type_for_typeid(field_ty)
+				field_store_llty = self._llvm_storage_type_for_typeid(field_ty)
+				field_raw = self._fresh("copy_field_raw")
+				self.lines.append(f"  {field_raw} = extractvalue {llty} {value}, {idx}")
+				self.value_types[field_raw] = field_store_llty
+				if field_store_llty == "i8" and field_val_llty == "i1":
+					field_val = self._bool_from_storage(field_raw)
+				else:
+					field_val = field_raw
 				copied = self._emit_copy_value(field_ty, field_val)
+				store_val = copied
+				if field_store_llty == "i8" and field_val_llty == "i1":
+					store_val = self._bool_to_storage(copied)
 				tmp = self._fresh("copy_ins")
-				self.lines.append(f"  {tmp} = insertvalue {llty} {current}, {field_llty} {copied}, {idx}")
+				self.lines.append(f"  {tmp} = insertvalue {llty} {current}, {field_store_llty} {store_val}, {idx}")
 				self.value_types[tmp] = llty
 				current = tmp
 			return current
@@ -3759,8 +3849,14 @@ class _FuncBuilder:
 
 	def _array_elem_layout(self, elem_ty: int, elem_llty: str) -> tuple[int, int]:
 		if self.type_table is None:
-			return self._sizeof(elem_llty), self._alignof(elem_llty)
-		return self._size_align_typeid(elem_ty)
+			size = self._sizeof(elem_llty)
+			if size == 0:
+				raise AssertionError("LLVM codegen v1: Array<ZST> unsupported")
+			return size, self._alignof(elem_llty)
+		size, align = self._size_align_typeid(elem_ty)
+		if size == 0:
+			raise AssertionError("LLVM codegen v1: Array<ZST> unsupported")
+		return size, align
 
 	def _sizeof(self, elem_llty: str) -> int:
 		# v1: isize/usize/pointers are word-sized; DriftString is two words.

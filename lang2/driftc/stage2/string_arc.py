@@ -229,10 +229,6 @@ def insert_string_arc(
 		elif isinstance(instr, M.Phi):
 			for val in instr.incoming.values():
 				yield val
-		elif isinstance(instr, M.OptionalIsSome):
-			yield instr.subject
-		elif isinstance(instr, M.OptionalValue):
-			yield instr.subject
 		elif isinstance(instr, M.ConstructResultOk):
 			if instr.value is not None:
 				yield instr.value
