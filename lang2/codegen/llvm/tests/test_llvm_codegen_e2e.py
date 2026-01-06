@@ -14,6 +14,7 @@ from typing import Optional
 import pytest
 
 from lang2.codegen.llvm import lower_module_to_llvm
+from lang2.codegen.llvm.test_utils import host_word_bits
 from lang2.driftc.checker import FnInfo
 from lang2.driftc.stage2 import BasicBlock, MirFunc, ConstInt, Return, ConstructResultOk, Call, ResultOk
 from lang2.driftc.stage4 import MirToSSA
@@ -73,7 +74,7 @@ def test_e2e_scalar_main_returns_42():
 	int_ty = table.ensure_int()
 	fn_infos = {fn_id: FnInfo(fn_id=fn_id, name="drift_main", declared_can_throw=False, return_type_id=int_ty)}
 
-	mod = lower_module_to_llvm({fn_id: mir}, {fn_id: ssa}, fn_infos)
+	mod = lower_module_to_llvm({fn_id: mir}, {fn_id: ssa}, fn_infos, word_bits=host_word_bits())
 	mod.emit_entry_wrapper("drift_main")
 	ir = mod.render()
 
@@ -118,8 +119,7 @@ def test_e2e_fnresult_callee_ok_path():
 		{callee_id: callee_mir, main_id: main_mir},
 		{callee_id: callee_ssa, main_id: main_ssa},
 		fn_infos,
-		type_table=table,
-	)
+		type_table=table, word_bits=host_word_bits())
 	mod.emit_entry_wrapper("drift_main")
 	ir = mod.render()
 

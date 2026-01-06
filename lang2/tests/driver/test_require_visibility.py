@@ -34,8 +34,8 @@ pub trait Show {
 	fn show(self: Self) -> Int
 }
 
-pub fn id<T>(x: T) nothrow -> T require T is Show {
-	return x;
+pub fn id<T>(var x: T) nothrow -> T require T is Show {
+	return move x;
 }
 """.lstrip(),
 	)

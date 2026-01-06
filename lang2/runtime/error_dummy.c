@@ -3,7 +3,7 @@
 #include <stdio.h>
 #include <string.h>
 
-struct DriftError* drift_error_new_dummy(int64_t code, struct DriftString event_fqn, struct DriftString key, struct DriftString payload) {
+struct DriftError* drift_error_new_dummy(drift_error_code_t code, struct DriftString event_fqn, struct DriftString key, struct DriftString payload) {
     struct DriftError* err = malloc(sizeof(struct DriftError));
     if (!err) {
         abort();
@@ -74,7 +74,7 @@ void drift_error_add_local_dv(struct DriftError* err, struct DriftString frame, 
     tgt->local_count = new_lcount;
 }
 
-int64_t drift_error_get_code(struct DriftError* err) {
+drift_error_code_t drift_error_get_code(struct DriftError* err) {
     if (!err) return 0;
     return err->code;
 }
@@ -126,7 +126,7 @@ void __exc_attrs_get_dv(struct DriftDiagnosticValue* out, const struct DriftErro
     *out = *val;
 }
 
-struct DriftError* drift_error_new_with_payload(int64_t code, struct DriftString event_fqn, struct DriftString key, struct DriftDiagnosticValue payload) {
+struct DriftError* drift_error_new_with_payload(drift_error_code_t code, struct DriftString event_fqn, struct DriftString key, struct DriftDiagnosticValue payload) {
     struct DriftError* err = drift_error_new_dummy(code, event_fqn, (struct DriftString){0, NULL}, (struct DriftString){0, NULL});
     if (!err) {
         return NULL;
@@ -135,7 +135,7 @@ struct DriftError* drift_error_new_with_payload(int64_t code, struct DriftString
     return err;
 }
 
-struct DriftError* drift_error_new(int64_t code, struct DriftString event_fqn) {
+struct DriftError* drift_error_new(drift_error_code_t code, struct DriftString event_fqn) {
     struct DriftError* err = drift_error_new_dummy(code, event_fqn, (struct DriftString){0, NULL}, (struct DriftString){0, NULL});
     return err;
 }

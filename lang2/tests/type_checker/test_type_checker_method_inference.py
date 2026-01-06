@@ -111,8 +111,7 @@ implement<T> Box<T> {
 
 fn main() -> String {
 	val b: Box<Int> = Box<type Int>(1);
-	val s: String = b.apply("s");
-	return s;
+	return b.apply("s");
 }
 """,
 		tmp_path,

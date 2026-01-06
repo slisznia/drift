@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from lang2.driftc.parser import parse_drift_workspace_to_hir
+from lang2.driftc.parser import parse_drift_workspace_to_hir, parse_drift_files_to_hir
 from lang2.driftc.module_lowered import flatten_modules
 from lang2.driftc.traits.world import TraitKey
 
@@ -49,7 +49,9 @@ fn main() nothrow -> Int{ return 0; }
 		tmp_path, files
 	)
 	assert diagnostics == []
-	scope = module_exports.get("m_main", {}).get("trait_scope", [])
+	scope_by_file = module_exports.get("m_main", {}).get("trait_scope_by_file", {})
+	expected_path = str(tmp_path / "mods" / "m_main" / "main.drift")
+	scope = scope_by_file.get(expected_path, [])
 	assert TraitKey(package_id=None, module="m_traits", name="Show") in scope
 
 
@@ -124,3 +126,59 @@ fn main() nothrow -> Int{ return 0; }
 	assert diagnostics
 	msgs = [d.message for d in diagnostics]
 	assert any("unknown module alias 'missing' in trait reference 'missing.Show'" in m for m in msgs)
+
+
+def test_use_trait_requires_workspace_pipeline_in_single_module_loader(tmp_path: Path) -> None:
+	mod_root = tmp_path / "mods"
+	file_a = mod_root / "a.drift"
+	file_b = mod_root / "b.drift"
+	_write_file(
+		file_a,
+		"""
+module m_main
+
+import m_traits;
+
+use trait m_traits.Show;
+
+fn main() nothrow -> Int{ return 0; }
+""",
+	)
+	_write_file(
+		file_b,
+		"""
+module m_main
+
+fn other() nothrow -> Int{ return 1; }
+""",
+	)
+	_module, _table, _exc, diagnostics = parse_drift_files_to_hir([file_a, file_b], package_id="test")
+	assert diagnostics
+	msgs = [d.message for d in diagnostics]
+	assert any("multi-file module build with 'use trait' requires the workspace pipeline" in m for m in msgs)
+
+
+def test_multi_file_single_module_loader_still_merges_without_use_trait(tmp_path: Path) -> None:
+	mod_root = tmp_path / "mods"
+	file_a = mod_root / "a.drift"
+	file_b = mod_root / "b.drift"
+	_write_file(
+		file_a,
+		"""
+module m_main
+
+fn a() nothrow -> Int{ return 1; }
+""",
+	)
+	_write_file(
+		file_b,
+		"""
+module m_main
+
+fn b() nothrow -> Int{ return 2; }
+""",
+	)
+	module, _table, _exc, diagnostics = parse_drift_files_to_hir([file_a, file_b], package_id="test")
+	assert diagnostics == []
+	names = {fn_id.name for fn_id in module.func_hirs.keys()}
+	assert {"a", "b"} <= names

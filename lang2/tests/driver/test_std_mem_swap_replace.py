@@ -33,8 +33,8 @@ export { swap, replace };
 pub fn swap<T>(a: T, b: T) nothrow -> Void {
 }
 
-pub fn replace<T>(place: T, value: T) nothrow -> T {
-	return place;
+pub fn replace<T>(var place: T, value: T) nothrow -> T {
+	return move place;
 }
 """.lstrip(),
 	)

@@ -20,14 +20,28 @@ module lib
 
 export { add };
 
-pub fn add(a: Int, b: Int) -> Int {
-	return a + b
+pub fn add(a: Int, b: Int) nothrow -> Int {
+	return a + b;
 }
 """.lstrip(),
 	)
 
 	pkg = tmp_path / "lib.dmp"
-	assert driftc_main(["-M", str(tmp_path), str(tmp_path / "lib" / "lib.drift"), "--emit-package", str(pkg)]) == 0
+	assert driftc_main(
+		[
+			"-M",
+			str(tmp_path),
+			str(tmp_path / "lib" / "lib.drift"),
+			"--emit-package",
+			str(pkg),
+			"--package-id",
+			"lib",
+			"--package-version",
+			"0.1.0",
+			"--package-target",
+			"test-target",
+		]
+	) == 0
 
 	# Compile a main module that imports `lib` from the package root.
 	_write_file(
@@ -38,7 +52,11 @@ module main
 import lib as lib;
 
 fn main() nothrow -> Int{
-	return lib.add(40, 2)
+	try {
+		return lib.add(40, 2);
+	} catch {
+		return 0;
+	}
 }
 """.lstrip(),
 	)
@@ -50,6 +68,8 @@ fn main() nothrow -> Int{
 			str(tmp_path),
 			"--package-root",
 			str(tmp_path),
+			"--allow-unsigned-from",
+			str(tmp_path),
 			str(tmp_path / "main.drift"),
 			"--emit-ir",
 			str(ir_path),
@@ -57,5 +77,4 @@ fn main() nothrow -> Int{
 	) == 0
 
 	ir = ir_path.read_text(encoding="utf-8")
-	assert "define i64 @lib::add" in ir
-
+	assert "lib::add__impl" in ir

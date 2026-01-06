@@ -57,6 +57,34 @@ class ConstInt(MInstr):
 
 
 @dataclass
+class ConstUint(MInstr):
+	"""dest = constant unsigned integer"""
+	dest: ValueId
+	value: int
+
+
+@dataclass
+class ConstUint64(MInstr):
+	"""dest = constant unsigned 64-bit integer"""
+	dest: ValueId
+	value: int
+
+
+@dataclass
+class IntFromUint(MInstr):
+	"""dest = cast Int from Uint (isize/usize conversion)."""
+	dest: ValueId
+	value: ValueId
+
+
+@dataclass
+class UintFromInt(MInstr):
+	"""dest = cast Uint from Int (usize/isize conversion)."""
+	dest: ValueId
+	value: ValueId
+
+
+@dataclass
 class ConstBool(MInstr):
 	"""dest = constant bool"""
 	dest: ValueId
@@ -106,6 +134,42 @@ class ZeroValue(MInstr):
 	- For aggregates, this should be constructed without calling into the runtime.
 	"""
 	dest: ValueId
+	ty: TypeId
+
+
+@dataclass
+class StringRetain(MInstr):
+	"""dest = retain(value) (String only)."""
+	dest: ValueId
+	value: ValueId
+
+
+@dataclass
+class StringRelease(MInstr):
+	"""release(value) (String only)."""
+	value: ValueId
+
+
+@dataclass
+class CopyValue(MInstr):
+	"""dest = copy(value) (semantic copy for Copy types)."""
+	dest: ValueId
+	value: ValueId
+	ty: TypeId
+
+
+@dataclass
+class DropValue(MInstr):
+	"""drop(value) (semantic drop for destructible values)."""
+	value: ValueId
+	ty: TypeId
+
+
+@dataclass
+class MoveOut(MInstr):
+	"""dest = move local (read local, then reset storage to zero)."""
+	dest: ValueId
+	local: LocalId
 	ty: TypeId
 
 
@@ -283,8 +347,8 @@ class VariantTag(MInstr):
 	"""
 	dest = tag(variant) as Uint (0..N-1).
 
-	MIR exposes the tag as a `Uint` (i64) for simplicity; LLVM lowers the stored
-	tag byte (i8) to i64 via zero-extension.
+	MIR exposes the tag as a `Uint` (usize) for simplicity; LLVM lowers the stored
+	tag byte (i8) to a word-sized integer via zero-extension.
 	"""
 
 	dest: ValueId
@@ -398,6 +462,70 @@ class ArrayLit(MInstr):
 
 
 @dataclass
+class ArrayAlloc(MInstr):
+	"""
+	dest = allocate Array buffer with len=0/cap and uninitialized elements.
+
+	`length` is reserved for future use and must be zero in v1; callers must set
+	the final length via ArraySetLen after initializing elements.
+	"""
+	dest: ValueId
+	elem_ty: TypeId
+	length: ValueId
+	cap: ValueId
+
+
+@dataclass
+class ArrayElemInit(MInstr):
+	"""array[index] = value (initialize uninitialized slot)."""
+	elem_ty: TypeId
+	array: ValueId
+	index: ValueId
+	value: ValueId
+
+
+@dataclass
+class ArrayElemInitUnchecked(MInstr):
+	"""array[index] = value (initialize slot without bounds checks)."""
+	elem_ty: TypeId
+	array: ValueId
+	index: ValueId
+	value: ValueId
+
+
+@dataclass
+class ArrayElemAssign(MInstr):
+	"""array[index] = value (drop old element, then init new)."""
+	elem_ty: TypeId
+	array: ValueId
+	index: ValueId
+	value: ValueId
+
+
+@dataclass
+class ArrayElemDrop(MInstr):
+	"""drop array[index] (destroy element in place)."""
+	elem_ty: TypeId
+	array: ValueId
+	index: ValueId
+
+
+@dataclass
+class ArrayDrop(MInstr):
+	"""drop all elements and free array backing store."""
+	elem_ty: TypeId
+	array: ValueId
+
+
+@dataclass
+class ArrayDup(MInstr):
+	"""dest = dup(array) with element-wise copy."""
+	dest: ValueId
+	elem_ty: TypeId
+	array: ValueId
+
+
+@dataclass
 class ArrayIndexLoad(MInstr):
 	"""dest = array[index] (typed array load)."""
 	dest: ValueId
@@ -413,6 +541,14 @@ class ArrayIndexStore(MInstr):
 	array: ValueId
 	index: ValueId
 	value: ValueId
+
+
+@dataclass
+class ArraySetLen(MInstr):
+	"""dest = array with updated len field."""
+	dest: ValueId
+	array: ValueId
+	length: ValueId
 
 
 @dataclass
@@ -740,6 +876,7 @@ class MirFunc:
 	fn_id: FunctionId
 	blocks: Dict[str, BasicBlock] = field(default_factory=dict)
 	entry: str = "entry"
+	local_types: Dict[str, TypeId] = field(default_factory=dict)
 
 	def __post_init__(self) -> None:
 		if self.name != function_symbol(self.fn_id):
@@ -755,11 +892,20 @@ __all__ = [
 	"UnaryOp",
 	"BinaryOp",
 	"ConstInt",
+	"ConstUint",
+	"ConstUint64",
+	"IntFromUint",
+	"UintFromInt",
 	"ConstBool",
 	"ConstString",
 	"ConstFloat",
 	"FnPtrConst",
 	"ZeroValue",
+	"StringRetain",
+	"StringRelease",
+	"CopyValue",
+	"DropValue",
+	"MoveOut",
 	"StringFromInt",
 	"StringFromBool",
 	"StringFromUint",
@@ -785,8 +931,16 @@ __all__ = [
 	"LoadIndex",
 	"StoreIndex",
 	"ArrayLit",
+	"ArrayAlloc",
+	"ArrayElemInit",
+	"ArrayElemInitUnchecked",
+	"ArrayElemAssign",
+	"ArrayElemDrop",
+	"ArrayDrop",
+	"ArrayDup",
 	"ArrayIndexLoad",
 	"ArrayIndexStore",
+	"ArraySetLen",
 	"ArrayLen",
 	"ArrayCap",
 	"Call",

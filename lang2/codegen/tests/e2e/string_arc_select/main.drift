@@ -1,0 +1,5 @@
+fn main() nothrow -> Int{
+    val cond = false;
+    val s = cond ? "a" : "bb";
+    return s.len;
+}

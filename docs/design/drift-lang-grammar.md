@@ -47,7 +47,7 @@ ConstDef     ::= "const" NAME ":" Ty "=" Expr TERMINATOR
 FnDef        ::= "fn" Ident TypeParams? "(" Params? ")" ReturnSig RequireClause? Block
 ReturnSig    ::= "nothrow"? "->" Ty
 Params       ::= Param ("," Param)*
-Param        ::= Ident ":" Ty
+Param        ::= ("var" | "val")? Ident ":" Ty
 
 StructDef    ::= "struct" NAME TypeParams? RequireClause? StructBody
 StructBody   ::= TupleStruct | BlockStruct
@@ -100,6 +100,9 @@ Notes:
 - `nothrow`, when present, appears immediately before `->` in `ReturnSig` for `FnDef`. `-> T nothrow` is invalid.
 - `nothrow`, when present, appears immediately before `->` in `FnReturn`. `-> T nothrow` is invalid.
 - Function types are not chainable; nesting is in the return type. `Fn(A) -> Fn(B) -> C` parses as `Fn(A) -> (Fn(B) -> C)`, and the other grouping is `Fn(Fn(A) -> Fn(B)) -> C`.
+- In MVP, trait-level `require` is restricted to conjunctions of `Self is Trait`
+  (supertraits). `or`/`not` are only allowed in function/struct `require` and
+  in trait guards.
 
 Statements and blocks:
 ```
@@ -217,7 +220,7 @@ CastExpr     ::= "cast" "<" Ty ">" "(" Expr ")"
 LambdaExpr   ::= "|" LambdaParams? "|" LambdaCaptures? LambdaReturns? "=>" LambdaBody
 LambdaReturns ::= "->" Ty
 LambdaParams ::= LambdaParam ("," LambdaParam)*
-LambdaParam  ::= NAME (":" Ty)?
+LambdaParam  ::= ("var" | "val")? NAME (":" Ty)?
 LambdaCaptures ::= "captures" "(" (LambdaCaptureItem ("," LambdaCaptureItem)*)? ")"
 LambdaCaptureItem ::= "copy" NAME | "move" NAME | "&" "mut"? NAME | NAME
 LambdaBody   ::= Expr | ValueBlock | Block

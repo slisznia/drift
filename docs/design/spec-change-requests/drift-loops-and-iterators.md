@@ -1,4 +1,7 @@
-# Drift Loops and Iterators — Integrated Spec (with Grammar & Iterable)
+# Drift Loops and Iterators — Proposal (with Grammar & Iterable)
+
+Status: proposal only. This document is not canonical until the grammar and
+trait model decisions (generic traits vs associated types) are finalized.
 
 ## 1. Goals
 
@@ -12,7 +15,7 @@ This replaces all C-style loops. There is **no** `for (init; cond; step)`.
 
 - Favor clear ownership and borrowing over implicit mutation.
 - Make iteration a first-class capability (`Iterable` + `Iterator`), not a hard-coded special form.
-- Express “this thing can be iterated” as a trait capability, consistent with `Debuggable`, `Destructible`, etc.
+- Express “this thing can be iterated” as a trait capability, consistent with `Debug`, `Destructible`, etc.
 - Keep the `for` surface syntax simple while letting the library define new iteration strategies via traits.
 
 All `for` loops are implemented in terms of a unified trait pair:
@@ -48,7 +51,9 @@ module std.prelude
 export std.iter.{Iterator, Iterable}
 ```
 
-The compiler implicitly imports `std.prelude` at the top of every compilation unit (unless a future strict mode disables this), so user code does **not** need to write:
+The compiler does **not** implicitly import `std.prelude`. Keep iteration traits
+explicit for now, or re-export them from `lang.core` if we decide to expand the
+single implicit prelude later. Until then, user code must write:
 
 ```drift
 import std.iter.Iterable
@@ -67,7 +72,7 @@ The main spec (Chapter 8) will state explicitly:
 
 ```drift
 trait Iterator<Item> {
-    fn next(self: &mut Self) -> Optional<T>
+    fn next(self: &mut Self) -> Optional<Item>
 }
 ```
 
@@ -460,7 +465,7 @@ Otherwise, `for pattern in expr` is ill-typed.
 
 1. **Add/rename the trait from `IntoIterator` to `Iterable`**
 
-   - In the chapter where you list canonical traits (likely near `Debuggable`, `Destructible`), add:
+   - In the chapter where you list canonical traits (likely near `Debug`, `Destructible`), add:
 
      ```drift
      trait Iterable<Item, Iter>
@@ -472,9 +477,10 @@ Otherwise, `for pattern in expr` is ill-typed.
 
    - If `IntoIterator` was previously mentioned, rename those mentions to `Iterable` and adjust any examples accordingly.
 
-2. **Update prelude export**
+2. **Update prelude/export policy**
 
-   - In the prelude description (where you talk about `std.prelude`), ensure it exports:
+   - Do not add an implicit `std.prelude`. Keep iteration traits explicit for now.
+   - If we later expand the single implicit prelude, re-export from `lang.core` instead:
 
      ```drift
      export std.iter.{Iterator, Iterable}

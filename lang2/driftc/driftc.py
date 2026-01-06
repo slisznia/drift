@@ -23,6 +23,7 @@ import argparse
 import copy
 import heapq
 import json
+import struct
 from enum import Enum
 import sys
 import shutil
@@ -38,6 +39,15 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
 	sys.path.insert(0, str(ROOT))
 
+_TEST_TARGET_WORD_BITS: int | None = None
+
+
+def _target_word_bits(target_word_bits: int | None) -> int:
+	"""Return the configured target word size in bits (no host fallback)."""
+	if target_word_bits is None:
+		raise ValueError("target word size is required; pass --target-word-bits")
+	return target_word_bits
+
 from lang2.driftc import stage1 as H
 from lang2.driftc.stage1 import normalize_hir
 from lang2.driftc.stage1 import closures as C
@@ -47,6 +57,7 @@ from lang2.driftc.stage1.call_info import CallInfo, CallSig, CallTarget, CallTar
 from lang2.driftc.stage1.lambda_validate import validate_lambdas_non_retaining
 from lang2.driftc.stage1.non_retaining_analysis import analyze_non_retaining_params
 from lang2.driftc.stage2 import HIRToMIR, make_builder, mir_nodes as M
+from lang2.driftc.stage2.string_arc import insert_string_arc
 from lang2.driftc.stage3.throw_summary import ThrowSummaryBuilder
 from lang2.driftc.stage4 import run_throw_checks
 from lang2.driftc.stage4 import MirToSSA
@@ -75,13 +86,15 @@ from lang2.driftc.core.function_id import (
 from lang2.driftc.traits.enforce import collect_used_type_keys, enforce_struct_requires, enforce_fn_requires
 from lang2.driftc.traits.linked_world import build_require_env, link_trait_worlds, LinkedWorld, RequireEnv
 from lang2.driftc.traits.world import TypeKey, type_key_from_typeid
+from lang2.driftc.traits.solver import ProofStatus
 from lang2.codegen.llvm import lower_module_to_llvm
+from lang2.codegen.llvm.test_utils import host_word_bits
 from lang2.drift_core.runtime import get_runtime_sources
 from lang2.driftc.parser import parse_drift_to_hir, parse_drift_files_to_hir, parse_drift_workspace_to_hir
 from lang2.driftc.module_lowered import flatten_modules
 from lang2.driftc.type_resolver import resolve_program_signatures
 from lang2.driftc.core.type_resolve_common import resolve_opaque_type
-from lang2.driftc.type_checker import TypeChecker
+from lang2.driftc.type_checker import TypeChecker, ThunkKind
 from lang2.driftc.method_registry import CallableRegistry, CallableSignature, Visibility, SelfMode
 from lang2.driftc.impl_index import GlobalImplIndex, find_impl_method_conflicts
 from lang2.driftc.trait_index import GlobalTraitImplIndex, GlobalTraitIndex, validate_trait_scopes
@@ -156,6 +169,8 @@ def _remap_mir_func_typeids(fn: M.MirFunc, tid_map: dict[int, int]) -> None:
 		for instr in block.instructions:
 			if isinstance(instr, M.ZeroValue):
 				instr.ty = int(_remap_tid(tid_map, instr.ty))  # type: ignore[assignment]
+			elif isinstance(instr, (M.CopyValue, M.DropValue)):
+				instr.ty = int(_remap_tid(tid_map, instr.ty))  # type: ignore[assignment]
 			elif isinstance(instr, (M.AddrOfArrayElem, M.LoadRef, M.StoreRef)):
 				instr.inner_ty = int(_remap_tid(tid_map, instr.inner_ty))  # type: ignore[assignment]
 			elif isinstance(instr, M.ConstructStruct):
@@ -173,7 +188,21 @@ def _remap_mir_func_typeids(fn: M.MirFunc, tid_map: dict[int, int]) -> None:
 			elif isinstance(instr, M.AddrOfField):
 				instr.struct_ty = int(_remap_tid(tid_map, instr.struct_ty))  # type: ignore[assignment]
 				instr.field_ty = int(_remap_tid(tid_map, instr.field_ty))  # type: ignore[assignment]
-			elif isinstance(instr, (M.ArrayLit, M.ArrayIndexLoad, M.ArrayIndexStore)):
+			elif isinstance(
+				instr,
+				(
+					M.ArrayLit,
+					M.ArrayAlloc,
+					M.ArrayElemInit,
+					M.ArrayElemInitUnchecked,
+					M.ArrayElemAssign,
+					M.ArrayElemDrop,
+					M.ArrayDrop,
+					M.ArrayDup,
+					M.ArrayIndexLoad,
+					M.ArrayIndexStore,
+				),
+			):
 				instr.elem_ty = int(_remap_tid(tid_map, instr.elem_ty))  # type: ignore[assignment]
 
 
@@ -936,6 +965,7 @@ def compile_stubbed_funcs(
 	exc_env: Mapping[str, int] | None = None,
 	module_exports: Mapping[str, dict[str, object]] | None = None,
 	module_deps: Mapping[str, set[str]] | None = None,
+	origin_by_fn_id: Mapping[FunctionId, Path] | None = None,
 	package_id: str | None = None,
 	generic_templates_by_id: Mapping[FunctionId, H.HBlock] | None = None,
 	generic_templates_by_key: Mapping[FunctionKey, H.HBlock] | None = None,
@@ -972,6 +1002,7 @@ def compile_stubbed_funcs(
 	    use parsed/type-checked signatures to derive throw intent; this parameter
 	    lets tests mimic that shape without a full parser/type checker.
 	  exc_env: optional exception environment (event name -> code) passed to HIRToMIR.
+	  origin_by_fn_id: optional mapping of FunctionId -> source path for file-scoped trait lookup.
 	  generic_templates_by_id: optional legacy map of FunctionId -> TemplateHIR (from packages).
 	  generic_templates_by_key: optional map of FunctionKey -> TemplateHIR (from packages).
 	  template_keys_by_fn_id: optional map of FunctionId -> FunctionKey (package templates).
@@ -1146,6 +1177,7 @@ def compile_stubbed_funcs(
 		function_keys_by_fn_id.update(template_keys_by_fn_id)
 	requires_by_fn_id: dict[FunctionId, object] = {}
 	trait_worlds = getattr(shared_type_table, "trait_worlds", {}) if shared_type_table is not None else {}
+	trait_world_diags: list[Diagnostic] = []
 	if shared_type_table is not None and (external_trait_defs or external_impl_metas):
 		from lang2.driftc.traits.world import TraitWorld, ImplDef, type_key_from_expr
 
@@ -1153,6 +1185,17 @@ def compile_stubbed_funcs(
 			trait_worlds = {}
 		default_package = getattr(shared_type_table, "package_id", None)
 		module_packages = getattr(shared_type_table, "module_packages", None)
+		def _module_package(mod: str | None) -> str | None:
+			if mod is None:
+				return default_package
+			return (module_packages or {}).get(mod, default_package)
+
+		def _trait_label(trait_key: object) -> str:
+			mod = getattr(trait_key, "module", None)
+			name = getattr(trait_key, "name", "")
+			base = f"{mod}.{name}" if mod else name
+			pkg = getattr(trait_key, "package_id", None)
+			return f"{pkg}::{base}" if pkg else base
 
 		def _ensure_world(mod: str | None) -> TraitWorld:
 			key = mod or "main"
@@ -1174,6 +1217,9 @@ def compile_stubbed_funcs(
 			for impl in external_impl_metas:
 				if getattr(impl, "trait_key", None) is None:
 					continue
+				impl_pkg = _module_package(getattr(impl, "def_module", None))
+				if impl_pkg != default_package:
+					continue
 				target_expr = getattr(impl, "target_expr", None)
 				if target_expr is None:
 					continue
@@ -1185,6 +1231,26 @@ def compile_stubbed_funcs(
 					module_packages=module_packages,
 				)
 				head_key = target_key.head()
+				local_pkg = default_package
+				trait_pkg = getattr(impl.trait_key, "package_id", None) or local_pkg
+				target_pkg = getattr(head_key, "package_id", None) or local_pkg
+				def _is_local(pkg: str | None) -> bool:
+					return pkg is None or pkg == local_pkg
+				if not _is_local(trait_pkg) and not _is_local(target_pkg):
+					trait_world_diags.append(
+						Diagnostic(
+							message=(
+								"orphan trait impl is not allowed: "
+								f"trait '{_trait_label(impl.trait_key)}' and "
+								f"type '{head_key.module}.{head_key.name}' are outside the current package"
+							),
+							code="E-IMPL-ORPHAN",
+							severity="error",
+							phase="typecheck",
+							span=getattr(impl, "loc", None),
+						)
+					)
+					continue
 				existing_ids = world.impls_by_trait_target.get((impl.trait_key, head_key), [])
 				dup = False
 				if existing_ids:
@@ -1230,7 +1296,7 @@ def compile_stubbed_funcs(
 				name = base
 		return name
 
-	local_package_id = package_id or "__local__"
+	local_package_id = package_id
 	default_package = getattr(shared_type_table, "package_id", None) or package_id
 	module_packages = getattr(shared_type_table, "module_packages", None)
 	for fn_id, sig in signatures_by_id.items():
@@ -1307,6 +1373,7 @@ def compile_stubbed_funcs(
 	trait_index = None
 	trait_impl_index = None
 	trait_scope_by_module: dict[str, list] | None = None
+	trait_scope_by_file: dict[str, list] | None = None
 	if module_exports is not None:
 		impl_index = GlobalImplIndex.from_module_exports(
 			module_exports=dict(module_exports),
@@ -1337,14 +1404,25 @@ def compile_stubbed_funcs(
 			for module_id in external_missing_impl_modules:
 				trait_impl_index.mark_missing_module(module_ids.setdefault(module_id, len(module_ids)))
 		trait_scope_by_module = {}
+		trait_scope_by_file = {}
 		for mod, exp in module_exports.items():
 			if isinstance(exp, dict):
 				scope = exp.get("trait_scope", [])
 				if isinstance(scope, list):
 					trait_scope_by_module[mod] = scope
+				scope_by_file = exp.get("trait_scope_by_file", {})
+				if isinstance(scope_by_file, dict):
+					for path, traits in scope_by_file.items():
+						if isinstance(path, str) and isinstance(traits, list):
+							trait_scope_by_file[path] = list(traits)
+		if not trait_scope_by_file:
+			trait_scope_by_file = None
 	typed_fns_by_id: dict[FunctionId, object] = {}
 	type_diags: list[Diagnostic] = []
+	if trait_world_diags:
+		type_diags.extend(trait_world_diags)
 	typecheck_ok_by_fn: dict[FunctionId, bool] = {}
+	deferred_guard_diags_by_template: dict[FunctionKey, dict[tuple[object, str], list[Diagnostic]]] = {}
 	def _has_error(diags: list[Diagnostic]) -> bool:
 		return any(getattr(d, "severity", None) == "error" for d in diags)
 	visible_module_names_by_name: dict[str, set[str]] = {}
@@ -1416,8 +1494,17 @@ def compile_stubbed_funcs(
 	for fn_id, hir_norm in normalized_hirs_by_id.items():
 		sig = signatures_by_id.get(fn_id)
 		param_types: dict[str, "TypeId"] = {}
+		param_mutable: dict[str, bool] | None = None
 		if sig is not None and sig.param_names is not None and sig.param_type_ids is not None:
 			param_types = {pname: pty for pname, pty in zip(sig.param_names, sig.param_type_ids)}
+		if sig is not None and sig.param_names is not None and sig.param_mutable is not None:
+			if len(sig.param_names) == len(sig.param_mutable):
+				param_mutable = {pname: bool(flag) for pname, flag in zip(sig.param_names, sig.param_mutable)}
+		current_file = None
+		if origin_by_fn_id is not None and fn_id in origin_by_fn_id:
+			current_file = str(origin_by_fn_id.get(fn_id))
+		elif sig is not None:
+			current_file = Span.from_loc(getattr(sig, "loc", None)).file
 		mod_name = getattr(fn_id, "module", None) or "main"
 		current_mod = _module_id_with_visibility(mod_name)
 		visible_mods = None
@@ -1429,6 +1516,7 @@ def compile_stubbed_funcs(
 			fn_id,
 			hir_norm,
 			param_types=param_types,
+			param_mutable=param_mutable,
 			return_type=sig.return_type_id if sig is not None else None,
 			signatures_by_id=signatures_by_id,
 			function_keys_by_fn_id=function_keys_by_fn_id,
@@ -1437,14 +1525,21 @@ def compile_stubbed_funcs(
 			trait_index=trait_index,
 			trait_impl_index=trait_impl_index,
 			trait_scope_by_module=trait_scope_by_module,
+			trait_scope_by_file=trait_scope_by_file,
 			linked_world=linked_world,
 			require_env=require_env,
 			visible_modules=visible_mods,
 			current_module=current_mod,
 			visibility_provenance=visibility_provenance_by_id,
+			current_file=current_file,
 		)
 		type_diags.extend(result.diagnostics)
 		typecheck_ok_by_fn[fn_id] = not _has_error(result.diagnostics)
+		deferred = getattr(result, "deferred_guard_diags", None)
+		if deferred:
+			fn_key = function_keys_by_fn_id.get(fn_id) if function_keys_by_fn_id else None
+			if fn_key is not None:
+				deferred_guard_diags_by_template[fn_key] = dict(deferred)
 		typed_fns_by_id[fn_id] = result.typed_fn
 	if type_checker.defaulted_phase_count() != 0:
 		raise AssertionError(
@@ -1518,6 +1613,11 @@ def compile_stubbed_funcs(
 
 	def _inst_hash(key: InstantiationKey) -> str:
 		return instantiation_key_hash(key)
+
+	def _diag_key(diag: Diagnostic) -> tuple[str, tuple[object, object, object, object, object]]:
+		span = getattr(diag, "span", None) or Span()
+		span_key = (span.file, span.line, span.column, span.end_line, span.end_column)
+		return (diag.message, span_key)
 
 	@dataclass
 	class InstantiationHandle:
@@ -1677,10 +1777,20 @@ def compile_stubbed_funcs(
 			visible = visible_module_names_by_name.get(mod_name, {mod_name})
 			visible_mods = tuple(sorted(_module_id_with_visibility(m) for m in visible))
 		_sync_visibility_provenance()
+		current_file = None
+		if origin_by_fn_id is not None and template_fn_id in origin_by_fn_id:
+			current_file = str(origin_by_fn_id.get(template_fn_id))
+		elif sig is not None:
+			current_file = Span.from_loc(getattr(sig, "loc", None)).file
+		param_mutable = None
+		if sig is not None and sig.param_names is not None and sig.param_mutable is not None:
+			if len(sig.param_names) == len(sig.param_mutable):
+				param_mutable = {pname: bool(flag) for pname, flag in zip(sig.param_names, sig.param_mutable)}
 		inst_result = type_checker.check_function(
 			inst_fn_id,
 			inst_hir,
 			param_types={pname: pty for pname, pty in zip(sig.param_names or [], inst_param_ids)},
+			param_mutable=param_mutable,
 			return_type=inst_ret_id,
 			signatures_by_id=signatures_by_id,
 			function_keys_by_fn_id=function_keys_by_fn_id,
@@ -1689,13 +1799,34 @@ def compile_stubbed_funcs(
 			trait_index=trait_index,
 			trait_impl_index=trait_impl_index,
 			trait_scope_by_module=trait_scope_by_module,
+			trait_scope_by_file=trait_scope_by_file,
 			linked_world=linked_world,
 			require_env=require_env,
 			visible_modules=visible_mods,
 			current_module=current_mod,
 			visibility_provenance=visibility_provenance_by_id,
+			current_file=current_file,
 		)
 		type_diags.extend(inst_result.diagnostics)
+		deferred = deferred_guard_diags_by_template.get(template_key)
+		guard_outcomes = getattr(inst_result, "guard_outcomes", None)
+		if deferred and isinstance(guard_outcomes, dict):
+			existing = {_diag_key(d) for d in inst_result.diagnostics}
+			for guard_key, status in guard_outcomes.items():
+				branch = None
+				if status is ProofStatus.PROVED:
+					branch = "then"
+				elif status is ProofStatus.REFUTED:
+					branch = "else"
+				if branch is None:
+					continue
+				for diag in deferred.get((guard_key, branch), []):
+					key = _diag_key(diag)
+					if key in existing:
+						continue
+					inst_result.diagnostics.append(diag)
+					type_diags.append(diag)
+					existing.add(key)
 		typed_fns_by_id[inst_fn_id] = inst_result.typed_fn
 		_queue_instantiations(inst_result.typed_fn)
 		handle.status = "emitted"
@@ -2045,6 +2176,7 @@ def compile_stubbed_funcs(
 				),
 			)
 			lower.lower_function_body(hir_norm)
+			builder.func.local_types = dict(lower._local_types)
 			for spec in lower.synth_sig_specs():
 				if spec.kind == "hidden_lambda":
 					continue
@@ -2327,10 +2459,20 @@ def compile_stubbed_funcs(
 			visible = visible_module_names_by_name.get(mod_name, {mod_name})
 			visible_mods = tuple(sorted(_module_id_with_visibility(m) for m in visible))
 		_sync_visibility_provenance()
+		current_file = None
+		if origin_by_fn_id is not None and spec.origin_fn_id is not None:
+			current_file = str(origin_by_fn_id.get(spec.origin_fn_id))
+		if current_file is None:
+			origin_sig = signatures_by_id.get(spec.origin_fn_id) if spec.origin_fn_id is not None else None
+			current_file = Span.from_loc(getattr(origin_sig, "loc", None)).file if origin_sig is not None else None
+		param_mutable = None
+		if spec.lambda_expr is not None:
+			param_mutable = {p.name: bool(getattr(p, "is_mutable", False)) for p in spec.lambda_expr.params}
 		hidden_typed = type_checker.check_function(
 			fn_id=spec.fn_id,
 			body=lambda_body,
 			param_types=param_types,
+			param_mutable=param_mutable,
 			return_type=spec.return_type_id,
 			signatures_by_id=signatures_by_id,
 			function_keys_by_fn_id=function_keys_by_fn_id,
@@ -2339,12 +2481,14 @@ def compile_stubbed_funcs(
 			trait_index=trait_index,
 			trait_impl_index=trait_impl_index,
 			trait_scope_by_module=trait_scope_by_module,
+			trait_scope_by_file=trait_scope_by_file,
 			linked_world=linked_world,
 			require_env=require_env,
 			visible_modules=visible_mods,
 			current_module=current_mod,
 			visibility_provenance=visibility_provenance_by_id,
 			visibility_imports=None,
+			current_file=current_file,
 			preseed_binding_types=preseed_binding_types,
 			preseed_binding_names=preseed_binding_names,
 			preseed_binding_mutable=preseed_binding_mutable,
@@ -2429,15 +2573,20 @@ def compile_stubbed_funcs(
 		_register_synth_signature(spec.thunk_fn_id, sig)
 		builder = make_builder(spec.thunk_fn_id)
 		builder.func.params = list(param_names)
-		call_dest: M.ValueId | None
-		if shared_type_table is not None and shared_type_table.is_void(spec.return_type):
-			call_dest = None
+		if spec.kind is ThunkKind.OK_WRAP:
+			call_dest: M.ValueId | None
+			if shared_type_table is not None and shared_type_table.is_void(spec.return_type):
+				call_dest = None
+			else:
+				call_dest = builder.new_temp()
+			builder.emit(M.Call(dest=call_dest, fn_id=spec.target_fn_id, args=param_names, can_throw=False))
+			ok_dest = builder.new_temp()
+			builder.emit(M.ConstructResultOk(dest=ok_dest, value=call_dest))
+			builder.set_terminator(M.Return(value=ok_dest))
 		else:
 			call_dest = builder.new_temp()
-		builder.emit(M.Call(dest=call_dest, fn_id=spec.target_fn_id, args=param_names, can_throw=False))
-		ok_dest = builder.new_temp()
-		builder.emit(M.ConstructResultOk(dest=ok_dest, value=call_dest))
-		builder.set_terminator(M.Return(value=ok_dest))
+			builder.emit(M.Call(dest=call_dest, fn_id=spec.target_fn_id, args=param_names, can_throw=True))
+			builder.set_terminator(M.Return(value=call_dest))
 		mir_funcs_by_id[spec.thunk_fn_id] = builder.func
 
 	for spec in type_checker.lambda_fn_specs():
@@ -2460,10 +2609,22 @@ def compile_stubbed_funcs(
 			visible = visible_module_names_by_name.get(spec.fn_id.module or "main", {spec.fn_id.module or "main"})
 			visible_mods = tuple(sorted(_module_id_with_visibility(m) for m in visible))
 		_sync_visibility_provenance()
+		current_file = None
+		if origin_by_fn_id is not None and spec.origin_fn_id is not None:
+			current_file = str(origin_by_fn_id.get(spec.origin_fn_id))
+		if current_file is None:
+			origin_sig = signatures_by_id.get(spec.origin_fn_id) if spec.origin_fn_id is not None else None
+			current_file = Span.from_loc(getattr(origin_sig, "loc", None)).file if origin_sig is not None else None
+		if current_file is None:
+			current_file = Span.from_loc(getattr(spec.lambda_expr, "loc", None)).file
+		param_mutable = None
+		if spec.lambda_expr is not None:
+			param_mutable = {p.name: bool(getattr(p, "is_mutable", False)) for p in spec.lambda_expr.params}
 		lambda_result = type_checker.check_function(
 			fn_id=spec.fn_id,
 			body=lambda_body,
 			param_types=param_types,
+			param_mutable=param_mutable,
 			return_type=spec.return_type,
 			signatures_by_id=signatures_by_id,
 			function_keys_by_fn_id=function_keys_by_fn_id,
@@ -2472,12 +2633,14 @@ def compile_stubbed_funcs(
 			trait_index=trait_index,
 			trait_impl_index=trait_impl_index,
 			trait_scope_by_module=trait_scope_by_module,
+			trait_scope_by_file=trait_scope_by_file,
 			linked_world=linked_world,
 			require_env=require_env,
 			visible_modules=visible_mods,
 			current_module=current_mod,
 			visibility_provenance=visibility_provenance_by_id,
 			visibility_imports=None,
+			current_file=current_file,
 		)
 		if lambda_result.diagnostics:
 			type_diags.extend(lambda_result.diagnostics)
@@ -2554,6 +2717,16 @@ def compile_stubbed_funcs(
 		mir_funcs_by_id[spec.wrapper_fn_id] = builder.func
 
 	_validate_mir_call_invariants(mir_funcs_by_id)
+	_validate_mir_array_alloc_invariants(mir_funcs_by_id)
+	if shared_type_table is not None:
+		_validate_mir_array_copy_invariants(mir_funcs_by_id, shared_type_table)
+	if shared_type_table is not None:
+		for fn_id, func in mir_funcs_by_id.items():
+			mir_funcs_by_id[fn_id] = insert_string_arc(
+				func,
+				type_table=shared_type_table,
+				fn_infos=checked.fn_infos_by_id,
+			)
 	_assert_signature_map_split(
 		base_signatures_by_id=base_signatures_by_id,
 		derived_signatures_by_id=derived_signatures_by_id,
@@ -2616,6 +2789,7 @@ def compile_to_llvm_ir_for_tests(
 	type_table: "TypeTable | None" = None,
 	module_exports: Mapping[str, dict[str, object]] | None = None,
 	module_deps: Mapping[str, set[str]] | None = None,
+	origin_by_fn_id: Mapping[FunctionId, Path] | None = None,
 	prelude_enabled: bool = True,
 	emit_instantiation_index: Path | None = None,
 	enforce_entrypoint: bool = False,
@@ -2657,6 +2831,7 @@ def compile_to_llvm_ir_for_tests(
 		exc_env=exc_env,
 		module_exports=module_exports,
 		module_deps=module_deps,
+		origin_by_fn_id=origin_by_fn_id,
 		return_checked=True,
 		build_ssa=True,
 		return_ssa=True,
@@ -2743,6 +2918,7 @@ def compile_to_llvm_ir_for_tests(
 		type_table=checked.type_table,
 		rename_map=rename_map,
 		argv_wrapper=argv_wrapper,
+		word_bits=host_word_bits(),
 	)
 	# If the entry is already called "main" and has no argv wrapper, do not emit
 	# a wrapper that would call itself; otherwise emit a thin OS wrapper that
@@ -2818,6 +2994,75 @@ def _validate_mir_call_invariants(funcs: Mapping[FunctionId, M.MirFunc]) -> None
 						raise AssertionError(
 							f"MIR CallIndirect missing can_throw in {function_symbol(fn_id)}"
 						)
+
+
+def _validate_mir_array_copy_invariants(
+	funcs: Mapping[FunctionId, M.MirFunc],
+	type_table: TypeTable,
+) -> None:
+	"""Ensure array ops observe CopyValue/MoveOut invariants for Copy elements."""
+	for fn_id, func in funcs.items():
+		defs: dict[M.ValueId, M.MirInstr] = {}
+		for block in func.blocks.values():
+			for instr in block.instructions:
+				dest = getattr(instr, "dest", None)
+				if isinstance(dest, str):
+					defs[dest] = instr
+		for block in func.blocks.values():
+			instrs = block.instructions
+			for idx, instr in enumerate(instrs):
+				if isinstance(instr, M.ArrayIndexLoad):
+					elem_ty = instr.elem_ty
+					if type_table.is_copy(elem_ty) and not type_table.is_bitcopy(elem_ty):
+						if idx + 1 >= len(instrs):
+							raise AssertionError(
+								f"MIR invariant violation: ArrayIndexLoad in {function_symbol(fn_id)} must be followed by CopyValue for Copy element type"
+							)
+						next_instr = instrs[idx + 1]
+						if not isinstance(next_instr, M.CopyValue) or next_instr.value != instr.dest:
+							raise AssertionError(
+								f"MIR invariant violation: ArrayIndexLoad in {function_symbol(fn_id)} must be immediately wrapped in CopyValue for Copy element type"
+							)
+				if isinstance(instr, (M.ArrayElemInit, M.ArrayElemInitUnchecked, M.ArrayElemAssign, M.ArrayIndexStore)):
+					elem_ty = instr.elem_ty
+					if type_table.is_copy(elem_ty) and not type_table.is_bitcopy(elem_ty):
+						src = defs.get(instr.value)
+						if isinstance(src, (M.CopyValue, M.MoveOut)):
+							continue
+						if isinstance(
+							src,
+							(
+								M.LoadLocal,
+								M.LoadRef,
+								M.ArrayIndexLoad,
+								M.StructGetField,
+								M.VariantGetField,
+							),
+						):
+							raise AssertionError(
+								f"MIR invariant violation: array store in {function_symbol(fn_id)} must use CopyValue or MoveOut for Copy element type"
+							)
+
+
+def _validate_mir_array_alloc_invariants(funcs: Mapping[FunctionId, M.MirFunc]) -> None:
+	"""Ensure ArrayAlloc length is zero in v1 (length must be set via ArraySetLen)."""
+	for fn_id, func in funcs.items():
+		defs: dict[M.ValueId, M.MirInstr] = {}
+		for block in func.blocks.values():
+			for instr in block.instructions:
+				dest = getattr(instr, "dest", None)
+				if isinstance(dest, str):
+					defs[dest] = instr
+		for block in func.blocks.values():
+			for instr in block.instructions:
+				if not isinstance(instr, M.ArrayAlloc):
+					continue
+				src = defs.get(instr.length)
+				if isinstance(src, (M.ConstUint, M.ConstInt, M.ConstUint64)) and src.value == 0:
+					continue
+				raise AssertionError(
+					f"MIR invariant violation: ArrayAlloc in {function_symbol(fn_id)} must use length=0 in v1"
+				)
 
 
 __all__ = ["compile_stubbed_funcs", "compile_to_llvm_ir_for_tests"]
@@ -2914,6 +3159,11 @@ def main(argv: list[str] | None = None) -> int:
 	parser.add_argument("--package-id", type=str, help="Package identity (required with --emit-package)")
 	parser.add_argument("--package-version", type=str, help="Package version (SemVer; required with --emit-package)")
 	parser.add_argument("--package-target", type=str, help="Target triple (required with --emit-package)")
+	parser.add_argument(
+		"--target-word-bits",
+		type=int,
+		help="Target pointer width in bits (required for codegen; e.g. 32 or 64)",
+	)
 	parser.add_argument("--package-build-epoch", type=str, default=None, help="Optional build epoch label (non-semantic)")
 	parser.add_argument(
 		"--json",
@@ -2934,6 +3184,8 @@ def main(argv: list[str] | None = None) -> int:
 		help="Disable the implicit import of lang.core (e.g. println); import/qualify explicitly",
 	)
 	args = parser.parse_args(argv)
+	if args.target_word_bits is None and _TEST_TARGET_WORD_BITS is not None:
+		args.target_word_bits = _TEST_TARGET_WORD_BITS
 
 	source_paths: list[Path] = list(args.source)
 	source_path = source_paths[0]
@@ -3187,14 +3439,19 @@ def main(argv: list[str] | None = None) -> int:
 				if isinstance(mid, str):
 					external_module_packages.setdefault(mid, pkg_id)
 
+	package_id = str(args.package_id) if args.package_id else None
 	modules, type_table, exception_catalog, module_exports, module_deps, parse_diags = parse_drift_workspace_to_hir(
 		source_paths,
 		module_paths=module_paths,
 		external_module_exports=external_exports,
 		external_module_packages=external_module_packages,
-		package_id=str(args.package_id or ""),
+		package_id=package_id,
 	)
 	func_hirs, signatures, fn_ids_by_name = flatten_modules(modules)
+	origin_by_fn_id: dict[FunctionId, Path] = {}
+	for mod in modules.values():
+		for fn_id, src_path in mod.origin_by_fn_id.items():
+			origin_by_fn_id[fn_id] = src_path
 	prelude_injected = _should_inject_prelude(bool(args.prelude), module_deps)
 	if prelude_injected:
 		_inject_prelude(signatures, fn_ids_by_name, type_table)
@@ -3572,6 +3829,10 @@ def main(argv: list[str] | None = None) -> int:
 						impl_target_type_args = [
 							type_table.ensure_typevar(tp.id, name=tp.name) for tp in impl_type_params
 						]
+					param_mutable_raw = sd.get("param_mutable")
+					param_mutable = None
+					if isinstance(param_mutable_raw, list):
+						param_mutable = [bool(x) for x in param_mutable_raw]
 
 					param_types_raw = sd.get("param_types")
 					param_types: list[object] | None = None
@@ -3603,6 +3864,7 @@ def main(argv: list[str] | None = None) -> int:
 						module=module_name,
 						method_name=sd.get("method_name"),
 						param_names=sd.get("param_names"),
+						param_mutable=param_mutable,
 						param_type_ids=param_type_ids,
 						return_type_id=ret_tid,
 						declared_can_throw=sd.get("declared_can_throw"),
@@ -4239,6 +4501,7 @@ def main(argv: list[str] | None = None) -> int:
 		mod_id: name for name, mod_id in module_ids.items() if name is not None
 	}
 	trait_scope_by_module: dict[str, list] = {}
+	trait_scope_by_file: dict[str, list] | None = {}
 	if isinstance(module_exports, dict):
 		for mod_name, exp in module_exports.items():
 			if isinstance(exp, dict):
@@ -4247,6 +4510,13 @@ def main(argv: list[str] | None = None) -> int:
 					trait_scope_by_module[mod_name] = list(scope)
 				else:
 					trait_scope_by_module[mod_name] = []
+				scope_by_file = exp.get("trait_scope_by_file", {})
+				if isinstance(scope_by_file, dict):
+					for path, traits in scope_by_file.items():
+						if isinstance(path, str) and isinstance(traits, list):
+							trait_scope_by_file[path] = list(traits)
+	if not trait_scope_by_file:
+		trait_scope_by_file = None
 	visible_modules_by_name_set = {
 		mod: set(visible) for mod, visible in visible_module_names_by_name.items()
 	}
@@ -4276,9 +4546,18 @@ def main(argv: list[str] | None = None) -> int:
 	for fn_id, hir_block in normalized_hirs_by_id.items():
 		# Build param type map from signatures when available.
 		param_types: dict[str, "TypeId"] = {}
+		param_mutable: dict[str, bool] | None = None
 		sig = signatures_by_id.get(fn_id)
 		if sig and sig.param_names and sig.param_type_ids:
 			param_types = {pname: pty for pname, pty in zip(sig.param_names, sig.param_type_ids) if pty is not None}
+		if sig and sig.param_names and sig.param_mutable:
+			if len(sig.param_names) == len(sig.param_mutable):
+				param_mutable = {pname: bool(flag) for pname, flag in zip(sig.param_names, sig.param_mutable)}
+		current_file = None
+		if fn_id in origin_by_fn_id:
+			current_file = str(origin_by_fn_id.get(fn_id))
+		elif sig is not None:
+			current_file = Span.from_loc(getattr(sig, "loc", None)).file
 		fn_module_name = sig.module if sig is not None and sig.module is not None else "main"
 		fn_module_id = module_ids.setdefault(fn_module_name, len(module_ids))
 		visible_modules = visible_modules_by_name.get(fn_module_name, (fn_module_id,))
@@ -4291,12 +4570,14 @@ def main(argv: list[str] | None = None) -> int:
 			fn_id,
 			hir_block,
 			param_types=param_types,
+			param_mutable=param_mutable,
 			return_type=sig.return_type_id if sig is not None else None,
 			callable_registry=callable_registry,
 			impl_index=global_impl_index,
 			trait_index=global_trait_index,
 			trait_impl_index=global_trait_impl_index,
 			trait_scope_by_module=trait_scope_by_module,
+			trait_scope_by_file=trait_scope_by_file,
 			linked_world=linked_world,
 			require_env=require_env,
 			visible_modules=visible_modules,
@@ -4304,6 +4585,7 @@ def main(argv: list[str] | None = None) -> int:
 			visibility_provenance=visibility_by_id,
 			visibility_imports=direct_imports,
 			signatures_by_id=signatures_by_id_all,
+			current_file=current_file,
 		)
 		type_diags.extend(result.diagnostics)
 		typed_fns[fn_id] = result.typed_fn
@@ -4532,6 +4814,29 @@ def main(argv: list[str] | None = None) -> int:
 			else:
 				print(f"{source_path}:?:?: error: {msg}", file=sys.stderr)
 			return 1
+		if package_id is None:
+			msg = "--emit-package requires a non-empty package id"
+			if args.json:
+				print(
+					json.dumps(
+						{
+							"exit_code": 1,
+							"diagnostics": [
+								{
+									"phase": "package",
+									"message": msg,
+									"severity": "error",
+									"file": str(source_path),
+									"line": None,
+									"column": None,
+								}
+							],
+						}
+					)
+				)
+			else:
+				print(f"{source_path}:?:?: error: {msg}", file=sys.stderr)
+			return 1
 
 		signatures_for_pkg = signatures_by_id_all if loaded_pkgs else signatures_by_id
 		combined_exports: dict[str, dict[str, object]] | None = None
@@ -4545,8 +4850,9 @@ def main(argv: list[str] | None = None) -> int:
 			exc_env=exception_catalog,
 			module_exports=combined_exports,
 			module_deps=module_deps,
+			origin_by_fn_id=origin_by_fn_id,
 			type_table=type_table,
-			package_id=str(args.package_id) if args.package_id is not None else None,
+			package_id=package_id,
 			external_trait_defs=external_trait_defs,
 			external_impl_metas=external_impl_metas,
 			external_missing_traits=external_missing_traits,
@@ -4571,7 +4877,7 @@ def main(argv: list[str] | None = None) -> int:
 					loc = f"{getattr(d.span, 'line', '?')}:{getattr(d.span, 'column', '?')}" if d.span else "?:?"
 					print(f"{source_path}:{loc}: {d.severity}: {d.message}", file=sys.stderr)
 			return 1
-
+	
 		pkg_signatures_by_symbol: dict[str, FnSignature] = {
 			function_symbol(fn_id): info.signature
 			for fn_id, info in checked_pkg.fn_infos_by_id.items()
@@ -4580,7 +4886,7 @@ def main(argv: list[str] | None = None) -> int:
 		signatures_by_symbol = {
 			function_symbol(fn_id): sig for fn_id, sig in signatures_by_id_all.items()
 		}
-
+	
 		# Group functions/signatures by module id.
 		source_module_ids = {getattr(fn_id, "module", None) or "main" for fn_id in normalized_hirs_by_id.keys()}
 		per_module_sigs: dict[str, dict[str, FnSignature]] = {}
@@ -4593,7 +4899,7 @@ def main(argv: list[str] | None = None) -> int:
 			if mid not in source_module_ids:
 				continue
 			per_module_sigs.setdefault(mid, {})[name] = sig
-
+	
 		per_module_mir: dict[str, dict[str, object]] = {}
 		inst_mir: dict[str, object] = {}
 		for fn_id, fn in mir_funcs.items():
@@ -4610,21 +4916,21 @@ def main(argv: list[str] | None = None) -> int:
 		for fn_id, block in normalized_hirs_by_id.items():
 			mid = getattr(fn_id, "module", None) or "main"
 			per_module_hir.setdefault(mid, {})[function_symbol(fn_id)] = block
-
+	
 		inst_module_id: str | None = None
 		if inst_sigs or inst_mir:
-			inst_module_id = f"{args.package_id}.__instantiations"
+			inst_module_id = f"{package_id}.__instantiations"
 			if inst_sigs:
 				per_module_sigs.setdefault(inst_module_id, {}).update(inst_sigs)
 			if inst_mir:
 				per_module_mir.setdefault(inst_module_id, {}).update(inst_mir)
-
+	
 		blobs_by_sha: dict[str, bytes] = {}
 		blob_types: dict[str, int] = {}
 		blob_names: dict[str, str] = {}
 		manifest_modules: list[dict[str, object]] = []
 		manifest_blobs: dict[str, dict[str, object]] = {}
-
+	
 		all_module_ids: set[str] = set(per_module_sigs.keys()) | set(per_module_mir.keys())
 		if isinstance(module_exports, dict):
 			all_module_ids |= set(str(k) for k in module_exports.keys())
@@ -4634,7 +4940,7 @@ def main(argv: list[str] | None = None) -> int:
 			# package under the `std.*` namespace.
 			if mid == "lang.core":
 				continue
-
+	
 			# Export surface uses module-local names (unqualified). Global names
 			# inside the compiler are qualified (`mid::name`).
 			exported_values: list[str] = []
@@ -4676,15 +4982,17 @@ def main(argv: list[str] | None = None) -> int:
 			exported_consts: list[str] = (
 				list(module_exports.get(mid, {}).get("consts", [])) if isinstance(module_exports, dict) else []
 			)
-
+	
 			trait_worlds = getattr(type_table, "trait_worlds", {}) if type_table is not None else {}
 			trait_world = trait_worlds.get(mid) if isinstance(trait_worlds, dict) else None
 			requires_by_symbol: dict[str, object] = {}
 			if trait_world is not None and hasattr(trait_world, "requires_by_fn"):
 				for fn_id, req_expr in getattr(trait_world, "requires_by_fn", {}).items():
 					requires_by_symbol[function_symbol(fn_id)] = req_expr
+			if package_id is None:
+				raise ValueError("package_id is required to emit module payloads")
 			trait_metadata = _encode_trait_metadata_for_module(
-				package_id=str(args.package_id or ""),
+				package_id=package_id,
 				module_id=mid,
 				exported_traits=exported_traits,
 				trait_world=trait_world,
@@ -4695,7 +5003,7 @@ def main(argv: list[str] | None = None) -> int:
 				if isinstance(module_exports, dict)
 				else [],
 			)
-
+	
 			# Synthesize signatures for value re-exports so package consumers can
 			# reference them without requiring trampolines.
 			sig_env: dict[str, FnSignature] = dict(per_module_sigs.get(mid, {}))
@@ -4753,15 +5061,15 @@ def main(argv: list[str] | None = None) -> int:
 					continue
 				if not getattr(sig, "is_exported_entrypoint", False):
 					sig_env[sym] = replace(sig, is_exported_entrypoint=True)
-
+	
 			payload_obj = encode_module_payload_v0(
-				package_id=str(args.package_id or ""),
+				package_id=package_id,
 				module_id=mid,
 				type_table=checked_pkg.type_table or type_table,
 				signatures=sig_env,
 				mir_funcs=per_module_mir.get(mid, {}),
 				generic_templates=encode_generic_templates(
-					package_id=str(args.package_id or ""),
+					package_id=package_id,
 					module_id=mid,
 					signatures=sig_env,
 					hir_blocks=per_module_hir.get(mid, {}),
@@ -4776,7 +5084,7 @@ def main(argv: list[str] | None = None) -> int:
 				trait_metadata=trait_metadata,
 				impl_headers=impl_headers,
 			)
-
+	
 			# Module interface (package interface table v0).
 			#
 			# This is the authoritative exported surface used by:
@@ -4816,7 +5124,7 @@ def main(argv: list[str] | None = None) -> int:
 						print(f"{source_path}:?:?: error: {msg}", file=sys.stderr)
 					return 1
 				iface_sigs[sym] = sd
-
+	
 			# Exported schemas (exceptions/variants) for the type namespace.
 			#
 			# These are used as load-time guardrails: exported type schemas must match
@@ -4825,7 +5133,7 @@ def main(argv: list[str] | None = None) -> int:
 			payload_tt = payload_obj.get("type_table") if isinstance(payload_obj, dict) else None
 			if not isinstance(payload_tt, dict):
 				payload_tt = {}
-
+	
 			iface_exc: dict[str, object] = {}
 			payload_exc = payload_tt.get("exception_schemas")
 			if isinstance(payload_exc, dict):
@@ -4834,7 +5142,7 @@ def main(argv: list[str] | None = None) -> int:
 					raw = payload_exc.get(fqn)
 					if isinstance(raw, list) and len(raw) == 2 and isinstance(raw[1], list):
 						iface_exc[fqn] = list(raw[1])
-
+	
 			iface_var: dict[str, object] = {}
 			payload_var = payload_tt.get("variant_schemas")
 			if isinstance(payload_var, dict):
@@ -4847,7 +5155,7 @@ def main(argv: list[str] | None = None) -> int:
 					if not isinstance(name, str) or name not in exported_types.get("variants", []):
 						continue
 					iface_var[name] = raw
-
+	
 			iface_obj = {
 				"format": "drift-module-interface",
 				"version": 0,
@@ -4875,14 +5183,14 @@ def main(argv: list[str] | None = None) -> int:
 			blob_types[iface_sha] = 2
 			blob_names[iface_sha] = f"iface:{mid}"
 			manifest_blobs[f"sha256:{iface_sha}"] = {"type": "exports", "length": len(iface_bytes)}
-
+	
 			payload_bytes = canonical_json_bytes(payload_obj)
 			payload_sha = sha256_hex(payload_bytes)
 			blobs_by_sha[payload_sha] = payload_bytes
 			blob_types[payload_sha] = 1
 			blob_names[payload_sha] = f"dmir:{mid}"
 			manifest_blobs[f"sha256:{payload_sha}"] = {"type": "dmir", "length": len(payload_bytes)}
-
+	
 			manifest_modules.append(
 				{
 					"module_id": mid,
@@ -4896,11 +5204,11 @@ def main(argv: list[str] | None = None) -> int:
 					"payload_blob": f"sha256:{payload_sha}",
 				}
 			)
-
+	
 		manifest_obj: dict[str, object] = {
 			"format": "dmir-pkg",
 			"format_version": 0,
-			"package_id": str(args.package_id),
+			"package_id": package_id,
 			"package_version": str(args.package_version),
 			"target": str(args.package_target),
 			"build_epoch": str(args.package_build_epoch) if args.package_build_epoch else None,
@@ -4911,7 +5219,7 @@ def main(argv: list[str] | None = None) -> int:
 			"modules": manifest_modules,
 			"blobs": manifest_blobs,
 		}
-
+	
 		write_dmir_pkg_v0(
 			args.emit_package,
 			manifest_obj=manifest_obj,
@@ -4919,11 +5227,11 @@ def main(argv: list[str] | None = None) -> int:
 			blob_types=blob_types,
 			blob_names=blob_names,
 		)
-
+	
 		if args.json:
 			print(json.dumps({"exit_code": 0, "diagnostics": []}))
 		return 0
-
+	
 	# If no codegen requested, acknowledge success.
 	if args.output is None and args.emit_ir is None:
 		if args.json:
@@ -4943,6 +5251,7 @@ def main(argv: list[str] | None = None) -> int:
 			exc_env=exception_catalog,
 			module_exports=combined_exports,
 			module_deps=module_deps,
+			origin_by_fn_id=origin_by_fn_id,
 			return_checked=True,
 			build_ssa=True,
 			return_ssa=True,
@@ -5071,6 +5380,19 @@ def main(argv: list[str] | None = None) -> int:
 			fn = pkg_mir_all[fn_id]
 			pkg_mir[fn_id] = fn
 
+		if checked_src.type_table is not None:
+			pkg_fn_infos: dict[FunctionId, FnInfo] = {}
+			for fn_id, sig in pkg_sigs_by_id.items():
+				if fn_id in pkg_fn_infos:
+					continue
+				pkg_fn_infos[fn_id] = make_fn_info(fn_id, sig, declared_can_throw=_sig_declared_can_throw(sig))
+			for fn_id, fn in pkg_mir.items():
+				pkg_mir[fn_id] = insert_string_arc(
+					fn,
+					type_table=checked_src.type_table,
+					fn_infos=pkg_fn_infos,
+				)
+
 		pkg_ssa: dict[FunctionId, MirToSSA.SsaFunc] = {}
 		for fn_id, fn in pkg_mir.items():
 			pkg_ssa[fn_id] = MirToSSA().run(fn)
@@ -5101,6 +5423,7 @@ def main(argv: list[str] | None = None) -> int:
 			type_table=checked_src.type_table,
 			rename_map={},
 			argv_wrapper=None,
+			word_bits=_target_word_bits(args.target_word_bits),
 		)
 		ir = module.render()
 	else:
@@ -5119,6 +5442,7 @@ def main(argv: list[str] | None = None) -> int:
 				exc_env=exception_catalog,
 				module_exports=module_exports,
 				module_deps=module_deps,
+				origin_by_fn_id=origin_by_fn_id,
 				type_table=type_table,
 				prelude_enabled=bool(args.prelude),
 				emit_instantiation_index=args.emit_instantiation_index,
@@ -5144,6 +5468,30 @@ def main(argv: list[str] | None = None) -> int:
 		else:
 			print(f"{source_path}:?:?: error: {msg}", file=sys.stderr)
 		return 1
+
+		if package_id is None:
+			msg = "--emit-package requires a non-empty package id"
+			if args.json:
+				print(
+					json.dumps(
+						{
+							"exit_code": 1,
+							"diagnostics": [
+								{
+									"phase": "package",
+									"message": msg,
+									"severity": "error",
+									"file": str(source_path),
+									"line": None,
+									"column": None,
+								}
+							],
+						}
+					)
+				)
+			else:
+				print(f"{source_path}:?:?: error: {msg}", file=sys.stderr)
+			return 1
 
 	args.output.parent.mkdir(parents=True, exist_ok=True)
 	ir_path = args.output.with_suffix(".ll")

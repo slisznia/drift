@@ -223,6 +223,7 @@ class HIRToMIR:
 		# zero-length, null-data string produced at MIR lowering time.
 		self.b.emit(M.ConstString(dest=self._string_empty_const, value=""))
 		self._uint_type = self._type_table.ensure_uint()
+		self._uint64_type = self._type_table.ensure_uint64()
 		self._unknown_type = self._type_table.ensure_unknown()
 		self._void_type = self._type_table.ensure_void()
 		self._dv_type = self._type_table.ensure_diagnostic_value()
@@ -502,7 +503,8 @@ class HIRToMIR:
 				raise AssertionError("unknown constructor in match reached MIR lowering (checker bug)")
 			self.b.set_block(current_block)
 			tag_const = self.b.new_temp()
-			self.b.emit(M.ConstInt(dest=tag_const, value=int(arm_def.tag)))
+			self.b.emit(M.ConstUint(dest=tag_const, value=int(arm_def.tag)))
+			self._local_types[tag_const] = self._uint_type
 			cmp_tmp = self.b.new_temp()
 			self.b.emit(M.BinaryOpInstr(dest=cmp_tmp, op=M.BinaryOp.EQ, left=tag_tmp, right=tag_const))
 			else_block = self.b.new_block("match_dispatch_next")
@@ -628,7 +630,23 @@ class HIRToMIR:
 
 	def _visit_expr_HLiteralInt(self, expr: H.HLiteralInt) -> M.ValueId:
 		dest = self.b.new_temp()
-		self.b.emit(M.ConstInt(dest=dest, value=expr.value))
+		expected = self._current_expected_type()
+		if expected == self._uint64_type:
+			self.b.emit(M.ConstUint64(dest=dest, value=expr.value))
+			return dest
+		if expected == self._uint_type:
+			self.b.emit(M.ConstUint(dest=dest, value=expr.value))
+			return dest
+		if expected == self._int_type:
+			self.b.emit(M.ConstInt(dest=dest, value=expr.value))
+			return dest
+		ty = self._infer_expr_type(expr)
+		if ty == self._uint64_type:
+			self.b.emit(M.ConstUint64(dest=dest, value=expr.value))
+		elif ty == self._uint_type:
+			self.b.emit(M.ConstUint(dest=dest, value=expr.value))
+		else:
+			self.b.emit(M.ConstInt(dest=dest, value=expr.value))
 		return dest
 
 	def _visit_expr_HLiteralFloat(self, expr: H.HLiteralFloat) -> M.ValueId:
@@ -778,8 +796,11 @@ class HIRToMIR:
 				continue
 			ty_id, val = cv
 			dest = self.b.new_temp()
-			if ty_id == self._int_type or ty_id == self._uint_type:
+			if ty_id == self._int_type:
 				self.b.emit(M.ConstInt(dest=dest, value=int(val)))
+				return dest
+			if ty_id == self._uint_type:
+				self.b.emit(M.ConstUint(dest=dest, value=int(val)))
 				return dest
 			if ty_id == self._bool_type:
 				self.b.emit(M.ConstBool(dest=dest, value=bool(val)))
@@ -845,15 +866,12 @@ class HIRToMIR:
 			raise AssertionError("move of projected place reached MIR lowering (checker bug)")
 		subj_name = expr.subject.base.name
 		self.b.ensure_local(subj_name)
-		moved_val = self.b.new_temp()
-		self.b.emit(M.LoadLocal(dest=moved_val, local=subj_name))
-
 		inner_ty = self._infer_expr_type(expr.subject.base)
 		if inner_ty is None:
 			raise AssertionError("move operand type unknown in MIR lowering (checker bug)")
-		zero = self.b.new_temp()
-		self.b.emit(M.ZeroValue(dest=zero, ty=inner_ty))
-		self.b.emit(M.StoreLocal(local=subj_name, value=zero))
+		moved_val = self.b.new_temp()
+		self.b.emit(M.MoveOut(dest=moved_val, local=subj_name, ty=inner_ty))
+		self._local_types[moved_val] = inner_ty
 		return moved_val
 
 	def _visit_expr_HUnary(self, expr: H.HUnary) -> M.ValueId:
@@ -876,12 +894,23 @@ class HIRToMIR:
 		return dest
 
 	def _visit_expr_HBinary(self, expr: H.HBinary) -> M.ValueId:
-		left = self.lower_expr(expr.left)
-		right = self.lower_expr(expr.right)
+		left_expr = expr.left
+		right_expr = expr.right
+		if isinstance(left_expr, H.HLiteralInt) and not isinstance(right_expr, H.HLiteralInt):
+			right_ty = self._infer_expr_type(right_expr)
+			left = self.lower_expr(left_expr, expected_type=right_ty) if right_ty is not None else self.lower_expr(left_expr)
+			right = self.lower_expr(right_expr)
+		elif isinstance(right_expr, H.HLiteralInt) and not isinstance(left_expr, H.HLiteralInt):
+			left_ty = self._infer_expr_type(left_expr)
+			left = self.lower_expr(left_expr)
+			right = self.lower_expr(right_expr, expected_type=left_ty) if left_ty is not None else self.lower_expr(right_expr)
+		else:
+			left = self.lower_expr(left_expr)
+			right = self.lower_expr(right_expr)
 		dest = self.b.new_temp()
 		# String-aware lowering: redirect +/== on strings to dedicated MIR ops.
-		left_ty = self._infer_expr_type(expr.left)
-		right_ty = self._infer_expr_type(expr.right)
+		left_ty = self._infer_expr_type(left_expr)
+		right_ty = self._infer_expr_type(right_expr)
 		if left_ty == self._string_type and right_ty == self._string_type:
 			if expr.op is H.BinaryOp.ADD:
 				self.b.emit(M.StringConcat(dest=dest, left=left, right=right))
@@ -955,14 +984,46 @@ class HIRToMIR:
 		dest = self.b.new_temp()
 		elem_ty = self._infer_array_elem_type(expr.subject)
 		self.b.emit(M.ArrayIndexLoad(dest=dest, elem_ty=elem_ty, array=subject, index=index))
+		if self._type_table.is_copy(elem_ty):
+			copy_dest = self.b.new_temp()
+			self.b.emit(M.CopyValue(dest=copy_dest, value=dest, ty=elem_ty))
+			self._local_types[copy_dest] = elem_ty
+			return copy_dest
+		td = self._type_table.get(elem_ty)
+		if td.kind is not TypeKind.TYPEVAR:
+			raise NotImplementedError("array index read requires Copy element type; borrow not supported in MVP")
 		return dest
 
 	def _visit_expr_HArrayLiteral(self, expr: H.HArrayLiteral) -> M.ValueId:
 		elem_ty = self._infer_array_literal_elem_type(expr)
-		values = [self.lower_expr(e) for e in expr.elements]
 		dest = self.b.new_temp()
-		self.b.emit(M.ArrayLit(dest=dest, elem_ty=elem_ty, elements=values))
-		return dest
+		length = len(expr.elements)
+		len_val = self.b.new_temp()
+		cap_val = self.b.new_temp()
+		self.b.emit(M.ConstUint(dest=len_val, value=length))
+		self.b.emit(M.ConstUint(dest=cap_val, value=length))
+		self._local_types[len_val] = self._uint_type
+		self._local_types[cap_val] = self._uint_type
+		zero_len = self.b.new_temp()
+		self.b.emit(M.ConstUint(dest=zero_len, value=0))
+		self._local_types[zero_len] = self._uint_type
+		self.b.emit(M.ArrayAlloc(dest=dest, elem_ty=elem_ty, length=zero_len, cap=cap_val))
+		for idx, elem_expr in enumerate(expr.elements):
+			val = self.lower_expr(elem_expr)
+			val_ty = self._infer_expr_type(elem_expr)
+			if val_ty is not None and self._type_table.is_copy(val_ty) and not isinstance(elem_expr, H.HMove):
+				copy_dest = self.b.new_temp()
+				self.b.emit(M.CopyValue(dest=copy_dest, value=val, ty=val_ty))
+				self._local_types[copy_dest] = val_ty
+				val = copy_dest
+			idx_val = self.b.new_temp()
+			self.b.emit(M.ConstInt(dest=idx_val, value=idx))
+			self._local_types[idx_val] = self._int_type
+			self.b.emit(M.ArrayElemInitUnchecked(elem_ty=elem_ty, array=dest, index=idx_val, value=val))
+		final_arr = self.b.new_temp()
+		self.b.emit(M.ArraySetLen(dest=final_arr, array=dest, length=len_val))
+		self._local_types[final_arr] = self._type_table.new_array(elem_ty)
+		return final_arr
 
 	def _lower_len(self, subj_ty: Optional[TypeId], subj_val: M.ValueId, dest: M.ValueId) -> None:
 		"""Lower length for Array<T> and String to Uint."""
@@ -1369,7 +1430,7 @@ class HIRToMIR:
 				else:
 					# Conservatively assume unknown method calls can throw, except for
 					# built-in, non-throwing intrinsics handled directly in lowering.
-					if expr.method_name not in {"as_int", "as_bool", "as_string", "iter", "next", "unwrap_ok", "unwrap_err"}:
+					if expr.method_name not in {"as_int", "as_bool", "as_string", "dup", "iter", "next", "unwrap_ok", "unwrap_err"}:
 						return True
 				if expr_can_throw(expr.receiver):
 					return True
@@ -1539,7 +1600,7 @@ class HIRToMIR:
 		if has_captures:
 			param_type_ids.append(self._type_table.ensure_ref(env_ty))
 			param_names.append(hidden_env_local)
-		for p in lam.params:
+		for idx, p in enumerate(lam.params):
 			param_names.append(p.name)
 			ptype = None
 			if getattr(p, "type", None) is not None:
@@ -1547,10 +1608,9 @@ class HIRToMIR:
 					ptype = resolve_opaque_type(p.type, self._type_table, module_id=mod)
 				except Exception:
 					ptype = None
-			if ptype is not None:
-				param_type_ids.append(ptype)
-			else:
-				param_type_ids.append(unknown)
+			if ptype is None and idx < len(args):
+				ptype = self._infer_expr_type(args[idx])
+			param_type_ids.append(ptype if ptype is not None else unknown)
 
 		ret_type: TypeId | None = declared_ret_type
 		if lam.body_expr is not None:
@@ -1658,17 +1718,40 @@ class HIRToMIR:
 		#   - `__ArrayIter_<T>.next() -> Optional<T>`
 		#
 		# This keeps the surface syntax stable while deferring trait dispatch.
+		if expr.method_name == "dup" and not expr.args:
+			recv_ty = self._infer_expr_type(expr.receiver)
+			if recv_ty is not None:
+				recv_def = self._type_table.get(recv_ty)
+				recv_val = self.lower_expr(expr.receiver)
+				if recv_def.kind is TypeKind.REF and recv_def.param_types:
+					inner_ty = recv_def.param_types[0]
+					tmp = self.b.new_temp()
+					self.b.emit(M.LoadRef(dest=tmp, ptr=recv_val, inner_ty=inner_ty))
+					recv_val = tmp
+					recv_ty = inner_ty
+					recv_def = self._type_table.get(recv_ty)
+				if recv_def.kind is TypeKind.ARRAY and recv_def.param_types:
+					elem_ty = recv_def.param_types[0]
+					dest = self.b.new_temp()
+					self.b.emit(M.ArrayDup(dest=dest, elem_ty=elem_ty, array=recv_val))
+					self._local_types[dest] = recv_ty
+					return dest
 		if expr.method_name == "iter" and not expr.args:
 			recv_ty = self._infer_expr_type(expr.receiver)
-			if recv_ty is not None and self._type_table.get(recv_ty).kind is TypeKind.ARRAY:
-				iter_ty = self._ensure_array_iter_struct(recv_ty)
-				recv_val = self.lower_expr(expr.receiver)
-				idx0 = self.b.new_temp()
-				self.b.emit(M.ConstInt(dest=idx0, value=0))
-				dest = self.b.new_temp()
-				self.b.emit(M.ConstructStruct(dest=dest, struct_ty=iter_ty, args=[recv_val, idx0]))
-				self._local_types[dest] = iter_ty
-				return dest
+			if recv_ty is not None:
+				recv_def = self._type_table.get(recv_ty)
+				if recv_def.kind is TypeKind.REF and recv_def.param_types:
+					array_ty = recv_def.param_types[0]
+					if self._type_table.get(array_ty).kind is TypeKind.ARRAY:
+						iter_ty = self._ensure_array_iter_struct(array_ty)
+						recv_val = self.lower_expr(expr.receiver)
+						idx0 = self.b.new_temp()
+						self.b.emit(M.ConstInt(dest=idx0, value=0))
+						self._local_types[idx0] = self._int_type
+						dest = self.b.new_temp()
+						self.b.emit(M.ConstructStruct(dest=dest, struct_ty=iter_ty, args=[recv_val, idx0]))
+						self._local_types[dest] = iter_ty
+						return dest
 		if expr.method_name == "next" and not expr.args:
 			recv_ty = self._infer_expr_type(expr.receiver)
 			if recv_ty is not None and self._is_array_iter_struct(recv_ty):
@@ -1754,9 +1837,13 @@ class HIRToMIR:
 		if idx_ty != self._int_type:
 			raise AssertionError("array iterator idx field must be Int (compiler bug)")
 		arr_def = self._type_table.get(arr_ty)
-		if arr_def.kind is not TypeKind.ARRAY or not arr_def.param_types:
-			raise AssertionError("array iterator arr field must be Array<T> (compiler bug)")
-		elem_ty = arr_def.param_types[0]
+		if arr_def.kind is not TypeKind.REF or not arr_def.param_types:
+			raise AssertionError("array iterator arr field must be &Array<T> (compiler bug)")
+		array_ty = arr_def.param_types[0]
+		array_def = self._type_table.get(array_ty)
+		if array_def.kind is not TypeKind.ARRAY or not array_def.param_types:
+			raise AssertionError("array iterator arr field must be &Array<T> (compiler bug)")
+		elem_ty = array_def.param_types[0]
 
 		arr_ptr = self.b.new_temp()
 		self.b.emit(M.AddrOfField(dest=arr_ptr, base_ptr=iter_ptr, struct_ty=iter_ty, field_index=0, field_ty=arr_ty))
@@ -1764,8 +1851,10 @@ class HIRToMIR:
 		self.b.emit(
 			M.AddrOfField(dest=idx_ptr, base_ptr=iter_ptr, struct_ty=iter_ty, field_index=1, field_ty=idx_ty, is_mut=True)
 		)
+		arr_ref = self.b.new_temp()
+		self.b.emit(M.LoadRef(dest=arr_ref, ptr=arr_ptr, inner_ty=arr_ty))
 		arr_val = self.b.new_temp()
-		self.b.emit(M.LoadRef(dest=arr_val, ptr=arr_ptr, inner_ty=arr_ty))
+		self.b.emit(M.LoadRef(dest=arr_val, ptr=arr_ref, inner_ty=array_ty))
 		idx_val = self.b.new_temp()
 		self.b.emit(M.LoadRef(dest=idx_val, ptr=idx_ptr, inner_ty=idx_ty))
 
@@ -1812,8 +1901,11 @@ class HIRToMIR:
 		# Compare idx < len(arr)
 		len_val = self.b.new_temp()
 		self.b.emit(M.ArrayLen(dest=len_val, array=arr_val))
+		len_int = self.b.new_temp()
+		self.b.emit(M.IntFromUint(dest=len_int, value=len_val))
+		self._local_types[len_int] = self._int_type
 		cmp = self.b.new_temp()
-		self.b.emit(M.BinaryOpInstr(dest=cmp, op=M.BinaryOp.LT, left=idx_val, right=len_val))
+		self.b.emit(M.BinaryOpInstr(dest=cmp, op=M.BinaryOp.LT, left=idx_val, right=len_int))
 		self.b.set_terminator(M.IfTerminator(cond=cmp, then_target=then_block.name, else_target=else_block.name))
 
 		# some branch
@@ -1822,6 +1914,7 @@ class HIRToMIR:
 		self.b.emit(M.ArrayIndexLoad(dest=elem_val, elem_ty=elem_ty, array=arr_val, index=idx_val))
 		one = self.b.new_temp()
 		self.b.emit(M.ConstInt(dest=one, value=1))
+		self._local_types[one] = self._int_type
 		idx_next = self.b.new_temp()
 		self.b.emit(M.BinaryOpInstr(dest=idx_next, op=M.BinaryOp.ADD, left=idx_val, right=one))
 		self.b.emit(M.StoreRef(ptr=idx_ptr, value=idx_next, inner_ty=idx_ty))
@@ -1976,6 +2069,7 @@ class HIRToMIR:
 		self.b.emit(M.LoadLocal(dest=err_tmp, local=error_local))
 		code_tmp = self.b.new_temp()
 		self.b.emit(M.ErrorEvent(dest=code_tmp, error=err_tmp))
+		self._local_types[code_tmp] = self._uint64_type
 
 		event_arms = [(arm, cb) for arm, cb in catch_blocks if arm.event_fqn is not None]
 		if event_arms:
@@ -1984,7 +2078,8 @@ class HIRToMIR:
 				self.b.set_block(current_block)
 				arm_code = self._lookup_catch_event_code(arm.event_fqn)
 				arm_code_const = self.b.new_temp()
-				self.b.emit(M.ConstInt(dest=arm_code_const, value=arm_code))
+				self.b.emit(M.ConstUint64(dest=arm_code_const, value=arm_code))
+				self._local_types[arm_code_const] = self._uint64_type
 				cmp_tmp = self.b.new_temp()
 				self.b.emit(M.BinaryOpInstr(dest=cmp_tmp, op=M.BinaryOp.EQ, left=code_tmp, right=arm_code_const))
 
@@ -2246,6 +2341,30 @@ class HIRToMIR:
 				self._local_types[local_name] = val_ty
 			self.b.emit(M.StoreLocal(local=local_name, value=val))
 			return
+		# Fast path: array element assignment for a direct local binding.
+		if (
+			len(stmt.target.projections) == 1
+			and isinstance(stmt.target.projections[0], H.HPlaceIndex)
+			and isinstance(stmt.target.base, H.HVar)
+		):
+			proj = stmt.target.projections[0]
+			array_name = self._canonical_local(getattr(stmt.target.base, "binding_id", None), stmt.target.base.name)
+			array_ty = self._local_types.get(array_name) or self._infer_expr_type(stmt.target.base)
+			if array_ty is not None:
+				td = self._type_table.get(array_ty)
+				if td.kind is TypeKind.ARRAY and td.param_types:
+					elem_ty = td.param_types[0]
+					array_val = self.b.new_temp()
+					self.b.emit(M.LoadLocal(dest=array_val, local=array_name))
+					index_val = self.lower_expr(proj.index)
+					val_ty = self._infer_expr_type(stmt.value)
+					if val_ty is not None and self._type_table.is_copy(val_ty) and not isinstance(stmt.value, H.HMove):
+						copy_dest = self.b.new_temp()
+						self.b.emit(M.CopyValue(dest=copy_dest, value=val, ty=val_ty))
+						self._local_types[copy_dest] = val_ty
+						val = copy_dest
+					self.b.emit(M.ArrayElemAssign(elem_ty=elem_ty, array=array_val, index=index_val, value=val))
+					return
 		ptr, inner_ty = self._lower_addr_of_place(stmt.target, is_mut=True)
 		self.b.emit(M.StoreRef(ptr=ptr, value=val, inner_ty=inner_ty))
 		return
@@ -2446,7 +2565,8 @@ class HIRToMIR:
 
 			code_const = self._lookup_error_code(event_fqn=stmt.value.event_fqn)
 			code_val = self.b.new_temp()
-			self.b.emit(M.ConstInt(dest=code_val, value=code_const))
+			self.b.emit(M.ConstUint64(dest=code_val, value=code_const))
+			self._local_types[code_val] = self._uint64_type
 
 			event_fqn_val = self.b.new_temp()
 			self.b.emit(M.ConstString(dest=event_fqn_val, value=stmt.value.event_fqn))
@@ -2659,6 +2779,7 @@ class HIRToMIR:
 		self.b.emit(M.LoadLocal(dest=err_tmp, local=error_local))
 		code_tmp = self.b.new_temp()
 		self.b.emit(M.ErrorEvent(dest=code_tmp, error=err_tmp))
+		self._local_types[code_tmp] = self._uint64_type
 
 		# Chain event-specific arms with IfTerminator, else falling through.
 		event_arms = [(arm, cb) for arm, cb in catch_blocks if arm.event_fqn is not None]
@@ -2669,7 +2790,8 @@ class HIRToMIR:
 				self.b.set_block(current_block)
 				arm_code = self._lookup_catch_event_code(arm.event_fqn)
 				arm_code_const = self.b.new_temp()
-				self.b.emit(M.ConstInt(dest=arm_code_const, value=arm_code))
+				self.b.emit(M.ConstUint64(dest=arm_code_const, value=arm_code))
+				self._local_types[arm_code_const] = self._uint64_type
 				cmp_tmp = self.b.new_temp()
 				self.b.emit(M.BinaryOpInstr(dest=cmp_tmp, op=M.BinaryOp.EQ, left=code_tmp, right=arm_code_const))
 
@@ -3360,8 +3482,12 @@ class HIRToMIR:
 			# Iterator protocol intrinsics (see `_visit_expr_HMethodCall`).
 			if expr.method_name == "iter" and not expr.args:
 				recv_ty = self._infer_expr_type(expr.receiver)
-				if recv_ty is not None and self._type_table.get(recv_ty).kind is TypeKind.ARRAY:
-					return self._ensure_array_iter_struct(recv_ty)
+				if recv_ty is not None:
+					recv_def = self._type_table.get(recv_ty)
+					if recv_def.kind is TypeKind.REF and recv_def.param_types:
+						array_ty = recv_def.param_types[0]
+						if self._type_table.get(array_ty).kind is TypeKind.ARRAY:
+							return self._ensure_array_iter_struct(array_ty)
 			if expr.method_name == "next" and not expr.args:
 				recv_ty = self._infer_expr_type(expr.receiver)
 				if recv_ty is not None and self._is_array_iter_struct(recv_ty):
@@ -3370,9 +3496,13 @@ class HIRToMIR:
 					if arr_ty is None:
 						return None
 					arr_def = self._type_table.get(arr_ty)
-					if arr_def.kind is not TypeKind.ARRAY or not arr_def.param_types:
+					if arr_def.kind is not TypeKind.REF or not arr_def.param_types:
 						return None
-					elem_ty = arr_def.param_types[0]
+					array_ty = arr_def.param_types[0]
+					array_def = self._type_table.get(array_ty)
+					if array_def.kind is not TypeKind.ARRAY or not array_def.param_types:
+						return None
+					elem_ty = array_def.param_types[0]
 					opt_base = self._type_table.get_variant_base(module_id="lang.core", name="Optional")
 					if opt_base is None:
 						return None

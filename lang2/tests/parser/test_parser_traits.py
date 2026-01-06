@@ -8,7 +8,7 @@ from lang2.driftc.parser.ast import IfStmt, TraitDef, TraitIs, TraitNot, TraitOr
 def test_parse_trait_def_with_require_and_method() -> None:
 	prog = p.parse_program(
 		"""
-trait Debuggable require Self is Printable {
+trait Debug require Self is Printable {
 	fn fmt(self: Int) -> String
 }
 """
@@ -16,7 +16,7 @@ trait Debuggable require Self is Printable {
 	assert len(prog.traits) == 1
 	tr = prog.traits[0]
 	assert isinstance(tr, TraitDef)
-	assert tr.name == "Debuggable"
+	assert tr.name == "Debug"
 	assert tr.require is not None
 	assert tr.methods and tr.methods[0].name == "fmt"
 
@@ -26,7 +26,7 @@ def test_parse_struct_and_function_require_clauses() -> None:
 		"""
 struct File require Self is Destructible { }
 
-fn use_file() -> Int require T is Debuggable {
+fn use_file() -> Int require T is Debug {
 	return 0;
 }
 """
@@ -41,7 +41,7 @@ def test_parse_trait_guard_in_if_stmt() -> None:
 	prog = p.parse_program(
 		"""
 fn main() -> Int {
-	if T is Debuggable or not T is Printable { return 1; } else { return 2; }
+	if T is Debug or not T is Printable { return 1; } else { return 2; }
 }
 """
 	)

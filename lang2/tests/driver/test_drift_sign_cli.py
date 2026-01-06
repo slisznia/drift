@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 
 from lang2.drift.crypto import compute_ed25519_kid
+from lang2.tests.driver.driver_cli_helpers import with_target_word_bits
 
 
 def _write_file(path: Path, text: str) -> None:
@@ -35,23 +36,25 @@ pub fn add(a: Int, b: Int) -> Int {
 	repo_root = Path.cwd()
 	assert (repo_root / "lang2").exists()
 	build_pkg = subprocess.run(
-		[
-			sys.executable,
-			"-m",
-			"lang2.driftc.driftc",
-			"-M",
-			str(tmp_path),
-			str(tmp_path / "lib" / "lib.drift"),
-			"--package-id",
-			"test.pkg",
-			"--package-version",
-			"0.0.0",
-			"--package-target",
-			"test-target",
-			"--emit-package",
-			str(pkg),
-			"--json",
-		],
+		with_target_word_bits(
+			[
+				sys.executable,
+				"-m",
+				"lang2.driftc.driftc",
+				"-M",
+				str(tmp_path),
+				str(tmp_path / "lib" / "lib.drift"),
+				"--package-id",
+				"test.pkg",
+				"--package-version",
+				"0.0.0",
+				"--package-target",
+				"test-target",
+				"--emit-package",
+				str(pkg),
+				"--json",
+			]
+		),
 		cwd=str(repo_root),
 		check=False,
 		capture_output=True,
@@ -116,22 +119,24 @@ fn main() nothrow -> Int{
 """.lstrip(),
 	)
 	consume = subprocess.run(
-		[
-			sys.executable,
-			"-m",
-			"lang2.driftc.driftc",
-			"-M",
-			str(tmp_path),
-			"--package-root",
-			str(tmp_path),
-			"--require-signatures",
-			"--trust-store",
-			str(trust_path),
-			str(tmp_path / "main.drift"),
-			"--emit-ir",
-			str(tmp_path / "out.ll"),
-			"--json",
-		],
+		with_target_word_bits(
+			[
+				sys.executable,
+				"-m",
+				"lang2.driftc.driftc",
+				"-M",
+				str(tmp_path),
+				"--package-root",
+				str(tmp_path),
+				"--require-signatures",
+				"--trust-store",
+				str(trust_path),
+				str(tmp_path / "main.drift"),
+				"--emit-ir",
+				str(tmp_path / "out.ll"),
+				"--json",
+			]
+		),
 		cwd=str(repo_root),
 		check=False,
 		capture_output=True,

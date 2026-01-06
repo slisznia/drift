@@ -55,8 +55,11 @@ parse-all: parse-examples
 parse-examples:
 	./.venv/bin/python3 tools/draft_linter.py examples
 
+review-cleanup:
+	rm -f combined_*
+
 # Lang2 staged compiler tests
-lang2-test: lang2-stage1-test lang2-stage2-test lang2-stage3-test lang2-stage4-test lang2-parser-test lang2-core-test lang2-llvm-test lang2-borrow-test lang2-type-checker-test lang2-method-registry-test lang2-driver-suite lang2-codegen-test
+lang2-test: review-cleanup lang2-stage1-test lang2-stage2-test lang2-stage3-test lang2-stage4-test lang2-parser-test lang2-core-test lang2-llvm-test lang2-borrow-test lang2-type-checker-test lang2-method-registry-test lang2-driver-suite lang2-codegen-test
 	@echo "lang2 tests: Success."
 
 lang2-stage1-test:

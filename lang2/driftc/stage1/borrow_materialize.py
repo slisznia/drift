@@ -140,6 +140,8 @@ class BorrowMaterializeRewriter:
 		"""
 		if hasattr(H, "HMove") and isinstance(expr, getattr(H, "HMove")):
 			return True
+		if hasattr(H, "HCopy") and isinstance(expr, getattr(H, "HCopy")):
+			return self._contains_move(expr.subject)
 		if isinstance(expr, H.HUnary):
 			return self._contains_move(expr.expr)
 		if isinstance(expr, H.HBinary):
@@ -313,6 +315,9 @@ class BorrowMaterializeRewriter:
 		if isinstance(expr, getattr(H, "HMove", ())):
 			pfx, subj = self._rewrite_expr(expr.subject)
 			return pfx, H.HMove(subject=subj, loc=getattr(expr, "loc", Span()))
+		if isinstance(expr, getattr(H, "HCopy", ())):
+			pfx, subj = self._rewrite_expr(expr.subject)
+			return pfx, H.HCopy(subject=subj, loc=getattr(expr, "loc", Span()))
 		if isinstance(expr, H.HArrayLiteral):
 			pfx: List[H.HStmt] = []
 			new_elems: List[H.HExpr] = []

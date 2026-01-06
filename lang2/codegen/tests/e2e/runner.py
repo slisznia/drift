@@ -163,6 +163,9 @@ def _run_case(case_dir: Path) -> str:
 		module_paths=[case_dir / mp for mp in module_paths] or None,
 	)
 	func_hirs, signatures, fn_ids_by_name = flatten_modules(modules)
+	origin_by_fn_id: dict[object, Path] = {}
+	for mod in modules.values():
+		origin_by_fn_id.update(mod.origin_by_fn_id)
 	expected_phase = expected.get("phase")
 
 	if parse_diags:
@@ -206,6 +209,7 @@ def _run_case(case_dir: Path) -> str:
 			type_table=type_table,
 			module_exports=module_exports,
 			module_deps=module_deps,
+			origin_by_fn_id=origin_by_fn_id,
 			enforce_entrypoint=True,
 			reserved_namespace_policy=reserved_policy,
 		)

@@ -129,9 +129,9 @@ implement Box<String> {
 fn main() -> String {
 	val b: Box<Int> = Box<type Int>(1);
 	val c: Box<String> = Box<type String>("s");
-	val x = b.tag();
-	val y = c.tag();
-	return x;
+	val _ = b.tag();
+	val _ = c.tag();
+	return b.tag();
 }
 """,
 		tmp_path,

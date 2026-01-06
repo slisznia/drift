@@ -5,6 +5,7 @@ LLVM lowering for functions that return function-pointer values.
 from __future__ import annotations
 
 from lang2.codegen.llvm import lower_module_to_llvm
+from lang2.codegen.llvm.test_utils import host_word_bits
 from lang2.driftc.checker import FnInfo, FnSignature
 from lang2.driftc.core.function_id import FunctionId, FunctionRefId, FunctionRefKind
 from lang2.driftc.core.types_core import TypeTable
@@ -53,12 +54,11 @@ def test_fnptr_return_type_lowering() -> None:
 		funcs={add1_info.fn_id: add1_mir, make_id: make_mir},
 		ssa_funcs={add1_info.fn_id: add1_ssa, make_id: make_ssa},
 		fn_infos={add1_info.fn_id: add1_info, make_id: make_info},
-		type_table=table,
-	)
+		type_table=table, word_bits=host_word_bits())
 	ir = mod.render()
 
-	assert "define i64 (i64)* @make()" in ir
-	assert "bitcast i64 (i64)* @add1 to i64 (i64)*" in ir
+	assert "define %drift.isize (%drift.isize)* @make()" in ir
+	assert "bitcast %drift.isize (%drift.isize)* @add1 to %drift.isize (%drift.isize)*" in ir
 
 
 def test_fnptr_return_fnresult_ok_payload() -> None:
@@ -86,9 +86,8 @@ def test_fnptr_return_fnresult_ok_payload() -> None:
 		funcs={add1_info.fn_id: add1_mir, make_id: make_mir},
 		ssa_funcs={add1_info.fn_id: add1_ssa, make_id: make_ssa},
 		fn_infos={add1_info.fn_id: add1_info, make_id: make_info},
-		type_table=table,
-	)
+		type_table=table, word_bits=host_word_bits())
 	ir = mod.render()
 
-	assert "%FnResult_FnPtr_Int_to_Int_NoThrow_Error = type { i1, i64 (i64)*, %DriftError* }" in ir
+	assert "%FnResult_FnPtr_Int_to_Int_NoThrow_Error = type { i1, %drift.isize (%drift.isize)*, %DriftError* }" in ir
 	assert "define %FnResult_FnPtr_Int_to_Int_NoThrow_Error @make()" in ir

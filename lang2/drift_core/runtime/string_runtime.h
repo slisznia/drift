@@ -22,6 +22,8 @@ DriftString drift_string_from_f64(double v);
 DriftString drift_string_from_bool(int v);
 DriftString drift_string_concat(DriftString a, DriftString b);
 int drift_string_eq(DriftString a, DriftString b);
+DriftString drift_string_retain(DriftString s);
+void drift_string_release(DriftString s);
 // DriftString lexicographic comparison by unsigned bytes.
 //
 // This is a deterministic, locale-independent ordering suitable for the

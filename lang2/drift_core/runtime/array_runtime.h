@@ -4,16 +4,21 @@
 #include <stddef.h>
 #include <stdint.h>
 
-typedef size_t drift_size;
+typedef ptrdiff_t drift_isize;
+typedef size_t drift_usize;
+_Static_assert(sizeof(drift_isize) == sizeof(void *), "drift_isize must be pointer-sized");
+_Static_assert(sizeof(drift_usize) == sizeof(void *), "drift_usize must be pointer-sized");
 
 typedef struct DriftArrayHeader {
-	drift_size len;
-	drift_size cap;
+	drift_usize len;
+	drift_usize cap;
 	void *data;
 } DriftArrayHeader;
 
-void *drift_alloc_array(size_t elem_size, size_t elem_align, drift_size len, drift_size cap);
+void *drift_alloc_array(size_t elem_size, size_t elem_align, drift_usize len, drift_usize cap);
+void drift_free_array(void *data);
+void drift_bounds_check(drift_isize idx, drift_usize len);
 __attribute__((noreturn))
-void drift_bounds_check_fail(drift_size idx, drift_size len);
+void drift_bounds_check_fail(drift_isize idx, drift_usize len);
 
 #endif // LANG2_ARRAY_RUNTIME_H

@@ -130,6 +130,9 @@ def _resolve_main_block(tmp_path: Path, source: str) -> tuple[H.HBlock, dict[int
 	)
 	assert diagnostics == []
 	func_hirs, signatures, fn_ids_by_name = flatten_modules(modules)
+	origin_by_fn_id: dict[FunctionId, Path] = {}
+	for mod in modules.values():
+		origin_by_fn_id.update(mod.origin_by_fn_id)
 	registry, module_ids = _build_registry(signatures)
 	impl_index = GlobalImplIndex.from_module_exports(
 		module_exports=module_exports,
@@ -142,13 +145,15 @@ def _resolve_main_block(tmp_path: Path, source: str) -> tuple[H.HBlock, dict[int
 		type_table=type_table,
 		module_ids=module_ids,
 	)
-	trait_scope_by_module: dict[str, list] = {}
+	trait_scope_by_file: dict[str, list] = {}
 	if isinstance(module_exports, dict):
-		for mod_name, exp in module_exports.items():
-			scope = []
+		for _mod_name, exp in module_exports.items():
 			if isinstance(exp, dict):
-				scope = list(exp.get("trait_scope", []) or [])
-			trait_scope_by_module[mod_name] = scope
+				scope_by_file = exp.get("trait_scope_by_file", {})
+				if isinstance(scope_by_file, dict):
+					for path, traits in scope_by_file.items():
+						if isinstance(path, str) and isinstance(traits, list):
+							trait_scope_by_file[path] = list(traits)
 	linked_world, require_env = build_linked_world(type_table)
 	conflicts = find_impl_method_conflicts(
 		module_exports=module_exports,
@@ -165,6 +170,7 @@ def _resolve_main_block(tmp_path: Path, source: str) -> tuple[H.HBlock, dict[int
 	param_types = {}
 	if main_sig and main_sig.param_names and main_sig.param_type_ids:
 		param_types = {pname: pty for pname, pty in zip(main_sig.param_names, main_sig.param_type_ids)}
+	current_file = str(origin_by_fn_id.get(main_id)) if main_id in origin_by_fn_id else None
 	current_mod = module_ids.setdefault(main_sig.module, len(module_ids))
 	visible_mods = tuple(sorted(module_ids.setdefault(mod, len(module_ids)) for mod in module_deps.get("main", {"main"})))
 	visibility_provenance = {mid: (name,) for name, mid in module_ids.items() if name is not None}
@@ -179,12 +185,13 @@ def _resolve_main_block(tmp_path: Path, source: str) -> tuple[H.HBlock, dict[int
 		impl_index=impl_index,
 		trait_index=trait_index,
 		trait_impl_index=trait_impl_index,
-		trait_scope_by_module=trait_scope_by_module,
+		trait_scope_by_file=trait_scope_by_file,
 		linked_world=linked_world,
 		require_env=require_env,
 		visible_modules=visible_mods,
 		current_module=current_mod,
 		visibility_provenance=visibility_provenance,
+		current_file=current_file,
 	)
 	return main_block, result.typed_fn.call_resolutions, signatures
 
@@ -201,6 +208,9 @@ def _resolve_main_with_meta(
 	)
 	assert diagnostics == []
 	func_hirs, signatures, fn_ids_by_name = flatten_modules(modules)
+	origin_by_fn_id: dict[FunctionId, Path] = {}
+	for mod in modules.values():
+		origin_by_fn_id.update(mod.origin_by_fn_id)
 	registry, module_ids = _build_registry(signatures)
 	impl_index = GlobalImplIndex.from_module_exports(
 		module_exports=module_exports,
@@ -213,13 +223,15 @@ def _resolve_main_with_meta(
 		type_table=type_table,
 		module_ids=module_ids,
 	)
-	trait_scope_by_module: dict[str, list] = {}
+	trait_scope_by_file: dict[str, list] = {}
 	if isinstance(module_exports, dict):
-		for mod_name, exp in module_exports.items():
-			scope = []
+		for _mod_name, exp in module_exports.items():
 			if isinstance(exp, dict):
-				scope = list(exp.get("trait_scope", []) or [])
-			trait_scope_by_module[mod_name] = scope
+				scope_by_file = exp.get("trait_scope_by_file", {})
+				if isinstance(scope_by_file, dict):
+					for path, traits in scope_by_file.items():
+						if isinstance(path, str) and isinstance(traits, list):
+							trait_scope_by_file[path] = list(traits)
 	linked_world, require_env = build_linked_world(type_table)
 	conflicts = find_impl_method_conflicts(
 		module_exports=module_exports,
@@ -236,6 +248,7 @@ def _resolve_main_with_meta(
 	param_types = {}
 	if main_sig and main_sig.param_names and main_sig.param_type_ids:
 		param_types = {pname: pty for pname, pty in zip(main_sig.param_names, main_sig.param_type_ids)}
+	current_file = str(origin_by_fn_id.get(main_id)) if main_id in origin_by_fn_id else None
 	current_mod = module_ids.setdefault(main_sig.module, len(module_ids))
 	visible_mods = tuple(sorted(module_ids.setdefault(mod, len(module_ids)) for mod in module_deps.get("main", {"main"})))
 	visibility_provenance = {mid: (name,) for name, mid in module_ids.items() if name is not None}
@@ -250,12 +263,13 @@ def _resolve_main_with_meta(
 		impl_index=impl_index,
 		trait_index=trait_index,
 		trait_impl_index=trait_impl_index,
-		trait_scope_by_module=trait_scope_by_module,
+		trait_scope_by_file=trait_scope_by_file,
 		linked_world=linked_world,
 		require_env=require_env,
 		visible_modules=visible_mods,
 		current_module=current_mod,
 		visibility_provenance=visibility_provenance,
+		current_file=current_file,
 	)
 	return main_block, result, signatures, module_exports, type_table
 
@@ -484,14 +498,14 @@ module main
 pub struct Box { value: Int }
 pub struct Item { value: Int }
 
-pub trait Debuggable { fn debug(self: &Self) -> String; }
-pub trait Printable require Self is Debuggable { fn show(self: &Self) -> String; }
+pub trait Debug { fn debug(self: &Self) -> String; }
+pub trait Printable require Self is Debug { fn show(self: &Self) -> String; }
 
-implement Debuggable for Item { fn debug(self: &Item) -> String { return "d"; } }
+implement Debug for Item { fn debug(self: &Item) -> String { return "d"; } }
 implement Printable for Item { fn show(self: &Item) -> String { return "p"; } }
 
 implement Box {
-	pub fn f<T>(self: Box, x: T) -> Int require T is Debuggable { return 1; }
+	pub fn f<T>(self: Box, x: T) -> Int require T is Debug { return 1; }
 	pub fn f<T>(self: Box, x: T) -> Int require T is Printable { return 2; }
 }
 
@@ -550,16 +564,16 @@ def test_trait_impl_require_prefers_trait_dependency(tmp_path: Path) -> None:
 		"""
 module m_lib
 
-export { Box, Item, Debuggable, Printable, Show };
+export { Box, Item, Debug, Printable, Show };
 
 pub struct Box<T> { value: T }
 pub struct Item { value: Int }
 
-pub trait Debuggable { fn debug(self: &Self) -> String; }
-pub trait Printable require Self is Debuggable { fn show(self: &Self) -> String; }
+pub trait Debug { fn debug(self: &Self) -> String; }
+pub trait Printable require Self is Debug { fn show(self: &Self) -> String; }
 pub trait Show { fn show(self: &Self) -> Int; }
 
-implement Debuggable for Item { fn debug(self: &Item) -> String { return "d"; } }
+implement Debug for Item { fn debug(self: &Item) -> String { return "d"; } }
 implement Printable for Item { fn show(self: &Item) -> String { return "p"; } }
 """,
 	)
@@ -570,7 +584,7 @@ module m_impl_a
 
 import m_lib;
 
-implement<T> m_lib.Show for m_lib.Box<T> require T is m_lib.Debuggable {
+implement<T> m_lib.Show for m_lib.Box<T> require T is m_lib.Debug {
 	pub fn show(self: &m_lib.Box<T>) -> Int { return 1; }
 }
 """,

@@ -1,0 +1,5 @@
+fn main() nothrow -> Int {
+	var a = [40, 2];
+	var b = a.dup();
+	return a[0] + b[1];
+}

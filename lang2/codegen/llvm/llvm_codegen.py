@@ -5,7 +5,7 @@ SSA → LLVM IR lowering for the v1 Drift ABI (textual emitter).
 
 Scope (v1 bring-up):
   - Input: SSA (`SsaFunc`) plus MIR (`MirFunc`) and `FnInfo` metadata.
-  - Supported types: Int (i64), Bool (i1 in regs), String ({%drift.size, i8*}),
+  - Supported types: Int (isize), Bool (i1 in regs), String ({%drift.size, i8*}),
     Array<T>, and FnResult<ok, Error> where ok ∈ {Int, String, Void-like, Ref<T>,
     Struct, Variant, FnPtr} (arrays are supported as values but not as FnResult ok
     payloads yet).
@@ -19,13 +19,13 @@ Scope (v1 bring-up):
   - Control flow: straight-line, if/else, and loops/backedges (general CFGs).
 
 ABI (from docs/design/drift-lang-abi.md):
-  - %DriftError           = { i64 code, i8* attrs, i64 attr_count, i8* frames, i64 frame_count }
-  - %FnResult_Int_Error   = { i1 is_err, i64 ok, %DriftError* err }
+  - %DriftError           = { u64 code, %DriftString event_fqn, i8* attrs, usize attr_count, i8* frames, usize frame_count }
+  - %FnResult_Int_Error   = { i1 is_err, isize ok, %DriftError* err }
   - %FnResult_String_Error= { i1 is_err, %DriftString ok, %DriftError* err }
   - %FnResult_Void_Error  = { i1 is_err, i8 ok, %DriftError* err } (void-like ok)
-  - %DriftString          = { %drift.size, i8* }
-  - %drift.size           = i64 (Uint carrier)
-  - Drift Int is i64; Bool is i1 in registers.
+  - %DriftString          = { %drift.usize, i8* }
+  - %drift.isize/%drift.usize are word-sized carriers for Int/Uint
+  - Drift Int is pointer-sized; Bool is i1 in registers.
 
 This emitter is deliberately small and produces LLVM text suitable for feeding
 to `lli`/`clang` in tests. It avoids allocas and relies on SSA/phinode lowering
@@ -35,6 +35,7 @@ directly. Unsupported features raise clear errors rather than emitting bad IR.
 from __future__ import annotations
 
 import re
+import struct
 from dataclasses import dataclass, field
 from typing import Dict, List, Mapping, Optional
 
@@ -47,6 +48,14 @@ from lang2.driftc.stage2 import (
 	ArrayIndexStore,
 	ArrayLen,
 	ArrayLit,
+	ArrayAlloc,
+	ArrayElemInit,
+	ArrayElemInitUnchecked,
+	ArrayElemAssign,
+	ArrayElemDrop,
+	ArrayDrop,
+	ArrayDup,
+	ArraySetLen,
 	AssignSSA,
 	BinaryOpInstr,
 	Call,
@@ -59,9 +68,18 @@ from lang2.driftc.stage2 import (
 	ConstructDV,
 	ConstBool,
 	ConstInt,
+	ConstUint,
+	ConstUint64,
+	IntFromUint,
+	UintFromInt,
 	ConstString,
 	FnPtrConst,
 	ZeroValue,
+	StringRetain,
+	StringRelease,
+	CopyValue,
+	DropValue,
+	MoveOut,
 	ConstructError,
 	ErrorAddAttrDV,
 	ErrorEvent,
@@ -109,7 +127,12 @@ from lang2.driftc.core.xxhash64 import hash64
 DRIFT_ERROR_TYPE = "%DriftError"
 DRIFT_ERROR_PTR = f"{DRIFT_ERROR_TYPE}*"
 FNRESULT_INT_ERROR = "%FnResult_Int_Error"
-DRIFT_SIZE_TYPE = "%drift.size"
+DRIFT_ISIZE_TYPE = "%drift.isize"
+DRIFT_USIZE_TYPE = "%drift.usize"
+DRIFT_INT_TYPE = DRIFT_ISIZE_TYPE
+DRIFT_UINT_TYPE = DRIFT_USIZE_TYPE
+DRIFT_U64_TYPE = "i64"
+DRIFT_ERROR_CODE_TYPE = DRIFT_U64_TYPE
 DRIFT_STRING_TYPE = "%DriftString"
 
 # --- LLVM identifier helpers ---
@@ -157,6 +180,7 @@ def lower_ssa_func_to_llvm(
 	fn_info: FnInfo,
 	fn_infos: Mapping[FunctionId, FnInfo] | None = None,
 	type_table: Optional[TypeTable] = None,
+	word_bits: int | None = None,
 ) -> str:
 	"""
 	Lower a single SSA function to LLVM IR text using FnInfo for return typing.
@@ -175,7 +199,9 @@ def lower_ssa_func_to_llvm(
 	  - General CFGs (including loops/backedges) are supported in v1.
 	"""
 	all_infos = dict(fn_infos) if fn_infos is not None else {fn_info.fn_id: fn_info}
-	mod = LlvmModuleBuilder()
+	if word_bits is None:
+		raise AssertionError("LLVM codegen requires explicit word_bits")
+	mod = LlvmModuleBuilder(word_bits=word_bits)
 	builder = _FuncBuilder(func=func, ssa=ssa, fn_info=fn_info, fn_infos=all_infos, module=mod, type_table=type_table)
 	mod.emit_func(builder.lower())
 	return mod.render()
@@ -188,6 +214,7 @@ def lower_module_to_llvm(
 	type_table: Optional[TypeTable] = None,
 	rename_map: Optional[Mapping[FunctionId, str]] = None,
 	argv_wrapper: Optional[str] = None,
+	word_bits: int | None = None,
 ) -> LlvmModuleBuilder:
 	"""
 	Lower a set of SSA functions to an LLVM module.
@@ -197,7 +224,9 @@ def lower_module_to_llvm(
 	  ssa_funcs: name -> SSA wrapper (must align with funcs)
 	  fn_infos: FunctionId -> FnInfo for each function
 	"""
-	mod = LlvmModuleBuilder()
+	if word_bits is None:
+		raise AssertionError("LLVM codegen requires explicit word_bits")
+	mod = LlvmModuleBuilder(word_bits=word_bits)
 
 	# --- ABI-boundary export wrappers (Milestone 4) --------------------------
 	#
@@ -213,10 +242,11 @@ def lower_module_to_llvm(
 	# to the `__impl` symbol and therefore keep the internal calling convention.
 	#
 	# Wrapper calling convention:
-	# - If the function is can-throw, the wrapper forwards the internal
-	#   `FnResult<ok, Error>` carrier unchanged.
-	# - If the function is not can-throw, the wrapper returns a `FnResult<ok, Error>`
-	#   with `is_err=false` and `err=null`.
+	# - Exported symbols use the boundary `Result<ok, Error*>` ABI:
+	#   - non-void: `{ ok, err* }`
+	#   - void: `err*` (null on success)
+	# - Internal functions continue to return `FnResult<ok, Error>` for throw
+	#   checks and MIR lowering.
 	#
 	# This preserves the language semantics ("-> T") while making the
 	# module interface uniformly boundary-shaped.
@@ -292,41 +322,68 @@ def lower_module_to_llvm(
 			param_parts.append(f"{llty} %{param_names[i]}")
 		params_str = ", ".join(param_parts)
 
-		# Return type: always a boundary FnResult for exported entrypoints.
+		# Return type: boundary Result for exported entrypoints.
 		ok_llty, ok_key = type_builder._llvm_ok_type_for_sig(sig)
-		fnres_llty = mod.fnresult_type(ok_key, ok_llty)
+		ret_tid = sig.return_type_id
+		ok_abi_llty = ok_llty
+		if ret_tid is not None:
+			ok_abi_llty = type_builder._llvm_ok_abi_type_for_typeid(ret_tid)
+		is_void_ret = ret_tid is not None and type_builder._is_void_typeid(ret_tid)
+		res_llty = DRIFT_ERROR_PTR if is_void_ret else f"{{ {ok_abi_llty}, {DRIFT_ERROR_PTR} }}"
 
 		lines: list[str] = []
-		lines.append(f"define {fnres_llty} {_llvm_fn_sym(function_symbol(public))}({params_str}) {{")
+		lines.append(f"define {res_llty} {_llvm_fn_sym(function_symbol(public))}({params_str}) {{")
 		lines.append("entry:")
 		args = ", ".join(f"{type_builder._llvm_type_for_typeid(t)} %{n}" for t, n in zip(param_tids, param_names))
 
 		if info.declared_can_throw:
-			# Forward can-throw carrier result unchanged.
+			# Convert internal FnResult<ok, Error*> to boundary Result ABI.
+			fnres_llty = mod.fnresult_type(ok_key, ok_llty)
 			lines.append(f"  %res = call {fnres_llty} {_llvm_fn_sym(impl)}({args})")
-			lines.append(f"  ret {fnres_llty} %res")
+			if is_void_ret:
+				lines.append(f"  %err = extractvalue {fnres_llty} %res, 2")
+				lines.append(f"  ret {DRIFT_ERROR_PTR} %err")
+			else:
+				ok_zero = type_builder._zero_value_for_ok(ok_abi_llty)
+				lines.append(f"  %is_err = extractvalue {fnres_llty} %res, 0")
+				lines.append(f"  %ok = extractvalue {fnres_llty} %res, 1")
+				lines.append(f"  %err = extractvalue {fnres_llty} %res, 2")
+				ok_val = "%ok"
+				if ok_llty != ok_abi_llty:
+					if ok_llty == "i1" and ok_abi_llty == "i8":
+						ok_val = "%ok_abi"
+						lines.append(f"  {ok_val} = zext i1 %ok to i8")
+					else:
+						raise AssertionError("LLVM codegen v1: unsupported ok ABI coercion")
+				lines.append(f"  %ok_sel = select i1 %is_err, {ok_zero}, {ok_abi_llty} {ok_val}")
+				lines.append(f"  %err_sel = select i1 %is_err, {DRIFT_ERROR_PTR} %err, {DRIFT_ERROR_PTR} null")
+				lines.append(f"  %tmp0 = insertvalue {res_llty} undef, {ok_abi_llty} %ok_sel, 0")
+				lines.append(f"  %tmp1 = insertvalue {res_llty} %tmp0, {DRIFT_ERROR_PTR} %err_sel, 1")
+				lines.append(f"  ret {res_llty} %tmp1")
 		else:
-			# Wrap a non-throwing return into FnResult.Ok(...).
-			ret_tid = sig.return_type_id
-			is_void_ret = ret_tid is not None and type_builder._is_void_typeid(ret_tid)
 			if is_void_ret:
 				lines.append(f"  call void {_llvm_fn_sym(impl)}({args})")
-				ok_val = "0"
+				lines.append(f"  ret {DRIFT_ERROR_PTR} null")
 			else:
-				ret_ty = "i64"
+				ret_ty = DRIFT_INT_TYPE
 				if ret_tid is not None and type_table is not None:
 					ret_ty = type_builder._llvm_type_for_typeid(ret_tid)
 				lines.append(f"  %ok = call {ret_ty} {_llvm_fn_sym(impl)}({args})")
 				ok_val = "%ok"
-			lines.append(f"  %tmp0 = insertvalue {fnres_llty} undef, i1 0, 0")
-			lines.append(f"  %tmp1 = insertvalue {fnres_llty} %tmp0, {ok_llty} {ok_val}, 1")
-			lines.append(f"  %tmp2 = insertvalue {fnres_llty} %tmp1, {DRIFT_ERROR_PTR} null, 2")
-			lines.append(f"  ret {fnres_llty} %tmp2")
+				if ok_llty != ok_abi_llty:
+					if ok_llty == "i1" and ok_abi_llty == "i8":
+						ok_val = "%ok_abi"
+						lines.append(f"  {ok_val} = zext i1 %ok to i8")
+					else:
+						raise AssertionError("LLVM codegen v1: unsupported ok ABI coercion")
+				lines.append(f"  %tmp0 = insertvalue {res_llty} undef, {ok_abi_llty} {ok_val}, 0")
+				lines.append(f"  %tmp1 = insertvalue {res_llty} %tmp0, {DRIFT_ERROR_PTR} null, 1")
+				lines.append(f"  ret {res_llty} %tmp1")
 		lines.append("}")
 		mod.emit_func("\n".join(lines))
 
 	if argv_wrapper is not None:
-		array_llty = f"{{ {DRIFT_SIZE_TYPE}, {DRIFT_SIZE_TYPE}, {DRIFT_STRING_TYPE}* }}"
+		array_llty = f"{{ {DRIFT_UINT_TYPE}, {DRIFT_UINT_TYPE}, {DRIFT_STRING_TYPE}* }}"
 		mod.emit_argv_entry_wrapper(user_main=argv_wrapper, array_type=array_llty)
 	return mod
 
@@ -354,6 +411,7 @@ def _escape_byte(b: int) -> str:
 class LlvmModuleBuilder:
 	"""Textual LLVM module builder with seeded ABI type declarations."""
 
+	word_bits: int
 	type_decls: List[str] = field(default_factory=list)
 	consts: List[str] = field(default_factory=list)
 	funcs: List[str] = field(default_factory=list)
@@ -366,6 +424,9 @@ class LlvmModuleBuilder:
 	needs_string_from_uint64: bool = False
 	needs_string_from_bool: bool = False
 	needs_string_from_f64: bool = False
+	needs_string_retain: bool = False
+	needs_string_release: bool = False
+	needs_memcpy: bool = False
 	needs_argv_helper: bool = False
 	needs_console_runtime: bool = False
 	needs_dv_runtime: bool = False
@@ -377,25 +438,28 @@ class LlvmModuleBuilder:
 	_fnresult_unwrap_helpers: Dict[str, str] = field(default_factory=dict)
 	_struct_types_by_name: Dict[str, str] = field(default_factory=dict)
 	_variant_types_by_key: Dict[str, str] = field(default_factory=dict)
+	array_drop_helpers: Dict[str, str] = field(default_factory=dict)
 
 	def __post_init__(self) -> None:
-		if DRIFT_SIZE_TYPE.startswith("%"):
-			self.type_decls.append(f"{DRIFT_SIZE_TYPE} = type i64")
+		if DRIFT_ISIZE_TYPE.startswith("%"):
+			self.type_decls.append(f"{DRIFT_ISIZE_TYPE} = type i{self.word_bits}")
+		if DRIFT_USIZE_TYPE.startswith("%"):
+			self.type_decls.append(f"{DRIFT_USIZE_TYPE} = type i{self.word_bits}")
 		self.type_decls.extend(
 			[
-				f"{DRIFT_STRING_TYPE} = type {{ {DRIFT_SIZE_TYPE}, i8* }}",
-				f"{DRIFT_ERROR_TYPE} = type {{ i64, {DRIFT_STRING_TYPE}, i8*, {DRIFT_SIZE_TYPE}, i8*, {DRIFT_SIZE_TYPE} }}",
-				f"{FNRESULT_INT_ERROR} = type {{ i1, i64, {DRIFT_ERROR_PTR} }}",
+				f"{DRIFT_STRING_TYPE} = type {{ {DRIFT_USIZE_TYPE}, i8* }}",
+				f"{DRIFT_ERROR_TYPE} = type {{ {DRIFT_ERROR_CODE_TYPE}, {DRIFT_STRING_TYPE}, i8*, {DRIFT_USIZE_TYPE}, i8*, {DRIFT_USIZE_TYPE} }}",
+				f"{FNRESULT_INT_ERROR} = type {{ i1, {DRIFT_INT_TYPE}, {DRIFT_ERROR_PTR} }}",
 				f"{DRIFT_DV_TYPE} = type {{ i8, [7 x i8], [2 x i64] }}",
-				f"{DRIFT_OPT_INT_TYPE} = type {{ i8, i64 }}",
+				f"{DRIFT_OPT_INT_TYPE} = type {{ i8, {DRIFT_INT_TYPE} }}",
 				f"{DRIFT_OPT_BOOL_TYPE} = type {{ i8, i8 }}",
 				f"{DRIFT_OPT_STRING_TYPE} = type {{ i8, {DRIFT_STRING_TYPE} }}",
-				"%DriftArrayHeader = type { i64, i64, i8* }",
+				f"%DriftArrayHeader = type {{ {DRIFT_USIZE_TYPE}, {DRIFT_USIZE_TYPE}, i8* }}",
 			]
 		)
 		# Seed the canonical FnResult types for supported ok payloads.
 		self._fnresult_types_by_key["Int"] = FNRESULT_INT_ERROR
-		self._fnresult_ok_llty_by_type[FNRESULT_INT_ERROR] = "i64"
+		self._fnresult_ok_llty_by_type[FNRESULT_INT_ERROR] = DRIFT_INT_TYPE
 		self._declare_fnresult_named_type("Void", "i8", "%FnResult_Void_Error")
 		self._declare_fnresult_named_type("String", DRIFT_STRING_TYPE, "%FnResult_String_Error")
 
@@ -457,6 +521,8 @@ class LlvmModuleBuilder:
 		ty_id: TypeId,
 		*,
 		payload_words: int,
+		payload_cell_llty: str,
+		payload_align_bytes: int,
 		type_table: TypeTable,
 	) -> str:
 		"""
@@ -467,11 +533,10 @@ class LlvmModuleBuilder:
 		repeating literal struct types everywhere.
 
 		Internal representation (v1):
-		  %Variant_<module>_<name>_<hash> = type { i8 tag, [7 x i8] pad, [payload_words x i64] payload }
+		  %Variant_<module>_<name>_<hash> = type { i8 tag, [pad x i8] pad, [payload_words x <cell>] payload }
 
-		The 7-byte pad ensures the payload begins at an 8-byte aligned offset,
-		which is sufficient for all currently supported field types (Int/Uint,
-		Float, pointers, DriftString, and aggregates built from those).
+		The pad ensures the payload begins at a payload-aligned offset (accounting
+		for any wider field alignments such as Float on 32-bit targets).
 		"""
 		type_key = type_table.type_key_string(ty_id)
 		if type_key in self._variant_types_by_key:
@@ -491,9 +556,13 @@ class LlvmModuleBuilder:
 		safe_name = "".join(ch if (ch.isalnum() or ch == "_") else "_" for ch in name)
 		suffix = f"{hash64(type_key.encode()):016x}"
 		payload_words = max(1, int(payload_words))
+		payload_align_bytes = max(1, int(payload_align_bytes))
+		pad_len = max(0, payload_align_bytes - 1)
 		llvm_name = f"%Variant_{safe_mod}_{safe_name}_{suffix}"
 		self._variant_types_by_key[type_key] = llvm_name
-		self.type_decls.append(f"{llvm_name} = type {{ i8, [7 x i8], [{payload_words} x i64] }}")
+		self.type_decls.append(
+			f"{llvm_name} = type {{ i8, [{pad_len} x i8], [{payload_words} x {payload_cell_llty}] }}"
+		)
 		return llvm_name
 
 	def fnresult_type(self, ok_key: str, ok_llty: str) -> str:
@@ -502,7 +571,7 @@ class LlvmModuleBuilder:
 
 		We emit named types per ok payload for readability/ABI stability. Supported
 		ok payloads in v1 include:
-		  - Int (i64), String (%DriftString), Void-like (i8), Ref<T> (T*)
+		  - Int (isize), String (%DriftString), Void-like (i8), Ref<T> (T*)
 		  - concrete Struct and Variant values by-value (compiler-private ABI)
 
 		Error slot is always %DriftError*.
@@ -570,17 +639,17 @@ class LlvmModuleBuilder:
 		"""
 		Emit a tiny OS entrypoint wrapper that calls `@drift_main` and truncs to i32.
 
-		This keeps the Drift ABI (i64 Int, FnResult later) distinct from the
+		This keeps the Drift ABI (isize Int, FnResult later) distinct from the
 		process ABI. Err-mapping is not yet implemented; the wrapper simply
-		truncates the i64 return to i32 for exit.
+		truncates the isize return to i32 for exit.
 		"""
 		self.funcs.append(
 			"\n".join(
 				[
 					"define i32 @main() {",
 					"entry:",
-					f"  %ret = call i64 {_llvm_fn_sym(drift_main)}()",
-					"  %trunc = trunc i64 %ret to i32",
+					f"  %ret = call {DRIFT_INT_TYPE} {_llvm_fn_sym(drift_main)}()",
+					f"  %trunc = trunc {DRIFT_INT_TYPE} %ret to i32",
 					"  ret i32 %trunc",
 					"}",
 				]
@@ -591,7 +660,7 @@ class LlvmModuleBuilder:
 		"""
 		Emit an OS entry for `main(argv: Array<String>) -> Int`.
 
-		Builds Array<String> via the runtime helper and truncates the i64 Int
+		Builds Array<String> via the runtime helper and truncates the isize Int
 		result to i32 for the process exit code.
 		"""
 		self.needs_argv_helper = True
@@ -600,17 +669,17 @@ class LlvmModuleBuilder:
 			"define i32 @main(i32 %argc, i8** %argv) {",
 			"entry:",
 			"  %arr.ptr = alloca %DriftArrayHeader",
-			"  call void @drift_build_argv(%DriftArrayHeader* sret(%DriftArrayHeader) %arr.ptr, i32 %argc, i8** %argv)",
+			"  call void @drift_build_argv(%DriftArrayHeader* %arr.ptr, i32 %argc, i8** %argv)",
 			"  %arr = load %DriftArrayHeader, %DriftArrayHeader* %arr.ptr",
 			"  %len = extractvalue %DriftArrayHeader %arr, 0",
 			"  %cap = extractvalue %DriftArrayHeader %arr, 1",
 			"  %data_raw = extractvalue %DriftArrayHeader %arr, 2",
 			"  %data = bitcast i8* %data_raw to %DriftString*",
-			f"  %tmp0 = insertvalue {array_type} undef, {DRIFT_SIZE_TYPE} %len, 0",
-			f"  %tmp1 = insertvalue {array_type} %tmp0, {DRIFT_SIZE_TYPE} %cap, 1",
+			f"  %tmp0 = insertvalue {array_type} undef, {DRIFT_UINT_TYPE} %len, 0",
+			f"  %tmp1 = insertvalue {array_type} %tmp0, {DRIFT_UINT_TYPE} %cap, 1",
 			f"  %argv_typed = insertvalue {array_type} %tmp1, %DriftString* %data, 2",
-			f"  %ret = call i64 {_llvm_fn_sym(user_main)}({array_type} %argv_typed)",
-			"  %trunc = trunc i64 %ret to i32",
+			f"  %ret = call {DRIFT_INT_TYPE} {_llvm_fn_sym(user_main)}({array_type} %argv_typed)",
+			f"  %trunc = trunc {DRIFT_INT_TYPE} %ret to i32",
 			"  ret i32 %trunc",
 			"}",
 		]
@@ -628,17 +697,21 @@ class LlvmModuleBuilder:
 				lines.append(f"{_llvm_comdat_sym(name)} = comdat any")
 			lines.append("")
 		if self.needs_argv_helper:
-			array_type = self.array_string_type or f"{{ {DRIFT_SIZE_TYPE}, {DRIFT_SIZE_TYPE}, {DRIFT_STRING_TYPE}* }}"
-			lines.append(f"declare void @drift_build_argv(%DriftArrayHeader* sret(%DriftArrayHeader), i32, i8**)")
+			array_type = self.array_string_type or f"{{ {DRIFT_UINT_TYPE}, {DRIFT_UINT_TYPE}, {DRIFT_STRING_TYPE}* }}"
+			lines.append("declare void @drift_build_argv(%DriftArrayHeader*, i32, i8**)")
 			lines.append("")
 		if self.needs_array_helpers:
 			lines.extend(
 				[
-					f"declare i8* @drift_alloc_array(i64, i64, {DRIFT_SIZE_TYPE}, {DRIFT_SIZE_TYPE})",
-					f"declare void @drift_bounds_check_fail({DRIFT_SIZE_TYPE}, {DRIFT_SIZE_TYPE})",
+					f"declare i8* @drift_alloc_array({DRIFT_USIZE_TYPE}, {DRIFT_USIZE_TYPE}, {DRIFT_USIZE_TYPE}, {DRIFT_USIZE_TYPE})",
+					"declare void @drift_free_array(i8*)",
+					f"declare void @drift_bounds_check({DRIFT_ISIZE_TYPE}, {DRIFT_USIZE_TYPE})",
+					f"declare void @drift_bounds_check_fail({DRIFT_ISIZE_TYPE}, {DRIFT_USIZE_TYPE})",
 					"",
 				]
 			)
+		if self.needs_memcpy:
+			lines.append("declare void @llvm.memcpy.p0i8.p0i8.i64(i8*, i8*, i64, i1)")
 		if self.needs_string_eq:
 			lines.append(f"declare i1 @drift_string_eq({DRIFT_STRING_TYPE}, {DRIFT_STRING_TYPE})")
 		if self.needs_string_cmp:
@@ -654,6 +727,10 @@ class LlvmModuleBuilder:
 			lines.append(f"declare {DRIFT_STRING_TYPE} @drift_string_from_bool(i32)")
 		if self.needs_string_from_f64:
 			lines.append(f"declare {DRIFT_STRING_TYPE} @drift_string_from_f64(double)")
+		if self.needs_string_retain:
+			lines.append(f"declare {DRIFT_STRING_TYPE} @drift_string_retain({DRIFT_STRING_TYPE})")
+		if self.needs_string_release:
+			lines.append(f"declare void @drift_string_release({DRIFT_STRING_TYPE})")
 		if (
 			self.needs_string_eq
 			or self.needs_string_cmp
@@ -662,6 +739,8 @@ class LlvmModuleBuilder:
 			or self.needs_string_from_uint64
 			or self.needs_string_from_bool
 			or self.needs_string_from_f64
+			or self.needs_string_retain
+			or self.needs_string_release
 		):
 			lines.append("")
 		if self.needs_console_runtime:
@@ -690,8 +769,8 @@ class LlvmModuleBuilder:
 		if self.needs_error_runtime:
 			lines.extend(
 				[
-					f"declare {DRIFT_ERROR_PTR} @drift_error_new(i64, {DRIFT_STRING_TYPE})",
-					f"declare {DRIFT_ERROR_PTR} @drift_error_new_with_payload(i64, {DRIFT_STRING_TYPE}, {DRIFT_STRING_TYPE}, {DRIFT_DV_TYPE})",
+					f"declare {DRIFT_ERROR_PTR} @drift_error_new({DRIFT_ERROR_CODE_TYPE}, {DRIFT_STRING_TYPE})",
+					f"declare {DRIFT_ERROR_PTR} @drift_error_new_with_payload({DRIFT_ERROR_CODE_TYPE}, {DRIFT_STRING_TYPE}, {DRIFT_STRING_TYPE}, {DRIFT_DV_TYPE})",
 					f"declare void @drift_error_add_attr_dv({DRIFT_ERROR_PTR}, {DRIFT_STRING_TYPE}, {DRIFT_DV_TYPE}*)",
 					"",
 				]
@@ -724,6 +803,9 @@ class _VariantLayout:
 
 	llvm_ty: str
 	payload_words: int
+	payload_cell_llty: str
+	payload_cell_bytes: int
+	payload_align_bytes: int
 	arms: Dict[str, _VariantArmLayout]
 
 
@@ -749,6 +831,7 @@ class _FuncBuilder:
 	lines: List[str] = field(default_factory=list)
 	value_map: Dict[str, str] = field(default_factory=dict)
 	value_types: Dict[str, str] = field(default_factory=dict)
+	const_values: Dict[str, int] = field(default_factory=dict)
 	aliases: Dict[str, str] = field(default_factory=dict)
 	# Locals whose address is taken via AddrOfLocal. These locals must be
 	# represented as real storage (alloca + load/store) because references
@@ -773,6 +856,7 @@ class _FuncBuilder:
 	# Variant lowering caches (compiler-private ABI).
 	_variant_layouts: Dict[TypeId, "_VariantLayout"] = field(default_factory=dict)
 	_size_align_cache: Dict[TypeId, tuple[int, int]] = field(default_factory=dict)
+	_drop_cache: Dict[TypeId, bool] = field(default_factory=dict)
 	def lower(self) -> str:
 		self._assert_cfg_supported()
 		self._prime_type_ids()
@@ -789,7 +873,7 @@ class _FuncBuilder:
 		# the textual emission order can drift (e.g. when SSA doesn't record an
 		# explicit block order). Make the invariant explicit here: always emit
 		# `self.func.entry` first.
-		order = self.ssa.block_order or list(self.func.blocks.keys())
+		order = self.ssa.block_order or sorted(self.func.blocks.keys())
 		if order and order[0] != self.func.entry:
 			order = [self.func.entry] + [b for b in order if b != self.func.entry]
 		for block_name in order:
@@ -830,14 +914,6 @@ class _FuncBuilder:
 				self.void_type_id = ty_id
 			if ty_def.kind is TypeKind.DIAGNOSTICVALUE:
 				self.dv_type_id = ty_id
-			if ty_def.kind is TypeKind.OPTIONAL and ty_def.param_types:
-				inner = ty_def.param_types[0]
-				if inner == self.int_type_id:
-					self.opt_int_type_id = ty_id
-				if inner == self.bool_type_id:
-					self.opt_bool_type_id = ty_id
-				if inner == self.string_type_id:
-					self.opt_string_type_id = ty_id
 
 	def _emit_header(self) -> None:
 		ret_ty = self._return_llvm_type()
@@ -869,7 +945,22 @@ class _FuncBuilder:
 	def _declare_array_helpers_if_needed(self) -> None:
 		"""Mark the module to emit array helper decls if any array ops are present."""
 		has_array = any(
-			isinstance(instr, (ArrayLit, ArrayIndexLoad, ArrayIndexStore))
+			isinstance(
+				instr,
+				(
+					ArrayLit,
+	ArrayAlloc,
+	ArrayElemInit,
+	ArrayElemInitUnchecked,
+	ArrayElemAssign,
+	ArrayElemDrop,
+	ArrayDrop,
+	ArrayDup,
+	ArrayIndexLoad,
+	ArrayIndexStore,
+	ArraySetLen,
+				),
+			)
 			for block in self.func.blocks.values()
 			for instr in block.instructions
 		)
@@ -942,6 +1033,12 @@ class _FuncBuilder:
 		self.value_types[self.value_map[alloca_id]] = f"{llty}*"
 		self.lines.insert(self._entry_alloca_insert_index, f"  %{alloca_id} = alloca {llty}")
 		self._entry_alloca_insert_index += 1
+		if llty == DRIFT_STRING_TYPE:
+			self.lines.insert(
+				self._entry_alloca_insert_index,
+				f"  store {llty} zeroinitializer, {llty}* %{alloca_id}",
+			)
+			self._entry_alloca_insert_index += 1
 		return alloca_id
 
 	def _emit_entry_param_inits(self) -> None:
@@ -958,11 +1055,17 @@ class _FuncBuilder:
 		for pname, ty_id in zip(self.func.params, self.fn_info.signature.param_type_ids):
 			if pname not in self.addr_taken_locals:
 				continue
-			llty = self._llvm_type_for_typeid(ty_id)
-			alloca_id = self._ensure_local_storage(pname, llty)
+			val_llty = self._llvm_type_for_typeid(ty_id)
+			store_llty = self._llvm_storage_type_for_typeid(ty_id)
+			alloca_id = self._ensure_local_storage(pname, store_llty)
 			assert self._entry_alloca_insert_index is not None
 			param_val = self._map_value(pname)
-			self.lines.insert(self._entry_alloca_insert_index, f"  store {llty} {param_val}, {llty}* %{alloca_id}")
+			if store_llty == "i8" and val_llty == "i1":
+				tmp = self._fresh("bool8")
+				self.lines.insert(self._entry_alloca_insert_index, f"  {tmp} = zext i1 {param_val} to i8")
+				self._entry_alloca_insert_index += 1
+				param_val = tmp
+			self.lines.insert(self._entry_alloca_insert_index, f"  store {store_llty} {param_val}, {store_llty}* %{alloca_id}")
 			self._entry_alloca_insert_index += 1
 
 	def _emit_block(self, block_name: str) -> None:
@@ -1011,8 +1114,39 @@ class _FuncBuilder:
 	def _lower_instr(self, instr: object, instr_index: int | None = None) -> None:
 		if isinstance(instr, ConstInt):
 			dest = self._map_value(instr.dest)
-			self.value_types[dest] = "i64"
-			self.lines.append(f"  {dest} = add i64 0, {instr.value}")
+			self.value_types[dest] = DRIFT_INT_TYPE
+			self.const_values[dest] = int(instr.value)
+			self.lines.append(f"  {dest} = add {DRIFT_INT_TYPE} 0, {instr.value}")
+		elif isinstance(instr, ConstUint):
+			dest = self._map_value(instr.dest)
+			self.value_types[dest] = DRIFT_UINT_TYPE
+			self.const_values[dest] = int(instr.value)
+			self.lines.append(f"  {dest} = add {DRIFT_UINT_TYPE} 0, {instr.value}")
+		elif isinstance(instr, ConstUint64):
+			dest = self._map_value(instr.dest)
+			self.value_types[dest] = DRIFT_U64_TYPE
+			self.const_values[dest] = int(instr.value)
+			self.lines.append(f"  {dest} = add {DRIFT_U64_TYPE} 0, {instr.value}")
+		elif isinstance(instr, IntFromUint):
+			dest = self._map_value(instr.dest)
+			val = self._map_value(instr.value)
+			val_ty = self.value_types.get(val)
+			if val_ty != DRIFT_USIZE_TYPE:
+				raise NotImplementedError(
+					f"LLVM codegen v1: IntFromUint requires Uint operand (have {val_ty})"
+				)
+			self.lines.append(f"  {dest} = add {DRIFT_INT_TYPE} {val}, 0")
+			self.value_types[dest] = DRIFT_INT_TYPE
+		elif isinstance(instr, UintFromInt):
+			dest = self._map_value(instr.dest)
+			val = self._map_value(instr.value)
+			val_ty = self.value_types.get(val)
+			if val_ty != DRIFT_INT_TYPE:
+				raise NotImplementedError(
+					f"LLVM codegen v1: UintFromInt requires Int operand (have {val_ty})"
+				)
+			self.lines.append(f"  {dest} = add {DRIFT_USIZE_TYPE} {val}, 0")
+			self.value_types[dest] = DRIFT_USIZE_TYPE
 		elif isinstance(instr, ConstBool):
 			dest = self._map_value(instr.dest)
 			val = 1 if instr.value else 0
@@ -1025,6 +1159,27 @@ class _FuncBuilder:
 			lit = repr(instr.value)
 			self.value_types[dest] = "double"
 			self.lines.append(f"  {dest} = fadd double 0.0, {lit}")
+		elif isinstance(instr, StringRetain):
+			dest = self._map_value(instr.dest)
+			val = self._map_value(instr.value)
+			self.module.needs_string_retain = True
+			self.lines.append(f"  {dest} = call {DRIFT_STRING_TYPE} @drift_string_retain({DRIFT_STRING_TYPE} {val})")
+			self.value_types[dest] = DRIFT_STRING_TYPE
+		elif isinstance(instr, StringRelease):
+			val = self._map_value(instr.value)
+			self.module.needs_string_release = True
+			self.lines.append(f"  call void @drift_string_release({DRIFT_STRING_TYPE} {val})")
+		elif isinstance(instr, CopyValue):
+			val = self._map_value(instr.value)
+			copied = self._emit_copy_value(instr.ty, val)
+			self.value_map[instr.dest] = copied
+			if copied in self.value_types:
+				self.value_types[self._map_value(instr.dest)] = self.value_types[copied]
+		elif isinstance(instr, DropValue):
+			val = self._map_value(instr.value)
+			self._emit_drop_value(instr.ty, val)
+		elif isinstance(instr, MoveOut):
+			raise AssertionError("MoveOut should be lowered before LLVM codegen")
 		elif isinstance(instr, ZeroValue):
 			if self.type_table is None:
 				raise NotImplementedError("LLVM codegen v1: ZeroValue requires a TypeTable")
@@ -1034,8 +1189,24 @@ class _FuncBuilder:
 			self._lower_unary(instr)
 		elif isinstance(instr, ConstString):
 			self._lower_const_string(instr)
+		elif isinstance(instr, ArrayAlloc):
+			self._lower_array_alloc(instr)
+		elif isinstance(instr, ArraySetLen):
+			self._lower_array_set_len(instr)
 		elif isinstance(instr, ArrayLit):
 			self._lower_array_lit(instr)
+		elif isinstance(instr, ArrayElemInit):
+			self._lower_array_elem_init(instr)
+		elif isinstance(instr, ArrayElemInitUnchecked):
+			self._lower_array_elem_init_unchecked(instr)
+		elif isinstance(instr, ArrayElemAssign):
+			self._lower_array_elem_assign(instr)
+		elif isinstance(instr, ArrayElemDrop):
+			self._lower_array_elem_drop(instr)
+		elif isinstance(instr, ArrayDrop):
+			self._lower_array_drop(instr)
+		elif isinstance(instr, ArrayDup):
+			self._lower_array_dup(instr)
 		elif isinstance(instr, ArrayIndexLoad):
 			self._lower_array_index_load(instr)
 		elif isinstance(instr, ArrayIndexStore):
@@ -1049,7 +1220,7 @@ class _FuncBuilder:
 			val = self._map_value(instr.value)
 			# StringLen is reused for strings and arrays at HIR level; here we assume string.
 			self.lines.append(f"  {dest} = extractvalue {DRIFT_STRING_TYPE} {val}, 0")
-			self.value_types[dest] = DRIFT_SIZE_TYPE
+			self.value_types[dest] = DRIFT_UINT_TYPE
 		elif isinstance(instr, StringConcat):
 			dest = self._map_value(instr.dest)
 			left = self._map_value(instr.left)
@@ -1064,26 +1235,34 @@ class _FuncBuilder:
 			dest = self._map_value(instr.dest)
 			val = self._map_value(instr.value)
 			val_ty = self.value_types.get(val)
-			if val_ty != "i64":
+			if val_ty != DRIFT_INT_TYPE:
 				raise NotImplementedError(
-					f"LLVM codegen v1: StringFromInt requires i64 operand (have {val_ty})"
+					f"LLVM codegen v1: StringFromInt requires Int operand (have {val_ty})"
 				)
 			self.module.needs_string_from_int64 = True
+			int64_val = val
+			if self.module.word_bits != 64:
+				int64_val = self._fresh("int64")
+				self.lines.append(f"  {int64_val} = sext {DRIFT_INT_TYPE} {val} to i64")
 			self.lines.append(
-				f"  {dest} = call {DRIFT_STRING_TYPE} @drift_string_from_int64(i64 {val})"
+				f"  {dest} = call {DRIFT_STRING_TYPE} @drift_string_from_int64(i64 {int64_val})"
 			)
 			self.value_types[dest] = DRIFT_STRING_TYPE
 		elif isinstance(instr, StringFromUint):
 			dest = self._map_value(instr.dest)
 			val = self._map_value(instr.value)
 			val_ty = self.value_types.get(val)
-			if val_ty != "i64":
+			if val_ty != DRIFT_USIZE_TYPE:
 				raise NotImplementedError(
-					f"LLVM codegen v1: StringFromUint requires i64 operand (have {val_ty})"
+					f"LLVM codegen v1: StringFromUint requires Uint operand (have {val_ty})"
 				)
 			self.module.needs_string_from_uint64 = True
+			int64_val = val
+			if self.module.word_bits != 64:
+				int64_val = self._fresh("uint64")
+				self.lines.append(f"  {int64_val} = zext {DRIFT_USIZE_TYPE} {val} to i64")
 			self.lines.append(
-				f"  {dest} = call {DRIFT_STRING_TYPE} @drift_string_from_uint64(i64 {val})"
+				f"  {dest} = call {DRIFT_STRING_TYPE} @drift_string_from_uint64(i64 {int64_val})"
 			)
 			self.value_types[dest] = DRIFT_STRING_TYPE
 		elif isinstance(instr, StringFromBool):
@@ -1136,10 +1315,13 @@ class _FuncBuilder:
 			self.lines.append(
 				f"  {tmp} = call i32 @drift_string_cmp({DRIFT_STRING_TYPE} {left}, {DRIFT_STRING_TYPE} {right})"
 			)
-			# Normalize to the compiler's Int carrier (i64) so downstream comparisons
-			# use the same integer pipeline as other BinaryOpInstr nodes.
-			self.lines.append(f"  {dest} = sext i32 {tmp} to i64")
-			self.value_types[dest] = "i64"
+			# Normalize to the compiler's Int carrier so downstream comparisons use
+			# the same integer pipeline as other BinaryOpInstr nodes.
+			if self.module.word_bits == 32:
+				self.lines.append(f"  {dest} = bitcast i32 {tmp} to {DRIFT_INT_TYPE}")
+			else:
+				self.lines.append(f"  {dest} = sext i32 {tmp} to {DRIFT_INT_TYPE}")
+			self.value_types[dest] = DRIFT_INT_TYPE
 		elif isinstance(instr, AssignSSA):
 			# AssignSSA is a pure SSA alias. We pre-collect aliases in
 			# `_collect_assign_aliases` so Φ lowering can resolve aliases even when
@@ -1149,15 +1331,21 @@ class _FuncBuilder:
 			# Address-taken locals are materialized as storage. For them, LoadLocal
 			# is a real `load` from the local's alloca slot.
 			if instr.local in self.addr_taken_locals:
-				llty = self.local_storage_types.get(instr.local)
-				if llty is None:
+				store_llty = self.local_storage_types.get(instr.local)
+				if store_llty is None:
 					raise NotImplementedError(
 						f"LLVM codegen v1: cannot load from address-taken local '{instr.local}' without a known type"
 					)
-				alloca_id = self._ensure_local_storage(instr.local, llty)
+				alloca_id = self._ensure_local_storage(instr.local, store_llty)
 				dest = self._map_value(instr.dest)
-				self.lines.append(f"  {dest} = load {llty}, {llty}* %{alloca_id}")
-				self.value_types[dest] = llty
+				if store_llty == "i8":
+					raw = self._fresh("bool8")
+					self.lines.append(f"  {raw} = load i8, i8* %{alloca_id}")
+					self._bool_from_storage(raw, dest=dest)
+					self.value_types[dest] = "i1"
+				else:
+					self.lines.append(f"  {dest} = load {store_llty}, {store_llty}* %{alloca_id}")
+					self.value_types[dest] = store_llty
 				return
 			# SSA pass already assigned a versioned name; treat this as an alias.
 			dest = self._map_value(instr.dest)
@@ -1182,13 +1370,18 @@ class _FuncBuilder:
 			# is a real `store` into the local's alloca slot.
 			val = self._map_value(instr.value)
 			if instr.local in self.addr_taken_locals:
-				llty = self.value_types.get(val)
-				if llty is None:
-					raise NotImplementedError(
-						f"LLVM codegen v1: cannot store into address-taken local '{instr.local}' without a typed value"
-					)
-				alloca_id = self._ensure_local_storage(instr.local, llty)
-				self.lines.append(f"  store {llty} {val}, {llty}* %{alloca_id}")
+				store_llty = self.local_storage_types.get(instr.local)
+				if store_llty is None:
+					val_llty = self.value_types.get(val)
+					if val_llty is None:
+						raise NotImplementedError(
+							f"LLVM codegen v1: cannot store into address-taken local '{instr.local}' without a typed value"
+						)
+					store_llty = "i8" if val_llty == "i1" else val_llty
+				alloca_id = self._ensure_local_storage(instr.local, store_llty)
+				if store_llty == "i8":
+					val = self._bool_to_storage(val)
+				self.lines.append(f"  store {store_llty} {val}, {store_llty}* %{alloca_id}")
 				return
 			# SSA maps locals to versioned names; no IR emission required here.
 			block_name = getattr(self, "_current_block_name", None)
@@ -1216,7 +1409,7 @@ class _FuncBuilder:
 		elif isinstance(instr, AddrOfArrayElem):
 			array = self._map_value(instr.array)
 			index = self._map_value(instr.index)
-			elem_llty = self._llvm_type_for_typeid(instr.inner_ty)
+			elem_llty = self._llvm_storage_type_for_typeid(instr.inner_ty)
 			arr_llty = self._llvm_array_type(elem_llty)
 			ptr_tmp = self._lower_array_index_addr(array=array, index=index, elem_llty=elem_llty, arr_llty=arr_llty)
 			# Record an alias so later uses resolve to the computed pointer.
@@ -1234,7 +1427,7 @@ class _FuncBuilder:
 				raise NotImplementedError(
 					f"LLVM codegen v1: AddrOfField base pointer type mismatch (have {have_ptr_ty}, expected {want_ptr_ty})"
 				)
-			field_llty = self._llvm_type_for_typeid(instr.field_ty)
+			field_llty = self._llvm_storage_type_for_typeid(instr.field_ty)
 			dest = self._map_value(instr.dest)
 			self.lines.append(
 				f"  {dest} = getelementptr inbounds {struct_llty}, {want_ptr_ty} {base_ptr}, i32 0, i32 {instr.field_index}"
@@ -1256,16 +1449,19 @@ class _FuncBuilder:
 				raise NotImplementedError("LLVM codegen v1: empty struct construction not supported yet")
 			for idx, (arg, field_ty) in enumerate(zip(instr.args, field_types)):
 				arg_val = self._map_value(arg)
-				field_llty = self._llvm_type_for_typeid(field_ty)
+				field_val_llty = self._llvm_type_for_typeid(field_ty)
+				field_store_llty = self._llvm_storage_type_for_typeid(field_ty)
 				have = self.value_types.get(arg_val)
-				if have is not None and have != field_llty:
+				if have is not None and have != field_val_llty:
 					raise NotImplementedError(
-						f"LLVM codegen v1: struct field {idx} type mismatch (have {have}, expected {field_llty})"
+						f"LLVM codegen v1: struct field {idx} type mismatch (have {have}, expected {field_val_llty})"
 					)
+				if field_store_llty == "i8" and field_val_llty == "i1":
+					arg_val = self._bool_to_storage(arg_val)
 				is_last = idx == len(field_types) - 1
 				tmp = self._map_value(instr.dest) if is_last else self._fresh("struct")
 				self.lines.append(
-					f"  {tmp} = insertvalue {struct_llty} {current}, {field_llty} {arg_val}, {idx}"
+					f"  {tmp} = insertvalue {struct_llty} {current}, {field_store_llty} {arg_val}, {idx}"
 				)
 				current = tmp
 			dest = self._map_value(instr.dest)
@@ -1295,7 +1491,7 @@ class _FuncBuilder:
 				)
 				payload_i8 = self._fresh("payload_i8")
 				self.lines.append(
-					f"  {payload_i8} = bitcast [{layout.payload_words} x i64]* {payload_words_ptr} to i8*"
+					f"  {payload_i8} = bitcast [{layout.payload_words} x {layout.payload_cell_llty}]* {payload_words_ptr} to i8*"
 				)
 				payload_struct_ptr = self._fresh("payload_struct")
 				self.lines.append(
@@ -1335,8 +1531,8 @@ class _FuncBuilder:
 			raw = self._fresh("tag8")
 			self.lines.append(f"  {raw} = extractvalue {variant_llty} {val}, 0")
 			dest = self._map_value(instr.dest)
-			self.lines.append(f"  {dest} = zext i8 {raw} to i64")
-			self.value_types[dest] = "i64"
+			self.lines.append(f"  {dest} = zext i8 {raw} to {DRIFT_UINT_TYPE}")
+			self.value_types[dest] = DRIFT_UINT_TYPE
 		elif isinstance(instr, VariantGetField):
 			if self.type_table is None:
 				raise NotImplementedError("LLVM codegen v1: VariantGetField requires a TypeTable")
@@ -1362,7 +1558,7 @@ class _FuncBuilder:
 			)
 			payload_i8 = self._fresh("payload_i8")
 			self.lines.append(
-				f"  {payload_i8} = bitcast [{layout.payload_words} x i64]* {payload_words_ptr} to i8*"
+			f"  {payload_i8} = bitcast [{layout.payload_words} x {layout.payload_cell_llty}]* {payload_words_ptr} to i8*"
 			)
 			payload_struct_ptr = self._fresh("payload_struct")
 			self.lines.append(
@@ -1394,28 +1590,45 @@ class _FuncBuilder:
 				raise NotImplementedError(
 					f"LLVM codegen v1: StructGetField subject type mismatch (have {have_struct}, expected {struct_llty})"
 				)
-			field_llty = self._llvm_type_for_typeid(instr.field_ty)
+			field_val_llty = self._llvm_type_for_typeid(instr.field_ty)
+			field_store_llty = self._llvm_storage_type_for_typeid(instr.field_ty)
 			dest = self._map_value(instr.dest)
-			self.lines.append(f"  {dest} = extractvalue {struct_llty} {subject}, {instr.field_index}")
-			self.value_types[dest] = field_llty
+			if field_store_llty == "i8" and field_val_llty == "i1":
+				raw = self._fresh("field8")
+				self.lines.append(f"  {raw} = extractvalue {struct_llty} {subject}, {instr.field_index}")
+				self._bool_from_storage(raw, dest=dest)
+				self.value_types[dest] = "i1"
+			else:
+				self.lines.append(f"  {dest} = extractvalue {struct_llty} {subject}, {instr.field_index}")
+				self.value_types[dest] = field_val_llty
 		elif isinstance(instr, LoadRef):
 			ptr = self._map_value(instr.ptr)
-			llty = self._llvm_type_for_typeid(instr.inner_ty)
-			ptr_ty = f"{llty}*"
+			val_llty = self._llvm_type_for_typeid(instr.inner_ty)
+			store_llty = self._llvm_storage_type_for_typeid(instr.inner_ty)
+			ptr_ty = f"{store_llty}*"
 			dest = self._map_value(instr.dest)
-			self.lines.append(f"  {dest} = load {llty}, {ptr_ty} {ptr}")
-			self.value_types[dest] = llty
+			if store_llty == "i8" and val_llty == "i1":
+				raw = self._fresh("bool8")
+				self.lines.append(f"  {raw} = load i8, i8* {ptr}")
+				self._bool_from_storage(raw, dest=dest)
+				self.value_types[dest] = "i1"
+			else:
+				self.lines.append(f"  {dest} = load {val_llty}, {ptr_ty} {ptr}")
+				self.value_types[dest] = val_llty
 		elif isinstance(instr, StoreRef):
 			ptr = self._map_value(instr.ptr)
-			llty = self._llvm_type_for_typeid(instr.inner_ty)
-			ptr_ty = f"{llty}*"
+			val_llty = self._llvm_type_for_typeid(instr.inner_ty)
+			store_llty = self._llvm_storage_type_for_typeid(instr.inner_ty)
+			ptr_ty = f"{store_llty}*"
 			val = self._map_value(instr.value)
 			have = self.value_types.get(val)
-			if have is not None and have != llty:
+			if have is not None and have != val_llty:
 				raise NotImplementedError(
-					f"LLVM codegen v1: StoreRef value type mismatch (have {have}, expected {llty})"
+					f"LLVM codegen v1: StoreRef value type mismatch (have {have}, expected {val_llty})"
 				)
-			self.lines.append(f"  store {llty} {val}, {ptr_ty} {ptr}")
+			if store_llty == "i8" and val_llty == "i1":
+				val = self._bool_to_storage(val)
+			self.lines.append(f"  store {store_llty} {val}, {ptr_ty} {ptr}")
 		elif isinstance(instr, BinaryOpInstr):
 			self._lower_binary(instr)
 		elif isinstance(instr, FnPtrConst):
@@ -1473,16 +1686,10 @@ class _FuncBuilder:
 				val = self._map_value(instr.value)
 				val_ty = self.value_types.get(val)
 				if val_ty is not None and val_ty != ok_llty:
-					if {val_ty, ok_llty} == {DRIFT_SIZE_TYPE, "i64"}:
-						# Size/Int share ABI width; allow a bitcast between the two.
-						tmp_cast = self._fresh("okcast")
-						self.lines.append(f"  {tmp_cast} = bitcast {val_ty} {val} to {ok_llty}")
-						val = tmp_cast
-					else:
-						raise NotImplementedError(
-							f"LLVM codegen v1: ok payload type mismatch for ConstructResultOk in {self.fn_info.name}: "
-							f"have {val_ty}, expected {ok_llty}"
-						)
+					raise NotImplementedError(
+						f"LLVM codegen v1: ok payload type mismatch for ConstructResultOk in {self.fn_info.name}: "
+						f"have {val_ty}, expected {ok_llty}"
+					)
 			tmp0 = self._fresh("ok0")
 			tmp1 = self._fresh("ok1")
 			err_zero = f"{DRIFT_ERROR_PTR} null"
@@ -1520,8 +1727,12 @@ class _FuncBuilder:
 			self.module.needs_dv_runtime = True
 			arg_val = self._map_value(instr.args[0])
 			arg_ty = self.value_types.get(arg_val)
-			if arg_ty == "i64":
-				self.lines.append(f"  {dest} = call {DRIFT_DV_TYPE} @drift_dv_int(i64 {arg_val})")
+			if arg_ty == DRIFT_INT_TYPE:
+				int64_val = arg_val
+				if self.module.word_bits != 64:
+					int64_val = self._fresh("int64")
+					self.lines.append(f"  {int64_val} = sext {DRIFT_INT_TYPE} {arg_val} to i64")
+				self.lines.append(f"  {dest} = call {DRIFT_DV_TYPE} @drift_dv_int(i64 {int64_val})")
 				return
 			if arg_ty == "i1":
 				self.lines.append(f"  {dest} = call {DRIFT_DV_TYPE} @drift_dv_bool(i1 {arg_val})")
@@ -1541,9 +1752,9 @@ class _FuncBuilder:
 			self.value_types[dest] = DRIFT_ERROR_PTR
 			self.module.needs_error_runtime = True
 			code_ty = self.value_types.get(code)
-			if code_ty != "i64":
+			if code_ty != DRIFT_ERROR_CODE_TYPE:
 				raise NotImplementedError(
-					f"LLVM codegen v1: error code must be Int (i64), got {code_ty}"
+					f"LLVM codegen v1: error code must be Uint64 (u64), got {code_ty}"
 				)
 			event_fqn_ty = self.value_types.get(event_fqn)
 			if event_fqn_ty != DRIFT_STRING_TYPE:
@@ -1552,12 +1763,12 @@ class _FuncBuilder:
 				)
 			if payload is None or attr_key is None:
 				self.lines.append(
-					f"  {dest} = call {DRIFT_ERROR_PTR} @drift_error_new(i64 {code}, {DRIFT_STRING_TYPE} {event_fqn})"
+					f"  {dest} = call {DRIFT_ERROR_PTR} @drift_error_new({DRIFT_ERROR_CODE_TYPE} {code}, {DRIFT_STRING_TYPE} {event_fqn})"
 				)
 			else:
 				# Attach payload via runtime helper; payload is expected to be a DiagnosticValue.
 				self.lines.append(
-					f"  {dest} = call {DRIFT_ERROR_PTR} @drift_error_new_with_payload(i64 {code}, {DRIFT_STRING_TYPE} {event_fqn}, {DRIFT_STRING_TYPE} {attr_key}, {DRIFT_DV_TYPE} {payload})"
+					f"  {dest} = call {DRIFT_ERROR_PTR} @drift_error_new_with_payload({DRIFT_ERROR_CODE_TYPE} {code}, {DRIFT_STRING_TYPE} {event_fqn}, {DRIFT_STRING_TYPE} {attr_key}, {DRIFT_DV_TYPE} {payload})"
 				)
 		elif isinstance(instr, ErrorAttrsGetDV):
 			self.module.needs_dv_runtime = True
@@ -1599,42 +1810,11 @@ class _FuncBuilder:
 			loaded = self._fresh("err_val")
 			self.lines.append(f"  {loaded} = load {DRIFT_ERROR_TYPE}, {DRIFT_ERROR_PTR} {err_val}")
 			self.lines.append(f"  {dest} = extractvalue {DRIFT_ERROR_TYPE} {loaded}, 0")
-			self.value_types[dest] = "i64"
+			self.value_types[dest] = DRIFT_ERROR_CODE_TYPE
 		elif isinstance(instr, OptionalIsSome):
-			opt_val = self._map_value(instr.opt)
-			opt_ty = self.value_types.get(opt_val)
-			if opt_ty not in (DRIFT_OPT_INT_TYPE, DRIFT_OPT_BOOL_TYPE, DRIFT_OPT_STRING_TYPE):
-				raise NotImplementedError(
-					f"LLVM codegen v1: OptionalIsSome requires Optional<Int|Bool|String>, got {opt_ty}"
-				)
-			tmp = self._fresh("opt_tag")
-			self.lines.append(f"  {tmp} = extractvalue {opt_ty} {opt_val}, 0")
-			dest = self._map_value(instr.dest)
-			self.lines.append(f"  {dest} = icmp ne i8 {tmp}, 0")
-			self.value_types[dest] = "i1"
+			raise NotImplementedError("LLVM codegen v1: OptionalIsSome is deprecated; Optional is lowered as a variant")
 		elif isinstance(instr, OptionalValue):
-			opt_val = self._map_value(instr.opt)
-			opt_ty = self.value_types.get(opt_val)
-			if opt_ty == DRIFT_OPT_INT_TYPE:
-				dest = self._map_value(instr.dest)
-				self.lines.append(f"  {dest} = extractvalue {opt_ty} {opt_val}, 1")
-				self.value_types[dest] = "i64"
-				return
-			elif opt_ty == DRIFT_OPT_BOOL_TYPE:
-				dest = self._map_value(instr.dest)
-				raw = self._fresh("opt_val")
-				self.lines.append(f"  {raw} = extractvalue {opt_ty} {opt_val}, 1")
-				self.lines.append(f"  {dest} = icmp ne i8 {raw}, 0")
-				self.value_types[dest] = "i1"
-				return
-			elif opt_ty == DRIFT_OPT_STRING_TYPE:
-				dest = self._map_value(instr.dest)
-				self.lines.append(f"  {dest} = extractvalue {opt_ty} {opt_val}, 1")
-				self.value_types[dest] = DRIFT_STRING_TYPE
-				return
-			raise NotImplementedError(
-				f"LLVM codegen v1: OptionalValue requires Optional<Int|Bool|String>, got {opt_ty}"
-			)
+			raise NotImplementedError("LLVM codegen v1: OptionalValue is deprecated; Optional is lowered as a variant")
 		elif isinstance(instr, (DVAsInt, DVAsBool, DVAsString)):
 			self.module.needs_dv_runtime = True
 			dest = self._map_value(instr.dest)
@@ -1643,16 +1823,58 @@ class _FuncBuilder:
 			self.lines.append(f"  {tmp_ptr} = alloca {DRIFT_DV_TYPE}")
 			self.lines.append(f"  store {DRIFT_DV_TYPE} {dv_val}, {DRIFT_DV_TYPE}* {tmp_ptr}")
 			if isinstance(instr, DVAsInt):
-				self.value_types[dest] = DRIFT_OPT_INT_TYPE
-				self.lines.append(f"  {dest} = call {DRIFT_OPT_INT_TYPE} @drift_dv_as_int({DRIFT_DV_TYPE}* {tmp_ptr})")
-			elif isinstance(instr, DVAsBool):
-				self.value_types[dest] = DRIFT_OPT_BOOL_TYPE
-				self.lines.append(f"  {dest} = call {DRIFT_OPT_BOOL_TYPE} @drift_dv_as_bool({DRIFT_DV_TYPE}* {tmp_ptr})")
-			else:
-				self.value_types[dest] = DRIFT_OPT_STRING_TYPE
+				opt_val = self._fresh("opt_int")
 				self.lines.append(
-					f"  {dest} = call {DRIFT_OPT_STRING_TYPE} @drift_dv_as_string({DRIFT_DV_TYPE}* {tmp_ptr})"
+					f"  {opt_val} = call {DRIFT_OPT_INT_TYPE} @drift_dv_as_int({DRIFT_DV_TYPE}* {tmp_ptr})"
 				)
+				is_some_raw = self._fresh("opt_some")
+				self.lines.append(f"  {is_some_raw} = extractvalue {DRIFT_OPT_INT_TYPE} {opt_val}, 0")
+				is_some = self._fresh("opt_some_i1")
+				self.lines.append(f"  {is_some} = icmp ne i8 {is_some_raw}, 0")
+				val = self._fresh("opt_val")
+				self.lines.append(f"  {val} = extractvalue {DRIFT_OPT_INT_TYPE} {opt_val}, 1")
+				opt_ty = self._optional_variant_type(self.int_type_id or self.type_table.ensure_int())
+				some_val = self._emit_variant_value(opt_ty, "Some", [val])
+				none_val = self._emit_variant_value(opt_ty, "None", [])
+				variant_llty = self._variant_layout(opt_ty).llvm_ty
+				self.lines.append(f"  {dest} = select i1 {is_some}, {variant_llty} {some_val}, {variant_llty} {none_val}")
+				self.value_types[dest] = variant_llty
+			elif isinstance(instr, DVAsBool):
+				opt_val = self._fresh("opt_bool")
+				self.lines.append(
+					f"  {opt_val} = call {DRIFT_OPT_BOOL_TYPE} @drift_dv_as_bool({DRIFT_DV_TYPE}* {tmp_ptr})"
+				)
+				is_some_raw = self._fresh("opt_some")
+				self.lines.append(f"  {is_some_raw} = extractvalue {DRIFT_OPT_BOOL_TYPE} {opt_val}, 0")
+				is_some = self._fresh("opt_some_i1")
+				self.lines.append(f"  {is_some} = icmp ne i8 {is_some_raw}, 0")
+				val_raw = self._fresh("opt_val_raw")
+				self.lines.append(f"  {val_raw} = extractvalue {DRIFT_OPT_BOOL_TYPE} {opt_val}, 1")
+				val = self._fresh("opt_val")
+				self.lines.append(f"  {val} = icmp ne i8 {val_raw}, 0")
+				opt_ty = self._optional_variant_type(self.bool_type_id or self.type_table.ensure_bool())
+				some_val = self._emit_variant_value(opt_ty, "Some", [val])
+				none_val = self._emit_variant_value(opt_ty, "None", [])
+				variant_llty = self._variant_layout(opt_ty).llvm_ty
+				self.lines.append(f"  {dest} = select i1 {is_some}, {variant_llty} {some_val}, {variant_llty} {none_val}")
+				self.value_types[dest] = variant_llty
+			else:
+				opt_val = self._fresh("opt_str")
+				self.lines.append(
+					f"  {opt_val} = call {DRIFT_OPT_STRING_TYPE} @drift_dv_as_string({DRIFT_DV_TYPE}* {tmp_ptr})"
+				)
+				is_some_raw = self._fresh("opt_some")
+				self.lines.append(f"  {is_some_raw} = extractvalue {DRIFT_OPT_STRING_TYPE} {opt_val}, 0")
+				is_some = self._fresh("opt_some_i1")
+				self.lines.append(f"  {is_some} = icmp ne i8 {is_some_raw}, 0")
+				val = self._fresh("opt_val")
+				self.lines.append(f"  {val} = extractvalue {DRIFT_OPT_STRING_TYPE} {opt_val}, 1")
+				opt_ty = self._optional_variant_type(self.string_type_id or self.type_table.ensure_string())
+				some_val = self._emit_variant_value(opt_ty, "Some", [val])
+				none_val = self._emit_variant_value(opt_ty, "None", [])
+				variant_llty = self._variant_layout(opt_ty).llvm_ty
+				self.lines.append(f"  {dest} = select i1 {is_some}, {variant_llty} {some_val}, {variant_llty} {none_val}")
+				self.value_types[dest] = variant_llty
 		elif isinstance(instr, Phi):
 			# Already handled in _lower_phi.
 			return
@@ -1661,9 +1883,9 @@ class _FuncBuilder:
 
 	def _lower_const_string(self, instr: ConstString) -> None:
 		"""
-		Lower a ConstString to a DriftString literal ({len: %drift.size, data: i8*}).
-		We emit a private unnamed constant for the bytes (with trailing NUL) and
-		build the struct inline; no runtime call is needed for literals.
+		Lower a ConstString to a DriftString literal ({len: %drift.usize, data: i8*}).
+		We emit a private unnamed constant with a header+bytes payload and build
+		the struct inline; retain/release is a no-op for static literals.
 
 		Literals are encoded as UTF-8 and emitted with explicit escapes so that
 		non-ASCII and special characters are preserved exactly.
@@ -1672,16 +1894,18 @@ class _FuncBuilder:
 		utf8_bytes = instr.value.encode("utf-8")
 		size = len(utf8_bytes)
 		global_name = f"@.str{len(self.module.consts)}"
+		header_llty = f"{{ {DRIFT_USIZE_TYPE}, {DRIFT_USIZE_TYPE}, [{size + 1} x i8] }}"
 		escaped = "".join(_escape_byte(b) for b in utf8_bytes) + "\\00"
 		self.module.consts.append(
-			f"{global_name} = private unnamed_addr constant [{size + 1} x i8] c\"{escaped}\""
+			f"{global_name} = private unnamed_addr constant {header_llty} "
+			f"{{ {DRIFT_USIZE_TYPE} 1, {DRIFT_USIZE_TYPE} 1, [{size + 1} x i8] c\"{escaped}\" }}"
 		)
 		ptr = self._fresh("strptr")
 		self.lines.append(
-			f"  {ptr} = getelementptr inbounds [{size + 1} x i8], [{size + 1} x i8]* {global_name}, i32 0, i32 0"
+			f"  {ptr} = getelementptr inbounds {header_llty}, {header_llty}* {global_name}, i32 0, i32 2, i32 0"
 		)
 		tmp0 = self._fresh("str0")
-		self.lines.append(f"  {tmp0} = insertvalue {DRIFT_STRING_TYPE} undef, {DRIFT_SIZE_TYPE} {size}, 0")
+		self.lines.append(f"  {tmp0} = insertvalue {DRIFT_STRING_TYPE} undef, {DRIFT_UINT_TYPE} {size}, 0")
 		self.lines.append(f"  {dest} = insertvalue {DRIFT_STRING_TYPE} {tmp0}, i8* {ptr}, 1")
 		self.value_types[dest] = DRIFT_STRING_TYPE
 
@@ -1735,10 +1959,11 @@ class _FuncBuilder:
 				)
 			for ty_id, arg in zip(sig.param_type_ids, instr.args):
 				llty = self._llvm_type_for_typeid(ty_id)
-				arg_parts.append(f"{llty} {self._map_value(arg)}")
+				arg_val = self._map_value(arg)
+				arg_parts.append(f"{llty} {arg_val}")
 		else:
 			# Legacy fallback: assume all args are Ints.
-			arg_parts = [f"i64 {self._map_value(a)}" for a in instr.args]
+			arg_parts = [f"{DRIFT_INT_TYPE} {self._map_value(a)}" for a in instr.args]
 		args = ", ".join(arg_parts)
 
 		is_exported_entry = bool(
@@ -1755,17 +1980,60 @@ class _FuncBuilder:
 			)
 
 		if call_can_throw:
-			_, fnres_llty = self._fnresult_types_for_fn(callee_info)
+			ok_llty, fnres_llty = self._fnresult_types_for_fn(callee_info)
 			if dest is None:
 				raise AssertionError("can-throw calls must preserve their FnResult value (MIR bug)")
-			self.lines.append(f"  {dest} = call {fnres_llty} {_llvm_fn_sym(target_sym)}({args})")
-			self.value_types[dest] = fnres_llty
+			if is_exported_entry and is_cross_module:
+				ret_tid = callee_info.signature.return_type_id if callee_info.signature else None
+				is_void_ret = ret_tid is not None and self._is_void_typeid(ret_tid)
+				ok_abi_llty = ok_llty
+				if ret_tid is not None:
+					ok_abi_llty = self._llvm_ok_abi_type_for_typeid(ret_tid)
+				res_llty = DRIFT_ERROR_PTR if is_void_ret else f"{{ {ok_abi_llty}, {DRIFT_ERROR_PTR} }}"
+				res_tmp = self._fresh("res")
+				self.lines.append(f"  {res_tmp} = call {res_llty} {_llvm_fn_sym(target_sym)}({args})")
+				if is_void_ret:
+					err_val = res_tmp
+					is_err = self._fresh("is_err")
+					self.lines.append(f"  {is_err} = icmp ne {DRIFT_ERROR_PTR} {err_val}, null")
+					ok_zero = self._zero_value_for_ok(ok_llty)
+					tmp0 = self._fresh("fn0")
+					tmp1 = self._fresh("fn1")
+					self.lines.append(f"  {tmp0} = insertvalue {fnres_llty} undef, i1 {is_err}, 0")
+					self.lines.append(f"  {tmp1} = insertvalue {fnres_llty} {tmp0}, {ok_zero}, 1")
+					self.lines.append(f"  {dest} = insertvalue {fnres_llty} {tmp1}, {DRIFT_ERROR_PTR} {err_val}, 2")
+				else:
+					ok_val = self._fresh("ok")
+					err_val = self._fresh("err")
+					is_err = self._fresh("is_err")
+					ok_zero = self._zero_value_for_ok(ok_llty)
+					self.lines.append(f"  {ok_val} = extractvalue {res_llty} {res_tmp}, 0")
+					self.lines.append(f"  {err_val} = extractvalue {res_llty} {res_tmp}, 1")
+					self.lines.append(f"  {is_err} = icmp ne {DRIFT_ERROR_PTR} {err_val}, null")
+					ok_val_in = ok_val
+					if ok_llty != ok_abi_llty:
+						if ok_llty == "i1" and ok_abi_llty == "i8":
+							ok_val_in = self._fresh("ok_i1")
+							self.lines.append(f"  {ok_val_in} = icmp ne i8 {ok_val}, 0")
+						else:
+							raise AssertionError("LLVM codegen v1: unsupported ok ABI coercion")
+					ok_sel = self._fresh("ok_sel")
+					self.lines.append(f"  {ok_sel} = select i1 {is_err}, {ok_zero}, {ok_llty} {ok_val_in}")
+					tmp0 = self._fresh("fn0")
+					tmp1 = self._fresh("fn1")
+					self.lines.append(f"  {tmp0} = insertvalue {fnres_llty} undef, i1 {is_err}, 0")
+					self.lines.append(f"  {tmp1} = insertvalue {fnres_llty} {tmp0}, {ok_llty} {ok_sel}, 1")
+					self.lines.append(f"  {dest} = insertvalue {fnres_llty} {tmp1}, {DRIFT_ERROR_PTR} {err_val}, 2")
+				self.value_types[dest] = fnres_llty
+			else:
+				self.lines.append(f"  {dest} = call {fnres_llty} {_llvm_fn_sym(target_sym)}({args})")
+				self.value_types[dest] = fnres_llty
 		else:
 			ret_tid = None
 			if callee_info.signature and callee_info.signature.return_type_id is not None:
 				ret_tid = callee_info.signature.return_type_id
 			is_void_ret = ret_tid is not None and self._is_void_typeid(ret_tid)
-			ret_ty = "void" if is_void_ret else "i64"
+			ret_ty = "void" if is_void_ret else DRIFT_INT_TYPE
 			if ret_tid is not None and self.type_table is not None and not is_void_ret:
 				ret_ty = self._llvm_type_for_typeid(ret_tid)
 			if dest is None:
@@ -1792,7 +2060,8 @@ class _FuncBuilder:
 		arg_parts: list[str] = []
 		for ty_id, arg in zip(instr.param_types, instr.args):
 			llty = self._llvm_type_for_typeid(ty_id)
-			arg_parts.append(f"{llty} {self._map_value(arg)}")
+			arg_val = self._map_value(arg)
+			arg_parts.append(f"{llty} {arg_val}")
 		args = ", ".join(arg_parts)
 
 		ret_tid = instr.user_ret_type
@@ -1853,7 +2122,7 @@ class _FuncBuilder:
 		- Same-module calls to exported entrypoints may target the private `__impl`
 		  body (internal calling convention).
 		- Cross-module calls to exported entrypoints must target the public wrapper
-		  symbol (FnResult boundary ABI), never `__impl`.
+		  symbol (Result boundary ABI), never `__impl`.
 		- Non-exported callees target their symbol name directly.
 		"""
 		is_exported_entry = bool(
@@ -1929,8 +2198,8 @@ class _FuncBuilder:
 					self.value_types[val] = ty
 			if ty == DRIFT_STRING_TYPE:
 				self.lines.append(f"  ret {DRIFT_STRING_TYPE} {val}")
-			elif ty in ("i64", DRIFT_SIZE_TYPE):
-				self.lines.append(f"  ret i64 {val}")
+			elif ty in (DRIFT_INT_TYPE, DRIFT_UINT_TYPE, "i1", "i8"):
+				self.lines.append(f"  ret {ty} {val}")
 			elif ty == "double":
 				self.lines.append(f"  ret double {val}")
 			elif ty is not None and (ty == "ptr" or ty.endswith("*")):
@@ -1969,14 +2238,14 @@ class _FuncBuilder:
 		if self.fn_info.signature and self.fn_info.signature.return_type_id is not None:
 			rt_id = self.fn_info.signature.return_type_id
 		if rt_id is None:
-			return "i64"
+			return DRIFT_INT_TYPE
 		# Use the same TypeTable-based mapping as parameters so ref returns are
 		# handled consistently (`&T` -> `T*`).
 		try:
 			return self._llvm_type_for_typeid(rt_id, allow_void_ok=False)
 		except NotImplementedError:
 			# Legacy fallback: treat unknown surface types as Int.
-			return "i64"
+			return DRIFT_INT_TYPE
 
 	def _is_void_return(self) -> bool:
 		if self.fn_info.signature and self.fn_info.signature.return_type_id is not None:
@@ -1994,31 +2263,36 @@ class _FuncBuilder:
 
 		This is not a stable external ABI; it only needs to be self-consistent
 		within the emitted LLVM module. We keep it simple and assume max alignment
-		8 for all supported field types in v1.
+		of the target word size for all supported field types in v1.
 		"""
 		if ty_id in self._size_align_cache:
 			return self._size_align_cache[ty_id]
 		if self.type_table is None:
 			raise NotImplementedError("LLVM codegen v1: TypeTable required for variant lowering")
 		td = self.type_table.get(ty_id)
+		word_bytes = self.module.word_bits // 8
 		if td.kind is TypeKind.SCALAR:
-			if td.name in ("Int", "Uint", "Float"):
+			if td.name in ("Int", "Uint"):
+				out = (word_bytes, word_bytes)
+			elif td.name == "Byte":
+				out = (1, 1)
+			elif td.name == "Float":
 				out = (8, 8)
 			elif td.name == "Bool":
 				out = (1, 1)
 			elif td.name == "String":
-				out = (16, 8)  # %DriftString = { i64, i8* }
+				out = (word_bytes * 2, word_bytes)  # %DriftString = { usize, i8* }
 			else:
 				out = (8, 8)
 			self._size_align_cache[ty_id] = out
 			return out
 		if td.kind in (TypeKind.REF, TypeKind.ERROR):
-			out = (8, 8)
+			out = (word_bytes, word_bytes)
 			self._size_align_cache[ty_id] = out
 			return out
 		if td.kind is TypeKind.ARRAY:
 			# Current array value lowering is a 3-word header (len, cap, data ptr).
-			out = (24, 8)
+			out = (word_bytes * 3, word_bytes)
 			self._size_align_cache[ty_id] = out
 			return out
 		if td.kind is TypeKind.STRUCT:
@@ -2037,7 +2311,10 @@ class _FuncBuilder:
 			return out
 		if td.kind is TypeKind.VARIANT:
 			layout = self._variant_layout(ty_id)
-			out = (8 + layout.payload_words * 8, 8)
+			out = (
+				layout.payload_align_bytes + layout.payload_words * layout.payload_cell_bytes,
+				layout.payload_align_bytes,
+			)
 			self._size_align_cache[ty_id] = out
 			return out
 		out = (8, 8)
@@ -2049,7 +2326,7 @@ class _FuncBuilder:
 		Compute and cache the variant layout for a concrete TypeId.
 
 		The variant value type is declared as:
-		  %Variant_<module>_<name>_<hash> = type { i8, [7 x i8], [payload_words x i64] }
+		  %Variant_<module>_<name>_<hash> = type { i8, [pad x i8], [payload_words x usize] }
 
 		Payload packing per constructor uses a literal struct type containing the
 		constructor's field storage types (Bool stored as i8).
@@ -2062,6 +2339,7 @@ class _FuncBuilder:
 		if inst is None:
 			raise NotImplementedError(f"LLVM codegen v1: missing variant instance for TypeId {ty_id}")
 		max_payload_size = 0
+		max_payload_align = 1
 		arms: Dict[str, _VariantArmLayout] = {}
 		for arm in inst.arms:
 			field_lltys: list[str] = []
@@ -2082,6 +2360,7 @@ class _FuncBuilder:
 			if max_align > 1:
 				offset = ((offset + max_align - 1) // max_align) * max_align
 			max_payload_size = max(max_payload_size, offset)
+			max_payload_align = max(max_payload_align, max_align)
 			payload_struct_llty = ""
 			if field_storage_lltys:
 				payload_struct_llty = "{ " + ", ".join(field_storage_lltys) + " }"
@@ -2091,21 +2370,85 @@ class _FuncBuilder:
 				field_storage_lltys=field_storage_lltys,
 				payload_struct_llty=payload_struct_llty,
 			)
-		payload_words = max(1, (max_payload_size + 7) // 8)
+		word_bytes = max(1, self.module.word_bits // 8)
+		payload_align_bytes = max(word_bytes, max_payload_align)
+		payload_cell_bytes = payload_align_bytes
+		payload_cell_llty = f"i{payload_cell_bytes * 8}"
+		payload_words = max(1, (max_payload_size + payload_cell_bytes - 1) // payload_cell_bytes)
 		llvm_ty = self.module.ensure_variant_type(
 			ty_id,
 			payload_words=payload_words,
+			payload_cell_llty=payload_cell_llty,
+			payload_align_bytes=payload_align_bytes,
 			type_table=self.type_table,
 		)
-		layout = _VariantLayout(llvm_ty=llvm_ty, payload_words=payload_words, arms=arms)
+		layout = _VariantLayout(
+			llvm_ty=llvm_ty,
+			payload_words=payload_words,
+			payload_cell_llty=payload_cell_llty,
+			payload_cell_bytes=payload_cell_bytes,
+			payload_align_bytes=payload_align_bytes,
+			arms=arms,
+		)
 		self._variant_layouts[ty_id] = layout
 		return layout
+
+	def _optional_variant_type(self, inner_tid: TypeId) -> TypeId:
+		if self.type_table is None:
+			raise NotImplementedError("LLVM codegen v1: Optional lowering requires a TypeTable")
+		return self.type_table.new_optional(inner_tid)
+
+	def _emit_variant_value(self, variant_ty: TypeId, ctor: str, args: list[str]) -> str:
+		layout = self._variant_layout(variant_ty)
+		variant_llty = layout.llvm_ty
+		arm_layout = layout.arms.get(ctor)
+		if arm_layout is None:
+			raise NotImplementedError(
+				f"LLVM codegen v1: unknown variant constructor '{ctor}' for TypeId {variant_ty}"
+			)
+		tmp_ptr = self._fresh("variant")
+		self.lines.append(f"  {tmp_ptr} = alloca {variant_llty}")
+		tag_ptr = self._fresh("tagptr")
+		self.lines.append(
+			f"  {tag_ptr} = getelementptr inbounds {variant_llty}, {variant_llty}* {tmp_ptr}, i32 0, i32 0"
+		)
+		self.lines.append(f"  store i8 {arm_layout.tag}, i8* {tag_ptr}")
+		if arm_layout.field_storage_lltys:
+			payload_words_ptr = self._fresh("payload_words")
+			self.lines.append(
+				f"  {payload_words_ptr} = getelementptr inbounds {variant_llty}, {variant_llty}* {tmp_ptr}, i32 0, i32 2"
+			)
+			payload_i8 = self._fresh("payload_i8")
+			self.lines.append(
+			f"  {payload_i8} = bitcast [{layout.payload_words} x {layout.payload_cell_llty}]* {payload_words_ptr} to i8*"
+			)
+			payload_struct_ptr = self._fresh("payload_struct")
+			self.lines.append(
+				f"  {payload_struct_ptr} = bitcast i8* {payload_i8} to {arm_layout.payload_struct_llty}*"
+			)
+			for idx, (arg_val, want_llty, store_llty) in enumerate(
+				zip(args, arm_layout.field_lltys, arm_layout.field_storage_lltys)
+			):
+				field_ptr = self._fresh("fieldptr")
+				self.lines.append(
+					f"  {field_ptr} = getelementptr inbounds {arm_layout.payload_struct_llty}, {arm_layout.payload_struct_llty}* {payload_struct_ptr}, i32 0, i32 {idx}"
+				)
+				if store_llty == "i8" and want_llty == "i1":
+					ext = self._fresh("bool8")
+					self.lines.append(f"  {ext} = zext i1 {arg_val} to i8")
+					self.lines.append(f"  store i8 {ext}, i8* {field_ptr}")
+				else:
+					self.lines.append(f"  store {store_llty} {arg_val}, {store_llty}* {field_ptr}")
+		out = self._fresh("variant_val")
+		self.lines.append(f"  {out} = load {variant_llty}, {variant_llty}* {tmp_ptr}")
+		self.value_types[out] = variant_llty
+		return out
 
 	def _llvm_type_for_typeid(self, ty_id: TypeId, *, allow_void_ok: bool = False) -> str:
 		"""
 		Map a TypeId to an LLVM type string for parameters/arguments.
 
-		v1 supports Int (i64), String (%DriftString), and Array<T> (by value).
+		v1 supports Int (isize), String (%DriftString), and Array<T> (by value).
 		"""
 		if self.type_table is not None:
 			if self.type_table.is_void(ty_id):
@@ -2115,12 +2458,18 @@ class _FuncBuilder:
 				raise NotImplementedError("LLVM codegen v1: Void is not a valid parameter type")
 			td = self.type_table.get(ty_id)
 			if td.kind is TypeKind.ARRAY and td.param_types:
-				elem_llty = self._llvm_type_for_typeid(td.param_types[0])
+				elem_llty = self._llvm_storage_type_for_typeid(td.param_types[0])
 				return self._llvm_array_type(elem_llty)
-			if td.kind is TypeKind.SCALAR and td.name in {"Int", "Uint"}:
-				return "i64"
+			if td.kind is TypeKind.SCALAR and td.name == "Int":
+				return DRIFT_INT_TYPE
+			if td.kind is TypeKind.SCALAR and td.name == "Uint":
+				return DRIFT_USIZE_TYPE
+			if td.kind is TypeKind.SCALAR and td.name in ("Uint64", "u64"):
+				return DRIFT_U64_TYPE
 			if td.kind is TypeKind.SCALAR and td.name == "Bool":
 				return "i1"
+			if td.kind is TypeKind.SCALAR and td.name == "Byte":
+				return "i8"
 			if td.kind is TypeKind.SCALAR and td.name == "Float":
 				return "double"
 			if td.kind is TypeKind.SCALAR and td.name == "String":
@@ -2128,7 +2477,7 @@ class _FuncBuilder:
 			if td.kind is TypeKind.REF:
 				inner_llty = "i8"
 				if td.param_types:
-					inner_llty = self._llvm_type_for_typeid(td.param_types[0])
+					inner_llty = self._llvm_storage_type_for_typeid(td.param_types[0])
 				return f"{inner_llty}*"
 			if td.kind is TypeKind.FUNCTION:
 				if not td.param_types:
@@ -2139,7 +2488,7 @@ class _FuncBuilder:
 				ret_tid = td.param_types[-1]
 				return self._fn_ptr_lltype(params, ret_tid, td.fn_throws)
 			if td.kind is TypeKind.STRUCT:
-				return self.module.ensure_struct_type(ty_id, type_table=self.type_table, map_type=self._llvm_type_for_typeid)
+				return self.module.ensure_struct_type(ty_id, type_table=self.type_table, map_type=self._llvm_storage_type_for_typeid)
 			if td.kind is TypeKind.VARIANT:
 				# Concrete variants lower to a named LLVM struct type that contains a
 				# tag byte and an aligned payload buffer.
@@ -2157,20 +2506,8 @@ class _FuncBuilder:
 					)
 				ok_llty, ok_key = self._llvm_ok_type_for_typeid(ok_tid)
 				return self.module.fnresult_type(ok_key, ok_llty)
-			if td.kind is TypeKind.OPTIONAL and td.param_types:
-				inner = td.param_types[0]
-				inner_def = self.type_table.get(inner)
-				if inner_def.kind is TypeKind.SCALAR and inner_def.name == "Int":
-					return DRIFT_OPT_INT_TYPE
-				if inner_def.kind is TypeKind.SCALAR and inner_def.name == "Bool":
-					return DRIFT_OPT_BOOL_TYPE
-				if inner_def.kind is TypeKind.SCALAR and inner_def.name == "String":
-					return DRIFT_OPT_STRING_TYPE
-				raise NotImplementedError(
-					f"LLVM codegen v1: Optional<{inner_def.name}> not supported (function {self.func.name})"
-				)
 			if self.int_type_id is not None and ty_id == self.int_type_id:
-				return "i64"
+				return DRIFT_INT_TYPE
 			if self.float_type_id is not None and ty_id == self.float_type_id:
 				return "double"
 			if self.string_type_id is not None and ty_id == self.string_type_id:
@@ -2178,6 +2515,20 @@ class _FuncBuilder:
 		raise NotImplementedError(
 			f"LLVM codegen v1: unsupported param type id {ty_id!r} for function {self.func.name}"
 		)
+
+	def _llvm_storage_type_for_typeid(self, ty_id: TypeId) -> str:
+		"""
+		Map a TypeId to an LLVM type string for storage in aggregates.
+
+		Bool values are stored as i8 in aggregates per ABI.
+		"""
+		llty = self._llvm_type_for_typeid(ty_id)
+		if self.type_table is None:
+			return llty
+		td = self.type_table.get(ty_id)
+		if td.kind is TypeKind.SCALAR and td.name == "Bool":
+			return "i8"
+		return llty
 
 	def _type_key(self, ty_id: TypeId) -> str:
 		"""Build a stable key string for a TypeId (used for FnResult naming/diagnostics)."""
@@ -2219,7 +2570,7 @@ class _FuncBuilder:
 		"""
 		Map an Ok TypeId to (ok_llty, ok_key) for FnResult payloads.
 
-		Supported in v1: Int -> i64, String -> %DriftString, Void -> i8, Ref<T> -> T*,
+		Supported in v1: Int -> isize, String -> %DriftString, Void -> i8, Ref<T> -> T*,
 		function pointers, and concrete Struct/Variant values by-value.
 		Other kinds are rejected with a clear diagnostic.
 		"""
@@ -2228,24 +2579,49 @@ class _FuncBuilder:
 		td = self.type_table.get(ty_id)
 		key = self._type_key(ty_id)
 		if td.kind is TypeKind.SCALAR and td.name == "Int":
-			return "i64", key
+			return DRIFT_INT_TYPE, key
+		if td.kind is TypeKind.SCALAR and td.name == "Uint":
+			return DRIFT_USIZE_TYPE, key
+		if td.kind is TypeKind.SCALAR and td.name in ("Uint64", "u64"):
+			return DRIFT_U64_TYPE, key
 		if td.kind is TypeKind.SCALAR and td.name == "String":
 			return DRIFT_STRING_TYPE, key
+		if td.kind is TypeKind.SCALAR and td.name == "Bool":
+			return "i1", key
+		if td.kind is TypeKind.SCALAR and td.name == "Byte":
+			return "i8", key
+		if td.kind is TypeKind.SCALAR and td.name == "Float":
+			return "double", key
 		if td.kind is TypeKind.VOID:
 			return "i8", key
 		if td.kind is TypeKind.REF:
 			inner_llty = "i8"
 			if td.param_types:
-				inner_llty = self._llvm_type_for_typeid(td.param_types[0])
+				inner_llty = self._llvm_storage_type_for_typeid(td.param_types[0])
 			return f"{inner_llty}*", key
 		if td.kind is TypeKind.FUNCTION:
 			return self._llvm_type_for_typeid(ty_id), key
 		if td.kind in (TypeKind.STRUCT, TypeKind.VARIANT):
 			return self._llvm_type_for_typeid(ty_id), key
-		supported = "Int, String, Void, Ref<T>, Struct, Variant, FnPtr"
+		supported = "Int, Uint, Uint64, Bool, Byte, Float, String, Void, Ref<T>, Struct, Variant, FnPtr"
 		raise NotImplementedError(
 			f"LLVM codegen v1: FnResult ok type {key} is not supported yet; supported ok payloads: {supported}"
 		)
+
+	def _llvm_ok_abi_type_for_typeid(self, ty_id: TypeId) -> str:
+		"""
+		Map an Ok TypeId to its ABI-boundary payload type for Result wrappers.
+
+		Bool uses storage form (i8) at the boundary; other supported ok payloads
+		use their normal value representation.
+		"""
+		if self.type_table is None:
+			raise NotImplementedError("LLVM codegen v1: TypeTable required for ok ABI lowering")
+		td = self.type_table.get(ty_id)
+		if td.kind is TypeKind.SCALAR and td.name == "Bool":
+			return "i8"
+		ok_llty, _ = self._llvm_ok_type_for_typeid(ty_id)
+		return ok_llty
 
 	def _llvm_ok_type_for_sig(self, sig: object) -> tuple[str, str]:
 		"""
@@ -2263,8 +2639,8 @@ class _FuncBuilder:
 		return self._llvm_ok_type_for_typeid(ret_tid)
 
 	def _llvm_scalar_type(self) -> str:
-		# All lowered values are i64 or i1; phis currently assume Int.
-		return "i64"
+		# All lowered values are isize or i1; phis currently assume Int.
+		return DRIFT_INT_TYPE
 
 	def _fnresult_typeids_for_fn(self, info: FnInfo | None = None) -> tuple[TypeId, TypeId]:
 		"""
@@ -2329,10 +2705,12 @@ class _FuncBuilder:
 
 	def _zero_value_for_ok(self, ok_llty: str) -> str:
 		"""Return a typed zero literal for the ok payload slot of a FnResult."""
-		if ok_llty == "i64":
-			return "i64 0"
+		if ok_llty == DRIFT_INT_TYPE:
+			return f"{DRIFT_INT_TYPE} 0"
 		if ok_llty == "i1":
 			return "i1 0"
+		if ok_llty == "i8":
+			return "i8 0"
 		if ok_llty.endswith("*"):
 			return f"{ok_llty} null"
 		# Structs/arrays and placeholder i8 can use zeroinitializer.
@@ -2348,8 +2726,8 @@ class _FuncBuilder:
 		"""
 		llty = self._llvm_type_for_typeid(ty)
 		td = self.type_table.get(ty) if self.type_table is not None else None
-		if llty == "i64":
-			return "i64 0"
+		if llty == DRIFT_INT_TYPE:
+			return f"{DRIFT_INT_TYPE} 0"
 		if llty == "i1":
 			return "i1 0"
 		if llty == "double":
@@ -2376,9 +2754,9 @@ class _FuncBuilder:
 		td = self.type_table.get(ty)
 
 		# Scalars: cheap constants.
-		if llty == "i64":
-			self.lines.append(f"  {dest} = add i64 0, 0")
-			self.value_types[dest] = "i64"
+		if llty == DRIFT_INT_TYPE:
+			self.lines.append(f"  {dest} = add {DRIFT_INT_TYPE} 0, 0")
+			self.value_types[dest] = DRIFT_INT_TYPE
 			return
 		if llty == "i1":
 			self.lines.append(f"  {dest} = add i1 0, 0")
@@ -2397,12 +2775,12 @@ class _FuncBuilder:
 		# Array runtime representation is a fixed 3-field aggregate in v1:
 		#   { len: %drift.size, cap: %drift.size, data: <elem>* }
 		if td.kind is TypeKind.ARRAY and td.param_types:
-			elem_llty = self._llvm_type_for_typeid(td.param_types[0])
+			elem_llty = self._llvm_storage_type_for_typeid(td.param_types[0])
 			arr_llty = self._llvm_array_type(elem_llty)
 			tmp0 = self._fresh("zero_arr")
-			self.lines.append(f"  {tmp0} = insertvalue {arr_llty} undef, {DRIFT_SIZE_TYPE} 0, 0")
+			self.lines.append(f"  {tmp0} = insertvalue {arr_llty} undef, {DRIFT_UINT_TYPE} 0, 0")
 			tmp1 = self._fresh("zero_arr")
-			self.lines.append(f"  {tmp1} = insertvalue {arr_llty} {tmp0}, {DRIFT_SIZE_TYPE} 0, 1")
+			self.lines.append(f"  {tmp1} = insertvalue {arr_llty} {tmp0}, {DRIFT_UINT_TYPE} 0, 1")
 			self.lines.append(f"  {dest} = insertvalue {arr_llty} {tmp1}, {elem_llty}* null, 2")
 			self.value_types[dest] = arr_llty
 			return
@@ -2412,7 +2790,7 @@ class _FuncBuilder:
 		# constant operands.
 		if llty == DRIFT_STRING_TYPE:
 			tmp0 = self._fresh("zero_str")
-			self.lines.append(f"  {tmp0} = insertvalue {DRIFT_STRING_TYPE} undef, {DRIFT_SIZE_TYPE} 0, 0")
+			self.lines.append(f"  {tmp0} = insertvalue {DRIFT_STRING_TYPE} undef, {DRIFT_UINT_TYPE} 0, 0")
 			self.lines.append(f"  {dest} = insertvalue {DRIFT_STRING_TYPE} {tmp0}, i8* null, 1")
 			self.value_types[dest] = DRIFT_STRING_TYPE
 			return
@@ -2448,7 +2826,7 @@ class _FuncBuilder:
 		self.value_map[mir_id] = self.value_map[root]
 		return self.value_map[mir_id]
 
-	def _map_binop(self, op: BinaryOp) -> str:
+	def _map_binop(self, op: BinaryOp, *, unsigned: bool = False) -> str:
 		if op == BinaryOp.ADD:
 			return "add"
 		if op == BinaryOp.SUB:
@@ -2456,9 +2834,9 @@ class _FuncBuilder:
 		if op == BinaryOp.MUL:
 			return "mul"
 		if op == BinaryOp.DIV:
-			return "sdiv"
+			return "udiv" if unsigned else "sdiv"
 		if op == BinaryOp.MOD:
-			return "srem"
+			return "urem" if unsigned else "srem"
 		if op == BinaryOp.BIT_AND:
 			return "and"
 		if op == BinaryOp.BIT_OR:
@@ -2474,14 +2852,24 @@ class _FuncBuilder:
 		if op == BinaryOp.NE:
 			return "icmp ne"
 		if op == BinaryOp.LT:
-			return "icmp slt"
+			return "icmp ult" if unsigned else "icmp slt"
 		if op == BinaryOp.LE:
-			return "icmp sle"
+			return "icmp ule" if unsigned else "icmp sle"
 		if op == BinaryOp.GT:
-			return "icmp sgt"
+			return "icmp ugt" if unsigned else "icmp sgt"
 		if op == BinaryOp.GE:
-			return "icmp sge"
+			return "icmp uge" if unsigned else "icmp sge"
 		raise NotImplementedError(f"LLVM codegen v1: unsupported binary op {op}")
+
+	def _llvm_name(self, val: str) -> str:
+		return val if val.startswith("%") else self._map_value(val)
+
+	def _retain_string(self, val: str) -> str:
+		self.module.needs_string_retain = True
+		out = self._fresh("str_retain")
+		self.lines.append(f"  {out} = call {DRIFT_STRING_TYPE} @drift_string_retain({DRIFT_STRING_TYPE} {val})")
+		self.value_types[out] = DRIFT_STRING_TYPE
+		return out
 
 	def _lower_unary(self, instr: UnaryOpInstr) -> None:
 		"""Lower unary ops for numeric/boolean operands."""
@@ -2496,18 +2884,18 @@ class _FuncBuilder:
 			self.value_types[dest] = "i1"
 			return
 		if instr.op is UnaryOp.NEG:
-			# Arithmetic negation on Int (i64).
-			if ty not in (None, "i64"):
+			# Arithmetic negation on Int (isize).
+			if ty not in (None, DRIFT_INT_TYPE):
 				raise NotImplementedError("LLVM codegen v1: neg only supported on Int")
-			self.lines.append(f"  {dest} = sub i64 0, {operand}")
-			self.value_types[dest] = "i64"
+			self.lines.append(f"  {dest} = sub {DRIFT_INT_TYPE} 0, {operand}")
+			self.value_types[dest] = DRIFT_INT_TYPE
 			return
 		if instr.op is UnaryOp.BIT_NOT:
-			# Bitwise not on Int/Uint (i64 carrier).
-			if ty not in (None, "i64"):
-				raise NotImplementedError("LLVM codegen v1: bitwise not only supported on Int/Uint")
-			self.lines.append(f"  {dest} = xor i64 {operand}, -1")
-			self.value_types[dest] = "i64"
+			# Bitwise not on Uint only.
+			if ty != DRIFT_USIZE_TYPE:
+				raise AssertionError("LLVM codegen v1: bitwise not requires Uint")
+			self.lines.append(f"  {dest} = xor {DRIFT_USIZE_TYPE} {operand}, -1")
+			self.value_types[dest] = DRIFT_USIZE_TYPE
 			return
 		raise NotImplementedError(f"LLVM codegen v1: unsupported unary op {instr.op}")
 
@@ -2558,11 +2946,34 @@ class _FuncBuilder:
 				return
 			raise NotImplementedError(f"LLVM codegen v1: unsupported bool binary op {instr.op}")
 
-		# Integer ops on i64.
-		op_str = self._map_binop(instr.op)
-		dest_ty = "i64" if not op_str.startswith("icmp") else "i1"
+		# Integer ops on isize/usize.
+		int_ty = None
+		unsigned = False
+		bitwise_ops = {BinaryOp.BIT_AND, BinaryOp.BIT_OR, BinaryOp.BIT_XOR, BinaryOp.SHL, BinaryOp.SHR}
+		if instr.op in bitwise_ops:
+			if left_ty != DRIFT_USIZE_TYPE or right_ty != DRIFT_USIZE_TYPE:
+				raise AssertionError(
+					f"LLVM codegen v1: bitwise ops require Uint operands (have {left_ty}, {right_ty})"
+				)
+			int_ty = DRIFT_USIZE_TYPE
+			unsigned = True
+		elif left_ty == DRIFT_INT_TYPE and right_ty == DRIFT_INT_TYPE:
+			int_ty = DRIFT_INT_TYPE
+			unsigned = False
+		elif left_ty == DRIFT_USIZE_TYPE and right_ty == DRIFT_USIZE_TYPE:
+			int_ty = DRIFT_USIZE_TYPE
+			unsigned = True
+		elif left_ty == DRIFT_U64_TYPE and right_ty == DRIFT_U64_TYPE:
+			int_ty = DRIFT_U64_TYPE
+			unsigned = True
+		if int_ty is None:
+			raise NotImplementedError(
+				f"LLVM codegen v1: integer binop requires matching Int/Uint operands (have {left_ty}, {right_ty})"
+			)
+		op_str = self._map_binop(instr.op, unsigned=unsigned)
+		dest_ty = int_ty if not op_str.startswith("icmp") else "i1"
 		self.value_types[dest] = dest_ty
-		self.lines.append(f"  {dest} = {op_str} i64 {left}, {right}")
+		self.lines.append(f"  {dest} = {op_str} {int_ty} {left}, {right}")
 
 	def _assert_acyclic(self) -> None:
 		pass
@@ -2583,32 +2994,647 @@ class _FuncBuilder:
 		dest = self._map_value(instr.dest)
 		elem_llty = self._llvm_array_elem_type(instr.elem_ty)
 		arr_llty = self._llvm_array_type(elem_llty)
-		elem_size = self._sizeof(elem_llty)
-		elem_align = self._alignof(elem_llty)
+		elem_size, elem_align = self._array_elem_layout(instr.elem_ty, elem_llty)
 		count = len(instr.elements)
-		# Call drift_alloc_array(elem_size, elem_align, len, cap)
-		len_const = count
+		# Call drift_alloc_array(elem_size, elem_align, len=0, cap=count)
+		len_const = 0
 		cap_const = count
 		tmp_alloc = self._fresh("arr")
 		self.lines.append(
-			f"  {tmp_alloc} = call i8* @drift_alloc_array(i64 {elem_size}, i64 {elem_align}, {DRIFT_SIZE_TYPE} {len_const}, {DRIFT_SIZE_TYPE} {cap_const})"
+			f"  {tmp_alloc} = call i8* @drift_alloc_array({DRIFT_USIZE_TYPE} {elem_size}, {DRIFT_USIZE_TYPE} {elem_align}, {DRIFT_USIZE_TYPE} {len_const}, {DRIFT_USIZE_TYPE} {cap_const})"
 		)
 		# Bitcast to elem*
 		tmp_data = self._fresh("data")
 		self.lines.append(f"  {tmp_data} = bitcast i8* {tmp_alloc} to {elem_llty}*")
+		# Build the array struct {len=0, cap, data}, then set len after init.
+		tmp0 = self._fresh("arrh0")
+		tmp1 = self._fresh("arrh1")
+		tmp2 = self._fresh("arrh2")
+		self.lines.append(f"  {tmp0} = insertvalue {arr_llty} undef, {DRIFT_UINT_TYPE} 0, 0")
+		self.lines.append(f"  {tmp1} = insertvalue {arr_llty} {tmp0}, {DRIFT_UINT_TYPE} {cap_const}, 1")
+		self.lines.append(f"  {tmp2} = insertvalue {arr_llty} {tmp1}, {elem_llty}* {tmp_data}, 2")
 		# Store elements
+		is_bool = self._is_bool_type(instr.elem_ty)
 		for idx, elem in enumerate(instr.elements):
 			elem_val = self._map_value(elem)
+			if is_bool:
+				elem_val = self._bool_to_storage(elem_val)
 			tmp_ptr = self._fresh("eltptr")
-			self.lines.append(f"  {tmp_ptr} = getelementptr inbounds {elem_llty}, {elem_llty}* {tmp_data}, i64 {idx}")
+			self.lines.append(
+				f"  {tmp_ptr} = getelementptr inbounds {elem_llty}, {elem_llty}* {tmp_data}, {DRIFT_INT_TYPE} {idx}"
+			)
 			self.lines.append(f"  store {elem_llty} {elem_val}, {elem_llty}* {tmp_ptr}")
+		tmp3 = self._fresh("arrh3")
+		self.lines.append(f"  {tmp3} = insertvalue {arr_llty} {tmp2}, {DRIFT_UINT_TYPE} {count}, 0")
+		self.lines.append(f"  {dest} = {tmp3}")
+		self.value_types[dest] = arr_llty
+
+	def _lower_array_alloc(self, instr: ArrayAlloc) -> None:
+		"""Lower ArrayAlloc by allocating a backing store and building the header struct."""
+		dest = self._map_value(instr.dest)
+		elem_llty = self._llvm_array_elem_type(instr.elem_ty)
+		arr_llty = self._llvm_array_type(elem_llty)
+		elem_size, elem_align = self._array_elem_layout(instr.elem_ty, elem_llty)
+		len_val = self._map_value(instr.length)
+		len_const = self.const_values.get(len_val)
+		if len_const is None or len_const != 0:
+			raise AssertionError("LLVM codegen v1: ArrayAlloc length must be constant zero")
+		cap_val = self._map_value(instr.cap)
+		self.module.needs_array_helpers = True
+		# MVP invariant: ArrayAlloc always returns len=0; callers must set len via ArraySetLen.
+		tmp_alloc = self._fresh("arr")
+		zero_len = self._fresh("len0")
+		self.lines.append(f"  {zero_len} = add {DRIFT_UINT_TYPE} 0, 0")
+		self.lines.append(
+			f"  {tmp_alloc} = call i8* @drift_alloc_array({DRIFT_USIZE_TYPE} {elem_size}, {DRIFT_USIZE_TYPE} {elem_align}, {DRIFT_USIZE_TYPE} {zero_len}, {DRIFT_USIZE_TYPE} {cap_val})"
+		)
+		tmp_data = self._fresh("data")
+		self.lines.append(f"  {tmp_data} = bitcast i8* {tmp_alloc} to {elem_llty}*")
+		tmp0 = self._fresh("arrh0")
+		tmp1 = self._fresh("arrh1")
+		self.lines.append(f"  {tmp0} = insertvalue {arr_llty} undef, {DRIFT_UINT_TYPE} {zero_len}, 0")
+		self.lines.append(f"  {tmp1} = insertvalue {arr_llty} {tmp0}, {DRIFT_UINT_TYPE} {cap_val}, 1")
+		self.lines.append(f"  {dest} = insertvalue {arr_llty} {tmp1}, {elem_llty}* {tmp_data}, 2")
+		self.value_types[dest] = arr_llty
+
+	def _lower_array_elem_init(self, instr: ArrayElemInit) -> None:
+		"""Lower ArrayElemInit as a direct store into the backing buffer."""
+		array = self._map_value(instr.array)
+		index = self._map_value(instr.index)
+		value = self._map_value(instr.value)
+		elem_llty = self._llvm_array_elem_type(instr.elem_ty)
+		arr_llty = self._llvm_array_type(elem_llty)
+		ptr_tmp = self._lower_array_index_addr(array=array, index=index, elem_llty=elem_llty, arr_llty=arr_llty)
+		if self._is_bool_type(instr.elem_ty):
+			value = self._bool_to_storage(value)
+		self.lines.append(f"  store {elem_llty} {value}, {elem_llty}* {ptr_tmp}")
+
+	def _lower_array_elem_init_unchecked(self, instr: ArrayElemInitUnchecked) -> None:
+		"""Lower ArrayElemInitUnchecked without bounds checks."""
+		array = self._map_value(instr.array)
+		index = self._map_value(instr.index)
+		value = self._map_value(instr.value)
+		idx_ty = self.value_types.get(index)
+		if idx_ty != DRIFT_INT_TYPE:
+			raise AssertionError("LLVM codegen v1: ArrayElemInitUnchecked index must be Int")
+		elem_llty = self._llvm_array_elem_type(instr.elem_ty)
+		arr_llty = self._llvm_array_type(elem_llty)
+		data_tmp = self._fresh("data")
+		self.lines.append(f"  {data_tmp} = extractvalue {arr_llty} {array}, 2")
+		ptr_tmp = self._fresh("eltptr")
+		self.lines.append(
+			f"  {ptr_tmp} = getelementptr inbounds {elem_llty}, {elem_llty}* {data_tmp}, {DRIFT_INT_TYPE} {index}"
+		)
+		if self._is_bool_type(instr.elem_ty):
+			value = self._bool_to_storage(value)
+		self.lines.append(f"  store {elem_llty} {value}, {elem_llty}* {ptr_tmp}")
+
+	def _lower_array_elem_assign(self, instr: ArrayElemAssign) -> None:
+		"""Lower ArrayElemAssign by dropping the old element then storing the new one."""
+		array = self._map_value(instr.array)
+		index = self._map_value(instr.index)
+		value = self._map_value(instr.value)
+		elem_llty = self._llvm_array_elem_type(instr.elem_ty)
+		arr_llty = self._llvm_array_type(elem_llty)
+		ptr_tmp = self._lower_array_index_addr(array=array, index=index, elem_llty=elem_llty, arr_llty=arr_llty)
+		if self._type_needs_drop(instr.elem_ty):
+			old_val = self._fresh("old")
+			self.lines.append(f"  {old_val} = load {elem_llty}, {elem_llty}* {ptr_tmp}")
+			self.value_types[old_val] = elem_llty
+			self._emit_drop_value(instr.elem_ty, old_val)
+		if self._is_bool_type(instr.elem_ty):
+			value = self._bool_to_storage(value)
+		self.lines.append(f"  store {elem_llty} {value}, {elem_llty}* {ptr_tmp}")
+
+	def _lower_array_elem_drop(self, instr: ArrayElemDrop) -> None:
+		"""Lower ArrayElemDrop by loading and dropping the element."""
+		if not self._type_needs_drop(instr.elem_ty):
+			return
+		array = self._map_value(instr.array)
+		index = self._map_value(instr.index)
+		elem_llty = self._llvm_array_elem_type(instr.elem_ty)
+		arr_llty = self._llvm_array_type(elem_llty)
+		ptr_tmp = self._lower_array_index_addr(array=array, index=index, elem_llty=elem_llty, arr_llty=arr_llty)
+		old_val = self._fresh("old")
+		self.lines.append(f"  {old_val} = load {elem_llty}, {elem_llty}* {ptr_tmp}")
+		self.value_types[old_val] = elem_llty
+		self._emit_drop_value(instr.elem_ty, old_val)
+
+	def _lower_array_drop(self, instr: ArrayDrop) -> None:
+		"""Lower ArrayDrop by dropping elements and freeing the backing store."""
+		array = self._map_value(instr.array)
+		elem_llty = self._llvm_array_elem_type(instr.elem_ty)
+		arr_llty = self._llvm_array_type(elem_llty)
+		len_tmp = self._fresh("len")
+		data_tmp = self._fresh("data")
+		self.lines.append(f"  {len_tmp} = extractvalue {arr_llty} {array}, 0")
+		self.lines.append(f"  {data_tmp} = extractvalue {arr_llty} {array}, 2")
+		if self._type_needs_drop(instr.elem_ty):
+			helper = self._ensure_array_drop_helper(instr.elem_ty)
+			self.lines.append(f"  call void @{helper}({DRIFT_UINT_TYPE} {len_tmp}, {elem_llty}* {data_tmp})")
+		self.module.needs_array_helpers = True
+		data_i8 = self._fresh("data_i8")
+		self.lines.append(f"  {data_i8} = bitcast {elem_llty}* {data_tmp} to i8*")
+		self.lines.append(f"  call void @drift_free_array(i8* {data_i8})")
+
+	def _lower_array_dup(self, instr: ArrayDup) -> None:
+		"""Lower ArrayDup by allocating a new buffer and copying elements."""
+		dest = self._map_value(instr.dest)
+		array = self._map_value(instr.array)
+		elem_llty = self._llvm_array_elem_type(instr.elem_ty)
+		arr_llty = self._llvm_array_type(elem_llty)
+		elem_size, elem_align = self._array_elem_layout(instr.elem_ty, elem_llty)
+		self.module.needs_array_helpers = True
+		bitcopy = True
+		if self.type_table is not None:
+			bitcopy = self.type_table.is_bitcopy(instr.elem_ty)
+		# Extract len, cap, data
+		len_tmp = self._fresh("len")
+		cap_tmp = self._fresh("cap")
+		data_tmp = self._fresh("data")
+		self.lines.append(f"  {len_tmp} = extractvalue {arr_llty} {array}, 0")
+		self.lines.append(f"  {cap_tmp} = extractvalue {arr_llty} {array}, 1")
+		self.lines.append(f"  {data_tmp} = extractvalue {arr_llty} {array}, 2")
+		# Allocate backing store (preserve capacity)
+		tmp_alloc = self._fresh("arr")
+		self.lines.append(
+			f"  {tmp_alloc} = call i8* @drift_alloc_array({DRIFT_USIZE_TYPE} {elem_size}, {DRIFT_USIZE_TYPE} {elem_align}, {DRIFT_USIZE_TYPE} {len_tmp}, {DRIFT_USIZE_TYPE} {cap_tmp})"
+		)
+		tmp_data = self._fresh("data")
+		self.lines.append(f"  {tmp_data} = bitcast i8* {tmp_alloc} to {elem_llty}*")
+		if bitcopy:
+			self.module.needs_memcpy = True
+			# memcpy bytes = len * elem_size (skip when len == 0)
+			len_is_zero = self._fresh("len_is_zero")
+			self.lines.append(f"  {len_is_zero} = icmp eq {DRIFT_UINT_TYPE} {len_tmp}, 0")
+			zero_block = self._fresh("arr_dup_zero")
+			copy_block = self._fresh("arr_dup_copy")
+			after_block = self._fresh("arr_dup_done")
+			self.lines.append(f"  br i1 {len_is_zero}, label {zero_block}, label {copy_block}")
+			self.lines.append(f"{zero_block[1:]}:")
+			self.lines.append(f"  br label {after_block}")
+			self.lines.append(f"{copy_block[1:]}:")
+			bytes_tmp = self._fresh("bytes")
+			self.lines.append(f"  {bytes_tmp} = mul {DRIFT_UINT_TYPE} {len_tmp}, {elem_size}")
+			bytes_i64 = bytes_tmp
+			if self.module.word_bits != 64:
+				bytes_i64 = self._fresh("bytes_i64")
+				self.lines.append(f"  {bytes_i64} = zext {DRIFT_UINT_TYPE} {bytes_tmp} to i64")
+			src_i8 = self._fresh("src")
+			dst_i8 = self._fresh("dst")
+			self.lines.append(f"  {src_i8} = bitcast {elem_llty}* {data_tmp} to i8*")
+			self.lines.append(f"  {dst_i8} = bitcast {elem_llty}* {tmp_data} to i8*")
+			self.lines.append(
+				f"  call void @llvm.memcpy.p0i8.p0i8.i64(i8* {dst_i8}, i8* {src_i8}, i64 {bytes_i64}, i1 false)"
+			)
+			self.lines.append(f"  br label {after_block}")
+			self.lines.append(f"{after_block[1:]}:")
+		else:
+			# Element-wise copy for non-bitcopy Copy types.
+			idx_ptr = self._fresh("idx_ptr")
+			self.lines.append(f"  {idx_ptr} = alloca {DRIFT_UINT_TYPE}")
+			self.lines.append(f"  store {DRIFT_UINT_TYPE} 0, {DRIFT_UINT_TYPE}* {idx_ptr}")
+			cond_block = self._fresh("arr_dup_cond")
+			body_block = self._fresh("arr_dup_body")
+			done_block = self._fresh("arr_dup_done")
+			self.lines.append(f"  br label {cond_block}")
+			self.lines.append(f"{cond_block[1:]}:")
+			idx_val = self._fresh("idx")
+			self.lines.append(f"  {idx_val} = load {DRIFT_UINT_TYPE}, {DRIFT_UINT_TYPE}* {idx_ptr}")
+			cmp = self._fresh("idx_ok")
+			self.lines.append(f"  {cmp} = icmp ult {DRIFT_UINT_TYPE} {idx_val}, {len_tmp}")
+			self.lines.append(f"  br i1 {cmp}, label {body_block}, label {done_block}")
+			self.lines.append(f"{body_block[1:]}:")
+			idx_val2 = self._fresh("idxv")
+			self.lines.append(f"  {idx_val2} = load {DRIFT_UINT_TYPE}, {DRIFT_UINT_TYPE}* {idx_ptr}")
+			src_ptr = self._fresh("src_ptr")
+			dst_ptr = self._fresh("dst_ptr")
+			self.lines.append(
+				f"  {src_ptr} = getelementptr inbounds {elem_llty}, {elem_llty}* {data_tmp}, {DRIFT_UINT_TYPE} {idx_val2}"
+			)
+			self.lines.append(
+				f"  {dst_ptr} = getelementptr inbounds {elem_llty}, {elem_llty}* {tmp_data}, {DRIFT_UINT_TYPE} {idx_val2}"
+			)
+			src_val = self._fresh("src_val")
+			self.lines.append(f"  {src_val} = load {elem_llty}, {elem_llty}* {src_ptr}")
+			copied_val = self._emit_copy_value(instr.elem_ty, src_val)
+			self.lines.append(f"  store {elem_llty} {copied_val}, {elem_llty}* {dst_ptr}")
+			next_val = self._fresh("idx_next")
+			self.lines.append(f"  {next_val} = add {DRIFT_UINT_TYPE} {idx_val2}, 1")
+			self.lines.append(f"  store {DRIFT_UINT_TYPE} {next_val}, {DRIFT_UINT_TYPE}* {idx_ptr}")
+			self.lines.append(f"  br label {cond_block}")
+			self.lines.append(f"{done_block[1:]}:")
 		# Build the array struct {len, cap, data}
 		tmp0 = self._fresh("arrh0")
 		tmp1 = self._fresh("arrh1")
-		self.lines.append(f"  {tmp0} = insertvalue {arr_llty} undef, {DRIFT_SIZE_TYPE} {len_const}, 0")
-		self.lines.append(f"  {tmp1} = insertvalue {arr_llty} {tmp0}, {DRIFT_SIZE_TYPE} {cap_const}, 1")
+		self.lines.append(f"  {tmp0} = insertvalue {arr_llty} undef, {DRIFT_UINT_TYPE} {len_tmp}, 0")
+		self.lines.append(f"  {tmp1} = insertvalue {arr_llty} {tmp0}, {DRIFT_UINT_TYPE} {cap_tmp}, 1")
 		self.lines.append(f"  {dest} = insertvalue {arr_llty} {tmp1}, {elem_llty}* {tmp_data}, 2")
 		self.value_types[dest] = arr_llty
+
+	def _emit_copy_value(self, ty_id: TypeId, value: str) -> str:
+		"""
+		Emit a semantic copy of a value, falling back to bitcopy when allowed.
+		"""
+		if self.type_table is None:
+			raise AssertionError("CopyValue requires a TypeTable")
+		if self.type_table.is_bitcopy(ty_id):
+			return value
+		td = self.type_table.get(ty_id)
+		llty = self._llvm_type_for_typeid(ty_id)
+		if td.kind is TypeKind.SCALAR and td.name == "String":
+			if self.module is not None:
+				self.module.needs_string_retain = True
+			out = self._fresh("str_retain")
+			self.lines.append(f"  {out} = call {DRIFT_STRING_TYPE} @drift_string_retain({DRIFT_STRING_TYPE} {value})")
+			self.value_types[out] = DRIFT_STRING_TYPE
+			return out
+		if td.kind is TypeKind.VARIANT:
+			inst = self.type_table.get_variant_instance(ty_id)
+			if inst is None:
+				raise NotImplementedError("LLVM codegen v1: variant copy requires instance metadata")
+			field_types_by_ctor = {arm.name: arm.field_types for arm in inst.arms}
+			layout = self._variant_layout(ty_id)
+			variant_llty = layout.llvm_ty
+			tag_val = self._fresh("var_tag")
+			self.lines.append(f"  {tag_val} = extractvalue {variant_llty} {value}, 0")
+			result_ptr = self._fresh("var_copy")
+			self.lines.append(f"  {result_ptr} = alloca {variant_llty}")
+			done_block = self._fresh("var_done")
+			arms = list(layout.arms.items())
+			default_block = self._fresh("var_bad")
+			arm_blocks: list[tuple[str, _VariantArmLayout]] = []
+			for ctor_name, arm_layout in arms:
+				arm_blocks.append((self._fresh(f"var_arm_{ctor_name.lower()}"), arm_layout))
+			case_specs = " ".join(
+				f"i8 {arm_layout.tag}, label {arm_block}" for (arm_block, arm_layout) in arm_blocks
+			)
+			self.lines.append(f"  switch i8 {tag_val}, label {default_block} [ {case_specs} ]")
+			for (arm_block, arm_layout), (ctor_name, _arm_layout) in zip(arm_blocks, arms):
+				self.lines.append(f"{arm_block[1:]}:")
+				# Extract payload fields for this arm.
+				tmp_ptr = self._fresh("variant")
+				self.lines.append(f"  {tmp_ptr} = alloca {variant_llty}")
+				self.lines.append(f"  store {variant_llty} {value}, {variant_llty}* {tmp_ptr}")
+				args: list[str] = []
+				if arm_layout.payload_struct_llty:
+					payload_words_ptr = self._fresh("payload_words")
+					self.lines.append(
+						f"  {payload_words_ptr} = getelementptr inbounds {variant_llty}, {variant_llty}* {tmp_ptr}, i32 0, i32 2"
+					)
+					payload_i8 = self._fresh("payload_i8")
+					self.lines.append(
+						f"  {payload_i8} = bitcast [{layout.payload_words} x {layout.payload_cell_llty}]* {payload_words_ptr} to i8*"
+					)
+					payload_struct_ptr = self._fresh("payload_struct")
+					self.lines.append(
+						f"  {payload_struct_ptr} = bitcast i8* {payload_i8} to {arm_layout.payload_struct_llty}*"
+					)
+					for fidx, (want_llty, store_llty) in enumerate(
+						zip(arm_layout.field_lltys, arm_layout.field_storage_lltys)
+					):
+						field_ptr = self._fresh("fieldptr")
+						self.lines.append(
+							f"  {field_ptr} = getelementptr inbounds {arm_layout.payload_struct_llty}, {arm_layout.payload_struct_llty}* {payload_struct_ptr}, i32 0, i32 {fidx}"
+						)
+						if store_llty == "i8" and want_llty == "i1":
+							raw = self._fresh("field8")
+							self.lines.append(f"  {raw} = load i8, i8* {field_ptr}")
+							field_val = self._fresh("field")
+							self.lines.append(f"  {field_val} = icmp ne i8 {raw}, 0")
+							self.value_types[field_val] = "i1"
+						else:
+							field_val = self._fresh("field")
+							self.lines.append(f"  {field_val} = load {want_llty}, {want_llty}* {field_ptr}")
+							self.value_types[field_val] = want_llty
+						field_ty = field_types_by_ctor.get(ctor_name, [])[fidx]
+						copied = self._emit_copy_value(field_ty, field_val)
+						args.append(copied)
+				copied_val = self._emit_variant_value(ty_id, ctor_name, args)
+				self.lines.append(f"  store {variant_llty} {copied_val}, {variant_llty}* {result_ptr}")
+				self.lines.append(f"  br label {done_block}")
+			# Default: unreachable tag
+			self.lines.append(f"{default_block[1:]}:")
+			if self.module is not None:
+				self.module.needs_llvm_trap = True
+			self.lines.append("  call void @llvm.trap()")
+			self.lines.append("  unreachable")
+			self.lines.append(f"{done_block[1:]}:")
+			out = self._fresh("var_out")
+			self.lines.append(f"  {out} = load {variant_llty}, {variant_llty}* {result_ptr}")
+			self.value_types[out] = variant_llty
+			return out
+		if td.kind is TypeKind.STRUCT:
+			inst = self.type_table.get_struct_instance(ty_id)
+			if inst is None:
+				raise NotImplementedError("LLVM codegen v1: struct copy requires instance metadata")
+			current = "undef"
+			for idx, field_ty in enumerate(inst.field_types):
+				field_llty = self._llvm_type_for_typeid(field_ty)
+				field_val = self._fresh("copy_field")
+				self.lines.append(f"  {field_val} = extractvalue {llty} {value}, {idx}")
+				self.value_types[field_val] = field_llty
+				copied = self._emit_copy_value(field_ty, field_val)
+				tmp = self._fresh("copy_ins")
+				self.lines.append(f"  {tmp} = insertvalue {llty} {current}, {field_llty} {copied}, {idx}")
+				self.value_types[tmp] = llty
+				current = tmp
+			return current
+		if td.kind is TypeKind.FNRESULT:
+			raise NotImplementedError("LLVM codegen v1: CopyValue on FnResult is invalid (FnResult is not Copy)")
+		raise NotImplementedError(f"LLVM codegen v1: copy not supported for {td.kind.name}")
+
+	def _type_needs_drop(self, ty_id: TypeId) -> bool:
+		if self.type_table is None:
+			raise AssertionError("drop requires a TypeTable")
+		cached = self._drop_cache.get(ty_id)
+		if cached is not None:
+			return cached
+		td = self.type_table.get(ty_id)
+		if td.kind is TypeKind.SCALAR:
+			needs = td.name == "String"
+			self._drop_cache[ty_id] = needs
+			return needs
+		if td.kind is TypeKind.REF:
+			self._drop_cache[ty_id] = False
+			return False
+		if td.kind is TypeKind.ARRAY and td.param_types:
+			needs = self._type_needs_drop(td.param_types[0])
+			self._drop_cache[ty_id] = needs
+			return needs
+		if td.kind is TypeKind.STRUCT:
+			inst = self.type_table.get_struct_instance(ty_id)
+			if inst is not None:
+				needs = any(self._type_needs_drop(fty) for fty in inst.field_types)
+				self._drop_cache[ty_id] = needs
+				return needs
+		if td.kind is TypeKind.VARIANT:
+			inst = self.type_table.get_variant_instance(ty_id)
+			if inst is not None:
+				needs = any(
+					self._type_needs_drop(fty) for arm in inst.arms for fty in arm.field_types
+				)
+				self._drop_cache[ty_id] = needs
+				return needs
+		if td.param_types:
+			needs = any(self._type_needs_drop(pt) for pt in td.param_types)
+			self._drop_cache[ty_id] = needs
+			return needs
+		self._drop_cache[ty_id] = False
+		return False
+
+	def _emit_drop_value(self, ty_id: TypeId, value: str) -> None:
+		if self.type_table is None:
+			raise AssertionError("drop requires a TypeTable")
+		if not self._type_needs_drop(ty_id):
+			return
+		td = self.type_table.get(ty_id)
+		llty = self._llvm_type_for_typeid(ty_id)
+		if td.kind is TypeKind.SCALAR and td.name == "String":
+			self.module.needs_string_release = True
+			self.lines.append(f"  call void @drift_string_release({DRIFT_STRING_TYPE} {value})")
+			return
+		if td.kind is TypeKind.ARRAY and td.param_types:
+			elem_ty = td.param_types[0]
+			self._lower_array_drop(ArrayDrop(elem_ty=elem_ty, array=value))
+			return
+		if td.kind is TypeKind.STRUCT:
+			inst = self.type_table.get_struct_instance(ty_id)
+			if inst is None:
+				return
+			for idx, field_ty in enumerate(inst.field_types):
+				if not self._type_needs_drop(field_ty):
+					continue
+				field_llty = self._llvm_type_for_typeid(field_ty)
+				field_val = self._fresh("drop_field")
+				self.lines.append(f"  {field_val} = extractvalue {llty} {value}, {idx}")
+				self.value_types[field_val] = field_llty
+				self._emit_drop_value(field_ty, field_val)
+			return
+		if td.kind is TypeKind.VARIANT:
+			inst = self.type_table.get_variant_instance(ty_id)
+			if inst is None:
+				return
+			layout = self._variant_layout(ty_id)
+			variant_llty = layout.llvm_ty
+			tag_val = self._fresh("drop_tag")
+			self.lines.append(f"  {tag_val} = extractvalue {variant_llty} {value}, 0")
+			done_block = self._fresh("var_drop_done")
+			arms = list(layout.arms.items())
+			default_block = self._fresh("var_drop_bad")
+			arm_blocks: list[tuple[str, _VariantArmLayout]] = []
+			for ctor_name, arm_layout in arms:
+				arm_blocks.append((self._fresh(f"var_drop_{ctor_name.lower()}"), arm_layout))
+			case_specs = " ".join(
+				f"i8 {arm_layout.tag}, label {arm_block}" for (arm_block, arm_layout) in arm_blocks
+			)
+			self.lines.append(f"  switch i8 {tag_val}, label {default_block} [ {case_specs} ]")
+			for (arm_block, arm_layout), (ctor_name, _arm_layout) in zip(arm_blocks, arms):
+				self.lines.append(f"{arm_block[1:]}:")
+				if arm_layout.payload_struct_llty:
+					tmp_ptr = self._fresh("variant")
+					self.lines.append(f"  {tmp_ptr} = alloca {variant_llty}")
+					self.lines.append(f"  store {variant_llty} {value}, {variant_llty}* {tmp_ptr}")
+					payload_words_ptr = self._fresh("payload_words")
+					self.lines.append(
+						f"  {payload_words_ptr} = getelementptr inbounds {variant_llty}, {variant_llty}* {tmp_ptr}, i32 0, i32 2"
+					)
+					payload_i8 = self._fresh("payload_i8")
+					self.lines.append(
+						f"  {payload_i8} = bitcast [{layout.payload_words} x {layout.payload_cell_llty}]* {payload_words_ptr} to i8*"
+					)
+					payload_struct_ptr = self._fresh("payload_struct")
+					self.lines.append(
+						f"  {payload_struct_ptr} = bitcast i8* {payload_i8} to {arm_layout.payload_struct_llty}*"
+					)
+					field_types = inst.arms_by_name[ctor_name].field_types
+					for fidx, (want_llty, store_llty) in enumerate(
+						zip(arm_layout.field_lltys, arm_layout.field_storage_lltys)
+					):
+						field_ty = field_types[fidx]
+						if not self._type_needs_drop(field_ty):
+							continue
+						field_ptr = self._fresh("fieldptr")
+						self.lines.append(
+							f"  {field_ptr} = getelementptr inbounds {arm_layout.payload_struct_llty}, {arm_layout.payload_struct_llty}* {payload_struct_ptr}, i32 0, i32 {fidx}"
+						)
+						if store_llty == "i8" and want_llty == "i1":
+							raw = self._fresh("field8")
+							self.lines.append(f"  {raw} = load i8, i8* {field_ptr}")
+							field_val = self._fresh("field")
+							self.lines.append(f"  {field_val} = icmp ne i8 {raw}, 0")
+							self.value_types[field_val] = "i1"
+						else:
+							field_val = self._fresh("field")
+							self.lines.append(f"  {field_val} = load {want_llty}, {want_llty}* {field_ptr}")
+							self.value_types[field_val] = want_llty
+						self._emit_drop_value(field_ty, field_val)
+				self.lines.append(f"  br label {done_block}")
+			self.lines.append(f"{default_block[1:]}:")
+			if self.module is not None:
+				self.module.needs_llvm_trap = True
+			self.lines.append("  call void @llvm.trap()")
+			self.lines.append("  unreachable")
+			self.lines.append(f"{done_block[1:]}:")
+			return
+
+	def _ensure_array_drop_helper(self, elem_ty: TypeId) -> str:
+		if self.type_table is None:
+			raise AssertionError("array drop helper requires a TypeTable")
+		key = self._type_key(elem_ty)
+		name = f"__drift_array_drop_{key}"
+		if name in self.module.array_drop_helpers:
+			return name
+		self.module.array_drop_helpers[name] = name
+		elem_llty = self._llvm_array_elem_type(elem_ty)
+		lines: list[str] = []
+		value_types: dict[str, str] = {}
+		tmp_counter = 0
+
+		def fresh(prefix: str) -> str:
+			nonlocal tmp_counter
+			tmp_counter += 1
+			return f"%{prefix}{tmp_counter}"
+
+		def emit_drop(ty_id: TypeId, val: str) -> None:
+			td = self.type_table.get(ty_id)
+			llty = self._llvm_type_for_typeid(ty_id)
+			if td.kind is TypeKind.SCALAR and td.name == "String":
+				self.module.needs_string_release = True
+				lines.append(f"  call void @drift_string_release({DRIFT_STRING_TYPE} {val})")
+				return
+			if td.kind is TypeKind.ARRAY and td.param_types:
+				inner_elem = td.param_types[0]
+				inner_llty = self._llvm_array_elem_type(inner_elem)
+				arr_len = fresh("len")
+				arr_data = fresh("data")
+				lines.append(f"  {arr_len} = extractvalue {{ {DRIFT_UINT_TYPE}, {DRIFT_UINT_TYPE}, {inner_llty}* }} {val}, 0")
+				lines.append(f"  {arr_data} = extractvalue {{ {DRIFT_UINT_TYPE}, {DRIFT_UINT_TYPE}, {inner_llty}* }} {val}, 2")
+				if self._type_needs_drop(inner_elem):
+					helper = self._ensure_array_drop_helper(inner_elem)
+					lines.append(f"  call void @{helper}({DRIFT_UINT_TYPE} {arr_len}, {inner_llty}* {arr_data})")
+				lines.append(f"  %data_i8 = bitcast {inner_llty}* {arr_data} to i8*")
+				lines.append("  call void @drift_free_array(i8* %data_i8)")
+				return
+			if td.kind is TypeKind.STRUCT:
+				inst = self.type_table.get_struct_instance(ty_id)
+				if inst is None:
+					return
+				for idx, field_ty in enumerate(inst.field_types):
+					if not self._type_needs_drop(field_ty):
+						continue
+					field_llty = self._llvm_type_for_typeid(field_ty)
+					field_val = fresh("field")
+					lines.append(f"  {field_val} = extractvalue {llty} {val}, {idx}")
+					value_types[field_val] = field_llty
+					emit_drop(field_ty, field_val)
+				return
+			if td.kind is TypeKind.VARIANT:
+				inst = self.type_table.get_variant_instance(ty_id)
+				if inst is None:
+					return
+				layout = self._variant_layout(ty_id)
+				variant_llty = layout.llvm_ty
+				tag_val = fresh("tag")
+				lines.append(f"  {tag_val} = extractvalue {variant_llty} {val}, 0")
+				done_block = fresh("drop_done")
+				arms = list(layout.arms.items())
+				default_block = fresh("drop_bad")
+				arm_blocks: list[tuple[str, _VariantArmLayout, str]] = []
+				for ctor_name, arm_layout in arms:
+					arm_blocks.append((fresh(f"drop_{ctor_name.lower()}"), arm_layout, ctor_name))
+				case_specs = " ".join(
+					f"i8 {arm_layout.tag}, label {arm_block}"
+					for (arm_block, arm_layout, _ctor_name) in arm_blocks
+				)
+				lines.append(f"  switch i8 {tag_val}, label {default_block} [ {case_specs} ]")
+				for arm_block, arm_layout, ctor_name in arm_blocks:
+					lines.append(f"{arm_block[1:]}:")
+					if arm_layout.payload_struct_llty:
+						tmp_ptr = fresh("variant")
+						lines.append(f"  {tmp_ptr} = alloca {variant_llty}")
+						lines.append(f"  store {variant_llty} {val}, {variant_llty}* {tmp_ptr}")
+						payload_words_ptr = fresh("payload_words")
+						lines.append(
+							f"  {payload_words_ptr} = getelementptr inbounds {variant_llty}, {variant_llty}* {tmp_ptr}, i32 0, i32 2"
+						)
+						payload_i8 = fresh("payload_i8")
+						lines.append(
+							f"  {payload_i8} = bitcast [{layout.payload_words} x {layout.payload_cell_llty}]* {payload_words_ptr} to i8*"
+						)
+						payload_struct_ptr = fresh("payload_struct")
+						lines.append(
+							f"  {payload_struct_ptr} = bitcast i8* {payload_i8} to {arm_layout.payload_struct_llty}*"
+						)
+						field_types = inst.arms_by_name[ctor_name].field_types
+						for fidx, (want_llty, store_llty) in enumerate(
+							zip(arm_layout.field_lltys, arm_layout.field_storage_lltys)
+						):
+							field_ty = field_types[fidx]
+							if not self._type_needs_drop(field_ty):
+								continue
+							field_ptr = fresh("fieldptr")
+							lines.append(
+								f"  {field_ptr} = getelementptr inbounds {arm_layout.payload_struct_llty}, {arm_layout.payload_struct_llty}* {payload_struct_ptr}, i32 0, i32 {fidx}"
+							)
+							if store_llty == "i8" and want_llty == "i1":
+								raw = fresh("field8")
+								lines.append(f"  {raw} = load i8, i8* {field_ptr}")
+								field_val = fresh("field")
+								lines.append(f"  {field_val} = icmp ne i8 {raw}, 0")
+								value_types[field_val] = "i1"
+							else:
+								field_val = fresh("field")
+								lines.append(f"  {field_val} = load {want_llty}, {want_llty}* {field_ptr}")
+								value_types[field_val] = want_llty
+							emit_drop(field_ty, field_val)
+					lines.append(f"  br label {done_block}")
+				lines.append(f"{default_block[1:]}:")
+				self.module.needs_llvm_trap = True
+				lines.append("  call void @llvm.trap()")
+				lines.append("  unreachable")
+				lines.append(f"{done_block[1:]}:")
+				return
+
+		lines.append(f"define void @{name}({DRIFT_UINT_TYPE} %len, {elem_llty}* %data) {{")
+		if not self._type_needs_drop(elem_ty):
+			lines.append("  ret void")
+			lines.append("}")
+			self.module.emit_func("\n".join(lines))
+			return name
+		idx_ptr = fresh("idx_ptr")
+		lines.append(f"  {idx_ptr} = alloca {DRIFT_UINT_TYPE}")
+		lines.append(f"  store {DRIFT_UINT_TYPE} 0, {DRIFT_UINT_TYPE}* {idx_ptr}")
+		cond_block = fresh("arr_drop_cond")
+		body_block = fresh("arr_drop_body")
+		done_block = fresh("arr_drop_done")
+		lines.append(f"  br label {cond_block}")
+		lines.append(f"{cond_block[1:]}:")
+		idx_val = fresh("idx")
+		lines.append(f"  {idx_val} = load {DRIFT_UINT_TYPE}, {DRIFT_UINT_TYPE}* {idx_ptr}")
+		cmp = fresh("idx_ok")
+		lines.append(f"  {cmp} = icmp ult {DRIFT_UINT_TYPE} {idx_val}, %len")
+		lines.append(f"  br i1 {cmp}, label {body_block}, label {done_block}")
+		lines.append(f"{body_block[1:]}:")
+		idx_val2 = fresh("idxv")
+		lines.append(f"  {idx_val2} = load {DRIFT_UINT_TYPE}, {DRIFT_UINT_TYPE}* {idx_ptr}")
+		ptr_tmp = fresh("eltptr")
+		lines.append(
+			f"  {ptr_tmp} = getelementptr inbounds {elem_llty}, {elem_llty}* %data, {DRIFT_UINT_TYPE} {idx_val2}"
+		)
+		old_val = fresh("old")
+		lines.append(f"  {old_val} = load {elem_llty}, {elem_llty}* {ptr_tmp}")
+		value_types[old_val] = elem_llty
+		emit_drop(elem_ty, old_val)
+		next_val = fresh("idx_next")
+		lines.append(f"  {next_val} = add {DRIFT_UINT_TYPE} {idx_val2}, 1")
+		lines.append(f"  store {DRIFT_UINT_TYPE} {next_val}, {DRIFT_UINT_TYPE}* {idx_ptr}")
+		lines.append(f"  br label {cond_block}")
+		lines.append(f"{done_block[1:]}:")
+		lines.append("  ret void")
+		lines.append("}")
+		self.module.emit_func("\n".join(lines))
+		return name
 
 	def _lower_array_index_load(self, instr: ArrayIndexLoad) -> None:
 		"""Lower ArrayIndexLoad with bounds checks and a load from data[idx]."""
@@ -2618,8 +3644,15 @@ class _FuncBuilder:
 		elem_llty = self._llvm_array_elem_type(instr.elem_ty)
 		arr_llty = self._llvm_array_type(elem_llty)
 		ptr_tmp = self._lower_array_index_addr(array=array, index=index, elem_llty=elem_llty, arr_llty=arr_llty)
-		self.lines.append(f"  {dest} = load {elem_llty}, {elem_llty}* {ptr_tmp}")
-		self.value_types[dest] = elem_llty
+		raw = dest
+		if self._is_bool_type(instr.elem_ty):
+			raw = self._fresh("bool8")
+		self.lines.append(f"  {raw} = load {elem_llty}, {elem_llty}* {ptr_tmp}")
+		if self._is_bool_type(instr.elem_ty):
+			self._bool_from_storage(raw, dest=dest)
+			self.value_types[dest] = "i1"
+		else:
+			self.value_types[dest] = elem_llty
 
 	def _lower_array_index_store(self, instr: ArrayIndexStore) -> None:
 		"""Lower ArrayIndexStore with bounds checks and a store into data[idx]."""
@@ -2629,8 +3662,28 @@ class _FuncBuilder:
 		elem_llty = self._llvm_array_elem_type(instr.elem_ty)
 		arr_llty = self._llvm_array_type(elem_llty)
 		ptr_tmp = self._lower_array_index_addr(array=array, index=index, elem_llty=elem_llty, arr_llty=arr_llty)
+		if self._type_needs_drop(instr.elem_ty):
+			old_val = self._fresh("old")
+			self.lines.append(f"  {old_val} = load {elem_llty}, {elem_llty}* {ptr_tmp}")
+			self.value_types[old_val] = elem_llty
+			self._emit_drop_value(instr.elem_ty, old_val)
+		if self._is_bool_type(instr.elem_ty):
+			value = self._bool_to_storage(value)
 		self.lines.append(f"  store {elem_llty} {value}, {elem_llty}* {ptr_tmp}")
 		# No dest; ArrayIndexStore returns void.
+
+	def _lower_array_set_len(self, instr: ArraySetLen) -> None:
+		"""Lower ArraySetLen by rebuilding the array header with a new len."""
+		dest = self._map_value(instr.dest)
+		array = self._map_value(instr.array)
+		length = self._map_value(instr.length)
+		arr_llty = self._type_of(instr.array)
+		if arr_llty is None:
+			raise AssertionError("ArraySetLen requires array LLVM type")
+		tmp0 = self._fresh("arr_len")
+		self.lines.append(f"  {tmp0} = insertvalue {arr_llty} {array}, {DRIFT_UINT_TYPE} {length}, 0")
+		self.value_map[instr.dest] = tmp0
+		self.value_types[self._map_value(instr.dest)] = arr_llty
 
 	def _lower_array_index_addr(self, *, array: str, index: str, elem_llty: str, arr_llty: str) -> str:
 		"""
@@ -2641,85 +3694,88 @@ class _FuncBuilder:
 		- AddrOfArrayElem (borrow of array element).
 		"""
 		idx_ty = self.value_types.get(index)
-		if idx_ty not in (DRIFT_SIZE_TYPE, "i64"):
-			raise NotImplementedError(f"LLVM codegen v1: array index must be Int/Size, got {idx_ty}")
+		if idx_ty != DRIFT_INT_TYPE:
+			raise NotImplementedError(f"LLVM codegen v1: array index must be Int, got {idx_ty}")
 		# Extract len and data
 		len_tmp = self._fresh("len")
 		data_tmp = self._fresh("data")
 		self.lines.append(f"  {len_tmp} = extractvalue {arr_llty} {array}, 0")
 		self.lines.append(f"  {data_tmp} = extractvalue {arr_llty} {array}, 2")
-		# Bounds checks: idx < 0 or idx >= len => drift_bounds_check_fail
-		neg_cmp = self._fresh("negcmp")
-		self.lines.append(f"  {neg_cmp} = icmp slt {DRIFT_SIZE_TYPE} {index}, 0")
-		oob_cmp = self._fresh("oobcmp")
-		self.lines.append(f"  {oob_cmp} = icmp uge {DRIFT_SIZE_TYPE} {index}, {len_tmp}")
-		oob_or = self._fresh("oobor")
-		self.lines.append(f"  {oob_or} = or i1 {neg_cmp}, {oob_cmp}")
-		ok_block = self._fresh("array_ok")
-		fail_block = self._fresh("array_oob")
-		self.lines.append(f"  br i1 {oob_or}, label {fail_block}, label {ok_block}")
-		# Fail block
-		self.lines.append(f"{fail_block[1:]}:")
-		self.lines.append(
-			f"  call void @drift_bounds_check_fail({DRIFT_SIZE_TYPE} {index}, {DRIFT_SIZE_TYPE} {len_tmp})"
-		)
-		self.lines.append("  unreachable")
-		# Ok block
-		self.lines.append(f"{ok_block[1:]}:")
+		self.module.needs_array_helpers = True
+		self.lines.append(f"  call void @drift_bounds_check({DRIFT_INT_TYPE} {index}, {DRIFT_UINT_TYPE} {len_tmp})")
 		ptr_tmp = self._fresh("eltptr")
-		self.lines.append(
-			f"  {ptr_tmp} = getelementptr inbounds {elem_llty}, {elem_llty}* {data_tmp}, {DRIFT_SIZE_TYPE} {index}"
-		)
+		self.lines.append(f"  {ptr_tmp} = getelementptr {elem_llty}, {elem_llty}* {data_tmp}, {DRIFT_INT_TYPE} {index}")
 		return ptr_tmp
 
 	def _lower_array_len(self, instr: ArrayLen) -> None:
 		"""Lower ArrayLen by extracting the len field (index 0)."""
 		dest = self._map_value(instr.dest)
 		array = self._map_value(instr.array)
-		arr_llty = self.value_types.get(array, self._llvm_array_type("i64"))
+		arr_llty = self.value_types.get(array)
+		if arr_llty is None:
+			raise AssertionError("LLVM codegen v1: ArrayLen missing LLVM type for array value (compiler bug)")
 		# ArrayLen now applies only to array values; strings use StringLen MIR.
 		self.lines.append(f"  {dest} = extractvalue {arr_llty} {array}, 0")
-		self.value_types[dest] = DRIFT_SIZE_TYPE
+		self.value_types[dest] = DRIFT_UINT_TYPE
 
 	def _lower_array_cap(self, instr: ArrayCap) -> None:
 		"""Lower ArrayCap by extracting the cap field (index 1)."""
 		dest = self._map_value(instr.dest)
 		array = self._map_value(instr.array)
-		arr_llty = self.value_types.get(array, self._llvm_array_type("i64"))
+		arr_llty = self.value_types.get(array)
+		if arr_llty is None:
+			raise AssertionError("LLVM codegen v1: ArrayCap missing LLVM type for array value (compiler bug)")
 		self.lines.append(f"  {dest} = extractvalue {arr_llty} {array}, 1")
-		self.value_types[dest] = DRIFT_SIZE_TYPE
+		self.value_types[dest] = DRIFT_UINT_TYPE
 
 	def _llvm_array_type(self, elem_llty: str) -> str:
-		return f"{{ {DRIFT_SIZE_TYPE}, {DRIFT_SIZE_TYPE}, {elem_llty}* }}"
+		return f"{{ {DRIFT_UINT_TYPE}, {DRIFT_UINT_TYPE}, {elem_llty}* }}"
 
 	def _llvm_array_elem_type(self, elem_ty: int) -> str:
 		"""
 		Map an element TypeId to an LLVM type string.
 
-		v1 backend supports Array<Int> and Array<String>; other element types
-		raise until implemented.
+		When a TypeTable is available, this supports all element types.
 		"""
-		if self.int_type_id is None and self.string_type_id is None:
-			# Legacy fallback when no TypeTable provided: assume Array<Int>.
-			return "i64"
-		if self.int_type_id is not None and elem_ty == self.int_type_id:
-			return "i64"
-		if self.string_type_id is not None and elem_ty == self.string_type_id:
-			return DRIFT_STRING_TYPE
-		raise NotImplementedError(f"LLVM codegen v1: unsupported array elem type id {elem_ty!r}")
+		if self.type_table is None:
+			raise NotImplementedError("LLVM codegen v1: array lowering requires a TypeTable")
+		return self._llvm_storage_type_for_typeid(elem_ty)
+
+	def _is_bool_type(self, ty_id: int) -> bool:
+		if self.type_table is None:
+			return False
+		td = self.type_table.get(ty_id)
+		return td.kind is TypeKind.SCALAR and td.name == "Bool"
+
+	def _bool_to_storage(self, value: str) -> str:
+		tmp = self._fresh("bool8")
+		self.lines.append(f"  {tmp} = zext i1 {value} to i8")
+		return tmp
+
+	def _bool_from_storage(self, raw: str, *, dest: str | None = None) -> str:
+		out = dest or self._fresh("bool")
+		self.lines.append(f"  {out} = icmp ne i8 {raw}, 0")
+		return out
+
+	def _array_elem_layout(self, elem_ty: int, elem_llty: str) -> tuple[int, int]:
+		if self.type_table is None:
+			return self._sizeof(elem_llty), self._alignof(elem_llty)
+		return self._size_align_typeid(elem_ty)
 
 	def _sizeof(self, elem_llty: str) -> int:
-		# v1: i64 → 8, i1 → 1, T* -> 8, %DriftString -> 16 (len + ptr)
-		if elem_llty == "i1":
+		# v1: isize/usize/pointers are word-sized; DriftString is two words.
+		word_bytes = self.module.word_bits // 8
+		if elem_llty in ("i1", "i8"):
 			return 1
 		if elem_llty == DRIFT_STRING_TYPE:
-			return 16
-		return 8
+			return word_bytes * 2
+		return word_bytes
 
 	def _alignof(self, elem_llty: str) -> int:
-		if elem_llty == "i1":
+		word_bytes = self.module.word_bits // 8
+		if elem_llty in ("i1", "i8"):
 			return 1
 		# DriftString is two word-sized fields; align to pointer size.
 		if elem_llty == DRIFT_STRING_TYPE:
-			return 8
-		return 8
+			return word_bytes
+		return word_bytes

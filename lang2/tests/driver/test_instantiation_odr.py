@@ -89,7 +89,7 @@ def _defined_nm_symbols(output: str) -> list[str]:
 def _emit_generic_pkg(tmp_path: Path, *, module_id: str, pkg_name: str, require: str | None = None) -> Path:
 	module_dir = tmp_path.joinpath(*module_id.split("."))
 	require_clause = f" require {require}" if require else ""
-	body = "return x"
+	body = "return move x"
 	_write_file(
 		module_dir / "lib.drift",
 		f"""
@@ -99,7 +99,7 @@ export {{ id, Show }};
 pub trait Show {{
 	fn show(self: Self) -> Int;
 }}
-pub fn id<T>(x: T) nothrow -> T{require_clause} {{
+pub fn id<T>(var x: T) nothrow -> T{require_clause} {{
 	{body};
 }}
 """.lstrip(),
@@ -215,8 +215,8 @@ pub fn make() -> Box<Int> {{
 }}
 
 implement<T> Box<T> {{
-	pub fn id<U>(self: &Box<T>, value: U) -> U {{
-		return value;
+	pub fn id<U>(self: &Box<T>, var value: U) -> U {{
+		return move value;
 	}}
 }}
 """.lstrip(),
@@ -245,9 +245,9 @@ def _emit_box_show_pkg(tmp_path: Path, *, module_id: str, pkg_name: str) -> Path
 		f"""
 module {module_id}
 
-export {{ Box, make, Show, Debuggable }};
+export {{ Box, make, Show, Debug }};
 
-pub trait Debuggable {{
+pub trait Debug {{
 	fn debug(self: Self) -> Int
 }}
 
@@ -257,11 +257,11 @@ pub trait Show {{
 
 pub struct Box<T> {{ value: T }}
 
-implement Debuggable for Int {{
+implement Debug for Int {{
 	pub fn debug(self: Int) -> Int {{ return self; }}
 }}
 
-implement<T> Show for Box<T> require T is Debuggable {{
+implement<T> Show for Box<T> require T is Debug {{
 	pub fn show(self: Box<T>) -> Int {{ return 7; }}
 }}
 
@@ -327,7 +327,7 @@ def test_instantiation_index_marks_comdat_linkonce(tmp_path: Path) -> None:
 		"""
 module main
 
-fn id<T>(x: T) nothrow -> T { return x; }
+fn id<T>(var x: T) nothrow -> T { return move x; }
 
 fn main() nothrow -> Int{
 	return id<type Int>(1);

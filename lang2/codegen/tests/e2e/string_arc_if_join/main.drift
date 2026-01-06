@@ -1,0 +1,10 @@
+fn main() nothrow -> Int{
+    val cond = true;
+    var s: String = "x";
+    if cond {
+        s = "a" + "b";
+    } else {
+        s = "c";
+    }
+    return s.len;
+}

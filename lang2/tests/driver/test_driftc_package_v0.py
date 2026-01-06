@@ -1622,11 +1622,11 @@ fn main() nothrow -> Int{
 	ir = ir_path.read_text(encoding="utf-8")
 	assert "lib::unused" not in ir
 	# Exported functions are ABI boundary entrypoints: they are emitted as
-	# `FnResult<ok, Error*>` wrappers, with a private `__impl` body that keeps
-	# the internal calling convention.
-	assert "define %FnResult_Int_Error @\"lib::add\"" in ir
-	assert "define i64 @\"lib::add__impl\"" in ir
-	assert "define i64 @lib::unused" not in ir
+	# `Result<ok, Error*>` wrappers (`{ ok, Error* }`), with a private `__impl`
+	# body that keeps the internal calling convention.
+	assert "define { %drift.isize, %DriftError* } @\"lib::add\"" in ir
+	assert "define %drift.isize @\"lib::add__impl\"" in ir
+	assert "define %drift.isize @lib::unused" not in ir
 
 
 def test_discover_package_files_accepts_package_file_path(tmp_path: Path) -> None:

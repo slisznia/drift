@@ -69,13 +69,13 @@ fn main() -> Int {
 struct Point { x: Int64, y: Int64 }
 
 implement Point {
-    fn move_by(self: &mut Point, dx: Int64, dy: Int64) -> Void {
+    fn move_by(self: &mut Point, dx: Int, dy: Int) -> Void {
         self.x += dx
         self.y += dy
     }
 }
 
-fn translate(p: &mut Point, dx: Int64, dy: Int64) -> Void {
+fn translate(p: &mut Point, dx: Int, dy: Int) -> Void {
     p.x += dx
     p.y += dy
 }
@@ -84,9 +84,9 @@ fn translate(p: &mut Point, dx: Int64, dy: Int64) -> Void {
 ### Collection literals with type inference
 
 ```drift
-fn numbers() -> Array<Int64> {
-    val xs = [1, 2, 3]          // inferred Array<Int64>
-    var ys: Array<Int64> = [4, 5, 6]
+fn numbers() -> Array<Int> {
+    val xs = [1, 2, 3]          // inferred Array<Int>
+    var ys: Array<Int> = [4, 5, 6]
     ys[1] = 42                 // requires `var`
     return xs + ys
 }

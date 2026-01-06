@@ -4,8 +4,39 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
+#include <stddef.h>
 
 #include "ryu/ryu.h"
+
+typedef struct DriftStringHeader {
+	_Atomic uint64_t refcount;
+	uint64_t flags;
+} DriftStringHeader;
+
+enum {
+	DRIFT_STRING_FLAG_STATIC = 1ULL << 0,
+};
+
+_Static_assert(sizeof(DriftStringHeader) == 16, "DriftStringHeader layout must stay stable");
+_Static_assert(offsetof(DriftStringHeader, flags) == 8, "DriftStringHeader flags offset must stay stable");
+_Static_assert(DRIFT_STRING_FLAG_STATIC == 1ULL, "DriftStringHeader static flag must stay stable");
+
+
+static DriftStringHeader *drift_string_header(char *data) {
+	return (DriftStringHeader *)(data - sizeof(DriftStringHeader));
+}
+
+static char *drift_string_alloc(drift_size_t len) {
+	size_t total = sizeof(DriftStringHeader) + (size_t)len + 1;
+	DriftStringHeader *hdr = (DriftStringHeader *)malloc(total);
+	if (!hdr) {
+		abort();
+	}
+	hdr->refcount = 1;
+	hdr->flags = 0;
+	return (char *)(hdr + 1);
+}
 
 DriftString drift_string_from_cstr(const char *cstr) {
 	if (cstr == NULL) {
@@ -13,10 +44,7 @@ DriftString drift_string_from_cstr(const char *cstr) {
 		return s;
 	}
 	drift_size_t len = (drift_size_t)strlen(cstr);
-	char *buf = (char *)malloc((size_t)len + 1);
-	if (!buf) {
-		abort();
-	}
+	char *buf = drift_string_alloc(len);
 	memcpy(buf, cstr, (size_t)len);
 	buf[len] = '\0';
 	DriftString s = {len, buf};
@@ -28,10 +56,7 @@ DriftString drift_string_from_utf8_bytes(const char *data, drift_size_t len) {
 		DriftString s = {0, NULL};
 		return s;
 	}
-	char *buf = (char *)malloc((size_t)len + 1);
-	if (!buf) {
-		abort();
-	}
+	char *buf = drift_string_alloc(len);
 	memcpy(buf, data, (size_t)len);
 	buf[len] = '\0';
 	DriftString s = {len, buf};
@@ -77,14 +102,37 @@ DriftString drift_string_from_f64(double v) {
 }
 
 DriftString drift_string_from_bool(int v) {
+	static struct {
+		DriftStringHeader hdr;
+		char data[5];
+	} k_true = {
+		.hdr = {ATOMIC_VAR_INIT(1), DRIFT_STRING_FLAG_STATIC},
+		.data = "true",
+	};
+	static struct {
+		DriftStringHeader hdr;
+		char data[6];
+	} k_false = {
+		.hdr = {ATOMIC_VAR_INIT(1), DRIFT_STRING_FLAG_STATIC},
+		.data = "false",
+	};
 	if (v) {
-		return drift_string_literal("true", 4);
+		DriftString s = {4, k_true.data};
+		return s;
 	}
-	return drift_string_literal("false", 5);
+	DriftString s = {5, k_false.data};
+	return s;
 }
 
 DriftString drift_string_literal(const char *data, drift_size_t len) {
-	DriftString s = {len, (char *)data};
+	if (data == NULL || len == 0) {
+		DriftString s = {0, NULL};
+		return s;
+	}
+	char *buf = drift_string_alloc(len);
+	memcpy(buf, data, (size_t)len);
+	buf[len] = '\0';
+	DriftString s = {len, buf};
 	return s;
 }
 
@@ -98,10 +146,7 @@ DriftString drift_string_concat(DriftString a, DriftString b) {
 		DriftString s = {0, NULL};
 		return s;
 	}
-	char *buf = (char *)malloc((size_t)total + 1);
-	if (!buf) {
-		abort();
-	}
+	char *buf = drift_string_alloc(total);
 	if (a.len > 0 && a.data) {
 		memcpy(buf, a.data, (size_t)a.len);
 	}
@@ -113,10 +158,43 @@ DriftString drift_string_concat(DriftString a, DriftString b) {
 	return s;
 }
 
-void drift_string_free(DriftString s) {
-	if (s.data) {
-		free(s.data);
+DriftString drift_string_retain(DriftString s) {
+	if (s.data == NULL) {
+		return s;
 	}
+	DriftStringHeader *hdr = drift_string_header(s.data);
+	if (hdr->flags & DRIFT_STRING_FLAG_STATIC) {
+		return s;
+	}
+	atomic_fetch_add_explicit(&hdr->refcount, 1, memory_order_relaxed);
+	return s;
+}
+
+void drift_string_release(DriftString s) {
+	if (s.data == NULL) {
+		return;
+	}
+	DriftStringHeader *hdr = drift_string_header(s.data);
+	if (hdr->flags & DRIFT_STRING_FLAG_STATIC) {
+		return;
+	}
+	uint64_t prev = atomic_fetch_sub_explicit(&hdr->refcount, 1, memory_order_release);
+	if (prev == 0) {
+		abort();
+	}
+	if (prev == 1) {
+		atomic_thread_fence(memory_order_acquire);
+#ifndef NDEBUG
+		if (hdr->flags & DRIFT_STRING_FLAG_STATIC) {
+			abort();
+		}
+#endif
+		free(hdr);
+	}
+}
+
+void drift_string_free(DriftString s) {
+	drift_string_release(s);
 }
 
 char *drift_string_to_cstr(DriftString s) {

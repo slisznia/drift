@@ -29,7 +29,7 @@ def test_subst_nested_types() -> None:
 	subst = Subst(owner=fid, args=[table.ensure_int()])
 	res = apply_subst(opt, subst, table)
 	td = table.get(res)
-	assert td.kind is TypeKind.OPTIONAL
-	inner = table.get(td.param_types[0])
-	assert inner.kind is TypeKind.ARRAY
-	assert inner.param_types[0] == table.ensure_int()
+	assert td.kind is TypeKind.VARIANT
+	inst = table.get_variant_instance(res)
+	assert inst is not None
+	assert inst.type_args[0] == table.new_array(table.ensure_int())

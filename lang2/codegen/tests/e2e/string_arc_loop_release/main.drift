@@ -1,0 +1,13 @@
+fn main() nothrow -> Int{
+    var i = 0;
+    var sum: Uint = 0;
+    while i < 3 {
+        val s = "a" + "b";
+        sum = sum + s.len;
+        i = i + 1;
+    }
+    if sum == 6 {
+        return 6;
+    }
+    return 0;
+}

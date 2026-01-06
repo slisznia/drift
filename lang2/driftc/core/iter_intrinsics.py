@@ -7,7 +7,7 @@ includes `for x in expr { ... }`. To keep that surface stable without
 committing to a public iterator ABI, the compiler treats a small subset of
 method calls as *intrinsics*:
 
-  - `Array<T>.iter() -> __ArrayIter_<T>`
+  - `&Array<T>.iter() -> __ArrayIter_<T>`
   - `__ArrayIter_<T>.next() -> Optional<T>`
 
 This module is the *single* source of truth for the internal iterator type
@@ -61,7 +61,7 @@ def ensure_array_iter_struct(array_ty: TypeId, table: TypeTable) -> TypeId:
 	Ensure the internal `__ArrayIter_<T>` struct type exists for `Array<T>`.
 
 	Internal layout (compiler-private):
-	  struct __ArrayIter_<T> { arr: Array<T>, idx: Int }
+	  struct __ArrayIter_<T> { arr: &Array<T>, idx: Int }
 
 	The MIR lowering relies on this exact field order:
 	  - field 0: arr (Array<T>)
@@ -74,7 +74,8 @@ def ensure_array_iter_struct(array_ty: TypeId, table: TypeTable) -> TypeId:
 	key = type_key_for_typeid(elem_ty, table)
 	name = f"__ArrayIter_{key}"
 	struct_id = table.declare_struct("lang.core", name, ["arr", "idx"])
-	table.define_struct_fields(struct_id, [array_ty, table.ensure_int()])
+	arr_ref = table.ensure_ref(array_ty)
+	table.define_struct_fields(struct_id, [arr_ref, table.ensure_int()])
 	return struct_id
 
 

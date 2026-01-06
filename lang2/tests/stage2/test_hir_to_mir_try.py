@@ -10,7 +10,7 @@ from lang2.driftc.stage2 import (
 	HIRToMIR,
 	make_builder,
 	ConstString,
-	ConstInt,
+	ConstUint64,
 	ConstructError,
 	Goto,
 	ErrorEvent,
@@ -77,7 +77,7 @@ def test_try_routes_throw_to_catch_block():
 	consts = [i for i in instrs if isinstance(i, ConstString)]
 	assert any(c.value == "boom" for c in consts)
 	assert any(c.value == "msg" for c in consts)
-	assert any(isinstance(i, ConstInt) for i in instrs)
+	assert any(isinstance(i, ConstUint64) for i in instrs)
 	assert any(isinstance(i, ConstructError) for i in instrs)
 	assert isinstance(try_body.terminator, Goto)
 	assert try_body.terminator.target.startswith("try_dispatch")

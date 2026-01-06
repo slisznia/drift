@@ -11,6 +11,7 @@ from lang2.driftc.stage2 import ArrayLen, BasicBlock, BinaryOpInstr, Call, Const
 from lang2.driftc.stage1 import BinaryOp
 from lang2.driftc.stage4.ssa import MirToSSA
 from lang2.codegen.llvm import lower_module_to_llvm
+from lang2.codegen.llvm.test_utils import host_word_bits
 
 
 def _types():
@@ -36,11 +37,11 @@ def test_string_len_ir():
 	 sig = FnSignature(name="main", param_type_ids=[], return_type_id=int_ty)
 	 info = FnInfo(fn_id=fn_id, name="main", declared_can_throw=False, signature=sig, return_type_id=int_ty)
 
-	 mod = lower_module_to_llvm({fn_id: func}, {fn_id: ssa}, {fn_id: info}, type_table=table)
+	 mod = lower_module_to_llvm({fn_id: func}, {fn_id: ssa}, {fn_id: info}, type_table=table, word_bits=host_word_bits())
 	 ir = mod.render()
 
 	 assert "extractvalue %DriftString %t0, 0" in ir
-	 assert "define i64 @main()" in ir
+	 assert "define %drift.isize @main()" in ir
 
 
 def test_string_eq_and_concat_ir():
@@ -62,7 +63,7 @@ def test_string_eq_and_concat_ir():
 	 sig = FnSignature(name="main", param_type_ids=[], return_type_id=str_ty)
 	 info = FnInfo(fn_id=fn_id, name="main", declared_can_throw=False, signature=sig, return_type_id=str_ty)
 
-	 mod = lower_module_to_llvm({fn_id: func}, {fn_id: ssa}, {fn_id: info}, type_table=table)
+	 mod = lower_module_to_llvm({fn_id: func}, {fn_id: ssa}, {fn_id: info}, type_table=table, word_bits=host_word_bits())
 	 ir = mod.render()
 
 	 assert "declare i1 @drift_string_eq(%DriftString, %DriftString)" in ir

@@ -93,9 +93,9 @@ fn main() nothrow -> Int{
 	assert isinstance(let_stmt.value, H.HFnPtrConst)
 	fnptr = let_stmt.value
 
-	assert fnptr.fn_ref.kind is FunctionRefKind.WRAPPER
-	assert fnptr.fn_ref.has_wrapper is True
-	assert function_ref_symbol(fnptr.fn_ref) == "mod_a::id"
+	assert fnptr.fn_ref.kind is FunctionRefKind.THUNK_BOUNDARY
+	assert fnptr.fn_ref.has_wrapper is False
+	assert function_ref_symbol(fnptr.fn_ref) == "lang.__internal::__thunk_boundary::mod_a::id"
 	assert fnptr.call_sig.can_throw is True
 	fnptr_ty = res.typed_fn.expr_types[fnptr.node_id]
 	td = type_table.get(fnptr_ty)

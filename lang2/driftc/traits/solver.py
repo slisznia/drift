@@ -52,6 +52,7 @@ class ProofFailure:
 	reason: ProofFailureReason
 	impl_ids: Tuple[int, ...] = ()
 	details: Tuple[str, ...] = ()
+	message_override: str | None = None
 
 
 @dataclass
@@ -125,10 +126,10 @@ def prove_expr(
 		right = prove_expr(world, env, subst, expr.right, _cache=_cache, _in_progress=_in_progress)
 		if right.status is ProofStatus.REFUTED:
 			return right
-		if left.status is ProofStatus.UNKNOWN or right.status is ProofStatus.UNKNOWN:
-			return ProofResult(status=ProofStatus.UNKNOWN, reasons=left.reasons + right.reasons)
 		if left.status is ProofStatus.AMBIGUOUS or right.status is ProofStatus.AMBIGUOUS:
 			return ProofResult(status=ProofStatus.AMBIGUOUS, reasons=left.reasons + right.reasons)
+		if left.status is ProofStatus.UNKNOWN or right.status is ProofStatus.UNKNOWN:
+			return ProofResult(status=ProofStatus.UNKNOWN, reasons=left.reasons + right.reasons)
 		return ProofResult(status=ProofStatus.PROVED, reasons=left.reasons + right.reasons, used_impls=left.used_impls + right.used_impls)
 	if isinstance(expr, parser_ast.TraitOr):
 		left = prove_expr(world, env, subst, expr.left, _cache=_cache, _in_progress=_in_progress)
@@ -170,12 +171,16 @@ def deny_expr(
 			return ProofResult(status=ProofStatus.REFUTED, reasons=res.reasons)
 		if res.status is ProofStatus.REFUTED:
 			return ProofResult(status=ProofStatus.PROVED, reasons=res.reasons)
+		if res.status is ProofStatus.AMBIGUOUS:
+			return ProofResult(status=ProofStatus.AMBIGUOUS, reasons=res.reasons)
 		return ProofResult(status=ProofStatus.UNKNOWN, reasons=res.reasons)
 	if isinstance(expr, parser_ast.TraitAnd):
 		left = deny_expr(world, env, subst, expr.left, _cache=_cache, _in_progress=_in_progress)
 		right = deny_expr(world, env, subst, expr.right, _cache=_cache, _in_progress=_in_progress)
 		if left.status is ProofStatus.PROVED or right.status is ProofStatus.PROVED:
 			return ProofResult(status=ProofStatus.PROVED, reasons=left.reasons + right.reasons)
+		if left.status is ProofStatus.AMBIGUOUS or right.status is ProofStatus.AMBIGUOUS:
+			return ProofResult(status=ProofStatus.AMBIGUOUS, reasons=left.reasons + right.reasons)
 		if left.status is ProofStatus.REFUTED and right.status is ProofStatus.REFUTED:
 			return ProofResult(status=ProofStatus.REFUTED, reasons=left.reasons + right.reasons)
 		return ProofResult(status=ProofStatus.UNKNOWN, reasons=left.reasons + right.reasons)
@@ -186,12 +191,43 @@ def deny_expr(
 		right = deny_expr(world, env, subst, expr.right, _cache=_cache, _in_progress=_in_progress)
 		if right.status is ProofStatus.REFUTED:
 			return right
+		if left.status is ProofStatus.AMBIGUOUS or right.status is ProofStatus.AMBIGUOUS:
+			return ProofResult(status=ProofStatus.AMBIGUOUS, reasons=left.reasons + right.reasons)
 		if left.status is ProofStatus.UNKNOWN or right.status is ProofStatus.UNKNOWN:
 			return ProofResult(status=ProofStatus.UNKNOWN, reasons=left.reasons + right.reasons)
 		return ProofResult(status=ProofStatus.PROVED, reasons=left.reasons + right.reasons)
 	if isinstance(expr, parser_ast.TraitNot):
 		return prove_expr(world, env, subst, expr.expr, _cache=_cache, _in_progress=_in_progress)
 	return ProofResult(status=ProofStatus.UNKNOWN, reasons=["unsupported trait expression"])
+
+
+def _subject_key(subject: object) -> object:
+	if isinstance(subject, parser_ast.SelfRef):
+		return "Self"
+	if isinstance(subject, parser_ast.TypeNameRef):
+		return subject.name
+	if isinstance(subject, str):
+		return subject
+	return subject
+
+
+def _bind_impl_type_params(
+	template: TypeKey,
+	actual: TypeKey,
+	params: set[str],
+	out: dict[str, TypeKey],
+) -> bool:
+	if template.name in params and not template.args:
+		cur = out.get(template.name)
+		if cur is None:
+			out[template.name] = actual
+			return True
+		return cur == actual
+	if template.name != actual.name or template.module != actual.module or template.package_id != actual.package_id:
+		return False
+	if len(template.args) != len(actual.args):
+		return False
+	return all(_bind_impl_type_params(t, a, params, out) for t, a in zip(template.args, actual.args))
 
 
 def prove_is(
@@ -206,13 +242,14 @@ def prove_is(
 ) -> ProofResult:
 	cache = _cache if _cache is not None else {}
 	in_progress = _in_progress if _in_progress is not None else set()
-	subject_ty = subst.get(subject)
+	subj_key = _subject_key(subject)
+	subject_ty = subst.get(subj_key)
 	if subject_ty is None and isinstance(subject, TypeKey):
 		subject_ty = subject
-	cache_key: CacheKey = (subject, _trait_key_str(trait_key), subject_ty)
+	cache_key: CacheKey = (subj_key, _trait_key_str(trait_key), subject_ty)
 	if cache_key in cache:
 		return cache[cache_key]
-	if (subject, trait_key) in env.assumed_true:
+	if (subj_key, trait_key) in env.assumed_true:
 		res = ProofResult(status=ProofStatus.PROVED, reasons=["assumed true"])
 		cache[cache_key] = res
 		return res
@@ -220,7 +257,7 @@ def prove_is(
 		res = ProofResult(status=ProofStatus.PROVED, reasons=["assumed true"])
 		cache[cache_key] = res
 		return res
-	if (subject, trait_key) in env.assumed_false:
+	if (subj_key, trait_key) in env.assumed_false:
 		res = ProofResult(status=ProofStatus.REFUTED, reasons=["assumed false"])
 		cache[cache_key] = res
 		return res
@@ -237,7 +274,7 @@ def prove_is(
 		cache[cache_key] = res
 		return res
 
-	cycle_key = (subject, trait_key, subject_ty)
+	cycle_key = (subj_key, trait_key, subject_ty)
 	if cycle_key in in_progress:
 		res = ProofResult(status=ProofStatus.UNKNOWN, reasons=["cycle in trait requirements"])
 		cache[cache_key] = res
@@ -251,18 +288,29 @@ def prove_is(
 
 		applicable: List[int] = []
 		reasons: List[str] = []
+		saw_unknown_req = False
+		saw_ambiguous_req = False
 		for impl_id, impl in ordered:
+			bindings: dict[str, TypeKey] = {}
 			if impl.target != subject_ty:
-				continue
+				params = set(getattr(impl, "type_params", []) or [])
+				if not params or not _bind_impl_type_params(impl.target, subject_ty, params, bindings):
+					continue
+			impl_subst = subst
+			if bindings:
+				impl_subst = dict(subst)
+				impl_subst.update(bindings)
 			if impl.require is not None:
-				req = prove_expr(world, env, subst, impl.require, _cache=cache, _in_progress=in_progress)
+				req = prove_expr(world, env, impl_subst, impl.require, _cache=cache, _in_progress=in_progress)
 				if req.status is ProofStatus.PROVED:
 					applicable.append(impl_id)
 					continue
 				if req.status is ProofStatus.AMBIGUOUS:
+					saw_ambiguous_req = True
 					reasons.append("ambiguous impl requirement")
 					continue
 				if req.status is ProofStatus.UNKNOWN:
+					saw_unknown_req = True
 					reasons.append("impl requirement unknown")
 					continue
 				reasons.append("impl requirement refuted")
@@ -270,7 +318,12 @@ def prove_is(
 			applicable.append(impl_id)
 
 		if len(applicable) == 0:
-			res = ProofResult(status=ProofStatus.REFUTED, reasons=reasons or ["no applicable impls"])
+			if saw_ambiguous_req:
+				res = ProofResult(status=ProofStatus.AMBIGUOUS, reasons=reasons or ["ambiguous impl requirements"])
+			elif saw_unknown_req:
+				res = ProofResult(status=ProofStatus.UNKNOWN, reasons=reasons or ["impl requirement unknown"])
+			else:
+				res = ProofResult(status=ProofStatus.REFUTED, reasons=reasons or ["no applicable impls"])
 		elif len(applicable) == 1:
 			res = ProofResult(status=ProofStatus.PROVED, used_impls=applicable)
 		else:

@@ -29,6 +29,7 @@ from lang2.driftc.stage1 import (
 	HIndex,
 	HCall,
 	HMethodCall,
+	HBorrow,
 	HExceptionInit,
 	HLet,
 	HAssign,
@@ -151,8 +152,9 @@ def test_for_desugars_to_iter_loop_match():
 	iterable_let, iter_let, loop = hir.statements
 	assert isinstance(iterable_let, HLet)
 	assert iterable_let.name.startswith("__for_iterable")
-	assert isinstance(iterable_let.value, HVar)
-	assert iterable_let.value.name == "items"
+	assert isinstance(iterable_let.value, HBorrow)
+	assert isinstance(iterable_let.value.subject, HVar)
+	assert iterable_let.value.subject.name == "items"
 	assert isinstance(iter_let, HLet)
 	assert iter_let.name.startswith("__for_iter")
 	assert isinstance(iter_let.value, HMethodCall)

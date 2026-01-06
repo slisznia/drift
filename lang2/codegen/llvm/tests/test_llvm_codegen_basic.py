@@ -6,10 +6,14 @@ from __future__ import annotations
 
 from lang2.driftc.core.function_id import FunctionId
 from lang2.codegen.llvm import LlvmModuleBuilder, lower_ssa_func_to_llvm
+from lang2.codegen.llvm.test_utils import host_word_bits
+from lang2.codegen.llvm import lower_module_to_llvm
 from lang2.driftc.checker import FnInfo, FnSignature
 from lang2.driftc.stage2 import (
 	BasicBlock,
+	ConstBool,
 	ConstInt,
+	ConstUint64,
 	ConstructError,
 	ConstructResultErr,
 	ConstructResultOk,
@@ -34,7 +38,7 @@ def _fn_info(name: str, can_throw: bool, return_ty: int) -> FnInfo:
 
 def test_codegen_plain_int_return():
 	"""
-	Non-can-throw function returning a constant Int should lower to i64 return.
+	Non-can-throw function returning a constant Int should lower to isize return.
 	"""
 	entry = BasicBlock(
 		name="entry",
@@ -48,10 +52,10 @@ def test_codegen_plain_int_return():
 	int_ty = table.ensure_int()
 	fn_info = _fn_info("main", False, int_ty)
 
-	ir = lower_ssa_func_to_llvm(mir, ssa, fn_info, type_table=table)
+	ir = lower_ssa_func_to_llvm(mir, ssa, fn_info, type_table=table, word_bits=host_word_bits())
 
-	assert "define i64 @main()" in ir
-	assert "ret i64 %t0" in ir
+	assert "define %drift.isize @main()" in ir
+	assert "ret %drift.isize %t0" in ir
 
 
 def test_codegen_fnresult_ok_return():
@@ -75,8 +79,8 @@ def test_codegen_fnresult_ok_return():
 	fnresult_ty = table.new_fnresult(int_ty, error_ty)
 	fn_info = _fn_info("f", True, fnresult_ty)
 
-	mod = LlvmModuleBuilder()
-	mod.emit_func(lower_ssa_func_to_llvm(mir, ssa, fn_info, type_table=table))
+	mod = LlvmModuleBuilder(word_bits=host_word_bits())
+	mod.emit_func(lower_ssa_func_to_llvm(mir, ssa, fn_info, type_table=table, word_bits=host_word_bits()))
 	ir = mod.render()
 
 	assert "%FnResult_Int_Error" in ir
@@ -104,12 +108,84 @@ def test_codegen_fnresult_ref_ok_return():
 	sig = FnSignature(name="f_ref", param_type_ids=[ref_int], return_type_id=fnresult_ty, declared_can_throw=True)
 	fn_info = FnInfo(fn_id=FunctionId(module="main", name="f_ref", ordinal=0), name="f_ref", declared_can_throw=True, return_type_id=fnresult_ty, signature=sig)
 
-	mod = LlvmModuleBuilder()
-	mod.emit_func(lower_ssa_func_to_llvm(mir, ssa, fn_info, type_table=table))
+	mod = LlvmModuleBuilder(word_bits=host_word_bits())
+	mod.emit_func(lower_ssa_func_to_llvm(mir, ssa, fn_info, type_table=table, word_bits=host_word_bits()))
 	ir = mod.render()
 
-	assert "%FnResult_Ref_Int_Error = type { i1, i64*, %DriftError* }" in ir
-	assert "define %FnResult_Ref_Int_Error @f_ref(i64* %p0)" in ir
+	assert "%FnResult_Ref_Int_Error = type { i1, %drift.isize*, %DriftError* }" in ir
+	assert "define %FnResult_Ref_Int_Error @f_ref(%drift.isize* %p0)" in ir
+
+
+def test_codegen_fnresult_ref_bool_ok_return():
+	"""FnResult<Ref<Bool>, Error> should use a Bool storage pointer payload (i8*)."""
+	entry = BasicBlock(
+		name="entry",
+		instructions=[
+			ConstructResultOk(dest="res", value="p0"),
+		],
+		terminator=Return(value="res"),
+	)
+	mir = MirFunc(fn_id=FunctionId(module="main", name="f_ref_bool", ordinal=0), name="f_ref_bool", params=["p0"], locals=[], blocks={"entry": entry}, entry="entry")
+	ssa = MirToSSA().run(mir)
+
+	table = TypeTable()
+	bool_ty = table.ensure_bool()
+	ref_bool = table.ensure_ref(bool_ty)
+	error_ty = table.ensure_error()
+	fnresult_ty = table.new_fnresult(ref_bool, error_ty)
+	sig = FnSignature(name="f_ref_bool", param_type_ids=[ref_bool], return_type_id=fnresult_ty, declared_can_throw=True)
+	fn_info = FnInfo(fn_id=FunctionId(module="main", name="f_ref_bool", ordinal=0), name="f_ref_bool", declared_can_throw=True, return_type_id=fnresult_ty, signature=sig)
+
+	mod = LlvmModuleBuilder(word_bits=host_word_bits())
+	mod.emit_func(lower_ssa_func_to_llvm(mir, ssa, fn_info, type_table=table, word_bits=host_word_bits()))
+	ir = mod.render()
+
+	assert "%FnResult_Ref_Bool_Error = type { i1, i8*, %DriftError* }" in ir
+	assert "define %FnResult_Ref_Bool_Error @f_ref_bool(i8* %p0)" in ir
+
+
+def test_export_wrapper_bool_return_uses_i8():
+	"""Exported Bool return uses i8 in the ABI wrapper and zexts the impl result."""
+	entry = BasicBlock(
+		name="entry",
+		instructions=[
+			ConstBool(dest="b", value=True),
+		],
+		terminator=Return(value="b"),
+	)
+	fn_id = FunctionId(module="main", name="foo", ordinal=0)
+	mir = MirFunc(fn_id=fn_id, name="foo", params=[], locals=[], blocks={"entry": entry}, entry="entry")
+	ssa = MirToSSA().run(mir)
+
+	table = TypeTable()
+	bool_ty = table.ensure_bool()
+	sig = FnSignature(
+		name="foo",
+		param_type_ids=[],
+		return_type_id=bool_ty,
+		declared_can_throw=False,
+		is_exported_entrypoint=True,
+	)
+	fn_info = FnInfo(
+		fn_id=fn_id,
+		name="foo",
+		declared_can_throw=False,
+		return_type_id=bool_ty,
+		signature=sig,
+	)
+
+	mod = lower_module_to_llvm(
+		funcs={fn_id: mir},
+		ssa_funcs={fn_id: ssa},
+		fn_infos={fn_id: fn_info},
+		type_table=table,
+		word_bits=host_word_bits(),
+	)
+	ir = mod.render()
+
+	assert "define { i8, %DriftError* } @foo()" in ir
+	assert "define i1 @foo__impl()" in ir
+	assert "zext i1 %ok to i8" in ir
 
 
 def test_codegen_fnresult_ref_err_zero_ok_slot():
@@ -119,7 +195,7 @@ def test_codegen_fnresult_ref_err_zero_ok_slot():
 	entry = BasicBlock(
 		name="entry",
 		instructions=[
-			ConstInt(dest="code", value=1),
+			ConstUint64(dest="code", value=1),
 			ConstString(dest="ename", value="m:Evt"),
 			ConstructDV(dest="dv", dv_type_name="Missing", args=[]),
 			ConstString(dest="key", value="k"),
@@ -138,12 +214,12 @@ def test_codegen_fnresult_ref_err_zero_ok_slot():
 	fnresult_ty = table.new_fnresult(ref_int, error_ty)
 	fn_info = FnInfo(fn_id=FunctionId(module="main", name="f_ref_err", ordinal=0), name="f_ref_err", declared_can_throw=True, return_type_id=fnresult_ty)
 
-	mod = LlvmModuleBuilder()
-	mod.emit_func(lower_ssa_func_to_llvm(mir, ssa, fn_info, type_table=table))
+	mod = LlvmModuleBuilder(word_bits=host_word_bits())
+	mod.emit_func(lower_ssa_func_to_llvm(mir, ssa, fn_info, type_table=table, word_bits=host_word_bits()))
 	ir = mod.render()
 
-	assert "%FnResult_Ref_Int_Error = type { i1, i64*, %DriftError* }" in ir
+	assert "%FnResult_Ref_Int_Error = type { i1, %drift.isize*, %DriftError* }" in ir
 	assert "define %FnResult_Ref_Int_Error @f_ref_err()" in ir
 	assert any(
-		"%FnResult_Ref_Int_Error" in line and ", i64* null, 1" in line for line in ir.splitlines()
+		"%FnResult_Ref_Int_Error" in line and ", %drift.isize* null, 1" in line for line in ir.splitlines()
 	)

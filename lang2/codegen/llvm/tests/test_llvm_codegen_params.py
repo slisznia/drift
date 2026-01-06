@@ -10,6 +10,7 @@ from lang2.driftc.core.types_core import TypeTable
 from lang2.driftc.stage2 import BasicBlock, Call, ConstInt, ConstString, MirFunc, Return
 from lang2.driftc.stage4.ssa import MirToSSA
 from lang2.codegen.llvm import lower_module_to_llvm
+from lang2.codegen.llvm.test_utils import host_word_bits
 
 
 def _int_and_string_types():
@@ -56,13 +57,12 @@ def test_int_param_header_and_call():
         {add_id: add, main_id: main},
         {add_id: add_ssa, main_id: main_ssa},
         {add_id: add_info, main_id: main_info},
-        type_table=table,
-    )
+        type_table=table, word_bits=host_word_bits())
     ir = mod.render()
 
-    assert "define i64 @add(i64 %x, i64 %y)" in ir
-    assert "define i64 @main()" in ir
-    assert "call i64 @add(i64 %t0, i64 %t1)" in ir
+    assert "define %drift.isize @add(%drift.isize %x, %drift.isize %y)" in ir
+    assert "define %drift.isize @main()" in ir
+    assert "call %drift.isize @add(%drift.isize %t0, %drift.isize %t1)" in ir
 
 
 def test_mixed_int_string_params_and_return():
@@ -96,13 +96,12 @@ def test_mixed_int_string_params_and_return():
         {comb_id: comb, main_id: main},
         {comb_id: comb_ssa, main_id: main_ssa},
         {comb_id: comb_info, main_id: main_info},
-        type_table=table,
-    )
+        type_table=table, word_bits=host_word_bits())
     ir = mod.render()
 
-    assert "define %DriftString @combine(i64 %x, %DriftString %s)" in ir
+    assert "define %DriftString @combine(%drift.isize %x, %DriftString %s)" in ir
     assert "define %DriftString @main()" in ir
-    assert "call %DriftString @combine(i64 %t0, %DriftString %t1)" in ir
+    assert "call %DriftString @combine(%drift.isize %t0, %DriftString %t1)" in ir
 
 
 def test_fnptr_param_headers():
@@ -130,9 +129,8 @@ def test_fnptr_param_headers():
         {apply_id: apply, apply_ct_id: apply_ct},
         {apply_id: apply_ssa, apply_ct_id: apply_ct_ssa},
         {apply_id: apply_info, apply_ct_id: apply_ct_info},
-        type_table=table,
-    )
+        type_table=table, word_bits=host_word_bits())
     ir = mod.render()
 
-    assert "define i64 @apply(i64 (i64)* %f, i64 %x)" in ir
-    assert "define i64 @apply_ct(%FnResult_Int_Error (i64)* %f, i64 %x)" in ir
+    assert "define %drift.isize @apply(%drift.isize (%drift.isize)* %f, %drift.isize %x)" in ir
+    assert "define %drift.isize @apply_ct(%FnResult_Int_Error (%drift.isize)* %f, %drift.isize %x)" in ir

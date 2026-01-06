@@ -20,7 +20,7 @@ This makes package consumption scale without pinning everything to a single
 Pinned rules (MVP)
 ------------------
 - Builtins are toolchain-owned and must unify to the host builtins:
-  Int/Uint/Bool/Float/String/Void/Error/DiagnosticValue/Unknown.
+  Int/Uint/Uint64/Bool/Float/String/Byte/Void/Error/DiagnosticValue/Unknown.
 - Packages may import new user-defined nominal types into the host TypeTable
   as long as there are no semantic collisions.
 - Collisions are hard errors:
@@ -277,6 +277,10 @@ def _builtin_type_id(host: TypeTable, td: DecodedTypeDef) -> TypeId | None:
 			return host.ensure_int()
 		if td.name == "Uint":
 			return host.ensure_uint()
+		if td.name == "Uint64":
+			return host.ensure_uint64()
+		if td.name == "Byte":
+			return host.ensure_byte()
 		if td.name == "Bool":
 			return host.ensure_bool()
 		if td.name == "Float":
@@ -378,9 +382,7 @@ def import_type_tables_and_build_typeid_maps(pkg_tt_objs: list[Mapping[str, Any]
 
 			# Structural / derived types.
 			sub_keys = tuple(key_for_tid(x) for x in td.param_types)
-			if td.kind is TypeKind.OPTIONAL:
-				k = ("optional", sub_keys[0])
-			elif td.kind is TypeKind.ARRAY:
+			if td.kind is TypeKind.ARRAY:
 				k = ("array", sub_keys[0])
 			elif td.kind is TypeKind.REF:
 				k = ("ref", bool(td.ref_mut), sub_keys[0])
@@ -470,6 +472,10 @@ def import_type_tables_and_build_typeid_maps(pkg_tt_objs: list[Mapping[str, Any]
 				return host.ensure_int()
 			if name == "Uint":
 				return host.ensure_uint()
+			if name == "Uint64":
+				return host.ensure_uint64()
+			if name == "Byte":
+				return host.ensure_byte()
 			if name == "Bool":
 				return host.ensure_bool()
 			if name == "Float":

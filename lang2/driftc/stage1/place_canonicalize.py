@@ -135,6 +135,9 @@ class PlaceCanonicalizeRewriter:
 			if place is not None:
 				subj = place
 			return pfx, H.HMove(subject=subj, loc=getattr(expr, "loc", Span()))
+		if isinstance(expr, getattr(H, "HCopy", ())):
+			pfx, subj = self._rewrite_expr(expr.subject)
+			return pfx, H.HCopy(subject=subj, loc=getattr(expr, "loc", Span()))
 
 		# Most expressions are unchanged; we only recurse to preserve structure.
 		if isinstance(expr, H.HVar):

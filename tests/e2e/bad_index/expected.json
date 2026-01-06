@@ -1,6 +1,6 @@
 {
   "args": [],
-  "compile_error": "Expected type Int, got Bool",
+  "compile_error": "array index must be an Int",
   "description": "e2e: bad index",
   "env": {},
   "run": false

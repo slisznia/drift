@@ -183,10 +183,10 @@ def test_explicit_capture_copy_non_copyable_reports_driver_diag(
 	source = """
 module m_main
 
-struct Box { value: Int }
+struct Box { value: Array<Int> }
 
 fn main() nothrow -> Int{
-	val b = Box(value = 1);
+	val b = Box(value = [1]);
 	val f = | | captures(copy b) => { return 0; };
 	return 0;
 }

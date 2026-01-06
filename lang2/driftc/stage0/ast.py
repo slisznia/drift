@@ -35,9 +35,31 @@ class TraitExpr(Expr):
 	pass
 
 
+class TraitSubject(Expr):
+	"""Trait subject reference (Self or a type name)."""
+	pass
+
+
+@dataclass
+class SelfRef(TraitSubject):
+	loc: Span = field(default_factory=Span)
+
+	def __hash__(self) -> int:
+		return hash("Self")
+
+
+@dataclass
+class TypeNameRef(TraitSubject):
+	name: str
+	loc: Span = field(default_factory=Span)
+
+	def __hash__(self) -> int:
+		return hash(self.name)
+
+
 @dataclass
 class TraitIs(TraitExpr):
-	subject: str
+	subject: object
 	trait: object
 	loc: Span = field(default_factory=Span)
 
@@ -187,6 +209,7 @@ class Param:
 	"""Function/lambda parameter (name + optional parsed type)."""
 	name: str
 	type_expr: object | None = None
+	mutable: bool = False
 	loc: Optional[object] = None
 
 
@@ -219,6 +242,18 @@ class Move(Expr):
 	- The operand must be an addressable place (not an rvalue).
 	- The operand is consumed and becomes unusable until reinitialized.
 	- Moving out of borrowed storage is rejected by the borrow checker.
+	"""
+	value: Expr
+	loc: Optional[object] = None
+
+
+@dataclass
+class Copy(Expr):
+	"""
+	Explicit duplication: `copy <expr>`.
+
+	The operand can be any expression; the type checker enforces that the
+	operand's type is Copy.
 	"""
 	value: Expr
 	loc: Optional[object] = None
@@ -480,7 +515,7 @@ class RethrowStmt(Stmt):
 
 __all__ = [
 	"Node", "Expr", "Stmt",
-	"TraitExpr", "TraitIs", "TraitAnd", "TraitOr", "TraitNot",
+	"TraitExpr", "TraitSubject", "SelfRef", "TypeNameRef", "TraitIs", "TraitAnd", "TraitOr", "TraitNot",
 	"Literal", "Name", "Placeholder", "Attr", "QualifiedMember",
 	"Param", "KwArg", "Call", "TypeApp", "Lambda", "Block",
 	"Binary", "Unary", "Move", "Index", "ArrayLiteral", "ExceptionCtor", "CatchExprArm", "TryCatchExpr", "Ternary",

@@ -205,13 +205,13 @@ def test_overload_require_prefers_trait_dependency(tmp_path: Path) -> None:
 		"""
 struct S { }
 
-trait Debuggable { fn debug(self: &Self) -> String; }
-trait Printable require Self is Debuggable { fn show(self: &Self) -> String; }
+trait Debug { fn debug(self: &Self) -> String; }
+trait Printable require Self is Debug { fn show(self: &Self) -> String; }
 
-implement Debuggable for S { fn debug(self: &S) -> String { return "d"; } }
+implement Debug for S { fn debug(self: &S) -> String { return "d"; } }
 implement Printable for S { fn show(self: &S) -> String { return "p"; } }
 
-fn f<T>(x: T) -> Int require T is Debuggable { return 1; }
+fn f<T>(x: T) -> Int require T is Debug { return 1; }
 fn f<T>(x: T) -> Int require T is Printable { return 2; }
 
 fn main(x: S) -> Int { return f(x); }

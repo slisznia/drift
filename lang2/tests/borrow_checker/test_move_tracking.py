@@ -30,7 +30,7 @@ def test_use_after_move_reports_diagnostic():
 	block = H.HBlock(
 		statements=[
 			H.HLet(name="x", value=H.HLiteralInt(1), declared_type_expr=None),
-			H.HExprStmt(expr=H.HVar("x")),  # move (non-Copy)
+			H.HExprStmt(expr=H.HMove(H.HVar("x"))),  # move (non-Copy)
 			H.HExprStmt(expr=H.HVar("x")),  # use after move
 		]
 	)
@@ -45,7 +45,7 @@ def test_use_after_move_detected_after_assignment():
 		statements=[
 			H.HLet(name="x", value=H.HLiteralInt(1), declared_type_expr=None),
 			H.HAssign(target=H.HVar("x"), value=H.HLiteralInt(2)),  # overwrite -> valid
-			H.HExprStmt(expr=H.HVar("x")),
+			H.HExprStmt(expr=H.HMove(H.HVar("x"))),
 			H.HExprStmt(expr=H.HVar("x")),  # use after move
 		]
 	)
@@ -66,3 +66,28 @@ def test_copy_type_is_not_moved():
 	bc = _checker_with_types({"b": "Bool"})
 	diags = bc.check_block(block)
 	assert diags == []
+
+
+def test_array_is_not_copy_in_type_table():
+	table = TypeTable()
+	int_ty = table.ensure_int()
+	arr_ty = table.new_array(int_ty)
+	assert table.is_copy(arr_ty) is False
+
+
+def test_array_value_moves_in_borrow_checker():
+	table = TypeTable()
+	int_ty = table.ensure_int()
+	arr_ty = table.new_array(int_ty)
+	fn_types = {PlaceBase(PlaceKind.LOCAL, 0, "a"): arr_ty}
+	base_lookup = lambda hv: PlaceBase(PlaceKind.LOCAL, 0, hv.name)
+	bc = BorrowChecker(type_table=table, fn_types=fn_types, base_lookup=base_lookup)
+	block = H.HBlock(
+		statements=[
+			H.HLet(name="a", value=H.HArrayLiteral(elements=[]), declared_type_expr=None),
+			H.HExprStmt(expr=H.HMove(H.HVar("a"))),  # move Array
+			H.HExprStmt(expr=H.HVar("a")),  # use after move
+		]
+	)
+	diags = bc.check_block(block)
+	assert any("use after move" in d.message for d in diags)

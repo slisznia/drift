@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Dict, List, Mapping, TYPE_CHECKING, Tuple
 
 from lang2.driftc.core.function_id import FunctionId
@@ -31,6 +32,7 @@ class ModuleLowered:
 	requires_by_struct: Dict["TypeKey", "parser_ast.TraitExpr"]
 	type_defs: Dict[str, List[str]]
 	impl_defs: List[ImplMeta]
+	origin_by_fn_id: Dict[FunctionId, Path]
 
 
 def flatten_modules(

@@ -1,0 +1,317 @@
+# Lang Core Traits - Work Progress
+
+Status legend: [todo], [in-progress], [done]
+
+## Goal
+Implement core trait semantics needed for stdlib containers/algorithms, focusing on:
+- trait bounds/guards + `use trait` + UFCS lookup rules (no trait objects; use interfaces for runtime dispatch),
+- Copy trait gating aligned with spec naming/prelude,
+- Iterator trait replacing compiler intrinsics (spec-defined `for` lowering).
+
+## Plan
+
+### 0) ABI/array index widths (isize/usize)
+- [done] Revert hard-wired i64 sizing and align Int/Uint with pointer-sized isize/usize end-to-end.
+  - Runtime uses `ptrdiff_t`/`size_t` for `drift_isize`/`drift_usize` in array bounds checks.
+  - LLVM codegen now emits `%drift.isize`/`%drift.usize` aliases and uses them for array headers, bounds checks, and Int/Uint values.
+- Array indexing now accepts Int only (signed isize) and uses non-`inbounds` GEP for dynamic indexing.
+- Typechecker rejects `Array<T>` when `T` is zero-sized (`E_ARRAY_ZST_UNSUPPORTED`) to avoid ZST array UB in v1.
+  - String literal headers now use `%drift.usize` fields rather than hard-coded i64.
+  - Updated LLVM IR tests to assert `%drift.isize`/`%drift.usize` rather than `i64`.
+  - Codegen/tests now pass `word_bits` from the host pointer width (until target layouts are plumbed) via `host_word_bits()`.
+  - Cleaned up LLVM test call sites after the `host_word_bits()` switch (removed stray commas/formatting from auto-edits).
+  - Updated LLVM tests to pass `word_bits` into `LlvmModuleBuilder(...)` where used directly.
+  - Array iterator internal idx switched to `Uint` so iterator comparisons stay in `Uint` and avoid mixed Int/Uint binops.
+- Spec/ABI docs updated to describe pointer-sized `Int`/`Uint` (isize/usize), `Size` reserved in v1, and `Array<T>` len/cap as `Uint`.
+- README/spec examples updated to infer `Array<Int>` (no `Array<Int64>` in v1).
+- Package type linking now treats `Byte` as a builtin scalar when importing packages.
+- Bool ABI is now honored: value type remains `i1`, aggregate storage uses `i8` (struct fields, array backing, refs), with zext on store and `icmp ne` on load.
+- Address-taken locals now use Bool storage (`i8`) with zext on store and `icmp ne` on load when taking `&Bool` or loading/storing addr-taken locals.
+- Zero-value emission for Array now uses storage element type (Bool arrays use `i8*`).
+- ArrayLen/ArrayCap now hard-error if array LLVM type is missing (no silent default to `{usize, usize, isize*}`).
+- FnResult ok payloads now support Bool/Uint/Byte/Float, and export wrappers use Bool storage (`i8`) at ABI boundaries.
+- Cross-module exported calls now use ABI ok storage types (Bool `i8`) and convert back to internal ok values.
+- `host_word_bits()` moved to `lang2.codegen.llvm.test_utils` to keep host sizing test-only.
+  - Typechecker now treats `len/cap` on Array/String as `Uint`, and string `+`/comparisons are typed as `String`/`Bool` so `s.len` works after string concatenation.
+  - HIR→MIR uses literal expected types for binary ops (e.g., `Uint` comparisons) and `HLiteralInt` now honors expected types to emit `ConstUint`.
+  - Updated `string_arc_loop_release` e2e to keep `sum` as `Uint` and return via a guard (avoids implicit Int/Uint mixing).
+  - Error codes are now fixed-width `Uint64` (u64) end-to-end: new `Uint64` scalar, MIR `ConstUint64`, HIR→MIR throw/catch lowering emits u64 codes, and LLVM/Rt ABI uses `uint64_t`/`i64` for `DriftError.code`.
+  - Variant payload storage now uses word-sized (`usize`) slots with word-sized padding, not hard-wired `i64`.
+  - Production codegen no longer falls back to host word size; CLI now requires `--target-word-bits` when emitting LLVM/output (tests still use host_word_bits).
+  - Driver tests auto-inject `--target-word-bits` using host pointer width via a test-only harness hook (production paths still require explicit target layout).
+  - Array iterator index is now `Int` (isize) instead of `Uint` to keep array indexing Int-only.
+    - Added MIR casts `IntFromUint`/`UintFromInt` and LLVM lowering so intrinsics can explicitly bridge Int/Uint.
+    - Iterator `next()` now casts `len: Uint` to `Int` before comparisons and indexes with `Int` only.
+  - Exported-function ABI now uses boundary `Result<T, Error*>` (`{T, err*}` or `err*` for `Void`), with wrappers converting internal `FnResult` to the boundary shape.
+  - Function references to exported/extern symbols now synthesize boundary thunks (`__thunk_boundary::...`) so fn pointers still use internal `FnResult` ABI.
+  - Variant payload alignment now accounts for max field alignment (payload cell size uses max(word, max_align)).
+  - Fixed variant max-align tracking across fields (handles zero-field arms correctly).
+  - Bitwise ops now require `Uint` at codegen (typechecker bugs no longer coerced).
+  - ArrayAlloc is defined as `len=0` allocation; length must be zero and is set via ArraySetLen.
+  - LLVM codegen now enforces ArrayAlloc length is a constant zero (tracks consts in the func builder); LLVM array tests now use ArrayElemInitUnchecked + ArraySetLen to match the MIR contract.
+  - Unary bitwise `~` now requires `Uint` in LLVM codegen (mirrors the binary bitwise rule).
+  - `drift_build_argv` now uses an explicit out-parameter ABI (no sret mismatch) to avoid struct-return calling convention surprises.
+  - ArrayElemInitUnchecked now asserts its index is `Int` (isize) in codegen.
+  - Fixed-width scalar types are now reserved in v1; the typechecker rejects them with `E_FIXED_WIDTH_RESERVED`, and spec examples default integer literals to `Int`.
+  - Fixed-width types are allowed only in `lang.abi.*`; `Byte` is a v1 surface scalar that is always allowed and lowers to `i8`.
+  - Test array runtime now honors alignment via `posix_memalign` and uses a non-null ZST sentinel.
+  - Added `string_literal_overwrite` e2e to ensure static-literal release is safe.
+
+### 1) Implement trait propositions + bounds/guards + `use trait` + UFCS (no trait objects)
+- [in-progress] Implement a shared AST for trait propositions used by both `require` and `if` guards (atoms + and/or/not/paren).
+  - Introduced SubjectRef nodes (`SelfRef`, `TypeNameRef`) in parser AST, stage0 AST, and HIR, with trait expressions now carrying a subject object rather than a string.
+  - Parser trait-expr builder now emits SubjectRefs and conversion to stage0 preserves them; linked-world trait subject keying updated accordingly.
+  - Began wiring SubjectRefs through typechecking/proof: subject-name helpers, HIR->parser conversion for trait guards, and safer subject collection explained below.
+  - Updated trait-world require checks to understand SubjectRefs in trait/struct/function require clauses.
+  - Updated trait enforcement subject collection and provisional DMIR trait expr canonicalization to handle SubjectRefs.
+  - Fixed indentation in `lang2/driftc/traits/world.py` while wiring SubjectRef handling for trait require clauses (trait + struct loops).
+  - Corrected SubjectRef handling in function require loops and `parser_ast` usage in `lang2/driftc/traits/world.py`.
+  - Relaxed unknown-trait checks in require clauses to only error on missing local traits.
+  - Updated trait solver to normalize SubjectRefs before substitution and caching.
+  - Updated linked-world subject substitution to recognize `SelfRef`/`TypeNameRef`.
+  - Updated trait-require enforcement to accept type-param names when binding subjects.
+  - Ensure type-param substitutions populate both id and name keys during enforcement.
+  - Fixed type-arg binding indentation in `lang2/driftc/traits/enforce.py` so substitutions and type-arg keys are applied outside the arg loop.
+  - Fixed indentation in `lang2/driftc/traits/enforce.py` around argument collection for trait enforcement.
+  - Fixed remaining indentation so type-arg binding runs after collecting call arguments.
+  - Normalized indent in `lang2/driftc/traits/enforce.py` to keep arg collection and type-arg binding aligned.
+  - Added impl type-param tracking and unification so trait solver can satisfy impl requires for generic impls.
+  - Relaxed impl require trait resolution errors to only flag missing local traits.
+  - Fixed indentation in `lang2/driftc/traits/world.py` for impl registration.
+  - Wired function `require` assumptions to recognize SubjectRefs when seeding `fn_require_assumed`.
+  - Fixed indentation in `lang2/driftc/type_checker.py` for function require assumption seeding.
+  - Scoped the `--emit-package` package-id validation to emit-package mode only.
+  - Fixed emit-package JSON error block indentation in `lang2/driftc/driftc.py`.
+  - Exported `HSelfRef`/`HTypeNameRef` from `lang2/driftc/stage1/__init__.py` for tests and downstream use.
+  - Fixed an indentation error in `lang2/driftc/type_checker.py` around obligation checking.
+  - Fixed driver indentation regressions in `lang2/driftc/driftc.py` (including the package emit block) uncovered by the driver test run.
+  - Fixed package-emission error handling indentation in `lang2/driftc/driftc.py`.
+  - Targeted driver tests now pass for trait bound resolution, instantiation requirement diagnostics, and generic impl require substitution.
+  - Made trait SubjectRef nodes hashable (TypeNameRef/SelfRef) to avoid set-key errors in require collection.
+  - Fixed function require assumption seeding block indentation in `lang2/driftc/type_checker.py`.
+  - Normalized trait require subject lowering to resolve `TypeNameRef` to type params in `lang2/driftc/traits/world.py`.
+  - Fixed package encoding of trait subjects so require fingerprints handle `Self`/`TypeNameRef` consistently (`lang2/driftc/packages/provisional_dmir_v0.py`).
+  - Targeted type-checker tests and full driver suite now pass.
+  - Updated const initializer e2e expectations to match parser-phase diagnostics.
+  - Constraint noted: trait propositions must remain compile-time only; do not allow `(T is Trait)` in value expressions. Add a negative parser/resolver test for value-position usage.
+  - Added parser/driver test rejecting trait propositions in value position (`lang2/tests/driver/test_trait_proposition_syntax.py`).
+  - Parser now emits `E-TRAIT-PROP-VALUE-POS` with a stable message when `is` appears in value expressions.
+  - Prioritized `IS` token handling in parse error codes so value-position trait props get `E-TRAIT-PROP-VALUE-POS` instead of semicolon errors.
+  - Added positive parser tests ensuring trait propositions are accepted in `if` guards and `require` clauses.
+- [in-progress] Implement proof rules for scope: conjunction adds both traits; disjunction adds none; negation adds none; parentheses respected.
+  - Added guard-assumption collection in `lang2/driftc/type_checker.py` and applied it to trait guards when the guard is provably true.
+- [done] Implement spec-defined `require T is Trait` / `require Self is Trait` checking for types + functions, using the proposition AST.
+  - MVP decision: trait-level `require` is conjunction-only (supertraits); `or`/`not` rejected until semantics are defined.
+  - Spec updated: trait-level `require` is conjunction-only (see `docs/design/drift-lang-spec.md`, `docs/design/drift-lang-grammar.md`).
+  - Canonical boolean trait form is `(T is A or T is B)`, not `T is (A or B)`; docs/tests should follow the grammar.
+  - Trait-level `require` legality (MVP):
+    - Legal: `trait Showable require Self is Debug { ... }`
+    - Legal: `trait Showable require Self is Debug and Self is Display { ... }`
+    - Illegal: `trait Showable require Self is (Debug or Display) { ... }`
+    - Illegal: `trait Showable require not (Self is Debug) { ... }`
+  - Added explicit legal/illegal examples for trait-level `require` in `docs/design/drift-lang-spec.md`.
+  - Impl `require` filtering is covered by driver tests (candidate selection respects requirements).
+- [done] Rename trait names for clarity/consistency: `Debuggable` -> `Debug`, `Displayable` -> `Display` (sweep docs/tests/code; exclude `docs/history.md`).
+- [done] Implement compile-time trait guards with branch-local assumption sets; typecheck each branch under its assumptions and defer non-selected branch errors to instantiation time.
+  - Trait-guard handling now records deferred diagnostics per guard/branch when proof is unknown (assumes guard for then-branch), and replays deferred branch diagnostics at instantiation based on the proven guard outcome.
+  - Unknown proofs for concrete guards now emit an error and typecheck both branches without deferral; guard identity is keyed by node id.
+  - `Self` guards now contribute branch-local assumptions and only defer when the receiver type still contains type vars.
+  - Trait guard proof now substitutes `Self` into the solver environment (including typevar Self).
+- [done] Implement trait method lookup gated by `use trait`, with UFCS escape hatch `TraitName::method(...)`, deterministic ambiguity ordering, and file-scoped `use trait`.
+  - `use trait` scopes are recorded per file in `module_exports` and method resolution uses file-scoped trait lists; module-level scope is used only when no per-file map is provided (single-file pipeline/harness).
+  - Added guardrails for single-module multi-file parsing: error if any `use trait` appears without the workspace pipeline; if per-file scopes are provided but `current_file` is missing, emit an internal error and treat as no traits in scope.
+  - Added driver test that asserts multi-file single-module loader hard-errors when `use trait` is present.
+  - Guardrail diagnostics now anchor to the first offending `use trait` location and note all offending files; workspace parsing sorts input paths deterministically.
+  - Added regression test that multi-file single-module loader still merges when no `use trait` is present.
+  - Fixed single-module lowering to initialize the type table before recording package/module metadata.
+  - Plumbed per-function origin files through `ModuleLowered` and driver typecheck paths so `current_file` is always available for file-scoped `use trait`.
+  - Driver now treats empty per-file trait scopes as `None` to avoid accidentally forcing file-scoped mode without `current_file`.
+  - Captureless lambda specs now carry `origin_fn_id`, and driver uses the origin file for file-scoped trait lookup in lambda typecheck.
+  - Added regression test covering file-scoped `use trait` inside captureless lambda coercions.
+  - Updated trait method resolution helpers to use per-function origins and tightened lambda file-scope assertions.
+  - Adjusted captureless-lambda file-scope test to use a non-generic struct trait impl (avoids scalar-impl gaps).
+  - Made captureless-lambda test impl method public to satisfy visibility rules.
+  - Captureless-lambda test now keeps full signatures map so trait impl methods are resolvable.
+  - Added origin tracking in method-resolution e2e helpers to support file-scoped trait lookup.
+  - Codegen e2e runner now passes per-function origin files into `compile_to_llvm_ir_for_tests` for file-scoped trait lookup.
+  - Review complete: step 2 (file-scoped `use trait` + UFCS) verified end-to-end.
+- [done] Enforce orphan rule: impl allowed only if trait or receiver type head is in current package.
+  - Added orphan impl diagnostics during trait-world construction for local-package trait impls (skip external packages, reject impls where both trait and target head are outside the package).
+  - Orphan checks now run in source `implement` collection with spec code `E-IMPL-ORPHAN`, plus a driver test that asserts rejection in sources.
+  - Trait-world diagnostics now flow into parser diagnostics so orphan errors surface during workspace parsing.
+  - Trait-world diagnostics now accept a phase; parser uses `phase="parser"` and orphan test asserts parser-phase.
+  - Trait/world keys now use per-module package id from `module_packages` to avoid cross-package mismatches; external module package overrides are rejected for source modules.
+  - Local package identity uses `None` consistently (no `"__local__"` sentinel); CLI/package emission now rejects empty package ids.
+  - Multi-file trait/impl diagnostics are now file-pinned by rewriting locs during module merge.
+  - Orphan rule test now uses external module exports/packages to simulate cross-package impls without overriding source modules.
+  - Review complete: orphan rule implementation + diagnostics verified end-to-end.
+- [done] Update `docs/design/drift-lang-spec.md` and `docs/design/drift-lang-grammar.md` to reflect this implementation scope (traits are compile-time only; runtime dispatch uses interfaces).
+- [done] Add parser + resolver tests for bounds/guards/use-trait/UFCS (positive + negative cases), including boolean trait expressions and guard scoping rules.
+  - Added guard scoping tests for `and` (adds scope) and `or/not` (no scope) in `lang2/tests/driver/test_trait_guard_scoping.py`.
+  - Added boolean `require` coverage for `or/not` in `lang2/tests/driver/test_struct_type_param_requires.py`.
+- [in-progress] Add diagnostics golden tests for missing require, guard misuse, orphan violations, overlap ambiguity, Copy violations, and trait method ambiguity with stable candidate ordering.
+  - Added golden-style driver tests for require failure, guard misuse, orphan, overlap, and trait method ambiguity in `lang2/tests/driver/test_trait_diagnostic_goldens.py`.
+  - Copy goldens blocked on Copy implementation.
+  - Guard-scoping goldens use `use trait` so trait scope is explicit; guard assumptions still gate method availability for type params.
+  - Added stable codes for overlap (`E-IMPL-OVERLAP`), trait method ambiguity (`E-METHOD-AMBIGUOUS`), and concrete guard undecidability (`E-TRAIT-GUARD-NOT-DECIDABLE`).
+
+### Next Step Plan (post-orphan)
+- [done] Implement `require` enforcement with the proposition AST for functions + structs (call/instantiation time), with concrete decision rules for PROVED/REFUTED/UNKNOWN/AMBIGUOUS and deterministic diagnostics.
+  - Added `_require_failure` helper to evaluate full boolean expressions with `prove_expr` and map failure reason/codes consistently.
+  - Struct require enforcement now evaluates the full proposition before reporting failures.
+  - Function/method require failures now use `_require_failure` so boolean expressions and `not` yield stable codes.
+  - Added driver tests for function/struct `require` with boolean `and` (pass + fail) in `lang2/tests/driver/test_struct_type_param_requires.py`.
+  - Require/guard assumptions now use conjunctive fact extraction (no `or`/`not` seeding) to avoid unsound trait assumptions.
+  - Struct `require` enforcement skips when type arguments contain nested typevars (recursive check).
+  - Trait propositions now error if they reach value-position typechecking (no runtime Bool).
+  - `require` errors for `or`/`not` now report formula-level messages with disjunct notes.
+  - Checker typing inference now uses CallInfo return types for method/invoke calls (prevents spurious “indexing requires an Array value” diagnostics when indexing results like `a.dup()`).
+  - Updated array dup e2e to declare `main` as `nothrow` to satisfy entrypoint enforcement.
+  - Fixed array dup non-copy e2e to use `fn main() nothrow -> Int` so parser/entrypoint checks don’t mask the dup diagnostic.
+  - Fixed array dup requires-move e2e to use `fn main() nothrow -> Int` so the copy/move diagnostic is exercised.
+  - Avoided spurious copy errors during `&mut` validation by typing borrow bases with `used_as_value=False` (fixes array-borrow e2e).
+  - Normalize pass now assigns binding ids to materialized borrow temps so rvalue borrow rewrite yields typed locals (fixes borrow_mut_rvalue_roundtrip).
+  - Added unary deref typing in the type checker so `*p` yields the referenced type with Copy gating.
+  - For-loop desugaring now borrows the iterable; array iter intrinsics now use `&Array<T>` and MIR lowering reads through that ref.
+  - Updated array-iterator `next()` typing to expect `&Array<T>` in the iterator struct.
+  - DiagnosticValue helper calls now type their receiver as a non-value use (no Copy requirement).
+  - Copy checks now defer for unresolved type parameters to avoid spurious errors in generic bodies.
+  - Match scrutinee typing now treats the scrutinee as a non-copying use (fixes Optional<Array<T>> matches).
+  - Updated stage1 for-loop desugaring test to expect a borrowed iterable (`&items`) in the iterable temp.
+  - Stage2 MIR type inference for `iter/next` now expects `&Array<T>` in iterator structs (matches lowered intrinsics).
+  - [done] Copy ≠ memcpy hardening: added `is_bitcopy`, gated ArrayDup memcpy on bitcopy, and implemented element-wise copy fallback with a `len == 0` guard.
+  - [done] Kept `String` as Copy for MVP and lowered CopyValue(String) via `drift_string_retain` (no byte copy); future `String.dup()`-gated behavior is tracked in TODO.md.
+  - [done] Implemented refcounted String runtime and updated literal lowering.
+    - Added `drift_string_retain`/`drift_string_release` semantics; string literals use static headers and releases are no-ops.
+    - LLVM literal lowering emits header+bytes globals with static flag.
+  - [done] Move String ownership into MIR (ARC pass) and make runtime refcount atomic.
+    - Added MIR ops: `StringRetain`, `StringRelease`, `CopyValue`, `MoveOut`.
+    - Added `stage2/string_arc.py` pass to insert retains/releases and expand `MoveOut` to load+zero+store.
+    - LLVM codegen now lowers explicit retain/release/copy ops and no longer guesses ownership or emits releases at return.
+    - Console runtime now releases strings after printing.
+    - ARC pass skips zero-initializing params (avoid clobbering by-value String params).
+    - ARC insertion is now CFG-aware (live-in/out analysis for String temps) and deterministic (sorted block/local order).
+    - Added control-flow e2e tests: if-join, loop temp, and select (`string_arc_if_join`, `string_arc_loop_release`, `string_arc_select`).
+    - Added debug assertion in string release to prevent freeing static literals.
+    - Added LLVM IR regression for literal overwrite to ensure a release call is emitted.
+    - LLVM block emission now falls back to sorted block names when SSA order is missing.
+    - Fixed ARC usage tracking for `ConstructResultErr` (use `error` field, not `value`).
+    - ARC liveness now treats Phi incoming values as uses (prevents premature releases at joins).
+    - Runtime now enforces literal header layout with static asserts and returns static bool literals without heap allocation.
+  - LLVM CopyValue no longer supports FnResult (hard error; FnResult is not Copy).
+  - Fixed array-drop helper block labels to avoid invalid LLVM IR (`%%label`), unblocking array/string e2e cases.
+  - Array element ops no longer auto-copy in LLVM lowering; duplication is now a MIR invariant (CopyValue inserted at duplication points, moves remain moves).
+  - HIR index reads (`xs[i]`) now emit `ArrayIndexLoad` + `CopyValue` for `Copy` element types (retain on `Array<String>` loads).
+  - Added typechecker coverage rejecting by-value `xs[i]` when element type is non-Copy (`test_type_checker_array_index_copy.py`).
+  - Added MIR invariant validation for array CopyValue/MoveOut usage and made bounds checks reject negative indices via signed runtime helper.
+  - Require subject validation now rejects non-type-params/`Self` with `E-REQUIRE-UNKNOWN-SUBJECT`.
+  - Trait solver now prefers AMBIGUOUS over UNKNOWN for `and`/`not`, and unknown impl requirements no longer force REFUTED.
+  - Trait-world validation now tolerates forward-referenced local traits and tightens orphan localness with package-id checks.
+  - Local impls now treat missing package ids as local when the module matches, avoiding false internal errors in package builds.
+  - Orphan package-id checks now ignore builtins (module=None) to avoid false internal errors on impls for `Int`/etc.
+  - Fixed indentation and local-trait lookup in impl require validation block.
+  - Trait require validation now rejects `or`/`not` (traits only) with `E-TRAIT-REQUIRE-UNSUPPORTED`, and world validation uses conjunctive facts only.
+  - Coherence/overlap checks now iterate deterministically over sorted keys and impl locations.
+  - Require substitution now preserves type-param bindings when param names collide with type param names.
+  - Failure prioritization now prefers AMBIGUOUS over UNKNOWN over NO_IMPL for clearer diagnostics.
+  - `build_trait_world` now requires an explicit `diag_phase` to avoid mis-stamped diagnostics.
+  - Added driver test covering comma-separated require clauses: `lang2/tests/driver/test_require_clause_commas.py`.
+  - Require subject validation now walks all atoms (including `or`/`not`) to reject invalid subjects anywhere.
+  - Added driver tests for invalid require subjects under `or`/`not` in `lang2/tests/driver/test_require_subject_restrictions.py`.
+  - Added phase-stamping assertion to orphan parse test.
+  - Added workspace parse smoke test (`lang2/tests/driver/test_workspace_parse_smoke.py`) to catch missing diag_phase wiring.
+  - Added positive trait-guard driver test (`lang2/tests/driver/test_trait_guard_positive.py`).
+  - Enforced struct `require` for non-generic structs and added driver test for missing `Self is Destructible`.
+  - Added regression test that missing type args do not trigger struct `require` (`lang2/tests/driver/test_struct_type_param_requires.py`).
+- [done] Add minimal driver tests for `require` (positive + negative, boolean `and`), then expand to broader bounds/guards/use-trait/UFCS coverage.
+- [todo] Add diagnostics goldens for trait/copy errors once `require` enforcement and parser tests stabilize (E-IMPL-ORPHAN, overlap/ambiguity, missing require, guard errors, Copy errors).
+  - [done] Added a workspace parse determinism test to guard against file-order variance.
+    - Uses diagnostic span fields (file/line/column) for stable comparison.
+  - [done] Parser adapter now converts `copy` expressions to stage0 AST (enables driftc --json in e2e copy tests).
+  - [done] Clarified prelude semantics in the spec: only a curated `lang.core` name list is injected; module/symbols are not auto-imported.
+
+### 2) Gate Copy via a real Copy trait (aligned with spec)
+- [done] Resolve Copy vs Copyable naming in the spec + compiler (use `Copy` only; docs updated in `docs/design/drift-lang-spec.md`).
+- [done] Decide module/prelude visibility for Copy (keep prelude tiny unless spec changes).
+  - Decision: `Copy` lives in `lang.core` and is **not** auto-preluded; use a qualified trait name or import the module.
+- [done] Enforce copy/move legality during typecheck (use-site diagnostics for assignments, arg passing, receiver selection, member lookup).
+  - Non-`Copy` value uses now require explicit `move`; borrow and assignment targets bypass copy checks.
+- [done] Implement `copy <expr>` in the expression grammar + typecheck rule “operand must be Copy”.
+- [done] Decide whether `copy` requires an lvalue operand or can copy rvalues; document and add tests.
+  - Decision: MVP `copy` requires an lvalue/place operand.
+- [done] Define auto-impl rules for Copy (scalars, &T, aggregate rules) and document them.
+  - `Optional<T>` is Copy iff `T` is Copy (generic variant semantics).
+- [done] Add typechecker tests for Copy vs non-Copy flows and at least one e2e rejection in container usage.
+  - Added typechecker tests for `copy` lvalue requirement and non-lvalue rejection.
+  - Added e2e `copy_non_copy_rejected` (Array is not Copy).
+- [done] Add `Array<T>.dup()` for `T: Copy` (explicit deep dup; Array itself remains non-Copy).
+  - Typecheck accepts `Array<T>.dup()` only when `T` is Copy; emits a targeted MVP error otherwise.
+  - Lowered to MIR `ArrayDup` and LLVM dup-based copy of the backing buffer.
+  - Added e2e coverage: dup success, non-Copy element rejection, and “no implicit copy” guard.
+  - Made `FnResult<T, Error>` non-Copy in `TypeTable.is_copy` and added a core test to lock it.
+- [done] Harden `Array<T>.dup()` semantics with BitCopy distinction (per latest plan).
+  - Added `TypeTable.is_bitcopy` (cached): scalars/refs/tuples/structs/Optional when all fields bitcopy; String/Array not bitcopy.
+  - Added `emit_copy_value(ty, value)` in codegen: bitcopy fast-path; otherwise recursive per-field copy (no memcpy for non-bitcopy).
+  - ArrayDup lowering branches on `is_bitcopy(elem_ty)` → `memcpy` or elementwise `emit_copy_value`, with `len == 0` guard.
+  - Tests: memcpy path covered by existing `array_dup_basic` (String dup gating deferred).
+  - Document compiler invariants (Copy ≠ BitCopy, ArrayDup branch rules) in code comments (no user-doc changes yet).
+- [in-progress] Consolidate `Optional<T>` as a generic variant and remove Optional ABI special-cases.
+  - Use the injected `lang.core Optional<T>` variant for all Optional typing (including DiagnosticValue accessors).
+  - Remove `TypeKind.OPTIONAL` codegen paths and Optional-specific LLVM types; rely on variant lowering.
+  - Update DV `as_*` lowering to construct `Optional<T>` variant results instead of `DriftOptional*` ABI structs.
+  - `TypeTable.new_optional` now returns the `lang.core Optional<T>` variant instantiation.
+  - LLVM array lowering now computes element type + size/align from the type table (no Int/String-only backend restriction).
+  - Variant `CopyValue` lowering now uses an LLVM `switch` on tag (not a linear branch chain) for scalable dispatch.
+  - Removed remaining `TypeKind.OPTIONAL` references in trait enforcement, type inference, and type-table linking.
+  - LLVM `CopyValue` now requires a TypeTable (no silent bitcopy fallback when missing).
+  - [in-progress] Define Array element lifetime ops and CopyValue insertion at duplication points.
+    - Add MIR ops for array element init/assign/drop + array drop; lower ArrayLits to alloc+init ops.
+  - Insert `CopyValue` at array duplication points (array literals, direct array element assignments) instead of relying on backend.
+  - Added stage2 test ensuring array literals duplicate Copy lvalues (`[s, s]` emits CopyValue twice).
+  - Array literals now allocate with `len=0`, use unchecked element init, and set `len` after initialization to avoid partially-initialized observable state.
+  - Spec updated to document v1 pointer-sized `Int`/`Uint` (isize/usize) and rationale to avoid fixed-width churn.
+  - Emit element drops on overwrite and array drop on scope exit for element types that need destruction (String/variant/struct containing String).
+  - Array element writes now retain/copy for Copy elements and release old elements when needed in LLVM lowering (ArrayElemInit/Assign + ArrayIndexStore).
+  - Follow-up: extend `CopyValue` insertion to all duplication points (StoreLocal/StoreRef, call args, struct/variant construction) after array semantics land.
+
+### 2.1) Move semantics (MVP fixes)
+- [done] Allow `var` parameters so move-only APIs can forward ownership (`fn id(var x: T) -> T { return move x; }`).
+- [done] Align spec to MVP move operand support (locals/params only; no `move x.y`/`move a[i]` yet).
+- [done] Remove duplicate move legality diagnostics in the borrow checker (typechecker remains the source of truth).
+- [done] Add an Array type cache in `TypeTable.new_array()` to avoid O(n) scans during type construction.
+- [done] Enable borrow-check auto-borrow by default and enforce mutable-base checks for `&mut` loans.
+- [done] Track moves/borrows inside call keyword arguments and treat `&x` in call args as temporary loans.
+- [done] Ensure `Array<T>` is never `Copy` under MVP structural rules.
+- [done] Apply auto-borrow to keyword arguments based on parameter types (including `&mut` checks).
+- [done] Fix borrowcheck move gating so `val` allows Copy reads and uninitialized reads are diagnosed explicitly.
+- [done] Align borrow checker with explicit move semantics: non-`Copy` value uses do not implicitly move; move tests use `move <expr>` explicitly.
+- [done] Seed borrow-check entry state with initialized param places and treat globals/consts as always-valid in borrow checking.
+- [done] Preserve `var` on impl method params when building signatures (fixes `move` inside impl methods).
+- [done] Package signatures now encode/decode `param_mutable` so `var` params survive package import/instantiation.
+- [done] `HPlaceExpr` base typecheck uses `used_as_value=False` to avoid spurious copy errors in `move`/borrow contexts.
+
+### 3) Iterator trait + migrate intrinsics
+- [done] Keep iterator spec-change doc as proposal-only until grammar + trait model decisions land; fix `Optional<Item>` typo and remove implicit `std.prelude` import from the proposal.
+- [todo] Add spec section defining `for x in y { ... }` lowering (deterministic).
+- [todo] Choose the trait type model: associated type `Item` (MVP-limited) **or** generic traits + `T is Iterator<Item>` syntax; update spec accordingly.
+- [todo] Define `Iterator` trait consistent with the chosen model.
+- [todo] Update compiler lowering to use UFCS in desugaring so iteration is not sensitive to `use trait` in user code.
+- [todo] Replace compiler intrinsics for `Array<T>.iter()` / `__ArrayIter_<T>.next()` with trait-based library implementations.
+- [todo] Add stdlib tests for iteration and a codegen e2e that exercises trait-based iteration (no intrinsic path).
+
+### 4) Integration + cleanup
+- [done] Enforce basic overlap/duplicate impl detection during trait-world construction with deterministic ordering.
+- [todo] Extend overlap/coherence semantics: reject decidable generic overlaps during collection; reserve use-site ambiguity for truly undecidable generic overlaps.
+- [todo] Define instantiation-time error deferral precisely (what phase counts as instantiation) and add tests that exercise guard-branch deferral.
+- [todo] Canonicalize receiver type heads (aliases/reexports) before orphan/overlap/matching decisions; add tests for alias/reexport cases.
+- [todo] Remove or deprecate intrinsic iterator paths in the compiler once the trait path is fully functional.
+- [todo] Update any diagnostics or error messages to refer to trait-based iteration instead of intrinsics.
+- [todo] Add a short migration note in `history.md` when the trait path replaces intrinsics.
+
+### 5) Determinism + diagnostics stability gates
+- [todo] Add a CI mode that randomizes file discovery/import traversal and asserts identical resolution and diagnostics (golden).
+- [todo] Add golden diagnostics fixtures for trait/Copy errors to lock stability and ordering.
+
+## Open questions
+- Do we want associated types, or generic traits + trait instantiation syntax, for `Iterator` in MVP?
+- Which builtins are auto-Copy vs require explicit Copy impls, and where does Copy live?

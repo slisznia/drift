@@ -16,11 +16,12 @@
 
 [Traits]
 - Gate `copy` via a real `Copy` trait post-typecheck.
-- Trait-based iteration: replace iterator intrinsics with a real `Iterator` trait + library implementation once module support lands (no dynamic dispatch in MVP).
-- Dynamic dispatch and trait bounds: pin surface syntax and type rules for trait bounds / trait objects.
-- Replace iterator intrinsics with real modules/traits: migrate `Array<T>.iter()` / `__ArrayIter_<T>.next()` from compiler intrinsics to a real `Iterator` trait + library implementation when module support lands.
+- Trait-based iteration (MVP): replace iterator intrinsics with a real `Iterator` trait + library implementation once module support lands (no dynamic dispatch in MVP).
 
 ## Post MVP
+[Traits]
+- Dynamic dispatch and trait bounds: pin surface syntax and type rules for trait bounds / trait objects.
+- `Array<String>.dup()` should require `String.dup()` and then lift `Array<T>.dup()` to `T: Dup` (out of MVP scope).
 
 [Error handling]
   - Captures (`^`): implement unwind-time frame capture (locals per frame + frames list), runtime representation, lowering/codegen, and e2e tests.

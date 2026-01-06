@@ -33,6 +33,8 @@ from lang2.driftc.stage2 import (
 	ConstructDV,
 	ConstructError,
 	ConstInt,
+	ConstUint,
+	ConstUint64,
 )
 
 
@@ -78,7 +80,7 @@ class MirPreAnalysis:
 		for block_name, block in func.blocks.items():
 			const_ints: Dict[str, int] = {}
 			for idx, instr in enumerate(block.instructions):
-				if isinstance(instr, ConstInt):
+				if isinstance(instr, (ConstInt, ConstUint, ConstUint64)):
 					const_ints[instr.dest] = instr.value
 				self._visit_instr(
 					block_name,

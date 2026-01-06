@@ -100,9 +100,25 @@ class HTraitExpr(HExpr):
 	pass
 
 
+class HTraitSubject(HExpr):
+	"""Trait subject reference (Self or a type name)."""
+	pass
+
+
+@dataclass
+class HSelfRef(HTraitSubject):
+	loc: Span = field(default_factory=Span)
+
+
+@dataclass
+class HTypeNameRef(HTraitSubject):
+	name: str
+	loc: Span = field(default_factory=Span)
+
+
 @dataclass
 class HTraitIs(HTraitExpr):
-	subject: str
+	subject: object
 	trait: object
 	loc: Span = field(default_factory=Span)
 
@@ -266,6 +282,7 @@ class HFString(HExpr):
 class HParam(HNode):
 	name: str
 	type: Optional["HTypeExpr"] = None
+	is_mutable: bool = False
 	binding_id: Optional[BindingId] = None
 	span: Span = field(default_factory=Span)
 
@@ -566,6 +583,13 @@ class HMove(HExpr):
 
 
 @dataclass
+class HCopy(HExpr):
+	"""Explicit copy of a value: `copy <expr>`."""
+	subject: HExpr
+	loc: Span = field(default_factory=Span)
+
+
+@dataclass
 class HDVInit(HExpr):
 	"""Desugared DiagnosticValue constructor call."""
 	dv_type_name: str
@@ -728,7 +752,7 @@ class HReturn(HStmt):
 __all__ = [
 	"HNode", "HExpr", "HStmt",
 	"UnaryOp", "BinaryOp",
-	"HVar", "HTraitExpr", "HTraitIs", "HTraitAnd", "HTraitOr", "HTraitNot",
+	"HVar", "HTraitExpr", "HTraitSubject", "HSelfRef", "HTypeNameRef", "HTraitIs", "HTraitAnd", "HTraitOr", "HTraitNot",
 	"HLiteralInt", "HLiteralString", "HLiteralBool", "HLiteralFloat",
 	"HFString", "HFStringHole",
 	"HParam", "HLambda",
@@ -736,7 +760,7 @@ __all__ = [
 	"HTypeApp", "HCast",
 	"HPlaceExpr", "HPlaceProj", "HPlaceField", "HPlaceIndex", "HPlaceDeref",
 	"HField", "HQualifiedMember", "HIndex", "HBorrow", "HDVInit",
-	"HMove",
+	"HMove", "HCopy",
 	"HKwArg",
 	"HExceptionInit",
 	"HUnary", "HBinary", "HArrayLiteral",

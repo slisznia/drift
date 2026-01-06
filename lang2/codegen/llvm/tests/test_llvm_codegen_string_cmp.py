@@ -1,10 +1,12 @@
 from lang2.driftc.core.function_id import FunctionId
+import struct
 # vim: set noexpandtab: -*- indent-tabs-mode: t -*-
 """
 IR lowering for string ordering operators via drift_string_cmp runtime helper.
 """
 
 from lang2.codegen.llvm import lower_module_to_llvm
+from lang2.codegen.llvm.test_utils import host_word_bits
 from lang2.driftc.checker import FnInfo, FnSignature
 from lang2.driftc.core.types_core import TypeTable
 from lang2.driftc.stage1 import BinaryOp
@@ -39,7 +41,7 @@ def test_string_cmp_emits_runtime_call_and_decl() -> None:
 	sig = FnSignature(name="main", param_type_ids=[], return_type_id=int_ty)
 	info = FnInfo(fn_id=fn_id, name="main", declared_can_throw=False, signature=sig, return_type_id=int_ty)
 
-	mod = lower_module_to_llvm({fn_id: func}, {fn_id: ssa}, {fn_id: info}, type_table=table)
+	mod = lower_module_to_llvm({fn_id: func}, {fn_id: ssa}, {fn_id: info}, type_table=table, word_bits=host_word_bits())
 	ir = mod.render()
 
 	assert "declare i32 @drift_string_cmp(%DriftString, %DriftString)" in ir
@@ -83,9 +85,13 @@ def test_string_lt_lowered_via_string_cmp_and_zero_compare() -> None:
 	sig = FnSignature(name="main", param_type_ids=[], return_type_id=int_ty)
 	info = FnInfo(fn_id=fn_id, name="main", declared_can_throw=False, signature=sig, return_type_id=int_ty)
 
-	mod = lower_module_to_llvm({fn_id: func}, {fn_id: ssa}, {fn_id: info}, type_table=table)
+	mod = lower_module_to_llvm({fn_id: func}, {fn_id: ssa}, {fn_id: info}, type_table=table, word_bits=host_word_bits())
 	ir = mod.render()
 
 	assert "call i32 @drift_string_cmp(%DriftString %s0, %DriftString %s1)" in ir
-	assert "sext i32" in ir
-	assert "icmp slt i64" in ir
+	word_bits = struct.calcsize("P") * 8
+	if word_bits == 32:
+		assert "bitcast i32" in ir
+	else:
+		assert "sext i32" in ir
+	assert "icmp slt %drift.isize" in ir

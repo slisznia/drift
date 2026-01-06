@@ -53,8 +53,6 @@ def apply_subst(type_id: TypeId, subst: Subst, table: TypeTable) -> TypeId:
 		return type_id
 	if td.kind is TypeKind.ARRAY:
 		return table.new_array(new_params[0])
-	if td.kind is TypeKind.OPTIONAL:
-		return table.new_optional(new_params[0])
 	if td.kind is TypeKind.REF:
 		return table.ensure_ref_mut(new_params[0]) if td.ref_mut else table.ensure_ref(new_params[0])
 	if td.kind is TypeKind.FNRESULT:

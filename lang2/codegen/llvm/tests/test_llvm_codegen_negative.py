@@ -8,6 +8,7 @@ from lang2.driftc.core.function_id import FunctionId
 import pytest
 
 from lang2.codegen.llvm import lower_ssa_func_to_llvm
+from lang2.codegen.llvm.test_utils import host_word_bits
 from lang2.driftc.checker import FnInfo
 from lang2.driftc.stage2 import (
 	BasicBlock,
@@ -51,7 +52,7 @@ def test_branch_condition_must_be_bool():
 	fn_info = FnInfo(fn_id=fn_id, name="f", declared_can_throw=False, return_type_id=int_ty)
 
 	with pytest.raises(NotImplementedError, match="branch condition must be bool"):
-		lower_ssa_func_to_llvm(mir, ssa, fn_info, {fn_id: fn_info}, type_table=table)
+		lower_ssa_func_to_llvm(mir, ssa, fn_info, {fn_id: fn_info}, type_table=table, word_bits=host_word_bits())
 
 
 def test_non_can_throw_returning_fnresult_rejected():
@@ -75,7 +76,7 @@ def test_non_can_throw_returning_fnresult_rejected():
 	fn_info = FnInfo(fn_id=fn_id, name="f", declared_can_throw=False, return_type_id=int_ty)
 
 	with pytest.raises(NotImplementedError, match="FnResult construction in non-can-throw function"):
-		lower_ssa_func_to_llvm(mir, ssa, fn_info, {fn_id: fn_info}, type_table=table)
+		lower_ssa_func_to_llvm(mir, ssa, fn_info, {fn_id: fn_info}, type_table=table, word_bits=host_word_bits())
 
 
 def test_can_throw_fnresult_with_unsupported_ok_type_is_rejected():
@@ -102,7 +103,7 @@ def test_can_throw_fnresult_with_unsupported_ok_type_is_rejected():
 	fn_info = FnInfo(fn_id=fn_id, name="f", declared_can_throw=True, return_type_id=fnresult_ty, error_type_id=err_ty)
 
 	with pytest.raises(NotImplementedError, match="FnResult ok type Array_Int is not supported"):
-		lower_ssa_func_to_llvm(mir, ssa, fn_info, {fn_id: fn_info}, type_table=table)
+		lower_ssa_func_to_llvm(mir, ssa, fn_info, {fn_id: fn_info}, type_table=table, word_bits=host_word_bits())
 
 
 def test_string_binaryop_unsupported():
@@ -125,4 +126,4 @@ def test_string_binaryop_unsupported():
 	fn_info = FnInfo(fn_id=fn_id, name="f", declared_can_throw=False, return_type_id=int_ty)
 
 	with pytest.raises(NotImplementedError, match="string binary op"):
-		lower_ssa_func_to_llvm(mir, ssa, fn_info, {fn_id: fn_info}, type_table=table)
+		lower_ssa_func_to_llvm(mir, ssa, fn_info, {fn_id: fn_info}, type_table=table, word_bits=host_word_bits())

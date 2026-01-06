@@ -9,7 +9,7 @@ from lang2.driftc.stage1.normalize import normalize_hir
 from lang2.driftc.stage2 import (
 	HIRToMIR,
 	make_builder,
-	ConstInt,
+	ConstUint64,
 	ConstString,
 	ConstructDV,
 	ConstructError,
@@ -24,7 +24,7 @@ from lang2.driftc.core.types_core import TypeTable
 def test_throw_lowers_to_error_and_result_err_return():
 	"""
 	`throw ExceptionInit` should:
-	  - emit a ConstInt for the event code placeholder,
+	  - emit a ConstUint64 for the event code placeholder,
 	  - ConstructError(code, first field DV, key=field name),
 	  - ConstructResultErr(error),
 	  - Return that result.
@@ -54,7 +54,7 @@ def test_throw_lowers_to_error_and_result_err_return():
 	# Expect: DV ctor, event-code const, ConstructError, ConstructResultErr.
 	dv_ctor = next(i for i in instrs if isinstance(i, ConstructDV))
 	payload_const = next(i for i in instrs if isinstance(i, ConstString) and i.value == "boom")
-	const_int = next(i for i in instrs if isinstance(i, ConstInt))
+	const_int = next(i for i in instrs if isinstance(i, ConstUint64))
 	key_const = next(i for i in instrs if isinstance(i, ConstString) and i.value == "msg")
 	event_name_const = next(i for i in instrs if isinstance(i, ConstString) and i.value == "m:Boom")
 	err = next(i for i in instrs if isinstance(i, ConstructError))

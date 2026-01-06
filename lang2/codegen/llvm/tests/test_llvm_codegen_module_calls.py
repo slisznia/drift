@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from lang2.driftc.core.function_id import FunctionId
 from lang2.codegen.llvm import lower_module_to_llvm
+from lang2.codegen.llvm.test_utils import host_word_bits
 from lang2.driftc.checker import FnInfo
 from lang2.driftc.stage2 import BasicBlock, MirFunc, ConstInt, Return, ConstructResultOk, Call, ResultOk
 from lang2.driftc.stage4 import MirToSSA
@@ -14,7 +15,7 @@ from lang2.driftc.core.types_core import TypeTable
 
 def test_module_lowering_non_throwing_call():
 	"""
-	Lower two non-throwing functions and ensure the call uses i64 ABI.
+	Lower two non-throwing functions and ensure the call uses isize ABI.
 	"""
 	# callee: -> 7
 	callee_entry = BasicBlock(
@@ -46,13 +47,12 @@ def test_module_lowering_non_throwing_call():
 	mod = lower_module_to_llvm(
 		funcs={callee_id: callee_mir, main_id: main_mir},
 		ssa_funcs={callee_id: callee_ssa, main_id: main_ssa},
-		fn_infos=fn_infos,
-	)
+		fn_infos=fn_infos, word_bits=host_word_bits())
 	ir = mod.render()
 
-	assert "define i64 @callee()" in ir
-	assert "define i64 @drift_main()" in ir
-	assert "call i64 @callee()" in ir
+	assert "define %drift.isize @callee()" in ir
+	assert "define %drift.isize @drift_main()" in ir
+	assert "call %drift.isize @callee()" in ir
 
 
 def test_module_lowering_can_throw_callee_call():
@@ -92,11 +92,10 @@ def test_module_lowering_can_throw_callee_call():
 		funcs={callee_id: callee_mir, main_id: main_mir},
 		ssa_funcs={callee_id: callee_ssa, main_id: main_ssa},
 		fn_infos=fn_infos,
-		type_table=table,
-	)
+		type_table=table, word_bits=host_word_bits())
 	ir = mod.render()
 
 	assert "define %FnResult_Int_Error @callee()" in ir
-	assert "define i64 @drift_main()" in ir
+	assert "define %drift.isize @drift_main()" in ir
 	assert "call %FnResult_Int_Error @callee()" in ir
 	assert "extractvalue %FnResult_Int_Error" in ir

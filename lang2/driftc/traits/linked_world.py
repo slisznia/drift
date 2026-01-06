@@ -396,6 +396,10 @@ def _trait_subject_key(
 	default_package: str | None = None,
 	module_packages: Mapping[str, str] | None = None,
 ) -> tuple[object, object]:
+	if isinstance(subject, parser_ast.SelfRef):
+		return ("self",)
+	if isinstance(subject, parser_ast.TypeNameRef):
+		return ("name", subject.name)
 	if isinstance(subject, TypeParamId):
 		return ("type_param", (subject.owner, subject.index))
 	if isinstance(subject, TypeKey):
@@ -618,9 +622,16 @@ def _subject_key(
 	module_packages: Mapping[str, str],
 	param_scope_map: Mapping[TypeParamId, tuple[str, int]],
 ) -> object:
-	if subject in subst:
-		subject = subst[subject]
-	elif isinstance(subject, str) and subject in subst:
+	subj_name: str | None = None
+	if isinstance(subject, parser_ast.SelfRef):
+		subj_name = "Self"
+	elif isinstance(subject, parser_ast.TypeNameRef):
+		subj_name = subject.name
+	elif isinstance(subject, str):
+		subj_name = subject
+	if subj_name is not None and subj_name in subst:
+		subject = subst[subj_name]
+	elif subject in subst:
 		subject = subst[subject]
 	if isinstance(subject, tuple) and subject and subject[0] == "tyvar":
 		return subject
@@ -652,7 +663,7 @@ def _subject_key(
 def _substitute_trait_subject(expr: parser_ast.TraitExpr, subject: object) -> parser_ast.TraitExpr:
 	if isinstance(expr, parser_ast.TraitIs):
 		subj = expr.subject
-		if subj == "Self":
+		if subj == "Self" or isinstance(subj, parser_ast.SelfRef):
 			subj = subject
 		return parser_ast.TraitIs(loc=expr.loc, subject=subj, trait=expr.trait)
 	if isinstance(expr, parser_ast.TraitAnd):

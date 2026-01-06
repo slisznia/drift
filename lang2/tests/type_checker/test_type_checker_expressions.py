@@ -102,6 +102,29 @@ def test_ternary_prefers_common_type():
 	assert tc.type_table.ensure_int() in res.typed_fn.expr_types.values()
 
 
+def test_copy_requires_lvalue():
+	tc = _tc()
+	block = H.HBlock(
+		statements=[
+			H.HExprStmt(expr=H.HCopy(subject=H.HLiteralInt(1))),
+		]
+	)
+	res = tc.check_function(_fn_id("copy_rvalue"), block)
+	assert any("copy operand must be an addressable place" in d.message for d in res.diagnostics)
+
+
+def test_copy_lvalue_ok():
+	tc = _tc()
+	block = H.HBlock(
+		statements=[
+			H.HLet(name="x", value=H.HLiteralInt(1), declared_type_expr=None, binding_id=1),
+			H.HExprStmt(expr=H.HCopy(subject=H.HVar("x", binding_id=1))),
+		]
+	)
+	res = tc.check_function(_fn_id("copy_lvalue"), block)
+	assert res.diagnostics == []
+
+
 def test_call_return_type_uses_signature():
 	table = TypeTable()
 	tc = TypeChecker(table)

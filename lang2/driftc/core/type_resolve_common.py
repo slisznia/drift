@@ -110,6 +110,8 @@ def resolve_opaque_type(
 			return table.ensure_uint()
 		if name == "Int":
 			return table.ensure_int()
+		if name == "Byte":
+			return table.ensure_byte()
 		if name == "Bool":
 			return table.ensure_bool()
 		if name == "String":
@@ -159,6 +161,8 @@ def resolve_opaque_type(
 			return table.ensure_diagnostic_value()
 		if raw == "Uint":
 			return table.ensure_uint()
+		if raw == "Byte":
+			return table.ensure_byte()
 		if raw.startswith("FnResult<") and raw.endswith(">"):
 			inner = raw[len("FnResult<"):-1]
 			parts = inner.split(",", 1)

@@ -80,6 +80,9 @@ def _typecheck_main(files: dict[Path, str], *, main_module: str, tmp_path: Path)
 	)
 	assert diagnostics == []
 	func_hirs, signatures, fn_ids_by_name = flatten_modules(modules)
+	origin_by_fn_id: dict[FunctionId, Path] = {}
+	for mod in modules.values():
+		origin_by_fn_id.update(mod.origin_by_fn_id)
 	registry, module_ids = _build_registry(signatures)
 	impl_index = GlobalImplIndex.from_module_exports(
 		module_exports=module_exports,
@@ -92,9 +95,14 @@ def _typecheck_main(files: dict[Path, str], *, main_module: str, tmp_path: Path)
 		type_table=type_table,
 		module_ids=module_ids,
 	)
-	trait_scope_by_module = {
-		mod: list(exports.get("trait_scope", []) or []) for mod, exports in module_exports.items()
-	}
+	trait_scope_by_file: dict[str, list[object]] = {}
+	for _mod, exports in module_exports.items():
+		if isinstance(exports, dict):
+			scope_by_file = exports.get("trait_scope_by_file", {})
+			if isinstance(scope_by_file, dict):
+				for path, traits in scope_by_file.items():
+					if isinstance(path, str) and isinstance(traits, list):
+						trait_scope_by_file[path] = list(traits)
 	linked_world, require_env = build_linked_world(type_table)
 	main_ids = fn_ids_by_name.get(f"{main_module}::main") or fn_ids_by_name.get("main") or []
 	assert len(main_ids) == 1
@@ -104,6 +112,7 @@ def _typecheck_main(files: dict[Path, str], *, main_module: str, tmp_path: Path)
 	param_types = {}
 	if main_sig and main_sig.param_names and main_sig.param_type_ids:
 		param_types = {pname: pty for pname, pty in zip(main_sig.param_names, main_sig.param_type_ids)}
+	current_file = str(origin_by_fn_id.get(main_id)) if main_id in origin_by_fn_id else None
 	current_mod = module_ids.setdefault(main_sig.module, len(module_ids)) if main_sig else 0
 	visible_mods = _visible_modules_for(main_module, module_deps, module_ids)
 	tc = TypeChecker(type_table=type_table)
@@ -117,11 +126,12 @@ def _typecheck_main(files: dict[Path, str], *, main_module: str, tmp_path: Path)
 		impl_index=impl_index,
 		trait_index=trait_index,
 		trait_impl_index=trait_impl_index,
-		trait_scope_by_module=trait_scope_by_module,
+		trait_scope_by_file=trait_scope_by_file,
 		linked_world=linked_world,
 		require_env=require_env,
 		visible_modules=visible_mods,
 		current_module=current_mod,
+		current_file=current_file,
 	)
 	return result.diagnostics
 

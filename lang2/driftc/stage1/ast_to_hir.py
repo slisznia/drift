@@ -229,8 +229,14 @@ class AstToHIR:
 		return H.HVar(name=expr.ident, binding_id=None)
 
 	def _visit_expr_TraitIs(self, expr: ast.TraitIs) -> H.HExpr:
+		def _lower_trait_subject(subject: object) -> object:
+			if isinstance(subject, ast.SelfRef):
+				return H.HSelfRef(loc=self._as_span(getattr(subject, "loc", None)))
+			if isinstance(subject, ast.TypeNameRef):
+				return H.HTypeNameRef(name=subject.name, loc=self._as_span(getattr(subject, "loc", None)))
+			return subject
 		return H.HTraitIs(
-			subject=expr.subject,
+			subject=_lower_trait_subject(expr.subject),
 			trait=expr.trait,
 			loc=self._as_span(getattr(expr, "loc", None)),
 		)
@@ -479,6 +485,10 @@ class AstToHIR:
 		"""
 		return H.HMove(subject=self.lower_expr(expr.value), loc=getattr(expr, "loc", None) or Span())
 
+	def _visit_expr_Copy(self, expr: ast.Copy) -> H.HExpr:
+		"""Lower the `copy` expression to an explicit HIR marker."""
+		return H.HCopy(subject=self.lower_expr(expr.value), loc=getattr(expr, "loc", None) or Span())
+
 	def _visit_expr_Binary(self, expr: ast.Binary) -> H.HExpr:
 		"""
 		Binary op lowering. Short-circuit behavior for &&/|| is NOT lowered
@@ -574,6 +584,7 @@ class AstToHIR:
 					H.HParam(
 						name=p.name,
 						type=p.type_expr,
+						is_mutable=bool(getattr(p, "mutable", False)),
 						binding_id=bid,
 						span=Span.from_loc(getattr(p, "loc", None)),
 					)
@@ -999,8 +1010,8 @@ class AstToHIR:
 		  - iter_var is currently an identifier (pattern support can be added later).
 		  - iterable expression is evaluated exactly once.
 		"""
-		# 1) Evaluate iterable once and bind.
-		iterable_expr = self.lower_expr(stmt.iterable)
+		# 1) Evaluate iterable once and bind (borrow to avoid consuming the iterable).
+		iterable_expr = H.HBorrow(subject=self.lower_expr(stmt.iterable), is_mut=False)
 		iterable_name = self._fresh_temp("__for_iterable")
 		iterable_let = H.HLet(name=iterable_name, value=iterable_expr)
 

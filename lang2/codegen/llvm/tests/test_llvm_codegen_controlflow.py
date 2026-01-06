@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from lang2.driftc.core.function_id import FunctionId
 from lang2.codegen.llvm import lower_ssa_func_to_llvm
+from lang2.codegen.llvm.test_utils import host_word_bits
 from lang2.driftc.checker import FnInfo
 from lang2.driftc.stage2 import (
 	BasicBlock,
@@ -74,8 +75,8 @@ def test_if_else_phi_lowering():
 	table = TypeTable()
 	fn_id = FunctionId(module="main", name="if_phi", ordinal=0)
 	fn_info = _int_fn_info("if_phi", False, table)
-	ir = lower_ssa_func_to_llvm(mir, ssa, fn_info, {fn_id: fn_info})
+	ir = lower_ssa_func_to_llvm(mir, ssa, fn_info, {fn_id: fn_info}, word_bits=host_word_bits())
 
 	assert "br i1 %cond, label %then, label %else" in ir
-	assert "phi i64" in ir
-	assert "ret i64" in ir
+	assert "phi %drift.isize" in ir
+	assert "ret %drift.isize" in ir

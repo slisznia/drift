@@ -1,0 +1,10 @@
+{
+  "description": "e2e: copy non-Copy value rejected",
+  "diagnostics": [
+    {
+      "message_contains": "type is not Copy"
+    }
+  ],
+  "exit_code": 1,
+  "phase": "typecheck"
+}

@@ -3,7 +3,7 @@
   "diagnostics": [
     {
       "message_contains": "declared type does not match initializer value",
-      "phase": "typecheck"
+      "phase": "parser"
     }
   ],
   "exit_code": 1,

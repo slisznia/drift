@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from lang2.driftc.core.function_id import FunctionId
 from lang2.codegen.llvm import lower_ssa_func_to_llvm
+from lang2.codegen.llvm.test_utils import host_word_bits
 from lang2.driftc.checker import FnInfo
 from lang2.driftc.core.types_core import TypeTable
 from lang2.driftc.stage2 import (
@@ -85,7 +86,7 @@ def test_loop_backedge_supported() -> None:
 	fn_id = FunctionId(module="main", name="loopy", ordinal=0)
 	fn_info = FnInfo(fn_id=fn_id, name="loopy", declared_can_throw=False, return_type_id=int_ty)
 
-	ir = lower_ssa_func_to_llvm(mir, ssa, fn_info, {fn_id: fn_info}, type_table=table)
+	ir = lower_ssa_func_to_llvm(mir, ssa, fn_info, {fn_id: fn_info}, type_table=table, word_bits=host_word_bits())
 	assert "loop:" in ir
 	assert "body:" in ir
 	# Backedge must exist in the textual IR.

@@ -240,7 +240,7 @@ We define **receiver compatibility** as:
 * If `self_mode == SelfByValue`:
 
   * Candidate is viable if `R == DeclReceiverType` (usually the impl target type).
-  * v1: **do not** automatically copy/clone; this is purely type equality.
+  * v1: **do not** automatically copy/dup; this is purely type equality.
 * If `self_mode == SelfByRef`:
 
   * Candidate is viable if **either**:

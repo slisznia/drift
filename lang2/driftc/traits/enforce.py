@@ -93,9 +93,17 @@ def collect_used_type_keys(
 	return used
 
 
+def _subject_key(subject: object) -> object:
+	if isinstance(subject, parser_ast.SelfRef):
+		return "Self"
+	if isinstance(subject, parser_ast.TypeNameRef):
+		return subject.name
+	return subject
+
+
 def _collect_trait_subjects(expr: parser_ast.TraitExpr, out: Set[object]) -> None:
 	if isinstance(expr, parser_ast.TraitIs):
-		out.add(expr.subject)
+		out.add(_subject_key(expr.subject))
 	elif isinstance(expr, (parser_ast.TraitAnd, parser_ast.TraitOr)):
 		_collect_trait_subjects(expr.left, out)
 		_collect_trait_subjects(expr.right, out)
@@ -192,7 +200,7 @@ def enforce_fn_requires(
 				if pdef.ref_mut != adef.ref_mut or not pdef.param_types or not adef.param_types:
 					return False
 				return _unify(pdef.param_types[0], adef.param_types[0])
-			if pdef.kind in (TypeKind.ARRAY, TypeKind.OPTIONAL, TypeKind.FNRESULT, TypeKind.FUNCTION):
+			if pdef.kind in (TypeKind.ARRAY, TypeKind.FNRESULT, TypeKind.FUNCTION):
 				if len(pdef.param_types) != len(adef.param_types):
 					return False
 				return all(_unify(p, a) for p, a in zip(pdef.param_types, adef.param_types))
@@ -271,6 +279,11 @@ def enforce_fn_requires(
 			)
 		if sig and getattr(sig, "type_params", None):
 			type_params = list(getattr(sig, "type_params", []) or [])
+			type_param_names = {
+				tp.id: tp.name
+				for tp in type_params
+				if getattr(tp, "id", None) is not None and isinstance(getattr(tp, "name", None), str)
+			}
 			type_args = getattr(expr, "type_args", None) or []
 			bindings: Dict[TypeParamId, object] | None = None
 			if type_args and len(type_args) == len(type_params):
@@ -282,13 +295,17 @@ def enforce_fn_requires(
 				bindings = _infer_type_args_from_call(sig, arg_type_ids)
 			if bindings:
 				for tp_id, ty_id in bindings.items():
-					if tp_id in subjects:
-						subst[tp_id] = normalize_type_key(
+					tp_name = type_param_names.get(tp_id)
+					if tp_id in subjects or tp_name in subjects:
+						key = normalize_type_key(
 							type_key_from_typeid(type_table, ty_id),
 							module_name=module_name,
 							default_package=require_env.default_package,
 							module_packages=require_env.module_packages,
 						)
+						subst[tp_id] = key
+						if tp_name:
+							subst[tp_name] = key
 				for tp in type_params:
 					ty_id = bindings.get(tp.id)
 					if ty_id is None:

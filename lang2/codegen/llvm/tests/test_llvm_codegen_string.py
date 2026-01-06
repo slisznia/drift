@@ -7,9 +7,11 @@ LLVM lowering for String literals and ->.
 
 from lang2.driftc.checker import FnInfo, FnSignature
 from lang2.driftc.core.types_core import TypeTable
-from lang2.driftc.stage2 import BasicBlock, Call, ConstString, MirFunc, Return
+from lang2.driftc.stage2 import BasicBlock, Call, ConstString, LoadLocal, MirFunc, Return, StoreLocal
+from lang2.driftc.stage2.string_arc import insert_string_arc
 from lang2.driftc.stage4.ssa import MirToSSA
 from lang2.codegen.llvm import lower_ssa_func_to_llvm, lower_module_to_llvm
+from lang2.codegen.llvm.test_utils import host_word_bits
 
 
 def _string_type(table: TypeTable):
@@ -35,11 +37,15 @@ def test_string_literal_return_ir():
 	sig = FnSignature(name="f", return_type_id=str_ty, param_type_ids=[])
 	fn_info = FnInfo(fn_id=fn_id, name="f", declared_can_throw=False, signature=sig, return_type_id=str_ty)
 
-	ir = lower_ssa_func_to_llvm(func, ssa, fn_info, {fn_id: fn_info}, type_table=table)
+	ir = lower_ssa_func_to_llvm(func, ssa, fn_info, {fn_id: fn_info}, type_table=table, word_bits=host_word_bits())
 
-	assert "%drift.size = type i64" in ir
-	assert "%DriftString = type { %drift.size, i8*" in ir
-	assert '@.str0 = private unnamed_addr constant [4 x i8] c"abc\\00"' in ir
+	assert "%drift.usize = type i" in ir
+	assert "%drift.isize = type i" in ir
+	assert "%DriftString = type { %drift.usize, i8*" in ir
+	assert (
+		'@.str0 = private unnamed_addr constant { %drift.usize, %drift.usize, [4 x i8] } '
+		'{ %drift.usize 1, %drift.usize 1, [4 x i8] c"abc\\00" }'
+	) in ir
 	assert "define %DriftString @f()" in ir
 	assert "ret %DriftString" in ir
 
@@ -62,11 +68,15 @@ def test_string_utf8_literal_ir():
 	sig = FnSignature(name="f", return_type_id=str_ty, param_type_ids=[])
 	fn_info = FnInfo(fn_id=fn_id, name="f", declared_can_throw=False, signature=sig, return_type_id=str_ty)
 
-	ir = lower_ssa_func_to_llvm(func, ssa, fn_info, {fn_id: fn_info}, type_table=table)
+	ir = lower_ssa_func_to_llvm(func, ssa, fn_info, {fn_id: fn_info}, type_table=table, word_bits=host_word_bits())
 
-	assert "%drift.size = type i64" in ir
-	assert "%DriftString = type { %drift.size, i8*" in ir
-	assert '@.str0 = private unnamed_addr constant [14 x i8] c"Solidarno\\C5\\9B\\C4\\87\\00"' in ir
+	assert "%drift.usize = type i" in ir
+	assert "%drift.isize = type i" in ir
+	assert "%DriftString = type { %drift.usize, i8*" in ir
+	assert (
+		'@.str0 = private unnamed_addr constant { %drift.usize, %drift.usize, [14 x i8] } '
+		'{ %drift.usize 1, %drift.usize 1, [14 x i8] c"Solidarno\\C5\\9B\\C4\\87\\00" }'
+	) in ir
 	assert "define %DriftString @f()" in ir
 	assert "ret %DriftString" in ir
 
@@ -107,14 +117,53 @@ def test_string_pass_through_call_ir():
 		{callee_id: callee, caller_id: caller},
 		{callee_id: callee_ssa, caller_id: caller_ssa},
 		{callee_id: callee_info, caller_id: caller_info},
-		type_table=table,
-	)
+		type_table=table, word_bits=host_word_bits())
 	ir = mod.render()
 
-	assert "%drift.size = type i64" in ir
-	assert "%DriftString = type { %drift.size, i8*" in ir
-	assert '@.str0 = private unnamed_addr constant [4 x i8] c"abc\\00"' in ir
+	assert "%drift.usize = type i" in ir
+	assert "%drift.isize = type i" in ir
+	assert "%DriftString = type { %drift.usize, i8*" in ir
+	assert (
+		'@.str0 = private unnamed_addr constant { %drift.usize, %drift.usize, [4 x i8] } '
+		'{ %drift.usize 1, %drift.usize 1, [4 x i8] c"abc\\00" }'
+	) in ir
 	assert "define %DriftString @id(%DriftString %s)" in ir
 	assert "define %DriftString @main()" in ir
 	assert "call %DriftString @id(%DriftString %t0)" in ir
 	assert "ret %DriftString" in ir
+
+
+def test_string_literal_overwrite_emits_release():
+	table = TypeTable()
+	str_ty = _string_type(table)
+
+	block = BasicBlock(
+		name="entry",
+		instructions=[
+			ConstString(dest="t0", value="a"),
+			StoreLocal(local="s", value="t0"),
+			ConstString(dest="t1", value="b"),
+			StoreLocal(local="s", value="t1"),
+			LoadLocal(dest="t2", local="s"),
+		],
+		terminator=Return(value="t2"),
+	)
+	fn_id = FunctionId(module="main", name="f", ordinal=0)
+	func = MirFunc(
+		fn_id=fn_id,
+		name="f",
+		params=[],
+		locals=["s"],
+		blocks={"entry": block},
+		entry="entry",
+		local_types={"s": str_ty, "t0": str_ty, "t1": str_ty, "t2": str_ty},
+	)
+	sig = FnSignature(name="f", return_type_id=str_ty, param_type_ids=[])
+	fn_info = FnInfo(fn_id=fn_id, name="f", declared_can_throw=False, signature=sig, return_type_id=str_ty)
+
+	func = insert_string_arc(func, type_table=table, fn_infos={fn_id: fn_info})
+	ssa = MirToSSA().run(func)
+
+	ir = lower_ssa_func_to_llvm(func, ssa, fn_info, {fn_id: fn_info}, type_table=table, word_bits=host_word_bits())
+
+	assert "call void @drift_string_release(%DriftString" in ir

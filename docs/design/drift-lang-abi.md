@@ -19,20 +19,22 @@ It covers:
 
 Drift has two classes of scalars:
 
-* **Natural width primitives:** fixed as 64-bit for ABI stability
+* **Natural width primitives:** pointer-sized (isize/usize) for target-native ABI
 * **Fixed-width primitives:** identical to C/LLVM integer/float widths
 
 ### 1.1 Natural-width primitives
 
 | Drift type | C ABI type           | LLVM IR                           | Notes                                  |
 | ---------- | -------------------- | --------------------------------- | -------------------------------------- |
-| `Int`      | `int64_t`            | `i64`                             | Signed integer.                        |
-| `Uint`     | `uint64_t`           | `i64`                             | Unsigned.                              |
-| `Size`     | `uintptr_t` (64-bit) | `i64`                             | Pointer-sized, pinned to 64-bit in v1. |
+| `Int`      | `ptrdiff_t`          | `%drift.isize`                    | Signed, pointer-sized.                 |
+| `Uint`     | `size_t`             | `%drift.usize`                    | Unsigned, pointer-sized.               |
+| `Size`     | (reserved)           | (reserved)                        | Not used in v1.                        |
 | `Bool`     | `uint8_t`            | `i1` (in regs), `i8` (in structs) | ABI defines on-wire as 1 byte.         |
 | `Float`    | `double`             | `double`                          | IEEE-754 64-bit float.                 |
 
 ### 1.2 Fixed-width primitives
+
+Fixed-width primitives are ABI-defined but **reserved in v1 surface code**; they are permitted only in `lang.abi.*` and internal runtime/compiler types. `Byte` remains a v1 surface scalar (maps to `uint8_t`/`i8`) even though `Uint8` is reserved.
 
 | Drift    | C ABI      | LLVM     |
 | -------- | ---------- | -------- |
@@ -147,7 +149,7 @@ The canonical v1 layout is:
 typedef struct {
     uint8_t    is_err;   // 0 = Ok, 1 = Err
     // padding as needed
-    T          ok;       // Only valid when is_err = 0
+    T          ok;       // Only valid when is_err = 0 (stored in aggregate form)
     DriftError *err;     // Only valid when is_err = 1
 } DriftFnResult_T_Error;
 ```
@@ -155,8 +157,15 @@ typedef struct {
 LLVM IR example for T = Int:
 
 ```llvm
-%FnResult_Int_Error = type { i1, i64, %DriftError* }
+%FnResult_Int_Error = type { i1, %drift.isize, %DriftError* }
 ```
+
+Notes:
+
+* `T` in `FnResult<T, Error>` uses its **aggregate/storage** representation.
+  For example, `Bool` is stored as `i8` (with `icmp ne` on load and `zext` on store).
+* `Int`/`Uint` are pointer-sized in v1 (`isize`/`usize`), and `Float` is target-specific
+  (typically `double`/8 bytes).
 
 This matches your MIR ops:
 
@@ -198,6 +207,13 @@ LLVM IR:
 ```llvm
 { T, %DriftError* }
 ```
+
+Notes:
+
+* `T` uses its **aggregate/storage** representation at the boundary. `Bool` is
+  stored as `i8` (wrappers `zext i1 -> i8` when returning `Bool`).
+* `Int`/`Uint` are pointer-sized in v1 (`isize`/`usize`), and `Float` is target-specific
+  (typically `double`/8 bytes).
 
 ### When `T` is `Void`:
 
@@ -246,7 +262,7 @@ Notes:
 
 Current implementations may lower them opaquely through:
 
-* `(T*, Size)` pairs,
+* `(T*, Uint)` pairs,
 * fat-pointer layouts, or
 * internal pointer types,
 
@@ -300,10 +316,9 @@ ABI-compatible changes:
 extern "C" {
 #endif
 
-// Scalars
-typedef int64_t   DriftInt;
-typedef uint64_t  DriftUint;
-typedef uint64_t  DriftSize;
+// Scalars (pointer-sized Int/Uint)
+typedef ptrdiff_t DriftInt;
+typedef size_t    DriftUint;
 typedef uint8_t   DriftBool;
 typedef double    DriftFloat;
 
@@ -314,9 +329,9 @@ typedef uint64_t DriftErrorCode;
 	    DriftErrorCode code;
 	    DriftString    event_fqn;
 	    void          *attrs;
-	    DriftSize      attr_count;
+	    DriftUint      attr_count;
 	    void          *frames;
-	    DriftSize      frame_count;
+	    DriftUint      frame_count;
 	} DriftError;
 
 // Result<Int, Error> for exported functions

@@ -10,29 +10,29 @@ from lang2.driftc.traits.world import TraitKey, TypeKey, build_trait_world
 def test_solver_proves_simple_impl() -> None:
 	prog = p.parse_program(
 		"""
-trait Debuggable { fn fmt(self: Int) -> String }
+trait Debug { fn fmt(self: Int) -> String }
 struct File { }
-implement Debuggable for File { fn fmt(self: File) -> String { return ""; } }
+implement Debug for File { fn fmt(self: File) -> String { return ""; } }
 """
 	)
 	world = build_trait_world(prog)
 	env = Env(default_module="main")
 	subst = {"Self": TypeKey(package_id=None, module="main", name="File", args=())}
-	res = prove_is(world, env, subst, "Self", TraitKey(package_id=None, module="main", name="Debuggable"))
+	res = prove_is(world, env, subst, "Self", TraitKey(package_id=None, module="main", name="Debug"))
 	assert res.status is ProofStatus.PROVED
 
 
 def test_solver_refutes_missing_impl_for_concrete_type() -> None:
 	prog = p.parse_program(
 		"""
-trait Debuggable { fn fmt(self: Int) -> String }
+trait Debug { fn fmt(self: Int) -> String }
 struct File { }
 """
 	)
 	world = build_trait_world(prog)
 	env = Env(default_module="main")
 	subst = {"Self": TypeKey(package_id=None, module="main", name="File", args=())}
-	res = prove_is(world, env, subst, "Self", TraitKey(package_id=None, module="main", name="Debuggable"))
+	res = prove_is(world, env, subst, "Self", TraitKey(package_id=None, module="main", name="Debug"))
 	assert res.status is ProofStatus.REFUTED
 
 

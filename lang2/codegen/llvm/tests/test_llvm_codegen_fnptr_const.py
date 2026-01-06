@@ -5,6 +5,7 @@ LLVM lowering for function pointer constants.
 from __future__ import annotations
 
 from lang2.codegen.llvm import lower_module_to_llvm
+from lang2.codegen.llvm.test_utils import host_word_bits
 from lang2.driftc.checker import FnInfo, FnSignature
 from lang2.driftc.core.function_id import FunctionId, FunctionRefId, FunctionRefKind
 from lang2.driftc.core.types_core import TypeTable
@@ -59,8 +60,7 @@ def test_fnptr_const_emits_bitcast() -> None:
 		funcs={fn_id: add1_mir, main_id: main_mir},
 		ssa_funcs={fn_id: add1_ssa, main_id: main_ssa},
 		fn_infos=fn_infos,
-		type_table=table,
-	)
+		type_table=table, word_bits=host_word_bits())
 	ir = mod.render()
 
-	assert "bitcast i64 (i64)* @add1 to i64 (i64)*" in ir
+	assert "bitcast %drift.isize (%drift.isize)* @add1 to %drift.isize (%drift.isize)*" in ir

@@ -138,7 +138,7 @@ The explicit forms `g(&v)` and `h(&mut v)` remain legal; they are just redundant
 This rule applies **everywhere**:
 
 * Free functions (`fn inspect(x: &File)`).
-* Trait methods (`fn clone(&self)` for a `Clonable` trait).
+* Trait methods (`fn dup(&self)` for a `Dup` trait).
 * Interface methods (`fn write(self: &OutputStream, ...)`) where the receiver is “by ref” in the interface type.
 
 ---
@@ -208,7 +208,7 @@ implement<T> Array<T> {
 Then:
 
 ```drift
-var xs: Array<Int64> = [1, 2, 3]
+var xs: Array<Int> = [1, 2, 3]
 
 xs.iter()        // calls &self overload (borrowed)
 xs->iter()       // calls self overload (consuming)

@@ -1,15 +1,16 @@
 #include "argv_runtime.h"
 
-DriftArrayString drift_build_argv(int argc, char **argv) {
-	DriftArrayString arr;
-	arr.len = (drift_size)argc;
-	arr.cap = (drift_size)argc;
+void drift_build_argv(DriftArrayString *out, int argc, char **argv) {
+	if (!out) {
+		abort();
+	}
+	out->len = (drift_usize)argc;
+	out->cap = (drift_usize)argc;
 	// Allocate backing store for DriftString elements.
-	DriftString *data = (DriftString *)drift_alloc_array(sizeof(DriftString), _Alignof(DriftString), arr.len, arr.cap);
+	DriftString *data = (DriftString *)drift_alloc_array(sizeof(DriftString), _Alignof(DriftString), out->len, out->cap);
 	for (int i = 0; i < argc; i++) {
 		// Construct from C string; drift_string_from_cstr handles NULL by returning empty.
 		data[i] = drift_string_from_cstr(argv[i]);
 	}
-	arr.data = (void *)data;
-	return arr;
+	out->data = (void *)data;
 }

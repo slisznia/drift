@@ -87,10 +87,10 @@ def test_unknown_event_name_matches_via_code_zero():
 	func = builder.func
 	dispatch = func.blocks["try_dispatch"]
 
-	# The dispatch block should compare against ConstInt 0 in the first (and only) event arm.
-	# Instructions in dispatch: LoadLocal(err_tmp), ErrorEvent(code_tmp), ConstInt(arm_code_const=0), BinaryOpInstr(cmp_tmp)
-	const_instrs = [instr for instr in dispatch.instructions if isinstance(instr, M.ConstInt)]
-	assert const_instrs, "expected a ConstInt arm code in dispatch"
+	# The dispatch block should compare against ConstUint64 0 in the first (and only) event arm.
+	# Instructions in dispatch: LoadLocal(err_tmp), ErrorEvent(code_tmp), ConstUint64(arm_code_const=0), BinaryOpInstr(cmp_tmp)
+	const_instrs = [instr for instr in dispatch.instructions if isinstance(instr, M.ConstUint64)]
+	assert const_instrs, "expected a ConstUint64 arm code in dispatch"
 	assert const_instrs[-1].value == 0
 
 

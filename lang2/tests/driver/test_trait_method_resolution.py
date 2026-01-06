@@ -7,6 +7,7 @@ from lang2.driftc import stage1 as H
 from lang2.driftc.core.function_id import FunctionId
 from lang2.driftc.impl_index import GlobalImplIndex, ImplMeta
 from lang2.driftc.method_registry import CallableRegistry, CallableSignature, SelfMode, Visibility
+from lang2.driftc.driftc import compile_stubbed_funcs
 from lang2.driftc.parser import parse_drift_workspace_to_hir
 from lang2.driftc.module_lowered import flatten_modules
 from lang2.driftc.trait_index import GlobalTraitImplIndex, GlobalTraitIndex
@@ -135,6 +136,12 @@ def _resolve_main_block(
 		paths,
 	)
 	func_hirs, signatures, fn_ids_by_name = flatten_modules(modules)
+	origin_by_fn_id: dict[FunctionId, Path] = {}
+	for mod in modules.values():
+		origin_by_fn_id.update(mod.origin_by_fn_id)
+	origin_by_fn_id: dict[FunctionId, Path] = {}
+	for mod in modules.values():
+		origin_by_fn_id.update(mod.origin_by_fn_id)
 	assert diagnostics == []
 	registry, module_ids = _build_registry(signatures)
 	impl_index = GlobalImplIndex.from_module_exports(
@@ -148,17 +155,21 @@ def _resolve_main_block(
 		type_table=type_table,
 		module_ids=module_ids,
 	)
-	trait_scope_by_module: dict[str, list[object]] = {}
-	for mod, exp in module_exports.items():
+	trait_scope_by_file: dict[str, list[object]] = {}
+	for _mod, exp in module_exports.items():
 		if isinstance(exp, dict):
-			scope = exp.get("trait_scope", [])
-			trait_scope_by_module[mod] = list(scope) if isinstance(scope, list) else []
+			scope_by_file = exp.get("trait_scope_by_file", {})
+			if isinstance(scope_by_file, dict):
+				for path, traits in scope_by_file.items():
+					if isinstance(path, str) and isinstance(traits, list):
+						trait_scope_by_file[path] = list(traits)
 	linked_world, require_env = build_linked_world(type_table)
 	main_key = f"{main_module}::main"
 	main_ids = fn_ids_by_name.get(main_key) or []
 	assert len(main_ids) == 1
 	main_id = main_ids[0]
 	main_block = func_hirs[main_id]
+	current_file = str(origin_by_fn_id.get(main_id)) if main_id in origin_by_fn_id else None
 	visible_modules = _visible_modules_for(main_module, module_deps, module_ids)
 	type_checker = TypeChecker(type_table=type_table)
 	result = type_checker.check_function(
@@ -169,11 +180,12 @@ def _resolve_main_block(
 		impl_index=impl_index,
 		trait_index=trait_index,
 		trait_impl_index=trait_impl_index,
-		trait_scope_by_module=trait_scope_by_module,
+		trait_scope_by_file=trait_scope_by_file,
 		linked_world=linked_world,
 		require_env=require_env,
 		visible_modules=visible_modules,
 		current_module=module_ids.setdefault(main_module, len(module_ids)),
+		current_file=current_file,
 	)
 	return (
 		main_block,
@@ -182,7 +194,7 @@ def _resolve_main_block(
 		module_deps,
 		module_ids,
 		type_table,
-		trait_scope_by_module,
+		trait_scope_by_file,
 	)
 
 
@@ -202,6 +214,9 @@ def _typecheck_named_fn(
 	)
 	func_hirs, signatures, fn_ids_by_name = flatten_modules(modules)
 	assert diagnostics == []
+	origin_by_fn_id: dict[FunctionId, Path] = {}
+	for mod in modules.values():
+		origin_by_fn_id.update(mod.origin_by_fn_id)
 	registry, module_ids = _build_registry(signatures)
 	impl_index = GlobalImplIndex.from_module_exports(
 		module_exports=module_exports,
@@ -214,11 +229,14 @@ def _typecheck_named_fn(
 		type_table=type_table,
 		module_ids=module_ids,
 	)
-	trait_scope_by_module: dict[str, list[object]] = {}
-	for mod, exp in module_exports.items():
+	trait_scope_by_file: dict[str, list[object]] = {}
+	for _mod, exp in module_exports.items():
 		if isinstance(exp, dict):
-			scope = exp.get("trait_scope", [])
-			trait_scope_by_module[mod] = list(scope) if isinstance(scope, list) else []
+			scope_by_file = exp.get("trait_scope_by_file", {})
+			if isinstance(scope_by_file, dict):
+				for path, traits in scope_by_file.items():
+					if isinstance(path, str) and isinstance(traits, list):
+						trait_scope_by_file[path] = list(traits)
 	linked_world, require_env = build_linked_world(type_table)
 	key = f"{module_name}::{fn_name}"
 	fn_ids = fn_ids_by_name.get(key) or []
@@ -229,6 +247,7 @@ def _typecheck_named_fn(
 	param_types = {}
 	if sig and sig.param_names and sig.param_type_ids:
 		param_types = {pname: pty for pname, pty in zip(sig.param_names, sig.param_type_ids)}
+	current_file = str(origin_by_fn_id.get(fn_id)) if fn_id in origin_by_fn_id else None
 	current_mod = module_ids.setdefault(module_name, len(module_ids))
 	visible_modules = _visible_modules_for(module_name, module_deps, module_ids)
 	type_checker = TypeChecker(type_table=type_table)
@@ -242,11 +261,12 @@ def _typecheck_named_fn(
 		impl_index=impl_index,
 		trait_index=trait_index,
 		trait_impl_index=trait_impl_index,
-		trait_scope_by_module=trait_scope_by_module,
+		trait_scope_by_file=trait_scope_by_file,
 		linked_world=linked_world,
 		require_env=require_env,
 		visible_modules=visible_modules,
 		current_module=current_mod,
+		current_file=current_file,
 	)
 
 
@@ -304,7 +324,7 @@ pub trait MapOne {
 export { Box, MapOne };
 
 implement<T> MapOne for Box<T> {
-	pub fn map<U>(self: &Box<T>, x: U) -> U { return x; }
+pub fn map<U>(self: &Box<T>, var x: U) -> U { return move x; }
 }
 """,
 		Path("m_main.drift"): """
@@ -1093,21 +1113,28 @@ fn main() nothrow -> Int{
 	modules, type_table, _exc_catalog, module_exports, module_deps, diagnostics = parse_drift_workspace_to_hir(paths)
 	assert diagnostics == []
 	func_hirs, signatures, fn_ids_by_name = flatten_modules(modules)
+	origin_by_fn_id: dict[FunctionId, Path] = {}
+	for mod in modules.values():
+		origin_by_fn_id.update(mod.origin_by_fn_id)
 	registry, module_ids = _build_registry(signatures)
 	impl_index = GlobalImplIndex.from_module_exports(
 		module_exports=module_exports,
 		type_table=type_table,
 		module_ids=module_ids,
 	)
-	trait_scope_by_module: dict[str, list[object]] = {}
-	for mod, exp in module_exports.items():
+	trait_scope_by_file: dict[str, list[object]] = {}
+	for _mod, exp in module_exports.items():
 		if isinstance(exp, dict):
-			scope = exp.get("trait_scope", [])
-			trait_scope_by_module[mod] = list(scope) if isinstance(scope, list) else []
+			scope_by_file = exp.get("trait_scope_by_file", {})
+			if isinstance(scope_by_file, dict):
+				for path, traits in scope_by_file.items():
+					if isinstance(path, str) and isinstance(traits, list):
+						trait_scope_by_file[path] = list(traits)
 	main_ids = fn_ids_by_name.get("m_main::main") or []
 	assert len(main_ids) == 1
 	main_id = main_ids[0]
 	main_block = func_hirs[main_id]
+	current_file = str(origin_by_fn_id.get(main_id)) if main_id in origin_by_fn_id else None
 	visible_modules = _visible_modules_for("m_main", module_deps, module_ids)
 	trait_index = GlobalTraitIndex()
 	trait_index.mark_missing(TraitKey(package_id=None, module="m_traits", name="Show"))
@@ -1122,10 +1149,137 @@ fn main() nothrow -> Int{
 		impl_index=impl_index,
 		trait_index=trait_index,
 		trait_impl_index=trait_impl_index,
-		trait_scope_by_module=trait_scope_by_module,
+		trait_scope_by_file=trait_scope_by_file,
 		linked_world=linked_world,
 		require_env=require_env,
 		visible_modules=visible_modules,
 		current_module=module_ids.setdefault("m_main", len(module_ids)),
+		current_file=current_file,
 	)
 	assert any("missing trait metadata" in d.message for d in result.diagnostics)
+
+
+def test_use_trait_is_file_scoped(tmp_path: Path) -> None:
+	files = {
+		Path("m_box.drift"): """
+module m_box
+
+pub struct Box<T> { value: T }
+
+pub trait Show {
+	fn show(self: Self) -> Int
+}
+
+export { Box, Show };
+
+implement Show for Box<Int> {
+	pub fn show(self: Box<Int>) -> Int { return self.value; }
+}
+""",
+		Path("m_main/with_use.drift"): """
+module m_main
+
+import m_box;
+
+use trait m_box.Show;
+
+fn ok() nothrow -> Int{
+	val b: m_box.Box<Int> = m_box.Box<type Int>(1);
+	return b.show();
+}
+""",
+		Path("m_main/no_use.drift"): """
+module m_main
+
+import m_box;
+
+fn fail() nothrow -> Int{
+	val b: m_box.Box<Int> = m_box.Box<type Int>(1);
+	return b.show();
+}
+""",
+	}
+	ok = _typecheck_named_fn(tmp_path, files, module_name="m_main", fn_name="ok")
+	assert ok.diagnostics == []
+	fail = _typecheck_named_fn(tmp_path, files, module_name="m_main", fn_name="fail")
+	assert any("no matching method 'show'" in d.message for d in fail.diagnostics)
+
+
+def test_use_trait_file_scope_applies_to_captureless_lambda(tmp_path: Path) -> None:
+	files = {
+		Path("m_box/lib.drift"): """
+module m_box
+
+pub struct Point { value: Int }
+
+pub trait Show { fn show(self: Point) -> Int }
+
+export { Point, Show };
+
+implement Show for Point {
+	pub fn show(self: Point) -> Int { return self.value; }
+}
+""",
+		Path("m_main/a.drift"): """
+module m_main
+
+import m_box;
+
+use trait m_box.Show;
+
+fn good() nothrow -> Int {
+	val b: m_box.Point = m_box.Point(value = 1);
+	val f: Fn(m_box.Point) -> Int = |x| -> Int => x.show();
+	return f(b);
+}
+""",
+		Path("m_main/b.drift"): """
+module m_main
+
+import m_box;
+
+fn bad() nothrow -> Int {
+	val b: m_box.Point = m_box.Point(value = 1);
+	val f: Fn(m_box.Point) -> Int = |x| -> Int => x.show();
+	return f(b);
+}
+""",
+	}
+	mod_root = tmp_path / "mods"
+	for rel, content in files.items():
+		_write_file(mod_root / rel, content)
+	paths = sorted(mod_root.rglob("*.drift"))
+	modules, type_table, _exc_catalog, module_exports, module_deps, diagnostics = parse_drift_workspace_to_hir(
+		paths,
+	)
+	assert diagnostics == []
+	func_hirs, signatures, fn_ids_by_name = flatten_modules(modules)
+	origin_by_fn_id: dict[FunctionId, Path] = {}
+	for mod in modules.values():
+		origin_by_fn_id.update(mod.origin_by_fn_id)
+	good_ids = fn_ids_by_name.get("m_main::good") or []
+	bad_ids = fn_ids_by_name.get("m_main::bad") or []
+	assert len(good_ids) == 1
+	assert len(bad_ids) == 1
+	good_id = good_ids[0]
+	bad_id = bad_ids[0]
+	_good_mir, good_checked = compile_stubbed_funcs(
+		func_hirs={good_id: func_hirs[good_id]},
+		signatures=signatures,
+		type_table=type_table,
+		module_exports=module_exports,
+		module_deps=module_deps,
+		origin_by_fn_id=origin_by_fn_id,
+		return_checked=True,
+	)
+	assert all("method 'show'" not in d.message for d in good_checked.diagnostics)
+	_bad_mir, bad_checked = compile_stubbed_funcs(
+		func_hirs={bad_id: func_hirs[bad_id]},
+		signatures=signatures,
+		type_table=type_table,
+		module_exports=module_exports,
+		module_deps=module_deps,
+		origin_by_fn_id=origin_by_fn_id,
+		return_checked=True,
+	)
+	assert any("method 'show'" in d.message for d in bad_checked.diagnostics)

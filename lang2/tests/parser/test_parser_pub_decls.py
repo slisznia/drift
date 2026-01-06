@@ -17,7 +17,7 @@ pub const ANSWER: Int = 1;
 pub struct S { }
 pub exception Boom()
 pub variant Opt<T> { Some(value: T), None }
-pub trait Debuggable { fn fmt(self: Int) -> Int }
+pub trait Debug { fn fmt(self: Int) -> Int }
 
 pub implement S {
 	pub fn tag(self: S) -> Int { return 0; }

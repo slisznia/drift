@@ -272,6 +272,10 @@ def encode_trait_expr(
 		return None
 	if isinstance(expr, parser_ast.TraitIs):
 		subject = expr.subject
+		if isinstance(subject, parser_ast.SelfRef):
+			subject = "Self"
+		if isinstance(subject, parser_ast.TypeNameRef):
+			subject = subject.name
 		if isinstance(subject, TypeParamId) and type_param_names is not None:
 			idx = int(subject.index)
 			if 0 <= idx < len(type_param_names):
@@ -468,6 +472,7 @@ def encode_signatures(signatures: Mapping[str, FnSignature], *, module_id: str) 
 				else None
 			),
 			"param_names": list(sig.param_names or []),
+			"param_mutable": list(sig.param_mutable or []),
 			"param_type_ids": list(sig.param_type_ids or []) if sig.param_type_ids is not None else None,
 			"return_type_id": sig.return_type_id,
 			"declared_can_throw": sig.declared_can_throw,
@@ -557,12 +562,21 @@ def _canonical_trait_expr(
 ) -> dict[str, Any] | None:
 	if expr is None:
 		return None
+	def _subject_name(subject: object) -> str | None:
+		if isinstance(subject, parser_ast.SelfRef):
+			return "Self"
+		if isinstance(subject, parser_ast.TypeNameRef):
+			return subject.name
+		if isinstance(subject, str):
+			return subject
+		return None
 	if isinstance(expr, parser_ast.TraitIs):
 		subject = expr.subject
-		if subject == "Self":
+		subj_name = _subject_name(subject)
+		if subj_name == "Self":
 			subj_obj = {"var": {"scope": "trait_self", "index": 0}}
-		elif subject in param_type_map:
-			subj_obj = {"var": param_type_map[subject]}
+		elif subj_name is not None and subj_name in param_type_map:
+			subj_obj = {"var": param_type_map[subj_name]}
 		elif isinstance(subject, TypeParamId) and subject in param_type_map:
 			subj_obj = {"var": param_type_map[subject]}
 		else:

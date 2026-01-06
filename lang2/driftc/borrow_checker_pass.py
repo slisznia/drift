@@ -7,7 +7,7 @@ Borrow-check pass (Phase 1/2): track moves per Place and loans.
 Scope:
 - Operates as a forward dataflow over a CFG derived from HIR.
 - Tracks place states (UNINIT/VALID/MOVED) and flags use-after-move.
-- Handles implicit moves for non-Copy values used by value.
+- Handles explicit moves only; non-Copy value uses require `move`.
 - Adds explicit borrow handling (& / &mut) with shared-vs-mut conflicts.
 - Loan lifetimes: function-wide for most forms, block-liveness regions for
   explicit HLet+HBorrow (NLL-lite: until last use within scope), and
@@ -32,6 +32,7 @@ from lang2.driftc.borrow_checker import (
 	FieldProj,
 	IndexProj,
 	IndexKind,
+	DerefProj,
 	merge_place_state,
 	place_from_expr,
 	places_overlap,
@@ -116,7 +117,7 @@ class BorrowChecker:
 		hv.name if hasattr(hv, "name") else str(hv),
 	)
 	diagnostics: List[Diagnostic] = field(default_factory=list)
-	enable_auto_borrow: bool = False
+	enable_auto_borrow: bool = True
 	_current_block_id: Optional[int] = field(init=False, default=None, repr=False)
 	_ref_witness_in: Optional[Dict[int, Dict[int, Span]]] = field(init=False, default=None, repr=False)
 	_ref_live_after_stmt: Optional[Dict[int, List[Set[int]]]] = field(init=False, default=None, repr=False)
@@ -256,7 +257,7 @@ class BorrowChecker:
 		type_table: TypeTable,
 		*,
 		signatures_by_id: Optional[Mapping[FunctionId, FnSignature]] = None,
-		enable_auto_borrow: bool = False,
+		enable_auto_borrow: bool = True,
 	) -> "BorrowChecker":
 		"""
 		Build a BorrowChecker from a TypedFn (binding-aware).
@@ -285,7 +286,9 @@ class BorrowChecker:
 			if bid is None and hasattr(typed_fn, "binding_for_var"):
 				bid = typed_fn.binding_for_var.get(hv.node_id)
 			local_id = bid if isinstance(bid, int) else -1
-			if binding_place_kind is not None and local_id in binding_place_kind:
+			if bid is None:
+				kind = PlaceKind.GLOBAL
+			elif binding_place_kind is not None and local_id in binding_place_kind:
 				kind = binding_place_kind[local_id]
 			else:
 				kind = PlaceKind.PARAM if local_id in param_ids else PlaceKind.LOCAL
@@ -307,9 +310,7 @@ class BorrowChecker:
 		"""Return True if the type is Copy per the core type table."""
 		if ty is None:
 			return False
-		td = self.type_table.get(ty)
-		# Conservatively treat scalars and references as Copy; everything else (incl. Unknown) is move-only.
-		return td.kind in (TypeKind.SCALAR, TypeKind.REF)
+		return bool(self.type_table.is_copy(ty))
 
 	def _is_ref_binding_id(self, binding_id: Optional[int]) -> bool:
 		if binding_id is None or self.binding_types is None:
@@ -326,6 +327,8 @@ class BorrowChecker:
 		This keeps move/borrow checks usable before we implement full per-subplace
 		state propagation.
 		"""
+		if place.base.kind is PlaceKind.GLOBAL:
+			return PlaceState.VALID
 		if place in state.place_states:
 			return state.place_states[place]
 		# Prefix fallback: treat unknown subplace state as the base place state.
@@ -375,15 +378,27 @@ class BorrowChecker:
 		if curr is PlaceState.MOVED:
 			self._diagnostic(f"use after move of '{place.base.name}'", span)
 			return
+		if curr is PlaceState.UNINIT:
+			self._diagnostic(f"use of uninitialized '{place.base.name}'", span)
+			return
+		overlap_loan = None
+		mut_loan = None
+		for loan in state.loans:
+			if not self._places_overlap(place, loan.place):
+				continue
+			overlap_loan = loan
+			if loan.kind is LoanKind.MUT:
+				mut_loan = loan
+				break
+		if mut_loan is not None:
+			self._diagnostic(f"cannot read '{place.base.name}' while it is mutably borrowed", span)
+			self._emit_loan_notes(mut_loan, self._current_block_id)
+			return
 		ty = self.fn_types.get(place.base)
 		if self._is_copy(ty):
 			return
-		for loan in state.loans:
-			if self._places_overlap(place, loan.place):
-				self._diagnostic(f"cannot move '{place.base.name}' while borrowed", span)
-				self._emit_loan_notes(loan, self._current_block_id)
-				return
-		self._set_state(state, place, PlaceState.MOVED)
+		# Non-Copy value uses do not implicitly move in MVP; explicit `move` is required.
+		return
 
 	def _force_move_place_use(self, state: _FlowState, place: Place, span: Span | None = None) -> None:
 		"""
@@ -406,17 +421,11 @@ class BorrowChecker:
 				self._diagnostic(f"cannot move '{place.base.name}' while borrowed", span)
 				self._emit_loan_notes(loan, self._current_block_id)
 				return
-		# Backstop: `move` is only allowed from owned mutable bindings. Parameters
-		# are treated as immutable, and reference-typed bindings are non-owning.
 		if self.binding_mutable is not None:
 			mut = self.binding_mutable.get(place.base.local_id, False)
 			if not mut:
 				self._diagnostic(f"cannot move from immutable binding '{place.base.name}'", span)
 				return
-		ty = self.fn_types.get(place.base)
-		if ty is not None and self.type_table.get(ty).kind is TypeKind.REF:
-			self._diagnostic(f"cannot move from reference '{place.base.name}'", span)
-			return
 		self._set_state(state, place, PlaceState.MOVED)
 
 	def _places_overlap(self, a: Place, b: Place) -> bool:
@@ -543,7 +552,7 @@ class BorrowChecker:
 		temporary borrow lifetimes (coarse NLL approximation).
 		"""
 		before = set(state.loans)
-		self._visit_expr(state, expr, as_value=True)
+		self._visit_expr(state, expr, as_value=True, escapes=False)
 		new_loans = state.loans - before
 		state.loans -= new_loans
 
@@ -565,6 +574,25 @@ class BorrowChecker:
 		if curr is PlaceState.MOVED or curr is PlaceState.UNINIT:
 			self._diagnostic(f"cannot borrow from moved or uninitialized '{place.base.name}'", span)
 			return
+		if kind is LoanKind.MUT and self.binding_mutable is not None:
+			has_deref = any(isinstance(p, DerefProj) for p in place.projections)
+			if not has_deref:
+				mut = self.binding_mutable.get(place.base.local_id, False)
+				if not mut:
+					self._diagnostic(f"cannot take mutable borrow of immutable binding '{place.base.name}'", span)
+					return
+			else:
+				base_ty = None
+				if self.binding_types is not None:
+					base_ty = self.binding_types.get(place.base.local_id)
+				if base_ty is not None:
+					base_def = self.type_table.get(base_ty)
+					if base_def.kind is TypeKind.REF and not base_def.ref_mut:
+						self._diagnostic(
+							f"cannot take mutable borrow through shared reference '{place.base.name}'",
+							span,
+						)
+						return
 		for loan in state.loans:
 			if not self._places_overlap(place, loan.place):
 				continue
@@ -884,11 +912,15 @@ class BorrowChecker:
 				_walk(node.fn)
 				for a in node.args:
 					_walk(a)
+				for kw in node.kwargs:
+					_walk(kw.value)
 				return
 			if isinstance(node, H.HMethodCall):
 				_walk(node.receiver)
 				for a in node.args:
 					_walk(a)
+				for kw in node.kwargs:
+					_walk(kw.value)
 				return
 			if isinstance(node, H.HBinary):
 				_walk(node.left)
@@ -965,11 +997,15 @@ class BorrowChecker:
 			self._collect_ref_uses_in_expr(expr.fn, bid, ref_uses, ref_use_spans)
 			for a in expr.args:
 				self._collect_ref_uses_in_expr(a, bid, ref_uses, ref_use_spans)
+			for kw in expr.kwargs:
+				self._collect_ref_uses_in_expr(kw.value, bid, ref_uses, ref_use_spans)
 			return
 		if isinstance(expr, H.HMethodCall):
 			self._collect_ref_uses_in_expr(expr.receiver, bid, ref_uses, ref_use_spans)
 			for a in expr.args:
 				self._collect_ref_uses_in_expr(a, bid, ref_uses, ref_use_spans)
+			for kw in expr.kwargs:
+				self._collect_ref_uses_in_expr(kw.value, bid, ref_uses, ref_use_spans)
 			return
 		if isinstance(expr, H.HBinary):
 			self._collect_ref_uses_in_expr(expr.left, bid, ref_uses, ref_use_spans)
@@ -1021,7 +1057,14 @@ class BorrowChecker:
 					q.append(p)
 		return seen
 
-	def _visit_expr(self, state: _FlowState, expr: H.HExpr, *, as_value: bool = True) -> None:
+	def _visit_expr(
+		self,
+		state: _FlowState,
+		expr: H.HExpr,
+		*,
+		as_value: bool = True,
+		escapes: bool = True,
+	) -> None:
 		"""
 		Traverse expressions and consume moves for lvalues in value position.
 
@@ -1048,13 +1091,25 @@ class BorrowChecker:
 				state,
 				place,
 				LoanKind.MUT if expr.is_mut else LoanKind.SHARED,
+				temporary=not escapes,
 				span=getattr(expr, "loc", Span()),
 			)
+			return
+		if hasattr(H, "HCopy") and isinstance(expr, getattr(H, "HCopy")):
+			place = place_from_expr(expr.subject, base_lookup=self.base_lookup)
+			if place is None:
+				self._diagnostic("copy operand must be an addressable place in MVP (local/param/field/index)", getattr(expr, "loc", Span()))
+				return
+			ty = self.fn_types.get(place.base)
+			if not self._is_copy(ty):
+				self._diagnostic(f"cannot copy '{place.base.name}': type is not Copy", getattr(expr, "loc", Span()))
+				return
+			self._visit_expr(state, expr.subject, as_value=True, escapes=False)
 			return
 		if hasattr(H, "HMove") and isinstance(expr, getattr(H, "HMove")):
 			if not as_value:
 				# `move <place>` is always a value-producing expression.
-				self._visit_expr(state, expr.subject, as_value=True)
+				self._visit_expr(state, expr.subject, as_value=True, escapes=False)
 				return
 			place = place_from_expr(expr.subject, base_lookup=self.base_lookup)
 			if place is None:
@@ -1068,9 +1123,9 @@ class BorrowChecker:
 				pre_loans = set(state.loans)
 				self._add_lambda_capture_loans(state, expr.fn)
 				for arg in expr.args:
-					self._visit_expr(state, arg, as_value=True)
+					self._visit_expr(state, arg, as_value=True, escapes=False)
 				for kw in expr.kwargs:
-					self._visit_expr(state, kw.value, as_value=True)
+					self._visit_expr(state, kw.value, as_value=True, escapes=False)
 				# Call executes here; keep capture loans live for the duration of the call.
 				new_loans = state.loans - pre_loans
 				state.loans -= {ln for ln in new_loans if ln.temporary}
@@ -1111,14 +1166,26 @@ class BorrowChecker:
 					raise AssertionError("replace argument 0 must be an addressable place (checker bug)")
 				# replace reads the old value (use-after-move) and writes the new.
 				self._consume_place_use(state, place, getattr(place_expr, "loc", Span()))
-				self._visit_expr(state, new_expr, as_value=True)
+				self._visit_expr(state, new_expr, as_value=True, escapes=False)
 				if not self._reject_write_while_borrowed(state, place, getattr(place_expr, "loc", Span())):
 					return
 				self._set_state(state, place, PlaceState.VALID)
 				return
 
 			pre_loans = set(state.loans)
-			self._visit_expr(state, expr.fn, as_value=True)
+			resolution = self.call_resolutions.get(expr.node_id) if self.call_resolutions is not None else None
+			call_info = None
+			if self.call_info_by_callsite_id is not None:
+				csid = getattr(expr, "callsite_id", None)
+				if isinstance(csid, int):
+					call_info = self.call_info_by_callsite_id.get(csid)
+			callee_is_value = True
+			if isinstance(expr.fn, H.HVar) and getattr(expr.fn, "binding_id", None) is None:
+				callee_is_value = False
+			if hasattr(H, "HQualifiedMember") and isinstance(expr.fn, getattr(H, "HQualifiedMember")):
+				callee_is_value = False
+			if callee_is_value:
+				self._visit_expr(state, expr.fn, as_value=True, escapes=False)
 			sig = self._resolve_sig_for_call(expr)
 			if sig and sig.param_nonretaining:
 				for idx, arg in enumerate(expr.args):
@@ -1137,7 +1204,6 @@ class BorrowChecker:
 						continue
 					if isinstance(kw.value, H.HLambda):
 						self._add_lambda_capture_loans(state, kw.value)
-			resolution = self.call_resolutions.get(expr.node_id) if self.call_resolutions is not None else None
 			param_types = None
 			if isinstance(resolution, CallableDecl):
 				param_types = list(resolution.signature.param_types)
@@ -1165,7 +1231,31 @@ class BorrowChecker:
 							span=getattr(arg, "loc", Span()),
 						)
 						continue
-				self._visit_expr(state, arg, as_value=True)
+				self._visit_expr(state, arg, as_value=True, escapes=False)
+			for kw in expr.kwargs:
+				kind_for_kw: Optional[LoanKind] = None
+				kw_index = self._param_index_for_call(sig, kw_name=kw.name) if sig is not None else None
+				if param_types and kw_index is not None and kw_index < len(param_types):
+					pty = param_types[kw_index]
+					if pty is not None:
+						td = self.type_table.get(pty)
+						if td.kind is TypeKind.REF:
+							if td.ref_mut is True:
+								kind_for_kw = LoanKind.MUT
+							elif td.ref_mut is False:
+								kind_for_kw = LoanKind.SHARED
+				if kind_for_kw is not None:
+					place = place_from_expr(kw.value, base_lookup=self.base_lookup)
+					if place is not None:
+						self._borrow_place(
+							state,
+							place,
+							kind_for_kw,
+							temporary=True,
+							span=getattr(kw.value, "loc", Span()),
+						)
+						continue
+				self._visit_expr(state, kw.value, as_value=True, escapes=False)
 			if param_types is not None:
 				new_loans = state.loans - pre_loans
 				state.loans -= {ln for ln in new_loans if ln.temporary}
@@ -1223,9 +1313,9 @@ class BorrowChecker:
 								span=getattr(expr.receiver, "loc", Span()),
 							)
 					else:
-						self._visit_expr(state, expr.receiver, as_value=True)
+						self._visit_expr(state, expr.receiver, as_value=True, escapes=False)
 				else:
-					self._visit_expr(state, expr.receiver, as_value=True)
+					self._visit_expr(state, expr.receiver, as_value=True, escapes=False)
 
 				for idx, arg in enumerate(expr.args):
 					kind_for_arg = None
@@ -1250,37 +1340,63 @@ class BorrowChecker:
 								span=getattr(arg, "loc", Span()),
 							)
 							continue
-					self._visit_expr(state, arg, as_value=True)
+					self._visit_expr(state, arg, as_value=True, escapes=False)
+				for kw in expr.kwargs:
+					kind_for_kw: Optional[LoanKind] = None
+					kw_index = self._param_index_for_call(sig, kw_name=kw.name) if sig is not None else None
+					if param_types and kw_index is not None and kw_index < len(param_types):
+						pty = param_types[kw_index]
+						if pty is not None:
+							td = self.type_table.get(pty)
+							if td.kind is TypeKind.REF:
+								if td.ref_mut is True:
+									kind_for_kw = LoanKind.MUT
+								elif td.ref_mut is False:
+									kind_for_kw = LoanKind.SHARED
+					if kind_for_kw is not None:
+						place = place_from_expr(kw.value, base_lookup=self.base_lookup)
+						if place is not None:
+							self._borrow_place(
+								state,
+								place,
+								kind_for_kw,
+								temporary=True,
+								span=getattr(kw.value, "loc", Span()),
+							)
+							continue
+					self._visit_expr(state, kw.value, as_value=True, escapes=False)
 				new_loans = state.loans - pre_loans
 				state.loans -= {ln for ln in new_loans if ln.temporary}
 				return
 			# No signature-driven info; fall back to value evaluation only (no heuristic auto-borrow).
-			self._visit_expr(state, expr.receiver, as_value=True)
+			self._visit_expr(state, expr.receiver, as_value=True, escapes=False)
 			for arg in expr.args:
-				self._visit_expr(state, arg, as_value=True)
+				self._visit_expr(state, arg, as_value=True, escapes=False)
+			for kw in expr.kwargs:
+				self._visit_expr(state, kw.value, as_value=True, escapes=False)
 			return
 		if isinstance(expr, H.HBinary):
-			self._visit_expr(state, expr.left, as_value=True)
-			self._visit_expr(state, expr.right, as_value=True)
+			self._visit_expr(state, expr.left, as_value=True, escapes=False)
+			self._visit_expr(state, expr.right, as_value=True, escapes=False)
 			return
 		if isinstance(expr, H.HUnary):
-			self._visit_expr(state, expr.expr, as_value=True)
+			self._visit_expr(state, expr.expr, as_value=True, escapes=False)
 			return
 		if isinstance(expr, H.HTernary):
-			self._visit_expr(state, expr.cond, as_value=True)
-			self._visit_expr(state, expr.then_expr, as_value=True)
-			self._visit_expr(state, expr.else_expr, as_value=True)
+			self._visit_expr(state, expr.cond, as_value=True, escapes=False)
+			self._visit_expr(state, expr.then_expr, as_value=True, escapes=False)
+			self._visit_expr(state, expr.else_expr, as_value=True, escapes=False)
 			return
 		if isinstance(expr, H.HResultOk):
-			self._visit_expr(state, expr.value, as_value=True)
+			self._visit_expr(state, expr.value, as_value=True, escapes=False)
 			return
 		if isinstance(expr, H.HArrayLiteral):
 			for el in expr.elements:
-				self._visit_expr(state, el, as_value=True)
+				self._visit_expr(state, el, as_value=True, escapes=False)
 			return
 		if isinstance(expr, H.HDVInit):
 			for a in expr.args:
-				self._visit_expr(state, a, as_value=True)
+				self._visit_expr(state, a, as_value=True, escapes=False)
 			return
 		# Literals and other rvalues need no action.
 
@@ -1311,7 +1427,7 @@ class BorrowChecker:
 								ref_binding_id=getattr(stmt, "binding_id", None),
 							)
 					else:
-						self._visit_expr(state, stmt.value, as_value=True)
+						self._visit_expr(state, stmt.value, as_value=True, escapes=False)
 					if getattr(stmt, "binding_id", None) is not None:
 						base = PlaceBase(PlaceKind.LOCAL, stmt.binding_id, stmt.name)
 					else:
@@ -1352,7 +1468,7 @@ class BorrowChecker:
 									self._set_state(state, tgt_place, PlaceState.VALID)
 								self._drop_dead_ref_bound_loans_after_stmt(state, block.id, stmt_i)
 								continue
-					self._visit_expr(state, stmt.value, as_value=True)
+					self._visit_expr(state, stmt.value, as_value=True, escapes=False)
 					if tgt_place is not None:
 						# MVP rule: do not silently "drop" active borrows on assignment.
 						# Instead, reject the write while any *live* loan overlaps the target.
@@ -1377,7 +1493,7 @@ class BorrowChecker:
 					#
 					# Read: use-after-move checks apply because `x += y` must read the old `x`.
 					# Write: freeze-while-borrowed applies because it mutates the place.
-					self._visit_expr(state, stmt.value, as_value=True)
+					self._visit_expr(state, stmt.value, as_value=True, escapes=False)
 					tgt = place_from_expr(stmt.target, base_lookup=self.base_lookup)
 					tgt_span = getattr(stmt, "loc", getattr(stmt.target, "loc", Span()))
 					if tgt is None:
@@ -1426,6 +1542,12 @@ class BorrowChecker:
 			self._ref_no_use_ids = None
 		self._block_facts_in = self._build_block_facts(blocks)
 		in_states: Dict[int, _FlowState] = {b.id: _FlowState() for b in blocks}
+		# Parameters are initialized at function entry.
+		entry_state = in_states.get(entry_id)
+		if entry_state is not None and self.fn_types:
+			for base in self.fn_types.keys():
+				if base.kind is PlaceKind.PARAM:
+					entry_state.place_states[Place(base)] = PlaceState.VALID
 		worklist = [entry_id]
 		while worklist:
 			bid = worklist.pop()

@@ -29,7 +29,7 @@ High-level code stays high-level by default. Low-level control appears only when
 
 ### 1.3. Move semantics everywhere
 
-Passing a value by value moves it—no deep copies unless you opt in. Moves are cheap; cloning is explicit.
+Passing by value consumes unless the type is `Copy` (in which case the compiler may duplicate implicitly). Moves are cheap; duplication is explicit.
 
 ### 1.4. Zero-cost abstractions
 
@@ -155,7 +155,9 @@ All modules compile down to a canonical Drift Module IR (DMIR) that can be crypt
 | Volatile access | `Volatile<T>` | Explicit MMIO load/store operations |
 | **Blocks & scopes** | `{ ... }` | Define scope boundaries for RAII and deterministic lifetimes |
 
-`val`/`var` bindings may omit the type annotation when the right-hand expression makes the type unambiguous. For example, `val greeting = "hello"` infers `String`, while `val nums = [1, 2, 3]` infers `Array<Int64>`. Add an explicit `: Type` when inference fails or when you want to document the intent.
+`val`/`var` bindings may omit the type annotation when the right-hand expression makes the type unambiguous. For example, `val greeting = "hello"` infers `String`, while `val nums = [1, 2, 3]` infers `Array<Int>`. Add an explicit `: Type` when inference fails or when you want to document the intent.
+
+Function parameters are `val` by default (not movable). Use `var` to opt into owned, movable parameters: `fn id(var x: File) -> File { return move x; }`.
 
 **Statement terminators:** Simple statements end with `;`. Compound statements that carry a block (`if`/`while`/`for`/`try`/`match`) are self-terminating. Newlines are whitespace only. In a normal block, a bare expression must appear as an expression statement and end with `;`. In a value-producing block (e.g., lambda bodies, match arms, try/catch expression arms), the final expression must **not** end with `;`.
 
@@ -167,14 +169,16 @@ All modules compile down to a canonical Drift Module IR (DMIR) that can be crypt
 | `Int`   | Signed two’s-complement integer of the platform’s natural word size. Guaranteed to be at least 32 bits. |
 | `Uint`  | Unsigned integer of the platform’s natural word size. Same bit-width as `Int`. |
 | `Size`  | (Reserved for future revisions) Natural-width unsigned; not used for collection lengths/indices in v1. |
-| `Float` | IEEE-754 binary floating type used as the default floating-point scalar. Guaranteed to be at least 32 bits. Implementations must document whether `Float` is `F32` or `F64` on a given target. |
+| `Float` | IEEE-754 binary floating type used as the default floating-point scalar. In v1, `Float` is fixed to `F64` to keep the ABI stable across targets. |
 | `Int8`, `Int16`, `Int32`, `Int64` | Fixed-width signed integers, exactly 8/16/32/64-bit two’s-complement. |
 | `Uint8`, `Uint16`, `Uint32`, `Uint64` | Fixed-width unsigned integers, exactly 8/16/32/64-bit. |
 | `F32`, `F64` | IEEE-754 binary32 and binary64 floating-point types. |
-| `Byte` | Unsigned 8-bit value (`Uint8` under the hood); used for byte buffers and FFI. |
-| `String` | UTF-8 immutable rope. |
+| `Byte` | Unsigned 8-bit value (v1 surface scalar; `Uint8` is reserved); used for byte buffers and FFI. |
+| `String` | Immutable UTF-8 string (shared backing). |
 
 `Byte` gives Drift APIs a canonical scalar for binary data. Use `Array<Byte>` (or the dedicated buffer types described in Chapters 6–7) when passing contiguous byte ranges.
+
+`Byte` is a v1 surface type even though other fixed-width scalars are reserved; `Uint8` remains reserved outside `lang.abi.*`.
 
 #### 3.1.2. String semantics (v1)
 
@@ -183,26 +187,25 @@ All modules compile down to a canonical Drift Module IR (DMIR) that can be crypt
   - Equality (`==`) is bytewise; no normalization or case folding.
 - Empty strings: `""` or `String.EMPTY`; `is_empty(s: String) -> Bool` checks `byte_length(s) == 0`.
 - Concatenation uses `+` and produces a new `String`.
-- `Array<String>` is supported; each element is a `%DriftString` header `{%drift.size, i8*}` at the ABI.
+- `Array<String>` is supported; each element is a `%DriftString` header `{%drift.usize, i8*}` at the ABI.
 
 #### 3.1.1. Integer and float semantics
 
 Drift distinguishes between **natural-width** numeric primitives and **fixed-width** primitives.
 
-- Natural-width primitives (`Int`, `Uint`, `Size`, `Float`) map to the platform’s efficient scalars:
-  - `Int` / `Uint` are at least 32 bits and typically match the native register size.
+- **v1 uses pointer-sized carriers** for `Int`/`Uint` (isize/usize). This avoids wasting space on 32-bit targets, keeps index/length arithmetic efficient, and aligns with the runtime/ABI for array bounds checks and container sizes.
 - `Size` is reserved for future revisions and **not** used for collection lengths/indices in v1. Collections use `Uint` for lengths/capacities and `Int` for indices (see chapter 12).
-  - `Float` is either `F32` or `F64`; implementations document the choice per target.
-- Fixed-width primitives (`Int8`…`Int64`, `Uint8`…`Uint64`, `F32`, `F64`) have exact widths and are used for binary/wire/FFI with explicit sizes.
+  - `Float` is fixed to `F64` in v1 (stable ABI); `F32` is available as an explicit narrow type.
+- Fixed-width primitives (`Int8`…`Int64`, `Uint8`…`Uint64`, `F32`, `F64`) are **reserved in v1**. They are used only in ABI/FFI modules and internal compiler/runtime types (e.g., `ErrorCode = Uint64`); user code should use `Int`/`Uint`/`Float`.
 
 Overflow:
 - Fixed-width integers use modular two’s-complement wraparound.
 - Natural-width integers: debug builds should trap on overflow; release builds may wrap unless the implementation guarantees trapping. Checked helpers (`checked_add`, etc.) may exist in stdlib.
 
 Conversions:
-- Widening non-overflowing conversions (e.g., `Int32`→`Int64`, `Uint32`→`Uint64`) may be implicit.
-- Narrowing or sign-changing conversions must be explicit and may fail at runtime if out of range.
-- `Size` ↔ other ints follow the same rules: `Size`→`Uint` is lossless; `Uint`→`Size` is lossless only if widths allow; `Int`→`Size` is explicit and requires non-negative values.
+- `Int`/`Uint`/`Float` conversions follow the usual widening/narrowing rules; narrowing or sign-changing conversions must be explicit and may fail at runtime if out of range.
+- Fixed-width conversions are reserved until the fixed-width primitives are enabled.
+- `Size` ↔ other ints follow the same rules when `Size` is introduced (reserved in v1). For v1, use `Uint` in place of `Size`.
 - Floating conversions follow IEEE-754 rules; narrowing (`F64`→`F32`) must be explicit.
 
 ### 3.2. Comments
@@ -222,9 +225,9 @@ Block comments may span multiple lines but do not nest. Comments are ignored by 
 
 ### 3.3. `lang.core` prelude (auto-imported)
 
-The module `lang.core` is implicitly imported into every Drift module. Its public
-functions are always in scope without an explicit `import`. This prelude
-currently exposes:
+The `lang.core` prelude injects a **curated list of names** into every Drift
+module. It does **not** bind the `lang.core` module itself, nor does it bring
+all public symbols into scope. The prelude currently exposes:
 
 ```drift
 module lang.core
@@ -251,8 +254,8 @@ Notes:
   the call traps. Other write failures are implementation-defined (abort or
   silent failure).
 - They perform no formatting beyond what you compose yourself.
-- The compiler flag `--no-prelude` disables the implicit import; users must
-  explicitly import or qualify `lang.core` symbols. `--prelude` re-enables it.
+- The compiler flag `--no-prelude` disables these injected names; users must
+  explicitly import or qualify `lang.core` symbols. `--prelude` re-enables them.
 
 Memory utilities live in `std.mem` and are **not** auto-imported. In particular:
 
@@ -272,11 +275,11 @@ println("hello, world");
 
 ```drift
 struct Point {
-    x: Int64,
-    y: Int64
+    x: Int,
+    y: Int
 }
 
-struct Point(x: Int64, y: Int64)  // header form; identical type
+struct Point(x: Int, y: Int)  // header form; identical type
 ```
 
 The tuple-style header desugars to the block form. Field names remain available for dot access while the constructor supports positional and named invocation. The resulting type follows standard Drift value semantics: fields determine copy- vs move-behavior, and ownership transfer still uses `move foo` as usual.
@@ -407,7 +410,7 @@ If `name` resolves to a member of `self`, the compiler desugars it based on cont
 - **Place (lvalue) context**: `name` behaves as the *addressable place* corresponding to the same member access, and is valid in:
   - assignment targets (`name = ...`, `name += ...`),
   - borrow subjects (`&name`, `&mut name`),
-  - move subjects (`move name`),
+  - move subjects (`move name`, MVP: locals/params only; member moves not supported yet),
   subject to the normal rules for addressability and writability.
 
 - **Call context**: `name(args...)` resolves as a method call on `self` (equivalent to `self.name(args...)`), after applying the normal receiver selection rules in §3.8.
@@ -457,11 +460,13 @@ Tooling/packaging note:
 
 `move x` transfers ownership of `x` without copying. After a move, `x` becomes invalid. Equivalent intent to `std::move(x)` in C++ but lighter and explicit.
 
+MVP restriction: `move` operands must be addressable local/parameter bindings. Moving out of projections (`move x.y`, `move a[i]`) is not supported yet.
+
 ### 4.1. Core rules
 | Aspect | Description |
 |---------|-------------|
 | **Move target** | Must be an owned (`var`) value. |
-| **Copyable types** | `x` copies; `move x` moves. |
+| **Copy types** | `x` copies; `move x` moves. |
 | **Non-copyable types** | Must use `move x`; plain `x` is a compile error. |
 | **Immutable (`val`)** | Cannot move from immutable bindings. |
 | **Borrowed (`&`, `&mut`)** | Cannot move from non-owning references. |
@@ -493,40 +498,44 @@ This design keeps ownership explicit: you opt *out* of move-only semantics only 
 
 ### 4.3. Opting into copying
 
-Types that want implicit copies implement the `Copy` trait (see Chapter 5 for the trait definition). The trait is only available when **every field is copyable**. Primitives already implement it; your structs may do the same:
+`Copy` is a compiler-known marker in MVP (no user-written `implement Copy for T`). It lives in `lang.core` and is **not** auto-preluded; use a qualified trait name (`lang.core.Copy`) or import the module when writing trait requirements. A type is `Copy` when the compiler may duplicate it implicitly at duplication points; this must be **O(1) and non-allocating**:
+
+- primitives, references, and function pointers are `Copy`,
+- tuples are `Copy` iff all elements are `Copy`,
+- structs are `Copy` iff all fields are `Copy`,
+- variants are `Copy` iff all fields of all constructors are `Copy`,
+- `Optional<T>` is `Copy` iff `T` is `Copy`.
+
+These are never `Copy` in MVP: `Array<T>`, `FnResult<_, _>`, `Error`, `DiagnosticValue`, and unresolved type parameters (they must be proven `Copy` by a `require`).
 
 ```drift
-implement Copy for Int {}
-implement Copy for Bool {}
-
 struct Job { id: Int }
-implement Copy for Job {}
 
 var a = Job(id = 1);
-var b = a; // ✅ copies `a` by calling `copy`
+var b = a; // ✅ copies `a` because Job is structurally Copy
+```
 
 ### 4.4. Explicit copy expression
 
-Use the `copy <expr>` expression to force a duplicate of a `Copy` value. It fails at compile time if the operand is not `Copy`. This works anywhere an expression is allowed (call arguments, closure captures, `val`/`var` bindings) and leaves the original binding usable. Default by-value passing still **moves** non-`Copy` values; `copy` is how you make the intent to duplicate explicit.
-```
+Use the `copy <expr>` expression to force a duplicate of a `Copy` value. It fails at compile time if the operand is not `Copy`. In MVP, the operand must be an **lvalue/place** (local/param/field/index). This works anywhere an expression is allowed (call arguments, closure captures, `val`/`var` bindings) and leaves the original binding usable. By-value passing does **not** implicitly move non-`Copy` values; passing a non-`Copy` value by-value requires an explicit `move`. `copy` is how you make the intent to duplicate explicit.
 
 Copying still respects ownership rules: `self: &T` indicates the value is borrowed for the duration of the copy, after which both the original and the newly returned value remain valid.
 
-### 4.5. Explicit deep copies (`clone`-style)
+### 4.5. Explicit deep copies (`dup`-style)
 
-If a move-only type wants to offer a deliberate, potentially expensive duplicate, it can expose an explicit method (e.g., `clone`). Assignment still will not copy—callers must opt in:
+If a move-only type wants to offer a deliberate, potentially expensive duplicate, it can expose an explicit method (e.g., `dup`). Assignment still will not copy—callers must opt in:
 
 ```drift
 struct Buffer { data: ByteBuffer }   // move-only
 
 implement Buffer {
-    fn clone(self: &Buffer) -> Buffer {
+    fn dup(self: &Buffer) -> Buffer {
         return Buffer(data = self.data.copy());
     }
 }
 
 var b1 = Buffer(...);
-var b2 = b1.clone(); // ✅ explicit deep copy
+var b2 = b1.dup(); // ✅ explicit deep copy
 var b3 = b1; // ❌ still not allowed; Buffer is not `Copy`
 ```
 
@@ -654,7 +663,7 @@ Traits in Drift describe **capabilities** a type *is capable of*.
 They are compile-time contracts, not inheritance hierarchies and not runtime polymorphism.
 
 Traits provide:
-- **Adjective-like descriptions** of capabilities (“Clonable”, “Destructible”, “Debuggable”).
+- **Adjective-like descriptions** of capabilities (“Dup”, “Destructible”, “Debug”).
 - **Static dispatch** — no vtables, zero runtime cost.
 - **Package-scoped implementations** — an impl is legal only if the trait or the receiver type head is defined in the current package.
 - **Type completeness checks** — types may *require* certain traits to exist.
@@ -675,11 +684,11 @@ Traits unify:
 A trait defines a set of functions that a type must provide to be considered capable of that trait.
 
 ```drift
-trait Clonable {
-    fn clone(self) -> Self
+trait Dup {
+    fn dup(self: &Self) -> Self
 }
 
-trait Debuggable {
+trait Debug {
     fn fmt(self) -> String
 }
 
@@ -703,9 +712,9 @@ Rules:
 An implementation attaches the capability to a type.
 
 ```drift
-struct Point { x: Int64, y: Int64 }
+struct Point { x: Int, y: Int }
 
-implement Debuggable for Point {
+implement Debug for Point {
     fn fmt(self) -> String {
         return "(" + self.x.to_string() + ", " + self.y.to_string() + ")";
     }
@@ -723,8 +732,8 @@ Rules:
 ```drift
 struct Box<T> { value: T }
 
-implement Debuggable for Box<T>
-    require T is Debuggable
+implement Debug for Box<T>
+    require T is Debug
 {
     fn fmt(self) -> String {
         return self.value.fmt();
@@ -732,7 +741,7 @@ implement Debuggable for Box<T>
 }
 ```
 
-- The `require` clause limits this implementation to types where `T is Debuggable`.
+- The `require` clause limits this implementation to types where `T is Debug`.
 - If the requirement does not hold, the implementation is ignored for that specialization.
 
 ---
@@ -743,9 +752,9 @@ A type may declare that it cannot exist unless certain traits are implemented.
 
 ```drift
 struct File
-    require Self is Destructible, Self is Debuggable
+    require Self is Destructible, Self is Debug
 {
-    fd: Int64
+    fd: Int
 }
 ```
 
@@ -755,14 +764,14 @@ Meaning:
 
   ```drift
   implement Destructible for File { ... }
-  implement Debuggable  for File { ... }
+  implement Debug  for File { ... }
   ```
 
 Compiler errors if missing:
 
 ```
 E-REQUIRE-SELF: Type File requires trait Destructible but no implementation was found.
-E-REQUIRE-SELF: Type File requires trait Debuggable but no implementation was found.
+E-REQUIRE-SELF: Type File requires trait Debug but no implementation was found.
 ```
 
 When a type is well-formed, its `require` obligations are assumed as implied facts
@@ -772,7 +781,7 @@ when proving trait requirements for values of that type.
 
 ```drift
 struct Box<T>
-    require T is Clonable,
+    require T is Dup,
             Self is Destructible
 {
     value: T
@@ -781,7 +790,7 @@ struct Box<T>
 
 Constraints:
 
-- `Box<T>` can only be instantiated when `T is Clonable`.
+- `Box<T>` can only be instantiated when `T is Dup`.
 - `Box<T>` is considered incomplete unless a `Destructible` implementation for `Box<T>` exists.
 
 ---
@@ -791,11 +800,11 @@ Constraints:
 Functions may restrict their usage to specific capabilities:
 
 ```drift
-fn clone_twice<T>
-    require T is Clonable
+fn dup_twice<T>
+    require T is Dup
 (value: T) -> (T, T) {
-    val a = value.clone();
-    val b = value.clone();
+    val a = value.dup();
+    val b = value.dup();
     return (a, b);
 }
 ```
@@ -804,8 +813,8 @@ More than one requirement may be listed:
 
 ```drift
 fn print_both<T, U>
-    require T is Debuggable,
-            U is Debuggable
+    require T is Debug,
+            U is Debug
 (t: T, u: U) -> Void {
     println(t.fmt());
     println(u.fmt());
@@ -860,7 +869,7 @@ Trait guards allow functions to adapt behavior based on whether a type implement
 
 ```drift
 fn log_value<T>(value: T) -> Void {
-    if T is Debuggable {
+    if T is Debug {
         println("[dbg] " + value.fmt());
     } else {
         println("<value>");
@@ -870,7 +879,7 @@ fn log_value<T>(value: T) -> Void {
 
 Semantics:
 
-- `if T is Debuggable` is a **compile-time condition**.
+- `if T is Debug` is a **compile-time condition**.
 - Only the active branch must type-check for the given `T`.
 - Inside the guarded block, methods from the trait become valid (`value.fmt()` here).
 - The guard condition is assumed as a proof fact in that branch for trait requirements.
@@ -881,9 +890,9 @@ Semantics:
 
 ```drift
 fn log_value<T>(value: T) -> Void {
-    if T is Debuggable and T is Serializable {
+    if T is Debug and T is Serializable {
         ...;
-    } else if T is Debuggable {
+    } else if T is Debug {
         ...;
     } else if T is Serializable {
         ...;
@@ -903,24 +912,60 @@ Trait requirements and guards allow boolean trait expressions:
 
 - `T is A and T is B` — must implement both traits
 - `T is A or T is B` — must implement at least one
-- `not (T is Copyable)` — must *not* implement the trait
+- `not (T is lang.core.Copy)` — must *not* implement the trait
 - Parentheses allowed for grouping
 
 Example:
 
 ```drift
-fn clone_if_possible<T>(value: T) -> T {
-    if T is Copyable {
+fn dup_if_possible<T>(value: T) -> T {
+    if T is lang.core.Copy {
         return value; // implicit copy
-    } else if T is Clonable {
-        return value.clone();
+    } else if T is Dup {
+        return value.dup();
     } else {
-        panic("Type cannot be cloned");
+        panic("Type cannot be duplicated");
     }
 }
 ```
 
 Traits become composable *properties* of types.
+
+**Trait-level `require` restriction (MVP):** when defining a trait, the `require`
+clause is limited to **conjunctions** of `Self is Trait` (supertraits). `or` and
+`not` are not allowed in trait requirements until their semantics are specified.
+
+Examples:
+
+```drift
+trait Printable
+    require Self is Debug, Self is Display
+{
+    ...
+}
+
+trait SyncSend
+    require (Self is Send and Self is Sync)
+{
+    ...
+}
+```
+
+Not allowed (trait-level):
+
+```drift
+trait Printable
+    require (Self is Debug or Self is Display)
+{
+    ...
+}
+
+trait NonCopy
+    require not (Self is lang.core.Copy)
+{
+    ...
+}
+```
 
 ---
 
@@ -930,7 +975,7 @@ Traits themselves may declare capabilities they depend upon:
 
 ```drift
 trait Printable
-    require Self is Debuggable, Self is Displayable
+    require Self is Debug, Self is Display
 {
     fn print(self) -> String {
         return self.fmt();
@@ -938,7 +983,7 @@ trait Printable
 }
 ```
 
-Any type that implements `Printable` must also implement `Debuggable` and `Displayable`.
+Any type that implements `Printable` must also implement `Debug` and `Display`.
 
 ---
 
@@ -1009,17 +1054,17 @@ Rules:
 #### 5.13.1. Defining a trait
 
 ```drift
-trait Debuggable {
+trait Debug {
     fn fmt(self) -> String
 }
 ```
 
-**Legacy note:** `Debuggable` was historically used for diagnostics. For exceptions and captured locals, use the `Diagnostic` trait defined in §5.13.7.
+**Legacy note:** `Debug` was historically used for diagnostics. For exceptions and captured locals, use the `Diagnostic` trait defined in §5.13.7.
 
 #### 5.13.2. Implementing a trait
 
 ```drift
-implement Debuggable for File {
+implement Debug for File {
     fn fmt(self) -> String { ... }
 }
 ```
@@ -1039,22 +1084,22 @@ struct Cache<K, V>
 
 ```drift
 fn print<T>
-    require T is Debuggable
+    require T is Debug
 (v: T) -> Void { ... }
 ```
 
 #### 5.13.5. Trait-guarded logic
 
 ```drift
-if T is Debuggable { ... }
+if T is Debug { ... }
 if not (T is Serializable) { ... }
 ```
 
 #### 5.13.6. Boolean trait expressions
 
 ```drift
-require T is (Debuggable or Displayable)
-require T is Clonable and not Destructible
+require (T is Debug or T is Display)
+require (T is Dup and not (T is Destructible))
 ```
 
 #### 5.13.7. Diagnostic trait
@@ -1081,8 +1126,8 @@ variant DiagnosticValue {
     Missing
     Null
     Bool(value: Bool)
-    Int(value: Int64)
-    Float(value: Float64)
+    Int(value: Int)
+    Float(value: Float)
     String(value: String)
     Array(items: Array<DiagnosticValue>)
     Object(fields: Map<String, DiagnosticValue>)
@@ -1096,9 +1141,9 @@ fn kind(self: &DiagnosticValue) -> String        // optional helper
 fn get(self: &DiagnosticValue, field: String) -> DiagnosticValue
 fn index(self: &DiagnosticValue, idx: Int) -> DiagnosticValue
 fn as_string(self: &DiagnosticValue) -> Optional<String>
-fn as_int(self: &DiagnosticValue) -> Optional<Int64>
+fn as_int(self: &DiagnosticValue) -> Optional<Int>
 fn as_bool(self: &DiagnosticValue) -> Optional<Bool>
-fn as_float(self: &DiagnosticValue) -> Optional<Float64>
+fn as_float(self: &DiagnosticValue) -> Optional<Float>
 ```
 
 Rules:
@@ -1175,7 +1220,7 @@ Traits are designed to:
 - Allow algorithms to adapt to available capabilities via **trait guards**.
 - Provide a unified abstraction for:
   - RAII (`Destructible`)
-  - formatting (`Debuggable`, `Displayable`)
+  - formatting (`Debug`, `Display`)
   - serialization, hashing, comparison
   - “marker” traits for POD or special behaviors
 
@@ -1237,16 +1282,16 @@ Drift differentiates between **methods** (eligible for dot-call syntax) and **fr
 Example:
 
 ```drift
-struct Point { x: Int64, y: Int64 }
+struct Point { x: Int, y: Int }
 
 implement Point {
-    fn move_by(self: &mut Point, dx: Int64, dy: Int64) -> Void {
+    fn move_by(self: &mut Point, dx: Int, dy: Int) -> Void {
         self.x += dx;
         self.y += dy;
     }
 }
 
-fn translate(p: &mut Point, dx: Int64, dy: Int64) -> Void {
+fn translate(p: &mut Point, dx: Int, dy: Int) -> Void {
     p.x += dx;
     p.y += dy;
 }
@@ -1267,7 +1312,7 @@ A concrete type implements an interface through an `implement` block:
 
 ```drift
 struct File {
-    fd: Int64
+    fd: Int
 }
 
 implement OutputStream for File {
@@ -1381,24 +1426,24 @@ The two systems are orthogonal by design.
 
 ```drift
 interface Shape {
-    fn area(self: &Shape) -> Float64
+    fn area(self: &Shape) -> Float
 }
 ```
 
 #### 6.8.2. Implementations
 
 ```drift
-struct Circle { radius: Float64 }
-struct Rect   { w: Float64, h: Float64 }
+struct Circle { radius: Float }
+struct Rect   { w: Float, h: Float }
 
 implement Shape for Circle {
-    fn area(self: &Circle) -> Float64 {
+    fn area(self: &Circle) -> Float {
         return 3.14159265 * self.radius * self.radius;
     }
 }
 
 implement Shape for Rect {
-    fn area(self: &Rect) -> Float64 {
+    fn area(self: &Rect) -> Float {
         return self.w * self.h;
     }
 }
@@ -1407,8 +1452,8 @@ implement Shape for Rect {
 #### 6.8.3. Usage
 
 ```drift
-fn total_area(shapes: Array<Shape>) -> Float64 {
-    var acc: Float64 = 0.0;
+fn total_area(shapes: Array<Shape>) -> Float {
+    var acc: Float = 0.0;
     var i = 0;
     while i < shapes.len() {
         acc = acc + shapes[i].area();
@@ -1487,20 +1532,20 @@ Layout stability: if interface inheritance is used, parent entries (including th
 These systems complement each other:
 
 ```drift
-trait Debuggable { fn fmt(self) -> String }
+trait Debug { fn fmt(self) -> String }
 
 interface DebugSink {
     fn write_debug(self: &DebugSink, msg: String) -> Void
 }
 
 fn log_value<T>
-    require T is Debuggable
+    require T is Debug
 (val: T, sink: DebugSink) -> Void {
     sink.write_debug(val.fmt());
 }
 ```
 
-- `T is Debuggable`: compile‑time capability  
+- `T is Debug`: compile‑time capability  
 - `sink: DebugSink`: runtime dynamic behavior  
 
 This pattern is central to building logging, serialization, and plugin systems.
@@ -1732,7 +1777,7 @@ if cond {
 ### 8.2. While loops
 
 ```drift
-var i: Int64 = 0;
+var i: Int = 0;
 while i < 3 {
     i = i + 1;
 }
@@ -1938,7 +1983,7 @@ variant LookupResult<T> {
     Error(err: DbError)
 }
 
-fn describe_lookup(id: Int64, r: LookupResult<String>) -> String {
+fn describe_lookup(id: Int, r: LookupResult<String>) -> String {
     return match r {
         Found(value) => { "Record " + id.to_string() + ": " + value },
         Missing      => { "No record for id " + id.to_string() },
@@ -2014,8 +2059,8 @@ Drift is **null-free**. There is no `null` literal. A value is either present (`
 ### 11.2. Construction
 
 ```drift
-val present: Optional<Int64> = Some(42);
-val empty: Optional<Int64> = None();
+val present: Optional<Int> = Some(42);
+val empty: Optional<Int> = None();
 ```
 
 ### 11.3. Control flow
@@ -2036,7 +2081,7 @@ There is no safe-navigation operator (`?.`). Access requires explicit pattern ma
 - Returning `None()` from a function declared `-> T` is a compile error.
 
 ```drift
-fn find_sku(id: Int64) -> Optional<String> { /* ... */ }
+fn find_sku(id: Int) -> Optional<String> { /* ... */ }
 
 val sku = find_sku(42);
 match sku {
@@ -2060,12 +2105,12 @@ Pattern matching moves the bound value by default. If you need to borrow instead
 
 ```drift
 struct Order {
-    id: Int64,
+    id: Int,
     sku: String,
-    quantity: Int64
+    quantity: Int
 }
 
-fn find_order(id: Int64) -> Optional<Order> {
+fn find_order(id: Int) -> Optional<Order> {
     if id == 42 { return Some(Order(id = 42, sku = "DRIFT-1", quantity = 1)); }
     return None();
 }
@@ -2087,7 +2132,7 @@ fn example() -> Void {
 
 Helper methods/combinators on `Optional<T>` (e.g. `is_some`, `unwrap_or`) are expected to exist, but are deferred until the module/trait story is finalized. MVP code should use `match`.
 
----;
+---
 ## 12. `lang.array`, `ByteBuffer`, and array literals
 
 `lang.array` is the standard module for homogeneous sequences. It exposes the generic type `Array<T>` plus builder helpers and the binary-centric `ByteBuffer`. `Array` is always in scope for type annotations, so you can write:
@@ -2102,10 +2147,10 @@ fn example() -> Void {
 Array literals follow the same ownership and typing rules as other expressions:
 
 ```drift
-val nums = [1, 2, 3]; // infers Array<Int64>
+val nums = [1, 2, 3]; // infers Array<Int>
 val names = ["Bob", "Alice"]; // infers Array<String>
 
-val explicit: Array<Int64> = [1, 2, 3]; // annotation still allowed when desired
+val explicit: Array<Int> = [1, 2, 3]; // annotation still allowed when desired
 ```
 
 - `[expr1, expr2, ...]` constructs an `Array<T>` where every element shares the same type `T`. The compiler infers `T` from the elements.
@@ -2121,7 +2166,7 @@ val explicit: Array<Int64> = [1, 2, 3]; // annotation still allowed when desired
 - `ByteBuffer.len: Uint`
 - `ByteSlice.len: Uint`
 
-Any function that indexes into a container or string must accept an `Int` index; bounds checks reject negative indices and indices ≥ `len`. Lengths/capacities are unsigned counts (`Uint`). Examples elsewhere that show `Size`/`Int64` are illustrative; the canonical types for arrays/strings in v1 are `Uint` for lengths/capacities and `Int` for indices.
+Any function that indexes into a container or string must accept an `Int` index; bounds checks reject negative indices and indices ≥ `len`. Lengths/capacities are unsigned counts (`Uint`). Examples elsewhere that show `Size`/`Int` are illustrative; the canonical types for arrays/strings in v1 are `Uint` for lengths/capacities and `Int` for indices.
 
 ### 12.1. ByteBuffer, ByteSlice, and MutByteSlice
 
@@ -2214,7 +2259,7 @@ val first = nums[0];
 Assignments through an index require the binding to be mutable:
 
 ```drift
-var mutable_values: Array<Int64> = [5, 10, 15];
+var mutable_values: Array<Int> = [5, 10, 15];
 mutable_values[1] = 42; // ok
 
 val frozen = [7, 8, 9];
@@ -2413,8 +2458,10 @@ Drift’s exception system is designed to:
 ### 14.2. Error type and layout
 
 ```drift
+type ErrorCode = Uint64
+
 struct Error {
-    event_code: Uint64,                        // stable, required
+    event_code: Uint64,                      // stable, required
     event_fqn: String,                         // canonical FQN label (for logging/telemetry only)
     attrs: Map<String, DiagnosticValue>,       // see §5.13.7, §14.3
     ctx_frames: Array<CtxFrame>,               // captured locals per frame
@@ -2423,7 +2470,7 @@ struct Error {
 
 exception IndexError {
     container: String,
-    index: Int64,
+    index: Int,
 }
 ```
 
@@ -2458,12 +2505,12 @@ Canonical FQN string label (`"<module>.<submodules>:<event>"`) stored with the e
 #### 14.3.1. Declaring events
 ```drift
 exception InvalidOrder {
-    order_id: Int64,
+    order_id: Int,
     code: String,
 }
 exception Timeout {
     operation: String,
-    millis: Int64,
+    millis: Int,
 }
 ```
 
@@ -2684,7 +2731,7 @@ This distinction becomes especially clear in pipelines (`|>`), where each stage 
 | Role | Parameter type | Return type | Ownership semantics | Typical usage |
 |------|----------------|--------------|---------------------|----------------|
 | **Mutator** | `&mut T` | `Void` or `T` | Borrows an existing `T` mutably and optionally -> it. Ownership stays with the caller. | In-place modification, e.g. `fill`, `tune`. |
-| **Transformer** | `T` | `U` (often `T`) | Consumes its input and -> a new owned value. Ownership transfers into the call and out again. | `compress`, `clone`, `serialize`. |
+| **Transformer** | `T` | `U` (often `T`) | Consumes its input and -> a new owned value. Ownership transfers into the call and out again. | `compress`, `dup`, `serialize`. |
 | **Finalizer / Sink** | `T` | `Void` | Consumes the value completely. Ownership ends here; the resource is destroyed or released at function return. | `finalize`, `close`, `free`, `commit`. |
 
 ### 15.2. Pipeline behavior
@@ -2746,7 +2793,7 @@ In both cases, the file handle is safely released exactly once.
 
 - Deterministic RAII: owned values run their destructor at end of liveness—scope exit, early return, or after being consumed by a finalizer. No deferred GC-style cleanup.
 - Move-only by default: moving a value consumes it; the source binding becomes invalid and is not dropped there. Drop runs exactly once on the final owner.
-- Copyable types opt in: only `Copy` types may be implicitly copied; they either have trivial/no destructor or a well-defined copy+drop story.
+- Copy types opt in: only `Copy` types may be implicitly duplicated; they must provide an O(1), non-allocating duplication path. The internal `BitCopy` predicate enables memcpy fast paths but is not user-visible.
 
 ## 16. Memory model
 
@@ -2831,8 +2878,8 @@ Growable containers track both `len` (initialized elements) and `cap` (reserved 
 
 ```drift
 struct Array<T> {
-    len: Int      // initialized elements
-    cap: Int      // reserved slots
+    len: Uint     // initialized elements
+    cap: Uint     // reserved slots
     buf: RawBuffer
 }
 ```
@@ -2943,144 +2990,21 @@ Containers rely on `lang.abi::RawBuffer` for contiguous storage, but the public 
 ```drift
 struct RawBuffer<T> { /* opaque */ }
 
-fn capacity(self: &RawBuffer<T>) -> Size
-fn slot_at(self: &RawBuffer<T>, i: Size) -> Slot<T> @unsafe
-fn reallocate(self: &mut RawBuffer<T>, new_cap: Size) @unsafe
+fn capacity(self: &RawBuffer<T>) -> Uint
+fn slot_at(self: &RawBuffer<T>, i: Uint) -> Slot<T> @unsafe
+fn reallocate(self: &mut RawBuffer<T>, new_cap: Uint) @unsafe
 ```
 
 `Array<T>` and similar types use these hooks internally; ordinary programs never touch the raw bytes.
 
 ### 17.5. Numeric types in FFI
 
-Drift distinguishes **natural-width** and **fixed-width** numeric primitives. FFI bindings must respect how C expresses numeric widths:
+Drift distinguishes **natural-width** and **fixed-width** numeric primitives.
+Fixed-width primitives are **reserved in v1**; the FFI mappings below are future-facing examples and will be enabled once fixed-width scalars are implemented.
 
-1. **C uses implementation-defined integer types** (e.g., `int`, `unsigned`, `size_t`, `ptrdiff_t`, `uintptr_t`):
-   - Drift bindings may use the corresponding natural-width primitives:
-     - `size_t` → `Size`
-     - `ptrdiff_t` → `Int`
-     - `uintptr_t` → `Uint`
-     - `int` → `Int` (or `Int32` if the ABI explicitly freezes C `int` to 32-bit)
-   - This pattern is appropriate when the C API itself is intentionally abstract over width.
-2. **C uses explicit fixed widths (`<stdint.h>` / `<inttypes.h>`)** (e.g., `int16_t`, `uint32_t`, `uint8_t`):
-   - Drift bindings **must** use the matching fixed-width primitives:
-     - `int8_t` → `Int8`, …, `int64_t` → `Int64`
-     - `uint8_t` → `Uint8`, …, `uint64_t` → `Uint64`
-   - Natural-width primitives (`Int`, `Uint`, `Size`, `Float`) **must not** appear in such signatures.
-3. **`Size` ABI representation:** `Size` lowers to an unsigned integer type that is at least as wide as a pointer and at least 16 bits. C shims typically map `Size` to `uintptr_t`:
+In v1, FFI bindings should use `Int`/`Uint` for C APIs that use implementation-defined widths (`int`, `size_t`, `ptrdiff_t`, `uintptr_t`).
 
-```c
-typedef uintptr_t DriftSize;
-```
-
-Use `DriftSize` in C structs and function signatures.
-4. **Public APIs vs. FFI surface:** FFI modules under `lang.abi.*` mirror C headers exactly and therefore use fixed-width Drift primitives whenever the C API does. Public Drift APIs in `std.*` and user code should prefer the natural-width types (`Int`, `Uint`, `Size`, `Float`, domain types) and hide fixed widths behind wrappers. Narrowing conversions (e.g., `Size` → `Uint32` for a `uint32_t len` parameter) must be explicit and checked or documented.
-
-#### 17.5.1. FFI wrapper pattern
-
-For C APIs that use explicit fixed widths (e.g., `uint32_t len`), a recommended pattern:
-
-- Low-level binding in `lang.abi.*` using fixed-width types:
-
-```drift
-// lang.abi.zlib
-extern "C"
-fn crc32(seed: Uint32, data: &Uint8, len: Uint32) -> Uint32
-```
-
-- High-level wrapper in `std.*` using `Size`/containers:
-
-```drift
-fn narrow_size_to_u32(len: Size) -> Uint32 {
-    if len > Uint32::MAX {
-        throw Error("len-too-large", code = "zlib.len.out_of_range");
-    }
-    return cast(len);
-}
-
-fn crc32(seed: Uint32, buf: ByteBuffer) -> Uint32 {
-    val len32: Uint32 = narrow_size_to_u32(buf.len());
-    return lang.abi.zlib.crc32(seed, buf.as_slice().data_ptr(), len32);
-}
-```
-
-Public code imports the wrapper; fixed widths stay localized to the FFI layer.
-
-### 17.6. FFI via `lang.abi`
-
-Interop lives in `lang.abi`, which exposes opaque pointer/slice types instead of raw addresses:
-
-- `abi.CPtr<T>` / `abi.MutCPtr<T>` — handles that represent foreign pointers; they can be passed around but not dereferenced directly.
-- `abi.Slice<T>` / `abi.MutSlice<T>` — safe views that lower to `(ptr, len)` at the ABI boundary.
-- `extern "C" struct` / `extern "C" fn` map to C layouts and calls.
-
-Only `lang.abi` knows how to construct these handles from actual addresses. Example:
-
-```drift
-import lang.abi as abi
-
-extern "C" struct Point { x: Int32, y: Int32 }
-extern "C" fn draw(points: abi.Slice<Point>) -> Int32
-
-fn render(points: Array<Point>) -> Int32 {
-    return draw(points.as_slice()); // no raw pointers in user code
-}
-```
-
-#### 17.5.1. Callbacks (C ABI)
-
-- Only **non-capturing** functions may cross the C ABI as callbacks; they are exported/imported as thin `extern "C"` function pointers. This matches C’s model and keeps the ABI predictable.
-- Capturing closures are **not** auto-wrapped for C. If state is needed, authors must build it explicitly (e.g., a struct of state plus a manual trampoline taking `void*`), and manage allocation/freeing on the C side; the language runtime does not box captures for C callbacks.
-- Drift-side code calling into C APIs that accept only a bare function pointer must provide a non-capturing function; APIs that also accept a user-data pointer can be targeted later with an explicit `ctx`+trampoline pattern, but that is a deliberate, manual choice.
-- Callbacks returned **from** C are treated as opaque `extern "C"` function pointers (cdecl). If the C API also -> a `ctx`/userdata pointer, it is modeled as a pair `{fn_ptr, ctx_ptr}` but remains **borrowed**: Drift does not free or drop it unless the API explicitly transfers ownership. Wrappers must:
-  - enforce the C calling convention,
-  - reject null pointers (or fail fast if invoked),
-  - prevent Drift exceptions from crossing into C (catch and convert to a Drift error),
-  - assume no thread-affinity guarantees unless the API states otherwise.
-
-### 17.6. Unsafe modules (`lang.internals`)
-
-Truly low-level helpers (`Slot<T>`, unchecked length changes, raw buffer manipulation) live in sealed modules such as `lang.internals`. Importing them requires explicit opt-in (feature flag + `@unsafe` annotations). Most applications never import these modules; the standard library and advanced crates do so when implementing containers or FFI shims.
-
-### 17.7. Examples
-
-**Placement without pointers**
-
-```drift
-var arr = Array<UserType>.with_capacity(10);
-
-var value = UserType(...);
-arr.push(value); // standard path
-
-var builder = arr.begin_uninit(1);
-builder.write(value);
-builder.finish();
-```
-
-**FFI call**
-
-```drift
-import lang.abi as abi
-
-extern "C" struct Buf { data: abi.CPtr<U8>, len: Int32 }
-extern "C" fn send(buf: abi.Slice<U8>) -> Int32
-
-fn transmit(bytes: Array<U8>) -> Int32 {
-    return send(bytes.as_slice());
-}
-```
-
-**Plugin note.** OS-level plugins (shared libraries) are just C-ABI FFI surfaces from Drift’s point of view. Authors should design plugin APIs as small C-style interfaces (opaque handles + error codes) and wrap them in static Drift modules as described in Chapter 21.
-
-### 17.8. Summary
-
-- The surface language never exposes raw pointer syntax or arithmetic.
-- Constructors, builders, and slices provide placement-new semantics without revealing addresses.
-- FFI always flows through `lang.abi` with opaque handles.
-- Unsafe helpers live behind `lang.internals` and require explicit opt-in.
-- Programmers still achieve zero-cost interop and efficient container implementations while keeping the foot-guns sealed away.
-
----
-
+Fixed-width FFI examples (e.g., `int32_t` → `Int32`) are deferred to post-MVP documentation.
 ---
 
 ## 18. Standard I/O design (v1)

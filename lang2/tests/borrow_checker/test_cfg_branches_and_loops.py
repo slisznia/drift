@@ -30,7 +30,7 @@ def test_move_in_one_branch_does_not_affect_other():
 			H.HLet(name="x", value=H.HLiteralInt(1), declared_type_expr=None),
 			H.HIf(
 				cond=H.HLiteralBool(True),
-				then_block=H.HBlock(statements=[H.HExprStmt(expr=H.HVar("x"))]),  # move x
+				then_block=H.HBlock(statements=[H.HExprStmt(expr=H.HMove(H.HVar("x")))]),  # move x
 				else_block=H.HBlock(statements=[H.HExprStmt(expr=H.HLiteralInt(0))]),
 			),
 			H.HExprStmt(expr=H.HVar("x")),  # after if: should be use-after-move (since one path moves)
@@ -49,8 +49,8 @@ def test_move_in_both_branches_flags_after_join():
 			H.HLet(name="x", value=H.HLiteralInt(1), declared_type_expr=None),
 			H.HIf(
 				cond=H.HLiteralBool(True),
-				then_block=H.HBlock(statements=[H.HExprStmt(expr=H.HVar("x"))]),  # move
-				else_block=H.HBlock(statements=[H.HExprStmt(expr=H.HVar("x"))]),  # move
+				then_block=H.HBlock(statements=[H.HExprStmt(expr=H.HMove(H.HVar("x")))]),  # move
+				else_block=H.HBlock(statements=[H.HExprStmt(expr=H.HMove(H.HVar("x")))]),  # move
 			),
 			H.HExprStmt(expr=H.HVar("x")),  # use after both branches moved
 		]
@@ -68,7 +68,7 @@ def test_loop_move_then_break_then_use():
 			H.HLoop(
 				body=H.HBlock(
 					statements=[
-						H.HExprStmt(expr=H.HVar("x")),  # move
+						H.HExprStmt(expr=H.HMove(H.HVar("x"))),  # move
 						H.HBreak(),
 					]
 				)

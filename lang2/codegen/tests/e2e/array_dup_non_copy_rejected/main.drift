@@ -1,0 +1,9 @@
+struct S {
+	x: Array<Int>
+}
+
+fn main() nothrow -> Int {
+	val xs: Array<S> = [S([1])];
+	val ys = xs.dup();
+	return 0;
+}

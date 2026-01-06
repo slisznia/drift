@@ -1,0 +1,7 @@
+module main
+
+fn main() nothrow -> Int {
+	var xs = [1, 2];
+	var ys = copy xs;
+	return 0;
+}

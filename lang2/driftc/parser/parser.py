@@ -18,6 +18,7 @@ from .ast import (
     BlockStmt,
     Call,
     ConstDef,
+    Copy,
     CatchClause,
     ExceptionArg,
     ExceptionDef,
@@ -56,6 +57,9 @@ from .ast import (
     TraitMethodSig,
     RequireClause,
     TraitExpr,
+    TraitSubject,
+    SelfRef,
+    TypeNameRef,
     TraitIs,
     TraitAnd,
     TraitOr,
@@ -1001,12 +1005,17 @@ def _build_trait_expr(node: Tree) -> TraitExpr:
 		)
 		if subject_tok is None or trait_node is None:
 			raise ValueError("trait atom missing subject or trait name")
+		subject_loc = _loc_from_token(subject_tok)
+		if subject_tok.value == "Self":
+			subject_ref: TraitSubject = SelfRef(loc=subject_loc)
+		else:
+			subject_ref = TypeNameRef(loc=subject_loc, name=subject_tok.value)
 		if _name(trait_node) == "trait_name":
 			trait_child = next((c for c in trait_node.children if isinstance(c, Tree)), None)
 			if trait_child is None:
 				raise ValueError("trait name missing base type")
 			trait_node = trait_child
-		return TraitIs(loc=_loc(node), subject=subject_tok.value, trait=_build_type_expr(trait_node))
+		return TraitIs(loc=_loc(node), subject=subject_ref, trait=_build_type_expr(trait_node))
 	raise ValueError(f"unsupported trait expr node: {name}")
 
 
@@ -1235,6 +1244,10 @@ def _build_value_block(tree: Tree) -> Block:
 
 
 def _build_param(tree: Tree) -> Param:
+	mutable = False
+	for child in tree.children:
+		if isinstance(child, Token) and child.type in {"VAR", "VAL"}:
+			mutable = child.type == "VAR"
 	ident_node = next(
 		child
 		for child in tree.children
@@ -1244,7 +1257,7 @@ def _build_param(tree: Tree) -> Param:
 	name_token = _unwrap_ident(ident_node)
 	type_node = next((child for child in tree.children if isinstance(child, Tree) and _name(child) == "type_expr"), None)
 	type_expr = _build_type_expr(type_node) if type_node is not None else None
-	return Param(name=name_token.value, type_expr=type_expr)
+	return Param(name=name_token.value, type_expr=type_expr, mutable=mutable)
 
 
 def _build_lambda(tree: Tree) -> Lambda:
@@ -1279,6 +1292,10 @@ def _build_lambda(tree: Tree) -> Lambda:
 		if isinstance(child, Tree) and _name(child) == "lambda_params":
 			for param_node in child.children:
 				if isinstance(param_node, Tree) and _name(param_node) == "lambda_param":
+					mutable = False
+					for tok in param_node.children:
+						if isinstance(tok, Token) and tok.type in {"VAR", "VAL"}:
+							mutable = tok.type == "VAR"
 					name_tok = next(tok for tok in param_node.children if isinstance(tok, Token) and tok.type == "NAME")
 					type_node = next(
 						(c for c in param_node.children if isinstance(c, Tree) and _name(c) == "type_expr"), None
@@ -1287,6 +1304,7 @@ def _build_lambda(tree: Tree) -> Lambda:
 						Param(
 							name=name_tok.value,
 							type_expr=_build_type_expr(type_node) if type_node is not None else None,
+							mutable=mutable,
 						)
 					)
 		elif isinstance(child, Tree) and _name(child) == "lambda_captures":
@@ -2051,6 +2069,13 @@ def _build_expr(node) -> Expr:
             raise TypeError(f"move_op expects an operand, got {node.children!r}")
         expr = _build_expr(target)
         return Move(loc=_loc(node), value=expr)
+    if name == "copy_op":
+        # Explicit copy marker: `copy <expr>`.
+        target = next((c for c in node.children if isinstance(c, Tree)), None)
+        if target is None:
+            raise TypeError(f"copy_op expects an operand, got {node.children!r}")
+        expr = _build_expr(target)
+        return Copy(loc=_loc(node), value=expr)
     if name == "postfix":
         return _build_postfix(node)
     if name == "qualified_member":

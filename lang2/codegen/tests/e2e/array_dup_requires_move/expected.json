@@ -1,0 +1,10 @@
+{
+  "description": "e2e: array dup requires move",
+  "diagnostics": [
+    {
+      "message_contains": "cannot copy 'a'"
+    }
+  ],
+  "exit_code": 1,
+  "phase": "typecheck"
+}

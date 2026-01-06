@@ -68,6 +68,7 @@ class ImplDef:
 	target_head: TypeHeadKey
 	methods: List[parser_ast.FunctionDef]
 	require: Optional[parser_ast.TraitExpr]
+	type_params: List[str] = field(default_factory=list)
 	loc: Optional[object] = None
 
 
@@ -210,8 +211,8 @@ def type_key_str(key: TypeKey | TypeHeadKey) -> str:
 	return _type_key_str(key)
 
 
-def _diag(message: str, loc: object | None) -> Diagnostic:
-	return Diagnostic(message=message, severity="error", phase="typecheck", span=Span.from_loc(loc))
+def _diag(message: str, loc: object | None, *, code: str | None = None, phase: str | None = None) -> Diagnostic:
+	return Diagnostic(message=message, severity="error", phase=phase, span=Span.from_loc(loc), code=code)
 
 
 def _collect_trait_is(expr: parser_ast.TraitExpr) -> List[parser_ast.TraitIs]:
@@ -226,23 +227,61 @@ def _collect_trait_is(expr: parser_ast.TraitExpr) -> List[parser_ast.TraitIs]:
 	return out
 
 
+def _walk_atoms_all(expr: parser_ast.TraitExpr) -> List[parser_ast.TraitIs]:
+	return _collect_trait_is(expr)
+
+
+def _extract_conjunctive_facts(expr: parser_ast.TraitExpr) -> List[parser_ast.TraitIs]:
+	if isinstance(expr, parser_ast.TraitIs):
+		return [expr]
+	if isinstance(expr, parser_ast.TraitAnd):
+		return _extract_conjunctive_facts(expr.left) + _extract_conjunctive_facts(expr.right)
+	return []
+
+
+def _has_non_conjunctive(expr: parser_ast.TraitExpr) -> bool:
+	if isinstance(expr, (parser_ast.TraitOr, parser_ast.TraitNot)):
+		return True
+	if isinstance(expr, parser_ast.TraitAnd):
+		return _has_non_conjunctive(expr.left) or _has_non_conjunctive(expr.right)
+	return False
+
+
 def build_trait_world(
 	prog: parser_ast.Program,
 	*,
 	diagnostics: Optional[List[Diagnostic]] = None,
 	package_id: Optional[str] = None,
 	module_packages: Mapping[str, str] | None = None,
+	diag_phase: str | None = None,
 ) -> TraitWorld:
-	diags: List[Diagnostic] = list(diagnostics or [])
+	if diag_phase is None:
+		raise ValueError("build_trait_world requires an explicit diag_phase")
+	diags: List[Diagnostic] = diagnostics if diagnostics is not None else []
 	world = TraitWorld(diagnostics=diags)
 	module_id = getattr(prog, "module", None) or "main"
+	local_pkg = (module_packages or {}).get(module_id, package_id)
+	def diag(message: str, loc: object | None, *, code: str | None = None) -> Diagnostic:
+		return _diag(message, loc, code=code, phase=diag_phase)
+	def _subject_name(subject: object) -> str | None:
+		if isinstance(subject, parser_ast.SelfRef):
+			return "Self"
+		if isinstance(subject, parser_ast.TypeNameRef):
+			return subject.name
+		if isinstance(subject, str):
+			return subject
+		return None
 
 	# Collect trait declarations.
+	local_trait_keys = {
+		TraitKey(package_id=local_pkg, module=module_id, name=tr.name)
+		for tr in getattr(prog, "traits", []) or []
+	}
 	method_seen: Dict[Tuple[TraitKey, str], object | None] = {}
 	for tr in getattr(prog, "traits", []) or []:
-		key = TraitKey(package_id=package_id, module=module_id, name=tr.name)
+		key = TraitKey(package_id=local_pkg, module=module_id, name=tr.name)
 		if key in world.traits:
-			world.diagnostics.append(_diag(f"duplicate trait definition '{_trait_key_str(key)}'", tr.loc))
+			world.diagnostics.append(diag(f"duplicate trait definition '{_trait_key_str(key)}'", tr.loc))
 			continue
 		require_expr = getattr(tr, "require", None).expr if getattr(tr, "require", None) is not None else None
 		world.traits[key] = TraitDef(
@@ -253,10 +292,24 @@ def build_trait_world(
 			loc=getattr(tr, "loc", None),
 		)
 		if require_expr is not None:
-			for atom in _collect_trait_is(require_expr):
-				if atom.subject != "Self":
+			if _has_non_conjunctive(require_expr):
+				world.diagnostics.append(
+					diag(
+						"trait require clause only supports conjunctions of 'Self is Trait'",
+						getattr(require_expr, "loc", None),
+						code="E-TRAIT-REQUIRE-UNSUPPORTED",
+					)
+				)
+				continue
+			for atom in _walk_atoms_all(require_expr):
+				subj_name = _subject_name(atom.subject)
+				if subj_name != "Self":
 					world.diagnostics.append(
-						_diag("trait require clause must use 'Self is Trait'", getattr(atom, "loc", None))
+						diag(
+							"trait require clause must use 'Self is Trait'",
+							getattr(atom, "loc", None),
+							code="E-REQUIRE-UNKNOWN-SUBJECT",
+						)
 					)
 					continue
 				trait_key = trait_key_from_expr(
@@ -265,9 +318,9 @@ def build_trait_world(
 					default_package=package_id,
 					module_packages=module_packages,
 				)
-				if trait_key not in world.traits:
+				if trait_key not in local_trait_keys and trait_key.module == module_id:
 					world.diagnostics.append(
-						_diag(
+						diag(
 							f"unknown trait '{_trait_key_str(trait_key)}' in require clause",
 							getattr(atom, "loc", None),
 						)
@@ -276,7 +329,7 @@ def build_trait_world(
 			mkey = (key, m.name)
 			if mkey in method_seen:
 				world.diagnostics.append(
-					_diag(
+					diag(
 						f"duplicate method '{m.name}' in trait '{_trait_key_str(key)}'",
 						getattr(m, "loc", None),
 					)
@@ -288,29 +341,34 @@ def build_trait_world(
 	for s in getattr(prog, "structs", []) or []:
 		if getattr(s, "require", None) is None:
 			continue
-		type_key = TypeKey(package_id=package_id, module=module_id, name=s.name, args=())
+		type_key = TypeKey(package_id=local_pkg, module=module_id, name=s.name, args=())
 		req_expr = s.require.expr
 		world.requires_by_struct[type_key] = req_expr
 		type_param_names = set(getattr(s, "type_params", []) or [])
-		for atom in _collect_trait_is(req_expr):
+		for atom in _walk_atoms_all(req_expr):
 			subj = atom.subject
-			if subj == "Self" or (isinstance(subj, str) and subj in type_param_names):
+			subj_name = _subject_name(subj)
+			if subj_name == "Self" or (subj_name is not None and subj_name in type_param_names):
 				trait_key = trait_key_from_expr(
 					atom.trait,
 					default_module=module_id,
 					default_package=package_id,
 					module_packages=module_packages,
 				)
-				if trait_key not in world.traits:
+				if trait_key not in local_trait_keys and trait_key.module == module_id:
 					world.diagnostics.append(
-						_diag(
+						diag(
 							f"unknown trait '{_trait_key_str(trait_key)}' in require clause",
 							getattr(atom, "loc", None),
 						)
 					)
 			else:
 				world.diagnostics.append(
-					_diag("require clause on struct must use a type parameter or 'Self'", getattr(atom, "loc", None))
+					diag(
+						"require clause on struct must use a type parameter or 'Self'",
+						getattr(atom, "loc", None),
+						code="E-REQUIRE-UNKNOWN-SUBJECT",
+					)
 				)
 
 	name_ord: Dict[str, int] = {}
@@ -322,10 +380,25 @@ def build_trait_world(
 		req_expr = fn.require.expr
 		fn_id = FunctionId(module=module_id, name=fn.name, ordinal=ordinal)
 		world.requires_by_fn[fn_id] = req_expr
-		for atom in _collect_trait_is(req_expr):
-			if atom.subject == "Self":
+		type_param_names = set(getattr(fn, "type_params", []) or [])
+		for atom in _walk_atoms_all(req_expr):
+			subj_name = _subject_name(atom.subject)
+			if subj_name == "Self":
 				world.diagnostics.append(
-					_diag("function require clause cannot use 'Self'", getattr(atom, "loc", None))
+					diag(
+						"function require clause cannot use 'Self'",
+						getattr(atom, "loc", None),
+						code="E-REQUIRE-UNKNOWN-SUBJECT",
+					)
+				)
+				continue
+			if subj_name is None or subj_name not in type_param_names:
+				world.diagnostics.append(
+					diag(
+						"function require clause must use a type parameter",
+						getattr(atom, "loc", None),
+						code="E-REQUIRE-UNKNOWN-SUBJECT",
+					)
 				)
 				continue
 			trait_key = trait_key_from_expr(
@@ -334,13 +407,13 @@ def build_trait_world(
 				default_package=package_id,
 				module_packages=module_packages,
 			)
-			if trait_key not in world.traits:
+			if trait_key not in local_trait_keys and trait_key.module == module_id:
 				world.diagnostics.append(
-					_diag(
+					diag(
 						f"unknown trait '{_trait_key_str(trait_key)}' in require clause",
 						getattr(atom, "loc", None),
 					)
-					)
+				)
 
 	# Collect impls (trait impls only).
 	for impl in getattr(prog, "implements", []) or []:
@@ -352,10 +425,8 @@ def build_trait_world(
 			default_package=package_id,
 			module_packages=module_packages,
 		)
-		if trait_key not in world.traits and trait_key.module == module_id:
-			world.diagnostics.append(
-				_diag(f"unknown trait '{_trait_key_str(trait_key)}' in implement block", getattr(impl, "loc", None))
-			)
+		if trait_key not in local_trait_keys and trait_key.module == module_id:
+			world.diagnostics.append(diag(f"unknown trait '{_trait_key_str(trait_key)}' in implement block", getattr(impl, "loc", None)))
 		target_key = type_key_from_expr(
 			impl.target,
 			default_module=module_id,
@@ -363,6 +434,43 @@ def build_trait_world(
 			module_packages=module_packages,
 		)
 		head_key = target_key.head()
+		trait_pkg = trait_key.package_id
+		target_pkg = head_key.package_id
+		if local_pkg is not None:
+			if trait_pkg is None and trait_key.module == module_id:
+				trait_pkg = local_pkg
+			if target_pkg is None and head_key.module == module_id:
+				target_pkg = local_pkg
+		def _is_local(pkg: Optional[str]) -> bool:
+			if local_pkg is None:
+				return pkg is None
+			return pkg == local_pkg
+		if local_pkg is not None:
+			missing_pkg = False
+			if trait_pkg is None and trait_key.module is not None and trait_key.module != module_id:
+				missing_pkg = True
+			if target_pkg is None and head_key.module is not None and head_key.module != module_id:
+				missing_pkg = True
+			if missing_pkg:
+				world.diagnostics.append(
+					diag(
+						"internal: missing package id for trait impl resolution",
+						getattr(impl, "loc", None),
+					)
+				)
+		if not _is_local(trait_pkg) and not _is_local(target_pkg):
+			world.diagnostics.append(
+				diag(
+					(
+						"orphan trait impl is not allowed: "
+						f"trait '{_trait_key_str(trait_key)}' and "
+						f"type '{_type_key_str(head_key)}' are outside the current package"
+					),
+					getattr(impl, "loc", None),
+					code="E-IMPL-ORPHAN",
+				)
+			)
+			continue
 		req_expr = impl.require.expr if getattr(impl, "require", None) is not None else None
 		impl_id = len(world.impls)
 		world.impls.append(
@@ -372,6 +480,7 @@ def build_trait_world(
 				target_head=head_key,
 				methods=list(getattr(impl, "methods", []) or []),
 				require=req_expr,
+				type_params=list(getattr(impl, "type_params", []) or []),
 				loc=getattr(impl, "loc", None),
 			)
 		)
@@ -379,23 +488,36 @@ def build_trait_world(
 		world.impls_by_target_head.setdefault(head_key, []).append(impl_id)
 		world.impls_by_trait_target.setdefault((trait_key, head_key), []).append(impl_id)
 		if req_expr is not None:
-			for atom in _collect_trait_is(req_expr):
+			for atom in _walk_atoms_all(req_expr):
 				trait_dep = trait_key_from_expr(
 					atom.trait,
 					default_module=module_id,
 					default_package=package_id,
 					module_packages=module_packages,
 				)
-				if trait_dep not in world.traits:
+				if trait_dep not in local_trait_keys and trait_dep.module == module_id:
 					world.diagnostics.append(
-						_diag(
+						diag(
 							f"unknown trait '{_trait_key_str(trait_dep)}' in require clause",
 							getattr(atom, "loc", None),
 						)
 					)
 
-	# Coherence/overlap checks.
-	for (trait_key, head_key), impl_ids in world.impls_by_trait_target.items():
+	# Coherence/overlap checks (stable ordering).
+	def _impl_sort_key(impl_id: int) -> tuple[int, int, int]:
+		impl = world.impls[impl_id]
+		loc = getattr(impl, "loc", None)
+		line = getattr(loc, "line", 0) or 0
+		col = getattr(loc, "column", 0) or 0
+		return (line, col, impl_id)
+
+	def _coherence_key(item: tuple[TraitKey, TypeHeadKey]) -> tuple[str, str]:
+		trait_key, head_key = item
+		return (_trait_key_str(trait_key), _type_key_str(head_key))
+
+	for key in sorted(world.impls_by_trait_target.keys(), key=_coherence_key):
+		trait_key, head_key = key
+		impl_ids = sorted(world.impls_by_trait_target.get(key, []), key=_impl_sort_key)
 		if len(impl_ids) <= 1:
 			continue
 		first = world.impls[impl_ids[0]]
@@ -403,9 +525,11 @@ def build_trait_world(
 			other = world.impls[other_id]
 			if other.target == first.target:
 				msg = f"duplicate impl for trait '{_trait_key_str(trait_key)}' on '{_type_key_str(head_key)}'"
+				code = "E-IMPL-DUPLICATE"
 			else:
 				msg = f"overlapping impls for trait '{_trait_key_str(trait_key)}' on '{_type_key_str(head_key)}'"
-			world.diagnostics.append(_diag(msg, other.loc))
+				code = "E-IMPL-OVERLAP"
+			world.diagnostics.append(diag(msg, other.loc, code=code))
 
 	return world
 
@@ -416,8 +540,13 @@ def _resolve_trait_subjects(
 ) -> parser_ast.TraitExpr:
 	if isinstance(expr, parser_ast.TraitIs):
 		subj = expr.subject
-		if isinstance(subj, str) and subj in type_param_map:
-			return parser_ast.TraitIs(loc=expr.loc, subject=type_param_map[subj], trait=expr.trait)
+		subj_name = None
+		if isinstance(subj, parser_ast.TypeNameRef):
+			subj_name = subj.name
+		elif isinstance(subj, str):
+			subj_name = subj
+		if subj_name is not None and subj_name in type_param_map:
+			return parser_ast.TraitIs(loc=expr.loc, subject=type_param_map[subj_name], trait=expr.trait)
 		return expr
 	if isinstance(expr, parser_ast.TraitAnd):
 		return parser_ast.TraitAnd(

@@ -28,7 +28,6 @@ class TypeKind(Enum):
 	TYPEVAR = auto()
 	ERROR = auto()
 	DIAGNOSTICVALUE = auto()
-	OPTIONAL = auto()
 	VOID = auto()
 	FNRESULT = auto()
 	FUNCTION = auto()
@@ -243,6 +242,8 @@ class TypeTable:
 		self._struct_instantiation_cache: dict[tuple[TypeId, tuple[TypeId, ...]], TypeId] = {}
 		# Type parameter cache: TypeParamId -> TypeId.
 		self._typevar_cache: dict[TypeParamId, TypeId] = {}
+		# Array cache: elem TypeId -> Array<elem> TypeId.
+		self._array_cache: dict[TypeId, TypeId] = {}
 		# Compile-time constants keyed by their fully-qualified symbol name.
 		#
 		# MVP: constants are literal values embedded into IR at each use site; there
@@ -640,6 +641,10 @@ class TypeTable:
 			return self.ensure_int()
 		if name == "Uint":
 			return self.ensure_uint()
+		if name in ("Uint64", "u64"):
+			return self.ensure_uint64()
+		if name == "Byte":
+			return self.ensure_byte()
 		if name == "Bool":
 			return self.ensure_bool()
 		if name == "Float":
@@ -733,6 +738,18 @@ class TypeTable:
 			self._uint_type = self.new_scalar("Uint")  # type: ignore[attr-defined]
 		return self._uint_type  # type: ignore[attr-defined]
 
+	def ensure_uint64(self) -> TypeId:
+		"""Return a stable Uint64 TypeId, creating it once."""
+		if getattr(self, "_uint64_type", None) is None:
+			self._uint64_type = self.new_scalar("Uint64")  # type: ignore[attr-defined]
+		return self._uint64_type  # type: ignore[attr-defined]
+
+	def ensure_byte(self) -> TypeId:
+		"""Return a stable Byte TypeId, creating it once."""
+		if getattr(self, "_byte_type", None) is None:
+			self._byte_type = self.new_scalar("Byte")  # type: ignore[attr-defined]
+		return self._byte_type  # type: ignore[attr-defined]
+
 	def ensure_int(self) -> TypeId:
 		"""Return a stable Int TypeId, creating it once."""
 		if getattr(self, "_int_type", None) is None:
@@ -790,13 +807,27 @@ class TypeTable:
 		return self._dv_type  # type: ignore[attr-defined]
 
 	def new_optional(self, inner: TypeId) -> TypeId:
-		"""Register Optional<inner> (cached for stability)."""
+		"""Register Optional<inner> as the builtin Optional<T> variant (cached)."""
 		if not hasattr(self, "_optional_cache"):
 			self._optional_cache = {}  # type: ignore[attr-defined]
 		cache = getattr(self, "_optional_cache")  # type: ignore[attr-defined]
 		if inner in cache:
 			return cache[inner]
-		opt_id = self._add(TypeKind.OPTIONAL, "Optional", [inner])
+		base = self.get_variant_base(module_id="lang.core", name="Optional")
+		if base is None:
+			base = self.declare_variant(
+				"lang.core",
+				"Optional",
+				["T"],
+				[
+					VariantArmSchema(
+						name="Some",
+						fields=[VariantFieldSchema(name="value", type_expr=GenericTypeExpr.param(0))],
+					),
+					VariantArmSchema(name="None", fields=[]),
+				],
+			)
+		opt_id = self.ensure_instantiated(base, [inner])
 		cache[inner] = opt_id
 		return opt_id
 
@@ -883,11 +914,12 @@ class TypeTable:
 
 	def new_array(self, elem: TypeId) -> TypeId:
 		"""Register an Array<elem> type."""
-		# Reuse existing Array<elem> if present to keep TypeIds stable.
-		for ty_id, ty_def in self._defs.items():
-			if ty_def.kind is TypeKind.ARRAY and ty_def.param_types and ty_def.param_types[0] == elem:
-				return ty_id
-		return self._add(TypeKind.ARRAY, "Array", [elem])
+		existing = self._array_cache.get(elem)
+		if existing is not None:
+			return existing
+		ty_id = self._add(TypeKind.ARRAY, "Array", [elem])
+		self._array_cache[elem] = ty_id
+		return ty_id
 
 	def new_ref(self, inner: TypeId, is_mut: bool) -> TypeId:
 		"""Register a reference type to `inner` (mutable vs shared encoded in ref_mut/name)."""
@@ -915,6 +947,126 @@ class TypeTable:
 		)
 		self._typevar_cache[param_id] = ty_id
 		return ty_id
+
+	def is_copy(self, ty: TypeId) -> bool:
+		"""Return True if `ty` is Copy under MVP structural rules."""
+		if not hasattr(self, "_copy_cache"):
+			self._copy_cache = {}  # type: ignore[attr-defined]
+		cache: Dict[TypeId, bool] = getattr(self, "_copy_cache")  # type: ignore[attr-defined]
+		if ty in cache:
+			return cache[ty]
+		seen: set[TypeId] = set()
+
+		def _is_copy(tid: TypeId) -> bool:
+			if tid in cache:
+				return cache[tid]
+			if tid in seen:
+				return False
+			seen.add(tid)
+			td = self.get(tid)
+			if td.kind in {TypeKind.SCALAR, TypeKind.REF, TypeKind.FUNCTION, TypeKind.VOID}:
+				cache[tid] = True
+				return True
+			if td.kind in {TypeKind.UNKNOWN, TypeKind.ERROR, TypeKind.DIAGNOSTICVALUE, TypeKind.TYPEVAR}:
+				cache[tid] = False
+				return False
+			if td.kind is TypeKind.ARRAY:
+				cache[tid] = False
+				return False
+			if td.kind is TypeKind.FNRESULT:
+				cache[tid] = False
+				return False
+			if td.kind is TypeKind.STRUCT:
+				inst = self.get_struct_instance(tid)
+				if inst is None:
+					cache[tid] = False
+					return False
+				ok = all(_is_copy(f) for f in inst.field_types)
+				cache[tid] = ok
+				return ok
+			if td.kind is TypeKind.VARIANT:
+				inst = self.get_variant_instance(tid)
+				if inst is None:
+					cache[tid] = False
+					return False
+				ok = True
+				for arm in inst.arms:
+					for f in arm.field_types:
+						if not _is_copy(f):
+							ok = False
+							break
+					if not ok:
+						break
+				cache[tid] = ok
+				return ok
+			cache[tid] = False
+			return False
+
+		return _is_copy(ty)
+
+	def is_bitcopy(self, ty: TypeId) -> bool:
+		"""
+		Return True if `ty` is safe to bitwise-copy (memcpy).
+
+		This is intentionally stricter than `is_copy`: a type can be Copy but still
+		require semantic copying once non-bitwise Copy types are introduced.
+		"""
+		if not hasattr(self, "_bitcopy_cache"):
+			self._bitcopy_cache = {}  # type: ignore[attr-defined]
+		cache: Dict[TypeId, bool] = getattr(self, "_bitcopy_cache")  # type: ignore[attr-defined]
+		if ty in cache:
+			return cache[ty]
+		seen: set[TypeId] = set()
+
+		def _is_bitcopy(tid: TypeId) -> bool:
+			if tid in cache:
+				return cache[tid]
+			if tid in seen:
+				return False
+			seen.add(tid)
+			if not self.is_copy(tid):
+				cache[tid] = False
+				return False
+			td = self.get(tid)
+			if td.kind in {TypeKind.SCALAR, TypeKind.REF, TypeKind.FUNCTION, TypeKind.VOID}:
+				if td.kind is TypeKind.SCALAR and td.name == "String":
+					cache[tid] = False
+					return False
+				cache[tid] = True
+				return True
+			if td.kind in {TypeKind.UNKNOWN, TypeKind.ERROR, TypeKind.DIAGNOSTICVALUE, TypeKind.TYPEVAR}:
+				cache[tid] = False
+				return False
+			if td.kind is TypeKind.ARRAY:
+				cache[tid] = False
+				return False
+			if td.kind is TypeKind.STRUCT:
+				inst = self.get_struct_instance(tid)
+				if inst is None:
+					cache[tid] = False
+					return False
+				ok = all(_is_bitcopy(f) for f in inst.field_types)
+				cache[tid] = ok
+				return ok
+			if td.kind is TypeKind.VARIANT:
+				inst = self.get_variant_instance(tid)
+				if inst is None:
+					cache[tid] = False
+					return False
+				ok = True
+				for arm in inst.arms:
+					for f in arm.field_types:
+						if not _is_bitcopy(f):
+							ok = False
+							break
+					if not ok:
+						break
+				cache[tid] = ok
+				return ok
+			cache[tid] = False
+			return False
+
+		return _is_bitcopy(ty)
 
 	def _add(
 		self,
@@ -1004,9 +1156,6 @@ class TypeTable:
 				if td.kind is TypeKind.ARRAY and td.param_types:
 					inner = _key(td.param_types[0])
 					return f"Array<{inner}>"
-				if td.kind is TypeKind.OPTIONAL and td.param_types:
-					inner = _key(td.param_types[0])
-					return f"Optional<{inner}>"
 				if td.kind is TypeKind.FNRESULT and len(td.param_types) >= 2:
 					ok = _key(td.param_types[0])
 					err = _key(td.param_types[1])

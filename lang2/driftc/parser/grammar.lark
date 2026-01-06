@@ -142,7 +142,7 @@ func_def: FN_KW ident type_params? "(" [params] ")" NOTHROW? return_sig require_
 return_sig: ARROW type_expr
 
 params: param (COMMA param)*
-param: ident COLON type_expr
+param: (VAR | VAL)? ident COLON type_expr
 
 # implement Trait for Type { fn ... }
 implement_def: "implement" type_params? type_expr ("for" type_expr)? require_clause? implement_body
@@ -386,6 +386,7 @@ term_tail: (STAR | SLASH | PERCENT) factor
 ?factor: postfix
        | STAR factor -> deref
        | MOVE factor -> move_op
+       | COPY factor -> copy_op
        | "+" factor -> pos
        | "-" factor -> neg
        | "not" factor -> not_op
@@ -424,7 +425,7 @@ cast_expr: CAST LT type_expr GT "(" expr ")"
 lambda_expr: BAR lambda_params? BAR lambda_captures? lambda_returns? FATARROW lambda_body
 lambda_returns: ARROW type_expr
 lambda_params: lambda_param (COMMA lambda_param)*
-lambda_param: NAME (COLON type_expr)?
+lambda_param: (VAR | VAL)? NAME (COLON type_expr)?
 lambda_captures: CAPTURES "(" [lambda_capture_list] ")"
 lambda_capture_list: lambda_capture_item (COMMA lambda_capture_item)*
 lambda_capture_item: COPY NAME

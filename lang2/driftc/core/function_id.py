@@ -75,6 +75,7 @@ class FunctionRefKind(Enum):
 	WRAPPER = auto()
 	IMPL = auto()
 	THUNK_OK_WRAP = auto()
+	THUNK_BOUNDARY = auto()
 
 
 @dataclass(frozen=True)

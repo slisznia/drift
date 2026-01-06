@@ -4,7 +4,9 @@ from lang2.driftc.core.function_id import FunctionId
 import pytest
 
 from lang2.codegen.llvm import lower_ssa_func_to_llvm, LlvmModuleBuilder
+from lang2.codegen.llvm.test_utils import host_word_bits
 from lang2.driftc.checker import FnInfo, FnSignature
+from lang2.driftc.stage1 import BinaryOp
 from lang2.driftc.stage2 import (
 	BasicBlock,
 	ConstructError,
@@ -13,10 +15,13 @@ from lang2.driftc.stage2 import (
 	ConstructResultErr,
 	ErrorAttrsGetDV,
 	DVAsInt,
-	OptionalIsSome,
-	OptionalValue,
+	BinaryOpInstr,
+	VariantGetField,
+	VariantTag,
 	IfTerminator,
 	ConstInt,
+	ConstUint,
+	ConstUint64,
 	ConstString,
 	MirFunc,
 	Return,
@@ -29,6 +34,10 @@ def test_error_attrs_lookup_lowered_to_runtime_call():
 	table = TypeTable()
 	int_ty = table.ensure_int()
 	err_ty = table.ensure_error()
+	opt_int_ty = table.new_optional(int_ty)
+	opt_int_inst = table.get_variant_instance(opt_int_ty)
+	assert opt_int_inst is not None
+	opt_int_some_tag = next(a.tag for a in opt_int_inst.arms if a.name == "Some")
 	fnres_ty = table.new_fnresult(int_ty, err_ty)
 	sig = FnSignature(name="f", param_type_ids=[], return_type_id=fnres_ty, declared_can_throw=True)
 	fn_info = FnInfo(fn_id=FunctionId(module="main", name="f", ordinal=0), name="f", declared_can_throw=True, return_type_id=fnres_ty, signature=sig)
@@ -36,7 +45,7 @@ def test_error_attrs_lookup_lowered_to_runtime_call():
 	entry = BasicBlock(
 		name="entry",
 	instructions=[
-		ConstInt(dest="code", value=1),
+		ConstUint64(dest="code", value=1),
 		ConstString(dest="ename", value="m:Evt"),
 		ConstString(dest="key", value="k"),
 		ConstructDV(dest="dv", dv_type_name="Missing", args=[]),
@@ -49,8 +58,8 @@ def test_error_attrs_lookup_lowered_to_runtime_call():
 	mir = MirFunc(fn_id=FunctionId(module="main", name="f", ordinal=0), name="f", params=[], locals=[], blocks={"entry": entry}, entry="entry")
 	ssa = MirToSSA().run(mir)
 
-	mod = LlvmModuleBuilder()
-	mod.emit_func(lower_ssa_func_to_llvm(mir, ssa, fn_info, type_table=table))
+	mod = LlvmModuleBuilder(word_bits=host_word_bits())
+	mod.emit_func(lower_ssa_func_to_llvm(mir, ssa, fn_info, type_table=table, word_bits=host_word_bits()))
 	ir = mod.render()
 
 	assert "declare void @__exc_attrs_get_dv" in ir
@@ -64,6 +73,9 @@ def test_dv_as_int_returns_optional_int():
 	err_ty = table.ensure_error()
 	dv_ty = table.ensure_diagnostic_value()
 	opt_int_ty = table.new_optional(int_ty)
+	opt_int_inst = table.get_variant_instance(opt_int_ty)
+	assert opt_int_inst is not None
+	opt_int_some_tag = next(a.tag for a in opt_int_inst.arms if a.name == "Some")
 	fnres_ty = table.new_fnresult(int_ty, err_ty)
 	sig = FnSignature(name="g", param_type_ids=[], return_type_id=fnres_ty, declared_can_throw=True)
 	fn_info = FnInfo(fn_id=FunctionId(module="main", name="g", ordinal=0), name="g", declared_can_throw=True, return_type_id=fnres_ty, signature=sig)
@@ -71,7 +83,7 @@ def test_dv_as_int_returns_optional_int():
 	entry = BasicBlock(
 		name="entry",
 	instructions=[
-		ConstInt(dest="code", value=2),
+		ConstUint64(dest="code", value=2),
 		ConstString(dest="ename", value="m:Evt"),
 		ConstString(dest="key", value="k"),
 		ConstructDV(dest="dv", dv_type_name="Missing", args=[]),
@@ -85,8 +97,8 @@ def test_dv_as_int_returns_optional_int():
 	mir = MirFunc(fn_id=FunctionId(module="main", name="g", ordinal=0), name="g", params=[], locals=[], blocks={"entry": entry}, entry="entry")
 	ssa = MirToSSA().run(mir)
 
-	mod = LlvmModuleBuilder()
-	mod.emit_func(lower_ssa_func_to_llvm(mir, ssa, fn_info, type_table=table))
+	mod = LlvmModuleBuilder(word_bits=host_word_bits())
+	mod.emit_func(lower_ssa_func_to_llvm(mir, ssa, fn_info, type_table=table, word_bits=host_word_bits()))
 	ir = mod.render()
 
 	assert "declare" in ir  # basic sanity
@@ -105,7 +117,7 @@ def test_error_additional_attr_lowered_to_runtime_call():
 	entry = BasicBlock(
 		name="entry",
 	instructions=[
-		ConstInt(dest="code", value=3),
+		ConstUint64(dest="code", value=3),
 		ConstString(dest="ename", value="m:Evt"),
 		ConstString(dest="k1", value="a"),
 		ConstInt(dest="v1", value=10),
@@ -122,8 +134,8 @@ def test_error_additional_attr_lowered_to_runtime_call():
 	mir = MirFunc(fn_id=FunctionId(module="main", name="h", ordinal=0), name="h", params=[], locals=[], blocks={"entry": entry}, entry="entry")
 	ssa = MirToSSA().run(mir)
 
-	mod = LlvmModuleBuilder()
-	mod.emit_func(lower_ssa_func_to_llvm(mir, ssa, fn_info, type_table=table))
+	mod = LlvmModuleBuilder(word_bits=host_word_bits())
+	mod.emit_func(lower_ssa_func_to_llvm(mir, ssa, fn_info, type_table=table, word_bits=host_word_bits()))
 	ir = mod.render()
 
 	assert "call void @drift_error_add_attr_dv" in ir
@@ -133,6 +145,10 @@ def test_error_attr_round_trip_additional_key():
 	table = TypeTable()
 	int_ty = table.ensure_int()
 	err_ty = table.ensure_error()
+	opt_int_ty = table.new_optional(int_ty)
+	opt_int_inst = table.get_variant_instance(opt_int_ty)
+	assert opt_int_inst is not None
+	opt_int_some_tag = next(a.tag for a in opt_int_inst.arms if a.name == "Some")
 
 	sig = FnSignature(name="attr_round_trip", param_type_ids=[], return_type_id=int_ty, declared_can_throw=False)
 	fn_info = FnInfo(fn_id=FunctionId(module="main", name="attr_round_trip", ordinal=0), name="attr_round_trip", declared_can_throw=False, return_type_id=int_ty, signature=sig)
@@ -140,7 +156,7 @@ def test_error_attr_round_trip_additional_key():
 	entry = BasicBlock(
 		name="entry",
 		instructions=[
-			ConstInt(dest="code", value=4),
+		ConstUint64(dest="code", value=4),
 			ConstString(dest="ename", value="m:Evt"),
 			ConstString(dest="payload_key", value="k"),
 			ConstInt(dest="payload_int", value=0),
@@ -152,14 +168,16 @@ def test_error_attr_round_trip_additional_key():
 			ErrorAddAttrDV(error="err", key="attr_key", value="attr_dv"),
 			ErrorAttrsGetDV(dest="dv_out", error="err", key="attr_key"),
 			DVAsInt(dest="opt", dv="dv_out"),
-			OptionalIsSome(dest="some", opt="opt"),
+			VariantTag(dest="tag", variant="opt", variant_ty=opt_int_ty),
+			ConstUint(dest="tag_some", value=opt_int_some_tag),
+			BinaryOpInstr(dest="some", op=BinaryOp.EQ, left="tag", right="tag_some"),
 		],
 		terminator=IfTerminator(cond="some", then_target="then", else_target="else"),
 	)
 	then_block = BasicBlock(
 		name="then",
 		instructions=[
-			OptionalValue(dest="val", opt="opt"),
+			VariantGetField(dest="val", variant="opt", variant_ty=opt_int_ty, ctor="Some", field_index=0, field_ty=int_ty),
 		],
 		terminator=Return(value="val"),
 	)
@@ -178,8 +196,8 @@ def test_error_attr_round_trip_additional_key():
 	)
 	ssa = MirToSSA().run(mir)
 
-	mod = LlvmModuleBuilder()
-	mod.emit_func(lower_ssa_func_to_llvm(mir, ssa, fn_info, type_table=table))
+	mod = LlvmModuleBuilder(word_bits=host_word_bits())
+	mod.emit_func(lower_ssa_func_to_llvm(mir, ssa, fn_info, type_table=table, word_bits=host_word_bits()))
 	ir = mod.render()
 
 	assert "call %DriftDiagnosticValue @drift_dv_int" in ir
@@ -188,5 +206,4 @@ def test_error_attr_round_trip_additional_key():
 	assert "call void @__exc_attrs_get_dv" in ir
 	assert "@drift_dv_as_int" in ir
 	assert "%DriftOptionalInt" in ir
-	assert "extractvalue %DriftOptionalInt %opt, 0" in ir
-	assert "extractvalue %DriftOptionalInt %opt, 1" in ir
+	assert "Variant_" in ir

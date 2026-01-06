@@ -2,23 +2,27 @@ from lang2.driftc.core.function_id import FunctionId
 # vim: set noexpandtab: -*- indent-tabs-mode: t -*-
 # author: Sławomir Liszniański; created: 2025-12-07
 """
-LLVM lowering for array MIR ops: ArrayLit + ArrayIndexLoad/Store.
+LLVM lowering for array MIR ops: ArrayAlloc/ElemInit + ArrayIndexLoad/ElemAssign.
 """
 
 from lang2.driftc.checker import FnInfo, FnSignature
 from lang2.driftc.core.types_core import TypeTable
 from lang2.driftc.stage2 import (
 	ArrayIndexLoad,
-	ArrayIndexStore,
-	ArrayLit,
+	ArrayElemAssign,
+	ArrayElemInitUnchecked,
+	ArrayAlloc,
 	ArrayLen,
+	ArraySetLen,
 	BasicBlock,
 	ConstInt,
+	ConstUint,
 	MirFunc,
 	Return,
 )
 from lang2.driftc.stage4.ssa import MirToSSA
 from lang2.codegen.llvm import lower_ssa_func_to_llvm
+from lang2.codegen.llvm.test_utils import host_word_bits
 
 
 def _int_types():
@@ -36,9 +40,17 @@ def test_array_literal_and_index_ir_contains_alloc_and_load():
 		instructions=[
 			ConstInt(dest="t1", value=1),
 			ConstInt(dest="t2", value=2),
-			ArrayLit(dest="t3", elem_ty=int_ty, elements=["t1", "t2"]),
-			ArrayIndexLoad(dest="t4", elem_ty=int_ty, array="t3", index="t1"),
-			ArrayLen(dest="t5", array="t3"),
+			ConstInt(dest="i0", value=0),
+			ConstInt(dest="i1", value=1),
+			ConstUint(dest="tlen0", value=0),
+			ConstUint(dest="tlen", value=2),
+			ConstUint(dest="tcap", value=2),
+			ArrayAlloc(dest="t3", elem_ty=int_ty, length="tlen0", cap="tcap"),
+			ArrayElemInitUnchecked(elem_ty=int_ty, array="t3", index="i0", value="t1"),
+			ArrayElemInitUnchecked(elem_ty=int_ty, array="t3", index="i1", value="t2"),
+			ArraySetLen(dest="t3_len", array="t3", length="tlen"),
+			ArrayIndexLoad(dest="t4", elem_ty=int_ty, array="t3_len", index="t1"),
+			ArrayLen(dest="t5", array="t3_len"),
 		],
 		terminator=Return(value="t4"),
 	)
@@ -47,15 +59,12 @@ def test_array_literal_and_index_ir_contains_alloc_and_load():
 	ssa = MirToSSA().run(func)
 	sig = FnSignature(name="f", return_type_id=int_ty, param_type_ids=[])
 	fn_info = FnInfo(fn_id=fn_id, name="f", declared_can_throw=False, signature=sig, return_type_id=int_ty)
-	ir = lower_ssa_func_to_llvm(func, ssa, fn_info, {fn_id: fn_info})
+	ir = lower_ssa_func_to_llvm(func, ssa, fn_info, {fn_id: fn_info}, type_table=table, word_bits=host_word_bits())
 	assert "declare i8* @drift_alloc_array" in ir
 	assert "call i8* @drift_alloc_array" in ir
-	assert "drift_bounds_check_fail" in ir
-	assert "br i1" in ir
-	assert "unreachable" in ir
-	assert "sext" not in ir
-	assert "getelementptr inbounds i64" in ir
-	assert "extractvalue { %drift.size, %drift.size, i64* } %t3, 0" in ir
+	assert "drift_bounds_check" in ir
+	assert "getelementptr %drift.isize" in ir
+	assert "extractvalue { %drift.usize, %drift.usize, %drift.isize* }" in ir
 
 
 def test_array_index_store_ir_contains_store():
@@ -65,8 +74,16 @@ def test_array_index_store_ir_contains_store():
 		instructions=[
 			ConstInt(dest="t1", value=1),
 			ConstInt(dest="t2", value=2),
-			ArrayLit(dest="t3", elem_ty=int_ty, elements=["t1", "t2"]),
-			ArrayIndexStore(elem_ty=int_ty, array="t3", index="t1", value="t2"),
+			ConstInt(dest="i0", value=0),
+			ConstInt(dest="i1", value=1),
+			ConstUint(dest="tlen0", value=0),
+			ConstUint(dest="tlen", value=2),
+			ConstUint(dest="tcap", value=2),
+			ArrayAlloc(dest="t3", elem_ty=int_ty, length="tlen0", cap="tcap"),
+			ArrayElemInitUnchecked(elem_ty=int_ty, array="t3", index="i0", value="t1"),
+			ArrayElemInitUnchecked(elem_ty=int_ty, array="t3", index="i1", value="t2"),
+			ArraySetLen(dest="t3_len", array="t3", length="tlen"),
+			ArrayElemAssign(elem_ty=int_ty, array="t3_len", index="t1", value="t2"),
 		],
 		terminator=Return(value="t1"),
 	)
@@ -75,7 +92,6 @@ def test_array_index_store_ir_contains_store():
 	ssa = MirToSSA().run(func)
 	sig = FnSignature(name="f", return_type_id=int_ty, param_type_ids=[])
 	fn_info = FnInfo(fn_id=fn_id, name="f", declared_can_throw=False, signature=sig, return_type_id=int_ty)
-	ir = lower_ssa_func_to_llvm(func, ssa, fn_info, {fn_id: fn_info})
-	assert "drift_bounds_check_fail" in ir
-	assert "store i64 %t2" in ir
-	assert "sext" not in ir
+	ir = lower_ssa_func_to_llvm(func, ssa, fn_info, {fn_id: fn_info}, type_table=table, word_bits=host_word_bits())
+	assert "drift_bounds_check" in ir
+	assert "store %drift.isize %t2" in ir

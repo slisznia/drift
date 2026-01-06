@@ -78,6 +78,7 @@ class FnSignature:
 	is_extern: bool = False
 	is_intrinsic: bool = False
 	param_names: Optional[list[str]] = None
+	param_mutable: Optional[list[bool]] = None
 	param_nonretaining: Optional[list[Optional[bool]]] = None
 	error_type_id: Optional[TypeId] = None  # resolved error TypeId
 	# Method metadata (set when the declaration comes from an `implement Type` block).
@@ -1013,6 +1014,16 @@ class Checker:
 				)
 			)
 
+		def report_error_attr_key_not_string(self) -> None:
+			self._append_diag(
+				_chk_diag(
+					message="Error.attrs expects a String key",
+					severity="error",
+					span=None,
+					code="E-ERROR-ATTR-KEY-NOT-STRING",
+				)
+			)
+
 		def report_index_subject_not_array(self) -> None:
 			self._append_diag(
 				_chk_diag(
@@ -1136,6 +1147,27 @@ class Checker:
 				return self._infer_expr_type(expr.subject)
 
 			if isinstance(expr, H.HCall) and isinstance(expr.fn, H.HVar):
+				if self.call_info_by_callsite_id is None:
+					self._append_diag(
+						_chk_diag(
+							message="internal: missing CallInfo map for call typing (checker bug)",
+							severity="error",
+							span=getattr(expr, "loc", None),
+						)
+					)
+					return None
+				info = self.call_info_by_callsite_id.get(getattr(expr, "callsite_id", None))
+				if info is None:
+					self._append_diag(
+						_chk_diag(
+							message="internal: missing CallInfo for call typing (checker bug)",
+							severity="error",
+							span=getattr(expr, "loc", None),
+						)
+					)
+					return None
+				return info.sig.user_ret_type
+			if isinstance(expr, (H.HMethodCall, H.HInvoke)):
 				if self.call_info_by_callsite_id is None:
 					self._append_diag(
 						_chk_diag(
@@ -1388,7 +1420,7 @@ class Checker:
 						if idx_ty is not None:
 							idx_def = self.table.get(idx_ty)
 							if idx_def.name != "String":
-								self.report_index_not_int()
+								self.report_error_attr_key_not_string()
 						return checker._dv
 				subject_ty = self._infer_expr_type(expr.subject)
 				idx_ty = self._infer_expr_type(expr.index)
@@ -1445,11 +1477,12 @@ class Checker:
 							self._append_diag(
 								_chk_diag(
 									message=(
-										"E-TRYEXPR-CONTROLFLOW: control-flow statement not allowed in try-expression "
-										"catch block; use statement try { ... } catch { ... } instead"
+										"control-flow statement not allowed in try-expression catch block; "
+										"use statement try { ... } catch { ... } instead"
 									),
 									severity="error",
 									span=getattr(stmt, "loc", arm_span),
+									code="E-TRYEXPR-CONTROLFLOW",
 								)
 							)
 							return None
@@ -2609,6 +2642,8 @@ class Checker:
 			ArrayIndexLoad,
 			ArrayLen,
 			ArrayCap,
+			ArrayAlloc,
+			ArraySetLen,
 			StringLen,
 		)
 		value_types: Dict[tuple[FunctionId, str], TypeId] = {}
@@ -2792,6 +2827,16 @@ class Checker:
 								changed = True
 						elif isinstance(instr, ArrayLit) and dest is not None:
 							arr_ty = self._type_table.new_array(instr.elem_ty)
+							if value_types.get((fn_id, dest)) != arr_ty:
+								value_types[(fn_id, dest)] = arr_ty
+								changed = True
+						elif isinstance(instr, ArrayAlloc) and dest is not None:
+							arr_ty = self._type_table.new_array(instr.elem_ty)
+							if value_types.get((fn_id, dest)) != arr_ty:
+								value_types[(fn_id, dest)] = arr_ty
+								changed = True
+						elif isinstance(instr, ArraySetLen) and dest is not None:
+							arr_ty = ty_for(fn_id, instr.array)
 							if value_types.get((fn_id, dest)) != arr_ty:
 								value_types[(fn_id, dest)] = arr_ty
 								changed = True

@@ -2,7 +2,7 @@
   "description": "e2e: bad index",
   "diagnostics": [
     {
-      "message_contains": "array index must be an integer type"
+      "message_contains": "array index must be an Int"
     }
   ],
   "exit_code": 1,

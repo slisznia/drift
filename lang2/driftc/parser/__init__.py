@@ -161,12 +161,6 @@ def _prime_builtins(table: TypeTable) -> None:
 	table.ensure_error()
 	table.ensure_diagnostic_value()
 	# Seed commonly used derived types so TypeIds are stable across builds.
-	#
-	# MVP: DV accessors return Optional<Int/Bool/String>, so we ensure those
-	# instantiations exist even if a particular module doesn't use them directly.
-	table.new_optional(table.ensure_int())
-	table.new_optional(table.ensure_bool())
-	table.new_optional(table.ensure_string())
 
 
 def _type_expr_to_str(typ: parser_ast.TypeExpr) -> str:
@@ -194,11 +188,19 @@ def _type_expr_key(typ: parser_ast.TypeExpr) -> tuple[object | None, str, tuple]
 	return (qual, typ.name, tuple(_type_expr_key(a) for a in getattr(typ, "args", []) or []))
 
 
+def _trait_subject_key(subject: object) -> object:
+	if isinstance(subject, parser_ast.SelfRef):
+		return ("self",)
+	if isinstance(subject, parser_ast.TypeNameRef):
+		return ("name", subject.name)
+	return ("name", subject)
+
+
 def _trait_expr_key(expr: parser_ast.TraitExpr | None) -> tuple | None:
 	if expr is None:
 		return None
 	if isinstance(expr, parser_ast.TraitIs):
-		return ("is", expr.subject, _type_expr_key(expr.trait))
+		return ("is", _trait_subject_key(expr.subject), _type_expr_key(expr.trait))
 	if isinstance(expr, parser_ast.TraitAnd):
 		return ("and", _trait_expr_key(expr.left), _trait_expr_key(expr.right))
 	if isinstance(expr, parser_ast.TraitOr):
@@ -263,13 +265,20 @@ def _generic_type_expr_from_parser(
 
 def _convert_expr(expr: parser_ast.Expr) -> s0.Expr:
 	"""Convert parser AST expressions into lang2.driftc.stage0 AST expressions."""
+	def _convert_trait_subject(subject: object) -> object:
+		if isinstance(subject, parser_ast.SelfRef):
+			return s0.SelfRef(loc=Span.from_loc(getattr(subject, "loc", None)))
+		if isinstance(subject, parser_ast.TypeNameRef):
+			return s0.TypeNameRef(name=subject.name, loc=Span.from_loc(getattr(subject, "loc", None)))
+		return subject
+
 	if isinstance(expr, parser_ast.Literal):
 		return s0.Literal(value=expr.value, loc=Span.from_loc(getattr(expr, "loc", None)))
 	if isinstance(expr, parser_ast.Name):
 		return s0.Name(ident=expr.ident, loc=Span.from_loc(getattr(expr, "loc", None)))
 	if isinstance(expr, parser_ast.TraitIs):
 		return s0.TraitIs(
-			subject=expr.subject,
+			subject=_convert_trait_subject(expr.subject),
 			trait=expr.trait,
 			loc=Span.from_loc(getattr(expr, "loc", None)),
 		)
@@ -295,6 +304,7 @@ def _convert_expr(expr: parser_ast.Expr) -> s0.Expr:
 			s0.Param(
 				name=p.name,
 				type_expr=p.type_expr,
+				mutable=bool(getattr(p, "mutable", False)),
 				loc=Span.from_loc(getattr(p, "loc", None)),
 			)
 			for p in expr.params
@@ -381,6 +391,8 @@ def _convert_expr(expr: parser_ast.Expr) -> s0.Expr:
 		return s0.ArrayLiteral(elements=[_convert_expr(e) for e in expr.elements], loc=Span.from_loc(getattr(expr, "loc", None)))
 	if isinstance(expr, parser_ast.Move):
 		return s0.Move(value=_convert_expr(expr.value), loc=Span.from_loc(getattr(expr, "loc", None)))
+	if isinstance(expr, parser_ast.Copy):
+		return s0.Copy(value=_convert_expr(expr.value), loc=Span.from_loc(getattr(expr, "loc", None)))
 	if isinstance(expr, parser_ast.Placeholder):
 		return s0.Placeholder(loc=Span.from_loc(getattr(expr, "loc", None)))
 	if isinstance(expr, parser_ast.Ternary):
@@ -586,11 +598,14 @@ class _FrontendParam:
 		name: str,
 		type_expr: parser_ast.TypeExpr | None,
 		loc: Optional[parser_ast.Located],
+		*,
+		mutable: bool = False,
 	) -> None:
 		self.name = name
 		# Preserve the parsed type expression so the resolver can build real TypeIds.
 		self.type = type_expr
 		self.loc = loc
+		self.mutable = bool(mutable)
 
 
 class _FrontendDecl:
@@ -649,6 +664,7 @@ def _decl_from_parser_fn(
 			p.name,
 			p.type_expr,
 			getattr(p, "loc", None),
+			mutable=bool(getattr(p, "mutable", False)),
 		)
 		for p in fn.params
 	]
@@ -677,9 +693,51 @@ def _diagnostic(message: str, loc: object | None) -> Diagnostic:
 	return _p_diag(message=message, severity="error", span=Span.from_loc(loc))
 
 
+def _is_trait_prop_value_pos_error(err: UnexpectedInput) -> bool:
+	token = getattr(err, "token", None)
+	if token is None or getattr(token, "type", None) != "IS":
+		return False
+	expected = set(getattr(err, "expected", None) or [])
+	if not expected:
+		return False
+	expr_continuations = {
+		"TERMINATOR",
+		"RPAR",
+		"BAR",
+		"OR",
+		"AND",
+		"EQEQ",
+		"NOTEQ",
+		"LT",
+		"LTE",
+		"GT",
+		"GTE",
+		"PLUS",
+		"MINUS",
+		"STAR",
+		"SLASH",
+		"PERCENT",
+		"AMP",
+		"CARET",
+		"PIPE_FWD",
+		"LSHIFT",
+		"SHR",
+		"DOT",
+		"DCOLON",
+		"LSQB",
+		"CALL_TYPE_LT",
+		"QUAL_TYPE_LT",
+		"ARROW",
+		"QMARK",
+	}
+	return bool(expected & expr_continuations)
+
+
 def _parse_error_code(err: UnexpectedInput) -> str | None:
 	expected = getattr(err, "expected", None)
 	token = getattr(err, "token", None)
+	if _is_trait_prop_value_pos_error(err):
+		return "E-TRAIT-PROP-VALUE-POS"
 	if expected and "COMMA" in expected:
 		token_type = getattr(token, "type", None) if token is not None else None
 		if token_type in {"NAME", "DEFAULT"}:
@@ -689,6 +747,12 @@ def _parse_error_code(err: UnexpectedInput) -> str | None:
 	if token is not None and getattr(token, "type", None) == "TERMINATOR":
 		return "E_UNEXPECTED_SEMICOLON_AFTER_COMPOUND"
 	return None
+
+
+def _parse_error_message(err: UnexpectedInput, code: str | None) -> str:
+	if code == "E-TRAIT-PROP-VALUE-POS":
+		return "trait propositions are only allowed in require clauses or if guards"
+	return str(err)
 
 
 def _typeexpr_uses_internal_fnresult(typ: parser_ast.TypeExpr) -> bool:
@@ -867,6 +931,7 @@ def parse_drift_files_to_hir(
 			requires_by_struct={},
 			type_defs={},
 			impl_defs=[],
+			origin_by_fn_id={},
 		)
 		return empty, TypeTable(), {}, [_p_diag(message="no input files", severity="error")]
 
@@ -886,13 +951,14 @@ def parse_drift_files_to_hir(
 			continue
 		except UnexpectedInput as err:
 			code = _parse_error_code(err)
+			message = _parse_error_message(err, code)
 			span = Span(
 				file=str(path),
 				line=getattr(err, "line", None),
 				column=getattr(err, "column", None),
 				raw=err,
 			)
-			diagnostics.append(_p_diag(message=str(err), severity="error", span=span, code=code))
+			diagnostics.append(_p_diag(message=message, severity="error", span=span, code=code))
 			continue
 		programs.append((path, prog))
 
@@ -907,6 +973,7 @@ def parse_drift_files_to_hir(
 			requires_by_struct={},
 			type_defs={},
 			impl_defs=[],
+			origin_by_fn_id={},
 		)
 		return empty, TypeTable(), {}, diagnostics
 
@@ -945,10 +1012,49 @@ def parse_drift_files_to_hir(
 			requires_by_struct={},
 			type_defs={},
 			impl_defs=[],
+			origin_by_fn_id={},
 		)
 		return empty, TypeTable(), {}, diagnostics
 
-	merged, _origins = _merge_module_files(module_id, programs, diagnostics)
+	if len(programs) > 1:
+		offending: list[Path] = []
+		first_span: Span | None = None
+		for path, prog in programs:
+			used = list(getattr(prog, "used_traits", []) or [])
+			if not used:
+				continue
+			offending.append(path)
+			if first_span is None:
+				first_span = _span_in_file(path, getattr(used[0], "loc", None))
+		if offending:
+			notes: list[str] = []
+			if len(offending) > 1:
+				paths = ", ".join(sorted(str(p) for p in offending))
+				notes.append(f"use trait present in: {paths}")
+			diagnostics.append(
+				_p_diag(
+					message="multi-file module build with 'use trait' requires the workspace pipeline for file-scoped traits",
+					severity="error",
+					span=first_span or Span(file=str(offending[0]), line=1, column=1),
+					notes=notes,
+				)
+			)
+		if offending:
+			empty = ModuleLowered(
+				module_id="main",
+				package_id=package_id,
+				func_hirs={},
+				signatures_by_id={},
+				fn_ids_by_name={},
+				requires_by_fn={},
+				requires_by_struct={},
+				type_defs={},
+				impl_defs=[],
+				origin_by_fn_id={},
+			)
+			return empty, TypeTable(), {}, diagnostics
+
+	merged, origins = _merge_module_files(module_id, programs, diagnostics)
 
 	# Lower the merged program using the existing single-file pipeline.
 	func_hirs, sigs, fn_ids, table, excs, impl_metas, diags = _lower_parsed_program_to_hir(
@@ -967,6 +1073,7 @@ def parse_drift_files_to_hir(
 		requires_by_struct=requires_by_struct,
 		type_defs=_collect_type_defs(merged),
 		impl_defs=list(impl_metas),
+		origin_by_fn_id=origins,
 	)
 	return module, table, excs, diags
 
@@ -1046,6 +1153,8 @@ def _merge_module_files(
 	first_struct: dict[str, tuple[Path, object | None]] = {}
 	for path, prog in files:
 		for s in getattr(prog, "structs", []) or []:
+			if getattr(s, "loc", None) is not None:
+				s.loc = _span_in_file(path, getattr(s, "loc", None))
 			if s.name in first_struct:
 				first_path, first_loc = first_struct[s.name]
 				diagnostics.extend(
@@ -1103,6 +1212,11 @@ def _merge_module_files(
 	first_trait: dict[str, tuple[Path, object | None]] = {}
 	for path, prog in files:
 		for tr in getattr(prog, "traits", []) or []:
+			if getattr(tr, "loc", None) is not None:
+				tr.loc = _span_in_file(path, getattr(tr, "loc", None))
+			for m in getattr(tr, "methods", []) or []:
+				if getattr(m, "loc", None) is not None:
+					m.loc = _span_in_file(path, getattr(m, "loc", None))
 			if tr.name in first_trait:
 				first_path, first_loc = first_trait[tr.name]
 				diagnostics.extend(
@@ -1129,6 +1243,8 @@ def _merge_module_files(
 	impls_by_key: dict[tuple[tuple | None, tuple], parser_ast.ImplementDef] = {}
 	for path, prog in files:
 		for impl in getattr(prog, "implements", []) or []:
+			if getattr(impl, "loc", None) is not None:
+				impl.loc = _span_in_file(path, getattr(impl, "loc", None))
 			impl_type_params = list(getattr(impl, "type_params", []) or [])
 			target_key = _impl_target_key(impl.target, impl_type_params)
 			target_str = _type_expr_key_str(impl.target)
@@ -1167,6 +1283,8 @@ def _merge_module_files(
 					)
 				)
 			for m in getattr(impl, "methods", []) or []:
+				if getattr(m, "loc", None) is not None:
+					m.loc = _span_in_file(path, getattr(m, "loc", None))
 				if m.name in free_names:
 					first_path, _first_loc = first_fn[m.name]
 					diagnostics.append(
@@ -1237,6 +1355,8 @@ def parse_drift_workspace_to_hir(
 	if not paths:
 		return {}, TypeTable(), {}, {}, {}, [_p_diag(message="no input files", severity="error")]
 
+	paths = sorted({p.resolve() for p in paths}, key=lambda p: str(p))
+
 	def _effective_module_id(p: parser_ast.Program) -> str:
 		return getattr(p, "module", None) or "main"
 
@@ -1257,13 +1377,14 @@ def parse_drift_workspace_to_hir(
 			continue
 		except UnexpectedInput as err:
 			code = _parse_error_code(err)
+			message = _parse_error_message(err, code)
 			span = Span(
 				file=str(path),
 				line=getattr(err, "line", None),
 				column=getattr(err, "column", None),
 				raw=err,
 			)
-			diagnostics.append(_p_diag(message=str(err), severity="error", span=span, code=code))
+			diagnostics.append(_p_diag(message=message, severity="error", span=span, code=code))
 			continue
 		parsed.append((path, prog))
 
@@ -1413,6 +1534,19 @@ def parse_drift_workspace_to_hir(
 		merged, origins = _merge_module_files(mid, files, diagnostics)
 		merged_programs[mid] = merged
 		origin_by_module[mid] = origins
+	source_modules = set(merged_programs.keys())
+	if isinstance(external_module_packages, dict):
+		override_modules = sorted(mod for mod in external_module_packages.keys() if mod in source_modules)
+		if override_modules:
+			diagnostics.append(
+				_p_diag(
+					message=(
+						"external module package mapping may not override source modules: "
+						+ ", ".join(override_modules)
+					),
+					severity="error",
+				)
+			)
 
 	if any(d.severity == "error" for d in diagnostics):
 		return {}, TypeTable(), {}, {}, {}, diagnostics
@@ -1955,12 +2089,14 @@ def parse_drift_workspace_to_hir(
 		for target_mod, ex_span in (star_reexports_by_module.get(mid) or {}).items():
 			dep_edges[mid].append((target_mod, ex_span))
 
-	# Resolve `use trait ...` directives into per-module trait scopes.
-	trait_scope_by_module: dict[str, list[TraitKey]] = {mid: [] for mid in merged_programs}
-	trait_scope_seen: dict[str, set[TraitKey]] = {mid: set() for mid in merged_programs}
+	# Resolve `use trait ...` directives into per-file trait scopes.
+	trait_scope_by_file: dict[Path, list[TraitKey]] = {}
+	trait_scope_seen_by_file: dict[Path, set[TraitKey]] = {}
 	module_packages_for_scope: dict[str, str] = {}
 	if isinstance(external_module_packages, dict):
 		for mod, pkg in external_module_packages.items():
+			if mod in merged_programs:
+				continue
 			if isinstance(mod, str) and isinstance(pkg, str):
 				module_packages_for_scope.setdefault(mod, pkg)
 	if package_id is not None:
@@ -2046,14 +2182,31 @@ def parse_drift_workspace_to_hir(
 				origin_mod, origin_name = _resolve_trait_origin(mod, tr.name)
 				origin_pkg = module_packages_for_scope.get(origin_mod, package_id)
 				key = TraitKey(package_id=origin_pkg, module=origin_mod, name=origin_name)
-				if key in trait_scope_seen[mid]:
+				seen = trait_scope_seen_by_file.setdefault(path, set())
+				if key in seen:
 					continue
-				trait_scope_seen[mid].add(key)
+				seen.add(key)
+				trait_scope_by_file.setdefault(path, []).append(key)
+
+	trait_scope_by_module: dict[str, list[TraitKey]] = {mid: [] for mid in merged_programs}
+	trait_scope_seen_by_module: dict[str, set[TraitKey]] = {mid: set() for mid in merged_programs}
+	for mid, files in by_module.items():
+		for path, _prog in files:
+			for key in trait_scope_by_file.get(path, []):
+				seen = trait_scope_seen_by_module[mid]
+				if key in seen:
+					continue
+				seen.add(key)
 				trait_scope_by_module[mid].append(key)
 
-	for mid, traits in trait_scope_by_module.items():
+	for mid in merged_programs:
 		if mid in module_exports:
-			module_exports[mid]["trait_scope"] = list(traits)
+			module_exports[mid]["trait_scope"] = list(trait_scope_by_module.get(mid, []))
+			file_scopes = {
+				str(path): list(traits) for path, traits in trait_scope_by_file.items() if path in dict(by_module.get(mid, []))
+			}
+			if file_scopes:
+				module_exports[mid]["trait_scope_by_file"] = file_scopes
 
 	# Collapse edge lists into a simple adjacency set for cycle detection.
 	# Include external modules so visibility rules can see package imports.
@@ -2380,6 +2533,8 @@ def parse_drift_workspace_to_hir(
 		shared_type_table.package_id = package_id
 	if isinstance(external_module_packages, dict):
 		for mod, pkg in external_module_packages.items():
+			if mod in merged_programs:
+				continue
 			if not isinstance(mod, str) or not isinstance(pkg, str):
 				continue
 			shared_type_table.module_packages.setdefault(mod, pkg)
@@ -2987,6 +3142,7 @@ def parse_drift_workspace_to_hir(
 			requires_by_struct=requires_by_struct_by_module.get(mid, {}),
 			type_defs=type_defs_by_module.get(mid, {}),
 			impl_defs=impls_by_module.get(mid, []),
+			origin_by_fn_id=origin_by_module.get(mid, {}),
 		)
 
 	return modules, shared_type_table, exc_catalog, module_exports, deps, diagnostics
@@ -3023,6 +3179,7 @@ def _lower_parsed_program_to_hir(
 	diagnostics = list(diagnostics or [])
 	module_name = getattr(prog, "module", None)
 	module_id = module_name or "main"
+	type_table = type_table or TypeTable()
 	if package_id is not None:
 		type_table.module_packages.setdefault(module_id, package_id)
 	func_hirs: Dict[FunctionId, H.HBlock] = {}
@@ -3045,7 +3202,6 @@ def _lower_parsed_program_to_hir(
 	# Build a TypeTable early so we can register user-defined type names (structs)
 	# before resolving function signatures. This prevents `resolve_opaque_type`
 	# from minting unrelated placeholder TypeIds for struct names.
-	type_table = type_table or TypeTable()
 	if package_id is not None:
 		type_table.package_id = package_id
 	_prime_builtins(type_table)
@@ -3056,6 +3212,7 @@ def _lower_parsed_program_to_hir(
 		diagnostics=diagnostics,
 		package_id=package_id,
 		module_packages=getattr(type_table, "module_packages", None),
+		diag_phase="parser",
 	)
 	trait_worlds = getattr(type_table, "trait_worlds", None)
 	if not isinstance(trait_worlds, dict):
@@ -3086,7 +3243,7 @@ def _lower_parsed_program_to_hir(
 		if val is None:
 			diagnostics.append(
 				_p_diag(
-					phase="typecheck",
+					phase="parser",
 					message=(
 						f"const '{c.name}' initializer must be a compile-time literal in MVP "
 						"(Int/Uint/Bool/String/Float, optionally with unary '+' or '-')"
@@ -3115,7 +3272,7 @@ def _lower_parsed_program_to_hir(
 		if not ok:
 			diagnostics.append(
 				_p_diag(
-					phase="typecheck",
+					phase="parser",
 					message=f"const '{c.name}' declared type does not match initializer value",
 					severity="error",
 					span=Span.from_loc(getattr(c, "loc", None)),
@@ -3355,6 +3512,7 @@ def _lower_parsed_program_to_hir(
 					p.name,
 					p.type_expr,
 					getattr(p, "loc", None),
+					mutable=bool(getattr(p, "mutable", False)),
 				)
 				for p in fn.params
 			]
@@ -3502,6 +3660,7 @@ def parse_drift_to_hir(
 			requires_by_struct={},
 			type_defs={},
 			impl_defs=[],
+			origin_by_fn_id={},
 		)
 		return empty, TypeTable(), {}, [_p_diag(message=str(err), severity="error", span=_span_in_file(path, err.loc))]
 	except _parser.QualifiedMemberParseError as err:
@@ -3515,10 +3674,12 @@ def parse_drift_to_hir(
 			requires_by_struct={},
 			type_defs={},
 			impl_defs=[],
+			origin_by_fn_id={},
 		)
 		return empty, TypeTable(), {}, [_p_diag(message=str(err), severity="error", span=_span_in_file(path, err.loc))]
 	except UnexpectedInput as err:
 		code = _parse_error_code(err)
+		message = _parse_error_message(err, code)
 		span = Span(
 			file=str(path),
 			line=getattr(err, "line", None),
@@ -3535,8 +3696,9 @@ def parse_drift_to_hir(
 			requires_by_struct={},
 			type_defs={},
 			impl_defs=[],
+			origin_by_fn_id={},
 		)
-		return empty, TypeTable(), {}, [_p_diag(message=str(err), severity="error", span=span, code=code)]
+		return empty, TypeTable(), {}, [_p_diag(message=message, severity="error", span=span, code=code)]
 	func_hirs, sigs, fn_ids, table, excs, impl_metas, diags = _lower_parsed_program_to_hir(
 		prog,
 		diagnostics=[],
@@ -3554,6 +3716,7 @@ def parse_drift_to_hir(
 		requires_by_struct=requires_by_struct,
 		type_defs=_collect_type_defs(prog),
 		impl_defs=list(impl_metas),
+		origin_by_fn_id={fn_id: path for fn_id in func_hirs.keys()},
 	)
 	return module, table, excs, diags
 

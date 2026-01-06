@@ -109,6 +109,7 @@ class TypeExpr:
 class Param:
 	name: str
 	type_expr: TypeExpr | None
+	mutable: bool = False
 
 
 @dataclass
@@ -230,10 +231,32 @@ class TraitExpr(Expr):
     pass
 
 
+class TraitSubject(Expr):
+    """Trait subject reference (Self or a type name)."""
+    pass
+
+
+@dataclass
+class SelfRef(TraitSubject):
+    loc: Located
+
+    def __hash__(self) -> int:
+        return hash("Self")
+
+
+@dataclass
+class TypeNameRef(TraitSubject):
+    loc: Located
+    name: str
+
+    def __hash__(self) -> int:
+        return hash(self.name)
+
+
 @dataclass
 class TraitIs(TraitExpr):
     loc: Located
-    subject: str
+    subject: object
     trait: TypeExpr
 
 
@@ -377,6 +400,12 @@ class Unary(Expr):
 
 @dataclass
 class Move(Expr):
+    loc: Located
+    value: Expr
+
+
+@dataclass
+class Copy(Expr):
     loc: Located
     value: Expr
 

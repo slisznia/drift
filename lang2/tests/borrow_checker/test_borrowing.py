@@ -37,7 +37,7 @@ def test_borrow_from_moved_value_is_error():
 	block = H.HBlock(
 		statements=[
 			H.HLet(name="x", value=H.HLiteralInt(1), declared_type_expr=None),
-			H.HExprStmt(expr=H.HVar("x")),  # move
+			H.HExprStmt(expr=H.HMove(subject=H.HVar("x"))),  # move
 			H.HExprStmt(expr=H.HBorrow(subject=H.HVar("x"), is_mut=False)),  # borrow moved
 		]
 	)
@@ -90,11 +90,43 @@ def test_move_while_borrowed_reports_diagnostic():
 		statements=[
 			H.HLet(name="x", value=H.HLiteralInt(1), declared_type_expr=None),
 			H.HLet(name="r", value=H.HBorrow(subject=H.HVar("x"), is_mut=False), declared_type_expr=None),  # shared loan
-			H.HExprStmt(expr=H.HVar("x")),  # move under loan
+			H.HExprStmt(expr=H.HMove(subject=H.HVar("x"))),  # move under loan
 		]
 	)
 	diags = _checker_with_types({"x": "Unknown", "r": "Unknown"}).check_block(block)
 	assert any("while borrowed" in d.message for d in diags)
+
+
+def test_read_copy_while_mut_borrowed_is_rejected():
+	"""Reading a Copy value while a mutable borrow is live should error."""
+	block = H.HBlock(
+		statements=[
+			H.HLet(name="x", value=H.HLiteralInt(1), declared_type_expr=None),
+			H.HLet(name="r", value=H.HBorrow(subject=H.HVar("x"), is_mut=True), declared_type_expr=None),
+			H.HExprStmt(expr=H.HVar("x")),
+		]
+	)
+	diags = _checker_with_types({"x": "Int"}).check_block(block)
+	assert any("mutably borrowed" in d.message for d in diags)
+
+
+def test_move_in_kwarg_tracked_for_use_after_move():
+	"""Moves in keyword arguments should be tracked for use-after-move."""
+	block = H.HBlock(
+		statements=[
+			H.HLet(name="x", value=H.HLiteralInt(1), declared_type_expr=None),
+			H.HExprStmt(
+				expr=H.HCall(
+					fn=H.HVar("f"),
+					args=[],
+					kwargs=[H.HKwArg(name="v", value=H.HMove(subject=H.HVar("x")))],
+				)
+			),
+			H.HExprStmt(expr=H.HVar("x")),
+		]
+	)
+	diags = _checker_with_types({"x": "Unknown"}).check_block(block)
+	assert any("use after move" in d.message for d in diags)
 
 
 def test_write_while_borrowed_is_rejected():

@@ -56,7 +56,9 @@ def test_type_table_seeds_diagnostic_value_and_optional():
 
 	assert table.get(dv_ty).kind is TypeKind.DIAGNOSTICVALUE
 	assert dv_ty == table.ensure_diagnostic_value()
-	assert table.get(opt_int).kind is TypeKind.OPTIONAL
-	assert table.get(opt_int).param_types == [table.ensure_int()]
+	assert table.get(opt_int).kind is TypeKind.VARIANT
+	inst = table.get_variant_instance(opt_int)
+	assert inst is not None
+	assert inst.type_args == [table.ensure_int()]
 	# Optional cache should reuse the same id for the same inner.
 	assert opt_int == opt_int_again
