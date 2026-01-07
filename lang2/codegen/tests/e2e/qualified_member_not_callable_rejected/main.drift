@@ -1,9 +1,11 @@
-variant Optional<T> {
+module main
+
+variant Maybe<T> {
 	Some(value: T),
 	None,
 }
 
 fn main() nothrow -> Int{
-	val f = Optional::Some;
+	val f = Maybe::Some;
 	return 0;
 }

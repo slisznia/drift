@@ -1,4 +1,6 @@
-struct Holder(r: &Int)
+module main
+
+struct Holder(r: &Int);
 
 fn main() nothrow -> Int{
 	return 0;

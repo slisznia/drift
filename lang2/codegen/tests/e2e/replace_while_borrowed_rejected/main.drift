@@ -1,5 +1,7 @@
+module main
+
 import std.mem as mem;
-struct Point(x: Int, y: Int)
+struct Point(x: Int, y: Int);
 
 fn main() nothrow -> Int{
 	var p = Point(1, 2);

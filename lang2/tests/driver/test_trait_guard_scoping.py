@@ -83,6 +83,7 @@ def _typecheck_named_fn(
 	paths = sorted(mod_root.rglob("*.drift"))
 	modules, type_table, _exc_catalog, module_exports, module_deps, diagnostics = parse_drift_workspace_to_hir(
 		paths,
+		module_paths=[mod_root],
 	)
 	assert diagnostics == []
 	func_hirs, signatures, fn_ids_by_name = flatten_modules(modules)
@@ -101,14 +102,12 @@ def _typecheck_named_fn(
 		type_table=type_table,
 		module_ids=module_ids,
 	)
-	trait_scope_by_file: dict[str, list[object]] = {}
+	trait_scope_by_module: dict[str, list[object]] = {}
 	for _mod, exp in module_exports.items():
 		if isinstance(exp, dict):
-			scope_by_file = exp.get("trait_scope_by_file", {})
-			if isinstance(scope_by_file, dict):
-				for path, traits in scope_by_file.items():
-					if isinstance(path, str) and isinstance(traits, list):
-						trait_scope_by_file[path] = list(traits)
+			scope = exp.get("trait_scope", [])
+			if isinstance(scope, list):
+				trait_scope_by_module[_mod] = list(scope)
 	linked_world, require_env = build_linked_world(type_table)
 	fn_key = f"{module_name}::{fn_name}"
 	fn_ids = fn_ids_by_name.get(fn_key) or []
@@ -137,7 +136,6 @@ def _typecheck_named_fn(
 				for p in fn_sig.param_types
 			]
 			param_types = {pname: pty for pname, pty in zip(fn_sig.param_names, resolved)}
-	current_file = str(origin_by_fn_id.get(fn_id)) if fn_id in origin_by_fn_id else None
 	visible_mods = _visible_modules_for(module_name, module_deps, module_ids)
 	tc = TypeChecker(type_table=type_table)
 	result = tc.check_function(
@@ -150,12 +148,11 @@ def _typecheck_named_fn(
 		impl_index=impl_index,
 		trait_index=trait_index,
 		trait_impl_index=trait_impl_index,
-		trait_scope_by_file=trait_scope_by_file,
+		trait_scope_by_module=trait_scope_by_module,
 		linked_world=linked_world,
 		require_env=require_env,
 		visible_modules=visible_mods,
 		current_module=module_ids.setdefault(module_name, len(module_ids)),
-		current_file=current_file,
 	)
 	return result
 

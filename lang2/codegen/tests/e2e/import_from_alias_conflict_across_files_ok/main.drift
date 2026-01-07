@@ -1,7 +1,10 @@
 module main
 
+import m_a as a;
+import m_b as b;
+
 export { main };
 
 pub fn main() nothrow -> Int{
-	return (try a() catch { 0 }) + (try b() catch { 0 });
+	return (try a.a() catch { 0 }) + (try b.b() catch { 0 });
 }

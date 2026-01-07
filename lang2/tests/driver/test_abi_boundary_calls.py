@@ -44,7 +44,7 @@ def test_cross_module_exported_call_uses_wrapper_not_impl(tmp_path: Path) -> Non
 				"",
 				"export { Point, make_point };",
 				"",
-				"pub struct Point(x: Int, y: Int)",
+				"pub struct Point(x: Int, y: Int);",
 				"",
 				"pub fn make_point() -> Point {",
 				"\treturn Point(x = 1, y = 2);",

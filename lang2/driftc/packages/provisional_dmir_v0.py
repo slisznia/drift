@@ -16,6 +16,7 @@ Goals:
 from __future__ import annotations
 
 import dataclasses
+import os
 import struct
 from enum import Enum
 from typing import Any, Mapping
@@ -152,8 +153,11 @@ def encode_span(span: Span | None) -> dict[str, Any] | None:
 		span = Span.from_loc(span)
 	if span.file is None and span.line is None and span.column is None and span.end_line is None and span.end_column is None:
 		return None
+	file = span.file
+	if isinstance(file, str) and os.path.isabs(file):
+		file = None
 	return {
-		"file": span.file,
+		"file": file,
 		"line": span.line,
 		"column": span.column,
 		"end_line": span.end_line,

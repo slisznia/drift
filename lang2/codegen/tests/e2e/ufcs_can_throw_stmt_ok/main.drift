@@ -6,7 +6,7 @@ trait Boom {
 	fn boom(self: &Self) -> Void
 }
 
-struct S(x: Int)
+struct S(x: Int);
 
 implement Boom for S {
 	fn boom(self: &S) -> Void {

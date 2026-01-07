@@ -1,0 +1,9 @@
+{
+  "description": "e2e: module root does not constrain declared module id",
+  "exit_code": 0,
+  "stderr": "",
+  "stdout": "",
+  "module_paths": [
+    "."
+  ]
+}

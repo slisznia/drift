@@ -6,7 +6,7 @@ trait Boom {
 	fn boom_value(self: &Self) -> Int
 }
 
-struct S(x: Int)
+struct S(x: Int);
 
 implement Boom for S {
 	fn boom_value(self: &S) -> Int {

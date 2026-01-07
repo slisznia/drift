@@ -1,7 +1,8 @@
-module main
+module m_b
 import lib as lib;
 
+export { b };
 
-fn b() -> Int {
+pub fn b() -> Int {
 	return lib.sub(10, 3);
 }

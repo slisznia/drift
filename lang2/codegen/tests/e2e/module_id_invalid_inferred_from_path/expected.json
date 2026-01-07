@@ -2,7 +2,7 @@
   "description": "e2e: module id invalid inferred from path",
   "diagnostics": [
     {
-      "message_contains": "invalid module id",
+      "message_contains": "module declaration is required for workspace builds",
       "phase": "parser"
     }
   ],

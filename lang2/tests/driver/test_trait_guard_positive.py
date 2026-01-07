@@ -107,14 +107,12 @@ fn main() nothrow -> Int{
 		type_table=type_table,
 		module_ids=module_ids,
 	)
-	trait_scope_by_file: dict[str, list[object]] = {}
+	trait_scope_by_module: dict[str, list[object]] = {}
 	for _mod, exports in module_exports.items():
 		if isinstance(exports, dict):
-			scope_by_file = exports.get("trait_scope_by_file", {})
-			if isinstance(scope_by_file, dict):
-				for path, traits in scope_by_file.items():
-					if isinstance(path, str) and isinstance(traits, list):
-						trait_scope_by_file[path] = list(traits)
+			scope = exports.get("trait_scope", [])
+			if isinstance(scope, list):
+				trait_scope_by_module[_mod] = list(scope)
 	linked_world, require_env = build_linked_world(type_table)
 	main_ids = fn_ids_by_name.get("main") or []
 	assert len(main_ids) == 1
@@ -137,7 +135,7 @@ fn main() nothrow -> Int{
 		impl_index=impl_index,
 		trait_index=trait_index,
 		trait_impl_index=trait_impl_index,
-		trait_scope_by_file=trait_scope_by_file,
+		trait_scope_by_module=trait_scope_by_module,
 		linked_world=linked_world,
 		require_env=require_env,
 		visible_modules=visible_mods,

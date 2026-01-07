@@ -54,7 +54,7 @@ class TypeExpr:
 	#   import lib as x
 	#   val p: x.Point = ...
 	#
-	# The compiler resolves `module_alias` using per-file import bindings and
+	# The compiler resolves `module_alias` using module-scoped import bindings and
 	# then rewrites the type reference to carry a canonical `module_id`.
 	#
 	# Note: once nominal type identity is module-scoped, the compiler must not
@@ -470,8 +470,7 @@ class Program:
 	# Location of the `module ...` declaration (when present).
 	#
 	# This is used to produce pinned diagnostics for module-id mismatch and other
-	# module-directive validation rules. When absent, the file implicitly declares
-	# its inferred module id (driver-level rule when module roots are provided).
+	# module-directive validation rules.
 	module_loc: Optional[Located] = None
 
 

@@ -26,6 +26,8 @@ def test_array_dup_string_uses_retain(tmp_path: Path) -> None:
 	src = tmp_path / "main.drift"
 	src.write_text(
 		"""
+module main
+
 fn main() nothrow -> Int {
 	val xs: Array<String> = ["a", "b"];
 	val ys = xs.dup();
@@ -60,6 +62,8 @@ def test_array_literal_reuses_string_lvalue_retains(tmp_path: Path) -> None:
 	src = tmp_path / "main.drift"
 	src.write_text(
 		"""
+module main
+
 fn main() nothrow -> Int {
 	val s: String = "hi";
 	val xs: Array<String> = [s, s];
@@ -91,6 +95,8 @@ def test_array_index_negative_literal_bounds_check_ir(tmp_path: Path) -> None:
 	src = tmp_path / "main.drift"
 	src.write_text(
 		"""
+module main
+
 fn main() nothrow -> Int {
 	val xs: Array<Int> = [1, 2];
 	val v = xs[-1];

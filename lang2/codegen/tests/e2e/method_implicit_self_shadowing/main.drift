@@ -1,6 +1,6 @@
-module m
+module main
 
-struct Point(x: Int)
+struct Point(x: Int);
 
 implement Point {
 	fn bump_and_sum(self: &mut Point) nothrow -> Int {

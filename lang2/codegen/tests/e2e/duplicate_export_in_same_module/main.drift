@@ -1,4 +1,8 @@
-module m
+module main
+
+export { add };
+export { add };
+
+pub fn add() -> Int { return 1; }
 
 fn main() nothrow -> Int{ return add(); }
-

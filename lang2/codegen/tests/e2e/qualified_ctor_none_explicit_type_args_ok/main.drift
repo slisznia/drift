@@ -1,11 +1,13 @@
-variant Optional<T> {
+module main
+
+variant Maybe<T> {
 	Some(value: T),
 	None,
 }
 
 fn main() nothrow -> Int{
-	val x = Optional<Int>::None();
-	val y = Optional::Some(1);
+	val x = Maybe<Int>::None();
+	val y = Maybe<Int>::Some(1);
 
 	val a = match x{
 	Some(v) => { v },
@@ -17,4 +19,3 @@ fn main() nothrow -> Int{
 	};
 	return a + b;
 }
-

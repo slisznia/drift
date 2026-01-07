@@ -1,6 +1,8 @@
-struct Point(x: Int, y: Int)
+module main
 
-fn bad(p: &Point) -> Void {
+struct Point(x: Int, y: Int);
+
+fn bad(p: &Point) nothrow -> Void {
 	val rx = &mut (*p).x;
 	*rx = *rx + 1;
 }
@@ -10,4 +12,3 @@ fn main() nothrow -> Int{
 	bad(&p);
 	return 0;
 }
-

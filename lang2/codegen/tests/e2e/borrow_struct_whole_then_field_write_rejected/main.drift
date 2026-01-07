@@ -1,4 +1,6 @@
-struct Point(x: Int, y: Int)
+module main
+
+struct Point(x: Int, y: Int);
 
 fn main() nothrow -> Int{
 	var p = Point(1, 2);

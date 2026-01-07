@@ -119,3 +119,30 @@
 - Fixed struct constructor lowering to pass expected field types and record constructed struct types; tightened typed-mode rules (strict vs recover) and gated strict mode on error-free typechecking.
 - Hard-stopped codegen on typecheck errors to avoid partial MIR/SSA emission.
 - Added codegen e2e coverage for two instantiations of the same generic struct in one module.
+
+## 2026-01-06 – Optional consolidation + module/diagnostic policy alignment
+- Consolidated `Optional<T>` as a canonical variant (`None=0`, `Some(T)=1`), removed Optional-specific MIR ops/ABIs, and enforced generic variant copy/dup/drop invariants (including `Optional<Bool>` storage decoding).
+- Pivoted DiagnosticValue optional ABI to out-params + `bool` return, removed `DriftOptional*` runtime structs, and aligned DV ctor/lookup ABI with isize/i8.
+- Tightened type system and IR correctness: forward nominals (no scalar placeholders), reserved builtin names, Byte as a seeded builtin, generic-arg validation, and deterministic variant instantiation caching.
+- Hardened array/iterator semantics (CopyValue insertion, auto-borrow for `iter()`, place-only `next()`, Uint-index compare), and made struct/variant layout deterministic for instantiated types.
+- Enforced module identity from `module <id>` (one file per module), removed multi-file module merges, and switched trait scope/aliasing to module scope only.
+- Removed filesystem paths from diagnostics/DMIR metadata using source labels (`<source>`, `<module>`), updated parsing order for determinism, and clarified spec text for type prelude, catch resolution, and script-only implicit `main`.
+
+## 2026-01-06 – Optional consolidation detailed log
+- Created Optional consolidation work-progress and recorded the full plan.
+- Added the Optional layout contract and determinism guardrails (fixed `None=0`, `Some=1` tag order).
+- Completed an inventory of Optional-specific logic across TypeTable, resolver, parser injection, MIR, stage2, ARC, LLVM, runtime, and tests.
+- Enforced Optional arm order in prelude injection and removed MIR OptionalIsSome/OptionalValue ops and references.
+- Pivoted DV Optional ABI to out-params + bool return; removed DriftOptional* runtime structs; updated DV lowering/tests; aligned DV ctor ABI; removed duplicate @dataclass.
+- Fixed FnResult ok-zero defaults for Uint/Uint64/Float; corrected struct CopyValue/ZeroValue for Bool storage types; fixed instantiated struct size/align; seeded Byte; fixed 32-bit StringCmp cast; removed redundant pointer-null bitcasts; enforced fnptr signature metadata; restored ZeroValue pointer SSA emission; fixed ArrayLit insertvalue emission and ArrayLit CopyValue for Copy-but-not-bitcopy elements; added Array<String> literal retain IR checks; stored FnResult Bool ok as i8 with conversions; asserted Array<ZST> in codegen.
+- Added stage2 Optional base seeding on demand; unified Optional instantiation in stage2 and type checker; removed Optional caches and TypeTable.new_optional; added optional mechanical tests and Optional<Bool> IR golden; documented Optional as standard variant in spec; added deterministic variant instantiation test.
+- Updated spec for named variant ctor args (no mixing, source-order evaluation); added stage2 source-order evaluation test.
+- Added forward nominal kind and upgraded ensure_named/declare_struct/declare_variant to reuse forward TypeIds; reserved builtin names; improved generic arg validation; added reserved names for exceptions.
+- Removed multi-file module merge; enforced one-file-per-module; removed module id inference from paths; switched trait scopes/aliases to module scope; removed file-scoped trait scope param; updated driver/tests for module headers and module-scoped use-trait; updated e2e fixtures to micro-modules and merge-module patterns; refreshed expected diagnostics for new module rules.
+- Removed filesystem paths from diagnostics/DMIR; introduced SourceLabel relabeling; updated parse order for determinism; removed string path scrubbing; added no-path-leak tests with absolute-path regex detection; updated CLI/spec for module discovery and script-only implicit main.
+- Updated e2e fixtures: added exports for m_a/m_b; removed duplicate module headers; added explicit Maybe ctor type args/annotations; updated qualified ctor duplicate-type-args expected line/column.
+- Fixed driver test workspace parsing to always pass module roots; repaired accidental module_paths insertion typos in trait tests.
+- Updated method resolution e2e diagnostic test to include module/Point and assert the “no matching method” message via JSON.
+- Added module headers to borrow checker lambda capture overlap tests; re-instated variant substitution via base instantiation when instances are missing.
+- Clarified spec: Float is target-native (per-target ABI); fixed-width floats remain reserved in v1.
+- Renamed module_root_mismatch e2e to module_root_unrelated_ok to reflect allowed behavior.

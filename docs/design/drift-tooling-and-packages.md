@@ -164,6 +164,20 @@ The filename is a **marker**, not an identifier.
 - `uses` – dependency keys from project file (no URLs/versions here)
 - `depends_on` – other local targets (typically packages)
 
+### 5.2 Source module discovery
+
+`driftc` discovers source modules by scanning source roots for `.drift` files:
+
+- A module is a **single** `.drift` source file containing `module <id>`.
+- `driftc` builds a map `module_id -> source file`.
+- If two files declare the same module id, the build **fails**.
+- Module ids come from the `module <id>` declaration; no filesystem layout is
+  required for semantic identity.
+
+For `drift-target.json`, the `"modules": [...]` list refers to **module ids**.
+Each module id must resolve to exactly one source file under the target’s source
+roots.
+
 ### Package target example
 ```json
 {
@@ -244,6 +258,9 @@ Signature policy:
 
 - Package artifacts are stored as **DMIR-PKG v0** containers (`*.dmp`) produced and consumed by `driftc`.
 - **Compression:** DMIR-PKG v0 containers are stored uncompressed. Compression, if used, is applied as an **outer transport layer** (Zstandard recommended) and is not part of the container format nor the signed payload.
+- Package manifests must not record host filesystem paths. Modules are identified
+  by `module_id` and blob references only; any optional source mapping uses
+  module ids and internal labels, not absolute paths.
 - Published packages may include a **signature sidecar** file next to the container:
   - `pkg.dmp` (DMIR-PKG container bytes)
   - `pkg.dmp.sig` (JSON signature metadata)

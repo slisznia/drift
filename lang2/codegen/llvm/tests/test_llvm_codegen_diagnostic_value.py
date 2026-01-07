@@ -27,14 +27,33 @@ from lang2.driftc.stage2 import (
 	Return,
 )
 from lang2.driftc.stage4 import MirToSSA
-from lang2.driftc.core.types_core import TypeTable
+from lang2.driftc.core.generic_type_expr import GenericTypeExpr
+from lang2.driftc.core.types_core import TypeTable, VariantArmSchema, VariantFieldSchema
+
+
+def _ensure_optional(table: TypeTable, inner: int) -> int:
+	base = table.get_variant_base(module_id="lang.core", name="Optional")
+	if base is None:
+		base = table.declare_variant(
+			"lang.core",
+			"Optional",
+			["T"],
+			[
+				VariantArmSchema(name="None", fields=[]),
+				VariantArmSchema(
+					name="Some",
+					fields=[VariantFieldSchema(name="value", type_expr=GenericTypeExpr.param(0))],
+				),
+			],
+		)
+	return table.ensure_instantiated(base, [inner])
 
 
 def test_error_attrs_lookup_lowered_to_runtime_call():
 	table = TypeTable()
 	int_ty = table.ensure_int()
 	err_ty = table.ensure_error()
-	opt_int_ty = table.new_optional(int_ty)
+	opt_int_ty = _ensure_optional(table, int_ty)
 	opt_int_inst = table.get_variant_instance(opt_int_ty)
 	assert opt_int_inst is not None
 	opt_int_some_tag = next(a.tag for a in opt_int_inst.arms if a.name == "Some")
@@ -72,7 +91,7 @@ def test_dv_as_int_returns_optional_int():
 	int_ty = table.ensure_int()
 	err_ty = table.ensure_error()
 	dv_ty = table.ensure_diagnostic_value()
-	opt_int_ty = table.new_optional(int_ty)
+	opt_int_ty = _ensure_optional(table, int_ty)
 	opt_int_inst = table.get_variant_instance(opt_int_ty)
 	assert opt_int_inst is not None
 	opt_int_some_tag = next(a.tag for a in opt_int_inst.arms if a.name == "Some")
@@ -144,7 +163,7 @@ def test_error_attr_round_trip_additional_key():
 	table = TypeTable()
 	int_ty = table.ensure_int()
 	err_ty = table.ensure_error()
-	opt_int_ty = table.new_optional(int_ty)
+	opt_int_ty = _ensure_optional(table, int_ty)
 	opt_int_inst = table.get_variant_instance(opt_int_ty)
 	assert opt_int_inst is not None
 	opt_int_some_tag = next(a.tag for a in opt_int_inst.arms if a.name == "Some")

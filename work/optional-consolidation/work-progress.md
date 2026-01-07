@@ -4,16 +4,16 @@
 Consolidate `Optional<T>` as a regular variant type, remove Optional-specific ABI/codegen paths, and rely on the generic variant lowering everywhere.
 
 ## Plan
-- [x] Inventory all Optional-specific logic (TypeKind.OPTIONAL, Optional ops, Optional ABI helpers) and map to variant equivalents.
-- [x] Lock Optional layout contract: `None` tag = 0, `Some(T)` tag = 1, stable arm order independent of surface listing.
-- [todo] Keep Optional as a surface type while removing Optional-specific IR kinds (lower to canonical `Variant` or `Named` that expands to variant).
-- [todo] Replace Optional-specific MIR/LLVM lowering with generic variant lowering (constructors, tests, match, copy/dup, ops).
-- [todo] Specify and enforce variant copy/dup/drop invariants (arm-wise copy/drop delegates to payload semantics; inactive arm has no payload).
-- [todo] Ensure Optional<Bool> follows Bool storage/value rules; add targeted IR golden.
-- [todo] Add mechanical tests that Optional ops/kinds are gone (no Optional MIR ops/TypeKind.OPTIONAL; IR uses variant only).
-- [todo] Ensure variant layout remains deterministic for generic instantiations (stable arm list, stable cache keys, no dict-order deps).
-- [todo] Remove Optional-specific type kinds and special cases once all paths use variant (type table, codegen, tests, docs).
-- [todo] Update docs/spec to reflect Optional as a standard variant and remove Optional ABI claims.
+- Inventory all Optional-specific logic (TypeKind.OPTIONAL, Optional ops, Optional ABI helpers) and map to variant equivalents.
+- Lock Optional layout contract: `None` tag = 0, `Some(T)` tag = 1, stable arm order independent of surface listing.
+- Keep Optional as a surface type while removing Optional-specific IR kinds (lower to canonical `Variant` or `Named` that expands to variant).
+- Replace Optional-specific MIR/LLVM lowering with generic variant lowering (constructors, tests, match, copy/dup, ops).
+- Specify and enforce variant copy/dup/drop invariants (arm-wise copy/drop delegates to payload semantics; inactive arm has no payload).
+- Ensure Optional<Bool> follows Bool storage/value rules; add targeted IR golden.
+- Add mechanical tests that Optional ops/kinds are gone (no Optional MIR ops/TypeKind.OPTIONAL; IR uses variant only).
+- Ensure variant layout remains deterministic for generic instantiations (stable arm list, stable cache keys, no dict-order deps).
+- Remove Optional-specific type kinds and special cases once all paths use variant (type table, codegen, tests, docs).
+- Update docs/spec to reflect Optional as a standard variant and remove Optional ABI claims.
 
 ## Log
 - 2026-01-05: Created work progress file and captured plan.
@@ -53,3 +53,84 @@ Consolidate `Optional<T>` as a regular variant type, remove Optional-specific AB
   2026-01-06: Stage2 iter/next misuse now recovers with Unknown values in recover mode (asserts in strict).
   2026-01-06: TypeChecker Optional cache now uses variant instantiation; package/link and driftc seeding no longer call new_optional.
   2026-01-06: define_struct_fields made idempotent for identical field definitions (mismatch is a hard error).
+  2026-01-06: resolve_opaque_type now auto-declares the canonical lang.core Optional base and resolves Optional<T> to the variant; added a core test for arm order (None/Some).
+  2026-01-06: Added Optional mechanical tests (no Optional MIR ops/TypeKind.OPTIONAL) and LLVM tests for Optional<String>/Optional<Array<String>>/Optional<Optional<String>> copy/drop, Optional<Bool> storage decode, and absence of DriftOptional legacy types.
+  2026-01-06: Removed TypeTable.new_optional and updated core/codegen tests to instantiate Optional via canonical variant base; removed Optional caches in the type checker.
+  2026-01-06: Documented Optional as a standard variant with fixed tag order (None=0, Some=1) in the spec.
+  2026-01-06: Added a core test asserting deterministic variant instantiation caching and stable arm order for generic variants.
+  2026-01-06: Stage2 Optional instantiation now uses TypeTable.ensure_optional_base (hir_to_mir Optional base lookup removed).
+  2026-01-06: Spec updated to allow named variant constructor args (no mixing), define error rules, source-order evaluation, and note field names are API.
+  2026-01-06: TypeChecker array-iterator return type now uses ensure_optional_base (no Optional base lookup fallback).
+  2026-01-06: TypeChecker now filters ctor-to-variant diagnostics by visible modules for E-CTOR-EXPECTED-TYPE.
+  2026-01-06: Added stage2 test asserting variant ctor kwargs evaluate in source order (left-to-right) regardless of field order.
+  2026-01-06: Added forward nominal kind and upgraded ensure_named/declare_struct/declare_variant to reuse forward TypeIds; forward nominals are not Copy/BitCopy.
+  2026-01-06: resolve_opaque_type now uses a core variant allowlist (Optional) and avoids minting placeholders when nominal structs/variants exist.
+  2026-01-06: ctor-to-variant diagnostics now restrict fallback to current-module only when visibility provenance is missing.
+  2026-01-06: Added reserved nominal type name checks for struct/variant declarations (builtins cannot be redefined).
+  2026-01-06: Generic type instantiations now error when the base is not a known struct/variant (type args are not dropped).
+  2026-01-06: Replaced remaining E_UNKNOWN_GENERIC in type checker with E-TYPE-NOT-GENERIC/E-TYPE-UNKNOWN gating for generic args.
+  2026-01-06: Reserved nominal type names are now rejected for exception declarations (E-NAME-RESERVED in parser).
+  2026-01-06: TypeTable generic expr evaluation now returns Unknown when args are supplied for non-generic/unknown bases (no silent arg dropping).
+  2026-01-06: resolve_opaque_type now guards core allowlist bare generics with allow_generic_base, and variant instantiation errors return Unknown instead of crashing.
+  2026-01-06: Workspace parser now requires module declarations for module-path builds, removes module-id inference, and errors on duplicate module ids (one file per module).
+  2026-01-06: Workspace trait scopes are now module-scoped only (no trait_scope_by_file/path keys) to avoid path-dependent semantics.
+  2026-01-06: Module alias resolution now uses module-scoped aliases (no module_aliases_by_file in type/call rewrite paths).
+  2026-01-06: Driver tests now pass module-scoped trait scopes to the checker (trait_scope_by_file removed from test harnesses).
+  2026-01-06: parse_drift_files_to_hir now rejects multi-file modules (no merging); workspace docs updated to module-scoped imports.
+  2026-01-06: encode_span now strips absolute file paths in DMIR encoding to avoid host-path leakage in package metadata.
+  2026-01-06: Fixed broken module_paths insertions in driver tests (trait_method_resolution/trait_guard_scoping/trait_diagnostic_goldens) and restored valid parse_drift_workspace_to_hir calls.
+  2026-01-06: Method resolution e2e diagnostic test now uses module main with struct Point and asserts the "no matching method" diagnostic via JSON output.
+  2026-01-06: Added module headers to borrow checker lambda capture overlap tests to avoid implicit-main drift.
+  2026-01-06: apply_subst now substitutes variants only via instances (removed param_types fallback).
+  2026-01-06: Spec FFI section now explicitly scopes fixed-width primitives to lang.abi.* usage in v1 examples.
+  2026-01-06: Primitive palette table now marks fixed-width scalars as reserved in v1 (lang.abi.* only).
+  2026-01-06: apply_subst now asserts on variant param_types without a variant instance (internal invariant guard).
+  2026-01-06: Spec now treats Float as target-native (IEEE-754 binary32/64 on supported targets) and removes v1 F64 pinning.
+  2026-01-06: Spec now states Float layout is target-defined and ABI stability is per-target, not cross-target.
+  2026-01-06: apply_subst now falls back to variant base instantiation when param_types exist without an instance (asserts if base missing).
+  2026-01-06: Renamed module_root_mismatch e2e to module_root_unrelated_ok and clarified description to reflect allowed behavior.
+  2026-01-06: CLI/module docs now state --module-path is discovery-only (no path-inferred module ids); parser AST comment updated.
+  2026-01-06: Spec now distinguishes value prelude vs always-on type prelude; Array in scope moved to type prelude wording.
+  2026-01-06: Removed multi-file module merge helper (_merge_module_files); one-file-per-module enforced end-to-end in workspace parsing.
+  2026-01-06: Workspace parsing now relabels diagnostics to module-id SourceLabels (<module>) to avoid host-path leakage; export span note updated for single-file modules.
+  2026-01-06: Workspace parser diagnostics no longer embed filesystem paths; path ordering now uses module-root-relative keys for determinism.
+  2026-01-06: Fixed workspace parser indentation after diagnostic message cleanup.
+  2026-01-06: Normalized workspace parse loop indentation (module_paths vs non-module_paths branches).
+  2026-01-06: Removed file-scoped trait scope parameter from TypeChecker API and updated call sites/tests.
+  2026-01-06: Added SourceLabel relabeling (<source> then <module>) for all workspace diagnostics and switched path sort fallback to content hash.
+  2026-01-06: resolve_opaque_type now enforces allow_generic_base for core allowlist in raw-string resolution.
+  2026-01-06: _relabel_diagnostics now replaces Span with dataclasses.replace to avoid frozen Span mutation.
+  2026-01-06: parse_drift_to_hir now resolves paths and relabels diagnostics to <source>/<module> without filesystem paths.
+  2026-01-06: Workspace parsing sorts by content hash, sorts parsed entries by module id, and enforces module declarations for multi-file builds.
+  2026-01-06: _diag_to_json now uses <source> for missing file labels; spec updated for catch name resolution and script-only implicit main.
+  2026-01-06: resolve_opaque_type now uses depth-aware FnResult<> parsing and guards generic struct bases in raw-string paths.
+  2026-01-06: JSON diagnostics now use <source>/<package>/<trust-store> labels instead of filesystem paths.
+  2026-01-06: Parser/driver comments updated to module-scoped imports (removed file-scoped wording).
+  2026-01-06: resolve_opaque_type string FnResult recursion now threads type_params/allow_generic_base; driftc package/trust diagnostics no longer embed filesystem paths in message text.
+  2026-01-06: Added deep typevar detection for generic instantiation decisions; variant instantiation split into template vs concrete APIs to prevent TypeVar leakage.
+  2026-01-06: Removed path scrubbing by string replacement; non-JSON diagnostics now use labels directly and never embed filesystem paths.
+  2026-01-06: Optional<...> raw-string resolution now routes template vs concrete instantiation using has_typevar and ensure_variant_*.
+  2026-01-06: Added driver regression test ensuring trust-store failures emit labels only (no filesystem paths) in JSON and stderr.
+  2026-01-06: Adjusted no-path-leak test to detect absolute path patterns (regex) instead of banning all slashes.
+  2026-01-06: apply_subst now routes variant/struct substitutions through template vs concrete instantiation based on deep has_typevar.
+  2026-01-06: Updated package tests to use a non-reserved generic variant name (Maybe<T>) now that Optional is a builtin.
+  2026-01-06: Updated e2e fixtures for module headers and micro-modules; added merge-module pattern for reexport tests and refreshed expectations for multi-file module errors.
+  2026-01-06: Updated driver tests to include module headers for workspace parsing and shifted use-trait scope tests to module-scoped modules.
+  2026-01-06: Fixed e2e fixtures by exporting m_a/m_b symbols, removing duplicate module headers in match fixtures, and adding explicit type args/annotations for Maybe ctor tests to reach match checks.
+  2026-01-06: Updated qualified_ctor_dup_type_args_rejected expected.json to match new line/column after module header insertion.
+  2026-01-06: Added missing semicolons to tuple-struct Point declarations in e2e fixtures to avoid parser-phase exits.
+  2026-01-06: Standardized variant ctor fixtures to module main (variant_ctor_requires_expected_type_rejected, variant_optional_match_basic).
+  2026-01-06: Removed unused current_file locals from driver tests to avoid path materialization.
+  2026-01-06: Added tuple-struct semicolons in driver tests (abi boundary calls, method signature metadata) after tuple-struct terminator rule change.
+  2026-01-06: Added missing tuple-struct semicolons across borrow/method/ufcs e2e fixtures to keep parser-phase clean.
+  2026-01-06: Added module header and tuple-struct semicolon to borrow_nll_join_borrow_live_rejected fixture.
+  2026-01-06: Added module headers to borrow_nll_* and borrow_struct_* e2e fixtures; removed duplicate origin_by_fn_id/trait_scope_by_module blocks in test_trait_method_resolution.
+  2026-01-06: Added module header to borrow_prefix_field_overwrite_rejected and marked borrow_struct_field_param_mut_reborrow_rejected helper as nothrow to avoid throw-mode masking.
+  2026-01-06: Standardized method_* e2e fixtures to module main; rewrote overload resolution test to use micro-modules + merge module; removed top-level stmt from grammar.
+  2026-01-06: Simplified overload resolution driver test to a single-module overload case (module m exports two overloads) to avoid reexport ambiguity.
+  2026-01-06: Updated grammar/spec docs to require tuple-struct semicolons and removed top-level stmt from grammar doc.
+  2026-01-06: Clarified spec that expression statements are restricted to postfix forms (call/member/index/literal/name) to match parser.
+  2026-01-06: Allowed top-level stray terminators in the parser grammar to match the grammar doc and reduce formatting-noise parse errors.
+  2026-01-06: Standardized struct_ctor_keyword_args fixture to module main.
+  2026-01-06: Added module headers and tuple-struct semicolons in borrow checker lambda capture tests to satisfy tuple-struct terminator rule.
+  2026-01-06: Added module_paths to remaining driver workspace parse calls (trait_method_resolution, trait_diagnostic_goldens).

@@ -1,16 +1,15 @@
-module m
+module main
 
-variant Optional<T> {
+variant Maybe<T> {
 	Some(value: T),
 	None,
 }
 
 fn main() nothrow -> Int{
-	val x: Optional<Int> = None();
+	val x: Maybe<Int> = None();
 	// Non-exhaustive match without `default` is rejected in MVP.
 	val y = match x{
 	Some(v) => { v },
 	};
 	return y;
 }
-

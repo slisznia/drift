@@ -228,9 +228,6 @@ class TypeChecker:
 		self._void = self.type_table.ensure_void()
 		self._error = self.type_table.ensure_error()
 		self._dv = self.type_table.ensure_diagnostic_value()
-		self._opt_int = self._optional_variant_type(self._int)
-		self._opt_bool = self._optional_variant_type(self._bool)
-		self._opt_string = self._optional_variant_type(self._string)
 		self._unknown = self.type_table.ensure_unknown()
 		self._thunk_specs: dict[tuple[ThunkKind, FunctionId, tuple[TypeId, ...], TypeId], ThunkSpec] = {}
 		self._lambda_fn_specs: dict[FunctionId, LambdaFnSpec] = {}
@@ -247,20 +244,7 @@ class TypeChecker:
 		return self._defaulted_phase_count
 
 	def _optional_variant_type(self, inner_ty: TypeId) -> TypeId:
-		opt_base = self.type_table.get_variant_base(module_id="lang.core", name="Optional")
-		if opt_base is None:
-			opt_base = self.type_table.declare_variant(
-				"lang.core",
-				"Optional",
-				["T"],
-				[
-					VariantArmSchema(name="None", fields=[]),
-					VariantArmSchema(
-						name="Some",
-						fields=[VariantFieldSchema(name="value", type_expr=GenericTypeExpr.param(0))],
-					),
-				],
-			)
+		opt_base = self.type_table.ensure_optional_base()
 		return self.type_table.ensure_instantiated(opt_base, [inner_ty])
 
 	def thunk_specs(self) -> list[ThunkSpec]:
@@ -522,14 +506,12 @@ class TypeChecker:
 		trait_index: GlobalTraitIndex | None = None,
 		trait_impl_index: GlobalTraitImplIndex | None = None,
 		trait_scope_by_module: Mapping[str, list[TraitKey]] | None = None,
-		trait_scope_by_file: Mapping[str, list[TraitKey]] | None = None,
 		linked_world: LinkedWorld | None = None,
 		require_env: RequireEnv | None = None,
 		visible_modules: Optional[Tuple[ModuleId, ...]] = None,
 		current_module: ModuleId = 0,
 		visibility_provenance: Mapping[ModuleId, tuple[str, ...]] | None = None,
 		visibility_imports: set[str] | None = None,
-		current_file: str | None = None,
 	) -> TypeCheckResult:
 		# Best-effort current module id in canonical string form.
 		#
@@ -1370,29 +1352,10 @@ class TypeChecker:
 				type_param_map = {p.name: p.id for p in getattr(sig, "type_params", []) or []}
 				type_param_names = {p.id: p.name for p in getattr(sig, "type_params", []) or []}
 
-		if current_file is None and sig is not None:
-			span = Span.from_loc(getattr(sig, "loc", None))
-			current_file = span.file
-
 		def _traits_in_scope() -> list[TraitKey]:
 			extra: list[TraitKey] = []
 			for scope in guard_trait_scopes:
 				extra.extend(scope)
-			if trait_scope_by_file is not None:
-				if not current_file:
-					diagnostics.append(
-						_tc_diag(
-							message="internal: missing current file for file-scoped trait resolution",
-							severity="error",
-							span=Span(),
-						)
-					)
-					return extra
-				traits = list(trait_scope_by_file.get(current_file, []))
-				for trait in extra:
-					if trait not in traits:
-						traits.append(trait)
-				return traits
 			if trait_scope_by_module:
 				traits = list(trait_scope_by_module.get(current_module_name, []))
 				for trait in extra:
@@ -3166,7 +3129,27 @@ class TypeChecker:
 		# - Constructor calls in expression position require an *expected variant type*.
 		# - Without an expected type, the compiler diagnoses instead of guessing.
 		ctor_to_variant_bases: dict[str, list[TypeId]] = {}
-		for base_id, schema in getattr(self.type_table, "variant_schemas", {}).items():
+		visible_ctor_module_ids = set(visible_modules or ())
+		visible_ctor_module_ids.add(current_module)
+		if prelude_module_id is not None:
+			visible_ctor_module_ids.add(prelude_module_id)
+
+		def _ctor_module_visible(module_name: str | None) -> bool:
+			if module_name is None:
+				return False
+			if visibility_provenance:
+				mod_id = module_ids_by_name.get(module_name)
+				if mod_id is None:
+					return False
+				return mod_id in visible_ctor_module_ids
+			# Best-effort fallback when no provenance is available: current module only.
+			return module_name == current_module_name
+
+		items = list(getattr(self.type_table, "variant_schemas", {}).items())
+		items.sort(key=lambda kv: (kv[1].module_id, kv[1].name))
+		for base_id, schema in items:
+			if not _ctor_module_visible(schema.module_id):
+				continue
 			for arm in schema.arms:
 				ctor_to_variant_bases.setdefault(arm.name, []).append(base_id)
 
@@ -3547,7 +3530,7 @@ class TypeChecker:
 					)
 					return record_expr(expr, self._unknown)
 
-				base_tid = resolve_opaque_type(base_te, self.type_table, module_id=current_module_name)
+				base_tid = resolve_opaque_type(base_te, self.type_table, module_id=current_module_name, allow_generic_base=True)
 				try:
 					base_def = self.type_table.get(base_tid)
 				except Exception:
@@ -3665,6 +3648,41 @@ class TypeChecker:
 						or self.type_table.get_nominal(kind=TypeKind.VARIANT, module_id=origin_mod, name=name)
 						or self.type_table.ensure_named(name, module_id=origin_mod)
 					)
+					if expr.args:
+						if base_id in self.type_table.struct_bases:
+							schema = self.type_table.struct_bases.get(base_id)
+							if schema is not None and not schema.type_params:
+								diagnostics.append(
+									_tc_diag(
+										message=f"type '{name}' is not generic",
+										code="E-TYPE-NOT-GENERIC",
+										severity="error",
+										span=Span.from_loc(getattr(expr, "loc", None)),
+									)
+								)
+								return self._unknown
+						elif base_id in self.type_table.variant_schemas:
+							schema = self.type_table.variant_schemas.get(base_id)
+							if schema is not None and not schema.type_params:
+								diagnostics.append(
+									_tc_diag(
+										message=f"type '{name}' is not generic",
+										code="E-TYPE-NOT-GENERIC",
+										severity="error",
+										span=Span.from_loc(getattr(expr, "loc", None)),
+									)
+								)
+								return self._unknown
+						else:
+							diagnostics.append(
+								_tc_diag(
+									message=f"unknown generic type '{name}'",
+									code="E-TYPE-UNKNOWN",
+									severity="error",
+									span=Span.from_loc(getattr(expr, "loc", None)),
+								)
+							)
+							return self._unknown
 					if expr.args:
 						arg_ids = [_lower_generic_expr(a) for a in expr.args]
 						if base_id in self.type_table.variant_schemas:
@@ -3871,7 +3889,7 @@ class TypeChecker:
 							)
 						)
 						return record_expr(expr, self._unknown)
-					base_tid = resolve_opaque_type(base_te, self.type_table, module_id=current_module_name)
+					base_tid = resolve_opaque_type(base_te, self.type_table, module_id=current_module_name, allow_generic_base=True)
 					try:
 						base_def = self.type_table.get(base_tid)
 					except Exception:
@@ -3990,6 +4008,41 @@ class TypeChecker:
 							or self.type_table.get_nominal(kind=TypeKind.VARIANT, module_id=origin_mod, name=name)
 							or self.type_table.ensure_named(name, module_id=origin_mod)
 						)
+						if expr.args:
+							if base_id in self.type_table.struct_bases:
+								schema = self.type_table.struct_bases.get(base_id)
+								if schema is not None and not schema.type_params:
+									diagnostics.append(
+										_tc_diag(
+											message=f"type '{name}' is not generic",
+											code="E-TYPE-NOT-GENERIC",
+											severity="error",
+											span=Span.from_loc(getattr(expr, "loc", None)),
+										)
+									)
+									return self._unknown
+							elif base_id in self.type_table.variant_schemas:
+								schema = self.type_table.variant_schemas.get(base_id)
+								if schema is not None and not schema.type_params:
+									diagnostics.append(
+										_tc_diag(
+											message=f"type '{name}' is not generic",
+											code="E-TYPE-NOT-GENERIC",
+											severity="error",
+											span=Span.from_loc(getattr(expr, "loc", None)),
+										)
+									)
+									return self._unknown
+							else:
+								diagnostics.append(
+									_tc_diag(
+										message=f"unknown generic type '{name}'",
+										code="E-TYPE-UNKNOWN",
+										severity="error",
+										span=Span.from_loc(getattr(expr, "loc", None)),
+									)
+								)
+								return self._unknown
 						if expr.args:
 							arg_ids = [_lower_generic_expr(a) for a in expr.args]
 							if base_id in self.type_table.variant_schemas:
@@ -5469,7 +5522,7 @@ class TypeChecker:
 							)
 							return record_expr(expr, self._unknown)
 						base_te = replace(base_te, args=list(call_type_args))
-					base_tid = resolve_opaque_type(base_te, self.type_table, module_id=current_module_name)
+					base_tid = resolve_opaque_type(base_te, self.type_table, module_id=current_module_name, allow_generic_base=True)
 					# TypeRef without explicit module context may refer to lang.core
 					# variants (e.g., `Optional`). Prefer that base when present.
 					try:
@@ -5664,6 +5717,41 @@ class TypeChecker:
 							or self.type_table.get_nominal(kind=TypeKind.VARIANT, module_id=origin_mod, name=name)
 							or self.type_table.ensure_named(name, module_id=origin_mod)
 						)
+						if expr.args:
+							if base_id in self.type_table.struct_bases:
+								schema = self.type_table.struct_bases.get(base_id)
+								if schema is not None and not schema.type_params:
+									diagnostics.append(
+										_tc_diag(
+											message=f"type '{name}' is not generic",
+											code="E-TYPE-NOT-GENERIC",
+											severity="error",
+											span=Span.from_loc(getattr(expr, "loc", None)),
+										)
+									)
+									return self._unknown
+							elif base_id in self.type_table.variant_schemas:
+								schema = self.type_table.variant_schemas.get(base_id)
+								if schema is not None and not schema.type_params:
+									diagnostics.append(
+										_tc_diag(
+											message=f"type '{name}' is not generic",
+											code="E-TYPE-NOT-GENERIC",
+											severity="error",
+											span=Span.from_loc(getattr(expr, "loc", None)),
+										)
+									)
+									return self._unknown
+							else:
+								diagnostics.append(
+									_tc_diag(
+										message=f"unknown generic type '{name}'",
+										code="E-TYPE-UNKNOWN",
+										severity="error",
+										span=Span.from_loc(getattr(expr, "loc", None)),
+									)
+								)
+								return self._unknown
 						if expr.args:
 							arg_ids = [_lower_generic_expr(a) for a in expr.args]
 							if base_id in self.type_table.variant_schemas:
@@ -6280,6 +6368,41 @@ class TypeChecker:
 										or self.type_table.get_nominal(kind=TypeKind.VARIANT, module_id=origin_mod, name=name)
 										or self.type_table.ensure_named(name, module_id=origin_mod)
 									)
+									if expr.args:
+										if base_id in self.type_table.struct_bases:
+											base_schema = self.type_table.struct_bases.get(base_id)
+											if base_schema is not None and not base_schema.type_params:
+												diagnostics.append(
+													_tc_diag(
+														message=f"type '{name}' is not generic",
+														code="E-TYPE-NOT-GENERIC",
+														severity="error",
+														span=Span.from_loc(getattr(expr, "loc", None)),
+													)
+												)
+												return self._unknown
+										elif base_id in self.type_table.variant_schemas:
+											base_schema = self.type_table.variant_schemas.get(base_id)
+											if base_schema is not None and not base_schema.type_params:
+												diagnostics.append(
+													_tc_diag(
+														message=f"type '{name}' is not generic",
+														code="E-TYPE-NOT-GENERIC",
+														severity="error",
+														span=Span.from_loc(getattr(expr, "loc", None)),
+													)
+												)
+												return self._unknown
+										else:
+											diagnostics.append(
+												_tc_diag(
+													message=f"unknown generic type '{name}'",
+													code="E-TYPE-UNKNOWN",
+													severity="error",
+													span=Span.from_loc(getattr(expr, "loc", None)),
+												)
+											)
+											return self._unknown
 									if expr.args:
 										arg_ids = [_lower_generic_expr(a) for a in expr.args]
 										if base_id in self.type_table.variant_schemas:
@@ -7079,32 +7202,35 @@ class TypeChecker:
 						)
 						return record_expr(expr, self._unknown)
 					if expr.method_name == "as_int":
+						opt_int = self._optional_variant_type(self._int)
 						record_method_call_info(
 							expr,
 							param_types=[recv_ty],
-							return_type=self._opt_int,
+							return_type=opt_int,
 							can_throw=False,
 							target=_intrinsic_method_fn_id(expr.method_name),
 						)
-						return record_expr(expr, self._opt_int)
+						return record_expr(expr, opt_int)
 					if expr.method_name == "as_bool":
+						opt_bool = self._optional_variant_type(self._bool)
 						record_method_call_info(
 							expr,
 							param_types=[recv_ty],
-							return_type=self._opt_bool,
+							return_type=opt_bool,
 							can_throw=False,
 							target=_intrinsic_method_fn_id(expr.method_name),
 						)
-						return record_expr(expr, self._opt_bool)
+						return record_expr(expr, opt_bool)
 					if expr.method_name == "as_string":
+						opt_string = self._optional_variant_type(self._string)
 						record_method_call_info(
 							expr,
 							param_types=[recv_ty],
-							return_type=self._opt_string,
+							return_type=opt_string,
 							can_throw=False,
 							target=_intrinsic_method_fn_id(expr.method_name),
 						)
-						return record_expr(expr, self._opt_string)
+						return record_expr(expr, opt_string)
 					record_method_call_info(
 						expr,
 						param_types=[recv_ty],
@@ -7268,23 +7394,7 @@ class TypeChecker:
 							)
 							return record_expr(expr, self._unknown)
 						elem_ty = array_def.param_types[0]
-						opt_base = self.type_table.get_variant_base(module_id="lang.core", name="Optional")
-						if opt_base is None:
-							diagnostics.append(
-								_tc_diag(
-									message="Optional<T> variant base is missing (compiler bug)",
-									severity="error",
-									span=getattr(expr, "loc", Span()),
-								)
-							)
-							record_method_call_info(
-								expr,
-								param_types=[recv_ty],
-								return_type=self._unknown,
-								can_throw=False,
-								target=_intrinsic_method_fn_id(expr.method_name),
-							)
-							return record_expr(expr, self._unknown)
+						opt_base = self.type_table.ensure_optional_base()
 						opt_ty = self.type_table.ensure_instantiated(opt_base, [elem_ty])
 						record_method_call_info(
 							expr,
@@ -7605,7 +7715,7 @@ class TypeChecker:
 									)
 								)
 								return record_expr(expr, self._unknown)
-						if not viable and trait_index and trait_impl_index and (trait_scope_by_file or trait_scope_by_module):
+						if not viable and trait_index and trait_impl_index and trait_scope_by_module:
 							visible_set = set(visible_modules or (current_module,))
 							missing_visible = set()
 							if trait_impl_index.missing_modules:
@@ -8369,7 +8479,7 @@ class TypeChecker:
 									chain_note = _visibility_note(res.decl.module_id)
 									if chain_note:
 										notes.append(f"{mod_label} {chain_note}")
-								if trait_index and (trait_scope_by_file or trait_scope_by_module):
+								if trait_index and trait_scope_by_module:
 									traits_in_scope = _traits_in_scope()
 									if any(trait_index.has_method(tr, expr.method_name) for tr in traits_in_scope):
 										notes.append("inherent methods took precedence; use UFCS to call a trait method")

@@ -1,5 +1,7 @@
-struct Inner(x: Int)
-struct Wrap(inner: Inner)
+module main
+
+struct Inner(x: Int);
+struct Wrap(inner: Inner);
 
 fn main() nothrow -> Int{
 	var w = Wrap(Inner(1));

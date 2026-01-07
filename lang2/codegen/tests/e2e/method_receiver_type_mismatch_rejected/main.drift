@@ -1,7 +1,7 @@
-module m
+module main
 
-struct Point(x: Int)
-struct Other(x: Int)
+struct Point(x: Int);
+struct Other(x: Int);
 
 implement Point {
 	fn bad(self: &mut Other) -> Void {

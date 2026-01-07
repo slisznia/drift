@@ -453,8 +453,8 @@ def _emit_optional_variant_pkg(
 	package_id: str | None = None,
 ) -> Path:
 	"""
-	Emit a package that exports a generic `variant Optional<T>` and a function
-	that -> `Optional<Int>`.
+	Emit a package that exports a generic `variant Maybe<T>` and a function
+	that -> `Maybe<Int>`.
 
 	This is used to validate package TypeTable linking for variants.
 	"""
@@ -476,13 +476,13 @@ def _emit_optional_variant_pkg(
 		f"""
 module {module_id}
 
-export {{ Optional, foo }};
+export {{ Maybe, foo }};
 
-pub variant Optional<T> {{
+pub variant Maybe<T> {{
 {arms}
 }}
 
-pub fn foo() nothrow -> Optional<Int> {{
+pub fn foo() nothrow -> Maybe<Int> {{
 	return Some(41);
 }}
 """.lstrip(),
@@ -687,7 +687,7 @@ import acme.optb as optb;
 fn main() nothrow -> Int{
 	try {
 		val x = liba.add(40, 2);
-		val y: optb.Optional<Int> = optb.foo();
+		val y: optb.Maybe<Int> = optb.foo();
 		val z = match y {
 			Some(v) => { v },
 			default => { 0 },
@@ -754,7 +754,7 @@ import acme.optb as optb;
 fn main() nothrow -> Int{
 	try {
 		val x = liba.add(40, 2);
-		val y: optb.Optional<Int> = optb.foo();
+		val y: optb.Maybe<Int> = optb.foo();
 		val z = match y {
 			Some(v) => { v },
 			default => { 0 },
@@ -799,7 +799,7 @@ def test_emit_package_is_deterministic_with_three_packages_and_derived_types(tmp
 	"""
 	Determinism stress test:
 	- multiple single-module packages in one root (discovery order perturbations),
-	- derived/instantiated types created in the consuming build (Optional<geom.Point>),
+	- derived/instantiated types created in the consuming build (Maybe<geom.Point>),
 	- output bytes must remain identical.
 	"""
 	src_root = tmp_path / "src"
@@ -824,7 +824,7 @@ import acme.opt as opt;
 fn main() nothrow -> Int{
 	try {
 		val p: g.Point = g.make();
-		val o: opt.Optional<g.Point> = Some(p);
+		val o: opt.Maybe<g.Point> = Some(p);
 		val x = match o {
 			Some(v) => { v.x },
 			default => { 0 },
@@ -2499,7 +2499,7 @@ import acme.opt as opt;
 
 fn main() nothrow -> Int{
 	try {
-		val x: opt.Optional<Int> = opt.foo();
+		val x: opt.Maybe<Int> = opt.foo();
 		val y = match x {
 			Some(v) => { v + 1 },
 			None => { 0 },
@@ -2530,8 +2530,8 @@ fn main() nothrow -> Int{
 
 
 def test_driftc_rejects_variant_schema_collision_between_source_and_package(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-	# Package defines `variant Optional<T>` in module `acme.opt`, while source defines
-	# a different `variant Optional<T>` in module `main`. With module-scoped nominal
+	# Package defines `variant Maybe<T>` in module `acme.opt`, while source defines
+	# a different `variant Maybe<T>` in module `main`. With module-scoped nominal
 	# type identity, these are distinct and must not collide.
 	_emit_optional_variant_pkg(tmp_path)
 
@@ -2540,8 +2540,8 @@ def test_driftc_rejects_variant_schema_collision_between_source_and_package(tmp_
 		"""
 module main
 
-// Collides by name with the package's `Optional<T>` schema.
-variant Optional<T> {
+// Collides by name with the package's `Maybe<T>` schema.
+variant Maybe<T> {
 	Some(value: T),
 	None,
 	Extra
@@ -3195,7 +3195,7 @@ Interface completeness: exported variants must have interface schema entries.
 	payload_obj = dict(mod.payload)
 
 	iface_var = dict(iface_obj.get("variant_schemas") or {})
-	iface_var.pop("Optional", None)
+	iface_var.pop("Maybe", None)
 	iface_obj["variant_schemas"] = iface_var
 
 	iface_bytes = canonical_json_bytes(iface_obj)
@@ -3240,7 +3240,7 @@ module main
 import acme.badvar as badvar;
 
 fn main() nothrow -> Int{
-	val o: badvar.Optional<Int> = None;
+	val o: badvar.Maybe<Int> = None;
 	return 0;
 }
 """.lstrip(),

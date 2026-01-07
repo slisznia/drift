@@ -1,6 +1,11 @@
 {
   "description": "e2e: module multifile basic",
-  "exit_code": 42,
-  "stderr": "",
-  "stdout": ""
+  "diagnostics": [
+    {
+      "message_contains": "multiple source files declare module",
+      "phase": "parser"
+    }
+  ],
+  "exit_code": 1,
+  "phase": "parser"
 }

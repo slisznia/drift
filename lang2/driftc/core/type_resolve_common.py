@@ -10,6 +10,8 @@ stay in sync as the language evolves.
 
 from lang2.driftc.core.types_core import TypeId, TypeKind, TypeParamId, TypeTable
 
+_CORE_VARIANT_ALLOWLIST: set[str] = {"Optional"}
+
 
 def _raw_can_throw(raw: object) -> bool:
 	if hasattr(raw, "can_throw") and callable(getattr(raw, "can_throw")):
@@ -26,6 +28,7 @@ def resolve_opaque_type(
 	*,
 	module_id: str | None = None,
 	type_params: dict[str, TypeParamId] | None = None,
+	allow_generic_base: bool = False,
 ) -> TypeId:
 	"""
 	Map a raw type shape (TypeExpr-like, string, tuple, or TypeId) to a TypeId.
@@ -66,22 +69,32 @@ def resolve_opaque_type(
 				base = table.get_variant_base(module_id=origin_mod, name=str(name))
 				if base is None:
 					base = table.get_struct_base(module_id=origin_mod, name=str(name))
-			if base is None and table.get_variant_base(module_id="lang.core", name=str(name)) is not None:
-				base = table.get_variant_base(module_id="lang.core", name=str(name))
+			if base is None:
+				if name == "Optional":
+					base = table.ensure_optional_base()
+				elif name in _CORE_VARIANT_ALLOWLIST:
+					base = table.get_variant_base(module_id="lang.core", name=str(name))
 			if base is not None:
 				arg_ids = [
 					resolve_opaque_type(a, table, module_id=origin_mod, type_params=type_params)
 					for a in list(args)
 				]
 				if base in table.variant_schemas:
-					return table.ensure_instantiated(base, arg_ids)
+					try:
+						if any(table.has_typevar(a) for a in arg_ids):
+							return table.ensure_variant_template(base, arg_ids)
+						return table.ensure_variant_instantiated(base, arg_ids)
+					except ValueError:
+						return table.ensure_unknown()
 				if base in table.struct_bases:
 					try:
-						if any(table.get(a).kind is TypeKind.TYPEVAR for a in arg_ids):
+						if any(table.has_typevar(a) for a in arg_ids):
 							return table.ensure_struct_template(base, arg_ids)
 						return table.ensure_struct_instantiated(base, arg_ids)
 					except ValueError:
 						return table.ensure_unknown()
+			if name not in {"Array", "Optional", "FnResult", "fn"}:
+				return table.ensure_unknown()
 		if name == "FnResult":
 			ok = resolve_opaque_type(args[0] if args else None, table, module_id=origin_mod, type_params=type_params)
 			err = resolve_opaque_type(
@@ -124,25 +137,54 @@ def resolve_opaque_type(
 		if origin_mod is not None:
 			ty = table.get_nominal(kind=TypeKind.STRUCT, module_id=origin_mod, name=str(name))
 			if ty is not None:
+				if not args and ty in table.struct_bases:
+					schema = table.struct_bases.get(ty)
+					if schema is not None and schema.type_params and not allow_generic_base:
+						return table.ensure_unknown()
 				return ty
 			ty = table.get_nominal(kind=TypeKind.VARIANT, module_id=origin_mod, name=str(name))
 			if ty is not None:
+				if not args and ty in table.variant_schemas:
+					schema = table.variant_schemas.get(ty)
+					if schema is not None and schema.type_params and not allow_generic_base:
+						return table.ensure_unknown()
 				return ty
 			# Toolchain-provided variants (e.g. lang.core Optional) are visible as
 			# unqualified type references even in user modules. If the current module
 			# does not define a variant of this name, prefer the toolchain base.
+			if str(name) in _CORE_VARIANT_ALLOWLIST:
+				core_base = table.get_variant_base(module_id="lang.core", name=str(name))
+				if core_base is not None:
+					if not allow_generic_base:
+						schema = table.variant_schemas.get(core_base)
+						if schema is not None and schema.type_params:
+							return table.ensure_unknown()
+					return core_base
+			return table.ensure_named(str(name), module_id=origin_mod)
+		# No module context: fall back to a forward nominal placeholder.
+		if str(name) in _CORE_VARIANT_ALLOWLIST:
 			core_base = table.get_variant_base(module_id="lang.core", name=str(name))
 			if core_base is not None:
+				if not allow_generic_base:
+					schema = table.variant_schemas.get(core_base)
+					if schema is not None and schema.type_params:
+						return table.ensure_unknown()
 				return core_base
-			return table.ensure_named(str(name), module_id=origin_mod)
-		# No module context: fall back to a scalar nominal placeholder.
-		core_base = table.get_variant_base(module_id="lang.core", name=str(name))
-		if core_base is not None:
-			return core_base
 		return table.ensure_named(str(name))
 
 	# String forms.
 	if isinstance(raw, str):
+		def _split_top_level_comma(text: str) -> tuple[str, str] | None:
+			depth = 0
+			for idx, ch in enumerate(text):
+				if ch == "<":
+					depth += 1
+				elif ch == ">":
+					depth = max(depth - 1, 0)
+				elif ch == "," and depth == 0:
+					return text[:idx].strip(), text[idx + 1 :].strip()
+			return None
+
 		if type_params and raw in type_params:
 			return table.ensure_typevar(type_params[raw], name=raw)
 		if raw == "Void":
@@ -165,13 +207,25 @@ def resolve_opaque_type(
 			return table.ensure_byte()
 		if raw.startswith("FnResult<") and raw.endswith(">"):
 			inner = raw[len("FnResult<"):-1]
-			parts = inner.split(",", 1)
-			if len(parts) == 2:
-				ok_raw, err_raw = parts[0].strip(), parts[1].strip()
-				ok_ty = resolve_opaque_type(ok_raw, table, module_id=module_id)
-				err_ty = resolve_opaque_type(err_raw, table, module_id=module_id)
-				return table.ensure_fnresult(ok_ty, err_ty)
-			return table.ensure_unknown()
+			parts = _split_top_level_comma(inner)
+			if parts is None:
+				return table.ensure_unknown()
+			ok_raw, err_raw = parts
+			ok_ty = resolve_opaque_type(
+				ok_raw,
+				table,
+				module_id=module_id,
+				type_params=type_params,
+				allow_generic_base=allow_generic_base,
+			)
+			err_ty = resolve_opaque_type(
+				err_raw,
+				table,
+				module_id=module_id,
+				type_params=type_params,
+				allow_generic_base=allow_generic_base,
+			)
+			return table.ensure_fnresult(ok_ty, err_ty)
 		if raw == "FnResult":
 			return table.ensure_unknown()
 		if raw.startswith("Array<") and raw.endswith(">"):
@@ -181,22 +235,72 @@ def resolve_opaque_type(
 		if raw.startswith("Optional<") and raw.endswith(">"):
 			inner = raw[len("Optional<"):-1]
 			inner_ty = resolve_opaque_type(inner, table, module_id=module_id, type_params=type_params)
-			base_id = table.get_variant_base(module_id="lang.core", name="Optional")
-			if base_id is not None:
-				return table.ensure_instantiated(base_id, [inner_ty])
-			return table.ensure_unknown()
-		# User-defined nominal types (e.g. structs) and unknown names.
+			base_id = table.ensure_optional_base()
+			try:
+				if table.has_typevar(inner_ty):
+					return table.ensure_variant_template(base_id, [inner_ty])
+				return table.ensure_variant_instantiated(base_id, [inner_ty])
+			except ValueError:
+				return table.ensure_unknown()
+		# User-defined nominal types (e.g. structs/variants) and unknown names.
+		if module_id is not None:
+			ty = table.get_nominal(kind=TypeKind.STRUCT, module_id=module_id, name=str(raw))
+			if ty is not None:
+				if ty in table.struct_bases and not allow_generic_base:
+					schema = table.struct_bases.get(ty)
+					if schema is not None and schema.type_params:
+						return table.ensure_unknown()
+				return ty
+			ty = table.get_nominal(kind=TypeKind.VARIANT, module_id=module_id, name=str(raw))
+			if ty is not None:
+				if ty in table.variant_schemas and not allow_generic_base:
+					schema = table.variant_schemas.get(ty)
+					if schema is not None and schema.type_params:
+						return table.ensure_unknown()
+				return ty
+			if raw in _CORE_VARIANT_ALLOWLIST:
+				core_base = table.get_variant_base(module_id="lang.core", name=str(raw))
+				if core_base is not None:
+					if not allow_generic_base:
+						schema = table.variant_schemas.get(core_base)
+						if schema is not None and schema.type_params:
+							return table.ensure_unknown()
+					return core_base
 		return table.ensure_named(raw, module_id=module_id)
 
 	# Tuple forms used by legacy call sites.
 	if isinstance(raw, tuple):
 		if len(raw) >= 3 and raw[0] == "FnResult":
-			ok = resolve_opaque_type(raw[1], table, module_id=module_id)
-			err = resolve_opaque_type(raw[2], table, module_id=module_id)
+			ok = resolve_opaque_type(
+				raw[1],
+				table,
+				module_id=module_id,
+				type_params=type_params,
+				allow_generic_base=allow_generic_base,
+			)
+			err = resolve_opaque_type(
+				raw[2],
+				table,
+				module_id=module_id,
+				type_params=type_params,
+				allow_generic_base=allow_generic_base,
+			)
 			return table.ensure_fnresult(ok, err)
 		if len(raw) == 2:
-			ok = resolve_opaque_type(raw[0], table, module_id=module_id)
-			err = resolve_opaque_type(raw[1], table, module_id=module_id)
+			ok = resolve_opaque_type(
+				raw[0],
+				table,
+				module_id=module_id,
+				type_params=type_params,
+				allow_generic_base=allow_generic_base,
+			)
+			err = resolve_opaque_type(
+				raw[1],
+				table,
+				module_id=module_id,
+				type_params=type_params,
+				allow_generic_base=allow_generic_base,
+			)
 			return table.ensure_fnresult(ok, err)
 		return table.ensure_unknown()
 

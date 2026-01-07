@@ -3,7 +3,10 @@
 # author: Sławomir Liszniański; created: 2025-12-09
 """End-to-end check: method resolution failure produces diagnostics and nonzero exit."""
 
+import json
 from pathlib import Path
+
+import pytest
 
 from lang2.driftc import driftc, stage1 as H
 from lang2.driftc.core.function_id import FunctionId
@@ -20,6 +23,13 @@ from lang2.driftc.type_checker import TypeChecker
 def _write_file(path: Path, content: str) -> None:
 	path.parent.mkdir(parents=True, exist_ok=True)
 	path.write_text(content)
+
+
+def _run_driftc_json(argv: list[str], capsys: pytest.CaptureFixture[str]) -> tuple[int, dict]:
+	rc = driftc.main(argv + ["--json"])
+	out = capsys.readouterr().out
+	payload = json.loads(out) if out.strip() else {}
+	return rc, payload
 
 
 def _callable_name(fn_id: FunctionId) -> str:
@@ -145,15 +155,13 @@ def _resolve_main_block(tmp_path: Path, source: str) -> tuple[H.HBlock, dict[int
 		type_table=type_table,
 		module_ids=module_ids,
 	)
-	trait_scope_by_file: dict[str, list] = {}
+	trait_scope_by_module: dict[str, list] = {}
 	if isinstance(module_exports, dict):
 		for _mod_name, exp in module_exports.items():
 			if isinstance(exp, dict):
-				scope_by_file = exp.get("trait_scope_by_file", {})
-				if isinstance(scope_by_file, dict):
-					for path, traits in scope_by_file.items():
-						if isinstance(path, str) and isinstance(traits, list):
-							trait_scope_by_file[path] = list(traits)
+				scope = exp.get("trait_scope", [])
+				if isinstance(scope, list):
+					trait_scope_by_module[_mod_name] = list(scope)
 	linked_world, require_env = build_linked_world(type_table)
 	conflicts = find_impl_method_conflicts(
 		module_exports=module_exports,
@@ -170,7 +178,6 @@ def _resolve_main_block(tmp_path: Path, source: str) -> tuple[H.HBlock, dict[int
 	param_types = {}
 	if main_sig and main_sig.param_names and main_sig.param_type_ids:
 		param_types = {pname: pty for pname, pty in zip(main_sig.param_names, main_sig.param_type_ids)}
-	current_file = str(origin_by_fn_id.get(main_id)) if main_id in origin_by_fn_id else None
 	current_mod = module_ids.setdefault(main_sig.module, len(module_ids))
 	visible_mods = tuple(sorted(module_ids.setdefault(mod, len(module_ids)) for mod in module_deps.get("main", {"main"})))
 	visibility_provenance = {mid: (name,) for name, mid in module_ids.items() if name is not None}
@@ -185,13 +192,12 @@ def _resolve_main_block(tmp_path: Path, source: str) -> tuple[H.HBlock, dict[int
 		impl_index=impl_index,
 		trait_index=trait_index,
 		trait_impl_index=trait_impl_index,
-		trait_scope_by_file=trait_scope_by_file,
+		trait_scope_by_module=trait_scope_by_module,
 		linked_world=linked_world,
 		require_env=require_env,
 		visible_modules=visible_mods,
 		current_module=current_mod,
 		visibility_provenance=visibility_provenance,
-		current_file=current_file,
 	)
 	return main_block, result.typed_fn.call_resolutions, signatures
 
@@ -223,15 +229,13 @@ def _resolve_main_with_meta(
 		type_table=type_table,
 		module_ids=module_ids,
 	)
-	trait_scope_by_file: dict[str, list] = {}
+	trait_scope_by_module: dict[str, list] = {}
 	if isinstance(module_exports, dict):
 		for _mod_name, exp in module_exports.items():
 			if isinstance(exp, dict):
-				scope_by_file = exp.get("trait_scope_by_file", {})
-				if isinstance(scope_by_file, dict):
-					for path, traits in scope_by_file.items():
-						if isinstance(path, str) and isinstance(traits, list):
-							trait_scope_by_file[path] = list(traits)
+				scope = exp.get("trait_scope", [])
+				if isinstance(scope, list):
+					trait_scope_by_module[_mod_name] = list(scope)
 	linked_world, require_env = build_linked_world(type_table)
 	conflicts = find_impl_method_conflicts(
 		module_exports=module_exports,
@@ -248,7 +252,6 @@ def _resolve_main_with_meta(
 	param_types = {}
 	if main_sig and main_sig.param_names and main_sig.param_type_ids:
 		param_types = {pname: pty for pname, pty in zip(main_sig.param_names, main_sig.param_type_ids)}
-	current_file = str(origin_by_fn_id.get(main_id)) if main_id in origin_by_fn_id else None
 	current_mod = module_ids.setdefault(main_sig.module, len(module_ids))
 	visible_mods = tuple(sorted(module_ids.setdefault(mod, len(module_ids)) for mod in module_deps.get("main", {"main"})))
 	visibility_provenance = {mid: (name,) for name, mid in module_ids.items() if name is not None}
@@ -263,13 +266,12 @@ def _resolve_main_with_meta(
 		impl_index=impl_index,
 		trait_index=trait_index,
 		trait_impl_index=trait_impl_index,
-		trait_scope_by_file=trait_scope_by_file,
+		trait_scope_by_module=trait_scope_by_module,
 		linked_world=linked_world,
 		require_env=require_env,
 		visible_modules=visible_mods,
 		current_module=current_mod,
 		visibility_provenance=visibility_provenance,
-		current_file=current_file,
 	)
 	return main_block, result, signatures, module_exports, type_table
 
@@ -292,10 +294,14 @@ def _impl_require_for_method(
 	return None
 
 
-def test_method_resolution_failure_reports_diagnostic(tmp_path):
+def test_method_resolution_failure_reports_diagnostic(tmp_path, capsys: pytest.CaptureFixture[str]):
 	src = tmp_path / "bad_method.drift"
 	src.write_text(
 		"""
+module main
+
+struct Point { }
+
 implement Point {
     fn m(self: &Point) -> Int { return 1; }
 }
@@ -304,10 +310,13 @@ fn main() nothrow -> Int{
     val x = 1;
     return x.m(); // no such method on Int;
 }
-"""
+""".lstrip(),
 	)
-	exit_code = driftc.main([str(src)])
-	assert exit_code == 1
+	rc, payload = _run_driftc_json([str(src)], capsys)
+	assert rc == 1
+	diags = payload.get("diagnostics", [])
+	assert diags
+	assert any("no matching method 'm'" in (d.get("message") or "") for d in diags)
 
 
 def test_cross_module_trait_dot_call_e2e(tmp_path: Path) -> None:

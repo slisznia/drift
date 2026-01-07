@@ -1,1 +1,4 @@
 module b
+
+export { b_part1.* };
+export { b_part2.* };

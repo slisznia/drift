@@ -1,6 +1,30 @@
 from __future__ import annotations
 
-from lang2.driftc.core.types_core import TypeTable, TypeKind
+from lang2.driftc.core.generic_type_expr import GenericTypeExpr
+from lang2.driftc.core.types_core import (
+	TypeKind,
+	TypeTable,
+	VariantArmSchema,
+	VariantFieldSchema,
+)
+
+
+def _ensure_optional(table: TypeTable, inner: int) -> int:
+	base = table.get_variant_base(module_id="lang.core", name="Optional")
+	if base is None:
+		base = table.declare_variant(
+			"lang.core",
+			"Optional",
+			["T"],
+			[
+				VariantArmSchema(name="None", fields=[]),
+				VariantArmSchema(
+					name="Some",
+					fields=[VariantFieldSchema(name="value", type_expr=GenericTypeExpr.param(0))],
+				),
+			],
+		)
+	return table.ensure_instantiated(base, [inner])
 
 
 def test_type_table_registers_basic_kinds():
@@ -51,8 +75,8 @@ def test_type_table_seeds_error_canonically():
 def test_type_table_seeds_diagnostic_value_and_optional():
 	table = TypeTable()
 	dv_ty = table.ensure_diagnostic_value()
-	opt_int = table.new_optional(table.ensure_int())
-	opt_int_again = table.new_optional(table.ensure_int())
+	opt_int = _ensure_optional(table, table.ensure_int())
+	opt_int_again = _ensure_optional(table, table.ensure_int())
 
 	assert table.get(dv_ty).kind is TypeKind.DIAGNOSTICVALUE
 	assert dv_ty == table.ensure_diagnostic_value()
@@ -62,3 +86,23 @@ def test_type_table_seeds_diagnostic_value_and_optional():
 	assert inst.type_args == [table.ensure_int()]
 	# Optional cache should reuse the same id for the same inner.
 	assert opt_int == opt_int_again
+
+
+def test_variant_instantiation_cache_is_stable() -> None:
+	table = TypeTable()
+	base = table.declare_variant(
+		"m",
+		"Result",
+		["T"],
+		[
+			VariantArmSchema(name="Ok", fields=[VariantFieldSchema(name="value", type_expr=GenericTypeExpr.param(0))]),
+			VariantArmSchema(name="Err", fields=[]),
+		],
+	)
+	int_ty = table.ensure_int()
+	inst_a = table.ensure_instantiated(base, [int_ty])
+	inst_b = table.ensure_instantiated(base, [int_ty])
+	assert inst_a == inst_b
+	inst = table.get_variant_instance(inst_a)
+	assert inst is not None
+	assert [arm.name for arm in inst.arms] == ["Ok", "Err"]

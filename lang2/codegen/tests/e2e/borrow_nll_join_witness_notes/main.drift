@@ -1,3 +1,5 @@
+module main
+
 fn main() nothrow -> Int{
 	var x = 0;
 	val r = &mut x;

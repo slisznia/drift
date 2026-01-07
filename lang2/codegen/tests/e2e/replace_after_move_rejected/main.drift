@@ -1,3 +1,5 @@
+module main
+
 import std.mem as mem;
 fn main() nothrow -> Int{
 	var x = 1;

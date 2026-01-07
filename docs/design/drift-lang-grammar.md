@@ -40,7 +40,7 @@ Ident        ::= NAME | "move" | "copy"
 Declarations and items:
 ```
 Item         ::= PubItem | FnDef | ConstDef | StructDef | ExceptionDef | VariantDef
-              | TraitDef | ImplementDef | UseTraitStmt | ImportStmt | ExportStmt | Stmt
+              | TraitDef | ImplementDef | UseTraitStmt | ImportStmt | ExportStmt
 PubItem      ::= "pub" (FnDef | ConstDef | StructDef | ExceptionDef | VariantDef | TraitDef | ImplementDef)
 
 ConstDef     ::= "const" NAME ":" Ty "=" Expr TERMINATOR
@@ -49,8 +49,8 @@ ReturnSig    ::= "nothrow"? "->" Ty
 Params       ::= Param ("," Param)*
 Param        ::= ("var" | "val")? Ident ":" Ty
 
-StructDef    ::= "struct" NAME TypeParams? RequireClause? StructBody
-StructBody   ::= TupleStruct | BlockStruct
+StructDef    ::= "struct" NAME TypeParams? RequireClause? TupleStruct TERMINATOR
+              | "struct" NAME TypeParams? RequireClause? BlockStruct TERMINATOR?
 TupleStruct  ::= "(" StructFieldList? ")"
 StructFieldList ::= StructField ("," StructField)*
 StructField  ::= NAME ":" Ty

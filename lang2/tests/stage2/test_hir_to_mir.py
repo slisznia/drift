@@ -36,12 +36,16 @@ from lang2.driftc.stage1 import (
 	HFString,
 	HFStringHole,
 	HExprStmt,
+	HQualifiedMember,
+	HKwArg,
 	BinaryOp,
 	assign_node_ids,
 	assign_callsite_ids,
 )
 from lang2.driftc.stage1.call_info import CallInfo, CallSig, CallTarget
-from lang2.driftc.core.types_core import TypeTable
+from lang2.driftc.core.types_core import TypeTable, VariantArmSchema, VariantFieldSchema
+from lang2.driftc.core.generic_type_expr import GenericTypeExpr
+from lang2.driftc.parser.ast import TypeExpr
 from lang2.driftc.stage1.normalize import normalize_hir
 from lang2.driftc.stage2 import (
 	HIRToMIR,
@@ -82,6 +86,54 @@ def _build_and_lower(block: HBlock):
 			csid = getattr(stmt.expr, "callsite_id", None)
 			if isinstance(csid, int):
 				call_info_by_callsite_id[csid] = info
+	lowerer = HIRToMIR(
+		builder,
+		type_table=type_table,
+		call_info_by_callsite_id=call_info_by_callsite_id,
+	)
+	lowerer.lower_block(hir_norm)
+	return builder.func
+
+
+def _lower_with_call_info(block: HBlock, type_table: TypeTable) -> object:
+	builder = make_builder(FunctionId(module="main", name="test_func", ordinal=0))
+	hir_norm = normalize_hir(block)
+	assign_node_ids(hir_norm)
+	assign_callsite_ids(hir_norm)
+	call_info_by_callsite_id: dict[int, CallInfo] = {}
+
+	def _walk_expr(expr: object) -> None:
+		if isinstance(expr, HCall):
+			if isinstance(expr.fn, HVar):
+				int_ty = type_table.ensure_int()
+				param_types = tuple(int_ty for _ in expr.args)
+				info = CallInfo(
+					target=CallTarget.direct(_fn_id(expr.fn.name)),
+					sig=CallSig(param_types=param_types, user_ret_type=int_ty, can_throw=False),
+				)
+				csid = getattr(expr, "callsite_id", None)
+				if isinstance(csid, int):
+					call_info_by_callsite_id[csid] = info
+			for arg in list(expr.args):
+				_walk_expr(arg)
+			for kw in list(expr.kwargs or []):
+				_walk_expr(kw.value)
+			return
+
+	def _walk_stmt(stmt: object) -> None:
+		if isinstance(stmt, HExprStmt):
+			_walk_expr(stmt.expr)
+		elif isinstance(stmt, HLet):
+			_walk_expr(stmt.value)
+		elif isinstance(stmt, HAssign):
+			_walk_expr(stmt.value)
+		elif isinstance(stmt, HReturn):
+			if stmt.value is not None:
+				_walk_expr(stmt.value)
+
+	for stmt in hir_norm.statements:
+		_walk_stmt(stmt)
+
 	lowerer = HIRToMIR(
 		builder,
 		type_table=type_table,
@@ -137,6 +189,46 @@ def test_if_lowering():
 	assert isinstance(entry.terminator, IfTerminator)
 	then_block = func.blocks["if_then"]
 	assert isinstance(then_block.terminator, Goto)
+
+
+def test_variant_ctor_kwargs_eval_order_is_source_order() -> None:
+	type_table = TypeTable()
+	int_ty = type_table.ensure_int()
+
+	pair_base = type_table.declare_variant(
+		module_id="main",
+		name="Pair",
+		type_params=[],
+		arms=[
+			VariantArmSchema(
+				name="Mk",
+				fields=[
+					VariantFieldSchema(name="a", type_expr=GenericTypeExpr.named("Int")),
+					VariantFieldSchema(name="b", type_expr=GenericTypeExpr.named("Int")),
+				],
+			)
+		],
+	)
+	type_table.ensure_instantiated(pair_base, [])
+
+	pair_te = TypeExpr(name="Pair", module_id="main")
+	ctor = HQualifiedMember(base_type_expr=pair_te, member="Mk")
+	call = HCall(
+		fn=ctor,
+		args=[],
+		kwargs=[
+			HKwArg(name="b", value=HCall(fn=HVar("f"), args=[HLiteralInt(1)], kwargs=[])),
+			HKwArg(name="a", value=HCall(fn=HVar("f"), args=[HLiteralInt(2)], kwargs=[])),
+		],
+	)
+	block = HBlock(statements=[HExprStmt(expr=call)])
+	func = _lower_with_call_info(block, type_table)
+	entry = func.blocks[func.entry]
+	const_vals = {op.dest: op.value for op in entry.instructions if isinstance(op, ConstInt)}
+	calls = [op for op in entry.instructions if isinstance(op, Call) and op.fn_id.name == "f"]
+	assert len(calls) == 2
+	assert const_vals[calls[0].args[0]] == 1
+	assert const_vals[calls[1].args[0]] == 2
 
 
 def test_loop_and_break_continue():

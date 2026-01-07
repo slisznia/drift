@@ -1832,20 +1832,7 @@ class HIRToMIR:
 		return ensure_array_iter_struct(array_ty, self._type_table)
 
 	def _optional_variant_type(self, inner_ty: TypeId) -> TypeId:
-		opt_base = self._type_table.get_variant_base(module_id="lang.core", name="Optional")
-		if opt_base is None:
-			opt_base = self._type_table.declare_variant(
-				"lang.core",
-				"Optional",
-				["T"],
-				[
-					VariantArmSchema(name="None", fields=[]),
-					VariantArmSchema(
-						name="Some",
-						fields=[VariantFieldSchema(name="value", type_expr=GenericTypeExpr.param(0))],
-					),
-				],
-		)
+		opt_base = self._type_table.ensure_optional_base()
 		return self._type_table.ensure_instantiated(opt_base, [inner_ty])
 
 	def _recover_unknown_value(self, msg: str) -> M.ValueId:
@@ -3577,9 +3564,7 @@ class HIRToMIR:
 					if array_def.kind is not TypeKind.ARRAY or not array_def.param_types:
 						return None
 					elem_ty = array_def.param_types[0]
-					opt_base = self._type_table.get_variant_base(module_id="lang.core", name="Optional")
-					if opt_base is None:
-						return None
+					opt_base = self._type_table.ensure_optional_base()
 					return self._type_table.ensure_instantiated(opt_base, [elem_ty])
 			recv_ty = self._infer_expr_type(expr.receiver)
 			if recv_ty is not None:
@@ -3612,7 +3597,7 @@ class HIRToMIR:
 		"""
 		base_te = getattr(qm, "base_type_expr", None)
 		cur_mod = self._current_module_name()
-		base_tid = resolve_opaque_type(base_te, self._type_table, module_id=cur_mod)
+		base_tid = resolve_opaque_type(base_te, self._type_table, module_id=cur_mod, allow_generic_base=True)
 		td = self._type_table.get(base_tid)
 		if td.kind is not TypeKind.VARIANT:
 			# `resolve_opaque_type` is conservative for bare generic variant names;

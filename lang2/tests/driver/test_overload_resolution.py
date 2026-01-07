@@ -7,6 +7,7 @@ from lang2.driftc import stage1 as H
 from lang2.driftc.core.function_id import FunctionId
 from lang2.driftc.core.types_core import TypeKind
 from lang2.driftc.method_registry import CallableRegistry, CallableSignature, Visibility
+from lang2.driftc.stage1.call_info import CallTargetKind
 from lang2.driftc.parser import parse_drift_workspace_to_hir
 from lang2.driftc.module_lowered import flatten_modules
 from lang2.driftc.type_checker import TypeChecker
@@ -101,51 +102,49 @@ def _find_fn_id_by_param_type(signatures: dict[FunctionId, object], *, name: str
 	raise AssertionError(f"missing overload for {name}({param_type_id})")
 
 
-def test_overloads_across_files_in_module(tmp_path: Path) -> None:
-	mod_root = tmp_path / "m"
+def test_overloads_in_module(tmp_path: Path) -> None:
+	mod_root = tmp_path / "mods"
 	_write_file(
-		mod_root / "a.drift",
+		mod_root / "m" / "lib.drift",
 		"""
 module m
 
-fn f(x: Int) -> Int { return x + 1; }
-""",
-	)
-	_write_file(
-		mod_root / "b.drift",
-		"""
-module m
+export { f };
 
-fn f(x: String) -> Int { return 2; }
+pub fn f(x: Int) -> Int { return x + 1; }
+pub fn f(x: String) -> Int { return 2; }
 """,
 	)
 	_write_file(
 		mod_root / "main.drift",
 		"""
-module m
+module main
+
+import m as m;
 
 fn main() nothrow -> Int{
-    val a: Int = f(1);
-    val b: Int = f("hi");
-    return a + b;
+	val a: Int = m.f(1);
+	val b: Int = m.f("hi");
+	return a + b;
 }
 """,
 	)
-	paths = [mod_root / "a.drift", mod_root / "b.drift", mod_root / "main.drift"]
-	modules, type_table, _exc_catalog, _exports, _deps, diagnostics = parse_drift_workspace_to_hir(
+	paths = sorted(mod_root.rglob("*.drift"))
+	modules, type_table, _exc_catalog, _exports, module_deps, diagnostics = parse_drift_workspace_to_hir(
 		paths,
-		module_paths=[tmp_path],
+		module_paths=[mod_root],
 	)
-	assert diagnostics == []
+	assert not diagnostics
 	func_hirs, signatures, fn_ids_by_name = flatten_modules(modules)
 	registry, module_ids = _build_registry(signatures)
-	main_ids = fn_ids_by_name.get("m::main") or []
+
+	main_ids = fn_ids_by_name.get("main::main") or fn_ids_by_name.get("main") or []
 	assert len(main_ids) == 1
 	main_id = main_ids[0]
 	main_block = func_hirs[main_id]
-	main_sig = signatures.get(main_id)
+	main_sig = signatures[main_id]
 	param_types = {}
-	if main_sig and main_sig.param_names and main_sig.param_type_ids:
+	if main_sig.param_names and main_sig.param_type_ids:
 		param_types = {pname: pty for pname, pty in zip(main_sig.param_names, main_sig.param_type_ids)}
 	current_mod = module_ids.setdefault(main_sig.module, len(module_ids))
 	tc = TypeChecker(type_table=type_table)
@@ -153,30 +152,22 @@ fn main() nothrow -> Int{
 		main_id,
 		main_block,
 		param_types=param_types,
-		return_type=main_sig.return_type_id if main_sig is not None else None,
+		return_type=main_sig.return_type_id,
 		signatures_by_id=signatures,
 		callable_registry=registry,
-		visible_modules=(current_mod,),
+		visible_modules=tuple(module_ids.values()),
 		current_module=current_mod,
 	)
-	assert result.diagnostics == []
-	calls = _collect_calls(main_block)
-	assert len(calls) >= 2
-	int_ty = type_table.ensure_int()
-	string_ty = type_table.ensure_string()
-	f_int = _find_fn_id_by_param_type(signatures, name="f", param_type_id=int_ty)
-	f_str = _find_fn_id_by_param_type(signatures, name="f", param_type_id=string_ty)
-	seen_int = False
-	seen_str = False
+	assert not result.diagnostics
+	calls = _collect_calls(result.typed_fn.body)
+	assert len(calls) == 2
+	int_fn = _find_fn_id_by_param_type(signatures, name="f", param_type_id=type_table.ensure_int())
+	str_fn = _find_fn_id_by_param_type(signatures, name="f", param_type_id=type_table.ensure_string())
+	targets = []
 	for call in calls:
-		decl = result.typed_fn.call_resolutions.get(call.node_id)
-		if decl is None or decl.fn_id is None:
-			continue
-		arg = call.args[0] if call.args else None
-		if isinstance(arg, H.HLiteralInt):
-			assert decl.fn_id == f_int
-			seen_int = True
-		if isinstance(arg, H.HLiteralString):
-			assert decl.fn_id == f_str
-			seen_str = True
-	assert seen_int and seen_str
+		info = result.typed_fn.call_info_by_callsite_id.get(call.callsite_id)
+		assert info is not None
+		assert info.target.kind is CallTargetKind.DIRECT
+		targets.append(info.target.symbol)
+	assert int_fn in targets
+	assert str_fn in targets

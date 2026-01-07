@@ -1,17 +1,17 @@
-module m
+module main
 
-variant Optional<T> {
+variant Maybe<T> {
 	Some(value: T),
 	None,
 }
 
-fn foo() nothrow -> Optional<Int> {
+fn foo() nothrow -> Maybe<Int> {
 	// Constructor calls require an expected type; return type provides it.
 	return Some(41);
 }
 
 fn main() nothrow -> Int{
-	val x: Optional<Int> = foo();
+	val x: Maybe<Int> = foo();
 	val y = match x{
 	Some(v) => { v + 1 },
 		None => { 0 },

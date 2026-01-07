@@ -1,4 +1,6 @@
-struct Point(x: Int, y: Int)
+module main
+
+struct Point(x: Int, y: Int);
 
 fn inc_x(p: &mut Point) nothrow -> Void {
 	val rx = &mut (*p).x;

@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from pathlib import Path
 from dataclasses import replace
+import hashlib
+import os
 from typing import Callable, Dict, Tuple, Optional, List, TYPE_CHECKING
 
 from lark.exceptions import UnexpectedInput
@@ -42,6 +44,21 @@ from lang2.driftc.impl_index import ImplMeta, ImplMethodMeta
 from lang2.driftc.module_lowered import ModuleLowered
 if TYPE_CHECKING:
 	from lang2.driftc.traits.world import TraitKey
+
+_RESERVED_NOMINAL_TYPE_NAMES: set[str] = {
+	"Int",
+	"Uint",
+	"Byte",
+	"Bool",
+	"Float",
+	"String",
+	"Void",
+	"Error",
+	"DiagnosticValue",
+	"Array",
+	"Optional",
+	"FnResult",
+}
 
 
 def _validate_module_id(
@@ -129,6 +146,24 @@ def _validate_module_id(
 					)
 				]
 	return []
+
+
+def _reject_reserved_nominal_type(
+	name: str,
+	*,
+	loc: object | None,
+	diagnostics: list[Diagnostic],
+) -> bool:
+	if name in _RESERVED_NOMINAL_TYPE_NAMES:
+		diagnostics.append(
+			_p_diag(
+				message=f"type name '{name}' is reserved by the compiler",
+				severity="error",
+				span=Span.from_loc(loc),
+			)
+		)
+		return True
+	return False
 
 
 def _format_span_short(span: Span) -> str:
@@ -799,6 +834,8 @@ def _build_exception_catalog(exceptions: list[parser_ast.ExceptionDef], module_n
 	payload_seen: dict[int, str] = {}
 	seen_names: set[str] = set()
 	for exc in exceptions:
+		if _reject_reserved_nominal_type(getattr(exc, "name", ""), loc=getattr(exc, "loc", None), diagnostics=diagnostics):
+			continue
 		if exc.name in seen_names:
 			diagnostics.append(_diagnostic(f"duplicate exception '{exc.name}'", getattr(exc, "loc", None)))
 			continue
@@ -841,6 +878,17 @@ def _span_in_file(path: Path, loc: object | None) -> Span:
 			raw=span.raw,
 		)
 	return span
+
+
+def _relabel_diagnostics(diags: list[Diagnostic], label_by_path: dict[str, str]) -> None:
+	for diag in diags:
+		span = diag.span
+		if not span or not span.file:
+			continue
+		if isinstance(span.file, str) and os.path.isabs(span.file):
+			label = label_by_path.get(span.file)
+			if label is not None:
+				diag.span = replace(span, file=label)
 
 
 def _diag_duplicate(
@@ -910,15 +958,8 @@ def parse_drift_files_to_hir(
 	"""
 	Parse and lower a set of Drift source files into a single module unit.
 
-	MVP (Milestone 1): accepts multiple files that all declare the same `module`
-	id (or default to `main`). The module is lowered as if it were one merged file:
-	- top-level declarations are combined,
-	- cross-file collisions are diagnosed (with a pinned note pointing at the
-	  first definition),
-	- then the existing parser→stage0→HIR pipeline runs on the merged program.
-
-	This does not implement cross-module imports yet; it only handles multiple
-	files *within* the same module.
+	MVP: only one file may define a module. This helper accepts a single file and
+	treats it as one module unit; multiple files are a hard error.
 	"""
 	diagnostics: list[Diagnostic] = []
 	if not paths:
@@ -936,6 +977,7 @@ def parse_drift_files_to_hir(
 		)
 		return empty, TypeTable(), {}, [_p_diag(message="no input files", severity="error")]
 
+	paths = [p.resolve() for p in paths]
 	programs: list[tuple[Path, parser_ast.Program]] = []
 	for path in paths:
 		source = path.read_text()
@@ -963,7 +1005,33 @@ def parse_drift_files_to_hir(
 			continue
 		programs.append((path, prog))
 
+	label_by_path = {str(p): "<source>" for p in paths}
+	_relabel_diagnostics(diagnostics, label_by_path)
 	if any(d.severity == "error" for d in diagnostics):
+		empty = ModuleLowered(
+			module_id="main",
+			package_id=package_id,
+			func_hirs={},
+			signatures_by_id={},
+			fn_ids_by_name={},
+			requires_by_fn={},
+			requires_by_struct={},
+			type_defs={},
+			impl_defs=[],
+			origin_by_fn_id={},
+		)
+		return empty, TypeTable(), {}, diagnostics
+
+	if len(programs) > 1:
+		span = Span(file=str(programs[0][0]), line=1, column=1)
+		diagnostics.append(
+			_p_diag(
+				message="multiple source files declare one module",
+				severity="error",
+				span=span,
+			)
+		)
+		_relabel_diagnostics(diagnostics, label_by_path)
 		empty = ModuleLowered(
 			module_id="main",
 			package_id=package_id,
@@ -1002,6 +1070,9 @@ def parse_drift_files_to_hir(
 					span=Span(file=str(path), line=1, column=1),
 				)
 			)
+	label = f"<{module_id}>"
+	label_by_path = {str(path): label for path, _prog in programs}
+	_relabel_diagnostics(diagnostics, label_by_path)
 	if any(d.severity == "error" for d in diagnostics):
 		empty = ModuleLowered(
 			module_id="main",
@@ -1017,53 +1088,14 @@ def parse_drift_files_to_hir(
 		)
 		return empty, TypeTable(), {}, diagnostics
 
-	if len(programs) > 1:
-		offending: list[Path] = []
-		first_span: Span | None = None
-		for path, prog in programs:
-			used = list(getattr(prog, "used_traits", []) or [])
-			if not used:
-				continue
-			offending.append(path)
-			if first_span is None:
-				first_span = _span_in_file(path, getattr(used[0], "loc", None))
-		if offending:
-			notes: list[str] = []
-			if len(offending) > 1:
-				paths = ", ".join(sorted(str(p) for p in offending))
-				notes.append(f"use trait present in: {paths}")
-			diagnostics.append(
-				_p_diag(
-					message="multi-file module build with 'use trait' requires the workspace pipeline for file-scoped traits",
-					severity="error",
-					span=first_span or Span(file=str(offending[0]), line=1, column=1),
-					notes=notes,
-				)
-			)
-		if offending:
-			empty = ModuleLowered(
-				module_id="main",
-				package_id=package_id,
-				func_hirs={},
-				signatures_by_id={},
-				fn_ids_by_name={},
-				requires_by_fn={},
-				requires_by_struct={},
-				type_defs={},
-				impl_defs=[],
-				origin_by_fn_id={},
-			)
-			return empty, TypeTable(), {}, diagnostics
-
-	merged, origins = _merge_module_files(module_id, programs, diagnostics)
-
-	# Lower the merged program using the existing single-file pipeline.
+	path, prog = programs[0]
 	func_hirs, sigs, fn_ids, table, excs, impl_metas, diags = _lower_parsed_program_to_hir(
-		merged,
+		prog,
 		diagnostics=diagnostics,
 		package_id=package_id,
 	)
 	requires_by_fn, requires_by_struct = _collect_requires_for_module(table, module_id)
+	origins = {fn_id: path for fn_id in func_hirs.keys()}
 	module = ModuleLowered(
 		module_id=module_id,
 		package_id=package_id,
@@ -1072,242 +1104,11 @@ def parse_drift_files_to_hir(
 		fn_ids_by_name=fn_ids,
 		requires_by_fn=requires_by_fn,
 		requires_by_struct=requires_by_struct,
-		type_defs=_collect_type_defs(merged),
+		type_defs=_collect_type_defs(prog),
 		impl_defs=list(impl_metas),
 		origin_by_fn_id=origins,
 	)
 	return module, table, excs, diags
-
-
-def _merge_module_files(
-	module_id: str,
-	files: list[tuple[Path, parser_ast.Program]],
-	diagnostics: list[Diagnostic],
-) -> tuple[parser_ast.Program, dict[FunctionId, Path]]:
-	"""
-	Merge a module's file set into a single parser AST `Program` (Milestone 1 rule set).
-
-	This is the single source of truth for “multi-file module” merge behavior.
-	Both `parse_drift_files_to_hir` (single-module build) and the workspace loader
-	(Milestone 2) must call this helper to avoid drift.
-	"""
-	merged = parser_ast.Program(module=module_id)
-	# Provenance map for module-local callable symbols (free functions and methods).
-	#
-	# Used by the workspace loader to implement per-file import environments:
-	# we need to know which source file a given function body came from so we can
-	# apply that file's imports while rewriting call sites.
-	origin_by_fn_id: dict[FunctionId, Path] = {}
-
-	first_fn_sig: dict[tuple, tuple[Path, object | None]] = {}
-	name_ord: dict[str, int] = {}
-	free_names: set[str] = set()
-	for path, prog in files:
-		for fn in getattr(prog, "functions", []) or []:
-			require_key = _trait_expr_key(fn.require.expr) if getattr(fn, "require", None) is not None else None
-			sig_key = (
-				fn.name,
-				len(getattr(fn, "params", []) or []),
-				tuple(_type_expr_key(p.type_expr) for p in getattr(fn, "params", []) or []),
-				require_key,
-			)
-			if sig_key in first_fn_sig:
-				first_path, first_loc = first_fn_sig[sig_key]
-				diagnostics.extend(
-					_diag_duplicate(
-						kind="function",
-						name=fn.name,
-						first_path=first_path,
-						first_loc=first_loc,
-						second_path=path,
-						second_loc=getattr(fn, "loc", None),
-					)
-				)
-				continue
-			first_fn_sig[sig_key] = (path, getattr(fn, "loc", None))
-			free_names.add(fn.name)
-			merged.functions.append(fn)
-			ordinal = name_ord.get(fn.name, 0)
-			name_ord[fn.name] = ordinal + 1
-			fn_id = FunctionId(module=module_id, name=fn.name, ordinal=ordinal)
-			origin_by_fn_id.setdefault(fn_id, path)
-
-	first_const: dict[str, tuple[Path, object | None]] = {}
-	for path, prog in files:
-		for c in getattr(prog, "consts", []) or []:
-			if c.name in first_const:
-				first_path, first_loc = first_const[c.name]
-				diagnostics.extend(
-					_diag_duplicate(
-						kind="const",
-						name=c.name,
-						first_path=first_path,
-						first_loc=first_loc,
-						second_path=path,
-						second_loc=getattr(c, "loc", None),
-					)
-				)
-				continue
-			first_const[c.name] = (path, getattr(c, "loc", None))
-			merged.consts.append(c)
-
-	first_struct: dict[str, tuple[Path, object | None]] = {}
-	for path, prog in files:
-		for s in getattr(prog, "structs", []) or []:
-			if getattr(s, "loc", None) is not None:
-				s.loc = _span_in_file(path, getattr(s, "loc", None))
-			if s.name in first_struct:
-				first_path, first_loc = first_struct[s.name]
-				diagnostics.extend(
-					_diag_duplicate(
-						kind="struct",
-						name=s.name,
-						first_path=first_path,
-						first_loc=first_loc,
-						second_path=path,
-						second_loc=getattr(s, "loc", None),
-					)
-				)
-				continue
-			first_struct[s.name] = (path, getattr(s, "loc", None))
-			merged.structs.append(s)
-
-	first_exc: dict[str, tuple[Path, object | None]] = {}
-	for path, prog in files:
-		for exc in getattr(prog, "exceptions", []) or []:
-			if exc.name in first_exc:
-				first_path, first_loc = first_exc[exc.name]
-				diagnostics.extend(
-					_diag_duplicate(
-						kind="exception",
-						name=exc.name,
-						first_path=first_path,
-						first_loc=first_loc,
-						second_path=path,
-						second_loc=getattr(exc, "loc", None),
-					)
-				)
-				continue
-			first_exc[exc.name] = (path, getattr(exc, "loc", None))
-			merged.exceptions.append(exc)
-
-	first_variant: dict[str, tuple[Path, object | None]] = {}
-	for path, prog in files:
-		for v in getattr(prog, "variants", []) or []:
-			if v.name in first_variant:
-				first_path, first_loc = first_variant[v.name]
-				diagnostics.extend(
-					_diag_duplicate(
-						kind="variant",
-						name=v.name,
-						first_path=first_path,
-						first_loc=first_loc,
-						second_path=path,
-						second_loc=getattr(v, "loc", None),
-					)
-				)
-				continue
-			first_variant[v.name] = (path, getattr(v, "loc", None))
-			merged.variants.append(v)
-
-	first_trait: dict[str, tuple[Path, object | None]] = {}
-	for path, prog in files:
-		for tr in getattr(prog, "traits", []) or []:
-			if getattr(tr, "loc", None) is not None:
-				tr.loc = _span_in_file(path, getattr(tr, "loc", None))
-			for m in getattr(tr, "methods", []) or []:
-				if getattr(m, "loc", None) is not None:
-					m.loc = _span_in_file(path, getattr(m, "loc", None))
-			if tr.name in first_trait:
-				first_path, first_loc = first_trait[tr.name]
-				diagnostics.extend(
-					_diag_duplicate(
-						kind="trait",
-						name=tr.name,
-						first_path=first_path,
-						first_loc=first_loc,
-						second_path=path,
-						second_loc=getattr(tr, "loc", None),
-					)
-				)
-				continue
-			first_trait[tr.name] = (path, getattr(tr, "loc", None))
-			merged.traits.append(tr)
-
-	# Combine module directives (imports/exports/use-trait).
-	for _, prog in files:
-		merged.imports.extend(getattr(prog, "imports", []) or [])
-		merged.exports.extend(getattr(prog, "exports", []) or [])
-		merged.used_traits.extend(getattr(prog, "used_traits", []) or [])
-
-	# Merge implement blocks by target repr.
-	impls_by_key: dict[tuple[tuple | None, tuple], parser_ast.ImplementDef] = {}
-	for path, prog in files:
-		for impl in getattr(prog, "implements", []) or []:
-			if getattr(impl, "loc", None) is not None:
-				impl.loc = _span_in_file(path, getattr(impl, "loc", None))
-			impl_type_params = list(getattr(impl, "type_params", []) or [])
-			target_key = _impl_target_key(impl.target, impl_type_params)
-			target_str = _type_expr_key_str(impl.target)
-			trait_key = _type_expr_key(impl.trait) if getattr(impl, "trait", None) is not None else None
-			trait_str = _type_expr_key_str(impl.trait) if getattr(impl, "trait", None) is not None else None
-			key = (trait_key, target_key)
-			dst = impls_by_key.get(key)
-			if dst is None:
-				dst = parser_ast.ImplementDef(
-					target=impl.target,
-					trait=getattr(impl, "trait", None),
-					require=getattr(impl, "require", None),
-					loc=getattr(impl, "loc", None),
-					is_pub=getattr(impl, "is_pub", False),
-					type_params=list(getattr(impl, "type_params", []) or []),
-					type_param_locs=list(getattr(impl, "type_param_locs", []) or []),
-					methods=[],
-				)
-				impls_by_key[key] = dst
-			elif list(getattr(dst, "type_params", []) or []) != impl_type_params:
-				impl_label = f"{trait_str} for {target_str}" if trait_str else target_str
-				diagnostics.append(
-					_p_diag(
-						message=f"conflicting type parameter lists for implement block '{impl_label}'",
-						severity="error",
-						span=_span_in_file(path, getattr(impl, "loc", None)),
-					)
-				)
-			elif getattr(dst, "require", None) != getattr(impl, "require", None):
-				impl_label = f"{trait_str} for {target_str}" if trait_str else target_str
-				diagnostics.append(
-					_p_diag(
-						message=f"conflicting require clauses for implement block '{impl_label}'",
-						severity="error",
-						span=_span_in_file(path, getattr(impl, "loc", None)),
-					)
-				)
-			for m in getattr(impl, "methods", []) or []:
-				if getattr(m, "loc", None) is not None:
-					m.loc = _span_in_file(path, getattr(m, "loc", None))
-				if m.name in free_names:
-					first_path, _first_loc = first_fn[m.name]
-					diagnostics.append(
-						_p_diag(
-							message=f"method '{m.name}' conflicts with existing free function of the same name",
-							severity="error",
-							span=_span_in_file(path, getattr(m, "loc", None)),
-							notes=[f"previous free function definition is in {first_path}"],
-						)
-					)
-					continue
-				dst.methods.append(m)
-				if trait_str:
-					symbol_name = f"{target_str}::{trait_str}::{m.name}"
-				else:
-					symbol_name = f"{target_str}::{m.name}"
-				ordinal = name_ord.get(symbol_name, 0)
-				name_ord[symbol_name] = ordinal + 1
-				fn_id = FunctionId(module=module_id, name=symbol_name, ordinal=ordinal)
-				origin_by_fn_id.setdefault(fn_id, path)
-	merged.implements = list(impls_by_key.values())
-	return merged, origin_by_fn_id
 
 
 def parse_drift_workspace_to_hir(
@@ -1328,20 +1129,18 @@ def parse_drift_workspace_to_hir(
 	"""
 	Parse and lower a set of Drift source files that may belong to multiple modules.
 
-	This is Milestone 2 (“module imports and cross-module resolution”) scaffolding:
+	MVP (“module imports and cross-module resolution”) scaffolding:
 	- input is an unordered set of files (typically all `*.drift` files in a build),
-	- files are grouped by their declared `module <id>` (or default to `main`),
-	- each module is merged from its file set (Milestone 1 behavior),
-	- imports are resolved across modules (MVP: module-only imports),
+	- each file must declare a `module <id>` (one file defines one module),
+	- modules are resolved and lowered independently (no multi-file merges),
+	- imports are resolved across modules (module-scoped),
 	- resulting HIR/signatures are returned as a single program unit suitable for
 	  the existing HIR→MIR→SSA→LLVM pipeline.
 
-		Important MVP constraints (pinned for clarity):
-		- Imports are treated as **per-file** bindings:
-		  - Duplicate identical imports in one file are idempotent (“no-op after first”).
-		  - Conflicting aliases/bindings in one file are diagnosed as errors.
-		  - Different files may import the same module/symbol freely; the module is still
-		    parsed/merged/compiled once per build and referenced from all import sites.
+	Important MVP constraints (pinned for clarity):
+	- Imports are **module-scoped** bindings (one file per module):
+	  - Duplicate identical imports in one module are idempotent (“no-op after first”).
+	  - Conflicting aliases/bindings in one module are diagnosed as errors.
 		- Module-qualified access (`import m` then `m.foo()`) is supported for calling
 		  exported free functions and for struct constructor calls (`m.Point(...)`).
 		- Cross-module import validation supports both value and type namespaces
@@ -1356,7 +1155,16 @@ def parse_drift_workspace_to_hir(
 	if not paths:
 		return {}, TypeTable(), {}, {}, {}, [_p_diag(message="no input files", severity="error")]
 
-	paths = sorted({p.resolve() for p in paths}, key=lambda p: str(p))
+	def _sort_key_for_path(path: Path) -> tuple[str]:
+		try:
+			data = path.read_bytes()
+		except OSError:
+			data = b""
+		digest = hashlib.sha256(data).hexdigest()
+		return (digest,)
+
+	paths = sorted({p.resolve() for p in paths}, key=_sort_key_for_path)
+	label_by_path_all = {str(p): "<source>" for p in paths}
 
 	def _effective_module_id(p: parser_ast.Program) -> str:
 		return getattr(p, "module", None) or "main"
@@ -1390,118 +1198,86 @@ def parse_drift_workspace_to_hir(
 		parsed.append((path, prog))
 
 	if any(d.severity == "error" for d in diagnostics):
+		_relabel_diagnostics(diagnostics, label_by_path_all)
 		return {}, TypeTable(), {}, {}, {}, diagnostics
 
-	def _infer_module_id_from_paths(path: Path) -> tuple[str, Path] | tuple[None, None]:
-		"""
-		Infer the module id for a file from the configured module roots.
-
-		Rule (MVP, pinned in work-progress):
-		- find the first module root that is a prefix of the file's absolute path,
-		- module id is derived from the directory relative to the root:
-		  - empty relative path => "main"
-		  - otherwise path segments joined by '.' (platform-independent).
-		"""
+	def _file_root_for_path(path: Path) -> Path | None:
 		if not module_paths:
-			return None, None
+			return None
 		abs_path = path.resolve()
-		candidates: list[tuple[Path, Path]] = []
+		candidates: list[Path] = []
 		for root in module_paths:
 			abs_root = root.resolve()
 			try:
-				rel_dir = abs_path.parent.relative_to(abs_root)
+				abs_path.parent.relative_to(abs_root)
 			except ValueError:
 				continue
-			candidates.append((abs_root, rel_dir))
-
+			candidates.append(abs_root)
 		if not candidates:
-			return None, None
-
-		# Deterministic root selection: pick the most-specific root (longest prefix).
-		# This prevents module identity from depending on CLI flag ordering when roots
-		# overlap (e.g. `-M src` and `-M src/vendor`).
-		candidates.sort(key=lambda r: len(r[0].parts), reverse=True)
-		best_len = len(candidates[0][0].parts)
-		best = [c for c in candidates if len(c[0].parts) == best_len]
+			return None
+		candidates.sort(key=lambda r: len(r.parts), reverse=True)
+		best_len = len(candidates[0].parts)
+		best = [c for c in candidates if len(c.parts) == best_len]
 		if len(best) != 1:
-			# Ambiguous configuration: multiple roots at the same specificity match
-			# the same file.
-			return None, None
+			return None
+		return best[0]
 
-		abs_root, rel_dir = best[0]
-		parts = list(rel_dir.parts)
-		if not parts or parts == ["."]:
-			return "main", abs_root
-		for seg in parts:
-			if seg in {".", ".."}:
-				return None, None
-			if not seg:
-				return None, None
-		return ".".join(parts), abs_root
-
-	# Group by module id (declared or inferred).
+	# Group by module id (declared only).
+	multiple_files = len(parsed) > 1
+	parsed = sorted(parsed, key=lambda it: _effective_module_id(it[1]))
 	by_module: dict[str, list[tuple[Path, parser_ast.Program]]] = {}
 	roots_by_module: dict[str, set[Path]] = {}
 	# For pinned diagnostics, keep at least one representative file per (module, root).
 	root_file_by_module: dict[str, dict[Path, Path]] = {}
 	for path, prog in parsed:
 		if module_paths:
-			inferred, root = _infer_module_id_from_paths(path)
-			if inferred is None or root is None:
+			root = _file_root_for_path(path)
+			if root is None:
 				diagnostics.append(
 					_p_diag(
-						message=f"file '{path}' is not under exactly one configured module root",
+						message="file is not under exactly one configured module root",
 						severity="error",
 						span=Span(file=str(path), line=1, column=1),
 					)
 				)
 				continue
-			# Validate inferred id before using it as a module-graph key.
-			diagnostics.extend(
-				_validate_module_id(
-					inferred,
-					span=Span(file=str(path), line=1, column=1),
-									)
-			)
 			declared = getattr(prog, "module", None)
-			if declared is not None:
-				decl_span = _span_in_file(path, getattr(prog, "module_loc", None))
-				diagnostics.extend(
-					_validate_module_id(
-						declared,
-						span=decl_span,
-											)
-				)
-				if any(d.severity == "error" for d in diagnostics):
-					continue
-				if declared != inferred:
-					notes = [f"inferred module id is '{inferred}' from root '{root}'"]
-					diagnostics.append(
-						_p_diag(
-							message=f"module id mismatch: expected '{inferred}', found '{declared}'",
-							severity="error",
-							span=decl_span,
-							notes=notes,
-						)
-					)
-					continue
-			# Treat missing module header as implicit declaration of the inferred id.
 			if declared is None:
-				prog = replace(prog, module=inferred)
-			by_module.setdefault(inferred, []).append((path, prog))
-			roots_by_module.setdefault(inferred, set()).add(root)
-			root_file_by_module.setdefault(inferred, {}).setdefault(root, path)
+				diagnostics.append(
+					_p_diag(
+						message="module declaration is required for workspace builds",
+						severity="error",
+						span=_span_in_file(path, getattr(prog, "module_loc", None)),
+					)
+				)
+				continue
+			decl_span = _span_in_file(path, getattr(prog, "module_loc", None))
+			diagnostics.extend(_validate_module_id(declared, span=decl_span))
+			if any(d.severity == "error" for d in diagnostics):
+				continue
+			by_module.setdefault(declared, []).append((path, prog))
+			roots_by_module.setdefault(declared, set()).add(root)
+			root_file_by_module.setdefault(declared, {}).setdefault(root, path)
 		else:
+			if getattr(prog, "module", None) is None and multiple_files:
+				diagnostics.append(
+					_p_diag(
+						message="module declaration is required for multi-file builds",
+						severity="error",
+						span=_span_in_file(path, getattr(prog, "module_loc", None)),
+					)
+				)
+				continue
 			mid = _effective_module_id(prog)
 			decl_span = _span_in_file(path, getattr(prog, "module_loc", None))
-			diagnostics.extend(
-				_validate_module_id(
-					mid,
-					span=decl_span,
-									)
-			)
+			diagnostics.extend(_validate_module_id(mid, span=decl_span))
 			by_module.setdefault(mid, []).append((path, prog))
 
+	label_by_path = dict(label_by_path_all)
+	label_by_path.update(
+		{str(path): f"<{mid}>" for mid, files in by_module.items() for path, _prog in files}
+	)
+	_relabel_diagnostics(diagnostics, label_by_path)
 	if any(d.severity == "error" for d in diagnostics):
 		return {}, TypeTable(), {}, {}, {}, diagnostics
 
@@ -1510,7 +1286,6 @@ def parse_drift_workspace_to_hir(
 	if module_paths:
 		for mid, roots in roots_by_module.items():
 			if len(roots) > 1:
-				root_list = ", ".join(str(r) for r in sorted(roots))
 				span_file = None
 				# Anchor the diagnostic to a concrete file under one of the roots.
 				for r in sorted(roots):
@@ -1520,21 +1295,37 @@ def parse_drift_workspace_to_hir(
 				span = Span(file=str(span_file), line=1, column=1) if span_file else Span()
 				diagnostics.append(
 					_p_diag(
-						message=f"multiple module roots provide module '{mid}' ({root_list})",
+						message=f"multiple module roots provide module '{mid}'",
 						severity="error",
 						span=span,
 					)
 				)
+	_relabel_diagnostics(diagnostics, label_by_path)
 	if any(d.severity == "error" for d in diagnostics):
 		return {}, TypeTable(), {}, {}, {}, diagnostics
 
-	# Merge each module (Milestone 1 rules) and retain callable provenance per file.
-	merged_programs: dict[str, parser_ast.Program] = {}
-	origin_by_module: dict[str, dict[FunctionId, Path]] = {}
+	# MVP: one source file defines one module.
 	for mid, files in by_module.items():
-		merged, origins = _merge_module_files(mid, files, diagnostics)
-		merged_programs[mid] = merged
-		origin_by_module[mid] = origins
+		if len(files) > 1:
+			span = Span(file=str(files[0][0]), line=1, column=1)
+			diagnostics.append(
+				_p_diag(
+					message=f"multiple source files declare module '{mid}'",
+					severity="error",
+					span=span,
+				)
+			)
+	_relabel_diagnostics(diagnostics, label_by_path)
+	if any(d.severity == "error" for d in diagnostics):
+		return {}, TypeTable(), {}, {}, {}, diagnostics
+
+	# MVP: one file defines one module (no merge).
+	merged_programs: dict[str, parser_ast.Program] = {}
+	module_file_by_id: dict[str, Path] = {}
+	for mid, files in by_module.items():
+		path, prog = files[0]
+		merged_programs[mid] = prog
+		module_file_by_id[mid] = path
 	source_modules = set(merged_programs.keys())
 	if isinstance(external_module_packages, dict):
 		override_modules = sorted(mod for mod in external_module_packages.keys() if mod in source_modules)
@@ -1585,8 +1376,8 @@ def parse_drift_workspace_to_hir(
 		exported name that resolves to multiple type kinds is also a compile-time
 		error.
 
-		Spans are anchored to the source file that contained the `export { ... }`
-		statement so diagnostics remain useful in multi-file modules.
+		Spans are anchored to the module's source file that contained the
+		`export { ... }` statement so diagnostics remain useful.
 		"""
 		module_fn_names: set[str] = {fn.name for fn in getattr(merged_prog, "functions", []) or []}
 		module_const_names: set[str] = {c.name for c in getattr(merged_prog, "consts", []) or []}
@@ -2013,6 +1804,12 @@ def parse_drift_workspace_to_hir(
 			out |= set(vs)
 		return out
 
+	label_by_path = {
+		str(path.resolve()): f"<{mid}>"
+		for mid, files in by_module.items()
+		for path, _prog in files
+	}
+	_relabel_diagnostics(diagnostics, label_by_path)
 	if any(d.severity == "error" for d in diagnostics):
 		return {}, TypeTable(), {}, {}, {}, diagnostics
 
@@ -2050,14 +1847,13 @@ def parse_drift_workspace_to_hir(
 
 	# Resolve imports and build a dependency graph.
 	#
-	# MVP rule: import bindings are per-file. Module dependencies, however, are
-	# computed at module granularity (a module depends on another module if any
-	# of its files import it).
+	# MVP rule: import bindings are module-scoped (one file per module). Module
+	# dependencies are computed at module granularity.
 	#
 	# Keep per-edge provenance so cycle diagnostics can be source-anchored.
 	# Each edge is (to_module, span).
 	dep_edges: dict[str, list[tuple[str, Span]]] = {mid: [] for mid in merged_programs}
-	module_aliases_by_file: dict[Path, dict[str, str]] = {}
+	module_aliases_by_module: dict[str, dict[str, str]] = {}
 	for mid, files in by_module.items():
 		for path, prog in files:
 			file_module_aliases: dict[str, str] = {}
@@ -2081,18 +1877,18 @@ def parse_drift_workspace_to_hir(
 							message=f"import alias '{alias}' conflicts: cannot import both '{prev}' and '{mod}' as '{alias}'",
 							severity="error",
 							span=span,
-						)
+					)
 					)
 
 			# Record module aliases for later module-qualified access resolution.
-			# This is per-file by design (imports are file-scoped in MVP).
-			module_aliases_by_file[path] = dict(file_module_aliases)
+			# MVP: one file per module, so module-scoped aliases are sufficient.
+			module_aliases_by_module[mid] = dict(file_module_aliases)
 		for target_mod, ex_span in (star_reexports_by_module.get(mid) or {}).items():
 			dep_edges[mid].append((target_mod, ex_span))
 
-	# Resolve `use trait ...` directives into per-file trait scopes.
-	trait_scope_by_file: dict[Path, list[TraitKey]] = {}
-	trait_scope_seen_by_file: dict[Path, set[TraitKey]] = {}
+	# Resolve `use trait ...` directives into module trait scopes.
+	trait_scope_by_module: dict[str, list[TraitKey]] = {mid: [] for mid in merged_programs}
+	trait_scope_seen_by_module: dict[str, set[TraitKey]] = {mid: set() for mid in merged_programs}
 	module_packages_for_scope: dict[str, str] = {}
 	if isinstance(external_module_packages, dict):
 		for mod, pkg in external_module_packages.items():
@@ -2136,14 +1932,14 @@ def parse_drift_workspace_to_hir(
 		return mod, trait_name
 
 	for mid, files in by_module.items():
+		module_aliases = module_aliases_by_module.get(mid, {})
 		for path, prog in files:
-			file_aliases = module_aliases_by_file.get(path, {})
 			for tr in getattr(prog, "used_traits", []) or []:
 				ref_path = list(getattr(tr, "module_path", []) or [])
 				if not ref_path:
 					continue
 				alias = ".".join(ref_path)
-				mod = file_aliases.get(alias)
+				mod = module_aliases.get(alias)
 				span = _span_in_file(path, getattr(tr, "loc", None))
 				if mod is None:
 					diagnostics.append(
@@ -2183,17 +1979,6 @@ def parse_drift_workspace_to_hir(
 				origin_mod, origin_name = _resolve_trait_origin(mod, tr.name)
 				origin_pkg = module_packages_for_scope.get(origin_mod, package_id)
 				key = TraitKey(package_id=origin_pkg, module=origin_mod, name=origin_name)
-				seen = trait_scope_seen_by_file.setdefault(path, set())
-				if key in seen:
-					continue
-				seen.add(key)
-				trait_scope_by_file.setdefault(path, []).append(key)
-
-	trait_scope_by_module: dict[str, list[TraitKey]] = {mid: [] for mid in merged_programs}
-	trait_scope_seen_by_module: dict[str, set[TraitKey]] = {mid: set() for mid in merged_programs}
-	for mid, files in by_module.items():
-		for path, _prog in files:
-			for key in trait_scope_by_file.get(path, []):
 				seen = trait_scope_seen_by_module[mid]
 				if key in seen:
 					continue
@@ -2203,11 +1988,6 @@ def parse_drift_workspace_to_hir(
 	for mid in merged_programs:
 		if mid in module_exports:
 			module_exports[mid]["trait_scope"] = list(trait_scope_by_module.get(mid, []))
-			file_scopes = {
-				str(path): list(traits) for path, traits in trait_scope_by_file.items() if path in dict(by_module.get(mid, []))
-			}
-			if file_scopes:
-				module_exports[mid]["trait_scope_by_file"] = file_scopes
 
 	# Collapse edge lists into a simple adjacency set for cycle detection.
 	# Include external modules so visibility rules can see package imports.
@@ -2216,7 +1996,7 @@ def parse_drift_workspace_to_hir(
 		for mid, edges in dep_edges.items()
 	}
 
-	# Resolve module-qualified type references using per-file module aliases and
+	# Resolve module-qualified type references using module-scoped aliases and
 	# module export interfaces.
 	#
 	# After successful resolution we record the canonical `module_id` on the type
@@ -2433,7 +2213,7 @@ def parse_drift_workspace_to_hir(
 
 	for mid, files in by_module.items():
 		for path, prog in files:
-			file_aliases = module_aliases_by_file.get(path, {})
+			file_aliases = module_aliases_by_module.get(mid, {})
 			# Top-level declarations.
 			for fn in getattr(prog, "functions", []) or []:
 				for p in getattr(fn, "params", []) or []:
@@ -2551,6 +2331,8 @@ def parse_drift_workspace_to_hir(
 	# can safely re-run its local declaration passes.
 	for _mid, _prog in merged_programs.items():
 		for _s in getattr(_prog, "structs", []) or []:
+			if _reject_reserved_nominal_type(getattr(_s, "name", ""), loc=getattr(_s, "loc", None), diagnostics=diagnostics):
+				continue
 			try:
 				struct_id = shared_type_table.declare_struct(
 					_mid,
@@ -2571,6 +2353,8 @@ def parse_drift_workspace_to_hir(
 			except ValueError as err:
 				diagnostics.append(_p_diag(message=str(err), severity="error", span=Span.from_loc(getattr(_s, "loc", None))))
 		for _v in getattr(_prog, "variants", []) or []:
+			if _reject_reserved_nominal_type(getattr(_v, "name", ""), loc=getattr(_v, "loc", None), diagnostics=diagnostics):
+				continue
 			arms: list[VariantArmSchema] = []
 			for _arm in getattr(_v, "arms", []) or []:
 				fields = [
@@ -2691,7 +2475,7 @@ def parse_drift_workspace_to_hir(
 		fn_id: FunctionId,
 		origin_file: Path | None,
 	) -> None:
-		file_module_aliases = module_aliases_by_file.get(origin_file or Path(), {})
+		file_module_aliases = module_aliases_by_module.get(module_id, {})
 		# Call-site rewriting must be scope-correct: a local binding shadows only
 		# within its lexical block, not across the whole function.
 		#
@@ -3084,17 +2868,14 @@ def parse_drift_workspace_to_hir(
 		walk_block(block, bound=initial_bound)
 
 	# Apply rewrite to each function body using its origin file’s import environment.
-	fn_origin_file: dict[FunctionId, Path] = {}
-	for _mid, origins in origin_by_module.items():
-		for fn_id, src_path in origins.items():
-			fn_origin_file[fn_id] = src_path
-
 	for fn_id, block in all_func_hirs.items():
+		fn_mod = fn_owner_module.get(fn_id, "main")
+		src_path = module_file_by_id.get(fn_mod)
 		_rewrite_calls_in_block(
 			block,
-			module_id=fn_owner_module.get(fn_id, "main"),
+			module_id=fn_mod,
 			fn_id=fn_id,
-			origin_file=fn_origin_file.get(fn_id),
+			origin_file=src_path,
 		)
 
 	# Cross-module exception code collision detection: event codes are derived
@@ -3143,7 +2924,11 @@ def parse_drift_workspace_to_hir(
 			requires_by_struct=requires_by_struct_by_module.get(mid, {}),
 			type_defs=type_defs_by_module.get(mid, {}),
 			impl_defs=impls_by_module.get(mid, []),
-			origin_by_fn_id=origin_by_module.get(mid, {}),
+			origin_by_fn_id={
+				fn_id: module_file_by_id.get(mid)
+				for fn_id in func_hirs_by_module.get(mid, {}).keys()
+				if module_file_by_id.get(mid) is not None
+			},
 		)
 
 	return modules, shared_type_table, exc_catalog, module_exports, deps, diagnostics
@@ -3291,20 +3076,11 @@ def _lower_parsed_program_to_hir(
 	if not any(getattr(v, "name", None) == "Optional" for v in variant_defs) and type_table.get_variant_base(
 		module_id="lang.core", name="Optional"
 	) is None:
-		type_table.declare_variant(
-			"lang.core",
-			"Optional",
-			["T"],
-			[
-				VariantArmSchema(name="None", fields=[]),
-				VariantArmSchema(
-					name="Some",
-					fields=[VariantFieldSchema(name="value", type_expr=GenericTypeExpr.param(0))],
-				),
-			],
-		)
+		type_table.ensure_optional_base()
 	# Declare all struct names first (placeholder field types) to support recursion.
 	for s in struct_defs:
+		if _reject_reserved_nominal_type(getattr(s, "name", ""), loc=getattr(s, "loc", None), diagnostics=diagnostics):
+			continue
 		field_names = [f.name for f in getattr(s, "fields", [])]
 		try:
 			struct_base_id = type_table.declare_struct(
@@ -3323,6 +3099,8 @@ def _lower_parsed_program_to_hir(
 	# Declare all variant names/schemas next so type resolution can instantiate
 	# variants (e.g., Optional<Int>) while resolving later annotations/fields.
 	for v in variant_defs:
+		if _reject_reserved_nominal_type(getattr(v, "name", ""), loc=getattr(v, "loc", None), diagnostics=diagnostics):
+			continue
 		arms: list[VariantArmSchema] = []
 		for arm in getattr(v, "arms", []) or []:
 			fields = [
@@ -3647,6 +3425,7 @@ def parse_drift_to_hir(
 	Collects parser/adapter diagnostics (e.g., duplicate functions) instead of
 	throwing, so callers can report them alongside later pipeline checks.
 	"""
+	path = path.resolve()
 	source = path.read_text()
 	try:
 		prog = _parser.parse_program(source)
@@ -3663,7 +3442,9 @@ def parse_drift_to_hir(
 			impl_defs=[],
 			origin_by_fn_id={},
 		)
-		return empty, TypeTable(), {}, [_p_diag(message=str(err), severity="error", span=_span_in_file(path, err.loc))]
+		diags = [_p_diag(message=str(err), severity="error", span=_span_in_file(path, err.loc))]
+		_relabel_diagnostics(diags, {str(path): "<source>"})
+		return empty, TypeTable(), {}, diags
 	except _parser.QualifiedMemberParseError as err:
 		empty = ModuleLowered(
 			module_id="main",
@@ -3677,7 +3458,9 @@ def parse_drift_to_hir(
 			impl_defs=[],
 			origin_by_fn_id={},
 		)
-		return empty, TypeTable(), {}, [_p_diag(message=str(err), severity="error", span=_span_in_file(path, err.loc))]
+		diags = [_p_diag(message=str(err), severity="error", span=_span_in_file(path, err.loc))]
+		_relabel_diagnostics(diags, {str(path): "<source>"})
+		return empty, TypeTable(), {}, diags
 	except UnexpectedInput as err:
 		code = _parse_error_code(err)
 		message = _parse_error_message(err, code)
@@ -3699,7 +3482,9 @@ def parse_drift_to_hir(
 			impl_defs=[],
 			origin_by_fn_id={},
 		)
-		return empty, TypeTable(), {}, [_p_diag(message=message, severity="error", span=span, code=code)]
+		diags = [_p_diag(message=message, severity="error", span=span, code=code)]
+		_relabel_diagnostics(diags, {str(path): "<source>"})
+		return empty, TypeTable(), {}, diags
 	func_hirs, sigs, fn_ids, table, excs, impl_metas, diags = _lower_parsed_program_to_hir(
 		prog,
 		diagnostics=[],
@@ -3719,6 +3504,8 @@ def parse_drift_to_hir(
 		impl_defs=list(impl_metas),
 		origin_by_fn_id={fn_id: path for fn_id in func_hirs.keys()},
 	)
+	label = f"<{module_id}>"
+	_relabel_diagnostics(diags, {str(path): label})
 	return module, table, excs, diags
 
 

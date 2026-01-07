@@ -550,7 +550,7 @@ def _find_dependency_main(loaded_pkgs: list["LoadedPackage"]) -> tuple[str, Path
 	for pkg in loaded_pkgs:
 		man = pkg.manifest
 		pkg_id = man.get("package_id") if isinstance(man, dict) else None
-		pkg_id_str = pkg_id if isinstance(pkg_id, str) else str(pkg.path)
+		pkg_id_str = pkg_id if isinstance(pkg_id, str) else _package_label()
 		for _mid, mod in pkg.modules_by_id.items():
 			payload = mod.payload
 			if not isinstance(payload, dict):
@@ -1009,7 +1009,7 @@ def compile_stubbed_funcs(
 	    use parsed/type-checked signatures to derive throw intent; this parameter
 	    lets tests mimic that shape without a full parser/type checker.
 	  exc_env: optional exception environment (event name -> code) passed to HIRToMIR.
-	  origin_by_fn_id: optional mapping of FunctionId -> source path for file-scoped trait lookup.
+	  origin_by_fn_id: optional mapping of FunctionId -> source path (debug-only).
 	  generic_templates_by_id: optional legacy map of FunctionId -> TemplateHIR (from packages).
 	  generic_templates_by_key: optional map of FunctionKey -> TemplateHIR (from packages).
 	  template_keys_by_fn_id: optional map of FunctionId -> FunctionKey (package templates).
@@ -1380,7 +1380,6 @@ def compile_stubbed_funcs(
 	trait_index = None
 	trait_impl_index = None
 	trait_scope_by_module: dict[str, list] | None = None
-	trait_scope_by_file: dict[str, list] | None = None
 	if module_exports is not None:
 		impl_index = GlobalImplIndex.from_module_exports(
 			module_exports=dict(module_exports),
@@ -1411,19 +1410,11 @@ def compile_stubbed_funcs(
 			for module_id in external_missing_impl_modules:
 				trait_impl_index.mark_missing_module(module_ids.setdefault(module_id, len(module_ids)))
 		trait_scope_by_module = {}
-		trait_scope_by_file = {}
 		for mod, exp in module_exports.items():
 			if isinstance(exp, dict):
 				scope = exp.get("trait_scope", [])
 				if isinstance(scope, list):
 					trait_scope_by_module[mod] = scope
-				scope_by_file = exp.get("trait_scope_by_file", {})
-				if isinstance(scope_by_file, dict):
-					for path, traits in scope_by_file.items():
-						if isinstance(path, str) and isinstance(traits, list):
-							trait_scope_by_file[path] = list(traits)
-		if not trait_scope_by_file:
-			trait_scope_by_file = None
 	typed_fns_by_id: dict[FunctionId, object] = {}
 	type_diags: list[Diagnostic] = []
 	if trait_world_diags:
@@ -1532,13 +1523,11 @@ def compile_stubbed_funcs(
 			trait_index=trait_index,
 			trait_impl_index=trait_impl_index,
 			trait_scope_by_module=trait_scope_by_module,
-			trait_scope_by_file=trait_scope_by_file,
 			linked_world=linked_world,
 			require_env=require_env,
 			visible_modules=visible_mods,
 			current_module=current_mod,
 			visibility_provenance=visibility_provenance_by_id,
-			current_file=current_file,
 		)
 		type_diags.extend(result.diagnostics)
 		typecheck_ok_by_fn[fn_id] = not _has_error(result.diagnostics)
@@ -1806,13 +1795,11 @@ def compile_stubbed_funcs(
 			trait_index=trait_index,
 			trait_impl_index=trait_impl_index,
 			trait_scope_by_module=trait_scope_by_module,
-			trait_scope_by_file=trait_scope_by_file,
 			linked_world=linked_world,
 			require_env=require_env,
 			visible_modules=visible_mods,
 			current_module=current_mod,
 			visibility_provenance=visibility_provenance_by_id,
-			current_file=current_file,
 		)
 		type_diags.extend(inst_result.diagnostics)
 		deferred = deferred_guard_diags_by_template.get(template_key)
@@ -2488,14 +2475,12 @@ def compile_stubbed_funcs(
 			trait_index=trait_index,
 			trait_impl_index=trait_impl_index,
 			trait_scope_by_module=trait_scope_by_module,
-			trait_scope_by_file=trait_scope_by_file,
 			linked_world=linked_world,
 			require_env=require_env,
 			visible_modules=visible_mods,
 			current_module=current_mod,
 			visibility_provenance=visibility_provenance_by_id,
 			visibility_imports=None,
-			current_file=current_file,
 			preseed_binding_types=preseed_binding_types,
 			preseed_binding_names=preseed_binding_names,
 			preseed_binding_mutable=preseed_binding_mutable,
@@ -2640,14 +2625,12 @@ def compile_stubbed_funcs(
 			trait_index=trait_index,
 			trait_impl_index=trait_impl_index,
 			trait_scope_by_module=trait_scope_by_module,
-			trait_scope_by_file=trait_scope_by_file,
 			linked_world=linked_world,
 			require_env=require_env,
 			visible_modules=visible_mods,
 			current_module=current_mod,
 			visibility_provenance=visibility_provenance_by_id,
 			visibility_imports=None,
-			current_file=current_file,
 		)
 		if lambda_result.diagnostics:
 			type_diags.extend(lambda_result.diagnostics)
@@ -3083,7 +3066,7 @@ def _diag_to_json(diag: Diagnostic, phase: str, source: Path) -> dict:
 	if diag.span is not None:
 		file = getattr(diag.span, "file", None)
 	if file is None:
-		file = str(source)
+		file = "<source>"
 	phase = getattr(diag, "phase", None) or phase
 	notes = list(getattr(diag, "notes", []) or [])
 	return {
@@ -3096,6 +3079,19 @@ def _diag_to_json(diag: Diagnostic, phase: str, source: Path) -> dict:
 		"column": column,
 		"notes": notes,
 	}
+
+
+def _source_label() -> str:
+	return "<source>"
+
+
+def _package_label() -> str:
+	return "<package>"
+
+
+def _trust_label() -> str:
+	return "<trust-store>"
+
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -3114,7 +3110,7 @@ def main(argv: list[str] | None = None) -> int:
 		dest="module_paths",
 		action="append",
 		type=Path,
-		help="Module root directory (repeatable); when provided, module ids are inferred from file paths under these roots",
+		help="Module root directory (repeatable); used to discover source files (module id always comes from module declaration)",
 	)
 	parser.add_argument(
 		"--package-root",
@@ -3216,7 +3212,7 @@ def main(argv: list[str] | None = None) -> int:
 			project_trust = load_trust_store_json(project_trust_path)
 		elif args.trust_store is not None:
 			# Explicit trust store path is required to exist.
-			msg = f"trust store not found: {project_trust_path}"
+			msg = f"trust store not found: {_trust_label()}"
 			if args.json:
 				print(
 					json.dumps(
@@ -3227,7 +3223,7 @@ def main(argv: list[str] | None = None) -> int:
 									"phase": "package",
 									"message": msg,
 									"severity": "error",
-									"file": str(project_trust_path),
+									"file": "<trust-store>",
 									"line": None,
 									"column": None,
 								}
@@ -3236,7 +3232,7 @@ def main(argv: list[str] | None = None) -> int:
 					)
 				)
 			else:
-				print(f"{project_trust_path}:?:?: error: {msg}", file=sys.stderr)
+				print(f"{_trust_label()}:?:?: error: {msg}", file=sys.stderr)
 			return 1
 
 		if args.dev_core_trust_store is not None and not args.dev:
@@ -3329,7 +3325,7 @@ def main(argv: list[str] | None = None) -> int:
 										"phase": "package",
 										"message": msg,
 										"severity": "error",
-										"file": str(pkg_path),
+										"file": "<package>",
 										"line": None,
 										"column": None,
 									}
@@ -3338,7 +3334,7 @@ def main(argv: list[str] | None = None) -> int:
 						)
 					)
 				else:
-					print(f"{pkg_path}:?:?: error: {msg}", file=sys.stderr)
+					print(f"{_package_label()}:?:?: error: {msg}", file=sys.stderr)
 				return 1
 
 		# Determinism: package discovery order (filenames, rglob ordering, CLI
@@ -3355,11 +3351,11 @@ def main(argv: list[str] | None = None) -> int:
 			pkg_ver = man.get("package_version")
 			pkg_target = man.get("target")
 			if not isinstance(pkg_id, str) or not isinstance(pkg_ver, str) or not isinstance(pkg_target, str):
-				msg = f"package '{pkg.path}' missing package identity fields"
+				msg = f"package {_package_label()} missing package identity fields"
 				if args.json:
-					print(json.dumps({"exit_code": 1, "diagnostics": [{"phase": "package", "message": msg, "severity": "error", "file": str(pkg.path), "line": None, "column": None}]}))
+					print(json.dumps({"exit_code": 1, "diagnostics": [{"phase": "package", "message": msg, "severity": "error", "file": "<package>", "line": None, "column": None}]}))
 				else:
-					print(f"{pkg.path}:?:?: error: {msg}", file=sys.stderr)
+					print(f"{_package_label()}:?:?: error: {msg}", file=sys.stderr)
 				return 1
 			pkg_sha = sha256_hex(pkg.path.read_bytes())
 			prev = pkg_id_map.get(pkg_id)
@@ -3370,22 +3366,19 @@ def main(argv: list[str] | None = None) -> int:
 			if pkg_ver != prev_ver or pkg_target != prev_target:
 				msg = (
 					f"multiple versions/targets for package id '{pkg_id}' in build: "
-					f"'{prev_ver}' ({prev_target}) from '{prev_path}' and '{pkg_ver}' ({pkg_target}) from '{pkg.path}'"
+					f"'{prev_ver}' ({prev_target}) and '{pkg_ver}' ({pkg_target}) across distinct package artifacts"
 				)
 				if args.json:
-					print(json.dumps({"exit_code": 1, "diagnostics": [{"phase": "package", "message": msg, "severity": "error", "file": str(pkg.path), "line": None, "column": None}]}))
+					print(json.dumps({"exit_code": 1, "diagnostics": [{"phase": "package", "message": msg, "severity": "error", "file": "<package>", "line": None, "column": None}]}))
 				else:
-					print(f"{pkg.path}:?:?: error: {msg}", file=sys.stderr)
+					print(f"{_package_label()}:?:?: error: {msg}", file=sys.stderr)
 				return 1
 			if pkg_sha != prev_sha and pkg.path != prev_path:
-				msg = (
-					f"duplicate package id '{pkg_id}' in build from different artifacts: "
-					f"'{prev_path}' and '{pkg.path}'"
-				)
+				msg = f"duplicate package id '{pkg_id}' in build from different artifacts"
 				if args.json:
-					print(json.dumps({"exit_code": 1, "diagnostics": [{"phase": "package", "message": msg, "severity": "error", "file": str(pkg.path), "line": None, "column": None}]}))
+					print(json.dumps({"exit_code": 1, "diagnostics": [{"phase": "package", "message": msg, "severity": "error", "file": "<package>", "line": None, "column": None}]}))
 				else:
-					print(f"{pkg.path}:?:?: error: {msg}", file=sys.stderr)
+					print(f"{_package_label()}:?:?: error: {msg}", file=sys.stderr)
 				return 1
 
 		# Reject duplicate module ids across package files early. Unioning exports
@@ -3397,7 +3390,7 @@ def main(argv: list[str] | None = None) -> int:
 				if prev is None:
 					mod_to_pkg[mid] = pkg.path
 				elif prev != pkg.path:
-					msg = f"module '{mid}' provided by multiple packages: '{prev}' and '{pkg.path}'"
+					msg = f"module '{mid}' provided by multiple packages"
 					if args.json:
 						print(
 							json.dumps(
@@ -3408,7 +3401,7 @@ def main(argv: list[str] | None = None) -> int:
 											"phase": "package",
 											"message": msg,
 											"severity": "error",
-											"file": str(source_path),
+											"file": "<source>",
 											"line": None,
 											"column": None,
 										}
@@ -3417,7 +3410,7 @@ def main(argv: list[str] | None = None) -> int:
 							)
 						)
 					else:
-						print(f"{source_path}:?:?: error: {msg}", file=sys.stderr)
+						print(f"{_source_label()}:?:?: error: {msg}", file=sys.stderr)
 					return 1
 		if args.output or args.emit_ir:
 			dep_main = _find_dependency_main(loaded_pkgs)
@@ -3425,9 +3418,9 @@ def main(argv: list[str] | None = None) -> int:
 				pkg_id, pkg_path, _sym_name = dep_main
 				msg = f"illegal entrypoint 'main' in dependency package {pkg_id}; entrypoints are only allowed in the root package"
 				if args.json:
-					print(json.dumps({"exit_code": 1, "diagnostics": [{"phase": "package", "message": msg, "severity": "error", "file": str(pkg_path), "line": None, "column": None}]}))
+					print(json.dumps({"exit_code": 1, "diagnostics": [{"phase": "package", "message": msg, "severity": "error", "file": "<package>", "line": None, "column": None}]}))
 				else:
-					print(f"{pkg_path}:?:?: error: {msg}", file=sys.stderr)
+					print(f"{_package_label()}:?:?: error: {msg}", file=sys.stderr)
 				return 1
 		external_exports = collect_external_exports(loaded_pkgs)
 
@@ -3493,7 +3486,7 @@ def main(argv: list[str] | None = None) -> int:
 		else:
 			for d in parse_diags:
 				loc = f"{getattr(d.span, 'line', '?')}:{getattr(d.span, 'column', '?')}" if d.span else "?:?"
-				print(f"{source_path}:{loc}: {d.severity}: {d.message}", file=sys.stderr)
+				print(f"{_source_label()}:{loc}: {d.severity}: {d.message}", file=sys.stderr)
 		return 1
 
 	if not args.dev:
@@ -3505,7 +3498,7 @@ def main(argv: list[str] | None = None) -> int:
 				print(json.dumps({"exit_code": 1, "diagnostics": [_diag_to_json(d, "package", source_path) for d in diags]}))
 			else:
 				for d in diags:
-					print(f"{source_path}:?:?: {d.severity}: {d.message}", file=sys.stderr)
+					print(f"{_source_label()}:?:?: {d.severity}: {d.message}", file=sys.stderr)
 			return 1
 
 	method_wrapper_specs: list[MethodWrapperSpec] = []
@@ -3538,13 +3531,13 @@ def main(argv: list[str] | None = None) -> int:
 						{
 							"exit_code": 1,
 							"diagnostics": [
-								{"phase": "package", "message": msg, "severity": "error", "file": str(source_path), "line": None, "column": None}
+								{"phase": "package", "message": msg, "severity": "error", "file": "<source>", "line": None, "column": None}
 							],
 						}
 					)
 				)
 			else:
-				print(f"{source_path}:?:?: error: {msg}", file=sys.stderr)
+				print(f"{_source_label()}:?:?: error: {msg}", file=sys.stderr)
 			return 1
 
 	# Prime builtins so TypeTable IDs are stable for package compatibility checks.
@@ -3558,20 +3551,7 @@ def main(argv: list[str] | None = None) -> int:
 	type_table.ensure_error()
 	type_table.ensure_diagnostic_value()
 	# Keep derived Optional<T> ids stable across builds (package embedding).
-	opt_base = type_table.get_variant_base(module_id="lang.core", name="Optional")
-	if opt_base is None:
-		opt_base = type_table.declare_variant(
-			"lang.core",
-			"Optional",
-			["T"],
-			[
-				VariantArmSchema(name="None", fields=[]),
-				VariantArmSchema(
-					name="Some",
-					fields=[VariantFieldSchema(name="value", type_expr=GenericTypeExpr.param(0))],
-				),
-			],
-		)
+	opt_base = type_table.ensure_optional_base()
 	type_table.ensure_instantiated(opt_base, [type_table.ensure_int()])
 	type_table.ensure_instantiated(opt_base, [type_table.ensure_bool()])
 	type_table.ensure_instantiated(opt_base, [type_table.ensure_string()])
@@ -3593,39 +3573,39 @@ def main(argv: list[str] | None = None) -> int:
 					continue
 				tt = payload.get("type_table")
 				if not isinstance(tt, dict):
-					msg = f"package '{pkg.path}' module '{mid}' is missing type_table"
+					msg = f"package {_package_label()} module '{mid}' is missing type_table"
 					if args.json:
 						print(
 							json.dumps(
 								{
 									"exit_code": 1,
 									"diagnostics": [
-										{"phase": "package", "message": msg, "severity": "error", "file": str(pkg.path), "line": None, "column": None}
+										{"phase": "package", "message": msg, "severity": "error", "file": "<package>", "line": None, "column": None}
 									],
 								}
 							)
 						)
 					else:
-						print(f"{pkg.path}:?:?: error: {msg}", file=sys.stderr)
+						print(f"{_package_label()}:?:?: error: {msg}", file=sys.stderr)
 					return 1
 				if pkg_tt_obj is None:
 					pkg_tt_obj = tt
 				else:
 					if type_table_fingerprint(tt) != type_table_fingerprint(pkg_tt_obj):
-						msg = f"package '{pkg.path}' contains inconsistent type_table across modules"
+						msg = f"package {_package_label()} contains inconsistent type_table across modules"
 						if args.json:
 							print(
 								json.dumps(
 									{
 										"exit_code": 1,
 										"diagnostics": [
-											{"phase": "package", "message": msg, "severity": "error", "file": str(pkg.path), "line": None, "column": None}
+											{"phase": "package", "message": msg, "severity": "error", "file": "<package>", "line": None, "column": None}
 										],
 									}
 								)
 							)
 						else:
-							print(f"{pkg.path}:?:?: error: {msg}", file=sys.stderr)
+							print(f"{_package_label()}:?:?: error: {msg}", file=sys.stderr)
 						return 1
 			if pkg_tt_obj is None:
 				continue
@@ -3637,9 +3617,9 @@ def main(argv: list[str] | None = None) -> int:
 		except ValueError as err:
 			msg = f"failed to import package types: {err}"
 			if args.json:
-				print(json.dumps({"exit_code": 1, "diagnostics": [{"phase": "package", "message": msg, "severity": "error", "file": str(source_path), "line": None, "column": None}]}))
+				print(json.dumps({"exit_code": 1, "diagnostics": [{"phase": "package", "message": msg, "severity": "error", "file": "<source>", "line": None, "column": None}]}))
 			else:
-				print(f"{source_path}:?:?: error: {msg}", file=sys.stderr)
+				print(f"{_source_label()}:?:?: error: {msg}", file=sys.stderr)
 			return 1
 		for path, tid_map in zip(pkg_paths, maps):
 			pkg_typeid_maps[path] = tid_map
@@ -3685,7 +3665,7 @@ def main(argv: list[str] | None = None) -> int:
 												"phase": "package",
 												"message": msg,
 												"severity": "error",
-												"file": str(source_path),
+												"file": "<source>",
 												"line": None,
 												"column": None,
 											}
@@ -3694,7 +3674,7 @@ def main(argv: list[str] | None = None) -> int:
 								)
 							)
 						else:
-							print(f"{source_path}:?:?: error: {msg}", file=sys.stderr)
+							print(f"{_source_label()}:?:?: error: {msg}", file=sys.stderr)
 						return 1
 					if name in local_display_names or name in external_signatures_by_name:
 						continue
@@ -3711,7 +3691,7 @@ def main(argv: list[str] | None = None) -> int:
 												"phase": "package",
 												"message": msg,
 												"severity": "error",
-												"file": str(source_path),
+												"file": "<source>",
 												"line": None,
 												"column": None,
 											}
@@ -3720,7 +3700,7 @@ def main(argv: list[str] | None = None) -> int:
 								)
 							)
 						else:
-							print(f"{source_path}:?:?: error: {msg}", file=sys.stderr)
+							print(f"{_source_label()}:?:?: error: {msg}", file=sys.stderr)
 						return 1
 					if module_name is not None and "::" not in name:
 						name = f"{module_name}::{name}"
@@ -3736,7 +3716,7 @@ def main(argv: list[str] | None = None) -> int:
 												"phase": "package",
 												"message": msg,
 												"severity": "error",
-												"file": str(source_path),
+												"file": "<source>",
 												"line": None,
 												"column": None,
 											}
@@ -3745,7 +3725,7 @@ def main(argv: list[str] | None = None) -> int:
 								)
 							)
 						else:
-							print(f"{source_path}:?:?: error: {msg}", file=sys.stderr)
+							print(f"{_source_label()}:?:?: error: {msg}", file=sys.stderr)
 						return 1
 					param_type_ids = sd.get("param_type_ids")
 					if isinstance(param_type_ids, list):
@@ -3769,7 +3749,7 @@ def main(argv: list[str] | None = None) -> int:
 												"phase": "package",
 												"message": msg,
 												"severity": "error",
-												"file": str(source_path),
+												"file": "<source>",
 												"line": None,
 												"column": None,
 											}
@@ -3778,7 +3758,7 @@ def main(argv: list[str] | None = None) -> int:
 								)
 							)
 						else:
-							print(f"{source_path}:?:?: error: {msg}", file=sys.stderr)
+							print(f"{_source_label()}:?:?: error: {msg}", file=sys.stderr)
 						return 1
 
 					symbol = str(sym)
@@ -3795,7 +3775,7 @@ def main(argv: list[str] | None = None) -> int:
 												"phase": "package",
 												"message": msg,
 												"severity": "error",
-												"file": str(source_path),
+												"file": "<source>",
 												"line": None,
 												"column": None,
 											}
@@ -3804,7 +3784,7 @@ def main(argv: list[str] | None = None) -> int:
 								)
 							)
 						else:
-							print(f"{source_path}:?:?: error: {msg}", file=sys.stderr)
+							print(f"{_source_label()}:?:?: error: {msg}", file=sys.stderr)
 						return 1
 					if module_name is not None and fn_id.module != module_name:
 						msg = f"package signature '{name}' fn_id module mismatch ({fn_id.module} vs {module_name})"
@@ -3818,7 +3798,7 @@ def main(argv: list[str] | None = None) -> int:
 												"phase": "package",
 												"message": msg,
 												"severity": "error",
-												"file": str(source_path),
+												"file": "<source>",
 												"line": None,
 												"column": None,
 											}
@@ -3827,7 +3807,7 @@ def main(argv: list[str] | None = None) -> int:
 								)
 							)
 						else:
-							print(f"{source_path}:?:?: error: {msg}", file=sys.stderr)
+							print(f"{_source_label()}:?:?: error: {msg}", file=sys.stderr)
 						return 1
 					type_param_names = sd.get("type_params")
 					if not isinstance(type_param_names, list):
@@ -3949,7 +3929,7 @@ def main(argv: list[str] | None = None) -> int:
 												"phase": "package",
 												"message": msg,
 												"severity": "error",
-												"file": str(pkg.path),
+												"file": "<package>",
 												"line": None,
 												"column": None,
 											}
@@ -3958,7 +3938,7 @@ def main(argv: list[str] | None = None) -> int:
 								)
 							)
 						else:
-							print(f"{pkg.path}:?:?: error: {msg}", file=sys.stderr)
+							print(f"{_package_label()}:?:?: error: {msg}", file=sys.stderr)
 						return 1
 
 					if ir_kind == "TemplateHIR-v0":
@@ -4159,9 +4139,9 @@ def main(argv: list[str] | None = None) -> int:
 						if prev != (remapped_tid, val):
 							msg = f"const '{sym}' provided by multiple sources with different values"
 							if args.json:
-								print(json.dumps({"exit_code": 1, "diagnostics": [{"phase": "package", "message": msg, "severity": "error", "file": str(pkg.path), "line": None, "column": None}]}))
+								print(json.dumps({"exit_code": 1, "diagnostics": [{"phase": "package", "message": msg, "severity": "error", "file": "<package>", "line": None, "column": None}]}))
 							else:
-								print(f"{pkg.path}:?:?: error: {msg}", file=sys.stderr)
+								print(f"{_package_label()}:?:?: error: {msg}", file=sys.stderr)
 							return 1
 						continue
 					type_table.define_const(module_id=mid, name=cname, type_id=remapped_tid, value=val)
@@ -4218,7 +4198,7 @@ def main(argv: list[str] | None = None) -> int:
 										"phase": "typecheck",
 										"message": msg,
 										"severity": "error",
-										"file": str(source_path),
+										"file": "<source>",
 										"line": None,
 										"column": None,
 									}
@@ -4227,7 +4207,7 @@ def main(argv: list[str] | None = None) -> int:
 						)
 					)
 				else:
-					print(f"{source_path}:?:?: error: {msg}", file=sys.stderr)
+					print(f"{_source_label()}:?:?: error: {msg}", file=sys.stderr)
 				return 1
 			origin_tid, origin_val = origin_entry
 			prev = type_table.lookup_const(dst_sym)
@@ -4244,7 +4224,7 @@ def main(argv: list[str] | None = None) -> int:
 											"phase": "typecheck",
 											"message": msg,
 											"severity": "error",
-											"file": str(source_path),
+											"file": "<source>",
 											"line": None,
 											"column": None,
 										}
@@ -4253,7 +4233,7 @@ def main(argv: list[str] | None = None) -> int:
 							)
 						)
 					else:
-						print(f"{source_path}:?:?: error: {msg}", file=sys.stderr)
+						print(f"{_source_label()}:?:?: error: {msg}", file=sys.stderr)
 					return 1
 				continue
 			type_table.define_const(module_id=exporting_mid, name=local_name, type_id=origin_tid, value=origin_val)
@@ -4522,7 +4502,6 @@ def main(argv: list[str] | None = None) -> int:
 		mod_id: name for name, mod_id in module_ids.items() if name is not None
 	}
 	trait_scope_by_module: dict[str, list] = {}
-	trait_scope_by_file: dict[str, list] | None = {}
 	if isinstance(module_exports, dict):
 		for mod_name, exp in module_exports.items():
 			if isinstance(exp, dict):
@@ -4531,13 +4510,6 @@ def main(argv: list[str] | None = None) -> int:
 					trait_scope_by_module[mod_name] = list(scope)
 				else:
 					trait_scope_by_module[mod_name] = []
-				scope_by_file = exp.get("trait_scope_by_file", {})
-				if isinstance(scope_by_file, dict):
-					for path, traits in scope_by_file.items():
-						if isinstance(path, str) and isinstance(traits, list):
-							trait_scope_by_file[path] = list(traits)
-	if not trait_scope_by_file:
-		trait_scope_by_file = None
 	visible_modules_by_name_set = {
 		mod: set(visible) for mod, visible in visible_module_names_by_name.items()
 	}
@@ -4598,7 +4570,6 @@ def main(argv: list[str] | None = None) -> int:
 			trait_index=global_trait_index,
 			trait_impl_index=global_trait_impl_index,
 			trait_scope_by_module=trait_scope_by_module,
-			trait_scope_by_file=trait_scope_by_file,
 			linked_world=linked_world,
 			require_env=require_env,
 			visible_modules=visible_modules,
@@ -4606,7 +4577,6 @@ def main(argv: list[str] | None = None) -> int:
 			visibility_provenance=visibility_by_id,
 			visibility_imports=direct_imports,
 			signatures_by_id=signatures_by_id_all,
-			current_file=current_file,
 		)
 		type_diags.extend(result.diagnostics)
 		typed_fns[fn_id] = result.typed_fn
@@ -4627,7 +4597,7 @@ def main(argv: list[str] | None = None) -> int:
 		else:
 			for d in type_diags:
 				loc = f"{getattr(d.span, 'line', '?')}:{getattr(d.span, 'column', '?')}" if d.span else "?:?"
-				print(f"{source_path}:{loc}: {d.severity}: {d.message}", file=sys.stderr)
+				print(f"{_source_label()}:{loc}: {d.severity}: {d.message}", file=sys.stderr)
 			return 1
 
 	# Compute non-retaining metadata for callable parameters before lambda validation.
@@ -4657,7 +4627,7 @@ def main(argv: list[str] | None = None) -> int:
 		else:
 			for d in lambda_diags:
 				loc = f"{getattr(d.span, 'line', '?')}:{getattr(d.span, 'column', '?')}" if d.span else "?:?"
-				print(f"{source_path}:{loc}: {d.severity}: {d.message}", file=sys.stderr)
+				print(f"{_source_label()}:{loc}: {d.severity}: {d.message}", file=sys.stderr)
 		return 1
 
 	# Checker (stub) enforces language-level rules (e.g., nothrow) after typecheck
@@ -4691,7 +4661,7 @@ def main(argv: list[str] | None = None) -> int:
 		else:
 			for d in checked.diagnostics:
 				loc = f"{getattr(d.span, 'line', '?')}:{getattr(d.span, 'column', '?')}" if d.span else "?:?"
-				print(f"{source_path}:{loc}: {d.severity}: {d.message}", file=sys.stderr)
+				print(f"{_source_label()}:{loc}: {d.severity}: {d.message}", file=sys.stderr)
 		return 1
 
 	# Reconcile method call CallInfo with checker-inferred throw behavior.
@@ -4777,7 +4747,7 @@ def main(argv: list[str] | None = None) -> int:
 		else:
 			for d in trait_diags:
 				loc = f"{getattr(d.span, 'line', '?')}:{getattr(d.span, 'column', '?')}" if d.span else "?:?"
-				print(f"{source_path}:{loc}: {d.severity}: {d.message}", file=sys.stderr)
+				print(f"{_source_label()}:{loc}: {d.severity}: {d.message}", file=sys.stderr)
 		return 1
 
 	for typed_fn in typed_fns.values():
@@ -4806,7 +4776,7 @@ def main(argv: list[str] | None = None) -> int:
 		else:
 			for d in borrow_diags:
 				loc = f"{getattr(d.span, 'line', '?')}:{getattr(d.span, 'column', '?')}" if d.span else "?:?"
-				print(f"{source_path}:{loc}: {d.severity}: {d.message}", file=sys.stderr)
+				print(f"{_source_label()}:{loc}: {d.severity}: {d.message}", file=sys.stderr)
 		return 1
 
 	# Package emission mode (Milestone 4): produce an unsigned package artifact
@@ -4824,7 +4794,7 @@ def main(argv: list[str] | None = None) -> int:
 									"phase": "package",
 									"message": msg,
 									"severity": "error",
-									"file": str(source_path),
+									"file": "<source>",
 									"line": None,
 									"column": None,
 								}
@@ -4833,7 +4803,7 @@ def main(argv: list[str] | None = None) -> int:
 					)
 				)
 			else:
-				print(f"{source_path}:?:?: error: {msg}", file=sys.stderr)
+				print(f"{_source_label()}:?:?: error: {msg}", file=sys.stderr)
 			return 1
 		if package_id is None:
 			msg = "--emit-package requires a non-empty package id"
@@ -4847,7 +4817,7 @@ def main(argv: list[str] | None = None) -> int:
 									"phase": "package",
 									"message": msg,
 									"severity": "error",
-									"file": str(source_path),
+									"file": "<source>",
 									"line": None,
 									"column": None,
 								}
@@ -4856,7 +4826,7 @@ def main(argv: list[str] | None = None) -> int:
 					)
 				)
 			else:
-				print(f"{source_path}:?:?: error: {msg}", file=sys.stderr)
+				print(f"{_source_label()}:?:?: error: {msg}", file=sys.stderr)
 			return 1
 
 		signatures_for_pkg = signatures_by_id_all if loaded_pkgs else signatures_by_id
@@ -4896,7 +4866,7 @@ def main(argv: list[str] | None = None) -> int:
 			else:
 				for d in checked_pkg.diagnostics:
 					loc = f"{getattr(d.span, 'line', '?')}:{getattr(d.span, 'column', '?')}" if d.span else "?:?"
-					print(f"{source_path}:{loc}: {d.severity}: {d.message}", file=sys.stderr)
+					print(f"{_source_label()}:{loc}: {d.severity}: {d.message}", file=sys.stderr)
 			return 1
 	
 		pkg_signatures_by_symbol: dict[str, FnSignature] = {
@@ -5055,7 +5025,7 @@ def main(argv: list[str] | None = None) -> int:
 													"phase": "package",
 													"message": msg,
 													"severity": "error",
-													"file": str(source_path),
+													"file": "<source>",
 													"line": None,
 													"column": None,
 												}
@@ -5064,7 +5034,7 @@ def main(argv: list[str] | None = None) -> int:
 									)
 								)
 							else:
-								print(f"{source_path}:?:?: error: {msg}", file=sys.stderr)
+								print(f"{_source_label()}:?:?: error: {msg}", file=sys.stderr)
 							return 1
 						sig_env[local_sym] = replace(
 							origin_sig,
@@ -5133,7 +5103,7 @@ def main(argv: list[str] | None = None) -> int:
 											"phase": "package",
 											"message": msg,
 											"severity": "error",
-											"file": str(source_path),
+											"file": "<source>",
 											"line": None,
 											"column": None,
 										}
@@ -5142,7 +5112,7 @@ def main(argv: list[str] | None = None) -> int:
 							)
 						)
 					else:
-						print(f"{source_path}:?:?: error: {msg}", file=sys.stderr)
+						print(f"{_source_label()}:?:?: error: {msg}", file=sys.stderr)
 					return 1
 				iface_sigs[sym] = sd
 	
@@ -5299,7 +5269,7 @@ def main(argv: list[str] | None = None) -> int:
 			else:
 				for d in checked_src.diagnostics:
 					loc = f"{getattr(d.span, 'line', '?')}:{getattr(d.span, 'column', '?')}" if d.span else "?:?"
-					print(f"{source_path}:{loc}: {d.severity}: {d.message}", file=sys.stderr)
+					print(f"{_source_label()}:{loc}: {d.severity}: {d.message}", file=sys.stderr)
 			return 1
 
 		# Decode package MIR payloads. We intentionally do not blindly embed all
@@ -5315,11 +5285,11 @@ def main(argv: list[str] | None = None) -> int:
 				if not isinstance(payload, dict):
 					continue
 				if payload.get("payload_kind") != "provisional-dmir" or payload.get("payload_version") != 0:
-					msg = f"unsupported package payload kind/version in {pkg.path}"
+					msg = f"unsupported package payload kind/version in {_package_label()}"
 					if args.json:
-						print(json.dumps({"exit_code": 1, "diagnostics": [{"phase": "package", "message": msg, "severity": "error", "file": str(source_path), "line": None, "column": None}]}))
+						print(json.dumps({"exit_code": 1, "diagnostics": [{"phase": "package", "message": msg, "severity": "error", "file": "<source>", "line": None, "column": None}]}))
 					else:
-						print(f"{source_path}:?:?: error: {msg}", file=sys.stderr)
+						print(f"{_source_label()}:?:?: error: {msg}", file=sys.stderr)
 					return 1
 				sigs_obj = payload.get("signatures")
 				name_to_fn_id: dict[str, FunctionId] = {}
@@ -5485,9 +5455,9 @@ def main(argv: list[str] | None = None) -> int:
 	if clang is None:
 		msg = "clang not available for code generation"
 		if args.json:
-			print(json.dumps({"exit_code": 1, "diagnostics": [{"phase": "codegen", "message": msg, "severity": "error", "file": str(source_path), "line": None, "column": None}]}))
+			print(json.dumps({"exit_code": 1, "diagnostics": [{"phase": "codegen", "message": msg, "severity": "error", "file": "<source>", "line": None, "column": None}]}))
 		else:
-			print(f"{source_path}:?:?: error: {msg}", file=sys.stderr)
+			print(f"{_source_label()}:?:?: error: {msg}", file=sys.stderr)
 		return 1
 
 		if package_id is None:
@@ -5502,7 +5472,7 @@ def main(argv: list[str] | None = None) -> int:
 									"phase": "package",
 									"message": msg,
 									"severity": "error",
-									"file": str(source_path),
+									"file": "<source>",
 									"line": None,
 									"column": None,
 								}
@@ -5511,7 +5481,7 @@ def main(argv: list[str] | None = None) -> int:
 					)
 				)
 			else:
-				print(f"{source_path}:?:?: error: {msg}", file=sys.stderr)
+				print(f"{_source_label()}:?:?: error: {msg}", file=sys.stderr)
 			return 1
 
 	args.output.parent.mkdir(parents=True, exist_ok=True)
@@ -5534,9 +5504,9 @@ def main(argv: list[str] | None = None) -> int:
 	if link_res.returncode != 0:
 		msg = f"clang failed: {link_res.stderr.strip()}"
 		if args.json:
-			print(json.dumps({"exit_code": 1, "diagnostics": [{"phase": "codegen", "message": msg, "severity": "error", "file": str(source_path), "line": None, "column": None}]}))
+			print(json.dumps({"exit_code": 1, "diagnostics": [{"phase": "codegen", "message": msg, "severity": "error", "file": "<source>", "line": None, "column": None}]}))
 		else:
-			print(f"{source_path}:?:?: error: {msg}", file=sys.stderr)
+			print(f"{_source_label()}:?:?: error: {msg}", file=sys.stderr)
 		return 1
 
 	if args.json:

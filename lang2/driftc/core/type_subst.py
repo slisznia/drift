@@ -37,6 +37,8 @@ def apply_subst(type_id: TypeId, subst: Subst, table: TypeTable) -> TypeId:
 		if inst is not None:
 			new_args = [apply_subst(a, subst, table) for a in inst.type_args]
 			if new_args != inst.type_args:
+				if any(table.has_typevar(a) for a in new_args):
+					return table.ensure_struct_template(inst.base_id, list(new_args))
 				return table.ensure_struct_instantiated(inst.base_id, list(new_args))
 			return type_id
 	if td.kind is TypeKind.VARIANT:
@@ -44,8 +46,18 @@ def apply_subst(type_id: TypeId, subst: Subst, table: TypeTable) -> TypeId:
 		if inst is not None:
 			new_args = [apply_subst(a, subst, table) for a in inst.type_args]
 			if new_args != inst.type_args:
-				return table.ensure_instantiated(inst.base_id, list(new_args))
+				if any(table.has_typevar(a) for a in new_args):
+					return table.ensure_variant_template(inst.base_id, list(new_args))
+				return table.ensure_variant_instantiated(inst.base_id, list(new_args))
 			return type_id
+		if td.param_types:
+			base = table.get_variant_base(module_id=td.module_id or "", name=td.name)
+			if base is None:
+				raise AssertionError("variant type has param_types but no instance (compiler bug)")
+			new_args = [apply_subst(p, subst, table) for p in td.param_types]
+			if any(table.has_typevar(a) for a in new_args):
+				return table.ensure_variant_template(base, list(new_args))
+			return table.ensure_variant_instantiated(base, list(new_args))
 	if not td.param_types:
 		return type_id
 	new_params = [apply_subst(p, subst, table) for p in td.param_types]
@@ -61,12 +73,6 @@ def apply_subst(type_id: TypeId, subst: Subst, table: TypeTable) -> TypeId:
 		if not new_params:
 			return type_id
 		return table.ensure_function(new_params[:-1], new_params[-1], can_throw=td.can_throw())
-	if td.kind is TypeKind.VARIANT:
-		if td.param_types:
-			base = table.get_variant_base(module_id=td.module_id or "", name=td.name)
-			if base is not None:
-				return table.ensure_instantiated(base, list(new_params))
-		return type_id
 	return type_id
 
 

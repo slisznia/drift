@@ -116,20 +116,7 @@ def _decode_generic_type_expr(obj: Any) -> GenericTypeExpr:
 
 
 def _ensure_optional_variant(table: TypeTable, inner: TypeId) -> TypeId:
-	opt_base = table.get_variant_base(module_id="lang.core", name="Optional")
-	if opt_base is None:
-		opt_base = table.declare_variant(
-			"lang.core",
-			"Optional",
-			["T"],
-			[
-				VariantArmSchema(name="None", fields=[]),
-				VariantArmSchema(
-					name="Some",
-					fields=[VariantFieldSchema(name="value", type_expr=GenericTypeExpr.param(0))],
-				),
-			],
-		)
+	opt_base = table.ensure_optional_base()
 	return table.ensure_instantiated(opt_base, [inner])
 
 

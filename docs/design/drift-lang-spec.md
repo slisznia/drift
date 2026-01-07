@@ -159,7 +159,7 @@ All modules compile down to a canonical Drift Module IR (DMIR) that can be crypt
 
 Function parameters are `val` by default (not movable). Use `var` to opt into owned, movable parameters: `fn id(var x: File) -> File { return move x; }`.
 
-**Statement terminators:** Simple statements end with `;`. Compound statements that carry a block (`if`/`while`/`for`/`try`/`match`) are self-terminating. Newlines are whitespace only. In a normal block, a bare expression must appear as an expression statement and end with `;`. In a value-producing block (e.g., lambda bodies, match arms, try/catch expression arms), the final expression must **not** end with `;`.
+**Statement terminators:** Simple statements end with `;`. Compound statements that carry a block (`if`/`while`/`for`/`try`/`match`) are self-terminating. Newlines are whitespace only. In a normal block, an expression statement must be a **postfix expression** (call, member access, index, literal, or name) and end with `;` to avoid ambiguity with statement-form `try`. In a value-producing block (e.g., lambda bodies, match arms, try/catch expression arms), the final expression must **not** end with `;`.
 
 ### 3.1. Primitive palette (updated)
 
@@ -169,10 +169,10 @@ Function parameters are `val` by default (not movable). Use `var` to opt into ow
 | `Int`   | Signed two’s-complement integer of the platform’s natural word size. Guaranteed to be at least 32 bits. |
 | `Uint`  | Unsigned integer of the platform’s natural word size. Same bit-width as `Int`. |
 | `Size`  | (Reserved for future revisions) Natural-width unsigned; not used for collection lengths/indices in v1. |
-| `Float` | IEEE-754 binary floating type used as the default floating-point scalar. In v1, `Float` is fixed to `F64` to keep the ABI stable across targets. |
-| `Int8`, `Int16`, `Int32`, `Int64` | Fixed-width signed integers, exactly 8/16/32/64-bit two’s-complement. |
-| `Uint8`, `Uint16`, `Uint32`, `Uint64` | Fixed-width unsigned integers, exactly 8/16/32/64-bit. |
-| `F32`, `F64` | IEEE-754 binary32 and binary64 floating-point types. |
+| `Float` | Target-native floating-point scalar (IEEE-754 binary32 or binary64 on supported targets). |
+| `Int8`, `Int16`, `Int32`, `Int64` | Fixed-width signed integers, exactly 8/16/32/64-bit two’s-complement (**reserved in v1; allowed only in `lang.abi.*`**). |
+| `Uint8`, `Uint16`, `Uint32`, `Uint64` | Fixed-width unsigned integers, exactly 8/16/32/64-bit (**reserved in v1; allowed only in `lang.abi.*`**). |
+| `F32`, `F64` | IEEE-754 binary32 and binary64 floating-point types (**reserved in v1; allowed only in `lang.abi.*`**). |
 | `Byte` | Unsigned 8-bit value (v1 surface scalar; `Uint8` is reserved); used for byte buffers and FFI. |
 | `String` | Immutable UTF-8 string (shared backing). |
 
@@ -195,7 +195,7 @@ Drift distinguishes between **natural-width** numeric primitives and **fixed-wid
 
 - **v1 uses pointer-sized carriers** for `Int`/`Uint` (isize/usize). This avoids wasting space on 32-bit targets, keeps index/length arithmetic efficient, and aligns with the runtime/ABI for array bounds checks and container sizes.
 - `Size` is reserved for future revisions and **not** used for collection lengths/indices in v1. Collections use `Uint` for lengths/capacities and `Int` for indices (see chapter 12).
-  - `Float` is fixed to `F64` in v1 (stable ABI); `F32` is available as an explicit narrow type.
+- `Float` is the target’s native floating-point type (most commonly IEEE-754 binary64; on some targets it may be binary32). The surface name remains `Float` regardless of width. Its bit-width/layout are target-defined; ABI stability is guaranteed within a target, not across different targets.
 - Fixed-width primitives (`Int8`…`Int64`, `Uint8`…`Uint64`, `F32`, `F64`) are **reserved in v1**. They are used only in ABI/FFI modules and internal compiler/runtime types (e.g., `ErrorCode = Uint64`); user code should use `Int`/`Uint`/`Float`.
 
 Overflow:
@@ -206,7 +206,7 @@ Conversions:
 - `Int`/`Uint`/`Float` conversions follow the usual widening/narrowing rules; narrowing or sign-changing conversions must be explicit and may fail at runtime if out of range.
 - Fixed-width conversions are reserved until the fixed-width primitives are enabled.
 - `Size` ↔ other ints follow the same rules when `Size` is introduced (reserved in v1). For v1, use `Uint` in place of `Size`.
-- Floating conversions follow IEEE-754 rules; narrowing (`F64`→`F32`) must be explicit.
+- Floating conversions follow IEEE-754 rules on supported targets; other targets use the platform’s native float behavior.
 
 ### 3.2. Comments
 
@@ -257,6 +257,19 @@ Notes:
 - The compiler flag `--no-prelude` disables these injected names; users must
   explicitly import or qualify `lang.core` symbols. `--prelude` re-enables them.
 
+### 3.4. Type prelude (always-on in v1)
+
+Drift provides a small, always-on **type prelude** for core types that appear
+pervasively in annotations. This is distinct from the value prelude above.
+
+The type prelude includes:
+
+- `Int`, `Uint`, `Byte`, `Bool`, `Float`, `String`, `Void`, `Error`, `DiagnosticValue`
+- `Array<T>`
+- `Optional<T>`
+- `FnResult<ok, err>`
+- `&T`, `&mut T` (reference type constructors)
+
 Memory utilities live in `std.mem` and are **not** auto-imported. In particular:
 
 - `std.mem.swap(a, b)` exchanges two addressable places.
@@ -271,7 +284,7 @@ Typical usage:
 println("hello, world");
 ```
 
-### 3.4. Struct syntax variants
+### 3.5. Struct syntax variants
 
 ```drift
 struct Point {
@@ -279,7 +292,7 @@ struct Point {
     y: Int
 }
 
-struct Point(x: Int, y: Int)  // header form; identical type
+struct Point(x: Int, y: Int);  // header form; identical type
 ```
 
 The tuple-style header desugars to the block form. Field names remain available for dot access while the constructor supports positional and named invocation. The resulting type follows standard Drift value semantics: fields determine copy- vs move-behavior, and ownership transfer still uses `move foo` as usual.
@@ -831,16 +844,16 @@ are not part of the surface language.
 
 ### 5.6.1. Trait method lookup and scope
 
-Trait dot-call lookup is explicit and file-scoped, with guard-scoped additions:
+Trait dot-call lookup is explicit and module-scoped, with guard-scoped additions:
 
 - Traits participate in dot-call lookup if listed via `use trait` or assumed by a
   trait guard in the current branch.
-- `use trait <QualifiedTraitName>` is a module-level directive (file-scoped).
+- `use trait <QualifiedTraitName>` is a module-level directive (module-scoped).
 - Multiple `use trait` directives are allowed; all listed traits are in scope.
 - Trait guards add a temporary, branch-local scope; there is no general block-scoped
   trait import.
-- Dot-call lookup does **not** consider traits outside the file-scoped list and
-  the current guard assumptions.
+- Dot-call lookup does **not** consider traits outside the module-scoped list
+  and the current guard assumptions.
 - Ambiguity between traits requires explicit disambiguation (UFCS).
 - UFCS syntax: `TraitName::method(receiver, args...)`. Module-qualified trait names
   are allowed. UFCS bypasses `use trait` scope but still respects visibility.
@@ -1670,8 +1683,8 @@ Rules:
   - functions
   - constants (`const`)
   - types such as `struct`, `variant`, `exception`, `trait`, `interface`, `type`
-- `export` may appear multiple times across multiple files in the same module;
-  the effective export set is their union.
+- `export` may appear multiple times within the module; the effective export set
+  is their union.
 - Exporting a name that is not declared in the module is a compile-time error.
 - Exporting a **non-`pub`** local symbol is a compile-time error.
 - `export { other.module.* }` re-exports exactly that module’s export set.
@@ -1706,7 +1719,10 @@ import std.concurrent as conc  // bind with alias
 
 **Module identifiers**
 
-- Declared with `module <id>` once per file; multiple files may share the same `<id>`, but a single-module build fails if any file is missing or mismatches the ID. A standalone file with no declaration defaults to `main`.
+- Declared with `module <id>` once per file. Exactly one source file defines one
+  module. A build must fail if multiple files declare the same module id.
+  **Single‑file script mode** may default a missing declaration to `main`;
+  workspace/target builds require an explicit `module <id>`.
 - `<id>` must be lowercase segments separated by dots. Each segment must start with a lowercase letter and may contain lowercase letters, digits, and underscores; underscores may not be leading/trailing or consecutive. Dots may not be leading/trailing or consecutive. Total length ≤ 254 UTF-8 bytes.
 - Reserved namespaces: `lang.*`, `std.*`, and `drift.*` (and any future toolchain‑reserved
   prefixes) are allowed syntactically but may only be provided by **trusted
@@ -1718,6 +1734,27 @@ import std.concurrent as conc  // bind with alias
   switches that replace the core trust store; those switches are not part of the
   language/build specification.
 - Frames/backtraces record the declared module ID (not filenames), so cross-module stacks are unambiguous.
+
+### 7.1.1. Merge modules and prelude modules (convention)
+
+Drift modules are single-file and explicit. Larger surfaces are composed by
+**merge modules** and optional **prelude modules**:
+
+- A **merge module** is a normal module whose primary job is re-exports.
+- A **prelude module** is a normal module (often `<pkg>.prelude`) that re-exports
+  frequently used traits/types for one-line imports.
+
+Example:
+
+```
+com.acme.http.client    // real code
+com.acme.http.server    // real code
+com.acme.http           // merge module: reexports client/server
+com.acme.http.prelude   // prelude module: reexports traits/types for ergonomics
+```
+
+Merge and prelude modules use the standard `export { other.module.* }` mechanism
+and follow the same visibility rules as any other module.
 
 ### 7.2. Module interface and exports
 
@@ -1866,6 +1903,7 @@ variant Result<T, E> {
 - The type name uses UpperCamel case and may declare generic parameters (`<T, E>`).
 - Each variant uses UpperCamel case and may include a field list `(field: Type, ...)`.
 - At least one variant must be declared, and names must be unique within the type.
+- Constructor field names are part of the public API; renaming a field is a breaking change.
 
 ### 10.2. Semantics and representation
 
@@ -1888,8 +1926,12 @@ val failure: Result<Int, String> = Err("oops");
 MVP rules:
 
 - Constructors are **unqualified identifiers** (`Ok`, `Err`, `Some`, `None`).
-- **Positional arguments only** in MVP (no named-field construction).
+- Constructor arguments may be **positional** or **named**.
+- **Do not mix** positional and named arguments in the same call.
+- Named arguments bind to the **constructor field names**.
+- **Unknown** field names, **duplicate** field names, **missing** required fields, or **extra** positional arguments are errors (no defaults in MVP).
 - An **unqualified** constructor call in expression position requires an **expected variant type** from context (e.g., an annotation, a parameter type, or a function return type). If there is no expected type, the compiler rejects the call rather than guessing.
+- **Evaluation order:** constructor arguments are evaluated in **source order** (left-to-right) even when named; assignment into the canonical field order happens after evaluation.
 
 Examples:
 
@@ -1914,6 +1956,7 @@ Rules (v1 MVP):
 - `TypeRef` is a nominal type reference (a variant type name; module-qualified type names may be supported where type references are supported).
 - In MVP, only **variant constructors** may be referenced through `TypeRef::Ctor(...)`.
 - The constructor name must exist on the referenced variant type and the argument count must match the constructor’s fields.
+- Argument rules are the same as unqualified calls (positional or named, no mixing, named binds to field names).
 - Generic type arguments may be inferred from constructor arguments:
   - `Optional::Some(1)` infers `T = Int`.
   - If type arguments are underconstrained (e.g., `Optional::None()`), the compiler rejects the call unless an expected type provides them (e.g., via a return type or an explicit annotation).
@@ -1971,6 +2014,10 @@ variant Optional<T> {
     Some(value: T)
     None
 }
+
+For ABI stability across modules, the canonical `Optional<T>` layout uses a
+fixed constructor tag order: `None` is tag 0 and `Some` is tag 1, regardless of
+how user code lists the arms.
 
 variant DbError {
     ConnectionLost
@@ -2135,7 +2182,7 @@ Helper methods/combinators on `Optional<T>` (e.g. `is_some`, `unwrap_or`) are ex
 ---
 ## 12. `lang.array`, `ByteBuffer`, and array literals
 
-`lang.array` is the standard module for homogeneous sequences. It exposes the generic type `Array<T>` plus builder helpers and the binary-centric `ByteBuffer`. `Array` is always in scope for type annotations, so you can write:
+`lang.array` is the standard module for homogeneous sequences. It exposes the generic type `Array<T>` plus builder helpers and the binary-centric `ByteBuffer`. `Array` is available via the type prelude, so you can write:
 
 ```drift
 fn example() -> Void {
@@ -2583,7 +2630,7 @@ try {
 ```
 
 Matches by `error.event_code` derived from the resolved fully-qualified event name (§14.1.1); the source uses the event name, runtime compares the deterministic code.
-Catch clauses must use the canonical FQN form `<module>.<submodules>:<Event>`; no implicit module-prefixing is performed.
+Unqualified `catch EventName(...)` resolves to the current module’s event; `catch mod:EventName(...)` targets another module. No implicit prefixing is performed beyond the current module.
 
 #### 14.5.2. Catch-all + rethrow
 ```drift
@@ -3369,7 +3416,8 @@ Dynamic, OS-level plugins (shared libraries such as `.so`, `.dll`, `.dylib`) are
 
 Drift code interacts with such plugins by:
 
-1. Defining an FFI surface in a dedicated `lang.abi.*` or application-specific FFI module:
+1. Defining an FFI surface in a dedicated `lang.abi.*` or application-specific FFI module.
+   Fixed-width primitives are allowed **only** in `lang.abi.*` in v1:
 
    ```drift
    // Example: plugin FFI surface
@@ -3409,7 +3457,7 @@ Drift code interacts with such plugins by:
 At the OS-level plugin boundary:
 
 - Drift’s `Error` type and unwinding **must not** cross into or out of a `.so`.
-- Plugin APIs must return errors as ABI-stable primitives (e.g., `Int32` error codes, or a small `enum` marked as FFI-safe).
+- Plugin APIs must return errors as ABI-stable primitives (e.g., `Int32` error codes in `lang.abi.*`, or a small `enum` marked as FFI-safe).
 - Hosts are responsible for mapping these codes into Drift’s `Error` values at the wrapper layer (static modules).
 
 Example:

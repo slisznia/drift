@@ -2,9 +2,10 @@
   "description": "e2e: module multifile duplicate fn",
   "diagnostics": [
     {
-      "message_contains": "duplicate function definition",
+      "message_contains": "multiple source files declare module",
       "phase": "parser"
     }
   ],
-  "exit_code": 1
+  "exit_code": 1,
+  "phase": "parser"
 }

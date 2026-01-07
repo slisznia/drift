@@ -3,7 +3,34 @@ from __future__ import annotations
 
 from lang2.driftc.core.function_id import FunctionId
 from lang2.driftc.core.type_subst import Subst, apply_subst
-from lang2.driftc.core.types_core import TypeParamId, TypeTable, TypeKind
+from lang2.driftc.core.generic_type_expr import GenericTypeExpr
+from lang2.driftc.core.types_core import (
+	TypeKind,
+	TypeParamId,
+	TypeTable,
+	VariantArmSchema,
+	VariantFieldSchema,
+)
+
+
+def _ensure_optional(table: TypeTable, inner: int) -> int:
+	base = table.get_variant_base(module_id="lang.core", name="Optional")
+	if base is None:
+		base = table.declare_variant(
+			"lang.core",
+			"Optional",
+			["T"],
+			[
+				VariantArmSchema(name="None", fields=[]),
+				VariantArmSchema(
+					name="Some",
+					fields=[VariantFieldSchema(name="value", type_expr=GenericTypeExpr.param(0))],
+				),
+			],
+		)
+	if table.has_typevar(inner):
+		return table.ensure_variant_template(base, [inner])
+	return table.ensure_variant_instantiated(base, [inner])
 
 
 def test_subst_owner_isolated() -> None:
@@ -25,7 +52,7 @@ def test_subst_nested_types() -> None:
 	tp = TypeParamId(owner=fid, index=0)
 	tv = table.ensure_typevar(tp, name="T")
 	arr = table.new_array(tv)
-	opt = table.new_optional(arr)
+	opt = _ensure_optional(table, arr)
 	subst = Subst(owner=fid, args=[table.ensure_int()])
 	res = apply_subst(opt, subst, table)
 	td = table.get(res)

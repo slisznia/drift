@@ -24,7 +24,7 @@ def test_method_signatures_have_receiver_metadata_workspace_and_single_file(tmp_
 		"""
 module m
 
-struct Point(x: Int, y: Int)
+struct Point(x: Int, y: Int);
 
 implement Point {
 	fn move_by(self: &mut Point, dx: Int, dy: Int) -> Void {

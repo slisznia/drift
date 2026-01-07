@@ -1,4 +1,6 @@
-struct Wrap(arr: Array<Int>)
+module main
+
+struct Wrap(arr: Array<Int>);
 
 fn main() nothrow -> Int{
 	var w = Wrap([1, 2]);

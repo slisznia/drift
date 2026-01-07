@@ -27,7 +27,26 @@ from lang2.driftc.stage2 import (
 	VariantTag,
 )
 from lang2.driftc.stage4 import MirToSSA
-from lang2.driftc.core.types_core import TypeTable
+from lang2.driftc.core.generic_type_expr import GenericTypeExpr
+from lang2.driftc.core.types_core import TypeTable, VariantArmSchema, VariantFieldSchema
+
+
+def _ensure_optional(table: TypeTable, inner: int) -> int:
+	base = table.get_variant_base(module_id="lang.core", name="Optional")
+	if base is None:
+		base = table.declare_variant(
+			"lang.core",
+			"Optional",
+			["T"],
+			[
+				VariantArmSchema(name="None", fields=[]),
+				VariantArmSchema(
+					name="Some",
+					fields=[VariantFieldSchema(name="value", type_expr=GenericTypeExpr.param(0))],
+				),
+			],
+		)
+	return table.ensure_instantiated(base, [inner])
 
 
 def test_optional_ops_round_trip_payload():
@@ -35,7 +54,7 @@ def test_optional_ops_round_trip_payload():
 	int_ty = table.ensure_int()
 	err_ty = table.ensure_error()
 	dv_ty = table.ensure_diagnostic_value()
-	opt_int_ty = table.new_optional(int_ty)
+	opt_int_ty = _ensure_optional(table, int_ty)
 	opt_int_inst = table.get_variant_instance(opt_int_ty)
 	assert opt_int_inst is not None
 	opt_int_some_tag = next(a.tag for a in opt_int_inst.arms if a.name == "Some")
@@ -117,7 +136,7 @@ def test_optional_ops_round_trip_string_payload():
 	string_ty = table.ensure_string()
 	err_ty = table.ensure_error()
 	dv_ty = table.ensure_diagnostic_value()
-	opt_string_ty = table.new_optional(string_ty)
+	opt_string_ty = _ensure_optional(table, string_ty)
 	opt_string_inst = table.get_variant_instance(opt_string_ty)
 	assert opt_string_inst is not None
 	opt_string_some_tag = next(a.tag for a in opt_string_inst.arms if a.name == "Some")

@@ -1,10 +1,12 @@
-variant Optional<T> {
+module main
+
+variant Maybe<T> {
 	Some(value: T),
 	None,
 }
 
 fn main() nothrow -> Int{
-	val x: Optional<Int> = Optional::Some(1);
+	val x: Maybe<Int> = Maybe::Some(1);
 	val y = match x{
 	Some(v) => {
 			// Shadow the binder name inside the arm block. This must not corrupt

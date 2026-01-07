@@ -49,9 +49,7 @@ fn main() nothrow -> Int{ return 0; }
 		tmp_path, files
 	)
 	assert diagnostics == []
-	scope_by_file = module_exports.get("m_main", {}).get("trait_scope_by_file", {})
-	expected_path = str(tmp_path / "mods" / "m_main" / "main.drift")
-	scope = scope_by_file.get(expected_path, [])
+	scope = module_exports.get("m_main", {}).get("trait_scope", [])
 	assert TraitKey(package_id=None, module="m_traits", name="Show") in scope
 
 
@@ -155,10 +153,10 @@ fn other() nothrow -> Int{ return 1; }
 	_module, _table, _exc, diagnostics = parse_drift_files_to_hir([file_a, file_b], package_id="test")
 	assert diagnostics
 	msgs = [d.message for d in diagnostics]
-	assert any("multi-file module build with 'use trait' requires the workspace pipeline" in m for m in msgs)
+	assert any("multiple source files declare one module" in m for m in msgs)
 
 
-def test_multi_file_single_module_loader_still_merges_without_use_trait(tmp_path: Path) -> None:
+def test_multi_file_single_module_loader_is_error(tmp_path: Path) -> None:
 	mod_root = tmp_path / "mods"
 	file_a = mod_root / "a.drift"
 	file_b = mod_root / "b.drift"
@@ -178,7 +176,7 @@ module m_main
 fn b() nothrow -> Int{ return 2; }
 """,
 	)
-	module, _table, _exc, diagnostics = parse_drift_files_to_hir([file_a, file_b], package_id="test")
-	assert diagnostics == []
-	names = {fn_id.name for fn_id in module.func_hirs.keys()}
-	assert {"a", "b"} <= names
+	_module, _table, _exc, diagnostics = parse_drift_files_to_hir([file_a, file_b], package_id="test")
+	assert diagnostics
+	msgs = [d.message for d in diagnostics]
+	assert any("multiple source files declare one module" in m for m in msgs)

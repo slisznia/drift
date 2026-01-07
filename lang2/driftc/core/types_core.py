@@ -24,6 +24,7 @@ class TypeKind(Enum):
 	"""Kinds of types understood by the minimal type core."""
 
 	SCALAR = auto()
+	FORWARD_NOMINAL = auto()
 	STRUCT = auto()
 	TYPEVAR = auto()
 	ERROR = auto()
@@ -281,18 +282,26 @@ class TypeTable:
 
 	def ensure_named(self, name: str, *, module_id: str | None = None) -> TypeId:
 		"""
-		Return a stable TypeId for a nominal scalar name.
+		Return a stable TypeId for a forward-declared nominal name.
 
 		This is used for user-defined type names that appear in annotations.
-		If the name has not been declared yet, we conservatively create a scalar
-		nominal type. Later, a richer kind (STRUCT/ENUM) may be declared under
-		that name; callers should prefer explicit `declare_struct` for structs.
+		If the name has not been declared yet, we create a forward nominal and
+		expect a later declaration to upgrade it to STRUCT/VARIANT.
 		"""
-		key = NominalKey(package_id=self._package_for_module(module_id), module_id=module_id, name=name, kind=TypeKind.SCALAR)
-		prev = self._nominal.get(key)
-		if prev is not None:
-			return prev
-		return self._add(TypeKind.SCALAR, name, [], module_id=module_id)
+		for kind in (TypeKind.STRUCT, TypeKind.VARIANT, TypeKind.FORWARD_NOMINAL, TypeKind.SCALAR):
+			key = NominalKey(
+				package_id=self._package_for_module(module_id), module_id=module_id, name=name, kind=kind
+			)
+			prev = self._nominal.get(key)
+			if prev is not None:
+				return prev
+		return self._add(TypeKind.FORWARD_NOMINAL, name, [], module_id=module_id, register_named=True)
+
+	def get_forward_nominal(self, *, module_id: str | None, name: str) -> TypeId | None:
+		"""Return a forward nominal TypeId by identity, or None if not present."""
+		return self._nominal.get(
+			NominalKey(package_id=self._package_for_module(module_id), module_id=module_id, name=name, kind=TypeKind.FORWARD_NOMINAL)
+		)
 
 	def get_nominal(self, *, kind: TypeKind, module_id: str | None, name: str) -> TypeId | None:
 		"""Return a nominal TypeId by identity, or None if not present."""
@@ -333,6 +342,40 @@ class TypeTable:
 		"""
 		type_params = list(type_params or [])
 		key = NominalKey(package_id=self._package_for_module(module_id), module_id=module_id, name=name, kind=TypeKind.STRUCT)
+		forward_key = NominalKey(
+			package_id=self._package_for_module(module_id),
+			module_id=module_id,
+			name=name,
+			kind=TypeKind.FORWARD_NOMINAL,
+		)
+		if forward_key in self._nominal:
+			ty_id = self._nominal.pop(forward_key)
+			td = self.get(ty_id)
+			if td.kind is not TypeKind.FORWARD_NOMINAL:
+				raise ValueError(f"type name '{name}' already defined as {td.kind}")
+			unknown = self.ensure_unknown()
+			placeholder = [unknown for _ in field_names]
+			self._defs[ty_id] = TypeDef(
+				kind=TypeKind.STRUCT,
+				name=name,
+				param_types=placeholder,
+				module_id=module_id,
+				field_names=list(field_names),
+			)
+			self._nominal[key] = ty_id
+			self.struct_schemas[key] = (name, list(field_names))
+			self.struct_bases[ty_id] = StructSchema(
+				module_id=module_id,
+				name=name,
+				type_params=type_params,
+				fields=[],
+			)
+			if ty_id not in self.struct_type_param_ids:
+				owner = FunctionId(module="lang.__internal", name=f"__struct_{module_id}::{name}", ordinal=0)
+				self.struct_type_param_ids[ty_id] = [
+					TypeParamId(owner=owner, index=idx) for idx, _name in enumerate(type_params)
+				]
+			return ty_id
 		if key in self._nominal:
 			ty_id = self._nominal[key]
 			td = self.get(ty_id)
@@ -382,6 +425,26 @@ class TypeTable:
 		`get_variant_instance(base_id)`.
 		"""
 		key = NominalKey(package_id=self._package_for_module(module_id), module_id=module_id, name=name, kind=TypeKind.VARIANT)
+		forward_key = NominalKey(
+			package_id=self._package_for_module(module_id),
+			module_id=module_id,
+			name=name,
+			kind=TypeKind.FORWARD_NOMINAL,
+		)
+		if forward_key in self._nominal:
+			base_id = self._nominal.pop(forward_key)
+			td = self.get(base_id)
+			if td.kind is not TypeKind.FORWARD_NOMINAL:
+				raise ValueError(f"type name '{name}' already defined as {td.kind}")
+			self._defs[base_id] = TypeDef(
+				kind=TypeKind.VARIANT,
+				name=name,
+				param_types=[],
+				module_id=module_id,
+			)
+			self._nominal[key] = base_id
+			self.variant_schemas[base_id] = VariantSchema(module_id=module_id, name=name, type_params=list(type_params), arms=list(arms))
+			return base_id
 		if key in self._nominal:
 			ty_id = self._nominal[key]
 			td = self.get(ty_id)
@@ -452,7 +515,7 @@ class TypeTable:
 			raise ValueError(
 				f"type argument count mismatch for '{schema.name}': expected {len(schema.type_params)}, got {len(type_args)}"
 			)
-		if any(self.get(arg).kind is TypeKind.TYPEVAR for arg in type_args):
+		if any(self.has_typevar(arg) for arg in type_args):
 			raise ValueError(f"type arguments for '{schema.name}' must be concrete")
 		if not schema.type_params:
 			if base_id not in self.struct_instances:
@@ -504,7 +567,7 @@ class TypeTable:
 		self._define_struct_instance(base_id, inst_id, type_args=list(type_args), field_names=field_names, field_types=field_types)
 		return inst_id
 
-	def ensure_instantiated(self, base_id: TypeId, type_args: list[TypeId]) -> TypeId:
+	def ensure_variant_instantiated(self, base_id: TypeId, type_args: list[TypeId]) -> TypeId:
 		"""
 		Return a stable TypeId for a concrete instantiation of a generic nominal.
 
@@ -517,6 +580,8 @@ class TypeTable:
 			raise ValueError(
 				f"type argument count mismatch for '{schema.name}': expected {len(schema.type_params)}, got {len(type_args)}"
 			)
+		if any(self.has_typevar(arg) for arg in type_args):
+			raise ValueError(f"type arguments for '{schema.name}' must be concrete")
 		if not schema.type_params:
 			# Non-generic variants use the base id directly. Ensure its concrete
 			# instance exists (it may be created lazily after all variants are
@@ -540,6 +605,43 @@ class TypeTable:
 		self._instantiation_cache[key] = inst_id
 		self._define_variant_instance(base_id, inst_id, list(type_args))
 		return inst_id
+
+	def ensure_variant_template(self, base_id: TypeId, type_args: list[TypeId]) -> TypeId:
+		"""
+		Return a template variant TypeId that may include TypeVar arguments.
+
+		Template instances are not cached and are used only during generic
+		validation/inference.
+		"""
+		schema = self.variant_schemas.get(base_id)
+		if schema is None:
+			raise ValueError("ensure_variant_template requires a declared generic variant base TypeId")
+		if len(type_args) != len(schema.type_params):
+			raise ValueError(
+				f"type argument count mismatch for '{schema.name}': expected {len(schema.type_params)}, got {len(type_args)}"
+			)
+		inst_id = self._add(
+			TypeKind.VARIANT,
+			schema.name,
+			list(type_args),
+			register_named=False,
+			module_id=schema.module_id,
+		)
+		self._define_variant_instance(base_id, inst_id, list(type_args))
+		return inst_id
+
+	def ensure_instantiated(self, base_id: TypeId, type_args: list[TypeId]) -> TypeId:
+		return self.ensure_variant_instantiated(base_id, type_args)
+
+	def has_typevar(self, ty: TypeId) -> bool:
+		"""Return True if `ty` contains any TypeVar (deep)."""
+		td = self.get(ty)
+		if td.kind is TypeKind.TYPEVAR:
+			return True
+		for child in td.param_types:
+			if self.has_typevar(child):
+				return True
+		return False
 
 	def finalize_variants(self) -> None:
 		"""
@@ -702,9 +804,16 @@ class TypeTable:
 		if expr.args:
 			arg_ids = [self._eval_generic_type_expr(a, type_args, module_id=module_id) for a in expr.args]
 			if base_id in self.variant_schemas:
+				schema = self.variant_schemas.get(base_id)
+				if schema is not None and not schema.type_params:
+					return self.ensure_unknown()
 				return self.ensure_instantiated(base_id, arg_ids)
 			if base_id in self.struct_bases:
+				schema = self.struct_bases.get(base_id)
+				if schema is not None and not schema.type_params:
+					return self.ensure_unknown()
 				return self.ensure_struct_instantiated(base_id, arg_ids)
+			return self.ensure_unknown()
 		return base_id
 
 	def define_struct_fields(self, struct_id: TypeId, field_types: List[TypeId]) -> None:
@@ -844,35 +953,28 @@ class TypeTable:
 			self._dv_type = self._add(TypeKind.DIAGNOSTICVALUE, "DiagnosticValue", [])  # type: ignore[attr-defined]
 		return self._dv_type  # type: ignore[attr-defined]
 
-	def new_optional(self, inner: TypeId) -> TypeId:
+	def ensure_optional_base(self) -> TypeId:
 		"""
-		Register Optional<inner> as the builtin Optional<T> variant (cached).
+		Return the canonical `lang.core.Optional<T>` variant base.
 
-		Deprecated: prefer normal variant instantiation via get_variant_base +
-		declare_variant + ensure_instantiated.
+		MVP contract:
+		  variant Optional<T> { None, Some(value: T) }
 		"""
-		if not hasattr(self, "_optional_cache"):
-			self._optional_cache = {}  # type: ignore[attr-defined]
-		cache = getattr(self, "_optional_cache")  # type: ignore[attr-defined]
-		if inner in cache:
-			return cache[inner]
 		base = self.get_variant_base(module_id="lang.core", name="Optional")
-		if base is None:
-			base = self.declare_variant(
-				"lang.core",
-				"Optional",
-				["T"],
-				[
-					VariantArmSchema(name="None", fields=[]),
-					VariantArmSchema(
-						name="Some",
-						fields=[VariantFieldSchema(name="value", type_expr=GenericTypeExpr.param(0))],
-					),
-				],
-			)
-		opt_id = self.ensure_instantiated(base, [inner])
-		cache[inner] = opt_id
-		return opt_id
+		if base is not None:
+			return base
+		return self.declare_variant(
+			"lang.core",
+			"Optional",
+			["T"],
+			[
+				VariantArmSchema(name="None", fields=[]),
+				VariantArmSchema(
+					name="Some",
+					fields=[VariantFieldSchema(name="value", type_expr=GenericTypeExpr.param(0))],
+				),
+			],
+		)
 
 	def ensure_ref(self, inner: TypeId) -> TypeId:
 		"""Return a stable shared reference TypeId to `inner`, creating it once."""
@@ -1010,7 +1112,7 @@ class TypeTable:
 			if td.kind in {TypeKind.SCALAR, TypeKind.REF, TypeKind.FUNCTION, TypeKind.VOID}:
 				cache[tid] = True
 				return True
-			if td.kind in {TypeKind.UNKNOWN, TypeKind.ERROR, TypeKind.DIAGNOSTICVALUE, TypeKind.TYPEVAR}:
+			if td.kind in {TypeKind.FORWARD_NOMINAL, TypeKind.UNKNOWN, TypeKind.ERROR, TypeKind.DIAGNOSTICVALUE, TypeKind.TYPEVAR}:
 				cache[tid] = False
 				return False
 			if td.kind is TypeKind.ARRAY:
@@ -1077,7 +1179,7 @@ class TypeTable:
 					return False
 				cache[tid] = True
 				return True
-			if td.kind in {TypeKind.UNKNOWN, TypeKind.ERROR, TypeKind.DIAGNOSTICVALUE, TypeKind.TYPEVAR}:
+			if td.kind in {TypeKind.FORWARD_NOMINAL, TypeKind.UNKNOWN, TypeKind.ERROR, TypeKind.DIAGNOSTICVALUE, TypeKind.TYPEVAR}:
 				cache[tid] = False
 				return False
 			if td.kind is TypeKind.ARRAY:
@@ -1137,7 +1239,7 @@ class TypeTable:
 			field_names=list(field_names) if field_names is not None else None,
 		)
 		if register_named is None:
-			register_named = kind in (TypeKind.SCALAR, TypeKind.STRUCT)
+			register_named = kind in (TypeKind.SCALAR, TypeKind.FORWARD_NOMINAL, TypeKind.STRUCT)
 		if register_named:
 			key = NominalKey(package_id=self._package_for_module(module_id), module_id=module_id, name=name, kind=kind)
 			self._nominal.setdefault(key, ty_id)
@@ -1180,7 +1282,7 @@ class TypeTable:
 			stack.append(tid)
 			try:
 				td = self.get(tid)
-				if td.kind is TypeKind.SCALAR:
+				if td.kind in {TypeKind.SCALAR, TypeKind.FORWARD_NOMINAL}:
 					if td.module_id is not None:
 						return _qualify(td.name, td.module_id)
 					return td.name

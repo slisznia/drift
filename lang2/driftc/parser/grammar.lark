@@ -109,7 +109,7 @@ BLOCK_COMMENT: /\/\*([^*]|\*(?!\/))*\*\//
 %ignore LINE_COMMENT
 %ignore BLOCK_COMMENT
 
-program: (module_decl | item)*
+program: (module_decl | item | TERMINATOR)*
 
 module_decl: MODULE module_path
 module_path: NAME (DOT NAME)*
@@ -126,7 +126,6 @@ ident: NAME | MOVE | COPY
      | use_trait_stmt TERMINATOR
      | import_stmt TERMINATOR
      | export_stmt TERMINATOR
-     | stmt
 
 pub_item: PUB (func_def | const_def | struct_def | exception_def | variant_def | trait_def | implement_def)
 
@@ -274,7 +273,8 @@ module_path_star: NAME (DOT NAME)* DOT STAR
 use_trait_stmt: USE TRAIT trait_ref
 trait_ref: module_path
 
-struct_def: "struct" NAME type_params? require_clause? struct_body TERMINATOR?
+struct_def: "struct" NAME type_params? require_clause? tuple_struct TERMINATOR
+          | "struct" NAME type_params? require_clause? block_struct TERMINATOR?
 struct_body: tuple_struct | block_struct
 tuple_struct: "(" struct_field_list? ")"
 struct_field_list: struct_field (COMMA struct_field)*

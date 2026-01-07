@@ -1,7 +1,8 @@
-module main
+module m_a
 import lib as lib;
 
+export { a };
 
-fn a() -> Int {
+pub fn a() -> Int {
 	return lib.add(1, 2);
 }

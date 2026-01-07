@@ -1,6 +1,11 @@
 {
   "description": "e2e: import multiple files same module",
-  "exit_code": 3,
-  "stderr": "",
-  "stdout": ""
+  "diagnostics": [
+    {
+      "message_contains": "multiple source files declare module",
+      "phase": "parser"
+    }
+  ],
+  "exit_code": 1,
+  "phase": "parser"
 }
