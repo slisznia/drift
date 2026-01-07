@@ -5,56 +5,6 @@ CLANG_BIN := "clang-15"
 # Default task: run the staged lang2 compiler tests.
 default: lang2-test
 
-test: test-ssa test-e2e
-	@echo "test-ssa test-e2e: Success."
-
-test-e2e:
-	rm -rf build/tests/e2e
-	./.venv/bin/python3 tests/e2e_runner.py
-
-test-ssa:
-	PYTHONPATH=. ./.venv/bin/python3 -m lang.mir_ssa_tests
-	./.venv/bin/python3 tests/ssa_check_smoke.py
-	./.venv/bin/python3 tests/ssa_programs_test.py
-	if ! command -v {{CLANG_BIN}} >/dev/null 2>&1; then \
-	  echo "{{CLANG_BIN}} is missing"; \
-	  exit 1; \
-	fi
-	{{CLANG_BIN}} -Ilang -Ilang/runtime -o /tmp/runtime_error_dummy_raw tests/runtime_error_dummy_raw.c lang/runtime/error_dummy.c lang/runtime/string_runtime.c lang/runtime/diagnostic_runtime.c && /tmp/runtime_error_dummy_raw
-	# legacy args test removed
-	{{CLANG_BIN}} -Ilang -Ilang/runtime -o /tmp/runtime_diagnostic_value tests/runtime_diagnostic_value.c lang/runtime/diagnostic_runtime.c lang/runtime/string_runtime.c && /tmp/runtime_diagnostic_value
-
-test-runtime-c:
-	#!/usr/bin/env bash
-	if ! command -v {{CLANG_BIN}} >/dev/null 2>&1; then
-	  echo "{{CLANG_BIN}} is missing"
-	  exit 1
-	fi
-	{{CLANG_BIN}} -Ilang -Ilang/runtime -o /tmp/runtime_error_dummy_raw tests/runtime_error_dummy_raw.c lang/runtime/error_dummy.c lang/runtime/string_runtime.c && /tmp/runtime_error_dummy_raw
-	# legacy args test removed
-	echo "test-runtime-c OK"
-
-test-e2e-ssa-subset:
-	rm -rf build/tests/e2e
-	PYTHONPATH=. ./.venv/bin/python3 tests/e2e_runner.py hello throw_try try_catch try_call_error try_event_catch_stmt try_event_catch_expr try_event_catch_no_fallback array_string for_array console_hello ref_struct_mutation
-
-# Loop a built e2e binary repeatedly to catch flakiness.
-run-e2e-loop CASE="exception_args_dot" RUNS="1000":
-	exe="build/tests/e2e/{{CASE}}/a.out"; \
-	if [ ! -x "$exe" ]; then \
-	  echo "missing $exe; build the case first (e.g., just test-e2e {{CASE}})" >&2; \
-	  exit 1; \
-	fi; \
-	expect="tests/e2e/{{CASE}}/expected.json"; \
-	./.venv/bin/python3 tools/run_loop.py --exe "$exe" --runs {{RUNS}} --expect-file "$expect"
-
-parse-all: parse-examples
-	@echo "parse-examples: Success."
-
-# Parse every Drift example under examples/
-parse-examples:
-	./.venv/bin/python3 tools/draft_linter.py examples
-
 review-cleanup:
 	rm -f combined_*
 
