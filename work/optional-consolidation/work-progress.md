@@ -134,3 +134,46 @@ Consolidate `Optional<T>` as a regular variant type, remove Optional-specific AB
   2026-01-06: Standardized struct_ctor_keyword_args fixture to module main.
   2026-01-06: Added module headers and tuple-struct semicolons in borrow checker lambda capture tests to satisfy tuple-struct terminator rule.
   2026-01-06: Added module_paths to remaining driver workspace parse calls (trait_method_resolution, trait_diagnostic_goldens).
+  2026-01-06: Removed legacy package type-link "optional" key handling now that Optional is a canonical variant.
+  2026-01-06: Dropped unused Optional caches in LLVM codegen helper state.
+  2026-01-06: Cleaned stale e2e build artifacts that still referenced DriftOptional types.
+  2026-01-06: Fixed package type table decoding to always return DecodedTypeTable even without variant_schemas.
+  2026-01-06: Package type-link now rejects non-builtin scalar types without module_id to avoid nominal key mismatch.
+  2026-01-06: Package type linking now canonicalizes builtin u64/Uint64 and validates exception schema keys match event FQNs.
+  2026-01-06: Package linking rejects non-lang.core packages that attempt to define lang.core nominals and enforces a core allowlist.
+  2026-01-06: LLVM variant lowering now stores ordered arm lists with explicit arm-name lookup to keep deterministic switch ordering.
+  2026-01-06: LLVM codegen only applies rename_map to same-module calls and doc now reflects bounded use of allocas.
+  2026-01-06: Package linker now keys TYPEVAR by package+TypeId to avoid cross-package/unrelated generic unification.
+  2026-01-06: Package variant schema decoding now validates base VARIANT TypeDef identity.
+  2026-01-06: LLVM variant type emission now asserts payload alignment is a power of two.
+  2026-01-06: Package linking now allows lang.core builtins and allowlisted core nominals from non-core packages (rejects everything else).
+  2026-01-06: Package type linking now normalizes core nominals to package_id=lang.core and validates Optional schema against the canonical base.
+  2026-01-06: Struct schema encoding now includes base_id and linker uses it (with typevar fallback) to avoid ambiguous generic struct matching.
+  2026-01-06: Package type linking no longer infers module ownership from TypeDefs; scalar nominals now normalize lang.core package ids consistently.
+  2026-01-06: Export wrapper lowering now coerces non-throwing Bool returns into ABI ok storage types.
+  2026-01-06: Package type tables now encode TypeParamId for TYPEVAR and linker keys typevars by semantic owner+index when present.
+  2026-01-06: Package type table decoding now rejects empty-string module_id values.
+  2026-01-06: Updated LLVM wrapper test to expect Bool ok coercion into i8 ABI storage.
+  2026-01-06: Package linker now rejects non-core lang.core TypeDefs/schemas and requires struct_schemas base_id/type_param_id for TYPEVAR.
+  2026-01-06: Package linker now encodes/links struct instantiations and validates variant base param_types invariants; struct schema base_id is mandatory.
+  2026-01-06: Fixed struct instantiation keying order, added instance/base identity guards, zero-initialized variant payloads, and marked variants non-bitcopy.
+  2026-01-06: Struct schemas now carry field type expressions; linker defines struct schema fields and inlines array drop to avoid double-mapping LLVM values.
+  2026-01-06: Package linker now allows Optional references from non-core packages while validating canonical schema; LLVM codegen now supports configurable float widths (f64 only at runtime).
+  2026-01-06: Struct schema encoding now uses template field expressions; struct instance keys validated before nominal handling; float returns now honor float width.
+  2026-01-06: Linker now populates struct instantiation cache when args are concrete, encodes all signatures, and enforces module-id ownership collisions across packages.
+  2026-01-06: Array drop helper now uses fresh SSA names; struct schema package_id uses nominal provider; linker no longer infers module providers from schemas.
+  2026-01-06: encode_signatures now emits all entries; Optional type exprs encode as lang.core; Float doc clarified as target-defined; StringFromFloat f32 now fpexts to f64.
+  2026-01-06: Added LLVM test to verify nested array drop helper IR parses and verifies via llvmlite (void signature wired); restored FnResult ref err asserts to their original test.
+  2026-01-06: Fixed encode_signatures early return, hardened nested array drop helper test assertions (cap=1, prefix matching), added encode_signatures determinism test, made TYPEVAR keys ignore display names with deterministic lowest-TypeId display selection (with regression test), added provided_nominals metadata + linker gating tests for lang.core references, and added variant-instantiation link regression using ensure_variant_instantiated.
+  2026-01-06: Added module-id collision check across provided nominals, legacy Optional reference allowance without provided_nominals, encode_type_table package_id enforcement, and provided_nominals TypeDef validation with tests.
+  2026-01-06: Documented workspace rule that module ids are globally unique across source and package modules.
+  2026-01-06: Cached struct/variant template instantiations, enforced module_packages completeness for type keys, validated struct schema field-name order, restricted provided_nominals kinds, and tightened GenericTypeExpr decode with regression tests.
+  2026-01-06: Linker now routes variant instantiations with TypeVar args through ensure_variant_template; added regression test.
+  2026-01-06: has_typevar now inspects struct/variant instances, module-scoped scalar nominals are declared explicitly, and link regression tests cover both.
+  2026-01-06: Linker now populates host.module_packages from provided_nominals and tests assert module ownership + type_key_string stability post-link.
+  2026-01-06: Added struct-based module_packages population test to cover struct schema path.
+  2026-01-06: Linker now seeds lang.core module ownership explicitly and has a regression test.
+  2026-01-06: encode_type_table now requires module_packages entries for declared modules to avoid empty provided_nominals; added regression test.
+  2026-01-06: provided_nominals is now required in payloads (legacy inference removed) with tests updated accordingly.
+  2026-01-06: Added test asserting no provider inference occurs when provided_nominals is empty.
+  2026-01-06: encode_type_table module_packages check now only enforces declared modules (not foreign imports), unblocking driver package emission.

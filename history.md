@@ -146,3 +146,10 @@
 - Added module headers to borrow checker lambda capture overlap tests; re-instated variant substitution via base instantiation when instances are missing.
 - Clarified spec: Float is target-native (per-target ABI); fixed-width floats remain reserved in v1.
 - Renamed module_root_mismatch e2e to module_root_unrelated_ok to reflect allowed behavior.
+## 2026-01-06 – Optional-as-variant consolidation + package/link determinism hardening
+- Consolidated Optional into regular variants (None=0/Some=1), removed Optional-specific MIR/LLVM/runtime paths, and added mechanical tests to ensure Optional ops/kinds are gone.
+- Standardized variant lowering: deterministic arm order, non-bitcopy variants, zero-initialized variant construction, and stable copy/drop behavior (including Optional<Bool> storage handling).
+- Package type tables and linker: mandatory provided_nominals, semantic TYPEVAR identity, struct schemas carry type exprs + base_id, struct/variant instantiation support (template vs concrete), and strict module-id ownership checks.
+- Enforced module ownership determinism: module_ids globally unique, linker populates host.module_packages (lang.core seeded), type_key_string requires provider mapping for imports.
+- Added template instantiation caching, deep has_typevar, module-scoped scalar nominals, and multiple regression tests to lock invariants.
+- LLVM backend updates: float width support, export wrapper Bool ABI coercion, array drop helper SSA fix + verifier test, and variant payload alignment guards.

@@ -173,6 +173,10 @@ The filename is a **marker**, not an identifier.
 - If two files declare the same module id, the build **fails**.
 - Module ids come from the `module <id>` declaration; no filesystem layout is
   required for semantic identity.
+- **Workspace rule:** module ids are globally unique within a build, across both
+  source modules and package-provided modules. The resolver must reject any
+  configuration where multiple packages (or package + source) provide the same
+  module id.
 
 For `drift-target.json`, the `"modules": [...]` list refers to **module ids**.
 Each module id must resolve to exactly one source file under the target’s source

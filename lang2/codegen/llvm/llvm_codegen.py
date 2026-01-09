@@ -28,8 +28,9 @@ ABI (from docs/design/drift-lang-abi.md):
   - Drift Int is pointer-sized; Bool is i1 in registers.
 
 This emitter is deliberately small and produces LLVM text suitable for feeding
-to `lli`/`clang` in tests. It avoids allocas and relies on SSA/phinode lowering
-directly. Unsupported features raise clear errors rather than emitting bad IR.
+to `lli`/`clang` in tests. It keeps allocas constrained to entry-block locals and
+temporary payload packing where LLVM requires addressable storage. Unsupported
+features raise clear errors rather than emitting bad IR.
 """
 
 from __future__ import annotations
@@ -176,6 +177,7 @@ def lower_ssa_func_to_llvm(
 	fn_infos: Mapping[FunctionId, FnInfo] | None = None,
 	type_table: Optional[TypeTable] = None,
 	word_bits: int | None = None,
+	float_bits: int | None = None,
 ) -> str:
 	"""
 	Lower a single SSA function to LLVM IR text using FnInfo for return typing.
@@ -196,7 +198,7 @@ def lower_ssa_func_to_llvm(
 	all_infos = dict(fn_infos) if fn_infos is not None else {fn_info.fn_id: fn_info}
 	if word_bits is None:
 		raise AssertionError("LLVM codegen requires explicit word_bits")
-	mod = LlvmModuleBuilder(word_bits=word_bits)
+	mod = LlvmModuleBuilder(word_bits=word_bits, float_bits=float_bits or 64)
 	builder = _FuncBuilder(func=func, ssa=ssa, fn_info=fn_info, fn_infos=all_infos, module=mod, type_table=type_table)
 	mod.emit_func(builder.lower())
 	return mod.render()
@@ -210,6 +212,7 @@ def lower_module_to_llvm(
 	rename_map: Optional[Mapping[FunctionId, str]] = None,
 	argv_wrapper: Optional[str] = None,
 	word_bits: int | None = None,
+	float_bits: int | None = None,
 ) -> LlvmModuleBuilder:
 	"""
 	Lower a set of SSA functions to an LLVM module.
@@ -221,7 +224,7 @@ def lower_module_to_llvm(
 	"""
 	if word_bits is None:
 		raise AssertionError("LLVM codegen requires explicit word_bits")
-	mod = LlvmModuleBuilder(word_bits=word_bits)
+	mod = LlvmModuleBuilder(word_bits=word_bits, float_bits=float_bits or 64)
 
 	# --- ABI-boundary export wrappers (Milestone 4) --------------------------
 	#
@@ -320,9 +323,11 @@ def lower_module_to_llvm(
 		# Return type: boundary Result for exported entrypoints.
 		ok_llty, ok_key = type_builder._llvm_ok_type_for_sig(sig)
 		ret_tid = sig.return_type_id
+		impl_ret_llty = ok_llty
 		ok_abi_llty = ok_llty
 		if ret_tid is not None:
 			ok_abi_llty = type_builder._llvm_ok_abi_type_for_typeid(ret_tid)
+			impl_ret_llty = type_builder._llvm_type_for_typeid(ret_tid)
 		is_void_ret = ret_tid is not None and type_builder._is_void_typeid(ret_tid)
 		res_llty = DRIFT_ERROR_PTR if is_void_ret else f"{{ {ok_abi_llty}, {DRIFT_ERROR_PTR} }}"
 
@@ -360,13 +365,10 @@ def lower_module_to_llvm(
 				lines.append(f"  call void {_llvm_fn_sym(impl)}({args})")
 				lines.append(f"  ret {DRIFT_ERROR_PTR} null")
 			else:
-				ret_ty = DRIFT_INT_TYPE
-				if ret_tid is not None and type_table is not None:
-					ret_ty = type_builder._llvm_type_for_typeid(ret_tid)
-				lines.append(f"  %ok = call {ret_ty} {_llvm_fn_sym(impl)}({args})")
+				lines.append(f"  %ok = call {impl_ret_llty} {_llvm_fn_sym(impl)}({args})")
 				ok_val = "%ok"
-				if ok_llty != ok_abi_llty:
-					if ok_llty == "i1" and ok_abi_llty == "i8":
+				if impl_ret_llty != ok_abi_llty:
+					if impl_ret_llty == "i1" and ok_abi_llty == "i8":
 						ok_val = "%ok_abi"
 						lines.append(f"  {ok_val} = zext i1 %ok to i8")
 					else:
@@ -407,6 +409,7 @@ class LlvmModuleBuilder:
 	"""Textual LLVM module builder with seeded ABI type declarations."""
 
 	word_bits: int
+	float_bits: int = 64
 	type_decls: List[str] = field(default_factory=list)
 	consts: List[str] = field(default_factory=list)
 	funcs: List[str] = field(default_factory=list)
@@ -550,6 +553,8 @@ class LlvmModuleBuilder:
 		suffix = f"{hash64(type_key.encode()):016x}"
 		payload_words = max(1, int(payload_words))
 		payload_align_bytes = max(1, int(payload_align_bytes))
+		if payload_align_bytes & (payload_align_bytes - 1):
+			raise AssertionError("variant payload alignment must be a power of two")
 		pad_len = max(0, payload_align_bytes - 1)
 		llvm_name = f"%Variant_{safe_mod}_{safe_name}_{suffix}"
 		self._variant_types_by_key[type_key] = llvm_name
@@ -801,7 +806,8 @@ class _VariantLayout:
 	payload_cell_llty: str
 	payload_cell_bytes: int
 	payload_align_bytes: int
-	arms: Dict[str, _VariantArmLayout]
+	arms: list[tuple[str, _VariantArmLayout]]
+	arm_by_name: Dict[str, _VariantArmLayout]
 
 
 @dataclass
@@ -844,9 +850,6 @@ class _FuncBuilder:
 	float_type_id: Optional[TypeId] = None
 	void_type_id: Optional[TypeId] = None
 	dv_type_id: Optional[TypeId] = None
-	opt_int_type_id: Optional[TypeId] = None
-	opt_bool_type_id: Optional[TypeId] = None
-	opt_string_type_id: Optional[TypeId] = None
 	sym_name: Optional[str] = None
 	# Variant lowering caches (compiler-private ABI).
 	_variant_layouts: Dict[TypeId, "_VariantLayout"] = field(default_factory=dict)
@@ -1150,10 +1153,11 @@ class _FuncBuilder:
 		elif isinstance(instr, ConstFloat):
 			dest = self._map_value(instr.dest)
 			# Use Python's repr(...) to preserve sufficient precision for round-trips.
-			# LLVM accepts decimal `double` literals in textual IR.
+			# LLVM accepts decimal float literals in textual IR.
 			lit = repr(instr.value)
-			self.value_types[dest] = "double"
-			self.lines.append(f"  {dest} = fadd double 0.0, {lit}")
+			float_llty = self._llvm_float_type()
+			self.value_types[dest] = float_llty
+			self.lines.append(f"  {dest} = fadd {float_llty} 0.0, {lit}")
 		elif isinstance(instr, StringRetain):
 			dest = self._map_value(instr.dest)
 			val = self._map_value(instr.value)
@@ -1279,10 +1283,15 @@ class _FuncBuilder:
 			dest = self._map_value(instr.dest)
 			val = self._map_value(instr.value)
 			val_ty = self.value_types.get(val)
-			if val_ty != "double":
+			float_llty = self._llvm_float_type()
+			if val_ty != float_llty:
 				raise NotImplementedError(
-					f"LLVM codegen v1: StringFromFloat requires double operand (have {val_ty})"
+					f"LLVM codegen v1: StringFromFloat requires {float_llty} operand (have {val_ty})"
 				)
+			if float_llty == "float":
+				ext = self._fresh("fext")
+				self.lines.append(f"  {ext} = fpext float {val} to double")
+				val = ext
 			self.module.needs_string_from_f64 = True
 			self.lines.append(
 				f"  {dest} = call {DRIFT_STRING_TYPE} @drift_string_from_f64(double {val})"
@@ -1466,7 +1475,7 @@ class _FuncBuilder:
 				raise NotImplementedError("LLVM codegen v1: ConstructVariant requires a TypeTable")
 			layout = self._variant_layout(instr.variant_ty)
 			variant_llty = layout.llvm_ty
-			arm_layout = layout.arms.get(instr.ctor)
+			arm_layout = layout.arm_by_name.get(instr.ctor)
 			if arm_layout is None:
 				raise NotImplementedError(
 					f"LLVM codegen v1: unknown variant constructor '{instr.ctor}' for TypeId {instr.variant_ty}"
@@ -1474,6 +1483,7 @@ class _FuncBuilder:
 			# Materialize into a stack slot so we can write into the aligned payload.
 			tmp_ptr = self._fresh("variant")
 			self.lines.append(f"  {tmp_ptr} = alloca {variant_llty}")
+			self.lines.append(f"  store {variant_llty} zeroinitializer, {variant_llty}* {tmp_ptr}")
 			tag_ptr = self._fresh("tagptr")
 			self.lines.append(
 				f"  {tag_ptr} = getelementptr inbounds {variant_llty}, {variant_llty}* {tmp_ptr}, i32 0, i32 0"
@@ -1533,7 +1543,7 @@ class _FuncBuilder:
 				raise NotImplementedError("LLVM codegen v1: VariantGetField requires a TypeTable")
 			layout = self._variant_layout(instr.variant_ty)
 			variant_llty = layout.llvm_ty
-			arm_layout = layout.arms.get(instr.ctor)
+			arm_layout = layout.arm_by_name.get(instr.ctor)
 			if arm_layout is None or not arm_layout.payload_struct_llty:
 				raise NotImplementedError(
 					f"LLVM codegen v1: VariantGetField unsupported ctor '{instr.ctor}' for TypeId {instr.variant_ty}"
@@ -2202,8 +2212,10 @@ class _FuncBuilder:
 		if is_exported_entry and is_cross_module and "__impl" in target_sym:
 			raise AssertionError(f"cross-module call resolved to __impl symbol {target_sym} (compiler bug)")
 
-		# Apply any final driver-level renames (e.g. argv wrapper) as a backstop.
-		target_sym = self.rename_map.get(fn_id, target_sym)
+		# Apply any final driver-level renames (e.g. argv wrapper) only for
+		# same-module calls to avoid retargeting external symbols.
+		if caller_mod == callee_mod:
+			target_sym = self.rename_map.get(fn_id, target_sym)
 		return target_sym, is_cross_module
 
 	def _lower_term(self, term: object) -> None:
@@ -2254,8 +2266,8 @@ class _FuncBuilder:
 				self.lines.append(f"  ret {DRIFT_STRING_TYPE} {val}")
 			elif ty in (DRIFT_INT_TYPE, DRIFT_UINT_TYPE, "i1", "i8"):
 				self.lines.append(f"  ret {ty} {val}")
-			elif ty == "double":
-				self.lines.append(f"  ret double {val}")
+			elif ty in ("double", "float"):
+				self.lines.append(f"  ret {ty} {val}")
 			elif ty is not None and (ty == "ptr" or ty.endswith("*")):
 				# Non-throwing functions may return references (`&T`), lowered as
 				# typed pointers (`T*`) in v1.
@@ -2331,7 +2343,8 @@ class _FuncBuilder:
 			elif td.name == "Byte":
 				out = (1, 1)
 			elif td.name == "Float":
-				out = (8, 8)
+				float_bytes = self.module.float_bits // 8
+				out = (float_bytes, float_bytes)
 			elif td.name == "Bool":
 				out = (1, 1)
 			elif td.name == "String":
@@ -2396,7 +2409,8 @@ class _FuncBuilder:
 			raise NotImplementedError(f"LLVM codegen v1: missing variant instance for TypeId {ty_id}")
 		max_payload_size = 0
 		max_payload_align = 1
-		arms: Dict[str, _VariantArmLayout] = {}
+		arms: list[tuple[str, _VariantArmLayout]] = []
+		arm_by_name: Dict[str, _VariantArmLayout] = {}
 		for arm in inst.arms:
 			field_lltys: list[str] = []
 			field_storage_lltys: list[str] = []
@@ -2420,12 +2434,15 @@ class _FuncBuilder:
 			payload_struct_llty = ""
 			if field_storage_lltys:
 				payload_struct_llty = "{ " + ", ".join(field_storage_lltys) + " }"
-			arms[arm.name] = _VariantArmLayout(
+			arm_layout = _VariantArmLayout(
 				tag=arm.tag,
 				field_lltys=field_lltys,
 				field_storage_lltys=field_storage_lltys,
 				payload_struct_llty=payload_struct_llty,
 			)
+			arms.append((arm.name, arm_layout))
+			arm_by_name[arm.name] = arm_layout
+		arms.sort(key=lambda item: (item[1].tag, item[0]))
 		word_bytes = max(1, self.module.word_bits // 8)
 		payload_align_bytes = max(word_bytes, max_payload_align)
 		payload_cell_bytes = payload_align_bytes
@@ -2445,6 +2462,7 @@ class _FuncBuilder:
 			payload_cell_bytes=payload_cell_bytes,
 			payload_align_bytes=payload_align_bytes,
 			arms=arms,
+			arm_by_name=arm_by_name,
 		)
 		self._variant_layouts[ty_id] = layout
 		return layout
@@ -2460,13 +2478,14 @@ class _FuncBuilder:
 	def _emit_variant_value(self, variant_ty: TypeId, ctor: str, args: list[str]) -> str:
 		layout = self._variant_layout(variant_ty)
 		variant_llty = layout.llvm_ty
-		arm_layout = layout.arms.get(ctor)
+		arm_layout = layout.arm_by_name.get(ctor)
 		if arm_layout is None:
 			raise NotImplementedError(
 				f"LLVM codegen v1: unknown variant constructor '{ctor}' for TypeId {variant_ty}"
 			)
 		tmp_ptr = self._fresh("variant")
 		self.lines.append(f"  {tmp_ptr} = alloca {variant_llty}")
+		self.lines.append(f"  store {variant_llty} zeroinitializer, {variant_llty}* {tmp_ptr}")
 		tag_ptr = self._fresh("tagptr")
 		self.lines.append(
 			f"  {tag_ptr} = getelementptr inbounds {variant_llty}, {variant_llty}* {tmp_ptr}, i32 0, i32 0"
@@ -2530,7 +2549,7 @@ class _FuncBuilder:
 			if td.kind is TypeKind.SCALAR and td.name == "Byte":
 				return "i8"
 			if td.kind is TypeKind.SCALAR and td.name == "Float":
-				return "double"
+				return self._llvm_float_type()
 			if td.kind is TypeKind.SCALAR and td.name == "String":
 				return DRIFT_STRING_TYPE
 			if td.kind is TypeKind.REF:
@@ -2568,7 +2587,7 @@ class _FuncBuilder:
 			if self.int_type_id is not None and ty_id == self.int_type_id:
 				return DRIFT_INT_TYPE
 			if self.float_type_id is not None and ty_id == self.float_type_id:
-				return "double"
+				return self._llvm_float_type()
 			if self.string_type_id is not None and ty_id == self.string_type_id:
 				return DRIFT_STRING_TYPE
 		raise NotImplementedError(
@@ -2650,7 +2669,7 @@ class _FuncBuilder:
 		if td.kind is TypeKind.SCALAR and td.name == "Byte":
 			return "i8", key
 		if td.kind is TypeKind.SCALAR and td.name == "Float":
-			return "double", key
+			return self._llvm_float_type(), key
 		if td.kind is TypeKind.VOID:
 			return "i8", key
 		if td.kind is TypeKind.REF:
@@ -2696,6 +2715,14 @@ class _FuncBuilder:
 				f"LLVM codegen v1: exported entrypoint wrapper requires a return type (function {self.func.name})"
 			)
 		return self._llvm_ok_type_for_typeid(ret_tid)
+
+	def _llvm_float_type(self) -> str:
+		bits = self.module.float_bits
+		if bits == 32:
+			return "float"
+		if bits == 64:
+			return "double"
+		raise NotImplementedError("LLVM codegen v1: unsupported float width")
 
 	def _llvm_scalar_type(self) -> str:
 		# All lowered values are isize or i1; phis currently assume Int.
@@ -3343,7 +3370,7 @@ class _FuncBuilder:
 			result_ptr = self._fresh("var_copy")
 			self.lines.append(f"  {result_ptr} = alloca {variant_llty}")
 			done_block = self._fresh("var_done")
-			arms = list(layout.arms.items())
+			arms = list(layout.arms)
 			default_block = self._fresh("var_bad")
 			arm_blocks: list[tuple[str, _VariantArmLayout]] = []
 			for ctor_name, arm_layout in arms:
@@ -3486,7 +3513,19 @@ class _FuncBuilder:
 			return
 		if td.kind is TypeKind.ARRAY and td.param_types:
 			elem_ty = td.param_types[0]
-			self._lower_array_drop(ArrayDrop(elem_ty=elem_ty, array=value))
+			elem_llty = self._llvm_array_elem_type(elem_ty)
+			arr_llty = self._llvm_array_type(elem_llty)
+			len_tmp = self._fresh("len")
+			data_tmp = self._fresh("data")
+			self.lines.append(f"  {len_tmp} = extractvalue {arr_llty} {value}, 0")
+			self.lines.append(f"  {data_tmp} = extractvalue {arr_llty} {value}, 2")
+			if self._type_needs_drop(elem_ty):
+				helper = self._ensure_array_drop_helper(elem_ty)
+				self.lines.append(f"  call void @{helper}({DRIFT_UINT_TYPE} {len_tmp}, {elem_llty}* {data_tmp})")
+			self.module.needs_array_helpers = True
+			data_i8 = self._fresh("data_i8")
+			self.lines.append(f"  {data_i8} = bitcast {elem_llty}* {data_tmp} to i8*")
+			self.lines.append(f"  call void @drift_free_array(i8* {data_i8})")
 			return
 		if td.kind is TypeKind.STRUCT:
 			inst = self.type_table.get_struct_instance(ty_id)
@@ -3510,7 +3549,7 @@ class _FuncBuilder:
 			tag_val = self._fresh("drop_tag")
 			self.lines.append(f"  {tag_val} = extractvalue {variant_llty} {value}, 0")
 			done_block = self._fresh("var_drop_done")
-			arms = list(layout.arms.items())
+			arms = list(layout.arms)
 			default_block = self._fresh("var_drop_bad")
 			arm_blocks: list[tuple[str, _VariantArmLayout]] = []
 			for ctor_name, arm_layout in arms:
@@ -3603,8 +3642,9 @@ class _FuncBuilder:
 				if self._type_needs_drop(inner_elem):
 					helper = self._ensure_array_drop_helper(inner_elem)
 					lines.append(f"  call void @{helper}({DRIFT_UINT_TYPE} {arr_len}, {inner_llty}* {arr_data})")
-				lines.append(f"  %data_i8 = bitcast {inner_llty}* {arr_data} to i8*")
-				lines.append("  call void @drift_free_array(i8* %data_i8)")
+				data_i8 = fresh("data_i8")
+				lines.append(f"  {data_i8} = bitcast {inner_llty}* {arr_data} to i8*")
+				lines.append(f"  call void @drift_free_array(i8* {data_i8})")
 				return
 			if td.kind is TypeKind.STRUCT:
 				inst = self.type_table.get_struct_instance(ty_id)
@@ -3628,7 +3668,7 @@ class _FuncBuilder:
 				tag_val = fresh("tag")
 				lines.append(f"  {tag_val} = extractvalue {variant_llty} {val}, 0")
 				done_block = fresh("drop_done")
-				arms = list(layout.arms.items())
+				arms = list(layout.arms)
 				default_block = fresh("drop_bad")
 				arm_blocks: list[tuple[str, _VariantArmLayout, str]] = []
 				for ctor_name, arm_layout in arms:

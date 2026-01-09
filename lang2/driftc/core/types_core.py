@@ -155,7 +155,7 @@ class VariantSchema:
 	Definition-time schema for a variant (generic or non-generic).
 
 	The schema is stored on the *base* variant type (declared name). Concrete
-	instantiations are created via `TypeTable.ensure_instantiated(...)` which
+	instantiations are created via `TypeTable.ensure_variant_instantiated(...)` which
 	evaluates field `GenericTypeExpr`s into concrete `TypeId`s.
 	"""
 
@@ -239,8 +239,12 @@ class TypeTable:
 		self.variant_instances: dict[TypeId, VariantInstance] = {}
 		# Instantiation cache: (base_id, args...) -> instantiated TypeId.
 		self._instantiation_cache: dict[tuple[TypeId, tuple[TypeId, ...]], TypeId] = {}
+		# Variant template cache: (base_id, args...) -> template TypeId.
+		self._variant_template_cache: dict[tuple[TypeId, tuple[TypeId, ...]], TypeId] = {}
 		# Struct instantiation cache: (base_id, args...) -> instantiated TypeId.
 		self._struct_instantiation_cache: dict[tuple[TypeId, tuple[TypeId, ...]], TypeId] = {}
+		# Struct template cache: (base_id, args...) -> template TypeId.
+		self._struct_template_cache: dict[tuple[TypeId, tuple[TypeId, ...]], TypeId] = {}
 		# Type parameter cache: TypeParamId -> TypeId.
 		self._typevar_cache: dict[TypeParamId, TypeId] = {}
 		# Array cache: elem TypeId -> Array<elem> TypeId.
@@ -418,7 +422,7 @@ class TypeTable:
 		Declare a variant nominal type (generic or non-generic).
 
 		The returned `TypeId` is the *base* type for the declared name.
-		Concrete instantiations are created via `ensure_instantiated`.
+		Concrete instantiations are created via `ensure_variant_instantiated`.
 
 		For non-generic variants (`type_params == []`), the base type is also a
 		concrete instantiation with zero type arguments, and is available via
@@ -463,11 +467,42 @@ class TypeTable:
 		self.variant_schemas[base_id] = VariantSchema(module_id=module_id, name=name, type_params=list(type_params), arms=list(arms))
 		return base_id
 
+	def declare_scalar(self, module_id: str, name: str) -> TypeId:
+		"""Declare a module-scoped scalar nominal."""
+		key = NominalKey(package_id=self._package_for_module(module_id), module_id=module_id, name=name, kind=TypeKind.SCALAR)
+		forward_key = NominalKey(
+			package_id=self._package_for_module(module_id),
+			module_id=module_id,
+			name=name,
+			kind=TypeKind.FORWARD_NOMINAL,
+		)
+		if forward_key in self._nominal:
+			ty_id = self._nominal.pop(forward_key)
+			td = self.get(ty_id)
+			if td.kind is not TypeKind.FORWARD_NOMINAL:
+				raise ValueError(f"type name '{name}' already defined as {td.kind}")
+			self._defs[ty_id] = TypeDef(kind=TypeKind.SCALAR, name=name, param_types=[], module_id=module_id)
+			self._nominal[key] = ty_id
+			return ty_id
+		if key in self._nominal:
+			ty_id = self._nominal[key]
+			td = self.get(ty_id)
+			if td.kind is TypeKind.SCALAR:
+				return ty_id
+			raise ValueError(f"type name '{name}' already defined as {td.kind}")
+		return self._add(TypeKind.SCALAR, name, [], module_id=module_id)
+
 	def define_struct_schema_fields(self, struct_id: TypeId, fields: list[StructFieldSchema]) -> None:
 		"""Define struct schema fields (template types) for a declared struct base."""
 		schema = self.struct_bases.get(struct_id)
 		if schema is None:
 			raise ValueError("define_struct_schema_fields requires a declared struct base TypeId")
+		td = self.get(struct_id)
+		if td.field_names is None:
+			raise ValueError("define_struct_schema_fields requires struct field names")
+		field_names = [f.name for f in fields]
+		if len(field_names) != len(td.field_names) or field_names != list(td.field_names):
+			raise ValueError("define_struct_schema_fields field names mismatch")
 		self.struct_bases[struct_id] = StructSchema(
 			module_id=schema.module_id,
 			name=schema.name,
@@ -545,7 +580,7 @@ class TypeTable:
 		Return a template struct TypeId that may include TypeVar arguments.
 
 		This is used when resolving type annotations that mention impl type
-		parameters (e.g., impl<T> Box<T>). Template instances are not cached.
+		parameters (e.g., impl<T> Box<T>).
 		"""
 		schema = self.struct_bases.get(base_id)
 		if schema is None:
@@ -554,6 +589,9 @@ class TypeTable:
 			raise ValueError(
 				f"type argument count mismatch for '{schema.name}': expected {len(schema.type_params)}, got {len(type_args)}"
 			)
+		key = (base_id, tuple(type_args))
+		if key in self._struct_template_cache:
+			return self._struct_template_cache[key]
 		inst_id = self._add(
 			TypeKind.STRUCT,
 			schema.name,
@@ -562,6 +600,7 @@ class TypeTable:
 			module_id=schema.module_id,
 			field_names=[f.name for f in schema.fields],
 		)
+		self._struct_template_cache[key] = inst_id
 		field_names = [f.name for f in schema.fields]
 		field_types = [self._eval_generic_type_expr(f.type_expr, type_args, module_id=schema.module_id) for f in schema.fields]
 		self._define_struct_instance(base_id, inst_id, type_args=list(type_args), field_names=field_names, field_types=field_types)
@@ -575,7 +614,7 @@ class TypeTable:
 		"""
 		schema = self.variant_schemas.get(base_id)
 		if schema is None:
-			raise ValueError("ensure_instantiated requires a declared generic variant base TypeId")
+			raise ValueError("ensure_variant_instantiated requires a declared generic variant base TypeId")
 		if len(type_args) != len(schema.type_params):
 			raise ValueError(
 				f"type argument count mismatch for '{schema.name}': expected {len(schema.type_params)}, got {len(type_args)}"
@@ -610,8 +649,7 @@ class TypeTable:
 		"""
 		Return a template variant TypeId that may include TypeVar arguments.
 
-		Template instances are not cached and are used only during generic
-		validation/inference.
+		Template instances are used during generic validation/inference.
 		"""
 		schema = self.variant_schemas.get(base_id)
 		if schema is None:
@@ -620,6 +658,9 @@ class TypeTable:
 			raise ValueError(
 				f"type argument count mismatch for '{schema.name}': expected {len(schema.type_params)}, got {len(type_args)}"
 			)
+		key = (base_id, tuple(type_args))
+		if key in self._variant_template_cache:
+			return self._variant_template_cache[key]
 		inst_id = self._add(
 			TypeKind.VARIANT,
 			schema.name,
@@ -627,10 +668,12 @@ class TypeTable:
 			register_named=False,
 			module_id=schema.module_id,
 		)
+		self._variant_template_cache[key] = inst_id
 		self._define_variant_instance(base_id, inst_id, list(type_args))
 		return inst_id
 
 	def ensure_instantiated(self, base_id: TypeId, type_args: list[TypeId]) -> TypeId:
+		"""Deprecated alias for ensure_variant_instantiated (variants only)."""
 		return self.ensure_variant_instantiated(base_id, type_args)
 
 	def has_typevar(self, ty: TypeId) -> bool:
@@ -638,6 +681,14 @@ class TypeTable:
 		td = self.get(ty)
 		if td.kind is TypeKind.TYPEVAR:
 			return True
+		if td.kind is TypeKind.STRUCT:
+			inst = self.struct_instances.get(ty)
+			if inst is not None:
+				return any(self.has_typevar(arg) for arg in inst.type_args)
+		if td.kind is TypeKind.VARIANT:
+			inst = self.variant_instances.get(ty)
+			if inst is not None:
+				return any(self.has_typevar(arg) for arg in inst.type_args)
 		for child in td.param_types:
 			if self.has_typevar(child):
 				return True
@@ -919,8 +970,7 @@ class TypeTable:
 		"""
 		Return a stable Float TypeId, creating it once.
 
-		In lang2 v1, `Float` is IEEE-754 double precision and maps to C `double`
-		and LLVM `double`.
+		Float is a target-defined scalar (width decided by the backend).
 		"""
 		if getattr(self, "_float_type", None) is None:
 			self._float_type = self.new_scalar("Float")  # type: ignore[attr-defined]
@@ -1194,20 +1244,10 @@ class TypeTable:
 				cache[tid] = ok
 				return ok
 			if td.kind is TypeKind.VARIANT:
-				inst = self.get_variant_instance(tid)
-				if inst is None:
-					cache[tid] = False
-					return False
-				ok = True
-				for arm in inst.arms:
-					for f in arm.field_types:
-						if not _is_bitcopy(f):
-							ok = False
-							break
-					if not ok:
-						break
-				cache[tid] = ok
-				return ok
+				# Variants are never bitcopy: their representation is not a stable
+				# bitwise ABI, and Copy requires per-arm semantics.
+				cache[tid] = False
+				return False
 			cache[tid] = False
 			return False
 
@@ -1267,7 +1307,12 @@ class TypeTable:
 		def _qualify(name: str, module_id: str | None) -> str:
 			if module_id is None:
 				return name
-			pkg = self.module_packages.get(module_id, self.package_id)
+			if module_id == "lang.core":
+				pkg = self.module_packages.get(module_id, "lang.core")
+			else:
+				if self.package_id is not None and module_id not in self.module_packages:
+					raise ValueError(f"module_packages missing provider for module '{module_id}'")
+				pkg = self.module_packages.get(module_id, self.package_id)
 			base = f"{module_id}.{name}"
 			if pkg:
 				return f"{pkg}::{base}"

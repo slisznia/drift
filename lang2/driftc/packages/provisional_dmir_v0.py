@@ -23,6 +23,7 @@ from typing import Any, Mapping
 
 from lang2.driftc.checker import FnSignature
 from lang2.driftc.core.function_id import FunctionId, function_id_to_obj, function_symbol, parse_function_symbol
+from lang2.driftc.core.types_core import TypeKind
 from lang2.driftc.core.generic_type_expr import GenericTypeExpr
 from lang2.driftc.core.span import Span
 from lang2.driftc.core.types_core import TypeDef, TypeId, TypeParamId, TypeTable
@@ -139,7 +140,6 @@ _BUILTIN_TYPE_NAMES = {
 	"Error",
 	"DiagnosticValue",
 	"Array",
-	"Optional",
 	"FnResult",
 	"&",
 	"&mut",
@@ -200,8 +200,11 @@ def encode_type_expr(
 	if name == "Self" or (type_param_names and name in type_param_names):
 		return {"param": name}
 	module_id = getattr(expr, "module_id", None)
-	if module_id is None and default_module and name not in _BUILTIN_TYPE_NAMES:
-		module_id = default_module
+	if module_id is None:
+		if name == "Optional":
+			module_id = "lang.core"
+		elif default_module and name not in _BUILTIN_TYPE_NAMES:
+			module_id = default_module
 	args_obj = []
 	for arg in list(getattr(expr, "args", []) or []):
 		args_obj.append(
@@ -348,9 +351,23 @@ def decode_trait_expr(obj: Any) -> parser_ast.TraitExpr | None:
 
 def encode_type_table(table: TypeTable, *, package_id: str) -> dict[str, Any]:
 	"""Encode the TypeTable deterministically."""
+	if table.package_id is None:
+		raise ValueError("type table missing package_id (set TypeTable.package_id before encoding)")
+	if table.package_id != package_id:
+		raise ValueError("type table package_id mismatch during encoding")
+	for key in getattr(table, "_nominal", {}).keys():  # type: ignore[attr-defined]
+		if key.module_id is None:
+			continue
+		if key.module_id == "lang.core":
+			table.module_packages.setdefault("lang.core", "lang.core")
+			continue
+		if key.package_id == package_id and table.module_packages.get(key.module_id) != package_id:
+			raise ValueError(
+				f"module_packages missing/incorrect for declared module '{key.module_id}'"
+			)
 
 	def _def_to_obj(td: TypeDef) -> dict[str, Any]:
-		return {
+		out = {
 			"kind": td.kind.name,
 			"name": td.name,
 			"param_types": list(td.param_types),
@@ -359,6 +376,14 @@ def encode_type_table(table: TypeTable, *, package_id: str) -> dict[str, Any]:
 			"fn_throws": td.fn_throws_raw(),
 			"field_names": list(td.field_names) if td.field_names is not None else None,
 		}
+		if td.kind is TypeKind.TYPEVAR and td.type_param_id is None:
+			raise ValueError("type table TYPEVAR missing type_param_id")
+		if td.type_param_id is not None:
+			out["type_param_id"] = {
+				"owner": function_id_to_obj(td.type_param_id.owner),
+				"index": td.type_param_id.index,
+			}
+		return out
 
 	def _encode_generic_type_expr(expr: GenericTypeExpr) -> dict[str, Any]:
 		return {
@@ -392,30 +417,72 @@ def encode_type_table(table: TypeTable, *, package_id: str) -> dict[str, Any]:
 	variant_schemas: dict[str, Any] = {}
 	for base_id in sorted(table.variant_schemas.keys()):
 		variant_schemas[str(base_id)] = _encode_variant_schema(table.variant_schemas[base_id])
-	return {
-		"package_id": package_id,
-		"defs": defs,
-		"struct_schemas": [
+	struct_instances: list[dict[str, Any]] = []
+	for inst_id, inst in sorted(table.struct_instances.items()):
+		if inst_id == inst.base_id:
+			continue
+		struct_instances.append(
 			{
+				"inst_id": int(inst_id),
+				"base_id": int(inst.base_id),
+				"type_args": list(inst.type_args),
+			}
+		)
+	struct_schema_entries: list[dict[str, Any]] = []
+	for key, (_n, _fields) in sorted(
+		table.struct_schemas.items(),
+		key=lambda kv: ((kv[0].module_id or ""), kv[0].name),
+	):
+		base_id = table.get_struct_base(module_id=key.module_id or "", name=key.name)
+		if base_id is None:
+			raise ValueError(f"internal: missing struct base for '{key.module_id}::{key.name}'")
+		schema = table.struct_bases.get(base_id)
+		if schema is None:
+			raise ValueError(f"internal: missing struct schema for '{key.module_id}::{key.name}'")
+		struct_schema_entries.append(
+			{
+				"base_id": base_id,
 				"type_id": {
-					"package_id": package_id,
+					"package_id": key.package_id or package_id,
 					"module": key.module_id,
 					"name": key.name,
 				},
 				"module_id": key.module_id,
 				"name": key.name,
-				"fields": list(fields),
-				"type_params": list(
-					(getattr(table.struct_bases.get(table.get_struct_base(module_id=key.module_id or "", name=key.name)), "type_params", None) or [])
-				),
+				"fields": [
+					{"name": f.name, "type_expr": _encode_generic_type_expr(f.type_expr)}
+					for f in schema.fields
+				],
+				"type_params": list(schema.type_params),
 			}
-			for key, (_n, fields) in sorted(
-				table.struct_schemas.items(),
-				key=lambda kv: ((kv[0].module_id or ""), kv[0].name),
-			)
-		],
+		)
+
+	provided_nominals: list[dict[str, Any]] = []
+	seen_provided: set[tuple[str, str, str]] = set()
+	for key in sorted(
+		(getattr(table, "_nominal", {}) or {}).keys(),  # type: ignore[attr-defined]
+		key=lambda k: (k.package_id or "", k.module_id or "", k.kind.name, k.name),
+	):
+		if key.package_id != package_id:
+			continue
+		if key.kind not in (TypeKind.STRUCT, TypeKind.VARIANT, TypeKind.SCALAR):
+			continue
+		if key.module_id is None:
+			continue
+		item = (key.kind.name, key.module_id, key.name)
+		if item in seen_provided:
+			continue
+		seen_provided.add(item)
+		provided_nominals.append({"kind": key.kind.name, "module_id": key.module_id, "name": key.name})
+
+	return {
+		"package_id": package_id,
+		"defs": defs,
+		"struct_schemas": struct_schema_entries,
+		"struct_instances": struct_instances,
 		"exception_schemas": {k: v for k, v in sorted(table.exception_schemas.items())},
 		"variant_schemas": variant_schemas,
+		"provided_nominals": provided_nominals,
 	}
 
 
@@ -535,8 +602,11 @@ def _canonical_type_expr(
 	if name in param_type_map:
 		return {"param": param_type_map[name]}
 	module_id = getattr(expr, "module_id", None)
-	if module_id is None and default_module and name not in _BUILTIN_TYPE_NAMES:
-		module_id = default_module
+	if module_id is None:
+		if name == "Optional":
+			module_id = "lang.core"
+		elif default_module and name not in _BUILTIN_TYPE_NAMES:
+			module_id = default_module
 	args_obj = []
 	for arg in list(getattr(expr, "args", []) or []):
 		args_obj.append(

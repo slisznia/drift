@@ -13,6 +13,7 @@ from lang2.driftc.stage2 import (
 	BasicBlock,
 	ConstBool,
 	ConstInt,
+	ConstUint,
 	ConstUint64,
 	ConstructError,
 	ConstructResultErr,
@@ -21,6 +22,8 @@ from lang2.driftc.stage2 import (
 	MirFunc,
 	Return,
 	ConstString,
+	ArrayAlloc,
+	DropValue,
 )
 from lang2.driftc.stage4 import MirToSSA
 from lang2.driftc.core.types_core import TypeTable
@@ -185,7 +188,7 @@ def test_export_wrapper_bool_return_uses_i8():
 
 	assert "define { i8, %DriftError* } @foo()" in ir
 	assert "define i1 @foo__impl()" in ir
-	assert "zext i1 %ok to i8" not in ir
+	assert "zext i1 %ok to i8" in ir
 
 
 def test_codegen_fnresult_ref_err_zero_ok_slot():
@@ -223,3 +226,53 @@ def test_codegen_fnresult_ref_err_zero_ok_slot():
 	assert any(
 		"%FnResult_Ref_Int_Error" in line and ", %drift.isize* null, 1" in line for line in ir.splitlines()
 	)
+
+
+def test_codegen_nested_array_drop_helper_verifies():
+	"""Nested array drop helpers should emit verifiable LLVM IR."""
+	import llvmlite.binding as llvm
+
+	table = TypeTable()
+	string_ty = table.ensure_string()
+	inner_array_ty = table.new_array(string_ty)
+	outer_array_ty = table.new_array(inner_array_ty)
+
+	entry = BasicBlock(
+		name="entry",
+		instructions=[
+			ConstUint(dest="len0", value=0),
+			ConstUint(dest="cap0", value=1),
+			ArrayAlloc(dest="arr", elem_ty=inner_array_ty, length="len0", cap="cap0"),
+			DropValue(value="arr", ty=outer_array_ty),
+		],
+		terminator=Return(value=None),
+	)
+	mir = MirFunc(fn_id=FunctionId(module="main", name="drop_arrays", ordinal=0), name="drop_arrays", params=[], locals=[], blocks={"entry": entry}, entry="entry")
+	ssa = MirToSSA().run(mir)
+
+	void_ty = table.ensure_void()
+	sig = FnSignature(
+		name="drop_arrays",
+		param_type_ids=[],
+		return_type_id=void_ty,
+		declared_can_throw=False,
+	)
+	fn_info = FnInfo(
+		fn_id=FunctionId(module="main", name="drop_arrays", ordinal=0),
+		name="drop_arrays",
+		declared_can_throw=False,
+		return_type_id=void_ty,
+		signature=sig,
+	)
+
+	ir = lower_ssa_func_to_llvm(mir, ssa, fn_info, type_table=table, word_bits=host_word_bits())
+
+	llvm.initialize()
+	llvm.initialize_native_target()
+	llvm.initialize_native_asmprinter()
+	module = llvm.parse_assembly(ir)
+	module.verify()
+
+	assert "define void @__drift_array_drop_" in ir
+	assert "call void @__drift_array_drop_" in ir
+	assert "call void @drift_free_array" in ir
