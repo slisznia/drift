@@ -180,7 +180,7 @@ fn main() -> Int {
 	assert isinstance(main.statements[0], H.HThrow)
 
 
-def test_implement_header_rejects_reference_target(tmp_path: Path):
+def test_implement_header_accepts_reference_target(tmp_path: Path):
 	src = tmp_path / "impl_ref.drift"
 	src.write_text(
 		"""
@@ -190,8 +190,7 @@ implement &Point {
 """
 	)
 	_module, _type_table, _exc_catalog, diagnostics = parse_drift_to_hir(src)
-	assert diagnostics, "expected diagnostic for reference-qualified implement header"
-	assert "nominal type" in diagnostics[0].message
+	assert diagnostics == []
 
 
 def test_parse_while_stmt_lowering(tmp_path: Path):

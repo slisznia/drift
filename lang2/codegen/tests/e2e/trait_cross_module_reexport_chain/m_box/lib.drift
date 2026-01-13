@@ -2,7 +2,7 @@ module m_box
 
 export { Box, make_box };
 
-pub struct Box { value: Int }
+pub struct Box { pub value: Int }
 
 pub fn make_box(value: Int) -> Box {
 	return Box(value = value);

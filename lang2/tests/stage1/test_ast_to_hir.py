@@ -19,7 +19,11 @@ import pytest
 from lang2.driftc.stage0 import ast
 from lang2.driftc.stage1 import (
 	AstToHIR,
+	HExpr,
+	HStmt,
 	HVar,
+	HMove,
+	HBorrow,
 	HLiteralInt,
 	HLiteralBool,
 	HLiteralString,
@@ -29,7 +33,6 @@ from lang2.driftc.stage1 import (
 	HIndex,
 	HCall,
 	HMethodCall,
-	HBorrow,
 	HExceptionInit,
 	HLet,
 	HAssign,
@@ -41,6 +44,7 @@ from lang2.driftc.stage1 import (
 	HLoop,
 	HBlock,
 	HMatchExpr,
+	HQualifiedMember,
 )
 
 
@@ -152,21 +156,35 @@ def test_for_desugars_to_iter_loop_match():
 	iterable_let, iter_let, loop = hir.statements
 	assert isinstance(iterable_let, HLet)
 	assert iterable_let.name.startswith("__for_iterable")
-	assert isinstance(iterable_let.value, HBorrow)
-	assert isinstance(iterable_let.value.subject, HVar)
-	assert iterable_let.value.subject.name == "items"
+	if isinstance(iterable_let.value, HVar):
+		iterable_var = iterable_let.value
+	else:
+		assert isinstance(iterable_let.value, HMove)
+		assert isinstance(iterable_let.value.subject, HVar)
+		iterable_var = iterable_let.value.subject
+	assert iterable_var.name == "items"
 	assert isinstance(iter_let, HLet)
 	assert iter_let.name.startswith("__for_iter")
-	assert isinstance(iter_let.value, HMethodCall)
-	assert iter_let.value.method_name == "iter"
+	assert isinstance(iter_let.value, HCall)
+	assert isinstance(iter_let.value.fn, HQualifiedMember)
+	assert iter_let.value.fn.member == "iter"
+	assert iter_let.value.fn.base_type_expr.name == "Iterable"
+	assert iter_let.value.fn.base_type_expr.module_id == "std.iter"
 	assert isinstance(loop, HLoop)
 	assert len(loop.body.statements) == 1
 	stmt = loop.body.statements[0]
 	assert isinstance(stmt, HExprStmt)
 	assert isinstance(stmt.expr, HMatchExpr)
 	match = stmt.expr
-	assert isinstance(match.scrutinee, HMethodCall)
-	assert match.scrutinee.method_name == "next"
+	assert isinstance(match.scrutinee, HCall)
+	assert isinstance(match.scrutinee.fn, HQualifiedMember)
+	assert match.scrutinee.fn.member == "next"
+	assert match.scrutinee.fn.base_type_expr.name == "SinglePassIterator"
+	assert match.scrutinee.fn.base_type_expr.module_id == "std.iter"
+	assert len(match.scrutinee.args) == 1
+	assert isinstance(match.scrutinee.args[0], HBorrow)
+	assert match.scrutinee.args[0].is_mut is True
+	assert isinstance(match.scrutinee.args[0].subject, HVar)
 	assert len(match.arms) == 2
 	some, default = match.arms
 	assert some.ctor == "Some"
@@ -176,6 +194,46 @@ def test_for_desugars_to_iter_loop_match():
 	assert default.ctor is None
 	assert default.binders == []
 	assert isinstance(default.block.statements[0], HBreak)
+
+
+def test_for_evaluates_iterable_once():
+	l = AstToHIR()
+	for_ast = ast.ForStmt(
+		iter_var="i",
+		iterable=ast.Call(func=ast.Name("make_items"), args=[], kwargs=[]),
+		body=[ast.ExprStmt(expr=ast.Name("i"))],
+	)
+	hir = l.lower_stmt(for_ast)
+	assert isinstance(hir, HBlock)
+
+	def count_make_calls(expr: HExpr) -> int:
+		count = 0
+		if isinstance(expr, HCall):
+			if isinstance(expr.fn, HVar) and expr.fn.name == "make_items":
+				count += 1
+		for child in getattr(expr, "args", []) or []:
+			count += count_make_calls(child)
+		for kw in getattr(expr, "kwargs", []) or []:
+			count += count_make_calls(kw.value)
+		if isinstance(expr, HMatchExpr):
+			count += count_make_calls(expr.scrutinee)
+			for arm in expr.arms:
+				for st in arm.block.statements:
+					if isinstance(st, HExprStmt):
+						count += count_make_calls(st.expr)
+		return count
+
+	def count_in_stmt(stmt: HStmt) -> int:
+		if isinstance(stmt, HLet):
+			return count_make_calls(stmt.value)
+		if isinstance(stmt, HExprStmt):
+			return count_make_calls(stmt.expr)
+		if isinstance(stmt, HLoop):
+			return sum(count_in_stmt(s) for s in stmt.body.statements)
+		return 0
+
+	total = sum(count_in_stmt(s) for s in hir.statements)
+	assert total == 1
 
 
 def test_for_with_missing_cond_step_defaults():

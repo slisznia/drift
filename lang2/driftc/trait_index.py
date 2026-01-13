@@ -83,11 +83,24 @@ class GlobalTraitImplIndex:
 
 	@staticmethod
 	def _target_base_id(type_table: TypeTable, target_type_id: TypeId) -> TypeId | None:
+		td = type_table.get(target_type_id)
+		if td.kind is TypeKind.REF and td.param_types:
+			inner_base = GlobalTraitImplIndex._target_base_id(type_table, td.param_types[0])
+			if inner_base is not None:
+				return inner_base
 		inst = type_table.get_struct_instance(target_type_id)
 		if inst is not None:
 			return inst.base_id
-		td = type_table.get(target_type_id)
+		vinst = type_table.get_variant_instance(target_type_id)
+		if vinst is not None:
+			return vinst.base_id
+		if td.kind is TypeKind.ARRAY:
+			return type_table.array_base_id()
 		if td.kind is TypeKind.STRUCT:
+			return target_type_id
+		if td.kind is TypeKind.VARIANT:
+			return target_type_id
+		if td.kind is TypeKind.SCALAR:
 			return target_type_id
 		return None
 

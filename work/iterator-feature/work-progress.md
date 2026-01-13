@@ -1,0 +1,186 @@
+# Iterator Feature Work Progress
+
+## Goal
+Define iterator traits and MVP constraints for collections/algorithms, aligned with Drift's compile-time traits.
+
+## Plan
+- Pin iterator category names and define their contracts.
+- Decide algorithm placement (iterator-based vs slice/view-based).
+- Define `Comparable`/`Equatable` naming and trait dependency rules.
+- Draft std collection MVP surface (maps/sets/queues) and required iterator categories.
+- Implement typechecker/lowering support for `for` desugaring using iterator traits.
+- Add tests for iterator trait resolution and `for` lowering.
+
+## Decisions (Pinned)
+- Iterator categories (for now):
+  - SinglePassIterator<T>
+  - MultiPassIterator<T>
+  - BidirectionalIterator<T>
+  - RandomAccessReadable<T>
+- Hierarchy split (pinned):
+  - Traversal: SinglePassIterator -> MultiPassIterator -> BidirectionalIterator
+  - Index-based: RandomAccessReadable/RandomAccessPermutable (not derived from traversal traits)
+- Random-access mutation for sorting is modeled as a separate capability:
+  - RandomAccessReadable<T>: `len() -> Int` + `compare_at(i: Int, j: Int) -> Int` for comparisons without copying
+  - RandomAccessPermutable<T>: `swap(i, j)` and stable indexing semantics (extends RandomAccessReadable)
+  - Contract notes:
+    - Stable indexing: `len()` is stable for the algorithm duration; valid indices satisfy `0 <= i < len`; negative indices raise `IndexError`.
+    - Bounds check rule: if `i < 0` then `IndexError`; else require `i < len`.
+    - Permutation semantics: `swap(i, j)` exchanges only slots `i` and `j` and preserves `len()` and other indices.
+    - Performance: `compare_at`/`swap` should be O(1) or amortized O(1) for generic sort to be viable.
+    - Read capability (pinned for MVP): use `compare_at(i, j) -> Int` with contract: `<0` means `i<j`, `0` means equal, `>0` means `i>j` (no copying); revisit `get_ref` once references exist.
+    - Order coherence: `compare_at` must reflect `T is Comparable` ordering (no custom orderings via `compare_at` in MVP).
+    - Order law (pinned): `compare_at` has sign symmetry + transitivity + totality:
+      - `cmp(i,j) == 0` iff `cmp(j,i) == 0`
+      - `cmp(i,j) < 0` iff `cmp(j,i) > 0`
+      - transitive and total (no unordered cases in MVP)
+- Defer any "contiguous storage" category until a slice/ABI view exists.
+- Traits are compile-time only (static dispatch).
+- Iterator method signatures (pinned):
+  - SinglePassIterator<T>: `next(self: &mut Self) -> Optional<T>`
+  - MultiPassIterator<T>: `require Self is Copy` (copies must be independent; advancing one copy must not affect the other)
+  - BidirectionalIterator<T>: `prev(self: &mut Self) -> Optional<T>`
+  - RandomAccessPermutable<T>: `swap(self: &mut Self, i: Int, j: Int) -> Void`
+- Iterator trait resolution must be static at call sites; no dynamic/erased iterator types.
+- MVP collections must return concrete iterator types in public signatures (no opaque return types unless/ until a language feature is defined).
+- `for` desugaring is pinned to `SinglePassIterator<T>` with `next(&mut self) -> Optional<T>` (generic item type).
+- Borrowed vs owned iteration may require distinct iterator types or iterator type parameters; do not assume a single iterator type can serve both.
+- `Iterable.iter` forms to support:
+  - `iter(self: T)` (move/Copy items)
+  - `iter(self: &T)` (borrowed items)
+  - `iter(self: &mut T)` (mutable borrowed items)
+  - `for x in arr` uses `std.iter.Iterable.iter(arr)` (moves/copies items)
+  - `for x in &arr` uses `std.iter.Iterable.iter(&arr)` (borrowed items)
+  - `for x in &mut arr` uses `std.iter.Iterable.iter(&mut arr)` (mutable borrowed items)
+- Iterators produced from `&mut` sources are never MultiPass (must not be Copy).
+- `iter(self: T)` consumes `self` unless `T` is Copy; using a non-Copy container after `for x in container` is an error.
+- `Comparable` implies `Equatable` for the same type: `require Self is Equatable`.
+- Heterogeneous equality/comparison is out of scope unless explicitly specified later.
+- `equal(a, b)` consumes both iterators; it advances in lockstep and returns true only if both end together.
+- Algorithms will be defined in terms of iterator capabilities only (e.g., RandomAccess), not Slice/View.
+- Slice/View will be introduced later as a concrete type that implements iterator traits.
+- Slice/View API is out of scope until a contiguous/ABI view is required.
+- Iterator/Slice work is a **module-level API** in stdlib; compiler support is limited to `for` desugaring.
+- Stdlib modules: containers in `std.containers`, algorithms in `std.algo`.
+- Iterator traits live in a low-level module (`std.iter`) to avoid container/algorithm import cycles.
+- `for` desugaring uses the fully-qualified `std.iter.SinglePassIterator` (no local shadowing).
+- `for` desugaring uses `std.iter.Iterable.iter(...)` with fully-qualified lookup (no local shadowing).
+- `Iterable` shape (pinned):
+  - `trait Iterable<Src, Item, Iter> { fn iter(src: Src) -> Iter require Iter is std.iter.SinglePassIterator<Item> }`
+- `for` evaluates its source expression exactly once, calls `Iterable.iter` exactly once, then loops on `next`.
+- Iterable coherence: for any concrete `Src`, at most one applicable `Iterable<Src, Item, Iter>` impl may exist (no ambiguity).
+- `Iterable.iter(x)` uses UFCS-style trait dispatch; this is a required language feature.
+- Iterator invalidation rule: any structural mutation of a collection invalidates all iterators derived from it; any method on an invalidated iterator/range raises `std.err:IteratorInvalidated(container: String, op: String)` (op is the method name, including `len`).
+- Bounds errors for `compare_at`/`swap` use `std.err:IndexError(container: String, index: Int)` with `container` set to the concrete type name.
+- Error payload determinism: `container` is the canonical type name without type arguments (e.g., `Array`, `HashMap`), no aliases; `op` is the exact trait method name (e.g., `next`, `prev`, `len`, `compare_at`, `swap`, `compare_key`).
+- `IteratorInvalidated.op` is stringly-typed; runtime registry should not define an enum.
+- `Equatable` and `Comparable` live in `std.core.cmp` (low-level comparison module).
+- MVP container set in `std.containers`: Array, HashMap, TreeMap, HashSet, TreeSet, List, Queue, Deque.
+- Array API (MVP):
+  - Indexing: `arr[i]` throws `IndexError` on OOB and is only allowed for Copy elements.
+  - `get(i) -> Optional<&T>` returns `None` on OOB (no throw).
+  - Borrowed element access is supported: `&arr[i]` / `&mut arr[i]` (uses borrow checker; no Copy required).
+  - Mutators: `push`, `pop`, `insert`, `remove`, `swap_remove`, `set`, `clear`, `reserve`, `shrink_to_fit`.
+  - `push`/`pop` operate on the tail; `remove` shifts left; `insert` shifts right; `swap_remove` is O(1) and unordered.
+  - Removal/shift operations use move-out semantics (no Copy required); `arr[i]` stays Copy-only.
+  - `len`/`cap` return `Int` and are non-negative.
+  - Variants with droppable payload must define a `tombstone_ctor` (e.g. Optional.None) for move-out neutralization.
+- Container iterator capabilities (pinned, per iter form):
+  - Array:
+    - iter(self: T): SinglePass
+    - iter(self: &T): SinglePass, MultiPass, Bidirectional
+    - iter(self: &mut T): deferred (not implemented; borrow-safety enforcement pending)
+  - Owned Array iteration requires Copy:
+    - `ArrayMoveIter<T>` is only available when `T is Copy` (prevents move-out holes on `arr[i]`).
+  - List:
+    - iter(self: T): SinglePass, MultiPass, Bidirectional
+    - iter(self: &T): SinglePass, MultiPass, Bidirectional
+    - iter(self: &mut T): SinglePass
+  - Deque (no RandomAccess* in MVP):
+    - iter(self: T): SinglePass, MultiPass, Bidirectional
+    - iter(self: &T): SinglePass, MultiPass, Bidirectional
+    - iter(self: &mut T): SinglePass
+  - Queue:
+    - iter(self: T): SinglePass
+    - iter(self: &T): SinglePass
+    - iter(self: &mut T): SinglePass
+  - TreeMap/TreeSet (in-order):
+    - iter(self: T): SinglePass, MultiPass, Bidirectional
+    - iter(self: &T): SinglePass, MultiPass, Bidirectional
+    - iter(self: &mut T): SinglePass
+  - HashMap/HashSet:
+    - iter(self: T): SinglePass
+    - iter(self: &T): SinglePass
+    - iter(self: &mut T): SinglePass
+- `std.iter.RandomAccessReadable` remains minimal (len + compare_at). Algorithm-specific capability traits live in `std.algo` (e.g., `BinarySearchable`).
+
+## Log
+- 2026-01-09: Created `docs/design/drift-stdlib-spec.md` and pinned iterable/for-lowering rules, iterator contracts, error events, and container capability matrix.
+- 2026-01-09: Moved comparison traits to `std.core.cmp`, added `BinarySearchable` for `compare_key`, tightened bounds/invalidation and error payload rules, and clarified container capability semantics.
+- 2026-01-09: Added stdlib trait modules (`std.iter`, `std.core.cmp`, `std.algo`) and updated `for` lowering to use UFCS (`Iterable.iter` / `SinglePassIterator.next`) with intrinsic handling.
+- 2026-01-10: Removed `.iter()`/`.next()` method intrinsics (UFCS is the only lowering path) and added for-lowering regression tests (HIR shape, single-eval) plus diagnostics tests for non-iterables.
+- 2026-01-10: Removed UFCS `Iterable.iter` / `SinglePassIterator.next` intrinsic fallback; added stdlib `ArrayMoveIter` + iterator impls and injected stdlib sources into workspace parsing so trait resolution drives `for`.
+- 2026-01-10: Pinned `for` diagnostics to spec categories (not iterable / iter result not iterator) and made stdlib loading explicit via `stdlib_root`/`--stdlib-root`.
+- 2026-01-10: Added canary tests for no-stdlib `for`, invalid iterator result, and local trait shadowing.
+- 2026-01-10: Scoped `for`-specific diagnostics to for-lowered calls only (direct UFCS errors remain generic).
+- 2026-01-10: Added Array/variant/scalar base matching for trait impl resolution and merged std.runtime registry spec into `docs/design/drift-stdlib-spec.md`.
+- 2026-01-11: Updated workspace parsing to ignore stdlib sources for the multi-file module-declaration rule; e2e runner now allows reserved namespaces by default when stdlib is loaded.
+- 2026-01-11: Added MultiPass copy-independence e2e test (CounterIter) to enforce the Copy+independence contract.
+- 2026-01-11: Allowed impl headers to target reference types, added Array borrowed iterators (`&Array` / `&mut Array`), and updated borrow/index checks to accept `&Array` indexing and `&mut` reborrows from `&mut` bases.
+- 2026-01-11: Added UFCS canary test to ensure `std.iter.Iterable::iter(...)` emits generic resolution errors outside `for` lowering.
+- 2026-01-11: Guarded variant ctor instantiation to avoid forcing concrete Optional<T> when type arguments contain typevars.
+- 2026-01-11: Implemented ArrayBorrowIter MultiPass/Bidirectional (Copy + prev) and aligned iterator capability matrix in spec/work-progress.
+- 2026-01-11: Added ArrayBorrowIter MultiPass copy-independence e2e test, prev boundary e2e test, and AddrOfArrayElem MIR regression for &arr[i].
+- 2026-01-11: Deferred `Array` &mut iteration (no Iterable impl yet) pending borrow-safety enforcement; removed overlap test accordingly.
+- 2026-01-11: Added driver test enforcing `MultiPassIterator` requires `Copy` for iterator types.
+- 2026-01-11: Added struct field visibility (private-by-default, `pub` fields) with diagnostics and stdlib export canaries; updated schema encoding to carry field visibility.
+- 2026-01-11: Unified array/string length, capacity, and index types on `Int` (isize) across stdlib traits, checker, MIR, LLVM codegen, runtime headers, and docs; updated tests accordingly.
+- 2026-01-12: Added Array API decisions (get/set/push/pop/insert/remove/swap_remove/clear/reserve/shrink_to_fit) and indexed access rules (arr[i] throws; get is Optional<&T>).
+- 2026-01-12: Implemented Array method intrinsics in the checker/lowering and added codegen e2e coverage for push/pop/insert/remove/swap_remove/clear/reserve/shrink_to_fit.
+- 2026-01-12: Added Array element take semantics for pop/remove/insert/swap_remove/grow/shrink (move-out, no Copy required) and added e2e coverage for Array<String> pop plus typechecker coverage for pop on non-Copy arrays.
+- 2026-01-12: Implemented recursive tombstone emission for ArrayElemTake (String/Array/Struct/Variant with tombstone ctor) and strengthened IR tests to tie tombstones to the take element pointer.
+- 2026-01-12: Updated package test Optional schemas to include `tombstone_ctor` for variant decoding.
+- 2026-01-12: Added `@tombstone` variant arm marker in the parser/AST, enforced payload-free tombstone arms, and wired `tombstone_ctor` into variant schema declarations.
+- 2026-01-12: Pinned array element borrowing (`&arr[i]` / `&mut arr[i]`) as MVP surface and added type-checker coverage for non-Copy element borrows.
+- 2026-01-12: Added e2e borrow-checker canary for shared `&arr[i]` followed by `&mut arr[i]` (rejects with borrowcheck diagnostic).
+- 2026-01-12: Added e2e canary allowing shared `&arr[0]` then `&mut arr[1]` (const disjoint indices), and asserted the mutated value.
+
+## Open Questions
+- Exact algorithm signatures in Drift syntax (defer until implementation).
+
+## Next
+- Add a regression test that `binary_search` is callable for any type implementing RandomAccessReadable, without Slice/View.
+- Add a regression test that `Comparable` requires `Equatable` (operator lowering for `==`/`!=` must have a matching equality impl).
+- Add a regression test that `for` over a collection returned from a function resolves iterator traits without dynamic dispatch and without opaque return types.
+- Add regression test for `Iterable.iter` resolution:
+  - local `iter` does not affect `for` lowering
+- Add `Array<T>` iterator/category coverage tests: `for` iteration plus `binary_search`/`sort` availability (compile pass/fail pairs).
+- Add a regression test that `min/max` reject types that do not implement `Comparable`.
+- Add a generic test harness for `RandomAccessPermutable<T>` that validates `sort_in_place` correctness and swap semantics.
+- Add a negative test for iterator invalidation after mutation (compile-time if provable, otherwise runtime trap/diagnostic).
+- Add compile-pass tests for both `for v in array` (owned) and `for v in array.iter()` (borrowed) once borrowing exists, ensuring no erased types are required.
+- Add compile-fail test: using a non-Copy container after `for x in container` is rejected.
+- Add a regression test that `sort_in_place` compiles for non-Copy `T` using `compare_at` (no `set` required).
+- Add a regression test where a user-defined `SinglePassIterator` is shadowed; `for` must still bind to `std.iter.SinglePassIterator`.
+- Add `equal` consumption tests:
+  - identical sequences -> true, both iterators exhausted
+  - early mismatch -> false, both advanced through mismatch element
+  - length mismatch -> false when one ends early
+- Add a regression test that `==` resolves without importing `std.algo` (uses fully-qualified `std.core.cmp`).
+- Add a regression test that iterator errors carry canonical `container`/`op` strings.
+- Add conformance tests: MultiPass iterators must be copy-independent (advance one copy, the other unchanged).
+- Implement the MultiPass copy-independence test alongside the first stdlib MultiPass iterator (Array).
+- Add diagnostics tests: `sort_in_place`/`binary_search` errors should mention both missing `Comparable` and required capability trait.
+
+## Algorithms (Proposed)
+- for_each(it, f) -> SinglePassIterator<T>
+- find(it, pred) -> Optional<T> -> SinglePassIterator<T>
+- any(it, pred) -> Bool -> SinglePassIterator<T>
+- all(it, pred) -> Bool -> SinglePassIterator<T>
+- count(it) -> Int -> SinglePassIterator<T>
+- fold(it, init, f) -> U -> SinglePassIterator<T>
+- min(it) / max(it) -> SinglePassIterator<T> + require T is Comparable
+- equal(a, b) -> Bool -> SinglePassIterator<T> + require T is Equatable (consumes both iterators)
+- sort_in_place(r) -> RandomAccessPermutable<T> + require T is Comparable (call on a permutable range, not a streaming iterator)
+- binary_search(r, key) -> BinarySearchable<T> + require T is Comparable (key passed by `&T`)
+  - Result index is relative to `r` (range-local), in `[0, len)`.

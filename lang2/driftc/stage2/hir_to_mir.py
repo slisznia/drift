@@ -51,7 +51,6 @@ from lang2.driftc.core.types_core import (
 )
 from lang2.driftc.core.type_resolve_common import resolve_opaque_type
 from lang2.driftc.core.generic_type_expr import GenericTypeExpr
-from lang2.driftc.core.iter_intrinsics import ensure_array_iter_struct, is_array_iter_struct
 from lang2.driftc.stage1.capture_discovery import discover_captures
 from lang2.driftc.stage1.closures import sort_captures
 from . import mir_nodes as M
@@ -956,6 +955,13 @@ class HIRToMIR:
 		if subj_ty is None:
 			raise AssertionError("struct field type unknown in MIR lowering (checker bug)")
 		sub_def = self._type_table.get(subj_ty)
+		if sub_def.kind is TypeKind.REF and sub_def.param_types:
+			inner_ty = sub_def.param_types[0]
+			loaded = self.b.new_temp()
+			self.b.emit(M.LoadRef(dest=loaded, ptr=subject, inner_ty=inner_ty))
+			subject = loaded
+			subj_ty = inner_ty
+			sub_def = self._type_table.get(subj_ty)
 		if sub_def.kind is not TypeKind.STRUCT:
 			raise NotImplementedError(f"field access is only supported on structs in v1 (have {sub_def.kind})")
 		info = self._type_table.struct_field(subj_ty, expr.name)
@@ -1003,13 +1009,13 @@ class HIRToMIR:
 		length = len(expr.elements)
 		len_val = self.b.new_temp()
 		cap_val = self.b.new_temp()
-		self.b.emit(M.ConstUint(dest=len_val, value=length))
-		self.b.emit(M.ConstUint(dest=cap_val, value=length))
-		self._local_types[len_val] = self._uint_type
-		self._local_types[cap_val] = self._uint_type
+		self.b.emit(M.ConstInt(dest=len_val, value=length))
+		self.b.emit(M.ConstInt(dest=cap_val, value=length))
+		self._local_types[len_val] = self._int_type
+		self._local_types[cap_val] = self._int_type
 		zero_len = self.b.new_temp()
-		self.b.emit(M.ConstUint(dest=zero_len, value=0))
-		self._local_types[zero_len] = self._uint_type
+		self.b.emit(M.ConstInt(dest=zero_len, value=0))
+		self._local_types[zero_len] = self._int_type
 		self.b.emit(M.ArrayAlloc(dest=dest, elem_ty=elem_ty, length=zero_len, cap=cap_val))
 		for idx, elem_expr in enumerate(expr.elements):
 			val = self.lower_expr(elem_expr)
@@ -1029,7 +1035,7 @@ class HIRToMIR:
 		return final_arr
 
 	def _lower_len(self, subj_ty: Optional[TypeId], subj_val: M.ValueId, dest: M.ValueId) -> None:
-		"""Lower length for Array<T> and String to Uint."""
+		"""Lower length for Array<T> and String to Int."""
 		if subj_ty is None:
 			# Conservative fallback: assume array when type is unknown.
 			self.b.emit(M.ArrayLen(dest=dest, array=subj_val))
@@ -1091,7 +1097,7 @@ class HIRToMIR:
 				raise AssertionError(f"{name}(x): missing argument type in CallInfo (checker bug)")
 			dest = self.b.new_temp()
 			self._lower_len(arg_ty, arg_val, dest)
-			self._local_types[dest] = self._uint_type
+			self._local_types[dest] = self._int_type
 			return dest
 		if intrinsic is IntrinsicKind.STRING_EQ:
 			if getattr(expr, "kwargs", None):
@@ -1137,15 +1143,25 @@ class HIRToMIR:
 			return self._lower_lambda_immediate_call(expr.fn, expr.args)
 		if hasattr(H, "HQualifiedMember") and isinstance(expr.fn, getattr(H, "HQualifiedMember")):
 			info = self._call_info_for_expr_optional(expr)
-			if info is None:
-				info = self._call_info_from_ufcs(expr)
+			skip_ufcs_info = False
 			if info is not None and info.target.kind is CallTargetKind.INDIRECT:
-				# Constructor calls record indirect call info during type checking;
-				# MIR lowering handles them as direct variant construction instead.
 				info = None
+				skip_ufcs_info = True
+			if info is None:
+				if not skip_ufcs_info:
+					info = self._call_info_from_ufcs(expr)
+					if info is not None and info.target.kind is CallTargetKind.INDIRECT:
+						# Constructor calls record indirect call info during type checking;
+						# MIR lowering handles them as direct variant construction instead.
+						info = None
 			if info is not None:
 				if getattr(expr, "kwargs", None):
 					raise AssertionError("keyword arguments reached MIR lowering for a UFCS call (checker bug)")
+				if info.target.kind is CallTargetKind.INTRINSIC:
+					intrinsic = info.target.intrinsic
+					if intrinsic is None:
+						raise AssertionError("intrinsic call missing name (typecheck/call-info bug)")
+					return self._lower_intrinsic_call_expr(expr, intrinsic, info=info)
 				result = self._lower_call_with_info(expr, info)
 				if result is None:
 					raise AssertionError("Void-returning call used in expression context (checker bug)")
@@ -1707,20 +1723,6 @@ class HIRToMIR:
 	def _visit_expr_HMethodCall(self, expr: H.HMethodCall) -> M.ValueId:
 		if getattr(expr, "kwargs", None):
 			raise AssertionError("keyword arguments for method calls are not supported in MIR lowering (checker bug)")
-		# Iterator protocol intrinsics for `for` desugaring (MVP).
-		#
-		# The language desugars:
-		#   for x in expr { body }
-		# into an iterator loop:
-		#   let it = expr.iter()
-		#   loop { match it.next() { Some(x) => { body } default => { break } } }
-		#
-		# Modules/traits are not implemented yet, so `.iter()` / `.next()` are
-		# treated as compiler intrinsics on arrays:
-		#   - `Array<T>.iter() -> __ArrayIter_<T>`
-		#   - `__ArrayIter_<T>.next() -> Optional<T>`
-		#
-		# This keeps the surface syntax stable while deferring trait dispatch.
 		if expr.method_name == "dup" and not expr.args:
 			recv_ty = self._infer_expr_type(expr.receiver)
 			if recv_ty is not None:
@@ -1739,45 +1741,11 @@ class HIRToMIR:
 					self.b.emit(M.ArrayDup(dest=dest, elem_ty=elem_ty, array=recv_val))
 					self._local_types[dest] = recv_ty
 					return dest
-		if expr.method_name == "iter" and not expr.args:
-			recv_ty = self._infer_expr_type(expr.receiver)
-			if recv_ty is not None:
-				recv_def = self._type_table.get(recv_ty)
-				if recv_def.kind is TypeKind.REF and recv_def.param_types:
-					array_ty = recv_def.param_types[0]
-					if self._type_table.get(array_ty).kind is TypeKind.ARRAY:
-						iter_ty = self._ensure_array_iter_struct(array_ty)
-						recv_val = self.lower_expr(expr.receiver)
-						idx0 = self.b.new_temp()
-						self.b.emit(M.ConstInt(dest=idx0, value=0))
-						self._local_types[idx0] = self._int_type
-						dest = self.b.new_temp()
-						self.b.emit(M.ConstructStruct(dest=dest, struct_ty=iter_ty, args=[recv_val, idx0]))
-						self._local_types[dest] = iter_ty
-						return dest
-				if recv_def.kind is TypeKind.ARRAY:
-					place_expr = None
-					if hasattr(H, "HPlaceExpr") and isinstance(expr.receiver, getattr(H, "HPlaceExpr")):
-						place_expr = expr.receiver
-					elif isinstance(expr.receiver, H.HVar):
-						place_expr = H.HPlaceExpr(base=expr.receiver, projections=[], loc=Span())
-					if place_expr is None:
-						return self._recover_unknown_value("iter() requires an addressable Array value in MVP (checker bug)")
-					recv_val, inner_ty = self._lower_addr_of_place(place_expr, is_mut=False)
-					if inner_ty != recv_ty:
-						raise AssertionError("iter() receiver place type mismatch (checker bug)")
-					iter_ty = self._ensure_array_iter_struct(recv_ty)
-					idx0 = self.b.new_temp()
-					self.b.emit(M.ConstInt(dest=idx0, value=0))
-					self._local_types[idx0] = self._int_type
-					dest = self.b.new_temp()
-					self.b.emit(M.ConstructStruct(dest=dest, struct_ty=iter_ty, args=[recv_val, idx0]))
-					self._local_types[dest] = iter_ty
-					return dest
-		if expr.method_name == "next" and not expr.args:
-			recv_ty = self._infer_expr_type(expr.receiver)
-			if recv_ty is not None and self._is_array_iter_struct(recv_ty):
-				return self._lower_array_iter_next(expr.receiver, recv_ty)
+		handled, value = self._lower_array_intrinsic_method(expr, want_value=True)
+		if handled:
+			if value is None:
+				raise AssertionError("Void array method used in expression context (checker bug)")
+			return value
 		# FnResult intrinsic methods (`is_err`/`unwrap`/`unwrap_err`) lower to
 		# dedicated MIR ops so later stages don't need ad-hoc method dispatch.
 		if expr.method_name in ("is_err", "unwrap", "unwrap_err") and not expr.args:
@@ -1822,18 +1790,604 @@ class HIRToMIR:
 			return self._lower_can_throw_call_value(emit_call=emit_call, ok_ty=ok_tid)
 		return result
 
-	def _ensure_array_iter_struct(self, array_ty: TypeId) -> TypeId:
-		"""
-		Ensure the internal `__ArrayIter_<T>` struct type exists for `Array<T>`.
-
-		Layout (compiler-private):
-		  struct __ArrayIter_<T> { arr: &Array<T>, idx: Int }
-		"""
-		return ensure_array_iter_struct(array_ty, self._type_table)
-
 	def _optional_variant_type(self, inner_ty: TypeId) -> TypeId:
 		opt_base = self._type_table.ensure_optional_base()
 		return self._type_table.ensure_instantiated(opt_base, [inner_ty])
+
+	def _emit_optional_none(self, opt_ty: TypeId) -> M.ValueId:
+		dest = self.b.new_temp()
+		self.b.emit(M.ConstructVariant(dest=dest, variant_ty=opt_ty, ctor="None", args=[]))
+		self._local_types[dest] = opt_ty
+		return dest
+
+	def _emit_optional_some(self, opt_ty: TypeId, value: M.ValueId) -> M.ValueId:
+		dest = self.b.new_temp()
+		self.b.emit(M.ConstructVariant(dest=dest, variant_ty=opt_ty, ctor="Some", args=[value]))
+		self._local_types[dest] = opt_ty
+		return dest
+
+	def _const_int(self, value: int) -> M.ValueId:
+		dest = self.b.new_temp()
+		self.b.emit(M.ConstInt(dest=dest, value=value))
+		return dest
+
+	def _addr_taken_local(self, name_hint: str, ty: TypeId, init_value: M.ValueId) -> str:
+		"""
+		Create a local and take its address so SSA leaves it as storage.
+
+		This avoids invalid φ nodes for helper locals that do not need SSA
+		renaming (e.g., loop indices in intrinsic lowering).
+		"""
+		local = f"{name_hint}{self.b.new_temp()}"
+		self.b.ensure_local(local)
+		self._local_types[local] = ty
+		self.b.emit(M.StoreLocal(local=local, value=init_value))
+		tmp = self.b.new_temp()
+		self.b.emit(M.AddrOfLocal(dest=tmp, local=local, is_mut=True))
+		return local
+
+	def _array_index_load_value(self, *, elem_ty: TypeId, array: M.ValueId, index: M.ValueId) -> M.ValueId:
+		raw = self.b.new_temp()
+		self.b.emit(M.ArrayIndexLoad(dest=raw, elem_ty=elem_ty, array=array, index=index))
+		if self._type_table.is_copy(elem_ty) and not self._type_table.is_bitcopy(elem_ty):
+			copied = self.b.new_temp()
+			self.b.emit(M.CopyValue(dest=copied, value=raw, ty=elem_ty))
+			return copied
+		return raw
+
+	def _array_elem_take_value(self, *, elem_ty: TypeId, array: M.ValueId, index: M.ValueId) -> M.ValueId:
+		dest = self.b.new_temp()
+		self.b.emit(M.ArrayElemTake(dest=dest, elem_ty=elem_ty, array=array, index=index))
+		self._local_types[dest] = elem_ty
+		return dest
+
+	def _lower_array_intrinsic_method(
+		self,
+		expr: H.HMethodCall,
+		*,
+		want_value: bool,
+	) -> tuple[bool, M.ValueId | None]:
+		name = expr.method_name
+		if name not in (
+			"push",
+			"pop",
+			"insert",
+			"remove",
+			"swap_remove",
+			"clear",
+			"reserve",
+			"shrink_to_fit",
+			"get",
+			"set",
+		):
+			return False, None
+
+		recv_ty = self._infer_expr_type(expr.receiver)
+		if recv_ty is None:
+			raise AssertionError("array method receiver type unknown in MIR lowering (checker bug)")
+		recv_def = self._type_table.get(recv_ty)
+		array_ty = recv_ty
+		recv_ptr: M.ValueId | None = None
+		if recv_def.kind is TypeKind.REF and recv_def.param_types:
+			array_ty = recv_def.param_types[0]
+			recv_ptr = self.lower_expr(expr.receiver)
+		else:
+			place_expr = None
+			if hasattr(H, "HPlaceExpr") and isinstance(expr.receiver, getattr(H, "HPlaceExpr")):
+				place_expr = expr.receiver
+			elif isinstance(expr.receiver, H.HVar):
+				place_expr = H.HPlaceExpr(base=expr.receiver, projections=[], loc=Span())
+			if place_expr is None:
+				raise NotImplementedError("Array method requires an lvalue receiver in MVP")
+			recv_ptr, _inner = self._lower_addr_of_place(
+				place_expr,
+				is_mut=name not in ("get",),
+			)
+		if recv_ptr is None:
+			raise AssertionError("array method missing receiver address (checker bug)")
+		array_def = self._type_table.get(array_ty)
+		if array_def.kind is not TypeKind.ARRAY or not array_def.param_types:
+			return False, None
+		elem_ty = array_def.param_types[0]
+
+		array_val = self.b.new_temp()
+		self.b.emit(M.LoadRef(dest=array_val, ptr=recv_ptr, inner_ty=array_ty))
+
+		if name == "get":
+			if not want_value:
+				return True, None
+			if len(expr.args) != 1:
+				raise AssertionError("Array.get arity mismatch reached MIR lowering (checker bug)")
+			idx_val = self.lower_expr(expr.args[0], expected_type=self._int_type)
+			len_val = self.b.new_temp()
+			self.b.emit(M.ArrayLen(dest=len_val, array=array_val))
+			zero = self._const_int(0)
+
+			opt_ty = self._optional_variant_type(self._type_table.ensure_ref(elem_ty))
+			res_local = f"__array_get_res{self.b.new_temp()}"
+			self.b.ensure_local(res_local)
+			self._local_types[res_local] = opt_ty
+
+			neg_cond = self.b.new_temp()
+			self.b.emit(M.BinaryOpInstr(dest=neg_cond, op=H.BinaryOp.LT, left=idx_val, right=zero))
+			neg_block = self.b.new_block("array_get_neg")
+			check_block = self.b.new_block("array_get_check")
+			join_block = self.b.new_block("array_get_join")
+			self.b.set_terminator(
+				M.IfTerminator(cond=neg_cond, then_target=neg_block.name, else_target=check_block.name)
+			)
+
+			self.b.set_block(neg_block)
+			none_val = self._emit_optional_none(opt_ty)
+			self.b.emit(M.StoreLocal(local=res_local, value=none_val))
+			self.b.set_terminator(M.Goto(target=join_block.name))
+
+			self.b.set_block(check_block)
+			lt_cond = self.b.new_temp()
+			self.b.emit(M.BinaryOpInstr(dest=lt_cond, op=H.BinaryOp.LT, left=idx_val, right=len_val))
+			ok_block = self.b.new_block("array_get_ok")
+			bad_block = self.b.new_block("array_get_bad")
+			self.b.set_terminator(
+				M.IfTerminator(cond=lt_cond, then_target=ok_block.name, else_target=bad_block.name)
+			)
+
+			self.b.set_block(ok_block)
+			ptr = self.b.new_temp()
+			self.b.emit(
+				M.AddrOfArrayElem(
+					dest=ptr,
+					array=array_val,
+					index=idx_val,
+					inner_ty=elem_ty,
+					is_mut=False,
+				)
+			)
+			some_val = self._emit_optional_some(opt_ty, ptr)
+			self.b.emit(M.StoreLocal(local=res_local, value=some_val))
+			self.b.set_terminator(M.Goto(target=join_block.name))
+
+			self.b.set_block(bad_block)
+			none_val = self._emit_optional_none(opt_ty)
+			self.b.emit(M.StoreLocal(local=res_local, value=none_val))
+			self.b.set_terminator(M.Goto(target=join_block.name))
+
+			self.b.set_block(join_block)
+			out = self.b.new_temp()
+			self.b.emit(M.LoadLocal(dest=out, local=res_local))
+			return True, out
+
+		if name == "pop":
+			if len(expr.args) != 0:
+				raise AssertionError("Array.pop arity mismatch reached MIR lowering (checker bug)")
+			if not want_value:
+				return True, None
+			opt_ty = self._optional_variant_type(elem_ty)
+			res_local = f"__array_pop_res{self.b.new_temp()}"
+			self.b.ensure_local(res_local)
+			self._local_types[res_local] = opt_ty
+
+			len_val = self.b.new_temp()
+			self.b.emit(M.ArrayLen(dest=len_val, array=array_val))
+			zero = self._const_int(0)
+			is_empty = self.b.new_temp()
+			self.b.emit(M.BinaryOpInstr(dest=is_empty, op=H.BinaryOp.EQ, left=len_val, right=zero))
+			empty_block = self.b.new_block("array_pop_empty")
+			ok_block = self.b.new_block("array_pop_ok")
+			join_block = self.b.new_block("array_pop_join")
+			self.b.set_terminator(
+				M.IfTerminator(cond=is_empty, then_target=empty_block.name, else_target=ok_block.name)
+			)
+
+			self.b.set_block(empty_block)
+			none_val = self._emit_optional_none(opt_ty)
+			self.b.emit(M.StoreLocal(local=res_local, value=none_val))
+			self.b.set_terminator(M.Goto(target=join_block.name))
+
+			self.b.set_block(ok_block)
+			one = self._const_int(1)
+			last_idx = self.b.new_temp()
+			self.b.emit(M.BinaryOpInstr(dest=last_idx, op=H.BinaryOp.SUB, left=len_val, right=one))
+			val = self._array_elem_take_value(elem_ty=elem_ty, array=array_val, index=last_idx)
+			new_len = self.b.new_temp()
+			self.b.emit(M.BinaryOpInstr(dest=new_len, op=H.BinaryOp.SUB, left=len_val, right=one))
+			new_arr = self.b.new_temp()
+			self.b.emit(M.ArraySetLen(dest=new_arr, array=array_val, length=new_len))
+			self.b.emit(M.StoreRef(ptr=recv_ptr, value=new_arr, inner_ty=array_ty))
+			some_val = self._emit_optional_some(opt_ty, val)
+			self.b.emit(M.StoreLocal(local=res_local, value=some_val))
+			self.b.set_terminator(M.Goto(target=join_block.name))
+
+			self.b.set_block(join_block)
+			out = self.b.new_temp()
+			self.b.emit(M.LoadLocal(dest=out, local=res_local))
+			return True, out
+
+		def grow_array(array_in: M.ValueId, *, len_val: M.ValueId, cap_val: M.ValueId, need_val: M.ValueId) -> M.ValueId:
+			two = self._const_int(2)
+			cap_x2 = self.b.new_temp()
+			self.b.emit(M.BinaryOpInstr(dest=cap_x2, op=H.BinaryOp.MUL, left=cap_val, right=two))
+			use_need = self.b.new_temp()
+			self.b.emit(M.BinaryOpInstr(dest=use_need, op=H.BinaryOp.LT, left=cap_x2, right=need_val))
+			new_cap_local = self._addr_taken_local("__array_new_cap", self._int_type, self._const_int(0))
+			cap_block = self.b.new_block("array_cap_x2")
+			need_block = self.b.new_block("array_cap_need")
+			join_block = self.b.new_block("array_cap_join")
+			self.b.set_terminator(
+				M.IfTerminator(cond=use_need, then_target=need_block.name, else_target=cap_block.name)
+			)
+
+			self.b.set_block(cap_block)
+			self.b.emit(M.StoreLocal(local=new_cap_local, value=cap_x2))
+			self.b.set_terminator(M.Goto(target=join_block.name))
+
+			self.b.set_block(need_block)
+			self.b.emit(M.StoreLocal(local=new_cap_local, value=need_val))
+			self.b.set_terminator(M.Goto(target=join_block.name))
+
+			self.b.set_block(join_block)
+			new_cap = self.b.new_temp()
+			self.b.emit(M.LoadLocal(dest=new_cap, local=new_cap_local))
+
+			zero = self._const_int(0)
+			new_arr = self.b.new_temp()
+			self.b.emit(M.ArrayAlloc(dest=new_arr, elem_ty=elem_ty, length=zero, cap=new_cap))
+
+			idx_local = self._addr_taken_local("__array_copy_i", self._int_type, self._const_int(0))
+			self.b.emit(M.StoreLocal(local=idx_local, value=zero))
+
+			cond_block = self.b.new_block("array_copy_cond")
+			body_block = self.b.new_block("array_copy_body")
+			exit_block = self.b.new_block("array_copy_exit")
+			self.b.set_terminator(M.Goto(target=cond_block.name))
+
+			self.b.set_block(cond_block)
+			cur = self.b.new_temp()
+			self.b.emit(M.LoadLocal(dest=cur, local=idx_local))
+			lt = self.b.new_temp()
+			self.b.emit(M.BinaryOpInstr(dest=lt, op=H.BinaryOp.LT, left=cur, right=len_val))
+			self.b.set_terminator(M.IfTerminator(cond=lt, then_target=body_block.name, else_target=exit_block.name))
+
+			self.b.set_block(body_block)
+			val = self._array_elem_take_value(elem_ty=elem_ty, array=array_in, index=cur)
+			self.b.emit(M.ArrayElemInitUnchecked(elem_ty=elem_ty, array=new_arr, index=cur, value=val))
+			next_i = self.b.new_temp()
+			one = self._const_int(1)
+			self.b.emit(M.BinaryOpInstr(dest=next_i, op=H.BinaryOp.ADD, left=cur, right=one))
+			self.b.emit(M.StoreLocal(local=idx_local, value=next_i))
+			self.b.set_terminator(M.Goto(target=cond_block.name))
+
+			self.b.set_block(exit_block)
+			new_arr_len = self.b.new_temp()
+			self.b.emit(M.ArraySetLen(dest=new_arr_len, array=new_arr, length=len_val))
+			old_zero = self.b.new_temp()
+			self.b.emit(M.ArraySetLen(dest=old_zero, array=array_in, length=zero))
+			self.b.emit(M.ArrayDrop(elem_ty=elem_ty, array=old_zero))
+			return new_arr_len
+
+		def shrink_array(array_in: M.ValueId, *, len_val: M.ValueId) -> M.ValueId:
+			zero = self._const_int(0)
+			new_arr = self.b.new_temp()
+			self.b.emit(M.ArrayAlloc(dest=new_arr, elem_ty=elem_ty, length=zero, cap=len_val))
+
+			idx_local = self._addr_taken_local("__array_shrink_i", self._int_type, self._const_int(0))
+			self.b.emit(M.StoreLocal(local=idx_local, value=zero))
+
+			cond_block = self.b.new_block("array_shrink_cond")
+			body_block = self.b.new_block("array_shrink_body")
+			exit_block = self.b.new_block("array_shrink_exit")
+			self.b.set_terminator(M.Goto(target=cond_block.name))
+
+			self.b.set_block(cond_block)
+			cur = self.b.new_temp()
+			self.b.emit(M.LoadLocal(dest=cur, local=idx_local))
+			lt = self.b.new_temp()
+			self.b.emit(M.BinaryOpInstr(dest=lt, op=H.BinaryOp.LT, left=cur, right=len_val))
+			self.b.set_terminator(M.IfTerminator(cond=lt, then_target=body_block.name, else_target=exit_block.name))
+
+			self.b.set_block(body_block)
+			val = self._array_elem_take_value(elem_ty=elem_ty, array=array_in, index=cur)
+			self.b.emit(M.ArrayElemInitUnchecked(elem_ty=elem_ty, array=new_arr, index=cur, value=val))
+			next_i = self.b.new_temp()
+			one = self._const_int(1)
+			self.b.emit(M.BinaryOpInstr(dest=next_i, op=H.BinaryOp.ADD, left=cur, right=one))
+			self.b.emit(M.StoreLocal(local=idx_local, value=next_i))
+			self.b.set_terminator(M.Goto(target=cond_block.name))
+
+			self.b.set_block(exit_block)
+			new_arr_len = self.b.new_temp()
+			self.b.emit(M.ArraySetLen(dest=new_arr_len, array=new_arr, length=len_val))
+			old_zero = self.b.new_temp()
+			self.b.emit(M.ArraySetLen(dest=old_zero, array=array_in, length=zero))
+			self.b.emit(M.ArrayDrop(elem_ty=elem_ty, array=old_zero))
+			return new_arr_len
+
+		def ensure_capacity(array_in: M.ValueId, *, len_val: M.ValueId, cap_val: M.ValueId, extra: M.ValueId) -> M.ValueId:
+			need = self.b.new_temp()
+			self.b.emit(M.BinaryOpInstr(dest=need, op=H.BinaryOp.ADD, left=len_val, right=extra))
+			# If len < cap and need <= cap, reuse. Otherwise grow.
+			need_ok = self.b.new_temp()
+			self.b.emit(M.BinaryOpInstr(dest=need_ok, op=H.BinaryOp.LE, left=need, right=cap_val))
+			ok_block = self.b.new_block("array_cap_ok")
+			grow_block = self.b.new_block("array_cap_grow")
+			join_block = self.b.new_block("array_cap_join2")
+			arr_local = f"__array_cap_arr{self.b.new_temp()}"
+			self.b.ensure_local(arr_local)
+			self._local_types[arr_local] = array_ty
+			self.b.set_terminator(
+				M.IfTerminator(cond=need_ok, then_target=ok_block.name, else_target=grow_block.name)
+			)
+
+			self.b.set_block(ok_block)
+			self.b.emit(M.StoreLocal(local=arr_local, value=array_in))
+			self.b.set_terminator(M.Goto(target=join_block.name))
+
+			self.b.set_block(grow_block)
+			new_arr = grow_array(array_in, len_val=len_val, cap_val=cap_val, need_val=need)
+			self.b.emit(M.StoreLocal(local=arr_local, value=new_arr))
+			self.b.set_terminator(M.Goto(target=join_block.name))
+
+			self.b.set_block(join_block)
+			out = self.b.new_temp()
+			self.b.emit(M.LoadLocal(dest=out, local=arr_local))
+			return out
+
+		if name in ("push", "insert"):
+			if name == "push" and len(expr.args) != 1:
+				raise AssertionError("Array.push arity mismatch reached MIR lowering (checker bug)")
+			if name == "insert" and len(expr.args) != 2:
+				raise AssertionError("Array.insert arity mismatch reached MIR lowering (checker bug)")
+			val_arg = expr.args[-1]
+			val = self.lower_expr(val_arg, expected_type=elem_ty)
+			len_val = self.b.new_temp()
+			self.b.emit(M.ArrayLen(dest=len_val, array=array_val))
+			cap_val = self.b.new_temp()
+			self.b.emit(M.ArrayCap(dest=cap_val, array=array_val))
+			one = self._const_int(1)
+			array_val2 = ensure_capacity(array_val, len_val=len_val, cap_val=cap_val, extra=one)
+			array_val = array_val2
+			if name == "push":
+				self.b.emit(M.ArrayElemInitUnchecked(elem_ty=elem_ty, array=array_val, index=len_val, value=val))
+				new_len = self.b.new_temp()
+				self.b.emit(M.BinaryOpInstr(dest=new_len, op=H.BinaryOp.ADD, left=len_val, right=one))
+				new_arr = self.b.new_temp()
+				self.b.emit(M.ArraySetLen(dest=new_arr, array=array_val, length=new_len))
+				self.b.emit(M.StoreRef(ptr=recv_ptr, value=new_arr, inner_ty=array_ty))
+				return True, None
+			# insert
+			idx_val = self.lower_expr(expr.args[0], expected_type=self._int_type)
+			eq_len = self.b.new_temp()
+			self.b.emit(M.BinaryOpInstr(dest=eq_len, op=H.BinaryOp.EQ, left=idx_val, right=len_val))
+			push_block = self.b.new_block("array_insert_push")
+			shift_block = self.b.new_block("array_insert_shift")
+			join_block = self.b.new_block("array_insert_join")
+			self.b.set_terminator(
+				M.IfTerminator(cond=eq_len, then_target=push_block.name, else_target=shift_block.name)
+			)
+
+			self.b.set_block(push_block)
+			self.b.emit(M.ArrayElemInitUnchecked(elem_ty=elem_ty, array=array_val, index=len_val, value=val))
+			new_len = self.b.new_temp()
+			self.b.emit(M.BinaryOpInstr(dest=new_len, op=H.BinaryOp.ADD, left=len_val, right=one))
+			new_arr = self.b.new_temp()
+			self.b.emit(M.ArraySetLen(dest=new_arr, array=array_val, length=new_len))
+			self.b.emit(M.StoreRef(ptr=recv_ptr, value=new_arr, inner_ty=array_ty))
+			self.b.set_terminator(M.Goto(target=join_block.name))
+
+			self.b.set_block(shift_block)
+			# Bounds-check: index must be < len.
+			tmp_ptr = self.b.new_temp()
+			self.b.emit(
+				M.AddrOfArrayElem(
+					dest=tmp_ptr,
+					array=array_val,
+					index=idx_val,
+					inner_ty=elem_ty,
+					is_mut=True,
+				)
+			)
+			last_idx = self.b.new_temp()
+			self.b.emit(M.BinaryOpInstr(dest=last_idx, op=H.BinaryOp.SUB, left=len_val, right=one))
+			idx_local = self._addr_taken_local("__array_ins_i", self._int_type, self._const_int(0))
+			self.b.emit(M.StoreLocal(local=idx_local, value=last_idx))
+
+			cond_block = self.b.new_block("array_insert_cond")
+			body_block = self.b.new_block("array_insert_body")
+			exit_block = self.b.new_block("array_insert_exit")
+			self.b.set_terminator(M.Goto(target=cond_block.name))
+
+			self.b.set_block(cond_block)
+			cur = self.b.new_temp()
+			self.b.emit(M.LoadLocal(dest=cur, local=idx_local))
+			ge = self.b.new_temp()
+			self.b.emit(M.BinaryOpInstr(dest=ge, op=H.BinaryOp.GE, left=cur, right=idx_val))
+			self.b.set_terminator(M.IfTerminator(cond=ge, then_target=body_block.name, else_target=exit_block.name))
+
+			self.b.set_block(body_block)
+			val_move = self._array_elem_take_value(elem_ty=elem_ty, array=array_val, index=cur)
+			next_i = self.b.new_temp()
+			self.b.emit(M.BinaryOpInstr(dest=next_i, op=H.BinaryOp.ADD, left=cur, right=one))
+			self.b.emit(M.ArrayElemInitUnchecked(elem_ty=elem_ty, array=array_val, index=next_i, value=val_move))
+			prev_i = self.b.new_temp()
+			self.b.emit(M.BinaryOpInstr(dest=prev_i, op=H.BinaryOp.SUB, left=cur, right=one))
+			self.b.emit(M.StoreLocal(local=idx_local, value=prev_i))
+			self.b.set_terminator(M.Goto(target=cond_block.name))
+
+			self.b.set_block(exit_block)
+			self.b.emit(M.ArrayElemInitUnchecked(elem_ty=elem_ty, array=array_val, index=idx_val, value=val))
+			new_len = self.b.new_temp()
+			self.b.emit(M.BinaryOpInstr(dest=new_len, op=H.BinaryOp.ADD, left=len_val, right=one))
+			new_arr = self.b.new_temp()
+			self.b.emit(M.ArraySetLen(dest=new_arr, array=array_val, length=new_len))
+			self.b.emit(M.StoreRef(ptr=recv_ptr, value=new_arr, inner_ty=array_ty))
+			self.b.set_terminator(M.Goto(target=join_block.name))
+
+			self.b.set_block(join_block)
+			return True, None
+
+		if name in ("remove", "swap_remove"):
+			if len(expr.args) != 1:
+				raise AssertionError("Array remove/swap_remove arity mismatch reached MIR lowering (checker bug)")
+			if not want_value:
+				return True, None
+			idx_val = self.lower_expr(expr.args[0], expected_type=self._int_type)
+			len_val = self.b.new_temp()
+			self.b.emit(M.ArrayLen(dest=len_val, array=array_val))
+			one = self._const_int(1)
+			val = self._array_elem_take_value(elem_ty=elem_ty, array=array_val, index=idx_val)
+			last_idx = self.b.new_temp()
+			self.b.emit(M.BinaryOpInstr(dest=last_idx, op=H.BinaryOp.SUB, left=len_val, right=one))
+			if name == "swap_remove":
+				need_swap = self.b.new_temp()
+				self.b.emit(M.BinaryOpInstr(dest=need_swap, op=H.BinaryOp.NE, left=idx_val, right=last_idx))
+				swap_block = self.b.new_block("array_swaprem_swap")
+				skip_block = self.b.new_block("array_swaprem_skip")
+				join_block = self.b.new_block("array_swaprem_join")
+				self.b.set_terminator(
+					M.IfTerminator(cond=need_swap, then_target=swap_block.name, else_target=skip_block.name)
+				)
+
+				self.b.set_block(swap_block)
+				tmp = self._array_elem_take_value(elem_ty=elem_ty, array=array_val, index=last_idx)
+				self.b.emit(M.ArrayElemInitUnchecked(elem_ty=elem_ty, array=array_val, index=idx_val, value=tmp))
+				self.b.set_terminator(M.Goto(target=join_block.name))
+
+				self.b.set_block(skip_block)
+				self.b.set_terminator(M.Goto(target=join_block.name))
+
+				self.b.set_block(join_block)
+			else:
+				start = self.b.new_temp()
+				self.b.emit(M.BinaryOpInstr(dest=start, op=H.BinaryOp.ADD, left=idx_val, right=one))
+				idx_local = self._addr_taken_local("__array_rem_i", self._int_type, self._const_int(0))
+				self.b.emit(M.StoreLocal(local=idx_local, value=start))
+
+				cond_block = self.b.new_block("array_remove_cond")
+				body_block = self.b.new_block("array_remove_body")
+				exit_block = self.b.new_block("array_remove_exit")
+				self.b.set_terminator(M.Goto(target=cond_block.name))
+
+				self.b.set_block(cond_block)
+				cur = self.b.new_temp()
+				self.b.emit(M.LoadLocal(dest=cur, local=idx_local))
+				lt = self.b.new_temp()
+				self.b.emit(M.BinaryOpInstr(dest=lt, op=H.BinaryOp.LT, left=cur, right=len_val))
+				self.b.set_terminator(M.IfTerminator(cond=lt, then_target=body_block.name, else_target=exit_block.name))
+
+				self.b.set_block(body_block)
+				tmp = self._array_elem_take_value(elem_ty=elem_ty, array=array_val, index=cur)
+				dest_idx = self.b.new_temp()
+				self.b.emit(M.BinaryOpInstr(dest=dest_idx, op=H.BinaryOp.SUB, left=cur, right=one))
+				self.b.emit(M.ArrayElemInitUnchecked(elem_ty=elem_ty, array=array_val, index=dest_idx, value=tmp))
+				next_i = self.b.new_temp()
+				self.b.emit(M.BinaryOpInstr(dest=next_i, op=H.BinaryOp.ADD, left=cur, right=one))
+				self.b.emit(M.StoreLocal(local=idx_local, value=next_i))
+				self.b.set_terminator(M.Goto(target=cond_block.name))
+
+				self.b.set_block(exit_block)
+			new_len = self.b.new_temp()
+			self.b.emit(M.BinaryOpInstr(dest=new_len, op=H.BinaryOp.SUB, left=len_val, right=one))
+			new_arr = self.b.new_temp()
+			self.b.emit(M.ArraySetLen(dest=new_arr, array=array_val, length=new_len))
+			self.b.emit(M.StoreRef(ptr=recv_ptr, value=new_arr, inner_ty=array_ty))
+			return True, val
+
+		if name == "set":
+			if len(expr.args) != 2:
+				raise AssertionError("Array.set arity mismatch reached MIR lowering (checker bug)")
+			idx_val = self.lower_expr(expr.args[0], expected_type=self._int_type)
+			val = self.lower_expr(expr.args[1], expected_type=elem_ty)
+			self.b.emit(M.ArrayIndexStore(elem_ty=elem_ty, array=array_val, index=idx_val, value=val))
+			return True, None
+
+		if name in ("clear", "reserve", "shrink_to_fit"):
+			if name == "clear":
+				if len(expr.args) != 0:
+					raise AssertionError("Array.clear arity mismatch reached MIR lowering (checker bug)")
+				len_val = self.b.new_temp()
+				self.b.emit(M.ArrayLen(dest=len_val, array=array_val))
+				zero = self._const_int(0)
+				idx_local = self._addr_taken_local("__array_clear_i", self._int_type, self._const_int(0))
+				self.b.emit(M.StoreLocal(local=idx_local, value=zero))
+
+				cond_block = self.b.new_block("array_clear_cond")
+				body_block = self.b.new_block("array_clear_body")
+				exit_block = self.b.new_block("array_clear_exit")
+				self.b.set_terminator(M.Goto(target=cond_block.name))
+
+				self.b.set_block(cond_block)
+				cur = self.b.new_temp()
+				self.b.emit(M.LoadLocal(dest=cur, local=idx_local))
+				lt = self.b.new_temp()
+				self.b.emit(M.BinaryOpInstr(dest=lt, op=H.BinaryOp.LT, left=cur, right=len_val))
+				self.b.set_terminator(M.IfTerminator(cond=lt, then_target=body_block.name, else_target=exit_block.name))
+
+				self.b.set_block(body_block)
+				self.b.emit(M.ArrayElemDrop(elem_ty=elem_ty, array=array_val, index=cur))
+				next_i = self.b.new_temp()
+				one = self._const_int(1)
+				self.b.emit(M.BinaryOpInstr(dest=next_i, op=H.BinaryOp.ADD, left=cur, right=one))
+				self.b.emit(M.StoreLocal(local=idx_local, value=next_i))
+				self.b.set_terminator(M.Goto(target=cond_block.name))
+
+				self.b.set_block(exit_block)
+				new_arr = self.b.new_temp()
+				self.b.emit(M.ArraySetLen(dest=new_arr, array=array_val, length=zero))
+				self.b.emit(M.StoreRef(ptr=recv_ptr, value=new_arr, inner_ty=array_ty))
+				return True, None
+
+			if name == "reserve":
+				if len(expr.args) != 1:
+					raise AssertionError("Array.reserve arity mismatch reached MIR lowering (checker bug)")
+				add_val = self.lower_expr(expr.args[0], expected_type=self._int_type)
+				zero = self._const_int(0)
+				neg = self.b.new_temp()
+				self.b.emit(M.BinaryOpInstr(dest=neg, op=H.BinaryOp.LE, left=add_val, right=zero))
+				skip_block = self.b.new_block("array_reserve_skip")
+				do_block = self.b.new_block("array_reserve_do")
+				join_block = self.b.new_block("array_reserve_join")
+				self.b.set_terminator(M.IfTerminator(cond=neg, then_target=skip_block.name, else_target=do_block.name))
+
+				self.b.set_block(skip_block)
+				self.b.set_terminator(M.Goto(target=join_block.name))
+
+				self.b.set_block(do_block)
+				len_val = self.b.new_temp()
+				self.b.emit(M.ArrayLen(dest=len_val, array=array_val))
+				cap_val = self.b.new_temp()
+				self.b.emit(M.ArrayCap(dest=cap_val, array=array_val))
+				new_arr = ensure_capacity(array_val, len_val=len_val, cap_val=cap_val, extra=add_val)
+				self.b.emit(M.StoreRef(ptr=recv_ptr, value=new_arr, inner_ty=array_ty))
+				self.b.set_terminator(M.Goto(target=join_block.name))
+
+				self.b.set_block(join_block)
+				return True, None
+
+			# shrink_to_fit
+			if len(expr.args) != 0:
+				raise AssertionError("Array.shrink_to_fit arity mismatch reached MIR lowering (checker bug)")
+			len_val = self.b.new_temp()
+			self.b.emit(M.ArrayLen(dest=len_val, array=array_val))
+			cap_val = self.b.new_temp()
+			self.b.emit(M.ArrayCap(dest=cap_val, array=array_val))
+			needs = self.b.new_temp()
+			self.b.emit(M.BinaryOpInstr(dest=needs, op=H.BinaryOp.LT, left=len_val, right=cap_val))
+			do_block = self.b.new_block("array_shrink_do")
+			skip_block = self.b.new_block("array_shrink_skip")
+			join_block = self.b.new_block("array_shrink_join")
+			self.b.set_terminator(M.IfTerminator(cond=needs, then_target=do_block.name, else_target=skip_block.name))
+
+			self.b.set_block(do_block)
+			new_arr = shrink_array(array_val, len_val=len_val)
+			self.b.emit(M.StoreRef(ptr=recv_ptr, value=new_arr, inner_ty=array_ty))
+			self.b.set_terminator(M.Goto(target=join_block.name))
+
+			self.b.set_block(skip_block)
+			self.b.set_terminator(M.Goto(target=join_block.name))
+
+			self.b.set_block(join_block)
+			return True, None
+
+		raise AssertionError("unreachable array intrinsic lowering (checker bug)")
 
 	def _recover_unknown_value(self, msg: str) -> M.ValueId:
 		if self._typed_mode == "strict":
@@ -1843,162 +2397,6 @@ class HIRToMIR:
 		self._local_types[dest] = self._unknown_type
 		return dest
 
-	def _is_array_iter_struct(self, ty_id: TypeId) -> bool:
-		"""Return True if `ty_id` is an internal array-iterator struct TypeId."""
-		return is_array_iter_struct(ty_id, self._type_table)
-
-	def _lower_array_iter_next(self, receiver: H.HExpr, iter_ty: TypeId) -> M.ValueId:
-		"""
-		Lower `__ArrayIter_<T>.next()` to a CFG that:
-		- checks `idx < arr.len`,
-		- returns `Some(arr[idx])` and increments idx on success,
-		- returns `None()` on exhaustion.
-
-		This is a compiler intrinsic (no trait dispatch yet).
-		"""
-		place_expr = None
-		if hasattr(H, "HPlaceExpr") and isinstance(receiver, getattr(H, "HPlaceExpr")):
-			place_expr = receiver
-		elif isinstance(receiver, H.HVar):
-			place_expr = H.HPlaceExpr(base=receiver, projections=[], loc=Span())
-		if place_expr is None:
-			return self._recover_unknown_value(
-				"array iterator next() requires a mutable iterator place in MVP (checker bug)"
-			)
-		iter_ptr, place_ty = self._lower_addr_of_place(place_expr, is_mut=True)
-		if place_ty != iter_ty:
-			raise AssertionError("array iterator next() receiver type mismatch (checker bug)")
-
-		iter_def = self._type_table.get(iter_ty)
-		if iter_def.kind is not TypeKind.STRUCT or not iter_def.param_types or len(iter_def.param_types) != 2:
-			raise AssertionError("array iterator type must be a 2-field struct (compiler bug)")
-		arr_ty, idx_ty = iter_def.param_types
-		if idx_ty != self._int_type:
-			raise AssertionError("array iterator idx field must be Int (compiler bug)")
-		arr_def = self._type_table.get(arr_ty)
-		if arr_def.kind is not TypeKind.REF or not arr_def.param_types:
-			raise AssertionError("array iterator arr field must be &Array<T> (compiler bug)")
-		array_ty = arr_def.param_types[0]
-		array_def = self._type_table.get(array_ty)
-		if array_def.kind is not TypeKind.ARRAY or not array_def.param_types:
-			raise AssertionError("array iterator arr field must be &Array<T> (compiler bug)")
-		elem_ty = array_def.param_types[0]
-
-		arr_ptr = self.b.new_temp()
-		self.b.emit(M.AddrOfField(dest=arr_ptr, base_ptr=iter_ptr, struct_ty=iter_ty, field_index=0, field_ty=arr_ty))
-		idx_ptr = self.b.new_temp()
-		self.b.emit(
-			M.AddrOfField(dest=idx_ptr, base_ptr=iter_ptr, struct_ty=iter_ty, field_index=1, field_ty=idx_ty, is_mut=True)
-		)
-		arr_ref = self.b.new_temp()
-		self.b.emit(M.LoadRef(dest=arr_ref, ptr=arr_ptr, inner_ty=arr_ty))
-		arr_val = self.b.new_temp()
-		self.b.emit(M.LoadRef(dest=arr_val, ptr=arr_ref, inner_ty=array_ty))
-		idx_val = self.b.new_temp()
-		self.b.emit(M.LoadRef(dest=idx_val, ptr=idx_ptr, inner_ty=idx_ty))
-
-		# Ensure Optional<T> exists and instantiate Optional<elem>.
-		opt_ty = self._optional_variant_type(elem_ty)
-
-		# Hidden local to merge the Optional result.
-		#
-		# Important: we intentionally merge through an address-taken local
-		# (AddrOfLocal + StoreRef/LoadRef) rather than StoreLocal/LoadLocal.
-		#
-		# `next()` lowering emits a small CFG diamond and is frequently used inside
-		# loops (`for` desugaring). If we represent the merge as a logical local,
-		# the SSA pass may conservatively place loop-header φ nodes for that local
-		# even though the value never escapes the `next()` intrinsic CFG. LLVM IR
-		# then needs correct forward-referenced φ typing. Using an address-taken
-		# local keeps the merge in memory and avoids emitting spurious φ nodes,
-		# making the intrinsic robust without depending on SSA/cfg heuristics.
-		result_local = f"__next_tmp{self.b.new_temp()}"
-		self.b.ensure_local(result_local)
-		self._local_types[result_local] = opt_ty
-		#
-		# Seed the storage with a well-typed value before taking its address.
-		#
-		# LLVM lowering needs to know the alloca element type for `AddrOfLocal`.
-		# For most address-taken locals this is inferred from an earlier StoreLocal
-		# (the first store determines the slot type). This synthetic initialization
-		# makes that inference reliable for the internal `next()` merge slot even
-		# though later writes go through `StoreRef`.
-		init_none = self.b.new_temp()
-		self.b.emit(M.ConstructVariant(dest=init_none, variant_ty=opt_ty, ctor="None", args=[]))
-		self.b.emit(M.StoreLocal(local=result_local, value=init_none))
-		self._local_types[init_none] = opt_ty
-		result_ptr = self.b.new_temp()
-		self.b.emit(M.AddrOfLocal(dest=result_ptr, local=result_local, is_mut=True))
-
-		then_block = self.b.new_block("array_next_some")
-		else_block = self.b.new_block("array_next_none")
-		join_block = self.b.new_block("array_next_join")
-		neg_block = self.b.new_block("array_next_neg")
-		cmp_block = self.b.new_block("array_next_cmp")
-
-		# Guard against negative idx before converting to Uint.
-		zero = self.b.new_temp()
-		self.b.emit(M.ConstInt(dest=zero, value=0))
-		self._local_types[zero] = self._int_type
-		idx_neg = self.b.new_temp()
-		self.b.emit(M.BinaryOpInstr(dest=idx_neg, op=M.BinaryOp.LT, left=idx_val, right=zero))
-		self.b.set_terminator(M.IfTerminator(cond=idx_neg, then_target=neg_block.name, else_target=cmp_block.name))
-
-		self.b.set_block(neg_block)
-		self.b.set_terminator(M.Unreachable())
-
-		self.b.set_block(cmp_block)
-		# Compare idx < len(arr) in Uint space.
-		len_val = self.b.new_temp()
-		self.b.emit(M.ArrayLen(dest=len_val, array=arr_val))
-		idx_u = self.b.new_temp()
-		self.b.emit(M.UintFromInt(dest=idx_u, value=idx_val))
-		self._local_types[idx_u] = self._uint_type
-		cmp = self.b.new_temp()
-		self.b.emit(M.BinaryOpInstr(dest=cmp, op=M.BinaryOp.LT, left=idx_u, right=len_val))
-		self.b.set_terminator(M.IfTerminator(cond=cmp, then_target=then_block.name, else_target=else_block.name))
-
-		# some branch
-		self.b.set_block(then_block)
-		elem_val = self.b.new_temp()
-		self.b.emit(M.ArrayIndexLoad(dest=elem_val, elem_ty=elem_ty, array=arr_val, index=idx_val))
-		if self._type_table.is_copy(elem_ty):
-			copy_val = self.b.new_temp()
-			self.b.emit(M.CopyValue(dest=copy_val, value=elem_val, ty=elem_ty))
-			self._local_types[copy_val] = elem_ty
-			elem_val = copy_val
-		else:
-			td = self._type_table.get(elem_ty)
-			if td.kind is not TypeKind.TYPEVAR:
-				return self._recover_unknown_value(
-					"array iterator next() requires Copy element type in MVP (checker bug)"
-				)
-		one = self.b.new_temp()
-		self.b.emit(M.ConstInt(dest=one, value=1))
-		self._local_types[one] = self._int_type
-		idx_next = self.b.new_temp()
-		self.b.emit(M.BinaryOpInstr(dest=idx_next, op=M.BinaryOp.ADD, left=idx_val, right=one))
-		self.b.emit(M.StoreRef(ptr=idx_ptr, value=idx_next, inner_ty=idx_ty))
-		some_val = self.b.new_temp()
-		self.b.emit(M.ConstructVariant(dest=some_val, variant_ty=opt_ty, ctor="Some", args=[elem_val]))
-		self.b.emit(M.StoreRef(ptr=result_ptr, value=some_val, inner_ty=opt_ty))
-		if self.b.block.terminator is None:
-			self.b.set_terminator(M.Goto(target=join_block.name))
-
-		# none branch
-		self.b.set_block(else_block)
-		none_val = self.b.new_temp()
-		self.b.emit(M.ConstructVariant(dest=none_val, variant_ty=opt_ty, ctor="None", args=[]))
-		self.b.emit(M.StoreRef(ptr=result_ptr, value=none_val, inner_ty=opt_ty))
-		if self.b.block.terminator is None:
-			self.b.set_terminator(M.Goto(target=join_block.name))
-
-		# join: load the Optional value
-		self.b.set_block(join_block)
-		dest = self.b.new_temp()
-		self.b.emit(M.LoadRef(dest=dest, ptr=result_ptr, inner_ty=opt_ty))
-		self._local_types[dest] = opt_ty
-		return dest
 
 	def _visit_expr_HDVInit(self, expr: H.HDVInit) -> M.ValueId:
 		arg_vals = [self.lower_expr(a) for a in expr.args]
@@ -2325,6 +2723,9 @@ class HIRToMIR:
 					self._lower_invoke(expr=stmt.expr)
 					return
 		if isinstance(stmt.expr, H.HMethodCall):
+			handled, _value = self._lower_array_intrinsic_method(stmt.expr, want_value=False)
+			if handled:
+				return
 			# Only special-case method calls when statement semantics differ from
 			# expression semantics:
 			# - can-throw calls in statement position must be "checked" and propagate,
@@ -3373,7 +3774,7 @@ class HIRToMIR:
 				if arg_ty is not None:
 					td = self._type_table.get(arg_ty)
 					if td.kind is TypeKind.ARRAY or (td.kind is TypeKind.SCALAR and td.name == "String"):
-						return self._uint_type
+						return self._int_type
 		if isinstance(expr, H.HInvoke):
 			info = self._call_info_for_expr_optional(expr)
 			if info is not None:
@@ -3390,7 +3791,7 @@ class HIRToMIR:
 				return None
 			ty_def = self._type_table.get(subj_ty)
 			if ty_def.kind is TypeKind.ARRAY or (ty_def.kind is TypeKind.SCALAR and ty_def.name == "String"):
-				return self._uint_type
+				return self._int_type
 			if expr.name == "attrs" and ty_def.kind is TypeKind.ERROR:
 				return self._dv_type
 		if isinstance(expr, H.HField):
@@ -3540,32 +3941,6 @@ class HIRToMIR:
 			info = self._call_info_for_expr_optional(expr)
 			if info is not None:
 				return info.sig.user_ret_type
-			# Iterator protocol intrinsics (see `_visit_expr_HMethodCall`).
-			if expr.method_name == "iter" and not expr.args:
-				recv_ty = self._infer_expr_type(expr.receiver)
-				if recv_ty is not None:
-					recv_def = self._type_table.get(recv_ty)
-					if recv_def.kind is TypeKind.REF and recv_def.param_types:
-						array_ty = recv_def.param_types[0]
-						if self._type_table.get(array_ty).kind is TypeKind.ARRAY:
-							return self._ensure_array_iter_struct(array_ty)
-			if expr.method_name == "next" and not expr.args:
-				recv_ty = self._infer_expr_type(expr.receiver)
-				if recv_ty is not None and self._is_array_iter_struct(recv_ty):
-					iter_def = self._type_table.get(recv_ty)
-					arr_ty = iter_def.param_types[0] if iter_def.param_types else None
-					if arr_ty is None:
-						return None
-					arr_def = self._type_table.get(arr_ty)
-					if arr_def.kind is not TypeKind.REF or not arr_def.param_types:
-						return None
-					array_ty = arr_def.param_types[0]
-					array_def = self._type_table.get(array_ty)
-					if array_def.kind is not TypeKind.ARRAY or not array_def.param_types:
-						return None
-					elem_ty = array_def.param_types[0]
-					opt_base = self._type_table.ensure_optional_base()
-					return self._type_table.ensure_instantiated(opt_base, [elem_ty])
 			recv_ty = self._infer_expr_type(expr.receiver)
 			if recv_ty is not None:
 				recv_def = self._type_table.get(recv_ty)
@@ -3765,6 +4140,14 @@ class HIRToMIR:
 			# Field projection: compute field address from a struct address.
 			if isinstance(proj, H.HPlaceField):
 				base_def = self._type_table.get(cur_ty)
+				if base_def.kind is TypeKind.REF and base_def.param_types:
+					if is_mut and not base_def.ref_mut:
+						raise AssertionError("mutable field place without &mut reached MIR lowering (checker bug)")
+					loaded_ptr = self.b.new_temp()
+					self.b.emit(M.LoadRef(dest=loaded_ptr, ptr=addr, inner_ty=cur_ty))
+					addr = loaded_ptr
+					cur_ty = base_def.param_types[0]
+					base_def = self._type_table.get(cur_ty)
 				if base_def.kind is not TypeKind.STRUCT:
 					raise AssertionError("field place base is not a struct (checker bug)")
 				info = self._type_table.struct_field(cur_ty, proj.name)
@@ -3789,6 +4172,14 @@ class HIRToMIR:
 			# Index projection: load the array value then compute element address.
 			if isinstance(proj, H.HPlaceIndex):
 				array_def = self._type_table.get(cur_ty)
+				if array_def.kind is TypeKind.REF and array_def.param_types:
+					if is_mut and not array_def.ref_mut:
+						raise AssertionError("mutable index place without &mut reached MIR lowering (checker bug)")
+					loaded_ptr = self.b.new_temp()
+					self.b.emit(M.LoadRef(dest=loaded_ptr, ptr=addr, inner_ty=cur_ty))
+					addr = loaded_ptr
+					cur_ty = array_def.param_types[0]
+					array_def = self._type_table.get(cur_ty)
 				if array_def.kind is not TypeKind.ARRAY or not array_def.param_types:
 					raise AssertionError("index place of non-array reached MIR lowering (checker bug)")
 				elem_ty = array_def.param_types[0]

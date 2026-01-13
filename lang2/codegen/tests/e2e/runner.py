@@ -28,7 +28,12 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 from typing import Iterable, Optional
 
-from lang2.driftc.parser import parse_drift_to_hir, parse_drift_files_to_hir, parse_drift_workspace_to_hir
+from lang2.driftc.parser import (
+	parse_drift_to_hir,
+	parse_drift_files_to_hir,
+	parse_drift_workspace_to_hir,
+	stdlib_root,
+)
 from lang2.driftc.module_lowered import flatten_modules
 from lang2.driftc.driftc import compile_to_llvm_ir_for_tests, ReservedNamespacePolicy
 from lang2.driftc.core.function_id import function_symbol
@@ -96,7 +101,16 @@ def _run_case(case_dir: Path) -> str:
 	expected = json.loads(expected_path.read_text())
 	if expected.get("skip"):
 		return "skipped (marked)"
-	allow_reserved = bool(expected.get("dev_allow_reserved_namespaces", False))
+	allow_reserved_flag = expected.get("dev_allow_reserved_namespaces")
+	if allow_reserved_flag is not None:
+		allow_reserved = bool(allow_reserved_flag)
+	else:
+		expect_diags = expected.get("diagnostics") or []
+		expects_reserved = any(
+			isinstance(d, dict) and "reserved module namespace" in str(d.get("message_contains", ""))
+			for d in expect_diags
+		)
+		allow_reserved = (stdlib_root() is not None) and not expects_reserved
 	module_paths = expected.get("module_paths") or []
 	module_args: list[str] = []
 	for mp in module_paths:
@@ -157,10 +171,20 @@ def _run_case(case_dir: Path) -> str:
 	# import resolution behavior is consistent:
 	# - missing module imports are diagnosed,
 	# - multi-file modules and multi-module cases share the same entry path.
-	allow_reserved = bool(expected.get("dev_allow_reserved_namespaces", False))
+	allow_reserved_flag = expected.get("dev_allow_reserved_namespaces")
+	if allow_reserved_flag is not None:
+		allow_reserved = bool(allow_reserved_flag)
+	else:
+		expect_diags = expected.get("diagnostics") or []
+		expects_reserved = any(
+			isinstance(d, dict) and "reserved module namespace" in str(d.get("message_contains", ""))
+			for d in expect_diags
+		)
+		allow_reserved = (stdlib_root() is not None) and not expects_reserved
 	modules, type_table, exception_catalog, module_exports, module_deps, parse_diags = parse_drift_workspace_to_hir(
 		drift_files,
 		module_paths=[case_dir / mp for mp in module_paths] or None,
+		stdlib_root=stdlib_root(),
 	)
 	func_hirs, signatures, fn_ids_by_name = flatten_modules(modules)
 	origin_by_fn_id: dict[object, Path] = {}

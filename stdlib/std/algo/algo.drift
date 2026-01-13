@@ -1,0 +1,11 @@
+module std.algo
+
+import std.iter as iter;
+
+export {
+	BinarySearchable
+};
+
+pub trait BinarySearchable<T> require Self is iter.RandomAccessReadable<T> {
+	fn compare_key(self: &Self, i: Int, key: &T) -> Int;
+}

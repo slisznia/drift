@@ -6,11 +6,10 @@ variant Maybe<T> {
 }
 
 fn main() nothrow -> Int{
-	val x = Maybe<Array<String>>::None();
+	val x = Maybe<Array<Int>>::None();
 	val y = match x{
 	Some(v) => { 1 },
 		None => { 0 },
 	};
 	return y;
 }
-

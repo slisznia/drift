@@ -65,8 +65,17 @@ class GlobalImplIndex:
 		inst = type_table.get_struct_instance(target_type_id)
 		if inst is not None:
 			return inst.base_id
+		vinst = type_table.get_variant_instance(target_type_id)
+		if vinst is not None:
+			return vinst.base_id
 		td = type_table.get(target_type_id)
+		if td.kind is TypeKind.ARRAY:
+			return type_table.array_base_id()
 		if td.kind is TypeKind.STRUCT:
+			return target_type_id
+		if td.kind is TypeKind.VARIANT:
+			return target_type_id
+		if td.kind is TypeKind.SCALAR:
 			return target_type_id
 		return None
 
@@ -152,8 +161,17 @@ def find_impl_method_conflicts(
 		inst = type_table.get_struct_instance(target_type_id)
 		if inst is not None:
 			return inst.base_id
+		vinst = type_table.get_variant_instance(target_type_id)
+		if vinst is not None:
+			return vinst.base_id
 		td = type_table.get(target_type_id)
+		if td.kind is TypeKind.ARRAY:
+			return type_table.array_base_id()
 		if td.kind is TypeKind.STRUCT:
+			return target_type_id
+		if td.kind is TypeKind.VARIANT:
+			return target_type_id
+		if td.kind is TypeKind.SCALAR:
 			return target_type_id
 		return None
 

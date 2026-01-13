@@ -8,7 +8,7 @@ from lang2.driftc.core.function_id import FunctionId
 from lang2.driftc.impl_index import GlobalImplIndex, ImplMeta
 from lang2.driftc.method_registry import CallableRegistry, CallableSignature, SelfMode, Visibility
 from lang2.driftc.driftc import compile_stubbed_funcs
-from lang2.driftc.parser import parse_drift_workspace_to_hir
+from lang2.driftc.parser import parse_drift_workspace_to_hir, stdlib_root
 from lang2.driftc.module_lowered import flatten_modules
 from lang2.driftc.trait_index import GlobalTraitImplIndex, GlobalTraitIndex
 from lang2.driftc.test_helpers import build_linked_world
@@ -135,6 +135,7 @@ def _resolve_main_block(
 	modules, type_table, _exc_catalog, module_exports, module_deps, diagnostics = parse_drift_workspace_to_hir(
 		paths,
 		module_paths=[mod_root],
+		stdlib_root=stdlib_root(),
 	)
 	func_hirs, signatures, fn_ids_by_name = flatten_modules(modules)
 	origin_by_fn_id: dict[FunctionId, Path] = {}
@@ -205,6 +206,7 @@ def _typecheck_named_fn(
 	modules, type_table, _exc_catalog, module_exports, module_deps, diagnostics = parse_drift_workspace_to_hir(
 		paths,
 		module_paths=[mod_root],
+		stdlib_root=stdlib_root(),
 	)
 	func_hirs, signatures, fn_ids_by_name = flatten_modules(modules)
 	assert diagnostics == []
@@ -265,7 +267,7 @@ def test_trait_dot_call_succeeds_with_use_trait(tmp_path: Path) -> None:
 		Path("m_box.drift"): """
 module m_box
 
-pub struct Box<T> { value: T }
+pub struct Box<T> { pub value: T }
 
 pub trait Show {
 	fn show(self: Self) -> Int
@@ -305,7 +307,7 @@ def test_trait_method_infers_method_type_params(tmp_path: Path) -> None:
 		Path("m_box.drift"): """
 module m_box
 
-pub struct Box<T> { value: T }
+pub struct Box<T> { pub value: T }
 
 pub trait MapOne {
 	fn map<U>(self: &Self, x: U) -> U
@@ -363,7 +365,7 @@ def test_trait_not_in_scope_is_not_found(tmp_path: Path) -> None:
 		Path("m_box.drift"): """
 module m_box
 
-pub struct Box<T> { value: T }
+pub struct Box<T> { pub value: T }
 
 pub trait Show {
 	fn show(self: Box<Int>) -> Int
@@ -399,7 +401,7 @@ def test_inherent_beats_trait_method(tmp_path: Path) -> None:
 		Path("m_box.drift"): """
 module m_box
 
-pub struct Box<T> { value: T }
+pub struct Box<T> { pub value: T }
 
 export { Box };
 
@@ -450,7 +452,7 @@ def test_trait_ambiguity_reports_modules(tmp_path: Path) -> None:
 		Path("m_box.drift"): """
 module m_box
 
-pub struct Box<T> { value: T }
+pub struct Box<T> { pub value: T }
 
 export { Box };
 """,
@@ -512,7 +514,7 @@ def test_trait_require_blocks_candidate(tmp_path: Path) -> None:
 		Path("m_box.drift"): """
 module m_box
 
-pub struct Box<T> { value: T }
+pub struct Box<T> { pub value: T }
 
 export { Box };
 """,
@@ -566,7 +568,7 @@ def test_trait_private_impl_not_visible_across_modules(tmp_path: Path) -> None:
 		Path("m_box.drift"): """
 module m_box
 
-pub struct Box<T> { value: T }
+pub struct Box<T> { pub value: T }
 
 export { Box };
 """,
@@ -619,7 +621,7 @@ def test_trait_same_trait_multiple_impls_ambiguous(tmp_path: Path) -> None:
 		Path("m_box.drift"): """
 module m_box
 
-pub struct Box<T> { value: T }
+pub struct Box<T> { pub value: T }
 
 export { Box };
 """,
@@ -782,7 +784,7 @@ def test_ufcs_call_without_use_trait(tmp_path: Path) -> None:
 		Path("m_box.drift"): """
 module m_box
 
-pub struct Box<T> { value: T }
+pub struct Box<T> { pub value: T }
 
 export { Box };
 """,
@@ -824,7 +826,7 @@ def test_ufcs_disambiguates_traits(tmp_path: Path) -> None:
 		Path("m_box.drift"): """
 module m_box
 
-pub struct Box<T> { value: T }
+pub struct Box<T> { pub value: T }
 
 export { Box };
 """,
@@ -882,7 +884,7 @@ def test_ufcs_respects_method_visibility(tmp_path: Path) -> None:
 		Path("m_box.drift"): """
 module m_box
 
-pub struct Box<T> { value: T }
+pub struct Box<T> { pub value: T }
 
 export { Box };
 """,
@@ -933,7 +935,7 @@ def test_ufcs_respects_requirements(tmp_path: Path) -> None:
 		Path("m_box.drift"): """
 module m_box
 
-pub struct Box<T> { value: T }
+pub struct Box<T> { pub value: T }
 
 export { Box };
 """,
@@ -1007,6 +1009,7 @@ fn main() nothrow -> Int{
 	_modules, _types, _exc, _exports, _deps, diagnostics = parse_drift_workspace_to_hir(
 		paths,
 		module_paths=[mod_root],
+		stdlib_root=stdlib_root(),
 	)
 	assert diagnostics
 	msgs = [d.message for d in diagnostics]
@@ -1020,7 +1023,7 @@ module m_box
 
 export { Box };
 
-pub struct Box<T> { value: T }
+pub struct Box<T> { pub value: T }
 """,
 		Path("m_trait/lib.drift"): """
 module m_trait
@@ -1049,6 +1052,7 @@ implement t.Show for m_box.Box<Int> {
 	_modules, type_table, _exc_catalog, module_exports, _deps, diagnostics = parse_drift_workspace_to_hir(
 		paths,
 		module_paths=[mod_root],
+		stdlib_root=stdlib_root(),
 	)
 	assert diagnostics == []
 	module_ids: dict[object, int] = {None: 0}
@@ -1077,7 +1081,7 @@ module m_box
 
 export { Box };
 
-pub struct Box<T> { value: T }
+pub struct Box<T> { pub value: T }
 """,
 		Path("m_traits/lib.drift"): """
 module m_traits
@@ -1109,6 +1113,7 @@ fn main() nothrow -> Int{
 	modules, type_table, _exc_catalog, module_exports, module_deps, diagnostics = parse_drift_workspace_to_hir(
 		paths,
 		module_paths=[mod_root],
+		stdlib_root=stdlib_root(),
 	)
 	assert diagnostics == []
 	func_hirs, signatures, fn_ids_by_name = flatten_modules(modules)
@@ -1159,7 +1164,7 @@ def test_use_trait_is_module_scoped(tmp_path: Path) -> None:
 		Path("m_box.drift"): """
 module m_box
 
-pub struct Box<T> { value: T }
+pub struct Box<T> { pub value: T }
 
 pub trait Show {
 	fn show(self: Self) -> Int
@@ -1205,7 +1210,7 @@ def test_use_trait_module_scope_applies_to_captureless_lambda(tmp_path: Path) ->
 		Path("m_box/lib.drift"): """
 module m_box
 
-pub struct Point { value: Int }
+pub struct Point { pub value: Int }
 
 pub trait Show { fn show(self: Point) -> Int }
 
@@ -1247,6 +1252,7 @@ fn bad() nothrow -> Int {
 	modules, type_table, _exc_catalog, module_exports, module_deps, diagnostics = parse_drift_workspace_to_hir(
 		paths,
 		module_paths=[mod_root],
+		stdlib_root=stdlib_root(),
 	)
 	assert diagnostics == []
 	func_hirs, signatures, fn_ids_by_name = flatten_modules(modules)

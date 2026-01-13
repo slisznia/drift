@@ -48,3 +48,72 @@ fn get(xs: Array<File>) -> Int {
 		tmp_path,
 	)
 	assert any("cannot copy value of type 'File" in d.message for d in diags)
+
+
+def test_array_pop_non_copy_allowed(tmp_path: Path) -> None:
+	diags = _check_fn(
+		"""
+struct File(data: Array<Int>);
+
+fn pop_ok() -> Int {
+	var inner = [1];
+	var arr: Array<File> = [];
+	arr.push(File(data = move inner));
+	val _v = arr.pop();
+	return 0;
+}
+""",
+		"pop_ok",
+		tmp_path,
+	)
+	assert diags == []
+
+
+def test_array_literal_non_copy_rejected(tmp_path: Path) -> None:
+	diags = _check_fn(
+		"""
+struct File { data: Array<Int> }
+
+fn make() -> Int {
+	var inner = [1];
+	val f = File(data = move inner);
+	val xs = [f];
+	return 0;
+}
+""",
+		"make",
+		tmp_path,
+	)
+	assert any("array literals require Copy element type" in d.message for d in diags)
+
+
+def test_array_index_borrow_non_copy_allowed(tmp_path: Path) -> None:
+	diags = _check_fn(
+		"""
+struct File { data: Array<Int> }
+
+fn borrow_ok(xs: &Array<File>) -> Int {
+	val _p = &xs[0];
+	return 0;
+}
+""",
+		"borrow_ok",
+		tmp_path,
+	)
+	assert diags == []
+
+
+def test_array_index_borrow_mut_non_copy_allowed(tmp_path: Path) -> None:
+	diags = _check_fn(
+		"""
+struct File { data: Array<Int> }
+
+fn borrow_mut_ok(xs: &mut Array<File>) -> Int {
+	val _p = &mut xs[0];
+	return 0;
+}
+""",
+		"borrow_mut_ok",
+		tmp_path,
+	)
+	assert diags == []

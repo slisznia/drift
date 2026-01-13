@@ -29,6 +29,7 @@ def _optional_type_table_obj(*, package_id: str, provided_nominals: list[dict[st
 				"module_id": "lang.core",
 				"name": "Optional",
 				"type_params": ["T"],
+				"tombstone_ctor": "None",
 				"arms": [
 					{"name": "None", "fields": []},
 					{

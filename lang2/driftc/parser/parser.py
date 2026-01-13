@@ -913,6 +913,9 @@ def _build_variant_def(tree: Tree) -> VariantDef:
 	body_node = next(child for child in tree.children if isinstance(child, Tree) and _name(child) == "variant_body")
 	arms: list[VariantArm] = []
 	for arm_node in (c for c in body_node.children if isinstance(c, Tree) and _name(c) == "variant_arm"):
+		tombstone = any(
+			isinstance(child, Tree) and _name(child) == "tombstone_marker" for child in arm_node.children
+		)
 		arm_name_token = next(child for child in arm_node.children if isinstance(child, Token) and child.type == "NAME")
 		fields_node = next((c for c in arm_node.children if isinstance(c, Tree) and _name(c) == "variant_fields"), None)
 		fields: list[VariantField] = []
@@ -923,7 +926,7 @@ def _build_variant_def(tree: Tree) -> VariantDef:
 					fname_tok = next(child for child in field_node.children if isinstance(child, Token) and child.type == "NAME")
 					ftype_node = next(child for child in field_node.children if isinstance(child, Tree) and _name(child) == "type_expr")
 					fields.append(VariantField(name=fname_tok.value, type_expr=_build_type_expr(ftype_node)))
-		arms.append(VariantArm(name=arm_name_token.value, fields=fields, loc=_loc(arm_node)))
+		arms.append(VariantArm(name=arm_name_token.value, fields=fields, tombstone=tombstone, loc=_loc(arm_node)))
 	return VariantDef(name=name_token.value, type_params=type_params, arms=arms, loc=loc)
 
 
@@ -1068,6 +1071,14 @@ def _build_trait_method_sig(tree: Tree) -> TraitMethodSig:
 def _build_trait_def(tree: Tree) -> TraitDef:
 	loc = _loc(tree)
 	name_token = next(child for child in tree.children if isinstance(child, Token) and child.type == "NAME")
+	type_params: list[str] = []
+	type_param_locs: list[Located] = []
+	type_params_node = next((c for c in tree.children if isinstance(c, Tree) and _name(c) == "type_params"), None)
+	if type_params_node is not None:
+		for tok in type_params_node.children:
+			if isinstance(tok, Token) and tok.type == "NAME":
+				type_params.append(tok.value)
+				type_param_locs.append(_loc_from_token(tok))
 	require_node = next((c for c in tree.children if isinstance(c, Tree) and _name(c) == "require_clause"), None)
 	body_node = next((c for c in tree.children if isinstance(c, Tree) and _name(c) == "trait_body"), None)
 	methods: list[TraitMethodSig] = []
@@ -1082,7 +1093,14 @@ def _build_trait_def(tree: Tree) -> TraitDef:
 			elif _name(item) == "trait_method_sig":
 				methods.append(_build_trait_method_sig(item))
 	require = _build_require_clause(require_node) if require_node is not None else None
-	return TraitDef(name=name_token.value, methods=methods, require=require, loc=loc)
+	return TraitDef(
+		name=name_token.value,
+		methods=methods,
+		require=require,
+		loc=loc,
+		type_params=type_params,
+		type_param_locs=type_param_locs,
+	)
 
 
 def _build_function(tree: Tree) -> FunctionDef:
@@ -1745,7 +1763,8 @@ def _collect_struct_fields(tree: Tree) -> List[Tree]:
 def _build_struct_field(tree: Tree) -> StructField:
     name_token = next(child for child in tree.children if isinstance(child, Token) and child.type == "NAME")
     type_node = next(child for child in tree.children if isinstance(child, Tree) and _name(child) == "type_expr")
-    return StructField(name=name_token.value, type_expr=_build_type_expr(type_node))
+    is_pub = any(isinstance(child, Token) and child.type == "PUB" for child in tree.children)
+    return StructField(name=name_token.value, type_expr=_build_type_expr(type_node), is_pub=is_pub)
 
 
 def _build_import_stmt(tree: Tree) -> ImportStmt:

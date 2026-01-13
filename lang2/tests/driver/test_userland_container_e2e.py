@@ -53,7 +53,7 @@ implement Show for Int {
 	pub fn show(self: &Int) -> Int { return 1; }
 }
 
-pub struct Vec<T> require T is Show { value: T }
+pub struct Vec<T> require T is Show { pub value: T }
 
 implement<T> Vec<T> {
 	pub fn len(self: &Vec<T>) -> Int { return 1; }

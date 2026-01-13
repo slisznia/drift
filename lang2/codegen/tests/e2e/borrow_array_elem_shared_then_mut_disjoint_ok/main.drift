@@ -1,0 +1,7 @@
+fn main() nothrow -> Int{
+	var arr = [1, 2];
+	val p = &arr[0];
+	val q = &mut arr[1];
+	*q = *q + 1;
+	return arr[1];
+}

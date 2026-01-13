@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from lang2.driftc.parser import parse_drift_workspace_to_hir, parse_drift_files_to_hir
+from lang2.driftc.parser import parse_drift_workspace_to_hir, parse_drift_files_to_hir, stdlib_root
 from lang2.driftc.module_lowered import flatten_modules
 from lang2.driftc.traits.world import TraitKey
 
@@ -21,6 +21,7 @@ def _parse_workspace(tmp_path: Path, files: dict[Path, str]):
 	modules, type_table, exc_catalog, module_exports, module_deps, diagnostics = parse_drift_workspace_to_hir(
 		paths,
 		module_paths=[mod_root],
+		stdlib_root=stdlib_root(),
 	)
 	func_hirs, sigs, fn_ids_by_name = flatten_modules(modules)
 	return func_hirs, sigs, fn_ids_by_name, type_table, exc_catalog, module_exports, module_deps, diagnostics

@@ -316,6 +316,7 @@ class HCall(HExpr):
 	kwargs: List["HKwArg"] = field(default_factory=list)
 	type_args: Optional[list["HTypeExpr"]] = None
 	callsite_id: Optional[int] = None
+	origin: str | None = None
 
 
 @dataclass
@@ -580,6 +581,7 @@ class HMove(HExpr):
 	# Canonical place operand (stage1→stage2 boundary).
 	subject: "HPlaceExpr"
 	loc: Span = field(default_factory=Span)
+	is_implicit: bool = False
 
 
 @dataclass

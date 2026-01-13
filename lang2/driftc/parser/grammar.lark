@@ -33,6 +33,7 @@ CALL_TYPE_LT.2: /<\s*type\b/
 THROW.2: /throw\b/
 NOTHROW.2: /nothrow\b/
 VARIANT.2: /variant\b/
+TOMBSTONE.2: /@tombstone\b/
 MATCH.2: /match\b/
 DEFAULT.2: /default\b/
 # Note: `>>=` must be recognized before `>>` (longest match).
@@ -149,7 +150,7 @@ implement_body: "{" (implement_item | TERMINATOR)* "}"
 implement_item: PUB func_def -> implement_func_pub
              | func_def      -> implement_func
 
-trait_def: TRAIT NAME require_clause? trait_body
+trait_def: TRAIT NAME type_params? require_clause? trait_body
 trait_body: "{" (trait_item | TERMINATOR)* "}"
 trait_item: trait_method_sig TERMINATOR*
 trait_method_sig: FN_KW ident type_params? "(" [params] ")" return_sig
@@ -278,7 +279,7 @@ struct_def: "struct" NAME type_params? require_clause? tuple_struct TERMINATOR
 struct_body: tuple_struct | block_struct
 tuple_struct: "(" struct_field_list? ")"
 struct_field_list: struct_field (COMMA struct_field)*
-struct_field: NAME COLON type_expr
+struct_field: PUB? NAME COLON type_expr
 block_struct: "{" TERMINATOR* (block_field TERMINATOR*)* "}"
 block_field: struct_field [COMMA]
 
@@ -297,7 +298,8 @@ domain_clause: "domain" NAME
 variant_def: VARIANT NAME type_params? variant_body TERMINATOR?
 type_params: ("<" | TYPE_LT) NAME (COMMA NAME)* (">" | TYPE_GT)
 variant_body: "{" (variant_arm (COMMA | TERMINATOR)*)+ "}"
-variant_arm: NAME variant_fields?
+variant_arm: tombstone_marker? NAME variant_fields?
+tombstone_marker: TOMBSTONE
 variant_fields: "(" [variant_field_list] ")"
 variant_field_list: variant_field (COMMA variant_field)*
 variant_field: NAME COLON type_expr

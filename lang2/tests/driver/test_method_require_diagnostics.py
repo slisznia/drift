@@ -6,7 +6,7 @@ from pathlib import Path
 from lang2.driftc.core.function_id import FunctionId
 from lang2.driftc.impl_index import GlobalImplIndex
 from lang2.driftc.method_registry import CallableRegistry, CallableSignature, SelfMode, Visibility
-from lang2.driftc.parser import parse_drift_workspace_to_hir
+from lang2.driftc.parser import parse_drift_workspace_to_hir, stdlib_root
 from lang2.driftc.module_lowered import flatten_modules
 from lang2.driftc.trait_index import GlobalTraitImplIndex, GlobalTraitIndex
 from lang2.driftc.test_helpers import build_linked_world
@@ -77,6 +77,7 @@ def _typecheck_main(files: dict[Path, str], *, main_module: str, tmp_path: Path)
 	modules, type_table, _exc_catalog, module_exports, module_deps, diagnostics = parse_drift_workspace_to_hir(
 		paths,
 		module_paths=[mod_root],
+		stdlib_root=stdlib_root(),
 	)
 	assert diagnostics == []
 	func_hirs, signatures, fn_ids_by_name = flatten_modules(modules)

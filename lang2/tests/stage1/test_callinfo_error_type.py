@@ -5,7 +5,7 @@ from pathlib import Path
 
 from lang2.driftc.core.types_core import TypeKind, TypeTable
 from lang2.driftc.method_registry import CallableRegistry, CallableSignature, Visibility
-from lang2.driftc.parser import parse_drift_workspace_to_hir
+from lang2.driftc.parser import parse_drift_workspace_to_hir, stdlib_root
 from lang2.driftc.module_lowered import flatten_modules
 from lang2.driftc.stage1.normalize import normalize_hir
 from lang2.driftc.type_checker import TypeChecker
@@ -46,7 +46,10 @@ fn main() -> Int { return boom(); }
 """.lstrip()
 	)
 
-	modules, table, _exc, _exports, _deps, diags = parse_drift_workspace_to_hir([mod_a, mod_b])
+	modules, table, _exc, _exports, _deps, diags = parse_drift_workspace_to_hir(
+		[mod_a, mod_b],
+		stdlib_root=stdlib_root(),
+	)
 	assert not diags
 	func_hirs, sigs, _fn_ids = flatten_modules(modules)
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from lang2.driftc.parser import parse_drift_workspace_to_hir
+from lang2.driftc.parser import parse_drift_workspace_to_hir, stdlib_root
 
 
 def _write_file(path: Path, content: str) -> None:
@@ -39,6 +39,7 @@ fn main() nothrow -> Int { return 0; }
 			"m_a": {"traits": ["TA"]},
 			"m_b": {"types": {"structs": ["SB"]}},
 		},
+		stdlib_root=stdlib_root(),
 	)
 	assert diagnostics
 	assert any(d.code == "E-IMPL-ORPHAN" for d in diagnostics)

@@ -1,0 +1,10 @@
+{
+  "description": "e2e: borrow array elem shared then mut rejected",
+  "diagnostics": [
+    {
+      "message_contains": "cannot take mutable borrow while borrow active on 'arr'",
+      "phase": "borrowcheck"
+    }
+  ],
+  "exit_code": 1
+}

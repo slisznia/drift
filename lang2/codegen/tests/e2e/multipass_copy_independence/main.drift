@@ -1,0 +1,45 @@
+module m_main
+
+import std.iter as iter;
+
+struct CounterIter {
+	idx: Int
+}
+
+implement iter.SinglePassIterator<Int> for CounterIter {
+	pub fn next(self: &mut CounterIter) -> Optional<Int> {
+		if self.idx < 1 {
+			val out = self.idx;
+			self.idx = out + 1;
+			return Optional::Some(out);
+		}
+		return Optional::None();
+	}
+}
+
+implement iter.MultiPassIterator<Int> for CounterIter {
+}
+
+implement iter.Iterable<CounterIter, Int, CounterIter> for CounterIter {
+	pub fn iter(self: CounterIter) -> CounterIter {
+		return self;
+	}
+}
+
+fn main() nothrow -> Int {
+	var it0 = CounterIter(idx = 0);
+	var it1 = it0;
+	var ax: Int = -1;
+	var bx: Int = -1;
+	for x0 in it0 {
+		ax = x0;
+	}
+	for x1 in it1 {
+		bx = x1;
+	}
+	if ax < 0 { return 1; }
+	if bx < 0 { return 2; }
+	if ax != 0 { return 3; }
+	if bx != 0 { return 4; }
+	return 0;
+}

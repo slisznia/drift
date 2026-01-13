@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from lang2.driftc.parser import parse_drift_workspace_to_hir
+from lang2.driftc.parser import parse_drift_workspace_to_hir, stdlib_root
 
 
 def _write_file(path: Path, content: str) -> None:
@@ -25,6 +25,7 @@ fn main() nothrow -> Int { return 0; }
 	_modules, _table, _exc, _exports, _deps, diags = parse_drift_workspace_to_hir(
 		paths,
 		module_paths=[tmp_path],
+		stdlib_root=stdlib_root(),
 	)
 	assert diags == []
 
@@ -50,8 +51,8 @@ fn dup() nothrow -> Int { return 2; }
 	)
 	paths_a = [a, b]
 	paths_b = [b, a]
-	*_rest, diags_a = parse_drift_workspace_to_hir(paths_a, module_paths=[tmp_path])
-	*_rest, diags_b = parse_drift_workspace_to_hir(paths_b, module_paths=[tmp_path])
+	*_rest, diags_a = parse_drift_workspace_to_hir(paths_a, module_paths=[tmp_path], stdlib_root=stdlib_root())
+	*_rest, diags_b = parse_drift_workspace_to_hir(paths_b, module_paths=[tmp_path], stdlib_root=stdlib_root())
 
 	def _diag_key(d):
 		span = getattr(d, "span", None)

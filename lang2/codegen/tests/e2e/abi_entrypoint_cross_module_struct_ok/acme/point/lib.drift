@@ -2,7 +2,7 @@ module acme.point
 
 export { Point, make_point };
 
-pub struct Point(x: Int, y: Int);
+pub struct Point { pub x: Int, pub y: Int }
 
 pub fn make_point() -> Point {
 	return Point(x = 1, y = 2);

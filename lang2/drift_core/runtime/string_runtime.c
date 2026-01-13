@@ -27,7 +27,10 @@ static DriftStringHeader *drift_string_header(char *data) {
 	return (DriftStringHeader *)(data - sizeof(DriftStringHeader));
 }
 
-static char *drift_string_alloc(drift_size_t len) {
+static char *drift_string_alloc(drift_isize len) {
+	if (len < 0) {
+		return NULL;
+	}
 	size_t total = sizeof(DriftStringHeader) + (size_t)len + 1;
 	DriftStringHeader *hdr = (DriftStringHeader *)malloc(total);
 	if (!hdr) {
@@ -43,20 +46,28 @@ DriftString drift_string_from_cstr(const char *cstr) {
 		DriftString s = {0, NULL};
 		return s;
 	}
-	drift_size_t len = (drift_size_t)strlen(cstr);
+	drift_isize len = (drift_isize)strlen(cstr);
 	char *buf = drift_string_alloc(len);
+	if (!buf) {
+		DriftString s = {0, NULL};
+		return s;
+	}
 	memcpy(buf, cstr, (size_t)len);
 	buf[len] = '\0';
 	DriftString s = {len, buf};
 	return s;
 }
 
-DriftString drift_string_from_utf8_bytes(const char *data, drift_size_t len) {
+DriftString drift_string_from_utf8_bytes(const char *data, drift_isize len) {
 	if (data == NULL || len == 0) {
 		DriftString s = {0, NULL};
 		return s;
 	}
 	char *buf = drift_string_alloc(len);
+	if (!buf) {
+		DriftString s = {0, NULL};
+		return s;
+	}
 	memcpy(buf, data, (size_t)len);
 	buf[len] = '\0';
 	DriftString s = {len, buf};
@@ -70,7 +81,7 @@ DriftString drift_string_from_int64(int64_t v) {
 	if (n < 0) {
 		abort();
 	}
-	return drift_string_from_utf8_bytes(buf, (drift_size_t)n);
+	return drift_string_from_utf8_bytes(buf, (drift_isize)n);
 }
 
 DriftString drift_string_from_uint64(uint64_t v) {
@@ -80,7 +91,7 @@ DriftString drift_string_from_uint64(uint64_t v) {
 	if (n < 0) {
 		abort();
 	}
-	return drift_string_from_utf8_bytes(buf, (drift_size_t)n);
+	return drift_string_from_utf8_bytes(buf, (drift_isize)n);
 }
 
 DriftString drift_string_from_f64(double v) {
@@ -98,7 +109,7 @@ DriftString drift_string_from_f64(double v) {
 	if (n <= 0) {
 		abort();
 	}
-	return drift_string_from_utf8_bytes(buf, (drift_size_t)n);
+	return drift_string_from_utf8_bytes(buf, (drift_isize)n);
 }
 
 DriftString drift_string_from_bool(int v) {
@@ -124,12 +135,16 @@ DriftString drift_string_from_bool(int v) {
 	return s;
 }
 
-DriftString drift_string_literal(const char *data, drift_size_t len) {
+DriftString drift_string_literal(const char *data, drift_isize len) {
 	if (data == NULL || len == 0) {
 		DriftString s = {0, NULL};
 		return s;
 	}
 	char *buf = drift_string_alloc(len);
+	if (!buf) {
+		DriftString s = {0, NULL};
+		return s;
+	}
 	memcpy(buf, data, (size_t)len);
 	buf[len] = '\0';
 	DriftString s = {len, buf};
@@ -140,13 +155,17 @@ DriftString drift_string_concat(DriftString a, DriftString b) {
 	if ((size_t)-1 - (size_t)a.len < (size_t)b.len) {
 		abort();
 	}
-	drift_size_t total = a.len + b.len;
+	drift_isize total = a.len + b.len;
 	/* For empty result, canonicalize to len=0, data=NULL to avoid heap allocs. */
 	if (total == 0) {
 		DriftString s = {0, NULL};
 		return s;
 	}
 	char *buf = drift_string_alloc(total);
+	if (!buf) {
+		DriftString s = {0, NULL};
+		return s;
+	}
 	if (a.len > 0 && a.data) {
 		memcpy(buf, a.data, (size_t)a.len);
 	}

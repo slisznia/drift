@@ -44,15 +44,17 @@ def test_module_lowering_non_throwing_call():
 		main_id: FnInfo(fn_id=main_id, name="drift_main", declared_can_throw=False, return_type_id=int_ty),
 	}
 
+	word_bits = host_word_bits()
+	word_ty = f"i{word_bits}"
 	mod = lower_module_to_llvm(
 		funcs={callee_id: callee_mir, main_id: main_mir},
 		ssa_funcs={callee_id: callee_ssa, main_id: main_ssa},
-		fn_infos=fn_infos, word_bits=host_word_bits())
+		fn_infos=fn_infos, word_bits=word_bits)
 	ir = mod.render()
 
-	assert "define %drift.isize @callee()" in ir
-	assert "define %drift.isize @drift_main()" in ir
-	assert "call %drift.isize @callee()" in ir
+	assert f"define {word_ty} @callee()" in ir
+	assert f"define {word_ty} @drift_main()" in ir
+	assert f"call {word_ty} @callee()" in ir
 
 
 def test_module_lowering_can_throw_callee_call():
@@ -88,14 +90,16 @@ def test_module_lowering_can_throw_callee_call():
 		main_id: FnInfo(fn_id=main_id, name="drift_main", declared_can_throw=False, return_type_id=int_ty),
 	}
 
+	word_bits = host_word_bits()
+	word_ty = f"i{word_bits}"
 	mod = lower_module_to_llvm(
 		funcs={callee_id: callee_mir, main_id: main_mir},
 		ssa_funcs={callee_id: callee_ssa, main_id: main_ssa},
 		fn_infos=fn_infos,
-		type_table=table, word_bits=host_word_bits())
+		type_table=table, word_bits=word_bits)
 	ir = mod.render()
 
 	assert "define %FnResult_Int_Error @callee()" in ir
-	assert "define %drift.isize @drift_main()" in ir
+	assert f"define {word_ty} @drift_main()" in ir
 	assert "call %FnResult_Int_Error @callee()" in ir
 	assert "extractvalue %FnResult_Int_Error" in ir

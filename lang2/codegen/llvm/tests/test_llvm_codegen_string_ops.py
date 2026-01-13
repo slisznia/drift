@@ -37,11 +37,13 @@ def test_string_len_ir():
 	 sig = FnSignature(name="main", param_type_ids=[], return_type_id=int_ty)
 	 info = FnInfo(fn_id=fn_id, name="main", declared_can_throw=False, signature=sig, return_type_id=int_ty)
 
-	 mod = lower_module_to_llvm({fn_id: func}, {fn_id: ssa}, {fn_id: info}, type_table=table, word_bits=host_word_bits())
+	 word_bits = host_word_bits()
+	 word_ty = f"i{word_bits}"
+	 mod = lower_module_to_llvm({fn_id: func}, {fn_id: ssa}, {fn_id: info}, type_table=table, word_bits=word_bits)
 	 ir = mod.render()
 
 	 assert "extractvalue %DriftString %t0, 0" in ir
-	 assert "define %drift.isize @main()" in ir
+	 assert f"define {word_ty} @main()" in ir
 
 
 def test_string_eq_and_concat_ir():

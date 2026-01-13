@@ -546,6 +546,13 @@ class Checker:
 						expected = self._type_table.ensure_ref(sig.impl_target_type_id)
 					elif sig.self_mode == "ref_mut":
 						expected = self._type_table.ensure_ref_mut(sig.impl_target_type_id)
+					if expected is not None:
+						target_td = self._type_table.get(sig.impl_target_type_id)
+						if target_td.kind is TypeKind.REF:
+							if sig.self_mode == "ref" and not target_td.ref_mut:
+								expected = sig.impl_target_type_id
+							elif sig.self_mode == "ref_mut" and target_td.ref_mut:
+								expected = sig.impl_target_type_id
 					impl_args = getattr(sig, "impl_target_type_args", None)
 					receiver_ok = expected is not None and recv_ty == expected
 					if not receiver_ok and impl_args:
@@ -1406,6 +1413,18 @@ class Checker:
 				if expr.name in ("len", "cap", "capacity"):
 					subj_ty = self._infer_expr_type(expr.subject)
 				if subj_ty is None:
+					subj_ty = self._infer_expr_type(expr.subject)
+					if subj_ty is None:
+						return None
+					subj_def = self.table.get(subj_ty)
+					if subj_def.kind is TypeKind.REF and subj_def.param_types:
+						subj_ty = subj_def.param_types[0]
+						subj_def = self.table.get(subj_ty)
+					if subj_def.kind is TypeKind.STRUCT:
+						info = self.table.struct_field(subj_ty, expr.name)
+						if info is not None:
+							_, field_ty = info
+							return field_ty
 					return None
 				return checker._len_cap_result_type(subj_ty)
 
@@ -1904,16 +1923,16 @@ class Checker:
 		"""
 		Map a parser TypeExpr-like object (name/args) or simple string/tuple into a
 		TypeId using the shared TypeTable. This mirrors the resolver and is used for
-		declared local types. The len/cap rule (Array/String → Uint) is centralized
+		declared local types. The len/cap rule (Array/String → Int) is centralized
 		in the type resolver; this helper simply resolves declared type names.
 		"""
 		return resolve_opaque_type(raw, self._type_table, module_id=module_id)
 
 	def _len_cap_result_type(self, subj_ty: TypeId) -> Optional[TypeId]:
-		"""Return Uint when length/capacity is requested on Array or String; otherwise None."""
+		"""Return Int when length/capacity is requested on Array or String; otherwise None."""
 		td = self._type_table.get(subj_ty)
 		if td.kind is TypeKind.ARRAY or (td.kind is TypeKind.SCALAR and td.name == "String"):
-			return self._type_table.ensure_uint()
+			return self._type_table.ensure_int()
 		return None
 
 	def _walk_hir(
@@ -2810,16 +2829,16 @@ class Checker:
 								value_types[(fn_id, dest)] = fn_ty
 								changed = True
 						elif isinstance(instr, StringLen) and dest is not None:
-							if value_types.get((fn_id, dest)) != self._uint_type:
-								value_types[(fn_id, dest)] = self._uint_type
+							if value_types.get((fn_id, dest)) != self._int_type:
+								value_types[(fn_id, dest)] = self._int_type
 								changed = True
 						elif isinstance(instr, ArrayLen) and dest is not None:
-							if value_types.get((fn_id, dest)) != self._uint_type:
-								value_types[(fn_id, dest)] = self._uint_type
+							if value_types.get((fn_id, dest)) != self._int_type:
+								value_types[(fn_id, dest)] = self._int_type
 								changed = True
 						elif isinstance(instr, ArrayCap) and dest is not None:
-							if value_types.get((fn_id, dest)) != self._uint_type:
-								value_types[(fn_id, dest)] = self._uint_type
+							if value_types.get((fn_id, dest)) != self._int_type:
+								value_types[(fn_id, dest)] = self._int_type
 								changed = True
 						elif isinstance(instr, ArrayIndexLoad) and dest is not None:
 							if instr.elem_ty is not None and value_types.get((fn_id, dest)) != instr.elem_ty:

@@ -230,9 +230,18 @@ def decode_type_table_obj(obj: Mapping[str, Any]) -> DecodedTypeTable:
 					raise ValueError("invalid struct schema field entry")
 				fname = fobj.get("name")
 				fty = fobj.get("type_expr")
+				is_pub = fobj.get("is_pub", False)
 				if not isinstance(fname, str):
 					raise ValueError("invalid struct schema field name")
-				field_schemas.append(StructFieldSchema(name=fname, type_expr=_decode_generic_type_expr(fty)))
+				if not isinstance(is_pub, bool):
+					raise ValueError("invalid struct schema field is_pub")
+				field_schemas.append(
+					StructFieldSchema(
+						name=fname,
+						type_expr=_decode_generic_type_expr(fty),
+						is_pub=is_pub,
+					)
+				)
 			type_params: list[str] = []
 			if type_params_obj is not None:
 				if not isinstance(type_params_obj, list):
@@ -278,8 +287,11 @@ def decode_type_table_obj(obj: Mapping[str, Any]) -> DecodedTypeTable:
 			name = schema_obj.get("name")
 			type_params = schema_obj.get("type_params")
 			arms_obj = schema_obj.get("arms")
+			tombstone_ctor = schema_obj.get("tombstone_ctor")
 			if not isinstance(schema_mid, str) or not isinstance(name, str) or not isinstance(type_params, list) or not isinstance(arms_obj, list):
 				raise ValueError("invalid variant schema fields")
+			if tombstone_ctor is not None and not isinstance(tombstone_ctor, str):
+				raise ValueError("invalid variant schema tombstone_ctor")
 			arms: list[VariantArmSchema] = []
 			for arm_obj in arms_obj:
 				if not isinstance(arm_obj, dict):
@@ -298,9 +310,23 @@ def decode_type_table_obj(obj: Mapping[str, Any]) -> DecodedTypeTable:
 						raise ValueError("invalid variant field name")
 					fields.append(VariantFieldSchema(name=fname, type_expr=_decode_generic_type_expr(fty)))
 				arms.append(VariantArmSchema(name=arm_name, fields=fields))
+			if tombstone_ctor is not None and tombstone_ctor not in {arm.name for arm in arms}:
+				raise ValueError("invalid variant schema tombstone_ctor (no matching arm)")
+			if tombstone_ctor is not None:
+				tomb_arm = next((arm for arm in arms if arm.name == tombstone_ctor), None)
+				if tomb_arm is None:
+					raise ValueError("invalid variant schema tombstone_ctor (no matching arm)")
+				if tomb_arm.fields:
+					raise ValueError("invalid variant schema tombstone_ctor (must have no payload)")
 			if base_def.module_id != schema_mid or base_def.name != name:
 				raise ValueError("variant schema does not match base VARIANT TypeDef")
-			variant_schemas[base_id] = VariantSchema(module_id=schema_mid, name=name, type_params=[str(x) for x in type_params], arms=arms)
+			variant_schemas[base_id] = VariantSchema(
+				module_id=schema_mid,
+				name=name,
+				type_params=[str(x) for x in type_params],
+				arms=arms,
+				tombstone_ctor=tombstone_ctor,
+			)
 
 	struct_instances_obj = obj.get("struct_instances")
 	struct_instances: dict[TypeId, tuple[TypeId, list[TypeId]]] = {}

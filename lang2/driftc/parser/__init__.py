@@ -28,6 +28,11 @@ def _p_diag(*args, **kwargs):
 		kwargs["phase"] = "parser"
 	return Diagnostic(*args, **kwargs)
 
+
+def stdlib_root() -> Path | None:
+	root = Path(__file__).resolve().parents[3] / "stdlib"
+	return root if root.exists() else None
+
 from lang2.driftc.core.span import Span
 from lang2.driftc.core.types_core import TypeKind, TypeParamId
 from lang2.driftc.core.event_codes import event_code, PAYLOAD_MASK
@@ -72,8 +77,7 @@ def _validate_module_id(
 
 	This is shared by:
 	- single-module builds (`parse_drift_files_to_hir`), and
-	- workspace builds (`parse_drift_workspace_to_hir`), including inferred ids
-	  from `-M/--module-path`.
+	- workspace builds (`parse_drift_workspace_to_hir`), including inferred ids from `-M/--module-path`.
 	"""
 	if not isinstance(mid, str) or not mid:
 		return [
@@ -1118,6 +1122,7 @@ def parse_drift_workspace_to_hir(
 	external_module_exports: dict[str, dict[str, object]] | None = None,
 	external_module_packages: dict[str, str] | None = None,
 	package_id: str | None = None,
+	stdlib_root: Path | None = None,
 	) -> Tuple[
 	Dict[str, ModuleLowered],
 	"TypeTable",
@@ -1152,6 +1157,27 @@ def parse_drift_workspace_to_hir(
 	from lang2.driftc.traits.world import TraitKey
 
 	diagnostics: list[Diagnostic] = []
+	user_paths = list(paths)
+	user_path_set = {p.resolve() for p in user_paths}
+
+	if stdlib_root is not None:
+		std_root = stdlib_root
+		std_paths = sorted(std_root.rglob("*.drift"))
+		if std_paths:
+			seen: set[Path] = set()
+			all_paths: list[Path] = []
+			for path in list(paths) + std_paths:
+				resolved = path.resolve()
+				if resolved in seen:
+					continue
+				seen.add(resolved)
+				all_paths.append(path)
+			paths = all_paths
+			if module_paths is not None:
+				roots = list(module_paths)
+				if std_root not in roots:
+					roots.append(std_root)
+				module_paths = roots
 	if not paths:
 		return {}, TypeTable(), {}, {}, {}, [_p_diag(message="no input files", severity="error")]
 
@@ -1223,13 +1249,14 @@ def parse_drift_workspace_to_hir(
 		return best[0]
 
 	# Group by module id (declared only).
-	multiple_files = len(parsed) > 1
+	multiple_files = len(user_path_set) > 1
 	parsed = sorted(parsed, key=lambda it: _effective_module_id(it[1]))
 	by_module: dict[str, list[tuple[Path, parser_ast.Program]]] = {}
 	roots_by_module: dict[str, set[Path]] = {}
 	# For pinned diagnostics, keep at least one representative file per (module, root).
 	root_file_by_module: dict[str, dict[Path, Path]] = {}
 	for path, prog in parsed:
+		is_user_file = path.resolve() in user_path_set
 		if module_paths:
 			root = _file_root_for_path(path)
 			if root is None:
@@ -1259,7 +1286,7 @@ def parse_drift_workspace_to_hir(
 			roots_by_module.setdefault(declared, set()).add(root)
 			root_file_by_module.setdefault(declared, {}).setdefault(root, path)
 		else:
-			if getattr(prog, "module", None) is None and multiple_files:
+			if getattr(prog, "module", None) is None and multiple_files and is_user_file:
 				diagnostics.append(
 					_p_diag(
 						message="module declaration is required for multi-file builds",
@@ -2346,6 +2373,7 @@ def parse_drift_workspace_to_hir(
 						type_expr=_generic_type_expr_from_parser(
 							_f.type_expr, type_params=list(getattr(_s, "type_params", []) or [])
 						),
+						is_pub=bool(getattr(_f, "is_pub", False)),
 					)
 					for _f in getattr(_s, "fields", []) or []
 				]
@@ -2356,7 +2384,30 @@ def parse_drift_workspace_to_hir(
 			if _reject_reserved_nominal_type(getattr(_v, "name", ""), loc=getattr(_v, "loc", None), diagnostics=diagnostics):
 				continue
 			arms: list[VariantArmSchema] = []
+			tombstone_ctor: str | None = None
+			invalid_variant = False
 			for _arm in getattr(_v, "arms", []) or []:
+				if getattr(_arm, "tombstone", False):
+					if tombstone_ctor is not None:
+						diagnostics.append(
+							_p_diag(
+								message=f"variant '{_v.name}' has multiple @tombstone arms",
+								severity="error",
+								span=Span.from_loc(getattr(_arm, "loc", None)),
+							)
+						)
+						invalid_variant = True
+					else:
+						tombstone_ctor = _arm.name
+					if getattr(_arm, "fields", []) or []:
+						diagnostics.append(
+							_p_diag(
+								message=f"variant '{_v.name}' tombstone arm '{_arm.name}' must have no payload",
+								severity="error",
+								span=Span.from_loc(getattr(_arm, "loc", None)),
+							)
+						)
+						invalid_variant = True
 				fields = [
 					VariantFieldSchema(
 						name=_f.name,
@@ -2367,12 +2418,15 @@ def parse_drift_workspace_to_hir(
 					for _f in getattr(_arm, "fields", []) or []
 				]
 				arms.append(VariantArmSchema(name=_arm.name, fields=fields))
+			if invalid_variant:
+				continue
 			try:
 				shared_type_table.declare_variant(
 					_mid,
 					_v.name,
 					list(getattr(_v, "type_params", []) or []),
 					arms,
+					tombstone_ctor=tombstone_ctor,
 				)
 			except ValueError as err:
 				diagnostics.append(_p_diag(message=str(err), severity="error", span=Span.from_loc(getattr(_v, "loc", None))))
@@ -3102,7 +3156,30 @@ def _lower_parsed_program_to_hir(
 		if _reject_reserved_nominal_type(getattr(v, "name", ""), loc=getattr(v, "loc", None), diagnostics=diagnostics):
 			continue
 		arms: list[VariantArmSchema] = []
+		tombstone_ctor: str | None = None
+		invalid_variant = False
 		for arm in getattr(v, "arms", []) or []:
+			if getattr(arm, "tombstone", False):
+				if tombstone_ctor is not None:
+					diagnostics.append(
+						_p_diag(
+							message=f"variant '{v.name}' has multiple @tombstone arms",
+							severity="error",
+							span=Span.from_loc(getattr(arm, "loc", None)),
+						)
+					)
+					invalid_variant = True
+				else:
+					tombstone_ctor = arm.name
+				if getattr(arm, "fields", []) or []:
+					diagnostics.append(
+						_p_diag(
+							message=f"variant '{v.name}' tombstone arm '{arm.name}' must have no payload",
+							severity="error",
+							span=Span.from_loc(getattr(arm, "loc", None)),
+						)
+					)
+					invalid_variant = True
 			fields = [
 				VariantFieldSchema(
 					name=f.name,
@@ -3111,12 +3188,15 @@ def _lower_parsed_program_to_hir(
 				for f in getattr(arm, "fields", []) or []
 			]
 			arms.append(VariantArmSchema(name=arm.name, fields=fields))
+		if invalid_variant:
+			continue
 		try:
 			type_table.declare_variant(
 				module_id,
 				v.name,
 				list(getattr(v, "type_params", []) or []),
 				arms,
+				tombstone_ctor=tombstone_ctor,
 			)
 		except ValueError as err:
 			diagnostics.append(_p_diag(message=str(err), severity="error", span=Span.from_loc(getattr(v, "loc", None))))
@@ -3128,11 +3208,12 @@ def _lower_parsed_program_to_hir(
 		field_templates = []
 		for f in getattr(s, "fields", []):
 			field_templates.append(
-				StructFieldSchema(
-					name=f.name,
-					type_expr=_generic_type_expr_from_parser(f.type_expr, type_params=type_params),
+					StructFieldSchema(
+						name=f.name,
+						type_expr=_generic_type_expr_from_parser(f.type_expr, type_params=type_params),
+						is_pub=bool(getattr(f, "is_pub", False)),
+					)
 				)
-			)
 			if type_params:
 				continue
 			ft = resolve_opaque_type(f.type_expr, type_table, module_id=module_id)
@@ -3212,16 +3293,7 @@ def _lower_parsed_program_to_hir(
 		func_hirs[fn_id] = hir_block
 	# Methods inside implement blocks.
 	for impl_index, impl in enumerate(getattr(prog, "implements", [])):
-		# Reject reference-qualified impl headers in v1 (must be nominal types).
-		if getattr(impl.target, "name", None) in {"&", "&mut"}:
-			diagnostics.append(
-				_p_diag(
-					message="implement header must use a nominal type, not a reference type",
-					severity="error",
-					span=Span.from_loc(getattr(impl, "loc", None)),
-				)
-			)
-			continue
+		# Allow reference-qualified impl headers (e.g., for Iterable<&T, ...>).
 		impl_type_params = list(getattr(impl, "type_params", []) or [])
 		impl_type_param_locs = list(getattr(impl, "type_param_locs", []) or [])
 		impl_target_str = _type_expr_key_str(impl.target)
@@ -3509,4 +3581,4 @@ def parse_drift_to_hir(
 	return module, table, excs, diags
 
 
-__all__ = ["parse_drift_to_hir", "parse_drift_files_to_hir", "parse_drift_workspace_to_hir"]
+__all__ = ["parse_drift_to_hir", "parse_drift_files_to_hir", "parse_drift_workspace_to_hir", "stdlib_root"]

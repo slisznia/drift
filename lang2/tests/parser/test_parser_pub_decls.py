@@ -16,7 +16,7 @@ pub const ANSWER: Int = 1;
 
 pub struct S { }
 pub exception Boom()
-pub variant Opt<T> { Some(value: T), None }
+pub variant Opt<T> { @tombstone None, Some(value: T) }
 pub trait Debug { fn fmt(self: Int) -> Int }
 
 pub implement S {

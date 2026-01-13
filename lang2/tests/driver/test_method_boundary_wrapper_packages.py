@@ -10,7 +10,7 @@ from lang2.driftc.impl_index import GlobalImplIndex, find_impl_method_conflicts
 from lang2.driftc.method_registry import CallableRegistry, CallableSignature, SelfMode, Visibility
 from lang2.driftc.packages.provider_v0 import collect_external_exports, load_package_v0
 from lang2.driftc.packages.type_table_link_v0 import import_type_tables_and_build_typeid_maps
-from lang2.driftc.parser import parse_drift_workspace_to_hir
+from lang2.driftc.parser import parse_drift_workspace_to_hir, stdlib_root
 from lang2.driftc.module_lowered import flatten_modules
 from lang2.driftc.stage1.call_info import CallTargetKind
 from lang2.driftc.test_helpers import build_linked_world
@@ -332,6 +332,7 @@ fn main() nothrow -> Int{
 		paths,
 		module_paths=[src_root],
 		external_module_exports=external_exports,
+		stdlib_root=stdlib_root(),
 	)
 	assert diagnostics == []
 	func_hirs, signatures, fn_ids_by_name = flatten_modules(modules)
@@ -443,6 +444,7 @@ fn main() -> Int {
 		paths,
 		module_paths=[src_root],
 		external_module_exports=external_exports,
+		stdlib_root=stdlib_root(),
 	)
 	assert diagnostics == []
 	func_hirs, signatures, fn_ids_by_name = flatten_modules(modules)

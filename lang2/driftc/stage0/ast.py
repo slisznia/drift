@@ -51,10 +51,11 @@ class SelfRef(TraitSubject):
 @dataclass
 class TypeNameRef(TraitSubject):
 	name: str
+	module_id: Optional[str] = None
 	loc: Span = field(default_factory=Span)
 
 	def __hash__(self) -> int:
-		return hash(self.name)
+		return hash((self.module_id, self.name))
 
 
 @dataclass

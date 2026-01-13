@@ -1,0 +1,9 @@
+fn main() nothrow -> Int {
+	var xs = [1, 2, 3];
+	xs.clear();
+	xs.push(4);
+	xs.push(5);
+	xs.reserve(10);
+	xs.shrink_to_fit();
+	return xs.len + xs.cap;
+}

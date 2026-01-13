@@ -10,7 +10,7 @@ from lang2.driftc.driftc import _inject_method_boundary_wrappers
 from lang2.driftc.method_registry import CallableRegistry, CallableSignature, SelfMode, Visibility
 from lang2.driftc.impl_index import GlobalImplIndex, find_impl_method_conflicts
 from lang2.driftc.driftc import main as driftc_main
-from lang2.driftc.parser import parse_drift_workspace_to_hir
+from lang2.driftc.parser import parse_drift_workspace_to_hir, stdlib_root
 from lang2.driftc.module_lowered import flatten_modules
 from lang2.driftc.stage1.call_info import CallTargetKind
 from lang2.driftc.test_helpers import build_linked_world
@@ -149,6 +149,7 @@ def _resolve_main_block(
 	modules, type_table, _exc_catalog, module_exports, module_deps, diagnostics = parse_drift_workspace_to_hir(
 		paths,
 		module_paths=[mod_root],
+		stdlib_root=stdlib_root(),
 	)
 	func_hirs, signatures, fn_ids_by_name = flatten_modules(modules)
 	assert diagnostics == []
@@ -200,7 +201,7 @@ module m_box
 
 export { Box };
 
-pub struct Box<T> { value: T }
+pub struct Box<T> { pub value: T }
 
 implement<T> Box<T> {
 	pub fn tag(self: Box<T>) -> Int { return 1; }
@@ -235,7 +236,7 @@ module m_types
 
 export { Box };
 
-pub struct Box<T> { value: T }
+pub struct Box<T> { pub value: T }
 """,
 		Path("m_a/lib.drift"): """
 module m_a
@@ -275,6 +276,7 @@ fn main() nothrow -> Int{
 	modules, type_table, _exc_catalog, _exports, module_deps, diagnostics = parse_drift_workspace_to_hir(
 		paths,
 		module_paths=[mod_root],
+		stdlib_root=stdlib_root(),
 	)
 	func_hirs, signatures, fn_ids_by_name = flatten_modules(modules)
 	assert diagnostics == []
@@ -332,7 +334,7 @@ module m_types
 
 export { Box };
 
-pub struct Box<T> { value: T }
+pub struct Box<T> { pub value: T }
 """,
 		Path("m_a/lib.drift"): """
 module m_a
@@ -382,7 +384,7 @@ module m_box
 
 export { Box };
 
-pub struct Box<T> { value: T }
+pub struct Box<T> { pub value: T }
 """,
 		Path("m_impl/lib.drift"): """
 module m_impl
@@ -426,7 +428,7 @@ module m_types
 
 export { Box };
 
-pub struct Box<T> { value: T }
+pub struct Box<T> { pub value: T }
 """,
 		Path("m_impl/lib.drift"): """
 module m_impl
@@ -456,6 +458,7 @@ fn main() nothrow -> Int{
 	modules, type_table, _exc_catalog, _exports, module_deps, diagnostics = parse_drift_workspace_to_hir(
 		paths,
 		module_paths=[mod_root],
+		stdlib_root=stdlib_root(),
 	)
 	func_hirs, signatures, fn_ids_by_name = flatten_modules(modules)
 	assert diagnostics == []
@@ -503,7 +506,7 @@ module m_box
 
 export { Box };
 
-pub struct Box<T> { value: T }
+pub struct Box<T> { pub value: T }
 """,
 		Path("m_impl/lib.drift"): """
 module m_impl
@@ -544,7 +547,7 @@ module m_box
 
 export { Box };
 
-pub struct Box<T> { value: T }
+pub struct Box<T> { pub value: T }
 
 implement Box<Int> {
 	pub fn tag(self: Box<Int>) -> Int { return 1; }
@@ -562,6 +565,7 @@ implement Box<Int> {
 	_modules, type_table, _exc_catalog, exports, module_deps, diagnostics = parse_drift_workspace_to_hir(
 		paths,
 		module_paths=[mod_root],
+		stdlib_root=stdlib_root(),
 	)
 	_func_hirs, signatures, _fn_ids_by_name = flatten_modules(_modules)
 	assert diagnostics == []
@@ -584,7 +588,7 @@ module m_types
 
 export { Box };
 
-pub struct Box { value: Int }
+pub struct Box { pub value: Int }
 """,
 		Path("m_impl_a/lib.drift"): """
 module m_impl_a
@@ -652,7 +656,7 @@ module mod_a
 
 export { Point };
 
-pub struct Point { x: Int }
+pub struct Point { pub x: Int }
 
 implement Point {
 \tpub fn bump(self: Point) nothrow -> Int { return self.x + 1; }
@@ -676,6 +680,7 @@ fn main() nothrow -> Int{
 	modules, type_table, _exc_catalog, module_exports, module_deps, diagnostics = parse_drift_workspace_to_hir(
 		paths,
 		module_paths=[mod_root],
+		stdlib_root=stdlib_root(),
 	)
 	assert diagnostics == []
 	func_hirs, signatures, fn_ids_by_name = flatten_modules(modules)
@@ -763,7 +768,7 @@ module m_box
 
 export { Box };
 
-pub struct Box<T> { value: T }
+pub struct Box<T> { pub value: T }
 
 implement Box<Int> {
 	pub fn tag(self: Box<Int>) -> Int { return 1; }
@@ -778,6 +783,7 @@ implement Box<Int> {
 	_modules, type_table, _exc_catalog, exports, _deps, diagnostics = parse_drift_workspace_to_hir(
 		paths,
 		module_paths=[mod_root],
+		stdlib_root=stdlib_root(),
 	)
 	assert diagnostics == []
 	module_ids: dict[object, int] = {None: 0}

@@ -4,7 +4,7 @@ import re
 from pathlib import Path
 
 from lang2.driftc.driftc import compile_to_llvm_ir_for_tests
-from lang2.driftc.parser import parse_drift_workspace_to_hir
+from lang2.driftc.parser import parse_drift_workspace_to_hir, stdlib_root
 from lang2.driftc.module_lowered import flatten_modules
 
 
@@ -44,7 +44,7 @@ def test_cross_module_exported_call_uses_wrapper_not_impl(tmp_path: Path) -> Non
 				"",
 				"export { Point, make_point };",
 				"",
-				"pub struct Point(x: Int, y: Int);",
+				"pub struct Point { pub x: Int, pub y: Int }",
 				"",
 				"pub fn make_point() -> Point {",
 				"\treturn Point(x = 1, y = 2);",
@@ -73,6 +73,7 @@ def test_cross_module_exported_call_uses_wrapper_not_impl(tmp_path: Path) -> Non
 	modules, type_table, exception_catalog, module_exports, module_deps, diags = parse_drift_workspace_to_hir(
 		drift_files,
 		module_paths=[tmp_path],
+		stdlib_root=stdlib_root(),
 	)
 	assert not diags
 	func_hirs, signatures, _fn_ids_by_name = flatten_modules(modules)

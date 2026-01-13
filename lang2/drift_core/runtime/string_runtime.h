@@ -5,16 +5,16 @@
 #include <stdint.h>
 #include <stdlib.h>
 
-typedef size_t drift_size_t;
+typedef ptrdiff_t drift_isize;
 
 typedef struct DriftString {
-	drift_size_t len;
+	drift_isize len;
 	char *data;
 } DriftString;
 
-DriftString drift_string_literal(const char *data, drift_size_t len);
+DriftString drift_string_literal(const char *data, drift_isize len);
 DriftString drift_string_from_cstr(const char *cstr);
-DriftString drift_string_from_utf8_bytes(const char *data, drift_size_t len);
+DriftString drift_string_from_utf8_bytes(const char *data, drift_isize len);
 DriftString drift_string_from_int64(int64_t v);
 DriftString drift_string_from_uint64(uint64_t v);
 // Deterministic float formatting (Ryu) for Drift `Float` once the type exists end-to-end.

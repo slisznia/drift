@@ -1,0 +1,4 @@
+{
+  "description": "e2e: borrow array elem shared then mut disjoint ok",
+  "exit_code": 3
+}

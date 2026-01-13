@@ -1,4 +1,4 @@
-fn byte_len_ref(s: &String) nothrow -> Uint {
+fn byte_len_ref(s: &String) nothrow -> Int {
 	return byte_length(s);
 }
 

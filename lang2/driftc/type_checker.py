@@ -117,9 +117,9 @@ from lang2.driftc.traits.linked_world import (
 	LinkedWorld,
 	RequireEnv,
 	BOOL_TRUE,
+	link_trait_worlds,
 )
 from lang2.driftc.method_resolver import MethodResolution, ResolutionError, resolve_method_call
-from lang2.driftc.core.iter_intrinsics import ensure_array_iter_struct, is_array_iter_struct
 from lang2.driftc.parser import ast as parser_ast
 from lang2.driftc.traits.solver import (
 	Env as TraitEnv,
@@ -713,9 +713,13 @@ class TypeChecker:
 			return PlaceBase(kind=kind, local_id=bid, name=name)
 
 		def _receiver_place(expr: H.HExpr) -> Optional[Place]:
+			if isinstance(expr, H.HBorrow):
+				return place_from_expr(expr.subject, base_lookup=_receiver_base_lookup)
 			return place_from_expr(expr, base_lookup=_receiver_base_lookup)
 
 		def _receiver_can_mut_borrow(expr: H.HExpr, place: Optional[Place]) -> bool:
+			if isinstance(expr, H.HBorrow):
+				return bool(expr.is_mut)
 			if place is None:
 				return False
 			has_deref = any(isinstance(p, DerefProj) for p in place.projections)
@@ -973,13 +977,7 @@ class TypeChecker:
 		)
 		linked = linked_world
 		if linked is None and has_trait_worlds:
-			diagnostics.append(
-				_tc_diag(
-					message="internal: linked trait world missing for typecheck",
-					severity="error",
-					span=Span(),
-				)
-			)
+			linked = link_trait_worlds(trait_worlds)
 		global_trait_world: TraitWorld | None = linked.global_world if linked is not None else None
 		visible_trait_world: TraitWorld | None = None
 		if linked is not None and visible_modules is not None:
@@ -1023,14 +1021,15 @@ class TypeChecker:
 			if not visible_names and current_module_name is not None:
 				visible_names.append(current_module_name)
 			visible_trait_world = linked.visible_world(visible_names)
+		default_package = getattr(self.type_table, "package_id", None)
+		module_packages = getattr(self.type_table, "module_packages", None)
 		require_env_local = require_env
 		if require_env_local is None and has_trait_worlds:
-			diagnostics.append(
-				_tc_diag(
-					message="internal: RequireEnv missing for typecheck",
-					severity="error",
-					span=Span(),
-				)
+			require_env_local = RequireEnv(
+				requires_by_fn={},
+				requires_by_struct={},
+				default_package=default_package,
+				module_packages=module_packages or {},
 			)
 		type_param_map: dict[str, TypeParamId] = {}
 		type_param_names: dict[TypeParamId, str] = {}
@@ -1123,9 +1122,6 @@ class TypeChecker:
 					module_packages=getattr(self.type_table, "module_packages", None),
 				)
 			return key
-
-		default_package = getattr(self.type_table, "package_id", None)
-		module_packages = getattr(self.type_table, "module_packages", None)
 
 		def _type_key_label(key: object) -> str:
 			pkg = getattr(key, "package_id", None)
@@ -2547,13 +2543,33 @@ class TypeChecker:
 			inst = self.type_table.get_struct_instance(ty)
 			if inst is not None:
 				return inst.base_id, list(inst.type_args)
+			vinst = self.type_table.get_variant_instance(ty)
+			if vinst is not None:
+				return vinst.base_id, list(vinst.type_args)
+			td = self.type_table.get(ty)
+			if td.kind is TypeKind.ARRAY and td.param_types:
+				return self.type_table.array_base_id(), [td.param_types[0]]
+			if td.kind is TypeKind.STRUCT:
+				param_ids = self.type_table.get_struct_type_param_ids(ty)
+				if param_ids:
+					schema = self.type_table.struct_bases.get(ty)
+					names = list(schema.type_params) if schema is not None else []
+					typevars: list[TypeId] = []
+					for idx, pid in enumerate(param_ids):
+						name = names[idx] if idx < len(names) else None
+						typevars.append(self.type_table.ensure_typevar(pid, name=name))
+					return ty, typevars
+			if td.kind in {TypeKind.STRUCT, TypeKind.VARIANT, TypeKind.SCALAR}:
+				return ty, []
 			return ty, []
 
 		def _enforce_struct_requires(ty: TypeId, span: Span) -> None:
 			base_id, args = _struct_base_and_args(ty)
+			base_def = self.type_table.get(base_id)
+			if base_def.kind is not TypeKind.STRUCT:
+				return
 			if any(_type_has_typevar(a) for a in args):
 				return
-			base_def = self.type_table.get(base_id)
 			base_mod = getattr(base_def, "module_id", None)
 			base_pkg = (
 				getattr(self.type_table, "module_packages", {}).get(base_mod, getattr(self.type_table, "package_id", None))
@@ -2580,6 +2596,7 @@ class TypeChecker:
 				default_package=default_package,
 				module_packages=module_packages or {},
 				assumed_true=set(fn_require_assumed),
+				type_table=self.type_table,
 			)
 			res = prove_expr(global_trait_world, env, subst, req) if global_trait_world is not None else None
 			failure = _require_failure(
@@ -2910,6 +2927,7 @@ class TypeChecker:
 					default_package=default_package,
 					module_packages=module_packages or {},
 					assumed_true=set(fn_require_assumed),
+					type_table=self.type_table,
 				)
 				res = prove_expr(world, env, subst, req)
 				if res.status is ProofStatus.PROVED:
@@ -3144,6 +3162,27 @@ class TypeChecker:
 				return mod_id in visible_ctor_module_ids
 			# Best-effort fallback when no provenance is available: current module only.
 			return module_name == current_module_name
+
+		def _ensure_field_visible(struct_id: TypeId, field_name: str, span: Span) -> bool:
+			td = self.type_table.get(struct_id)
+			def_mod = td.module_id
+			if def_mod is None or def_mod == current_module_name:
+				return True
+			info = self.type_table.struct_field_info(struct_id, field_name)
+			if info is None:
+				return True
+			_is_pub = info[2]
+			if _is_pub:
+				return True
+			diagnostics.append(
+				_tc_diag(
+					message=f"field '{field_name}' is private",
+					severity="error",
+					span=span,
+					code="E-PRIVATE-FIELD",
+				)
+			)
+			return False
 
 		items = list(getattr(self.type_table, "variant_schemas", {}).items())
 		items.sort(key=lambda kv: (kv[1].module_id, kv[1].name))
@@ -4478,13 +4517,16 @@ class TypeChecker:
 					if (not has_deref) and place.base.local_id is not None and not binding_mutable.get(
 						place.base.local_id, False
 					):
-						diagnostics.append(
-							_tc_diag(
-								message="cannot take &mut of an immutable binding; declare it with `var`",
-								severity="error",
-								span=getattr(expr, "loc", Span()),
+						base_ty = binding_types.get(place.base.local_id)
+						base_def = self.type_table.get(base_ty) if base_ty is not None else None
+						if base_def is None or base_def.kind is not TypeKind.REF or not base_def.ref_mut:
+							diagnostics.append(
+								_tc_diag(
+									message="cannot take &mut of an immutable binding; declare it with `var`",
+									severity="error",
+									span=getattr(expr, "loc", Span()),
+								)
 							)
-						)
 					# Detect a deref projection anywhere in the place and validate the corresponding
 					# reference expression is `&mut`.
 					#
@@ -4612,15 +4654,27 @@ class TypeChecker:
 						)
 					)
 					return record_expr(expr, self._unknown)
-				if place.base.local_id is not None and not binding_mutable.get(place.base.local_id, False):
-					diagnostics.append(
-						_tc_diag(
-							message="move requires an owned mutable binding declared with var",
-							severity="error",
-							span=getattr(expr, "loc", Span()),
+				subject_name = getattr(expr.subject, "name", None)
+				if subject_name is None and hasattr(H, "HPlaceExpr") and isinstance(expr.subject, getattr(H, "HPlaceExpr")):
+					subject_name = getattr(expr.subject.base, "name", None)
+				if place.base.local_id is not None:
+					is_param = binding_place_kind.get(place.base.local_id) is PlaceKind.PARAM
+					is_self_name = subject_name == "self"
+					is_implicit_move = bool(getattr(expr, "is_implicit", False))
+					if (
+						not binding_mutable.get(place.base.local_id, False)
+						and not (is_param and is_self_name)
+						and not is_self_name
+						and not is_implicit_move
+					):
+						diagnostics.append(
+							_tc_diag(
+								message="move requires an owned mutable binding declared with var",
+								severity="error",
+								span=getattr(expr, "loc", Span()),
+							)
 						)
-					)
-					return record_expr(expr, self._unknown)
+						return record_expr(expr, self._unknown)
 				inner_ty = type_expr(expr.subject, used_as_value=False)
 				if inner_ty is not None:
 					td = self.type_table.get(inner_ty)
@@ -4832,6 +4886,40 @@ class TypeChecker:
 							default_package=default_package,
 							module_packages=module_packages,
 						)
+						base_mod = getattr(base_te, "module_id", None) or getattr(base_te, "module_alias", None)
+						base_name = getattr(base_te, "name", None)
+						call_origin = getattr(expr, "origin", None)
+						if trait_key not in trait_index.traits_by_id:
+							if (
+								call_origin == "for_iter"
+								and base_mod == "std.iter"
+								and base_name == "Iterable"
+								and qm.member == "iter"
+							):
+								diagnostics.append(
+									_tc_diag(
+										message="type is not iterable",
+										code="E-NOT-ITERABLE",
+										severity="error",
+										span=getattr(expr, "loc", Span()),
+									)
+								)
+								return record_expr(expr, self._unknown)
+							if (
+								call_origin == "for_next"
+								and base_mod == "std.iter"
+								and base_name == "SinglePassIterator"
+								and qm.member == "next"
+							):
+								diagnostics.append(
+									_tc_diag(
+										message="iter() result is not an iterator",
+										code="E-ITER-RESULT-NOT-ITERATOR",
+										severity="error",
+										span=getattr(expr, "loc", Span()),
+									)
+								)
+								return record_expr(expr, self._unknown)
 						if trait_key in trait_index.traits_by_id:
 							if kw_pairs:
 								diagnostics.append(
@@ -4851,7 +4939,7 @@ class TypeChecker:
 									)
 								)
 								return record_expr(expr, self._unknown)
-							recv_ty = type_expr(expr.args[0])
+							recv_ty = type_expr(expr.args[0], used_as_value=False)
 							arg_types = [type_expr(a) for a in expr.args[1:]]
 							receiver_place = _receiver_place(expr.args[0])
 							receiver_is_lvalue = receiver_place is not None
@@ -5142,6 +5230,7 @@ class TypeChecker:
 													except Exception:
 														continue
 											env = TraitEnv(
+												type_table=self.type_table,
 												default_module=def_mod,
 												default_package=default_package,
 												module_packages=module_packages or {},
@@ -5226,6 +5315,7 @@ class TypeChecker:
 															subst[tp.id] = key
 															subst[tp.name] = key
 											env = TraitEnv(
+												type_table=self.type_table,
 												default_module=decl.fn_id.module or current_module_name,
 												default_package=default_package,
 												module_packages=module_packages or {},
@@ -5506,11 +5596,49 @@ class TypeChecker:
 									)
 								)
 								return record_expr(expr, self._unknown)
+							base_te = getattr(qm, "base_type_expr", None)
+							base_mod = getattr(base_te, "module_id", None) or getattr(base_te, "module_alias", None)
+							base_name = getattr(base_te, "name", None)
+							call_origin = getattr(expr, "origin", None)
+							if (
+								call_origin == "for_iter"
+								and base_mod == "std.iter"
+								and base_name == "Iterable"
+								and qm.member == "iter"
+							):
+								diagnostics.append(
+									_tc_diag(
+										message="type is not iterable",
+										code="E-NOT-ITERABLE",
+										severity="error",
+										span=getattr(expr, "loc", Span()),
+									)
+								)
+								return record_expr(expr, self._unknown)
+							if (
+								call_origin == "for_next"
+								and base_mod == "std.iter"
+								and base_name == "SinglePassIterator"
+								and qm.member == "next"
+							):
+								diagnostics.append(
+									_tc_diag(
+										message="iter() result is not an iterator",
+										code="E-ITER-RESULT-NOT-ITERATOR",
+										severity="error",
+										span=getattr(expr, "loc", Span()),
+									)
+								)
+								return record_expr(expr, self._unknown)
 							recv_label = _label_typeid(recv_ty)
-							raise ResolutionError(
-								f"no matching method '{qm.member}' for receiver {recv_label} and args {arg_types}",
-								span=getattr(expr, "loc", Span()),
+							diagnostics.append(
+								_tc_diag(
+									message=f"no matching method '{qm.member}' for receiver {recv_label} and args {arg_types}",
+									severity="error",
+									span=getattr(expr, "loc", Span()),
+								)
 							)
+							return record_expr(expr, self._unknown)
 					if base_te is not None and call_type_args:
 						if getattr(base_te, "args", []) or []:
 							diagnostics.append(
@@ -5910,7 +6038,7 @@ class TypeChecker:
 					td_ret = self.type_table.get(inst_tid)
 					if td_ret.kind is TypeKind.VARIANT and schema.type_params:
 						args = list(td_ret.param_types)
-						if all(self.type_table.get(a).kind is not TypeKind.TYPEVAR for a in args):
+						if not any(self.type_table.has_typevar(a) for a in args):
 							base_inst = self.type_table.variant_instances.get(base_tid)
 							base_id = base_inst.base_id if base_inst is not None else base_tid
 							inst_tid = self.type_table.ensure_instantiated(base_id, args)
@@ -6105,6 +6233,7 @@ class TypeChecker:
 				# not a value), otherwise we'd emit a misleading "unknown variable"
 				# diagnostic before the constructor path has a chance to fire.
 				should_type_fn = True
+				is_struct_ctor = False
 				if isinstance(expr.fn, H.HVar):
 					# Builtins that look like calls but are not normal function values.
 					# We must not type-check `expr.fn` as a variable, otherwise we'd emit
@@ -6142,8 +6271,28 @@ class TypeChecker:
 				# arguments, e.g. `takes_opt(Some(1))` where `takes_opt` expects
 				# `Optional<Int>`.
 				arg_types: list[TypeId] = []
-				arg_types = [type_expr(a) for a in expr.args]
-				kw_types = [type_expr(k.value) for k in kw_pairs]
+				kw_types: list[TypeId] = []
+				if not is_struct_ctor:
+					arg_types = [type_expr(a) for a in expr.args]
+					kw_types = [type_expr(k.value) for k in kw_pairs]
+
+				def _type_ctor_args(field_names: list[str], field_types: list[TypeId]) -> None:
+					nonlocal arg_types
+					nonlocal kw_types
+					if not is_struct_ctor:
+						return
+					if arg_types or kw_types:
+						return
+					arg_types = []
+					for idx, arg_expr in enumerate(expr.args):
+						expected = field_types[idx] if idx < len(field_types) else None
+						arg_types.append(type_expr(arg_expr, expected_type=expected))
+					kw_types = []
+					for kw in kw_pairs:
+						expected = None
+						if kw.name in field_names:
+							expected = field_types[field_names.index(kw.name)]
+						kw_types.append(type_expr(kw.value, expected_type=expected))
 				def _std_mem_intrinsic_kind(fn_id: FunctionId | None) -> IntrinsicKind | None:
 					if fn_id is None or fn_id.module != "std.mem":
 						return None
@@ -6193,7 +6342,7 @@ class TypeChecker:
 							)
 						)
 						return record_expr(expr, self._unknown)
-					ret_ty = self._uint
+					ret_ty = self._int
 					intrinsic_kind = IntrinsicKind.BYTE_LENGTH
 					record_call_info(
 						expr,
@@ -6437,6 +6586,7 @@ class TypeChecker:
 
 								field_names = [f.name for f in struct_schema.fields]
 								field_types = [_lower_generic_expr(f.type_expr) for f in struct_schema.fields]
+								_type_ctor_args(field_names, field_types)
 								mapped_types: list[Optional[TypeId]] = [None] * len(field_types)
 								for idx, ty in enumerate(arg_types):
 									if idx < len(mapped_types):
@@ -6524,7 +6674,10 @@ class TypeChecker:
 								)
 								return record_expr(expr, self._unknown)
 						try:
-							struct_id = self.type_table.ensure_struct_instantiated(struct_id, type_arg_ids)
+							if any(self.type_table.has_typevar(t) for t in type_arg_ids):
+								struct_id = self.type_table.ensure_struct_template(struct_id, type_arg_ids)
+							else:
+								struct_id = self.type_table.ensure_struct_instantiated(struct_id, type_arg_ids)
 						except ValueError as err:
 							diagnostics.append(
 								_tc_diag(
@@ -6561,6 +6714,9 @@ class TypeChecker:
 					else:
 						field_names = list(struct_def.field_names or [])
 						field_types = list(struct_def.param_types)
+					for fname in field_names:
+						_ensure_field_visible(struct_id, fname, getattr(expr, "loc", Span()))
+					_type_ctor_args(field_names, field_types)
 					record_call_info(
 						expr,
 						param_types=field_types,
@@ -7276,134 +7432,150 @@ class TypeChecker:
 							target=_intrinsic_method_fn_id(expr.method_name),
 						)
 						return record_expr(expr, recv_nominal)
-
-				# Iterator protocol intrinsics for `for` desugaring (MVP).
-				#
-				# The stage1 lowering desugars:
-				#   for x in expr { body }
-				# into:
-				#   let it = expr.iter()
-				#   loop { match it.next() { Some(x) => { body } default => { break } } }
-				#
-				# Modules/traits are not implemented yet, so `.iter()` / `.next()` are
-				# compiler intrinsics on arrays.
-				if expr.method_name == "iter" and not expr.args:
-					recv_def = self.type_table.get(recv_ty)
-					if recv_def.kind is TypeKind.REF and recv_def.param_types:
-						recv_nominal = recv_def.param_types[0]
-						nominal_def = self.type_table.get(recv_nominal)
-						if nominal_def.kind is TypeKind.ARRAY:
-							iter_ty = ensure_array_iter_struct(recv_nominal, self.type_table)
-							record_method_call_info(
-								expr,
-								param_types=[recv_ty],
-								return_type=iter_ty,
-								can_throw=False,
-								target=_intrinsic_method_fn_id(expr.method_name),
-							)
-							return record_expr(expr, iter_ty)
-					if recv_def.kind is TypeKind.ARRAY:
-						is_place = (
-							(hasattr(H, "HPlaceExpr") and isinstance(expr.receiver, getattr(H, "HPlaceExpr")))
-							or isinstance(expr.receiver, H.HVar)
+				if expr.method_name in (
+					"push",
+					"pop",
+					"insert",
+					"remove",
+					"swap_remove",
+					"clear",
+					"reserve",
+					"shrink_to_fit",
+					"get",
+					"set",
+				):
+					recv_nominal = _unwrap_ref_type(recv_ty)
+					recv_def = self.type_table.get(recv_nominal)
+					if recv_def.kind is TypeKind.ARRAY and recv_def.param_types:
+						elem_ty = recv_def.param_types[0]
+						recv_place = _receiver_place(expr.receiver)
+						needs_mut = expr.method_name in (
+							"push",
+							"insert",
+							"remove",
+							"swap_remove",
+							"clear",
+							"reserve",
+							"shrink_to_fit",
+							"set",
+							"pop",
 						)
-						if not is_place:
+						if needs_mut and not _receiver_can_mut_borrow(expr.receiver, recv_place):
 							diagnostics.append(
 								_tc_diag(
-									message="iter() requires an addressable Array value in MVP",
+									message=f"Array.{expr.method_name}() requires a mutable Array receiver",
 									severity="error",
 									span=getattr(expr, "loc", Span()),
 								)
 							)
 							return record_expr(expr, self._unknown)
-						iter_ty = ensure_array_iter_struct(recv_ty, self.type_table)
-						param_ty = self.type_table.ensure_ref(recv_ty)
+						if expr.method_name == "get" and recv_place is None:
+							diagnostics.append(
+								_tc_diag(
+									message="Array.get() requires an lvalue Array receiver",
+									severity="error",
+									span=getattr(expr, "loc", Span()),
+								)
+							)
+							return record_expr(expr, self._unknown)
+						expected_args = {
+							"push": 1,
+							"pop": 0,
+							"insert": 2,
+							"remove": 1,
+							"swap_remove": 1,
+							"clear": 0,
+							"reserve": 1,
+							"shrink_to_fit": 0,
+							"get": 1,
+							"set": 2,
+						}
+						want = expected_args.get(expr.method_name)
+						if want is not None and len(expr.args) != want:
+							diagnostics.append(
+								_tc_diag(
+									message=f"Array.{expr.method_name}() expects {want} argument(s)",
+									severity="error",
+									span=getattr(expr, "loc", Span()),
+								)
+							)
+							return record_expr(expr, self._unknown)
+						if expr.method_name in ("push", "set"):
+							arg_ty = arg_types[0] if arg_types else None
+							if arg_ty is not None and arg_ty != elem_ty:
+								diagnostics.append(
+									_tc_diag(
+										message="Array element type mismatch",
+										severity="error",
+										span=getattr(expr.args[0], "loc", getattr(expr, "loc", Span())),
+									)
+								)
+								return record_expr(expr, self._unknown)
+						if expr.method_name == "insert":
+							if len(arg_types) == 2:
+								idx_ty, val_ty = arg_types
+								if idx_ty is not None:
+									td_idx = self.type_table.get(idx_ty)
+									if td_idx.kind is not TypeKind.TYPEVAR and idx_ty != self._int:
+										diagnostics.append(
+											_tc_diag(
+												message="array index must be an Int",
+												severity="error",
+												span=getattr(expr.args[0], "loc", getattr(expr, "loc", Span())),
+											)
+										)
+										return record_expr(expr, self._unknown)
+								if val_ty is not None and val_ty != elem_ty:
+									diagnostics.append(
+										_tc_diag(
+											message="Array element type mismatch",
+											severity="error",
+											span=getattr(expr.args[1], "loc", getattr(expr, "loc", Span())),
+										)
+									)
+									return record_expr(expr, self._unknown)
+						if expr.method_name in ("remove", "swap_remove", "get"):
+							if arg_types:
+								idx_ty = arg_types[0]
+								if idx_ty is not None:
+									td_idx = self.type_table.get(idx_ty)
+									if td_idx.kind is not TypeKind.TYPEVAR and idx_ty != self._int:
+										diagnostics.append(
+											_tc_diag(
+												message="array index must be an Int",
+												severity="error",
+												span=getattr(expr.args[0], "loc", getattr(expr, "loc", Span())),
+											)
+										)
+										return record_expr(expr, self._unknown)
+						if expr.method_name == "reserve" and arg_types:
+							add_ty = arg_types[0]
+							if add_ty is not None and add_ty != self._int:
+								diagnostics.append(
+									_tc_diag(
+										message="reserve expects an Int size",
+										severity="error",
+										span=getattr(expr.args[0], "loc", getattr(expr, "loc", Span())),
+									)
+								)
+								return record_expr(expr, self._unknown)
+						if expr.method_name == "get":
+							ref_ty = self.type_table.ensure_ref(elem_ty)
+							ret_ty = self._optional_variant_type(ref_ty)
+						elif expr.method_name == "pop":
+							ret_ty = self._optional_variant_type(elem_ty)
+						elif expr.method_name in ("remove", "swap_remove"):
+							ret_ty = elem_ty
+						else:
+							ret_ty = self._void
 						record_method_call_info(
 							expr,
-							param_types=[param_ty],
-							return_type=iter_ty,
+							param_types=[recv_ty] + arg_types,
+							return_type=ret_ty,
 							can_throw=False,
 							target=_intrinsic_method_fn_id(expr.method_name),
 						)
-						return record_expr(expr, iter_ty)
-				if expr.method_name == "next" and not expr.args:
-					if is_array_iter_struct(recv_ty, self.type_table):
-						if not (
-							(hasattr(H, "HPlaceExpr") and isinstance(expr.receiver, getattr(H, "HPlaceExpr")))
-							or isinstance(expr.receiver, H.HVar)
-						):
-							diagnostics.append(
-								_tc_diag(
-									message="next() requires a mutable iterator place in MVP",
-									severity="error",
-									span=getattr(expr, "loc", Span()),
-								)
-							)
-							return record_expr(expr, self._unknown)
-						iter_def = self.type_table.get(recv_ty)
-						if not iter_def.param_types or len(iter_def.param_types) != 2:
-							diagnostics.append(
-								_tc_diag(
-									message="internal array iterator type is malformed (compiler bug)",
-									severity="error",
-									span=getattr(expr, "loc", Span()),
-								)
-							)
-							record_method_call_info(
-								expr,
-								param_types=[recv_ty],
-								return_type=self._unknown,
-								can_throw=False,
-								target=_intrinsic_method_fn_id(expr.method_name),
-							)
-							return record_expr(expr, self._unknown)
-						arr_ty = iter_def.param_types[0]
-						arr_def = self.type_table.get(arr_ty)
-						if arr_def.kind is not TypeKind.REF or not arr_def.param_types:
-							diagnostics.append(
-								_tc_diag(
-									message="internal array iterator type does not contain &Array<T> (compiler bug)",
-									severity="error",
-									span=getattr(expr, "loc", Span()),
-								)
-							)
-							record_method_call_info(
-								expr,
-								param_types=[recv_ty],
-								return_type=self._unknown,
-								can_throw=False,
-								target=_intrinsic_method_fn_id(expr.method_name),
-							)
-							return record_expr(expr, self._unknown)
-						array_ty = arr_def.param_types[0]
-						array_def = self.type_table.get(array_ty)
-						if array_def.kind is not TypeKind.ARRAY or not array_def.param_types:
-							diagnostics.append(
-								_tc_diag(
-									message="internal array iterator type does not contain &Array<T> (compiler bug)",
-									severity="error",
-									span=getattr(expr, "loc", Span()),
-								)
-							)
-							record_method_call_info(
-								expr,
-								param_types=[recv_ty],
-								return_type=self._unknown,
-								can_throw=False,
-								target=_intrinsic_method_fn_id(expr.method_name),
-							)
-							return record_expr(expr, self._unknown)
-						elem_ty = array_def.param_types[0]
-						opt_base = self.type_table.ensure_optional_base()
-						opt_ty = self.type_table.ensure_instantiated(opt_base, [elem_ty])
-						record_method_call_info(
-							expr,
-							param_types=[recv_ty],
-							return_type=opt_ty,
-							can_throw=False,
-							target=_intrinsic_method_fn_id(expr.method_name),
-						)
-						return record_expr(expr, opt_ty)
+						return record_expr(expr, ret_ty)
 
 				# FnResult intrinsic methods.
 				if expr.method_name in ("is_err", "unwrap", "unwrap_err") and not expr.args:
@@ -7620,6 +7792,7 @@ class TypeChecker:
 										default_package=default_package,
 										module_packages=module_packages or {},
 										assumed_true=set(fn_require_assumed),
+										type_table=self.type_table,
 									)
 									res = prove_expr(world, env, subst, req)
 									if res.status is not ProofStatus.PROVED:
@@ -8021,6 +8194,7 @@ class TypeChecker:
 												default_package=default_package,
 												module_packages=module_packages or {},
 												assumed_true=set(fn_require_assumed),
+												type_table=self.type_table,
 											)
 											res = prove_expr(world, env, subst, cand.require_expr)
 											if res.status is not ProofStatus.PROVED:
@@ -8112,6 +8286,7 @@ class TypeChecker:
 												default_package=default_package,
 												module_packages=module_packages or {},
 												assumed_true=set(fn_require_assumed),
+												type_table=self.type_table,
 											)
 											res = prove_expr(world, env, subst, req)
 											if res.status is not ProofStatus.PROVED:
@@ -8591,6 +8766,9 @@ class TypeChecker:
 						continue
 					if isinstance(proj, H.HPlaceField):
 						td = self.type_table.get(current_ty)
+						if td.kind is TypeKind.REF and td.param_types:
+							current_ty = td.param_types[0]
+							td = self.type_table.get(current_ty)
 						if td.kind is not TypeKind.STRUCT:
 							diagnostics.append(
 								_tc_diag(
@@ -8599,6 +8777,8 @@ class TypeChecker:
 									span=getattr(expr, "loc", Span()),
 								)
 							)
+							return record_expr(expr, self._unknown)
+						if not _ensure_field_visible(current_ty, proj.name, getattr(expr, "loc", Span())):
 							return record_expr(expr, self._unknown)
 						info = self.type_table.struct_field(current_ty, proj.name)
 						if info is None:
@@ -8625,6 +8805,9 @@ class TypeChecker:
 							)
 							return record_expr(expr, self._unknown)
 						td = self.type_table.get(current_ty)
+						if td.kind is TypeKind.REF and td.param_types:
+							current_ty = td.param_types[0]
+							td = self.type_table.get(current_ty)
 						if td.kind is not TypeKind.ARRAY or not td.param_types:
 							diagnostics.append(
 								_tc_diag(
@@ -8650,16 +8833,16 @@ class TypeChecker:
 			if isinstance(expr, H.HField):
 				sub_ty = type_expr(expr.subject, used_as_value=False)
 				if expr.name in ("len", "cap", "capacity"):
-					# Array/String length/capacity sugar returns Uint.
+					# Array/String length/capacity sugar returns Int.
 					inner_ty = sub_ty
 					inner_def = self.type_table.get(inner_ty)
 					if inner_def.kind is TypeKind.REF and inner_def.param_types:
 						inner_ty = inner_def.param_types[0]
 						inner_def = self.type_table.get(inner_ty)
 					if inner_def.kind is TypeKind.ARRAY:
-						return record_expr(expr, self._uint)
+						return record_expr(expr, self._int)
 					if expr.name == "len" and inner_ty == self._string:
-						return record_expr(expr, self._uint)
+						return record_expr(expr, self._int)
 					if expr.name in ("cap", "capacity"):
 						diagnostics.append(
 							_tc_diag(
@@ -8688,7 +8871,12 @@ class TypeChecker:
 					return record_expr(expr, self._unknown)
 				# Struct fields: `x.field`
 				sub_def = self.type_table.get(sub_ty)
+				if sub_def.kind is TypeKind.REF and sub_def.param_types:
+					sub_ty = sub_def.param_types[0]
+					sub_def = self.type_table.get(sub_ty)
 				if sub_def.kind is TypeKind.STRUCT:
+					if not _ensure_field_visible(sub_ty, expr.name, getattr(expr, "loc", Span())):
+						return record_expr(expr, self._unknown)
 					info = self.type_table.struct_field(sub_ty, expr.name)
 					if info is None:
 						diagnostics.append(
@@ -8743,6 +8931,8 @@ class TypeChecker:
 							)
 						)
 						return record_expr(expr, self._unknown)
+				if td.kind is TypeKind.REF and td.param_types:
+					td = self.type_table.get(td.param_types[0])
 				if td.kind is TypeKind.ARRAY and td.param_types:
 					elem_ty = td.param_types[0]
 					_require_copy_value(elem_ty, span=getattr(expr, "loc", Span()), used_as_value=used_as_value)
@@ -8888,8 +9078,23 @@ class TypeChecker:
 			# Arrays/ternary.
 			if isinstance(expr, H.HArrayLiteral):
 				elem_types = [type_expr(e) for e in expr.elements]
+				if not elem_types:
+					if expected_type is not None:
+						td = self.type_table.get(expected_type)
+						if td.kind is TypeKind.ARRAY:
+							return record_expr(expr, expected_type)
+					return record_expr(expr, self._unknown)
 				if elem_types and all(t == elem_types[0] for t in elem_types):
 					if _reject_zst_array(elem_types[0], span=getattr(expr, "loc", Span())):
+						return record_expr(expr, self._unknown)
+					if not self.type_table.is_copy(elem_types[0]):
+						diagnostics.append(
+							_tc_diag(
+								message="array literals require Copy element type in MVP",
+								severity="error",
+								span=getattr(expr, "loc", Span()),
+							)
+						)
 						return record_expr(expr, self._unknown)
 					return record_expr(expr, self.type_table.new_array(elem_types[0]))
 				return record_expr(expr, self._unknown)
@@ -9319,6 +9524,7 @@ class TypeChecker:
 							default_package=default_package,
 							module_packages=module_packages or {},
 							assumed_true=set(fn_require_assumed),
+							type_table=self.type_table,
 						)
 						res = prove_expr(world, env, subst, parser_expr)
 						if res.status is ProofStatus.PROVED:

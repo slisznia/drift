@@ -45,6 +45,7 @@ def _ensure_optional(table: TypeTable, inner: int) -> int:
 					fields=[VariantFieldSchema(name="value", type_expr=GenericTypeExpr.param(0))],
 				),
 			],
+			tombstone_ctor="None",
 		)
 	return table.ensure_instantiated(base, [inner])
 

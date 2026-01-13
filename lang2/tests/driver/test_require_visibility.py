@@ -46,7 +46,7 @@ module types
 
 export { Bad };
 
-pub struct Bad { x: Int }
+pub struct Bad { pub x: Int }
 """.lstrip(),
 	)
 	_write_file(

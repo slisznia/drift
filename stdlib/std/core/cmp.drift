@@ -1,0 +1,14 @@
+module std.core.cmp
+
+export {
+	Equatable,
+	Comparable
+};
+
+pub trait Equatable {
+	fn eq(self: &Self, other: &Self) -> Bool;
+}
+
+pub trait Comparable require Self is Equatable {
+	fn cmp(self: &Self, other: &Self) -> Int;
+}

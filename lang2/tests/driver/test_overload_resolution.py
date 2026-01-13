@@ -8,7 +8,7 @@ from lang2.driftc.core.function_id import FunctionId
 from lang2.driftc.core.types_core import TypeKind
 from lang2.driftc.method_registry import CallableRegistry, CallableSignature, Visibility
 from lang2.driftc.stage1.call_info import CallTargetKind
-from lang2.driftc.parser import parse_drift_workspace_to_hir
+from lang2.driftc.parser import parse_drift_workspace_to_hir, stdlib_root
 from lang2.driftc.module_lowered import flatten_modules
 from lang2.driftc.type_checker import TypeChecker
 
@@ -133,6 +133,7 @@ fn main() nothrow -> Int{
 	modules, type_table, _exc_catalog, _exports, module_deps, diagnostics = parse_drift_workspace_to_hir(
 		paths,
 		module_paths=[mod_root],
+		stdlib_root=stdlib_root(),
 	)
 	assert not diagnostics
 	func_hirs, signatures, fn_ids_by_name = flatten_modules(modules)

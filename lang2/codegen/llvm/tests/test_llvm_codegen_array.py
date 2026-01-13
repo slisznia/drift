@@ -7,16 +7,20 @@ LLVM lowering for array MIR ops: ArrayAlloc/ElemInit + ArrayIndexLoad/ElemAssign
 
 from lang2.driftc.checker import FnInfo, FnSignature
 from lang2.driftc.core.types_core import TypeTable
+import re
+
 from lang2.driftc.stage2 import (
 	ArrayIndexLoad,
 	ArrayElemAssign,
 	ArrayElemInitUnchecked,
 	ArrayAlloc,
+	ArrayElemTake,
 	ArrayLen,
 	ArraySetLen,
 	BasicBlock,
 	ConstInt,
 	ConstUint,
+	ConstString,
 	MirFunc,
 	Return,
 )
@@ -32,6 +36,17 @@ def _int_types():
 	return table, int_ty
 
 
+def _int_string_types():
+	table = TypeTable()
+	int_ty = table.new_scalar("Int")
+	uint_ty = table.new_scalar("Uint")
+	str_ty = table.new_scalar("String")
+	table._int_type = int_ty  # type: ignore[attr-defined]
+	table._uint_type = uint_ty  # type: ignore[attr-defined]
+	table._string_type = str_ty  # type: ignore[attr-defined]
+	return table, int_ty, str_ty
+
+
 def test_array_literal_and_index_ir_contains_alloc_and_load():
 	table, int_ty = _int_types()
 	# MIR: t1=1; t2=2; t3=[t1,t2]; t4=t3[1]; return t4
@@ -42,9 +57,9 @@ def test_array_literal_and_index_ir_contains_alloc_and_load():
 			ConstInt(dest="t2", value=2),
 			ConstInt(dest="i0", value=0),
 			ConstInt(dest="i1", value=1),
-			ConstUint(dest="tlen0", value=0),
-			ConstUint(dest="tlen", value=2),
-			ConstUint(dest="tcap", value=2),
+			ConstInt(dest="tlen0", value=0),
+			ConstInt(dest="tlen", value=2),
+			ConstInt(dest="tcap", value=2),
 			ArrayAlloc(dest="t3", elem_ty=int_ty, length="tlen0", cap="tcap"),
 			ArrayElemInitUnchecked(elem_ty=int_ty, array="t3", index="i0", value="t1"),
 			ArrayElemInitUnchecked(elem_ty=int_ty, array="t3", index="i1", value="t2"),
@@ -59,12 +74,14 @@ def test_array_literal_and_index_ir_contains_alloc_and_load():
 	ssa = MirToSSA().run(func)
 	sig = FnSignature(name="f", return_type_id=int_ty, param_type_ids=[])
 	fn_info = FnInfo(fn_id=fn_id, name="f", declared_can_throw=False, signature=sig, return_type_id=int_ty)
-	ir = lower_ssa_func_to_llvm(func, ssa, fn_info, {fn_id: fn_info}, type_table=table, word_bits=host_word_bits())
+	word_bits = host_word_bits()
+	word_ty = f"i{word_bits}"
+	ir = lower_ssa_func_to_llvm(func, ssa, fn_info, {fn_id: fn_info}, type_table=table, word_bits=word_bits)
 	assert "declare i8* @drift_alloc_array" in ir
 	assert "call i8* @drift_alloc_array" in ir
 	assert "drift_bounds_check" in ir
-	assert "getelementptr %drift.isize" in ir
-	assert "extractvalue { %drift.usize, %drift.usize, %drift.isize* }" in ir
+	assert f"getelementptr {word_ty}" in ir
+	assert f"extractvalue {{ {word_ty}, {word_ty}, {word_ty}* }}" in ir
 
 
 def test_array_index_store_ir_contains_store():
@@ -76,9 +93,9 @@ def test_array_index_store_ir_contains_store():
 			ConstInt(dest="t2", value=2),
 			ConstInt(dest="i0", value=0),
 			ConstInt(dest="i1", value=1),
-			ConstUint(dest="tlen0", value=0),
-			ConstUint(dest="tlen", value=2),
-			ConstUint(dest="tcap", value=2),
+			ConstInt(dest="tlen0", value=0),
+			ConstInt(dest="tlen", value=2),
+			ConstInt(dest="tcap", value=2),
 			ArrayAlloc(dest="t3", elem_ty=int_ty, length="tlen0", cap="tcap"),
 			ArrayElemInitUnchecked(elem_ty=int_ty, array="t3", index="i0", value="t1"),
 			ArrayElemInitUnchecked(elem_ty=int_ty, array="t3", index="i1", value="t2"),
@@ -92,6 +109,46 @@ def test_array_index_store_ir_contains_store():
 	ssa = MirToSSA().run(func)
 	sig = FnSignature(name="f", return_type_id=int_ty, param_type_ids=[])
 	fn_info = FnInfo(fn_id=fn_id, name="f", declared_can_throw=False, signature=sig, return_type_id=int_ty)
-	ir = lower_ssa_func_to_llvm(func, ssa, fn_info, {fn_id: fn_info}, type_table=table, word_bits=host_word_bits())
+	word_bits = host_word_bits()
+	word_ty = f"i{word_bits}"
+	ir = lower_ssa_func_to_llvm(func, ssa, fn_info, {fn_id: fn_info}, type_table=table, word_bits=word_bits)
 	assert "drift_bounds_check" in ir
-	assert "store %drift.isize %t2" in ir
+	assert f"store {word_ty} %t2" in ir
+
+
+def test_array_take_tombstones_nested_array():
+	table, int_ty, str_ty = _int_string_types()
+	inner_ty = table.new_array(str_ty)
+	outer_ty = table.new_array(inner_ty)
+
+	block = BasicBlock(
+		name="entry",
+		instructions=[
+			ConstString(dest="s0", value="x"),
+			ConstInt(dest="i0", value=0),
+			ConstInt(dest="tlen0", value=0),
+			ConstInt(dest="tlen", value=1),
+			ConstInt(dest="tcap0", value=0),
+			ConstInt(dest="tcap1", value=1),
+			ArrayAlloc(dest="inner", elem_ty=str_ty, length="tlen0", cap="tcap0"),
+			ArrayElemInitUnchecked(elem_ty=str_ty, array="inner", index="i0", value="s0"),
+			ArraySetLen(dest="inner_len", array="inner", length="tlen"),
+			ArrayAlloc(dest="outer", elem_ty=inner_ty, length="tlen0", cap="tcap1"),
+			ArrayElemInitUnchecked(elem_ty=inner_ty, array="outer", index="i0", value="inner_len"),
+			ArraySetLen(dest="outer_len", array="outer", length="tlen"),
+			ArrayElemTake(dest="taken", elem_ty=inner_ty, array="outer_len", index="i0"),
+		],
+		terminator=Return(value="tlen"),
+	)
+	fn_id = FunctionId(module="main", name="f", ordinal=0)
+	func = MirFunc(fn_id=fn_id, name="f", params=[], locals=[], blocks={"entry": block}, entry="entry")
+	ssa = MirToSSA().run(func)
+	sig = FnSignature(name="f", return_type_id=int_ty, param_type_ids=[])
+	fn_info = FnInfo(fn_id=fn_id, name="f", declared_can_throw=False, signature=sig, return_type_id=int_ty)
+	ir = lower_ssa_func_to_llvm(func, ssa, fn_info, {fn_id: fn_info}, type_table=table, word_bits=host_word_bits())
+
+	match = re.search(
+		r"call void @drift_bounds_check[^\n]*\n\s*(%[\w\.]+) = getelementptr[^\n]*\n(?s:.*?store [^\n]*, [^\n]*\* \1)",
+		ir,
+	)
+	assert match is not None

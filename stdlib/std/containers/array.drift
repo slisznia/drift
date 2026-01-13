@@ -1,0 +1,77 @@
+module std.containers
+
+import std.iter as iter;
+
+export {
+	ArrayMoveIter,
+	ArrayBorrowIter
+};
+
+pub struct ArrayMoveIter<T> {
+	arr: Array<T>,
+	idx: Int
+}
+
+pub struct ArrayBorrowIter<T> {
+	arr: &Array<T>,
+	idx: Int
+}
+
+implement<T> iter.Iterable<Array<T>, T, ArrayMoveIter<T>> for Array<T> require T is Copy {
+	pub fn iter(var self: Array<T>) -> ArrayMoveIter<T> {
+		return ArrayMoveIter(arr = move self, idx = 0);
+	}
+}
+
+implement<T> iter.SinglePassIterator<T> for ArrayMoveIter<T> require T is Copy {
+	pub fn next(self: &mut ArrayMoveIter<T>) -> Optional<T> {
+		val i = self.idx;
+		if i < self.arr.len {
+			val v = self.arr[i];
+			self.idx = i + 1;
+			return Optional::Some(v);
+		}
+		return Optional::None();
+	}
+}
+
+implement<T> iter.Iterable<&Array<T>, &T, ArrayBorrowIter<T>> for &Array<T> {
+	pub fn iter(self: &Array<T>) -> ArrayBorrowIter<T> {
+		return ArrayBorrowIter(arr = self, idx = 0);
+	}
+}
+
+implement<T> iter.SinglePassIterator<&T> for ArrayBorrowIter<T> {
+	pub fn next(self: &mut ArrayBorrowIter<T>) -> Optional<&T> {
+		val len = self.arr.len;
+		if self.idx > len {
+			self.idx = len;
+		}
+		val i = self.idx;
+		if i < len {
+			val v = &self.arr[i];
+			self.idx = i + 1;
+			return Optional::Some(v);
+		}
+		return Optional::None();
+	}
+}
+
+implement<T> iter.MultiPassIterator<&T> for ArrayBorrowIter<T> {
+}
+
+implement<T> iter.BidirectionalIterator<&T> for ArrayBorrowIter<T> {
+	pub fn prev(self: &mut ArrayBorrowIter<T>) -> Optional<&T> {
+		val len = self.arr.len;
+		if self.idx > len {
+			self.idx = len;
+		}
+		val i = self.idx;
+		if i == 0 {
+			return Optional::None();
+		}
+		val new_i = i - 1;
+		self.idx = new_i;
+		return Optional::Some(&self.arr[new_i]);
+	}
+}

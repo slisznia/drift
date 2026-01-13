@@ -10,6 +10,7 @@ from lang2.driftc.stage1 import (
 	HArrayLiteral,
 	HAssign,
 	HBlock,
+	HBorrow,
 	HExprStmt,
 	HField,
 	HIndex,
@@ -21,6 +22,7 @@ from lang2.driftc.stage1 import (
 from lang2.driftc.stage1.normalize import normalize_hir
 from lang2.driftc.stage2 import (
 	ArrayAlloc,
+	AddrOfArrayElem,
 	ArrayElemAssign,
 	ArrayElemInitUnchecked,
 	ArrayIndexLoad,
@@ -129,6 +131,23 @@ def test_array_literal_reuses_copy_value_for_string_lvalues():
 	assert len(copy_vals) == 2
 	for instr in copy_vals:
 		assert instr.ty == string_ty
+
+
+def test_array_index_borrow_lowers_to_addrof_elem():
+	table, _int_ty = _make_type_table()
+	block = HBlock(
+		statements=[
+			HLet(name="xs", value=HArrayLiteral(elements=[HLiteralInt(1), HLiteralInt(2)])),
+			HLet(
+				name="r",
+				value=HBorrow(subject=HIndex(subject=HVar("xs"), index=HLiteralInt(0)), is_mut=False),
+			),
+		]
+	)
+	builder = make_builder(FunctionId(module="main", name="f", ordinal=0))
+	HIRToMIR(builder, type_table=table).lower_block(normalize_hir(block))
+	entry = builder.func.blocks[builder.func.entry]
+	assert any(isinstance(instr, AddrOfArrayElem) for instr in entry.instructions)
 
 
 def test_array_literal_single_string_lvalue_emits_copyvalue():

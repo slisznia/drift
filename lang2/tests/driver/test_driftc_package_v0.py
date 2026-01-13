@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from lang2.codegen.llvm.test_utils import host_word_bits
 from lang2.driftc.driftc import main as driftc_main
 from lang2.driftc.packages import dmir_pkg_v0
 from lang2.driftc.packages.provider_v0 import discover_package_files
@@ -200,7 +201,7 @@ module {module_id}
 
 export {{ S }};
 
-pub struct S(x: Int);
+pub struct S {{ pub x: Int }}
 
 implement S {{
 	pub fn main(self: &S) nothrow -> Int {{
@@ -381,7 +382,7 @@ module {module_id}
 
 export {{ Point }};
 
-pub struct Point {{ x: Int, y: Int }}
+pub struct Point {{ pub x: Int, pub y: Int }}
 
 fn make() -> Point {{
 	return Point(x = 1, y = 2);
@@ -420,7 +421,7 @@ module {module_id}
 
 export {{ Point, make }};
 
-pub struct Point {{ x: Int, y: Int }}
+pub struct Point {{ pub x: Int, pub y: Int }}
 
 pub fn make() nothrow -> Point {{
 	return Point(x = 1, y = 0);
@@ -1147,7 +1148,7 @@ module lib
 
 export { S, make };
 
-pub struct S(x: Int);
+pub struct S { pub x: Int }
 
 pub fn make() nothrow -> S {
 	return S(x = 42);
@@ -1624,9 +1625,11 @@ fn main() nothrow -> Int{
 	# Exported functions are ABI boundary entrypoints: they are emitted as
 	# `Result<ok, Error*>` wrappers (`{ ok, Error* }`), with a private `__impl`
 	# body that keeps the internal calling convention.
-	assert "define { %drift.isize, %DriftError* } @\"lib::add\"" in ir
-	assert "define %drift.isize @\"lib::add__impl\"" in ir
-	assert "define %drift.isize @lib::unused" not in ir
+	word_bits = host_word_bits()
+	word_ty = f"i{word_bits}"
+	assert f"define {{ {word_ty}, %DriftError* }} @\"lib::add\"" in ir
+	assert f"define {word_ty} @\"lib::add__impl\"" in ir
+	assert f"define {word_ty} @lib::unused" not in ir
 
 
 def test_discover_package_files_accepts_package_file_path(tmp_path: Path) -> None:
@@ -3276,7 +3279,7 @@ module m
 
 export { Point };
 
-pub struct Point { x: Int }
+pub struct Point { pub x: Int }
 
 pub implement Point {
 	fn move_by(self: &mut Point, dx: Int) -> Void {

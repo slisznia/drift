@@ -204,6 +204,7 @@ def _remap_mir_func_typeids(fn: M.MirFunc, tid_map: dict[int, int]) -> None:
 					M.ArrayElemInitUnchecked,
 					M.ArrayElemAssign,
 					M.ArrayElemDrop,
+					M.ArrayElemTake,
 					M.ArrayDrop,
 					M.ArrayDup,
 					M.ArrayIndexLoad,
@@ -642,7 +643,7 @@ def _encode_trait_metadata_for_module(
 				"require": encode_trait_expr(
 					getattr(trait_def, "require", None),
 					default_module=module_id,
-					type_param_names=[],
+					type_param_names=trait_type_params,
 				),
 				"span": encode_span(getattr(trait_def, "loc", None)),
 			}
@@ -735,7 +736,7 @@ def _collect_external_trait_and_impl_metadata(
 	from lang2.driftc.traits.world import ImplKey, TraitDef, TraitKey
 	from lang2.driftc.impl_index import ImplMeta, ImplMethodMeta
 	from lang2.driftc.packages.provisional_dmir_v0 import decode_span
-	from lang2.driftc.parser import ast as parser_ast
+	from lang2.driftc.parser import ast as parser_ast, stdlib_root
 
 	trait_defs: list[object] = []
 	impl_metas: list[object] = []
@@ -825,6 +826,12 @@ def _collect_external_trait_and_impl_metadata(
 					trait_key = TraitKey(package_id=trait_pkg, module=trait_mod, name=trait_name)
 					if id_registry is not None:
 						id_registry.intern_trait(trait_key)
+					trait_type_params_raw = entry.get("type_params")
+					trait_type_params = (
+						[p for p in trait_type_params_raw if isinstance(p, str)]
+						if isinstance(trait_type_params_raw, list)
+						else []
+					)
 					trait_defs.append(
 						TraitDef(
 							key=trait_key,
@@ -832,6 +839,7 @@ def _collect_external_trait_and_impl_metadata(
 							methods=methods,
 							require=require,
 							loc=decode_span(entry.get("span")) or None,
+							type_params=trait_type_params,
 						)
 					)
 			for name in exported_traits:
@@ -1430,6 +1438,10 @@ def compile_stubbed_funcs(
 			if fn_id.module == "lang.core":
 				prelude_modules.add("lang.core")
 				break
+		if isinstance(module_exports, dict):
+			for std_mod in ("std.iter", "std.containers"):
+				if std_mod in module_exports:
+					prelude_modules.add(std_mod)
 	if module_deps is not None:
 		def _collect_reexport_targets(mod: str) -> set[str]:
 			exp = module_exports.get(mod) if isinstance(module_exports, dict) else None
@@ -1719,15 +1731,20 @@ def compile_stubbed_funcs(
 		inst_fn_id = handle.fn_id
 		inst_param_ids = list(sig.param_type_ids)
 		inst_ret_id = sig.return_type_id
+		inst_impl_target_id = sig.impl_target_type_id
 		if impl_args:
 			impl_owner = sig.impl_type_params[0].id.owner
 			impl_subst = Subst(owner=impl_owner, args=list(impl_args))
 			inst_param_ids = [apply_subst(t, impl_subst, shared_type_table) for t in inst_param_ids]
 			inst_ret_id = apply_subst(inst_ret_id, impl_subst, shared_type_table)
+			if inst_impl_target_id is not None:
+				inst_impl_target_id = apply_subst(inst_impl_target_id, impl_subst, shared_type_table)
 		if fn_args:
 			fn_subst = Subst(owner=template_fn_id, args=list(fn_args))
 			inst_param_ids = [apply_subst(t, fn_subst, shared_type_table) for t in inst_param_ids]
 			inst_ret_id = apply_subst(inst_ret_id, fn_subst, shared_type_table)
+			if inst_impl_target_id is not None:
+				inst_impl_target_id = apply_subst(inst_impl_target_id, fn_subst, shared_type_table)
 		inst_impl_target_args = None
 		if sig.impl_target_type_args is not None:
 			inst_impl_target_args = list(sig.impl_target_type_args)
@@ -1742,6 +1759,7 @@ def compile_stubbed_funcs(
 			name=function_symbol(inst_fn_id),
 			param_type_ids=inst_param_ids,
 			return_type_id=inst_ret_id,
+			impl_target_type_id=inst_impl_target_id,
 			impl_target_type_args=inst_impl_target_args,
 			type_params=[],
 			impl_type_params=[],
@@ -2023,6 +2041,68 @@ def compile_stubbed_funcs(
 		validate_entrypoint_main(signatures_by_id, shared_type_table, checked.diagnostics)
 	if type_diags:
 		checked.diagnostics.extend(type_diags)
+	if module_exports and shared_type_table is not None:
+		def _collect_nominal_types(type_id: TypeId, *, seen: set[TypeId], out: set[TypeId]) -> None:
+			if type_id in seen:
+				return
+			seen.add(type_id)
+			td = shared_type_table.get(type_id)
+			if td is None:
+				return
+			if td.kind in (TypeKind.STRUCT, TypeKind.VARIANT):
+				out.add(type_id)
+			for child in td.param_types:
+				_collect_nominal_types(child, seen=seen, out=out)
+
+		for mid, exports in module_exports.items():
+			vals = exports.get("values") if isinstance(exports, dict) else None
+			types_obj = exports.get("types") if isinstance(exports, dict) else None
+			if not isinstance(vals, list) or not isinstance(types_obj, dict):
+				continue
+			exported_structs = set(types_obj.get("structs") or [])
+			exported_variants = set(types_obj.get("variants") or [])
+			for sym in vals:
+				if not isinstance(sym, str):
+					continue
+				for fn_id, sig in signatures_by_id.items():
+					if fn_id.module != mid or fn_id.name != sym:
+						continue
+					nominals: set[TypeId] = set()
+					seen: set[TypeId] = set()
+					if sig.return_type_id is not None:
+						_collect_nominal_types(sig.return_type_id, seen=seen, out=nominals)
+					for tid in sig.param_type_ids or []:
+						_collect_nominal_types(tid, seen=seen, out=nominals)
+					for tid in nominals:
+						td = shared_type_table.get(tid)
+						if td is None or td.module_id != mid:
+							continue
+						if td.kind is TypeKind.STRUCT and td.name not in exported_structs:
+							checked.diagnostics.append(
+								Diagnostic(
+									message=(
+										f"exported value '{sym}' uses private type '{td.name}' "
+										f"in module '{mid}'"
+									),
+									code="E-PRIVATE-TYPE",
+									severity="error",
+									phase="typecheck",
+									span=None,
+								)
+							)
+						if td.kind is TypeKind.VARIANT and td.name not in exported_variants:
+							checked.diagnostics.append(
+								Diagnostic(
+									message=(
+										f"exported value '{sym}' uses private type '{td.name}' "
+										f"in module '{mid}'"
+									),
+									code="E-PRIVATE-TYPE",
+									severity="error",
+									phase="typecheck",
+									span=None,
+								)
+							)
 	if any(d.severity == "error" for d in checked.diagnostics):
 		if return_checked:
 			if return_ssa:
@@ -2783,7 +2863,7 @@ def compile_to_llvm_ir_for_tests(
 	prelude_enabled: bool = True,
 	emit_instantiation_index: Path | None = None,
 	enforce_entrypoint: bool = False,
-	reserved_namespace_policy: ReservedNamespacePolicy = ReservedNamespacePolicy.ENFORCE,
+	reserved_namespace_policy: ReservedNamespacePolicy = ReservedNamespacePolicy.ALLOW_DEV,
 ) -> tuple[str, CheckedProgramById]:
 	"""
 	End-to-end helper: HIR -> MIR -> throw checks -> SSA -> LLVM IR for tests.
@@ -3017,7 +3097,7 @@ def _validate_mir_array_copy_invariants(
 					elem_ty = instr.elem_ty
 					if type_table.is_copy(elem_ty) and not type_table.is_bitcopy(elem_ty):
 						src = defs.get(instr.value)
-						if isinstance(src, (M.CopyValue, M.MoveOut)):
+						if isinstance(src, (M.CopyValue, M.MoveOut, M.ArrayElemTake)):
 							continue
 						if isinstance(
 							src,
@@ -3185,6 +3265,11 @@ def main(argv: list[str] | None = None) -> int:
 		dest="prelude",
 		action="store_false",
 		help="Disable the implicit import of lang.core (e.g. println); import/qualify explicitly",
+	)
+	parser.add_argument(
+		"--stdlib-root",
+		type=Path,
+		help="Path to stdlib root (optional); when set, stdlib sources are loaded",
 	)
 	args = parser.parse_args(argv)
 	if args.target_word_bits is None and _TEST_TARGET_WORD_BITS is not None:
@@ -3446,6 +3531,7 @@ def main(argv: list[str] | None = None) -> int:
 		external_module_exports=external_exports,
 		external_module_packages=external_module_packages,
 		package_id=package_id,
+		stdlib_root=args.stdlib_root,
 	)
 	func_hirs, signatures, fn_ids_by_name = flatten_modules(modules)
 	origin_by_fn_id: dict[FunctionId, Path] = {}

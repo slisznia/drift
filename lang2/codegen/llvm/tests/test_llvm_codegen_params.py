@@ -53,16 +53,18 @@ def test_int_param_header_and_call():
     main_sig = FnSignature(name="main", param_type_ids=[], return_type_id=int_ty)
     main_info = FnInfo(fn_id=main_id, name="main", declared_can_throw=False, signature=main_sig, return_type_id=int_ty)
 
+    word_bits = host_word_bits()
+    word_ty = f"i{word_bits}"
     mod = lower_module_to_llvm(
         {add_id: add, main_id: main},
         {add_id: add_ssa, main_id: main_ssa},
         {add_id: add_info, main_id: main_info},
-        type_table=table, word_bits=host_word_bits())
+        type_table=table, word_bits=word_bits)
     ir = mod.render()
 
-    assert "define %drift.isize @add(%drift.isize %x, %drift.isize %y)" in ir
-    assert "define %drift.isize @main()" in ir
-    assert "call %drift.isize @add(%drift.isize %t0, %drift.isize %t1)" in ir
+    assert f"define {word_ty} @add({word_ty} %x, {word_ty} %y)" in ir
+    assert f"define {word_ty} @main()" in ir
+    assert f"call {word_ty} @add({word_ty} %t0, {word_ty} %t1)" in ir
 
 
 def test_mixed_int_string_params_and_return():
@@ -92,16 +94,18 @@ def test_mixed_int_string_params_and_return():
     main_sig = FnSignature(name="main", param_type_ids=[], return_type_id=str_ty)
     main_info = FnInfo(fn_id=main_id, name="main", declared_can_throw=False, signature=main_sig, return_type_id=str_ty)
 
+    word_bits = host_word_bits()
+    word_ty = f"i{word_bits}"
     mod = lower_module_to_llvm(
         {comb_id: comb, main_id: main},
         {comb_id: comb_ssa, main_id: main_ssa},
         {comb_id: comb_info, main_id: main_info},
-        type_table=table, word_bits=host_word_bits())
+        type_table=table, word_bits=word_bits)
     ir = mod.render()
 
-    assert "define %DriftString @combine(%drift.isize %x, %DriftString %s)" in ir
+    assert f"define %DriftString @combine({word_ty} %x, %DriftString %s)" in ir
     assert "define %DriftString @main()" in ir
-    assert "call %DriftString @combine(%drift.isize %t0, %DriftString %t1)" in ir
+    assert f"call %DriftString @combine({word_ty} %t0, %DriftString %t1)" in ir
 
 
 def test_fnptr_param_headers():
@@ -125,12 +129,14 @@ def test_fnptr_param_headers():
     apply_ct_sig = FnSignature(name="apply_ct", param_type_ids=[fnptr_throwing, int_ty], return_type_id=int_ty)
     apply_ct_info = FnInfo(fn_id=apply_ct_id, name="apply_ct", declared_can_throw=False, signature=apply_ct_sig, return_type_id=int_ty)
 
+    word_bits = host_word_bits()
+    word_ty = f"i{word_bits}"
     mod = lower_module_to_llvm(
         {apply_id: apply, apply_ct_id: apply_ct},
         {apply_id: apply_ssa, apply_ct_id: apply_ct_ssa},
         {apply_id: apply_info, apply_ct_id: apply_ct_info},
-        type_table=table, word_bits=host_word_bits())
+        type_table=table, word_bits=word_bits)
     ir = mod.render()
 
-    assert "define %drift.isize @apply(%drift.isize (%drift.isize)* %f, %drift.isize %x)" in ir
-    assert "define %drift.isize @apply_ct(%FnResult_Int_Error (%drift.isize)* %f, %drift.isize %x)" in ir
+    assert f"define {word_ty} @apply({word_ty} ({word_ty})* %f, {word_ty} %x)" in ir
+    assert f"define {word_ty} @apply_ct(%FnResult_Int_Error ({word_ty})* %f, {word_ty} %x)" in ir

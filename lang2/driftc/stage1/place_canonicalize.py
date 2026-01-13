@@ -134,7 +134,11 @@ class PlaceCanonicalizeRewriter:
 			place = place_expr_from_lvalue_expr(subj)
 			if place is not None:
 				subj = place
-			return pfx, H.HMove(subject=subj, loc=getattr(expr, "loc", Span()))
+			return pfx, H.HMove(
+				subject=subj,
+				loc=getattr(expr, "loc", Span()),
+				is_implicit=getattr(expr, "is_implicit", False),
+			)
 		if isinstance(expr, getattr(H, "HCopy", ())):
 			pfx, subj = self._rewrite_expr(expr.subject)
 			return pfx, H.HCopy(subject=subj, loc=getattr(expr, "loc", Span()))
@@ -182,6 +186,8 @@ class PlaceCanonicalizeRewriter:
 				args=new_args,
 				kwargs=new_kwargs,
 				type_args=getattr(expr, "type_args", None),
+				callsite_id=getattr(expr, "callsite_id", None),
+				origin=getattr(expr, "origin", None),
 			)
 		if isinstance(expr, getattr(H, "HInvoke", ())):
 			_, callee = self._rewrite_expr(expr.callee)

@@ -10,15 +10,15 @@ _Static_assert(sizeof(drift_isize) == sizeof(void *), "drift_isize must be point
 _Static_assert(sizeof(drift_usize) == sizeof(void *), "drift_usize must be pointer-sized");
 
 typedef struct DriftArrayHeader {
-	drift_usize len;
-	drift_usize cap;
+	drift_isize len;
+	drift_isize cap;
 	void *data;
 } DriftArrayHeader;
 
-void *drift_alloc_array(size_t elem_size, size_t elem_align, drift_usize len, drift_usize cap);
+void *drift_alloc_array(size_t elem_size, size_t elem_align, drift_isize len, drift_isize cap);
 void drift_free_array(void *data);
-void drift_bounds_check(drift_isize idx, drift_usize len);
+void drift_bounds_check(drift_isize idx, drift_isize len);
 __attribute__((noreturn))
-void drift_bounds_check_fail(drift_isize idx, drift_usize len);
+void drift_bounds_check_fail(drift_isize idx, drift_isize len);
 
 #endif // LANG2_ARRAY_RUNTIME_H

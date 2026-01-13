@@ -4,7 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from lang2.driftc.module_lowered import flatten_modules
-from lang2.driftc.parser import parse_drift_workspace_to_hir
+from lang2.driftc.parser import parse_drift_workspace_to_hir, stdlib_root
 from lang2.driftc.type_checker import TypeChecker
 
 
@@ -17,7 +17,9 @@ def _typecheck_workspace(tmp_path: Path, content: str) -> list[str]:
 	src = tmp_path / "main.drift"
 	_write_file(src, content)
 	modules, type_table, _exc, module_exports, _deps, diagnostics = parse_drift_workspace_to_hir(
-		[src], module_paths=[tmp_path]
+		[src],
+		module_paths=[tmp_path],
+		stdlib_root=stdlib_root(),
 	)
 	assert diagnostics == []
 	func_hirs, signatures_by_id, _fn_ids = flatten_modules(modules)

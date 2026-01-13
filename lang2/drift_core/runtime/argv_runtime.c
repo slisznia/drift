@@ -4,8 +4,8 @@ void drift_build_argv(DriftArrayString *out, int argc, char **argv) {
 	if (!out) {
 		abort();
 	}
-	out->len = (drift_usize)argc;
-	out->cap = (drift_usize)argc;
+	out->len = (drift_isize)argc;
+	out->cap = (drift_isize)argc;
 	// Allocate backing store for DriftString elements.
 	DriftString *data = (DriftString *)drift_alloc_array(sizeof(DriftString), _Alignof(DriftString), out->len, out->cap);
 	for (int i = 0; i < argc; i++) {

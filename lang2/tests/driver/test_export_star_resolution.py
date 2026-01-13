@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from lang2.driftc.parser import parse_drift_workspace_to_hir
+from lang2.driftc.parser import parse_drift_workspace_to_hir, stdlib_root
 
 
 def _write_module(root: Path, rel: str, src: str) -> None:
@@ -17,6 +17,7 @@ def _parse_workspace(root: Path) -> list[str]:
 	_modules, _tt, _exc, _exports, _deps, diagnostics = parse_drift_workspace_to_hir(
 		paths,
 		module_paths=[root],
+		stdlib_root=stdlib_root(),
 	)
 	return [d.message for d in diagnostics]
 

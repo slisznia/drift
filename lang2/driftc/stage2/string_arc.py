@@ -173,6 +173,9 @@ def insert_string_arc(
 		elif isinstance(instr, M.ArrayElemDrop):
 			yield instr.array
 			yield instr.index
+		elif isinstance(instr, M.ArrayElemTake):
+			yield instr.array
+			yield instr.index
 		elif isinstance(instr, M.ArrayDrop):
 			yield instr.array
 		elif isinstance(instr, M.ArrayDup):
@@ -344,6 +347,9 @@ def insert_string_arc(
 			elif isinstance(instr, M.MoveOut):
 				owned_defs.add(dest)
 				move_only_defs.add(dest)
+			elif isinstance(instr, M.ArrayElemTake):
+				owned_defs.add(dest)
+				move_only_defs.add(dest)
 
 	for name in block_order:
 		block = func.blocks[name]
@@ -441,6 +447,10 @@ def insert_string_arc(
 			elif isinstance(instr, M.ArrayIndexLoad):
 				if _is_string_tid(instr.elem_ty):
 					owned_values.discard(instr.dest)
+			elif isinstance(instr, M.ArrayElemTake):
+				if _is_string_tid(instr.elem_ty):
+					owned_values.add(instr.dest)
+					move_only_values.add(instr.dest)
 			elif isinstance(instr, M.AssignSSA):
 				if _is_string_value(instr.src):
 					if instr.src in owned_values:
@@ -492,6 +502,31 @@ def insert_string_arc(
 					val = _ensure_owned(val, owned_values, new_instrs)
 					new_instrs.append(
 						M.ArrayIndexStore(elem_ty=instr.elem_ty, array=instr.array, index=instr.index, value=val)
+					)
+					_note_use(val, consume=True)
+				continue
+
+			if isinstance(instr, (M.ArrayElemInit, M.ArrayElemInitUnchecked, M.ArrayElemAssign)) and _is_string_tid(instr.elem_ty):
+				val = instr.value
+				if val in move_only_values:
+					new_instrs.append(
+						type(instr)(
+							elem_ty=instr.elem_ty,
+							array=instr.array,
+							index=instr.index,
+							value=val,
+						)
+					)
+					_note_use(val, consume=True)
+				else:
+					val = _ensure_owned(val, owned_values, new_instrs)
+					new_instrs.append(
+						type(instr)(
+							elem_ty=instr.elem_ty,
+							array=instr.array,
+							index=instr.index,
+							value=val,
+						)
 					)
 					_note_use(val, consume=True)
 				continue

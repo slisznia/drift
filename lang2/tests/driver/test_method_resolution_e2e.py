@@ -12,8 +12,7 @@ from lang2.driftc import driftc, stage1 as H
 from lang2.driftc.core.function_id import FunctionId
 from lang2.driftc.impl_index import GlobalImplIndex, ImplMeta, find_impl_method_conflicts
 from lang2.driftc.method_registry import CallableRegistry, CallableSignature, SelfMode, Visibility
-from lang2.driftc.parser import ast as parser_ast
-from lang2.driftc.parser import parse_drift_workspace_to_hir
+from lang2.driftc.parser import ast as parser_ast, parse_drift_workspace_to_hir, stdlib_root
 from lang2.driftc.module_lowered import flatten_modules
 from lang2.driftc.test_helpers import build_linked_world
 from lang2.driftc.trait_index import GlobalTraitImplIndex, GlobalTraitIndex
@@ -137,6 +136,7 @@ def _resolve_main_block(tmp_path: Path, source: str) -> tuple[H.HBlock, dict[int
 	modules, type_table, _exc_catalog, module_exports, module_deps, diagnostics = parse_drift_workspace_to_hir(
 		paths,
 		module_paths=[tmp_path],
+		stdlib_root=stdlib_root(),
 	)
 	assert diagnostics == []
 	func_hirs, signatures, fn_ids_by_name = flatten_modules(modules)
@@ -211,6 +211,7 @@ def _resolve_main_with_meta(
 	modules, type_table, _exc_catalog, module_exports, module_deps, diagnostics = parse_drift_workspace_to_hir(
 		paths,
 		module_paths=[tmp_path],
+		stdlib_root=stdlib_root(),
 	)
 	assert diagnostics == []
 	func_hirs, signatures, fn_ids_by_name = flatten_modules(modules)
@@ -328,7 +329,7 @@ module m_box
 
 export { Box };
 
-pub struct Box { value: Int }
+pub struct Box { pub value: Int }
 """,
 	)
 	_write_file(
@@ -381,7 +382,7 @@ module m_box
 
 export { Box };
 
-pub struct Box { value: Int }
+pub struct Box { pub value: Int }
 """,
 	)
 	_write_file(
@@ -425,7 +426,7 @@ def test_receiver_prefers_ref_over_ref_mut(tmp_path: Path) -> None:
 		"""
 module main
 
-pub struct Box { value: Int }
+pub struct Box { pub value: Int }
 
 implement Box {
 	pub fn f(self: &Box) -> Int { return 1; }
@@ -451,7 +452,7 @@ def test_receiver_prefers_ref_mut_over_value(tmp_path: Path) -> None:
 		"""
 module main
 
-pub struct Box { value: Int }
+pub struct Box { pub value: Int }
 
 implement Box {
 	pub fn g(self: &mut Box) -> Int { return 1; }
@@ -477,7 +478,7 @@ def test_receiver_rvalue_prefers_value(tmp_path: Path) -> None:
 		"""
 module main
 
-pub struct Box { value: Int }
+pub struct Box { pub value: Int }
 
 pub fn make() -> Box { return Box(value = 1); }
 
@@ -504,8 +505,8 @@ def test_inherent_require_prefers_trait_dependency(tmp_path: Path) -> None:
 		"""
 module main
 
-pub struct Box { value: Int }
-pub struct Item { value: Int }
+pub struct Box { pub value: Int }
+pub struct Item { pub value: Int }
 
 pub trait Debug { fn debug(self: &Self) -> String; }
 pub trait Printable require Self is Debug { fn show(self: &Self) -> String; }
@@ -543,8 +544,8 @@ def test_inherent_require_incomparable_is_ambiguous(tmp_path: Path) -> None:
 		"""
 module main
 
-pub struct Box { value: Int }
-pub struct Item { value: Int }
+pub struct Box { pub value: Int }
+pub struct Item { pub value: Int }
 
 pub trait A { fn a(self: &Self) -> Int; }
 pub trait B { fn b(self: &Self) -> Int; }
@@ -575,8 +576,8 @@ module m_lib
 
 export { Box, Item, Debug, Printable, Show };
 
-pub struct Box<T> { value: T }
-pub struct Item { value: Int }
+pub struct Box<T> { pub value: T }
+pub struct Item { pub value: Int }
 
 pub trait Debug { fn debug(self: &Self) -> String; }
 pub trait Printable require Self is Debug { fn show(self: &Self) -> String; }

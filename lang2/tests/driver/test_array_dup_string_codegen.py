@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from lang2.driftc.parser import parse_drift_workspace_to_hir
+from lang2.driftc.parser import parse_drift_workspace_to_hir, stdlib_root
 from lang2.driftc.module_lowered import flatten_modules
 from lang2.driftc.driftc import compile_to_llvm_ir_for_tests
 
@@ -39,6 +39,7 @@ fn main() nothrow -> Int {
 	modules, type_table, exc_catalog, module_exports, module_deps, diags = parse_drift_workspace_to_hir(
 		[src],
 		module_paths=[tmp_path],
+		stdlib_root=stdlib_root(),
 	)
 	assert not diags
 	func_hirs, signatures, _fn_ids_by_name = flatten_modules(modules)
@@ -74,6 +75,7 @@ fn main() nothrow -> Int {
 	modules, type_table, exc_catalog, module_exports, module_deps, diags = parse_drift_workspace_to_hir(
 		[src],
 		module_paths=[tmp_path],
+		stdlib_root=stdlib_root(),
 	)
 	assert not diags
 	func_hirs, signatures, _fn_ids_by_name = flatten_modules(modules)
@@ -107,6 +109,7 @@ fn main() nothrow -> Int {
 	modules, type_table, exc_catalog, module_exports, module_deps, diags = parse_drift_workspace_to_hir(
 		[src],
 		module_paths=[tmp_path],
+		stdlib_root=stdlib_root(),
 	)
 	assert not diags
 	func_hirs, signatures, _fn_ids_by_name = flatten_modules(modules)

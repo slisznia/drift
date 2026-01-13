@@ -23,6 +23,8 @@ def _string_type(table: TypeTable):
 def test_string_literal_return_ir():
 	table = TypeTable()
 	str_ty = _string_type(table)
+	word_bits = host_word_bits()
+	word_ty = f"i{word_bits}"
 
 	block = BasicBlock(
 		name="entry",
@@ -37,14 +39,12 @@ def test_string_literal_return_ir():
 	sig = FnSignature(name="f", return_type_id=str_ty, param_type_ids=[])
 	fn_info = FnInfo(fn_id=fn_id, name="f", declared_can_throw=False, signature=sig, return_type_id=str_ty)
 
-	ir = lower_ssa_func_to_llvm(func, ssa, fn_info, {fn_id: fn_info}, type_table=table, word_bits=host_word_bits())
+	ir = lower_ssa_func_to_llvm(func, ssa, fn_info, {fn_id: fn_info}, type_table=table, word_bits=word_bits)
 
-	assert "%drift.usize = type i" in ir
-	assert "%drift.isize = type i" in ir
-	assert "%DriftString = type { %drift.usize, i8*" in ir
+	assert f"%DriftString = type {{ {word_ty}, i8*" in ir
 	assert (
-		'@.str0 = private unnamed_addr constant { %drift.usize, %drift.usize, [4 x i8] } '
-		'{ %drift.usize 1, %drift.usize 1, [4 x i8] c"abc\\00" }'
+		f'@.str0 = private unnamed_addr constant {{ {word_ty}, {word_ty}, [4 x i8] }} '
+		f'{{ {word_ty} 1, {word_ty} 1, [4 x i8] c"abc\\00" }}'
 	) in ir
 	assert "define %DriftString @f()" in ir
 	assert "ret %DriftString" in ir
@@ -54,6 +54,8 @@ def test_string_utf8_literal_ir():
 	"""UTF-8 literals should be escaped byte-wise in the LLVM global."""
 	table = TypeTable()
 	str_ty = _string_type(table)
+	word_bits = host_word_bits()
+	word_ty = f"i{word_bits}"
 
 	block = BasicBlock(
 		name="entry",
@@ -68,14 +70,12 @@ def test_string_utf8_literal_ir():
 	sig = FnSignature(name="f", return_type_id=str_ty, param_type_ids=[])
 	fn_info = FnInfo(fn_id=fn_id, name="f", declared_can_throw=False, signature=sig, return_type_id=str_ty)
 
-	ir = lower_ssa_func_to_llvm(func, ssa, fn_info, {fn_id: fn_info}, type_table=table, word_bits=host_word_bits())
+	ir = lower_ssa_func_to_llvm(func, ssa, fn_info, {fn_id: fn_info}, type_table=table, word_bits=word_bits)
 
-	assert "%drift.usize = type i" in ir
-	assert "%drift.isize = type i" in ir
-	assert "%DriftString = type { %drift.usize, i8*" in ir
+	assert f"%DriftString = type {{ {word_ty}, i8*" in ir
 	assert (
-		'@.str0 = private unnamed_addr constant { %drift.usize, %drift.usize, [14 x i8] } '
-		'{ %drift.usize 1, %drift.usize 1, [14 x i8] c"Solidarno\\C5\\9B\\C4\\87\\00" }'
+		f'@.str0 = private unnamed_addr constant {{ {word_ty}, {word_ty}, [14 x i8] }} '
+		f'{{ {word_ty} 1, {word_ty} 1, [14 x i8] c"Solidarno\\C5\\9B\\C4\\87\\00" }}'
 	) in ir
 	assert "define %DriftString @f()" in ir
 	assert "ret %DriftString" in ir
@@ -84,6 +84,8 @@ def test_string_utf8_literal_ir():
 def test_string_pass_through_call_ir():
 	table = TypeTable()
 	str_ty = _string_type(table)
+	word_bits = host_word_bits()
+	word_ty = f"i{word_bits}"
 
 	# callee: return its string argument
 	callee_block = BasicBlock(
@@ -117,15 +119,15 @@ def test_string_pass_through_call_ir():
 		{callee_id: callee, caller_id: caller},
 		{callee_id: callee_ssa, caller_id: caller_ssa},
 		{callee_id: callee_info, caller_id: caller_info},
-		type_table=table, word_bits=host_word_bits())
+		type_table=table,
+		word_bits=word_bits,
+	)
 	ir = mod.render()
 
-	assert "%drift.usize = type i" in ir
-	assert "%drift.isize = type i" in ir
-	assert "%DriftString = type { %drift.usize, i8*" in ir
+	assert f"%DriftString = type {{ {word_ty}, i8*" in ir
 	assert (
-		'@.str0 = private unnamed_addr constant { %drift.usize, %drift.usize, [4 x i8] } '
-		'{ %drift.usize 1, %drift.usize 1, [4 x i8] c"abc\\00" }'
+		f'@.str0 = private unnamed_addr constant {{ {word_ty}, {word_ty}, [4 x i8] }} '
+		f'{{ {word_ty} 1, {word_ty} 1, [4 x i8] c"abc\\00" }}'
 	) in ir
 	assert "define %DriftString @id(%DriftString %s)" in ir
 	assert "define %DriftString @main()" in ir

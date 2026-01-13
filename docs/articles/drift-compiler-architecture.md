@@ -79,7 +79,7 @@ Resolve declared types into TypeIds, build canonical function signatures, and pe
 * Shallow HIR checks:
   * Catch-arm shape/unknown events (when catalog provided).
   * Array/indexing rules (index must be Int, subject must be Array).
-  * `.len/.cap` typing (Array/String → Uint).
+  * `.len/.cap` typing (Array/String → Int).
   * Uint-only bitwise ops; Bool-only conditions.
   * Duplicate function definitions rejected.
 * Produce a `CheckedProgram` with signatures, shared `TypeTable`, diagnostics; no full type checking yet.

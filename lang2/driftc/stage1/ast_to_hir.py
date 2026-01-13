@@ -1010,18 +1010,46 @@ class AstToHIR:
 		  - iter_var is currently an identifier (pattern support can be added later).
 		  - iterable expression is evaluated exactly once.
 		"""
-		# 1) Evaluate iterable once and bind (borrow to avoid consuming the iterable).
-		iterable_expr = H.HBorrow(subject=self.lower_expr(stmt.iterable), is_mut=False)
+		# 1) Evaluate iterable once and bind (no implicit borrow; the Iterable hook
+		# defines ownership/borrowing semantics).
+		iterable_expr = self.lower_expr(stmt.iterable)
+		iterable_is_move = False
+		if hasattr(H, "HMove") and isinstance(iterable_expr, getattr(H, "HVar")):
+			iterable_expr = H.HMove(
+				subject=iterable_expr,
+				loc=getattr(stmt, "loc", None) or Span(),
+				is_implicit=True,
+			)
+			iterable_is_move = True
 		iterable_name = self._fresh_temp("__for_iterable")
 		iterable_let = H.HLet(name=iterable_name, value=iterable_expr)
 
-		# 2) Build iterator: __for_iter = __for_iterable.iter()
+		# 2) Build iterator: __for_iter = std.iter.Iterable.iter(__for_iterable)
 		iter_name = self._fresh_temp("__for_iter")
-		iter_call = H.HMethodCall(receiver=H.HVar(iterable_name), method_name="iter", args=[])
+		iter_trait = ast.TypeNameRef(name="Iterable", module_id="std.iter")
+		iter_arg = H.HVar(iterable_name)
+		if iterable_is_move and hasattr(H, "HMove"):
+			iter_arg = H.HMove(
+				subject=iter_arg,
+				loc=getattr(stmt, "loc", None) or Span(),
+				is_implicit=True,
+			)
+		iter_call = H.HCall(
+			fn=H.HQualifiedMember(base_type_expr=iter_trait, member="iter"),
+			args=[iter_arg],
+			origin="for_iter",
+		)
 		iter_let = H.HLet(name=iter_name, value=iter_call, is_mutable=True)
 
-		# 3) In loop: match __for_iter.next() { Some(iter_var) => { body } default => { break } }
-		next_call = H.HMethodCall(receiver=H.HVar(iter_name), method_name="next", args=[])
+		# 3) In loop: match std.iter.SinglePassIterator.next(__for_iter) { ... }
+		next_trait = ast.TypeNameRef(name="SinglePassIterator", module_id="std.iter")
+		iter_arg = H.HVar(iter_name)
+		iter_arg = H.HBorrow(subject=iter_arg, is_mut=True)
+		next_call = H.HCall(
+			fn=H.HQualifiedMember(base_type_expr=next_trait, member="next"),
+			args=[iter_arg],
+			origin="for_next",
+		)
 		body_block = self.lower_block(stmt.body)
 		arms: list[H.HMatchArm] = [
 			# `for` desugaring matches `Optional<T>::Some(value: T)` positionally,

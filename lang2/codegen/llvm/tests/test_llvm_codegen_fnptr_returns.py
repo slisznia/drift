@@ -50,14 +50,16 @@ def test_fnptr_return_type_lowering() -> None:
 	make_sig = FnSignature(name="make", return_type_id=fn_ty, declared_can_throw=False)
 	make_info = FnInfo(fn_id=make_id, name="make", declared_can_throw=False, return_type_id=fn_ty, signature=make_sig)
 
+	word_bits = host_word_bits()
+	word_ty = f"i{word_bits}"
 	mod = lower_module_to_llvm(
 		funcs={add1_info.fn_id: add1_mir, make_id: make_mir},
 		ssa_funcs={add1_info.fn_id: add1_ssa, make_id: make_ssa},
 		fn_infos={add1_info.fn_id: add1_info, make_id: make_info},
-		type_table=table, word_bits=host_word_bits())
+		type_table=table, word_bits=word_bits)
 	ir = mod.render()
 
-	assert "define %drift.isize (%drift.isize)* @make()" in ir
+	assert f"define {word_ty} ({word_ty})* @make()" in ir
 	assert "@add1" in ir
 
 
@@ -82,12 +84,14 @@ def test_fnptr_return_fnresult_ok_payload() -> None:
 	make_sig = FnSignature(name="make", return_type_id=fn_ty, declared_can_throw=True)
 	make_info = FnInfo(fn_id=make_id, name="make", declared_can_throw=True, return_type_id=fn_ty, signature=make_sig)
 
+	word_bits = host_word_bits()
+	word_ty = f"i{word_bits}"
 	mod = lower_module_to_llvm(
 		funcs={add1_info.fn_id: add1_mir, make_id: make_mir},
 		ssa_funcs={add1_info.fn_id: add1_ssa, make_id: make_ssa},
 		fn_infos={add1_info.fn_id: add1_info, make_id: make_info},
-		type_table=table, word_bits=host_word_bits())
+		type_table=table, word_bits=word_bits)
 	ir = mod.render()
 
-	assert "%FnResult_FnPtr_Int_to_Int_NoThrow_Error = type { i1, %drift.isize (%drift.isize)*, %DriftError* }" in ir
+	assert f"%FnResult_FnPtr_Int_to_Int_NoThrow_Error = type {{ i1, {word_ty} ({word_ty})*, %DriftError* }}" in ir
 	assert "define %FnResult_FnPtr_Int_to_Int_NoThrow_Error @make()" in ir

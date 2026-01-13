@@ -511,6 +511,15 @@ class ArrayElemDrop(MInstr):
 
 
 @dataclass
+class ArrayElemTake(MInstr):
+	"""dest = take array[index] (move element out; slot becomes uninitialized)."""
+	dest: ValueId
+	elem_ty: TypeId
+	array: ValueId
+	index: ValueId
+
+
+@dataclass
 class ArrayDrop(MInstr):
 	"""drop all elements and free array backing store."""
 	elem_ty: TypeId
@@ -553,21 +562,21 @@ class ArraySetLen(MInstr):
 
 @dataclass
 class ArrayLen(MInstr):
-	"""dest = len(array) in Size units."""
+	"""dest = len(array) as Int."""
 	dest: ValueId
 	array: ValueId
 
 
 @dataclass
 class ArrayCap(MInstr):
-	"""dest = cap(array) in Size units."""
+	"""dest = cap(array) as Int."""
 	dest: ValueId
 	array: ValueId
 
 
 @dataclass
 class StringLen(MInstr):
-	"""dest = len(string) in Uint/size units."""
+	"""dest = len(string) as Int."""
 	dest: ValueId
 	value: ValueId
 
@@ -920,6 +929,7 @@ __all__ = [
 	"ArrayElemInitUnchecked",
 	"ArrayElemAssign",
 	"ArrayElemDrop",
+	"ArrayElemTake",
 	"ArrayDrop",
 	"ArrayDup",
 	"ArrayIndexLoad",

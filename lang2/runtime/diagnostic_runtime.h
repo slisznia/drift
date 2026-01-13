@@ -26,7 +26,7 @@ _Static_assert(sizeof(drift_isize) == sizeof(void*), "drift_isize must be pointe
 _Static_assert(sizeof(drift_usize) == sizeof(void*), "drift_usize must be pointer-sized");
 
 struct DriftString {
-    drift_usize len;
+    drift_isize len;
     char* data;
 };
 
@@ -51,7 +51,7 @@ struct DriftDiagnosticValue {
     union {
         uint64_t as_u64[2]; // 16-byte blob for generic storage
         struct {
-            int64_t len;
+            drift_isize len;
             char* data;
         } string_value;
         int64_t int_value;

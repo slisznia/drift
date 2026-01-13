@@ -38,6 +38,7 @@ def _declare_optional_base(table: TypeTable) -> int:
 				fields=[VariantFieldSchema(name="value", type_expr=GenericTypeExpr.param(0))],
 			),
 		],
+		tombstone_ctor="None",
 	)
 
 

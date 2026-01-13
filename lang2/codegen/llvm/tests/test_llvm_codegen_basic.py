@@ -19,13 +19,17 @@ from lang2.driftc.stage2 import (
 	ConstructResultErr,
 	ConstructResultOk,
 	ConstructDV,
+	BinaryOpInstr,
+	IntFromUint,
 	MirFunc,
 	Return,
 	ConstString,
 	ArrayAlloc,
 	DropValue,
+	UintFromInt,
 )
 from lang2.driftc.stage4 import MirToSSA
+from lang2.driftc.stage1 import BinaryOp
 from lang2.driftc.core.types_core import TypeTable
 
 
@@ -55,10 +59,12 @@ def test_codegen_plain_int_return():
 	int_ty = table.ensure_int()
 	fn_info = _fn_info("main", False, int_ty)
 
-	ir = lower_ssa_func_to_llvm(mir, ssa, fn_info, type_table=table, word_bits=host_word_bits())
+	word_bits = host_word_bits()
+	word_ty = f"i{word_bits}"
+	ir = lower_ssa_func_to_llvm(mir, ssa, fn_info, type_table=table, word_bits=word_bits)
 
-	assert "define %drift.isize @main()" in ir
-	assert "ret %drift.isize %t0" in ir
+	assert f"define {word_ty} @main()" in ir
+	assert f"ret {word_ty} %t0" in ir
 
 
 def test_codegen_fnresult_ok_return():
@@ -111,12 +117,14 @@ def test_codegen_fnresult_ref_ok_return():
 	sig = FnSignature(name="f_ref", param_type_ids=[ref_int], return_type_id=fnresult_ty, declared_can_throw=True)
 	fn_info = FnInfo(fn_id=FunctionId(module="main", name="f_ref", ordinal=0), name="f_ref", declared_can_throw=True, return_type_id=fnresult_ty, signature=sig)
 
-	mod = LlvmModuleBuilder(word_bits=host_word_bits())
-	mod.emit_func(lower_ssa_func_to_llvm(mir, ssa, fn_info, type_table=table, word_bits=host_word_bits()))
+	word_bits = host_word_bits()
+	word_ty = f"i{word_bits}"
+	mod = LlvmModuleBuilder(word_bits=word_bits)
+	mod.emit_func(lower_ssa_func_to_llvm(mir, ssa, fn_info, type_table=table, word_bits=word_bits))
 	ir = mod.render()
 
-	assert "%FnResult_Ref_Int_Error = type { i1, %drift.isize*, %DriftError* }" in ir
-	assert "define %FnResult_Ref_Int_Error @f_ref(%drift.isize* %p0)" in ir
+	assert f"%FnResult_Ref_Int_Error = type {{ i1, {word_ty}*, %DriftError* }}" in ir
+	assert f"define %FnResult_Ref_Int_Error @f_ref({word_ty}* %p0)" in ir
 
 
 def test_codegen_fnresult_ref_bool_ok_return():
@@ -217,14 +225,16 @@ def test_codegen_fnresult_ref_err_zero_ok_slot():
 	fnresult_ty = table.new_fnresult(ref_int, error_ty)
 	fn_info = FnInfo(fn_id=FunctionId(module="main", name="f_ref_err", ordinal=0), name="f_ref_err", declared_can_throw=True, return_type_id=fnresult_ty)
 
-	mod = LlvmModuleBuilder(word_bits=host_word_bits())
-	mod.emit_func(lower_ssa_func_to_llvm(mir, ssa, fn_info, type_table=table, word_bits=host_word_bits()))
+	word_bits = host_word_bits()
+	word_ty = f"i{word_bits}"
+	mod = LlvmModuleBuilder(word_bits=word_bits)
+	mod.emit_func(lower_ssa_func_to_llvm(mir, ssa, fn_info, type_table=table, word_bits=word_bits))
 	ir = mod.render()
 
-	assert "%FnResult_Ref_Int_Error = type { i1, %drift.isize*, %DriftError* }" in ir
+	assert f"%FnResult_Ref_Int_Error = type {{ i1, {word_ty}*, %DriftError* }}" in ir
 	assert "define %FnResult_Ref_Int_Error @f_ref_err()" in ir
 	assert any(
-		"%FnResult_Ref_Int_Error" in line and ", %drift.isize* null, 1" in line for line in ir.splitlines()
+		f"%FnResult_Ref_Int_Error" in line and f", {word_ty}* null, 1" in line for line in ir.splitlines()
 	)
 
 
@@ -240,8 +250,8 @@ def test_codegen_nested_array_drop_helper_verifies():
 	entry = BasicBlock(
 		name="entry",
 		instructions=[
-			ConstUint(dest="len0", value=0),
-			ConstUint(dest="cap0", value=1),
+			ConstInt(dest="len0", value=0),
+			ConstInt(dest="cap0", value=1),
 			ArrayAlloc(dest="arr", elem_ty=inner_array_ty, length="len0", cap="cap0"),
 			DropValue(value="arr", ty=outer_array_ty),
 		],
@@ -265,7 +275,9 @@ def test_codegen_nested_array_drop_helper_verifies():
 		signature=sig,
 	)
 
-	ir = lower_ssa_func_to_llvm(mir, ssa, fn_info, type_table=table, word_bits=host_word_bits())
+	word_bits = host_word_bits()
+	word_ty = f"i{word_bits}"
+	ir = lower_ssa_func_to_llvm(mir, ssa, fn_info, type_table=table, word_bits=word_bits)
 
 	llvm.initialize()
 	llvm.initialize_native_target()
@@ -276,3 +288,73 @@ def test_codegen_nested_array_drop_helper_verifies():
 	assert "define void @__drift_array_drop_" in ir
 	assert "call void @__drift_array_drop_" in ir
 	assert "call void @drift_free_array" in ir
+
+
+def test_codegen_int_uint_conversions_verify():
+	"""IntFromUint/UintFromInt should produce verifier-clean IR."""
+	import llvmlite.binding as llvm
+
+	entry = BasicBlock(
+		name="entry",
+		instructions=[
+			ConstUint(dest="u0", value=5),
+			IntFromUint(dest="i0", value="u0"),
+			UintFromInt(dest="u1", value="i0"),
+		],
+		terminator=Return(value="i0"),
+	)
+	mir = MirFunc(fn_id=FunctionId(module="main", name="conv", ordinal=0), name="conv", params=[], locals=[], blocks={"entry": entry}, entry="entry")
+	ssa = MirToSSA().run(mir)
+
+	table = TypeTable()
+	int_ty = table.ensure_int()
+	fn_info = _fn_info("conv", False, int_ty)
+
+	ir = lower_ssa_func_to_llvm(mir, ssa, fn_info, type_table=table, word_bits=host_word_bits())
+
+	llvm.initialize()
+	llvm.initialize_native_target()
+	llvm.initialize_native_asmprinter()
+	module = llvm.parse_assembly(ir)
+	module.verify()
+
+
+def test_codegen_signed_unsigned_ops_are_op_selected():
+	"""Signed/unsigned behavior should be encoded by ops, not types."""
+	import llvmlite.binding as llvm
+
+	entry = BasicBlock(
+		name="entry",
+		instructions=[
+			ConstInt(dest="i0", value=1),
+			ConstInt(dest="i1", value=2),
+			BinaryOpInstr(dest="i_lt", op=BinaryOp.LT, left="i0", right="i1"),
+			ConstUint(dest="u0", value=1),
+			ConstUint(dest="u1", value=2),
+			BinaryOpInstr(dest="u_lt", op=BinaryOp.LT, left="u0", right="u1"),
+			BinaryOpInstr(dest="u_div", op=BinaryOp.DIV, left="u1", right="u0"),
+			BinaryOpInstr(dest="u_mod", op=BinaryOp.MOD, left="u1", right="u0"),
+		],
+		terminator=Return(value="i0"),
+	)
+	mir = MirFunc(fn_id=FunctionId(module="main", name="ops", ordinal=0), name="ops", params=[], locals=[], blocks={"entry": entry}, entry="entry")
+	ssa = MirToSSA().run(mir)
+
+	table = TypeTable()
+	int_ty = table.ensure_int()
+	fn_info = _fn_info("ops", False, int_ty)
+
+	word_bits = host_word_bits()
+	word_ty = f"i{word_bits}"
+	ir = lower_ssa_func_to_llvm(mir, ssa, fn_info, type_table=table, word_bits=word_bits)
+
+	llvm.initialize()
+	llvm.initialize_native_target()
+	llvm.initialize_native_asmprinter()
+	module = llvm.parse_assembly(ir)
+	module.verify()
+
+	assert f"icmp slt {word_ty}" in ir
+	assert f"icmp ult {word_ty}" in ir
+	assert f"udiv {word_ty}" in ir
+	assert f"urem {word_ty}" in ir

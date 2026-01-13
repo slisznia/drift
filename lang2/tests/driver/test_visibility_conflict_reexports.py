@@ -30,7 +30,7 @@ module m_types
 
 export { Box };
 
-pub struct Box { value: Int }
+pub struct Box { pub value: Int }
 """,
 	)
 	_write_file(
@@ -100,7 +100,7 @@ module m_types
 
 export { Box };
 
-pub struct Box { value: Int }
+pub struct Box { pub value: Int }
 """,
 	)
 	_write_file(

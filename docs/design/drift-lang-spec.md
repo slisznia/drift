@@ -187,14 +187,14 @@ Function parameters are `val` by default (not movable). Use `var` to opt into ow
   - Equality (`==`) is bytewise; no normalization or case folding.
 - Empty strings: `""` or `String.EMPTY`; `is_empty(s: String) -> Bool` checks `byte_length(s) == 0`.
 - Concatenation uses `+` and produces a new `String`.
-- `Array<String>` is supported; each element is a `%DriftString` header `{%drift.usize, i8*}` at the ABI.
+- `Array<String>` is supported; each element is a `%DriftString` header `{%drift.isize, i8*}` at the ABI.
 
 #### 3.1.1. Integer and float semantics
 
 Drift distinguishes between **natural-width** numeric primitives and **fixed-width** primitives.
 
-- **v1 uses pointer-sized carriers** for `Int`/`Uint` (isize/usize). This avoids wasting space on 32-bit targets, keeps index/length arithmetic efficient, and aligns with the runtime/ABI for array bounds checks and container sizes.
-- `Size` is reserved for future revisions and **not** used for collection lengths/indices in v1. Collections use `Uint` for lengths/capacities and `Int` for indices (see chapter 12).
+- **v1 uses pointer-sized carriers** for `Int`/`Uint` (isize/usize). This avoids wasting space on 32-bit targets and keeps arithmetic efficient.
+- `Size` is reserved for future revisions and **not** used for collection lengths/indices in v1. Collections use `Int` for lengths/capacities and indices (see chapter 12).
 - `Float` is the target’s native floating-point type (most commonly IEEE-754 binary64; on some targets it may be binary32). The surface name remains `Float` regardless of width. Its bit-width/layout are target-defined; ABI stability is guaranteed within a target, not across different targets.
 - Fixed-width primitives (`Int8`…`Int64`, `Uint8`…`Uint64`, `F32`, `F64`) are **reserved in v1**. They are used only in ABI/FFI modules and internal compiler/runtime types (e.g., `ErrorCode = Uint64`); user code should use `Int`/`Uint`/`Float`.
 
@@ -1696,6 +1696,21 @@ Rules:
 Exported functions are module interface entry points and therefore use the
 cross-module can-throw ABI calling convention (Section 7.2).
 
+### 7.0.1. Member visibility (struct fields and methods)
+
+Member visibility is **module-scoped** and defaults to private.
+
+Rules:
+
+- Struct fields and `implement` methods are **private by default**.
+- A field or method marked `pub` is accessible outside the defining module,
+  subject to the visibility of its enclosing type.
+- `export { TypeName }` does **not** elevate member visibility; it only exports
+  the type name.
+- Field access and method calls are checked at the access site:
+  - A private field/method may be used only within the defining module.
+  - Access outside the defining module is a compile-time error.
+
 ### 7.1. Import syntax (modules only)
 
 Drift has a single import form:
@@ -1905,6 +1920,26 @@ variant Result<T, E> {
 - At least one variant must be declared, and names must be unique within the type.
 - Constructor field names are part of the public API; renaming a field is a breaking change.
 
+#### 10.1.1. Tombstone constructors (`@tombstone`)
+
+Array mutation operations (e.g., `pop/remove/insert/swap_remove`) move values out of array slots. For **droppable** variant payloads, the compiler must be able to synthesize a safe, non-owning value of the same type. Variants provide this via a **tombstone constructor**.
+
+```drift
+variant Maybe<T> {
+    @tombstone None
+    Some(value: T)
+}
+```
+
+Rules (MVP):
+
+- `@tombstone` is contextual: it is only recognized on variant arms.
+- At most one arm per variant may be marked `@tombstone`.
+- The tombstone arm must have **no payload** (zero fields).
+- A variant is **droppable** if any arm payload type is droppable (by schema analysis, including transitive droppable types).
+- Droppable variants **must** declare a tombstone arm.
+- The compiler records the tombstone arm name as `tombstone_ctor` in the variant schema.
+
 ### 10.2. Semantics and representation
 
 A `variant` value stores:
@@ -2011,8 +2046,8 @@ Matches can be nested or composed with other `variant` types:
 
 ```drift
 variant Optional<T> {
+    @tombstone None
     Some(value: T)
-    None
 }
 
 For ABI stability across modules, the canonical `Optional<T>` layout uses a
@@ -2201,19 +2236,20 @@ val explicit: Array<Int> = [1, 2, 3]; // annotation still allowed when desired
 ```
 
 - `[expr1, expr2, ...]` constructs an `Array<T>` where every element shares the same type `T`. The compiler infers `T` from the elements.
- - Mixed-type literals (`[1, "two"]`) are rejected during type checking (compile-time error).
+- Mixed-type literals (`[1, "two"]`) are rejected during type checking (compile-time error).
+- **MVP restriction:** non-empty array literals require `T` to be `Copy`. Empty literals (`[]`) are allowed only with an explicit `Array<T>` type annotation.
 - Empty literals are reserved for a future constructor; for now, call the stdlib helper once it lands.
 
 `Array<T>` integrates with the broader language design — it moves with `move x`, can be captured with `^`, and will participate in trait implementations like `Display` once the stdlib grows. The literal syntax keeps sample programs succinct while we flesh out higher-level APIs.
 
-**Indexing and lengths.** In v1, container lengths/capacities use `Uint`; indices are `Int`:
+**Indexing and lengths.** In v1, container lengths/capacities and indices use `Int`:
 
-- `Array<T>.len: Uint`
-- `Array<T>.capacity: Uint`
-- `ByteBuffer.len: Uint`
-- `ByteSlice.len: Uint`
+- `Array<T>.len: Int`
+- `Array<T>.capacity: Int`
+- `ByteBuffer.len: Int`
+- `ByteSlice.len: Int`
 
-Any function that indexes into a container or string must accept an `Int` index; bounds checks reject negative indices and indices ≥ `len`. Lengths/capacities are unsigned counts (`Uint`). Examples elsewhere that show `Size`/`Int` are illustrative; the canonical types for arrays/strings in v1 are `Uint` for lengths/capacities and `Int` for indices.
+Any function that indexes into a container or string must accept an `Int` index; bounds checks reject negative indices and indices ≥ `len`. Lengths/capacities are signed counts (`Int`) with the invariant `len >= 0` / `capacity >= 0`. Examples elsewhere that show `Size` are illustrative; the canonical type for array/string lengths and indices in v1 is `Int`.
 
 ### 12.1. ByteBuffer, ByteSlice, and MutByteSlice
 
@@ -2248,15 +2284,15 @@ val from_utf8 = ByteBuffer.from_string("drift");
 
 Core operations:
 
-- `fn len(self: &ByteBuffer) -> Uint` — number of initialized bytes.
-- `fn capacity(self: &ByteBuffer) -> Uint` — reserved storage.
+- `fn len(self: &ByteBuffer) -> Int` — number of initialized bytes.
+- `fn capacity(self: &ByteBuffer) -> Int` — reserved storage.
 - `fn clear(self: &mut ByteBuffer) -> Void` — resets `len` to zero without freeing.
 - `fn push(self: &mut ByteBuffer, b: Byte) -> Void`
 - `fn extend(self: &mut ByteBuffer, slice: ByteSlice) -> Void`
 - `fn as_slice(self: &ByteBuffer) -> ByteSlice`
-- `fn slice(self: &ByteBuffer, start: Uint, len: Uint) -> ByteSlice`
+- `fn slice(self: &ByteBuffer, start: Int, len: Int) -> ByteSlice`
 - `fn as_mut_slice(self: &mut ByteBuffer) -> MutByteSlice`
-- `fn reserve(self: &mut ByteBuffer, additional: Uint) -> Void`
+- `fn reserve(self: &mut ByteBuffer, additional: Int) -> Void`
 
 `ByteSlice`/`MutByteSlice` are lightweight descriptors (`{ ptr, len }`). They do not own memory; borrow rules ensure the referenced storage stays alive for the duration of the borrow. `MutByteSlice` provides exclusive access, so you cannot obtain a second mutable slice while one is active.
 
@@ -2281,19 +2317,23 @@ fn copy_stream(src: InputStream, dst: OutputStream) -> Void {
 
 
 ### 12.2. Indexing, mutation, and borrowing
-#### 12.2.1. Borrowed element references
+#### 12.2.1. Borrowed element access (MVP)
 
-To avoid copying and allow other APIs to operate on a specific slot, `Array<T>` exposes helper methods:
+In MVP, `Array<T>` exposes **borrowed** element access via:
 
 ```drift
-fn ref_at(self: &Array<T>, index: Int) -> &T
-fn ref_mut_at(self: &mut Array<T>, index: Int) -> &mut T
+fn get(self: &Array<T>, index: Int) -> Optional<&T>
 ```
 
-- `ref_at` borrows the array immutably and -> an immutable `&T` to element `index`. Multiple `ref_at` calls may coexist, and the array remains usable for other reads while the borrow lives.
-- `ref_mut_at` requires an exclusive `&mut Array<T>` borrow and yields an exclusive `&mut T`. While the returned reference lives, no other borrows of the same element (or the array) are allowed; this enforces the usual aliasing rules.
+and via direct borrows of indexed places:
 
-Bounds checks mirror simple indexing: out-of-range indices raise `IndexError(container = "Array", index = i)`. These APIs make it easy to hand a callee a view of part of the array—e.g., pass `ref_mut_at` into a mutator function that expects `&mut T`—without copying the element or exposing the entire container.
+```drift
+val p = &arr[i];
+val q = &mut arr[i];
+```
+
+- `get` returns `None` on out-of-range indices (no throw).
+- Direct indexing (`arr[i]`) is **Copy-only**; for non-`Copy` elements, use `get` or borrow the indexed place.
 
 
 Use square brackets to read an element:
@@ -2318,9 +2358,14 @@ Nested indexing works as expected (e.g., `matrix[row][col]`) as long as the root
 
 ## 13. Collection literals (arrays and maps)
 
+**Deferred (non-normative in MVP).** This section describes a future trait-based
+literal desugaring model. In MVP, array literals construct `Array<T>` directly (see §12),
+and map literal desugaring is not yet implemented. Treat the material below as a
+forward-looking design, not current behavior.
+
 Drift includes literal syntax for homogeneous arrays (`[a, b, ...]`) and maps (`{ key: value, ... }`).
 The syntax is part of the language grammar, but **literals never hard-wire a concrete container type**.
-Instead, they are desugared through capability interfaces so projects can pick any backing collection.
+Instead, they are desugared through trait hooks so projects can pick any backing collection.
 
 ### 13.1. Goals
 
@@ -2925,8 +2970,8 @@ Growable containers track both `len` (initialized elements) and `cap` (reserved 
 
 ```drift
 struct Array<T> {
-    len: Uint     // initialized elements
-    cap: Uint     // reserved slots
+    len: Int     // initialized elements
+    cap: Int     // reserved slots
     buf: RawBuffer
 }
 ```
@@ -3037,9 +3082,9 @@ Containers rely on `lang.abi::RawBuffer` for contiguous storage, but the public 
 ```drift
 struct RawBuffer<T> { /* opaque */ }
 
-fn capacity(self: &RawBuffer<T>) -> Uint
-fn slot_at(self: &RawBuffer<T>, i: Uint) -> Slot<T> @unsafe
-fn reallocate(self: &mut RawBuffer<T>, new_cap: Uint) @unsafe
+fn capacity(self: &RawBuffer<T>) -> Int
+fn slot_at(self: &RawBuffer<T>, i: Int) -> Slot<T> @unsafe
+fn reallocate(self: &mut RawBuffer<T>, new_cap: Int) @unsafe
 ```
 
 `Array<T>` and similar types use these hooks internally; ordinary programs never touch the raw bytes.

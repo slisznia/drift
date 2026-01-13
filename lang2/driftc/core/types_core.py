@@ -105,6 +105,7 @@ class StructFieldSchema:
 
 	name: str
 	type_expr: GenericTypeExpr
+	is_pub: bool = False
 
 
 @dataclass(frozen=True)
@@ -163,6 +164,7 @@ class VariantSchema:
 	name: str
 	type_params: list[str]
 	arms: list[VariantArmSchema]
+	tombstone_ctor: str | None = None
 
 
 @dataclass(frozen=True)
@@ -249,6 +251,10 @@ class TypeTable:
 		self._typevar_cache: dict[TypeParamId, TypeId] = {}
 		# Array cache: elem TypeId -> Array<elem> TypeId.
 		self._array_cache: dict[TypeId, TypeId] = {}
+		# Array base id for trait impl matching (Array<__T>).
+		self._array_base_id: TypeId | None = None
+		# Cache for drop-needs checks.
+		self._needs_drop_cache: dict[TypeId, bool] = {}
 		# Compile-time constants keyed by their fully-qualified symbol name.
 		#
 		# MVP: constants are literal values embedded into IR at each use site; there
@@ -417,7 +423,15 @@ class TypeTable:
 			]
 		return ty_id
 
-	def declare_variant(self, module_id: str, name: str, type_params: list[str], arms: list[VariantArmSchema]) -> TypeId:
+	def declare_variant(
+		self,
+		module_id: str,
+		name: str,
+		type_params: list[str],
+		arms: list[VariantArmSchema],
+		*,
+		tombstone_ctor: str | None = None,
+	) -> TypeId:
 		"""
 		Declare a variant nominal type (generic or non-generic).
 
@@ -428,6 +442,14 @@ class TypeTable:
 		concrete instantiation with zero type arguments, and is available via
 		`get_variant_instance(base_id)`.
 		"""
+		if tombstone_ctor is not None:
+			tombstone_arm = next((arm for arm in arms if arm.name == tombstone_ctor), None)
+			if tombstone_arm is None:
+				raise ValueError(f"tombstone_ctor '{tombstone_ctor}' missing in variant '{name}'")
+			if tombstone_arm.fields:
+				raise ValueError(
+					f"tombstone_ctor '{tombstone_ctor}' for variant '{name}' must have no payload"
+				)
 		key = NominalKey(package_id=self._package_for_module(module_id), module_id=module_id, name=name, kind=TypeKind.VARIANT)
 		forward_key = NominalKey(
 			package_id=self._package_for_module(module_id),
@@ -447,7 +469,13 @@ class TypeTable:
 				module_id=module_id,
 			)
 			self._nominal[key] = base_id
-			self.variant_schemas[base_id] = VariantSchema(module_id=module_id, name=name, type_params=list(type_params), arms=list(arms))
+			self.variant_schemas[base_id] = VariantSchema(
+				module_id=module_id,
+				name=name,
+				type_params=list(type_params),
+				arms=list(arms),
+				tombstone_ctor=tombstone_ctor,
+			)
 			return base_id
 		if key in self._nominal:
 			ty_id = self._nominal[key]
@@ -455,7 +483,11 @@ class TypeTable:
 			if td.kind is TypeKind.VARIANT:
 				schema = self.variant_schemas.get(ty_id)
 				if schema is not None:
-					if list(schema.type_params) != list(type_params) or list(schema.arms) != list(arms):
+					if (
+						list(schema.type_params) != list(type_params)
+						or list(schema.arms) != list(arms)
+						or schema.tombstone_ctor != tombstone_ctor
+					):
 						raise ValueError(
 							f"variant '{module_id}::{name}' schema mismatch: "
 							f"params {schema.type_params} vs {type_params}, arms {schema.arms} vs {arms}"
@@ -464,7 +496,13 @@ class TypeTable:
 			raise ValueError(f"type name '{name}' already defined as {td.kind}")
 		# Base variant type. Note: base is named; instantiations are not.
 		base_id = self._add(TypeKind.VARIANT, name, [], register_named=True, module_id=module_id)
-		self.variant_schemas[base_id] = VariantSchema(module_id=module_id, name=name, type_params=list(type_params), arms=list(arms))
+		self.variant_schemas[base_id] = VariantSchema(
+			module_id=module_id,
+			name=name,
+			type_params=list(type_params),
+			arms=list(arms),
+			tombstone_ctor=tombstone_ctor,
+		)
 		return base_id
 
 	def declare_scalar(self, module_id: str, name: str) -> TypeId:
@@ -767,12 +805,63 @@ class TypeTable:
 			arm_inst = VariantArmInstance(tag=tag, name=arm.name, field_names=field_names, field_types=field_types)
 			arms.append(arm_inst)
 			by_name[arm.name] = arm_inst
+		needs_drop = any(self._type_needs_drop(fty) for arm in arms for fty in arm.field_types)
+		if needs_drop:
+			ctor = schema.tombstone_ctor
+			if not ctor:
+				raise ValueError(f"variant '{schema.name}' requires tombstone_ctor for droppable payloads")
+			tombstone_arm = by_name.get(ctor)
+			if tombstone_arm is None:
+				raise ValueError(f"tombstone_ctor '{ctor}' missing in variant '{schema.name}'")
+			if tombstone_arm.field_types:
+				raise ValueError(
+					f"tombstone_ctor '{ctor}' for variant '{schema.name}' must have no payload"
+				)
+			for fty in tombstone_arm.field_types:
+				if self._type_needs_drop(fty):
+					raise ValueError(
+						f"tombstone_ctor '{ctor}' for variant '{schema.name}' must be non-droppable"
+					)
 		self.variant_instances[inst_id] = VariantInstance(
 			base_id=base_id,
 			type_args=list(type_args),
 			arms=arms,
 			arms_by_name=by_name,
 		)
+
+	def _type_needs_drop(self, tid: TypeId) -> bool:
+		cached = self._needs_drop_cache.get(tid)
+		if cached is not None:
+			return cached
+		td = self.get(tid)
+		if td.kind is TypeKind.SCALAR:
+			needs = td.name == "String"
+			self._needs_drop_cache[tid] = needs
+			return needs
+		if td.kind is TypeKind.ARRAY:
+			needs = bool(td.param_types) and self._type_needs_drop(td.param_types[0])
+			self._needs_drop_cache[tid] = needs
+			return needs
+		if td.kind is TypeKind.STRUCT:
+			inst = self.get_struct_instance(tid)
+			if inst is None:
+				return False
+			needs = any(self._type_needs_drop(fty) for fty in inst.field_types)
+			self._needs_drop_cache[tid] = needs
+			return needs
+		if td.kind is TypeKind.VARIANT:
+			inst = self.get_variant_instance(tid)
+			if inst is None:
+				return False
+			needs = any(self._type_needs_drop(fty) for arm in inst.arms for fty in arm.field_types)
+			self._needs_drop_cache[tid] = needs
+			return needs
+		if td.param_types:
+			needs = any(self._type_needs_drop(pt) for pt in td.param_types)
+			self._needs_drop_cache[tid] = needs
+			return needs
+		self._needs_drop_cache[tid] = False
+		return False
 
 	def _define_struct_instance(
 		self,
@@ -911,6 +1000,15 @@ class TypeTable:
 
 	def struct_field(self, struct_id: TypeId, field_name: str) -> tuple[int, TypeId] | None:
 		"""Return (field_index, field_type_id) for a struct field, or None."""
+		info = self.struct_field_info(struct_id, field_name)
+		if info is None:
+			return None
+		idx, field_ty, _is_pub = info
+		return idx, field_ty
+
+	def struct_field_info(self, struct_id: TypeId, field_name: str) -> tuple[int, TypeId, bool] | None:
+		"""Return (field_index, field_type_id, is_pub) for a struct field, or None."""
+		base_id = struct_id
 		inst = self.struct_instances.get(struct_id)
 		if inst is not None:
 			idx = inst.fields_by_name.get(field_name)
@@ -918,17 +1016,30 @@ class TypeTable:
 				return None
 			if idx >= len(inst.field_types):
 				return None
-			return idx, inst.field_types[idx]
-		td = self.get(struct_id)
-		if td.kind is not TypeKind.STRUCT or td.field_names is None:
-			return None
-		try:
-			idx = td.field_names.index(field_name)
-		except ValueError:
-			return None
-		if idx >= len(td.param_types):
-			return None
-		return idx, td.param_types[idx]
+			field_ty = inst.field_types[idx]
+			base_id = inst.base_id
+		else:
+			td = self.get(struct_id)
+			if td.kind is not TypeKind.STRUCT or td.field_names is None:
+				return None
+			try:
+				idx = td.field_names.index(field_name)
+			except ValueError:
+				return None
+			if idx >= len(td.param_types):
+				return None
+			field_ty = td.param_types[idx]
+		schema = self.struct_bases.get(base_id)
+		is_pub = False
+		if schema is not None:
+			if idx < len(schema.fields) and schema.fields[idx].name == field_name:
+				is_pub = schema.fields[idx].is_pub
+			else:
+				for f in schema.fields:
+					if f.name == field_name:
+						is_pub = f.is_pub
+						break
+		return idx, field_ty, is_pub
 
 	def ensure_uint(self) -> TypeId:
 		"""Return a stable Uint TypeId, creating it once."""
@@ -1024,6 +1135,7 @@ class TypeTable:
 					fields=[VariantFieldSchema(name="value", type_expr=GenericTypeExpr.param(0))],
 				),
 			],
+			tombstone_ctor="None",
 		)
 
 	def ensure_ref(self, inner: TypeId) -> TypeId:
@@ -1115,6 +1227,16 @@ class TypeTable:
 		ty_id = self._add(TypeKind.ARRAY, "Array", [elem])
 		self._array_cache[elem] = ty_id
 		return ty_id
+
+	def array_base_id(self) -> TypeId:
+		"""Return a stable Array base TypeId used for trait impl lookup."""
+		if self._array_base_id is not None:
+			return self._array_base_id
+		owner = FunctionId(module="__builtin__", name="Array", ordinal=0)
+		param_id = TypeParamId(owner=owner, index=0)
+		elem = self.ensure_typevar(param_id, name="T")
+		self._array_base_id = self.new_array(elem)
+		return self._array_base_id
 
 	def new_ref(self, inner: TypeId, is_mut: bool) -> TypeId:
 		"""Register a reference type to `inner` (mutable vs shared encoded in ref_mut/name)."""

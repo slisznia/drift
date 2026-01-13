@@ -53,7 +53,7 @@ StructDef    ::= "struct" NAME TypeParams? RequireClause? TupleStruct TERMINATOR
               | "struct" NAME TypeParams? RequireClause? BlockStruct TERMINATOR?
 TupleStruct  ::= "(" StructFieldList? ")"
 StructFieldList ::= StructField ("," StructField)*
-StructField  ::= NAME ":" Ty
+StructField  ::= "pub"? NAME ":" Ty
 BlockStruct  ::= "{" TERMINATOR* (StructField ","? TERMINATOR*)* "}"
 
 ExceptionDef ::= "exception" NAME "(" ExceptionParams? ")"
@@ -62,7 +62,8 @@ ExceptionParam ::= NAME ":" Ty | "domain" "=" STRING
 
 VariantDef   ::= "variant" NAME TypeParams? VariantBody
 VariantBody  ::= "{" VariantArm ("," VariantArm)* ","? "}"
-VariantArm   ::= NAME VariantFields?
+VariantArm   ::= VariantArmAttr* NAME VariantFields?
+VariantArmAttr ::= "@" NAME
 VariantFields ::= "(" VariantFieldList? ")"
 VariantFieldList ::= VariantField ("," VariantField)*
 VariantField ::= NAME ":" Ty

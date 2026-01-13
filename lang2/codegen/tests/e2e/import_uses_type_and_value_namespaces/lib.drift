@@ -2,7 +2,7 @@ module lib
 
 export { Point, make };
 
-pub struct Point(x: Int, y: Int);
+pub struct Point { pub x: Int, pub y: Int }
 
 pub fn make() -> Point { return Point(1, 2); }
 

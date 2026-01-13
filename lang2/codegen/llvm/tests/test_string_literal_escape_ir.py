@@ -20,10 +20,12 @@ def _build_func(body_instrs):
 
 def test_string_literal_with_quote_and_backslash_ir():
 	# literal: "a\"b\\c" => bytes: 61 22 62 5c 63
+	word_bits = host_word_bits()
+	word_ty = f"i{word_bits}"
 	ir = _build_func([ConstString(dest="s", value='a"b\\c')])
 	assert (
-		'private unnamed_addr constant { %drift.usize, %drift.usize, [6 x i8] } '
-		'{ %drift.usize 1, %drift.usize 1, [6 x i8] c"a\\22b\\5Cc\\00" }'
+		f'private unnamed_addr constant {{ {word_ty}, {word_ty}, [6 x i8] }} '
+		f'{{ {word_ty} 1, {word_ty} 1, [6 x i8] c"a\\22b\\5Cc\\00" }}'
 	) in ir
-	assert 'define %drift.isize @f()' in ir  # return type path still Int-only for this helper
+	assert f'define {word_ty} @f()' in ir  # return type path still Int-only for this helper
 	assert 'ret' in ir

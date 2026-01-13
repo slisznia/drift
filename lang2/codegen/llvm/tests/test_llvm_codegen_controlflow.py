@@ -75,8 +75,10 @@ def test_if_else_phi_lowering():
 	table = TypeTable()
 	fn_id = FunctionId(module="main", name="if_phi", ordinal=0)
 	fn_info = _int_fn_info("if_phi", False, table)
-	ir = lower_ssa_func_to_llvm(mir, ssa, fn_info, {fn_id: fn_info}, word_bits=host_word_bits())
+	word_bits = host_word_bits()
+	word_ty = f"i{word_bits}"
+	ir = lower_ssa_func_to_llvm(mir, ssa, fn_info, {fn_id: fn_info}, word_bits=word_bits)
 
 	assert "br i1 %cond, label %then, label %else" in ir
-	assert "phi %drift.isize" in ir
-	assert "ret %drift.isize" in ir
+	assert f"phi {word_ty}" in ir
+	assert f"ret {word_ty}" in ir

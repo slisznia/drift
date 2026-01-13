@@ -6,6 +6,8 @@ from enum import Enum, auto
 from typing import Dict, List, Optional, Set, Tuple, Mapping
 
 from lang2.driftc.parser import ast as parser_ast
+from lang2.driftc.core.type_resolve_common import resolve_opaque_type
+from lang2.driftc.core.types_core import TypeKind, TypeTable
 from .world import TraitWorld, TraitKey, TypeKey, ImplDef, trait_key_from_expr
 
 
@@ -69,6 +71,7 @@ class Env:
 	default_module: Optional[str] = None
 	default_package: Optional[str] = None
 	module_packages: Mapping[str, str] = field(default_factory=dict)
+	type_table: TypeTable | None = None
 
 
 CacheKey = Tuple[object, str, Optional[TypeKey]]
@@ -211,6 +214,14 @@ def _subject_key(subject: object) -> object:
 	return subject
 
 
+def _type_expr_from_key(key: TypeKey) -> parser_ast.TypeExpr:
+	return parser_ast.TypeExpr(
+		name=key.name,
+		args=[_type_expr_from_key(a) for a in key.args],
+		module_id=key.module,
+	)
+
+
 def _bind_impl_type_params(
 	template: TypeKey,
 	actual: TypeKey,
@@ -269,6 +280,24 @@ def prove_is(
 		res = ProofResult(status=ProofStatus.UNKNOWN, reasons=["unknown subject type"])
 		cache[cache_key] = res
 		return res
+	if trait_key.name == "Copy" and trait_key.module is None and env.type_table is not None:
+		if isinstance(subject_ty, TypeKey):
+			try:
+				expr = _type_expr_from_key(subject_ty)
+				tid = resolve_opaque_type(expr, env.type_table, module_id=expr.module_id)
+			except Exception:
+				tid = None
+			if tid is not None:
+				td = env.type_table.get(tid)
+				if td.kind in {TypeKind.TYPEVAR, TypeKind.UNKNOWN}:
+					res = ProofResult(status=ProofStatus.UNKNOWN, reasons=["unknown Copy subject"])
+				else:
+					res = ProofResult(
+						status=ProofStatus.PROVED if env.type_table.is_copy(tid) else ProofStatus.REFUTED,
+						reasons=["builtin Copy check"],
+					)
+				cache[cache_key] = res
+				return res
 	if trait_key not in world.traits:
 		res = ProofResult(status=ProofStatus.REFUTED, reasons=["unknown trait"])
 		cache[cache_key] = res
@@ -328,6 +357,34 @@ def prove_is(
 			res = ProofResult(status=ProofStatus.PROVED, used_impls=applicable)
 		else:
 			res = ProofResult(status=ProofStatus.AMBIGUOUS, reasons=["multiple applicable impls"], used_impls=applicable)
+		req_expr = world.traits.get(trait_key).require if trait_key in world.traits else None
+		if req_expr is not None:
+			req_subst = dict(subst)
+			req_subst["Self"] = subject_ty
+			req_env = Env(
+				assumed_true=set(env.assumed_true),
+				assumed_false=set(env.assumed_false),
+				default_module=trait_key.module,
+				default_package=trait_key.package_id,
+				module_packages=env.module_packages,
+				type_table=env.type_table,
+			)
+			req_res = prove_expr(world, req_env, req_subst, req_expr, _cache=cache, _in_progress=in_progress)
+			if req_res.status is not ProofStatus.PROVED:
+				combined_reasons = list(res.reasons) + list(req_res.reasons)
+				def _combine_status(left: ProofStatus, right: ProofStatus) -> ProofStatus:
+					if left is ProofStatus.REFUTED or right is ProofStatus.REFUTED:
+						return ProofStatus.REFUTED
+					if left is ProofStatus.AMBIGUOUS or right is ProofStatus.AMBIGUOUS:
+						return ProofStatus.AMBIGUOUS
+					if left is ProofStatus.UNKNOWN or right is ProofStatus.UNKNOWN:
+						return ProofStatus.UNKNOWN
+					return ProofStatus.PROVED
+				res = ProofResult(
+					status=_combine_status(res.status, req_res.status),
+					reasons=combined_reasons,
+					used_impls=res.used_impls,
+				)
 		cache[cache_key] = res
 		return res
 	finally:

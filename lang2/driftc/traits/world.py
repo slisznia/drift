@@ -59,6 +59,7 @@ class TraitDef:
 	methods: List[parser_ast.TraitMethodSig]
 	require: Optional[parser_ast.TraitExpr]
 	loc: Optional[object] = None
+	type_params: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -89,6 +90,7 @@ def _qual_from_type_expr(typ: parser_ast.TypeExpr) -> Optional[str]:
 
 
 BUILTIN_TYPE_NAMES = {"Int", "Bool", "String", "Uint", "Float", "Void", "Error", "DiagnosticValue"}
+BUILTIN_TRAIT_NAMES = {"Copy"}
 
 
 def type_key_from_expr(
@@ -177,12 +179,14 @@ def trait_key_from_expr(
 	default_package: Optional[str] = None,
 	module_packages: Mapping[str, str] | None = None,
 ) -> TraitKey:
-	module = _qual_from_type_expr(typ) or default_module
+	module = _qual_from_type_expr(typ)
+	if module is None and typ.name in BUILTIN_TRAIT_NAMES:
+		module = None
+	elif module is None:
+		module = default_module
 	pkg = None
 	if module is not None:
 		pkg = (module_packages or {}).get(module, default_package)
-	else:
-		pkg = default_package
 	return TraitKey(package_id=pkg, module=module, name=typ.name)
 
 
@@ -283,6 +287,7 @@ def build_trait_world(
 		if key in world.traits:
 			world.diagnostics.append(diag(f"duplicate trait definition '{_trait_key_str(key)}'", tr.loc))
 			continue
+		trait_type_params = list(getattr(tr, "type_params", []) or [])
 		require_expr = getattr(tr, "require", None).expr if getattr(tr, "require", None) is not None else None
 		world.traits[key] = TraitDef(
 			key=key,
@@ -290,6 +295,7 @@ def build_trait_world(
 			methods=list(getattr(tr, "methods", []) or []),
 			require=require_expr,
 			loc=getattr(tr, "loc", None),
+			type_params=trait_type_params,
 		)
 		if require_expr is not None:
 			if _has_non_conjunctive(require_expr):
@@ -303,10 +309,10 @@ def build_trait_world(
 				continue
 			for atom in _walk_atoms_all(require_expr):
 				subj_name = _subject_name(atom.subject)
-				if subj_name != "Self":
+				if subj_name != "Self" and subj_name not in trait_type_params:
 					world.diagnostics.append(
 						diag(
-							"trait require clause must use 'Self is Trait'",
+							"trait require clause must use 'Self' or a trait type parameter",
 							getattr(atom, "loc", None),
 							code="E-REQUIRE-UNKNOWN-SUBJECT",
 						)

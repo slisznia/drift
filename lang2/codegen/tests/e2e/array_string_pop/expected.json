@@ -1,0 +1,6 @@
+{
+  "description": "e2e: array string pop uses take semantics",
+  "exit_code": 0,
+  "stderr": "",
+  "stdout": "b\na\n"
+}

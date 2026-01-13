@@ -398,7 +398,7 @@ def encode_type_table(table: TypeTable, *, package_id: str) -> dict[str, Any]:
 		# `VariantSchema` / `VariantArmSchema` / `VariantFieldSchema` are dataclasses,
 		# but we encode them manually so the payload stays stable even if we later
 		# refactor internal Python class names.
-		return {
+		out = {
 			"module_id": schema.module_id,
 			"name": schema.name,
 			"type_params": list(schema.type_params),
@@ -410,6 +410,9 @@ def encode_type_table(table: TypeTable, *, package_id: str) -> dict[str, Any]:
 				for arm in schema.arms
 			],
 		}
+		if getattr(schema, "tombstone_ctor", None) is not None:
+			out["tombstone_ctor"] = schema.tombstone_ctor
+		return out
 
 	defs: dict[str, Any] = {}
 	for tid in sorted(table._defs.keys()):  # type: ignore[attr-defined]
@@ -450,7 +453,11 @@ def encode_type_table(table: TypeTable, *, package_id: str) -> dict[str, Any]:
 				"module_id": key.module_id,
 				"name": key.name,
 				"fields": [
-					{"name": f.name, "type_expr": _encode_generic_type_expr(f.type_expr)}
+					{
+						"name": f.name,
+						"type_expr": _encode_generic_type_expr(f.type_expr),
+						"is_pub": bool(getattr(f, "is_pub", False)),
+					}
 					for f in schema.fields
 				],
 				"type_params": list(schema.type_params),

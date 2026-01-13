@@ -8,6 +8,7 @@ from typing import Dict, List, Optional, Sequence
 class StructField:
     name: str
     type_expr: "TypeExpr"
+    is_pub: bool = False
 
 
 @dataclass
@@ -517,6 +518,7 @@ class VariantArm:
 	name: str
 	fields: List[VariantField]
 	loc: Located
+	tombstone: bool = False
 
 
 @dataclass
@@ -552,6 +554,8 @@ class TraitDef:
 	loc: Located
 	is_pub: bool = False
 	require: Optional["RequireClause"] = None
+	type_params: List[str] = field(default_factory=list)
+	type_param_locs: List[Located] = field(default_factory=list)
 
 
 @dataclass

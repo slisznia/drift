@@ -60,7 +60,7 @@ struct DriftDiagnosticValue drift_dv_get(struct DriftDiagnosticValue dv, struct 
     }
     for (size_t i = 0; i < dv.data.object.len; i++) {
         struct DriftDiagnosticField* f = &dv.data.object.fields[i];
-        if (f->key.len == field.len && (field.len == 0 || memcmp(f->key.data, field.data, field.len) == 0)) {
+        if (f->key.len == field.len && (field.len == 0 || memcmp(f->key.data, field.data, (size_t)field.len) == 0)) {
             if (f->value) {
                 return *(f->value);
             }
@@ -117,7 +117,7 @@ bool drift_dv_as_string(const struct DriftDiagnosticValue* dv, struct DriftStrin
         return false;
     }
     if (out) {
-        out->len = (drift_usize)dv->data.string_value.len;
+        out->len = dv->data.string_value.len;
         out->data = dv->data.string_value.data;
     }
     return true;
