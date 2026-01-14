@@ -17,7 +17,11 @@
 [Traits]
 - Gate `copy` via a real `Copy` trait post-typecheck.
 - Trait-based iteration (MVP): replace iterator intrinsics with a real `Iterator` trait + library implementation once module support lands (no dynamic dispatch in MVP).
-- Implement `Destructible` (non-throwing `destroy(self)`) and wire drop semantics: treat Destructible as droppable in the checker, lower `DropValue` to `destroy`, and require Destructible for owned interface vtables.
+- Implement `Destructible`:
+  - `trait Destructible { fn destroy(self) -> Void }` (non-throwing).
+  - Checker: treat Destructible types as droppable; insert `DropValue` as today.
+  - Codegen: lower `DropValue` to the concrete `destroy` impl.
+  - Vtables: owned interface values require Destructible so the drop slot is always present.
 
 ## Post MVP
 [Traits]

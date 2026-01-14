@@ -1265,11 +1265,24 @@ class TypeTable:
 		self._typevar_cache[param_id] = ty_id
 		return ty_id
 
+	def set_copy_query(self, query, *, allow_fallback: bool = False) -> None:
+		"""Install a Copy query hook for trait-based Copy checks."""
+		self._copy_query = query  # type: ignore[attr-defined]
+		self._copy_query_allow_fallback = bool(allow_fallback)  # type: ignore[attr-defined]
+		if hasattr(self, "_copy_cache"):
+			self._copy_cache.clear()  # type: ignore[attr-defined]
+
 	def is_copy(self, ty: TypeId) -> bool:
 		"""Return True if `ty` is Copy under MVP structural rules."""
 		if not hasattr(self, "_copy_cache"):
 			self._copy_cache = {}  # type: ignore[attr-defined]
 		cache: Dict[TypeId, bool] = getattr(self, "_copy_cache")  # type: ignore[attr-defined]
+		if not hasattr(self, "_copy_query"):
+			trait_worlds = getattr(self, "trait_worlds", None)
+			if isinstance(trait_worlds, dict) and any(
+				mod in {"std.core", "std.iter", "std.containers", "std.algo"} for mod in trait_worlds.keys()
+			):
+				raise ValueError("Copy query hook is missing while stdlib trait metadata is present")
 		if ty in cache:
 			return cache[ty]
 		seen: set[TypeId] = set()
@@ -1282,6 +1295,9 @@ class TypeTable:
 			seen.add(tid)
 			td = self.get(tid)
 			if td.kind in {TypeKind.SCALAR, TypeKind.REF, TypeKind.FUNCTION, TypeKind.VOID}:
+				if td.kind is TypeKind.SCALAR and td.name == "String":
+					cache[tid] = False
+					return False
 				cache[tid] = True
 				return True
 			if td.kind in {TypeKind.FORWARD_NOMINAL, TypeKind.UNKNOWN, TypeKind.ERROR, TypeKind.DIAGNOSTICVALUE, TypeKind.TYPEVAR}:
@@ -1319,6 +1335,19 @@ class TypeTable:
 			cache[tid] = False
 			return False
 
+		if hasattr(self, "_copy_query"):
+			query = getattr(self, "_copy_query")  # type: ignore[attr-defined]
+			allow_fallback = bool(getattr(self, "_copy_query_allow_fallback", False))  # type: ignore[attr-defined]
+			try:
+				res = query(ty)
+			except Exception:
+				res = None
+			if res is not None:
+				cache[ty] = bool(res)
+				return cache[ty]
+			if not allow_fallback:
+				cache[ty] = False
+				return False
 		return _is_copy(ty)
 
 	def is_bitcopy(self, ty: TypeId) -> bool:

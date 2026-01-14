@@ -1,6 +1,7 @@
 module std.containers
 
 import std.iter as iter;
+import std.core as core;
 
 export {
 	ArrayMoveIter,
@@ -17,13 +18,13 @@ pub struct ArrayBorrowIter<T> {
 	idx: Int
 }
 
-implement<T> iter.Iterable<Array<T>, T, ArrayMoveIter<T>> for Array<T> require T is Copy {
+implement<T> iter.Iterable<Array<T>, T, ArrayMoveIter<T>> for Array<T> require T is core.Copy {
 	pub fn iter(var self: Array<T>) -> ArrayMoveIter<T> {
 		return ArrayMoveIter(arr = move self, idx = 0);
 	}
 }
 
-implement<T> iter.SinglePassIterator<T> for ArrayMoveIter<T> require T is Copy {
+implement<T> iter.SinglePassIterator<T> for ArrayMoveIter<T> require T is core.Copy {
 	pub fn next(self: &mut ArrayMoveIter<T>) -> Optional<T> {
 		val i = self.idx;
 		if i < self.arr.len {
@@ -58,6 +59,9 @@ implement<T> iter.SinglePassIterator<&T> for ArrayBorrowIter<T> {
 }
 
 implement<T> iter.MultiPassIterator<&T> for ArrayBorrowIter<T> {
+}
+
+implement<T> core.Copy for ArrayBorrowIter<T> {
 }
 
 implement<T> iter.BidirectionalIterator<&T> for ArrayBorrowIter<T> {

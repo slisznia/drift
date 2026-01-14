@@ -8,7 +8,7 @@ LLVM lowering for Array<String> allocations and indexing.
 """
 
 from lang2.driftc.checker import FnInfo, FnSignature
-from lang2.driftc.core.types_core import TypeTable
+from lang2.driftc.core.types_core import TypeKind, TypeTable
 from lang2.driftc.stage2 import (
 	ArrayAlloc,
 	ArrayLit,
@@ -40,6 +40,14 @@ def _types():
     table._int_type = int_ty  # type: ignore[attr-defined]
     table._uint_type = uint_ty  # type: ignore[attr-defined]
     table._string_type = str_ty  # type: ignore[attr-defined]
+    def _copy_query(tid: int) -> bool | None:
+        td = table.get(tid)
+        if td.kind is TypeKind.SCALAR and td.name in {"Int", "Uint", "Bool", "Float", "String", "Void"}:
+            return True
+        if td.kind in {TypeKind.REF, TypeKind.VOID}:
+            return bool(getattr(td, "ref_mut", False)) is False
+        return None
+    table.set_copy_query(_copy_query, allow_fallback=True)
     return table, int_ty, uint_ty, str_ty
 
 

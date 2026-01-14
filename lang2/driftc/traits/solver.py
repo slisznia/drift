@@ -6,8 +6,7 @@ from enum import Enum, auto
 from typing import Dict, List, Optional, Set, Tuple, Mapping
 
 from lang2.driftc.parser import ast as parser_ast
-from lang2.driftc.core.type_resolve_common import resolve_opaque_type
-from lang2.driftc.core.types_core import TypeKind, TypeTable
+from lang2.driftc.core.types_core import TypeTable
 from .world import TraitWorld, TraitKey, TypeKey, ImplDef, trait_key_from_expr
 
 
@@ -280,24 +279,6 @@ def prove_is(
 		res = ProofResult(status=ProofStatus.UNKNOWN, reasons=["unknown subject type"])
 		cache[cache_key] = res
 		return res
-	if trait_key.name == "Copy" and trait_key.module is None and env.type_table is not None:
-		if isinstance(subject_ty, TypeKey):
-			try:
-				expr = _type_expr_from_key(subject_ty)
-				tid = resolve_opaque_type(expr, env.type_table, module_id=expr.module_id)
-			except Exception:
-				tid = None
-			if tid is not None:
-				td = env.type_table.get(tid)
-				if td.kind in {TypeKind.TYPEVAR, TypeKind.UNKNOWN}:
-					res = ProofResult(status=ProofStatus.UNKNOWN, reasons=["unknown Copy subject"])
-				else:
-					res = ProofResult(
-						status=ProofStatus.PROVED if env.type_table.is_copy(tid) else ProofStatus.REFUTED,
-						reasons=["builtin Copy check"],
-					)
-				cache[cache_key] = res
-				return res
 	if trait_key not in world.traits:
 		res = ProofResult(status=ProofStatus.REFUTED, reasons=["unknown trait"])
 		cache[cache_key] = res

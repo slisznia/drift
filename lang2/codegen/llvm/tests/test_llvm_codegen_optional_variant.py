@@ -7,6 +7,7 @@ from lang2.driftc.checker import FnInfo, FnSignature
 from lang2.driftc.core.function_id import FunctionId
 from lang2.driftc.core.generic_type_expr import GenericTypeExpr
 from lang2.driftc.core.types_core import (
+	TypeKind,
 	TypeTable,
 	VariantArmSchema,
 	VariantFieldSchema,
@@ -41,6 +42,16 @@ def _declare_optional_base(table: TypeTable) -> int:
 		tombstone_ctor="None",
 	)
 
+def _enable_copy_for_scalars(table: TypeTable) -> None:
+	def _copy_query(tid: int) -> bool | None:
+		td = table.get(tid)
+		if td.kind is TypeKind.SCALAR and td.name in {"Int", "Uint", "Bool", "Float", "String", "Void"}:
+			return True
+		if td.kind in {TypeKind.REF, TypeKind.VOID}:
+			return bool(getattr(td, "ref_mut", False)) is False
+		return None
+	table.set_copy_query(_copy_query, allow_fallback=True)
+
 
 def _lower_ir(mir: MirFunc, fn_info: FnInfo, table: TypeTable) -> str:
 	ssa = MirToSSA().run(mir)
@@ -62,6 +73,7 @@ def _fn_info(name: str, ret_ty: int) -> FnInfo:
 
 def test_optional_copyvalue_string_retains_and_drops() -> None:
 	table = TypeTable()
+	_enable_copy_for_scalars(table)
 	opt_base = _declare_optional_base(table)
 	opt_string = table.ensure_instantiated(opt_base, [table.ensure_string()])
 
@@ -93,6 +105,7 @@ def test_optional_copyvalue_string_retains_and_drops() -> None:
 
 def test_optional_drop_array_string_calls_array_drop() -> None:
 	table = TypeTable()
+	_enable_copy_for_scalars(table)
 	opt_base = _declare_optional_base(table)
 	string_ty = table.ensure_string()
 	arr_string = table.new_array(string_ty)
@@ -125,6 +138,7 @@ def test_optional_drop_array_string_calls_array_drop() -> None:
 
 def test_optional_drop_optional_string_releases() -> None:
 	table = TypeTable()
+	_enable_copy_for_scalars(table)
 	opt_base = _declare_optional_base(table)
 	opt_string = table.ensure_instantiated(opt_base, [table.ensure_string()])
 	opt_opt_string = table.ensure_instantiated(opt_base, [opt_string])
@@ -155,6 +169,7 @@ def test_optional_drop_optional_string_releases() -> None:
 
 def test_optional_bool_storage_decode_uses_icmp() -> None:
 	table = TypeTable()
+	_enable_copy_for_scalars(table)
 	opt_base = _declare_optional_base(table)
 	opt_bool = table.ensure_instantiated(opt_base, [table.ensure_bool()])
 
@@ -183,6 +198,7 @@ def test_optional_bool_storage_decode_uses_icmp() -> None:
 
 def test_optional_ir_has_no_legacy_optional_types() -> None:
 	table = TypeTable()
+	_enable_copy_for_scalars(table)
 	opt_base = _declare_optional_base(table)
 	opt_int = table.ensure_instantiated(opt_base, [table.ensure_int()])
 

@@ -1,5 +1,7 @@
 module std.iter
 
+import std.core as core;
+
 export {
 	Iterable,
 	SinglePassIterator,
@@ -17,7 +19,7 @@ pub trait SinglePassIterator<T> {
 	fn next(self: &mut Self) -> Optional<T>;
 }
 
-pub trait MultiPassIterator<T> require Self is SinglePassIterator<T>, Self is Copy {
+pub trait MultiPassIterator<T> require Self is SinglePassIterator<T>, Self is core.Copy {
 }
 
 pub trait BidirectionalIterator<T> require Self is MultiPassIterator<T> {

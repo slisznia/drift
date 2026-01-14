@@ -90,7 +90,7 @@ def _qual_from_type_expr(typ: parser_ast.TypeExpr) -> Optional[str]:
 
 
 BUILTIN_TYPE_NAMES = {"Int", "Bool", "String", "Uint", "Float", "Void", "Error", "DiagnosticValue"}
-BUILTIN_TRAIT_NAMES = {"Copy"}
+BUILTIN_TRAIT_NAMES: set[str] = set()
 
 
 def type_key_from_expr(
@@ -100,20 +100,27 @@ def type_key_from_expr(
 	default_package: Optional[str] = None,
 	module_packages: Mapping[str, str] | None = None,
 ) -> TypeKey:
+	name = typ.name
+	if name == "&":
+		name = "Ref"
+	elif name == "&mut":
+		name = "RefMut"
 	qual = _qual_from_type_expr(typ)
-	if qual is None and typ.name in BUILTIN_TYPE_NAMES:
+	if name in {"Ref", "RefMut"}:
+		mod = None
+	elif qual is None and name in BUILTIN_TYPE_NAMES:
 		mod = None
 	else:
 		mod = qual or default_module
 	pkg = None
 	if mod is not None:
 		pkg = (module_packages or {}).get(mod, default_package)
-	elif typ.name not in BUILTIN_TYPE_NAMES:
+	elif name not in BUILTIN_TYPE_NAMES:
 		pkg = default_package
 	return TypeKey(
 		package_id=pkg,
 		module=mod,
-		name=typ.name,
+		name=name,
 		args=tuple(
 			type_key_from_expr(
 				a,
@@ -180,9 +187,7 @@ def trait_key_from_expr(
 	module_packages: Mapping[str, str] | None = None,
 ) -> TraitKey:
 	module = _qual_from_type_expr(typ)
-	if module is None and typ.name in BUILTIN_TRAIT_NAMES:
-		module = None
-	elif module is None:
+	if module is None:
 		module = default_module
 	pkg = None
 	if module is not None:

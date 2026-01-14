@@ -92,8 +92,8 @@ from lang2.driftc.core.function_id import (
 )
 from lang2.driftc.traits.enforce import collect_used_type_keys, enforce_struct_requires, enforce_fn_requires
 from lang2.driftc.traits.linked_world import build_require_env, link_trait_worlds, LinkedWorld, RequireEnv
-from lang2.driftc.traits.world import TypeKey, type_key_from_typeid
-from lang2.driftc.traits.solver import ProofStatus
+from lang2.driftc.traits.world import TypeKey, TraitKey, type_key_from_typeid
+from lang2.driftc.traits.solver import Env as TraitEnv, ProofStatus, prove_is
 from lang2.codegen.llvm import lower_module_to_llvm
 from lang2.codegen.llvm.test_utils import host_word_bits
 from lang2.drift_core.runtime import get_runtime_sources
@@ -151,11 +151,56 @@ def _remap_tid(tid_map: dict[int, int], tid: object) -> object:
 	return tid
 
 
+def _find_trait_key(world: "TraitWorld", *, module: str, name: str) -> TraitKey | None:
+	keys = [key for key in world.traits.keys() if key.module == module and key.name == name]
+	if not keys:
+		return None
+	keys.sort(key=lambda k: (k.package_id or "", k.module or "", k.name))
+	return keys[0]
+
+
+def _install_copy_query(type_table: TypeTable, linked_world: LinkedWorld) -> None:
+	copy_key = _find_trait_key(linked_world.global_world, module="std.core", name="Copy")
+	if copy_key is None:
+		std_modules = {"std.core", "std.iter", "std.containers", "std.algo"}
+		if any(mod in std_modules for mod in linked_world.trait_worlds.keys()):
+			raise ValueError("stdlib missing std.core.Copy trait metadata")
+		return
+	default_package = getattr(type_table, "package_id", None)
+	module_packages = getattr(type_table, "module_packages", None) or {}
+	env = TraitEnv(
+		default_module=None,
+		default_package=default_package,
+		module_packages=module_packages,
+		type_table=type_table,
+	)
+	world = linked_world.global_world
+
+	def _query_copy(tid: int) -> bool | None:
+		td = type_table.get(tid)
+		if td.kind is TypeKind.FUNCTION:
+			return True
+		try:
+			subject = type_key_from_typeid(type_table, tid)
+		except Exception:
+			return None
+		res = prove_is(world, env, {}, subject, copy_key)
+		if res.status is ProofStatus.PROVED:
+			return True
+		if res.status is ProofStatus.REFUTED:
+			return False
+		return None
+
+	type_table.set_copy_query(_query_copy, allow_fallback=False)
+
+
 def _build_linked_world(type_table: TypeTable | None) -> tuple[LinkedWorld | None, RequireEnv | None]:
 	trait_worlds = getattr(type_table, "trait_worlds", None) if type_table is not None else None
 	if not isinstance(trait_worlds, dict):
 		return None, None
 	linked_world = link_trait_worlds(trait_worlds)
+	if type_table is not None:
+		_install_copy_query(type_table, linked_world)
 	default_package = getattr(type_table, "package_id", None)
 	module_packages = getattr(type_table, "module_packages", None)
 	return linked_world, build_require_env(
@@ -2103,6 +2148,19 @@ def compile_stubbed_funcs(
 									span=None,
 								)
 							)
+	if run_borrow_check and not any(d.severity == "error" for d in checked.diagnostics):
+		borrow_diags: list[Diagnostic] = []
+		for _fn_id, typed_fn in typed_fns_by_id.items():
+			bc = BorrowChecker.from_typed_fn(
+				typed_fn,
+				type_table=shared_type_table,
+				signatures_by_id=signatures_by_id,
+				enable_auto_borrow=True,
+			)
+			borrow_diags.extend(bc.check_block(typed_fn.body))
+		if borrow_diags:
+			_assert_all_phased(borrow_diags, context="borrowcheck")
+			checked.diagnostics.extend(borrow_diags)
 	if any(d.severity == "error" for d in checked.diagnostics):
 		if return_checked:
 			if return_ssa:

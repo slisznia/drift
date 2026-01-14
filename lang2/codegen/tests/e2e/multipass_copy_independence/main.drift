@@ -1,6 +1,7 @@
 module m_main
 
 import std.iter as iter;
+import std.core as core;
 
 struct CounterIter {
 	idx: Int
@@ -18,6 +19,9 @@ implement iter.SinglePassIterator<Int> for CounterIter {
 }
 
 implement iter.MultiPassIterator<Int> for CounterIter {
+}
+
+implement core.Copy for CounterIter {
 }
 
 implement iter.Iterable<CounterIter, Int, CounterIter> for CounterIter {

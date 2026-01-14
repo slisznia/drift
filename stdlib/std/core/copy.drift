@@ -1,0 +1,29 @@
+module std.core
+
+export {
+	Copy
+};
+
+pub trait Copy {
+}
+
+implement Copy for Int {
+}
+
+implement Copy for Uint {
+}
+
+implement Copy for Bool {
+}
+
+implement Copy for Float {
+}
+
+implement Copy for String {
+}
+
+implement Copy for Void {
+}
+
+implement<T> Copy for &T {
+}

@@ -179,7 +179,7 @@ def _resolve_main_block(tmp_path: Path, source: str) -> tuple[H.HBlock, dict[int
 	if main_sig and main_sig.param_names and main_sig.param_type_ids:
 		param_types = {pname: pty for pname, pty in zip(main_sig.param_names, main_sig.param_type_ids)}
 	current_mod = module_ids.setdefault(main_sig.module, len(module_ids))
-	visible_mods = tuple(sorted(module_ids.setdefault(mod, len(module_ids)) for mod in module_deps.get("main", {"main"})))
+	visible_mods = tuple(sorted(module_ids.values()))
 	visibility_provenance = {mid: (name,) for name, mid in module_ids.items() if name is not None}
 	tc = TypeChecker(type_table=type_table)
 	result = tc.check_function(
@@ -505,6 +505,8 @@ def test_inherent_require_prefers_trait_dependency(tmp_path: Path) -> None:
 		"""
 module main
 
+import std.core as core;
+
 pub struct Box { pub value: Int }
 pub struct Item { pub value: Int }
 
@@ -513,6 +515,7 @@ pub trait Printable require Self is Debug { fn show(self: &Self) -> String; }
 
 implement Debug for Item { fn debug(self: &Item) -> String { return "d"; } }
 implement Printable for Item { fn show(self: &Item) -> String { return "p"; } }
+implement core.Copy for Item { }
 
 implement Box {
 	pub fn f<T>(self: Box, x: T) -> Int require T is Debug { return 1; }
@@ -544,6 +547,8 @@ def test_inherent_require_incomparable_is_ambiguous(tmp_path: Path) -> None:
 		"""
 module main
 
+import std.core as core;
+
 pub struct Box { pub value: Int }
 pub struct Item { pub value: Int }
 
@@ -552,6 +557,7 @@ pub trait B { fn b(self: &Self) -> Int; }
 
 implement A for Item { fn a(self: &Item) -> Int { return 1; } }
 implement B for Item { fn b(self: &Item) -> Int { return 2; } }
+implement core.Copy for Item { }
 
 implement Box {
 	pub fn f<T>(self: Box, x: T) -> Int require T is A { return 1; }
@@ -574,6 +580,8 @@ def test_trait_impl_require_prefers_trait_dependency(tmp_path: Path) -> None:
 		"""
 module m_lib
 
+import std.core as core;
+
 export { Box, Item, Debug, Printable, Show };
 
 pub struct Box<T> { pub value: T }
@@ -585,6 +593,7 @@ pub trait Show { fn show(self: &Self) -> Int; }
 
 implement Debug for Item { fn debug(self: &Item) -> String { return "d"; } }
 implement Printable for Item { fn show(self: &Item) -> String { return "p"; } }
+implement core.Copy for Item { }
 """,
 	)
 	_write_file(

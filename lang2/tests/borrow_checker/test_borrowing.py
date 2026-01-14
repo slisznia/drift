@@ -126,7 +126,7 @@ def test_move_in_kwarg_tracked_for_use_after_move():
 		]
 	)
 	diags = _checker_with_types({"x": "Unknown"}).check_block(block)
-	assert any("use after move" in d.message for d in diags)
+	assert any(d.code == "E_USE_AFTER_MOVE" for d in diags)
 
 
 def test_write_while_borrowed_is_rejected():

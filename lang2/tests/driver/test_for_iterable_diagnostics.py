@@ -13,7 +13,7 @@ def _write_file(path: Path, content: str) -> None:
 	path.write_text(content)
 
 
-def _compile(tmp_path: Path, content: str, *, use_stdlib: bool = True):
+def _compile(tmp_path: Path, content: str, *, use_stdlib: bool = True, run_borrow_check: bool = False):
 	mod_root = tmp_path / "mods"
 	src = mod_root / "main.drift"
 	_write_file(src, content)
@@ -33,6 +33,7 @@ def _compile(tmp_path: Path, content: str, *, use_stdlib: bool = True):
 		module_exports=module_exports,
 		module_deps=module_deps,
 		return_checked=True,
+		run_borrow_check=run_borrow_check,
 	)
 	return checked.diagnostics
 
@@ -96,7 +97,7 @@ module m_main
 
 fn main() nothrow -> Int {
 	val xs = [1, 2, 3];
-	for x in xs { x; }
+	for x in move xs { x; }
 	return 0;
 }
 """,
@@ -166,19 +167,68 @@ fn main() nothrow -> Int {
 	assert diagnostics == []
 
 
-def test_for_owned_array_requires_copy_element(tmp_path: Path) -> None:
+def test_for_over_owned_array_compiles(tmp_path: Path) -> None:
 	diagnostics = _compile(
 		tmp_path,
 		"""
 module m_main
 
 fn main() nothrow -> Int {
-	var inner1 = [1];
-	var inner2 = [2];
-	var xs: Array<Array<Int>> = [];
-	xs.push(move inner1);
-	xs.push(move inner2);
+	val xs = [1, 2, 3];
 	for x in xs { x; }
+	return 0;
+}
+""",
+	)
+	assert diagnostics == []
+
+
+def test_for_over_borrowed_array_compiles(tmp_path: Path) -> None:
+	diagnostics = _compile(
+		tmp_path,
+		"""
+module m_main
+
+fn main() nothrow -> Int {
+	val xs = [1, 2, 3];
+	for x in &xs { x; }
+	return 0;
+}
+""",
+	)
+	assert diagnostics == []
+
+
+def test_for_over_owned_array_consumes_non_copy(tmp_path: Path) -> None:
+	diagnostics = _compile(
+		tmp_path,
+		"""
+module m_main
+
+fn main() nothrow -> Int {
+	var a = [1, 2, 3];
+	for x in a { x; }
+	a.push(4);
+	return 0;
+}
+""",
+		run_borrow_check=True,
+	)
+	assert any(d.code == "E_USE_AFTER_MOVE" for d in diagnostics)
+
+
+def test_for_owned_array_requires_copy_element(tmp_path: Path) -> None:
+	diagnostics = _compile(
+		tmp_path,
+		"""
+module m_main
+
+fn consume(xs: Array<Array<Int>>) nothrow -> Int {
+	for x in xs { x; }
+	return 0;
+}
+
+fn main() nothrow -> Int {
 	return 0;
 }
 """,

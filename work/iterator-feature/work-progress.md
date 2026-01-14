@@ -144,33 +144,25 @@ Define iterator traits and MVP constraints for collections/algorithms, aligned w
 - 2026-01-12: Pinned array element borrowing (`&arr[i]` / `&mut arr[i]`) as MVP surface and added type-checker coverage for non-Copy element borrows.
 - 2026-01-12: Added e2e borrow-checker canary for shared `&arr[i]` followed by `&mut arr[i]` (rejects with borrowcheck diagnostic).
 - 2026-01-12: Added e2e canary allowing shared `&arr[0]` then `&mut arr[1]` (const disjoint indices), and asserted the mutated value.
+- 2026-01-13: Added driver regression tests for `for` lowering (shadowing, function-returned iterables), algorithm capability requirements, `Comparable`/`Equatable` gating, and `==` resolution without std.algo.
+- 2026-01-13: Added e2e harnesses for `RandomAccessPermutable` sort correctness, equal consumption over iterators, and borrow-check rejection for mutating a borrowed array.
+- 2026-01-13: Enabled borrow checking in test harness (`compile_stubbed_funcs`) for all modules, inlined nested HIR blocks for move tracking, and added driver test for owned `for` consuming non-Copy arrays (use-after-move).
+- 2026-01-13: Centralized implicit moves in the borrow checker for consuming positions (by-value bindings/call args/returns) using projected-place types.
+- 2026-01-13: Added borrow-check canaries for non-Copy subplace moves (field/index) and for non-consuming operator operands in consuming positions (binary/unary/ternary).
+- 2026-01-13: Added `E_USE_AFTER_MOVE` diagnostics for borrow checking and a CLI-path canary ensuring owned `for` consumes non-Copy arrays.
+- 2026-01-13: Completed planned regression tests for iterator/algorithm gating and `for` resolution:
+  - owned `for` consumes non-Copy (driver)
+  - borrowed `for` leaves source usable (driver)
+  - equal consumption (e2e)
+  - mutation invalidation (e2e)
+  - Comparable/Permutable/BinarySearchable gating (driver)
+  - local shadowing + function-returned iterable (driver)
 
 ## Open Questions
 - Exact algorithm signatures in Drift syntax (defer until implementation).
 
 ## Next
-- Add a regression test that `binary_search` is callable for any type implementing RandomAccessReadable, without Slice/View.
-- Add a regression test that `Comparable` requires `Equatable` (operator lowering for `==`/`!=` must have a matching equality impl).
-- Add a regression test that `for` over a collection returned from a function resolves iterator traits without dynamic dispatch and without opaque return types.
-- Add regression test for `Iterable.iter` resolution:
-  - local `iter` does not affect `for` lowering
-- Add `Array<T>` iterator/category coverage tests: `for` iteration plus `binary_search`/`sort` availability (compile pass/fail pairs).
-- Add a regression test that `min/max` reject types that do not implement `Comparable`.
-- Add a generic test harness for `RandomAccessPermutable<T>` that validates `sort_in_place` correctness and swap semantics.
-- Add a negative test for iterator invalidation after mutation (compile-time if provable, otherwise runtime trap/diagnostic).
-- Add compile-pass tests for both `for v in array` (owned) and `for v in array.iter()` (borrowed) once borrowing exists, ensuring no erased types are required.
-- Add compile-fail test: using a non-Copy container after `for x in container` is rejected.
-- Add a regression test that `sort_in_place` compiles for non-Copy `T` using `compare_at` (no `set` required).
-- Add a regression test where a user-defined `SinglePassIterator` is shadowed; `for` must still bind to `std.iter.SinglePassIterator`.
-- Add `equal` consumption tests:
-  - identical sequences -> true, both iterators exhausted
-  - early mismatch -> false, both advanced through mismatch element
-  - length mismatch -> false when one ends early
-- Add a regression test that `==` resolves without importing `std.algo` (uses fully-qualified `std.core.cmp`).
-- Add a regression test that iterator errors carry canonical `container`/`op` strings.
-- Add conformance tests: MultiPass iterators must be copy-independent (advance one copy, the other unchanged).
-- Implement the MultiPass copy-independence test alongside the first stdlib MultiPass iterator (Array).
-- Add diagnostics tests: `sort_in_place`/`binary_search` errors should mention both missing `Comparable` and required capability trait.
+- TODO (blocked): Add a regression test that iterator errors carry canonical `container`/`op` strings (requires stable runtime error payload shape).
 
 ## Algorithms (Proposed)
 - for_each(it, f) -> SinglePassIterator<T>

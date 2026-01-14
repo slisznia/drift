@@ -1,0 +1,10 @@
+{
+  "description": "e2e: borrow iter mutation invalidation rejected",
+  "diagnostics": [
+    {
+      "message_contains": "cannot write to 'arr' while it is borrowed",
+      "phase": "borrowcheck"
+    }
+  ],
+  "exit_code": 1
+}

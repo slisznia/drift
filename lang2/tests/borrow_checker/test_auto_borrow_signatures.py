@@ -138,7 +138,7 @@ def test_method_value_receiver_moves_and_later_use_errors():
 	ref_sig = FnSignature(name="m", param_type_ids=[int_ty])
 	diags = _bc_with_sig(table, ref_sig, fn_id=fn_id, call_resolutions=call_resolutions).check_block(block)
 	assert diags
-	assert any("use after move" in d.message for d in diags)
+	assert any(d.code == "E_USE_AFTER_MOVE" for d in diags)
 
 
 def test_hcall_kwarg_mut_autoborrow_temporary_allows_later_write():

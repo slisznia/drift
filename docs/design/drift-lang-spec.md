@@ -511,21 +511,15 @@ This design keeps ownership explicit: you opt *out* of move-only semantics only 
 
 ### 4.3. Opting into copying
 
-`Copy` is a compiler-known marker in MVP (no user-written `implement Copy for T`). It lives in `lang.core` and is **not** auto-preluded; use a qualified trait name (`lang.core.Copy`) or import the module when writing trait requirements. A type is `Copy` when the compiler may duplicate it implicitly at duplication points; this must be **O(1) and non-allocating**:
-
-- primitives, references, and function pointers are `Copy`,
-- tuples are `Copy` iff all elements are `Copy`,
-- structs are `Copy` iff all fields are `Copy`,
-- variants are `Copy` iff all fields of all constructors are `Copy`,
-- `Optional<T>` is `Copy` iff `T` is `Copy`.
-
-These are never `Copy` in MVP: `Array<T>`, `FnResult<_, _>`, `Error`, `DiagnosticValue`, and unresolved type parameters (they must be proven `Copy` by a `require`).
+`Copy` is a marker trait defined in `std.core` (not auto-preluded). Use a qualified trait name (`std.core.Copy`) or import the module when writing trait requirements. A type is `Copy` when the compiler may duplicate it implicitly at duplication points; this must be **O(1)**. `Copy` does **not** imply “no drop”: some `Copy` types (e.g., `String`) require semantic copying with retain/release under the hood. The internal `BitCopy` predicate still controls memcpy fast paths.
 
 ```drift
 struct Job { id: Int }
 
+implement std.core.Copy for Job {}
+
 var a = Job(id = 1);
-var b = a; // ✅ copies `a` because Job is structurally Copy
+var b = a; // ✅ copies `a` because Job is Copy
 ```
 
 ### 4.4. Explicit copy expression
@@ -925,14 +919,14 @@ Trait requirements and guards allow boolean trait expressions:
 
 - `T is A and T is B` — must implement both traits
 - `T is A or T is B` — must implement at least one
-- `not (T is lang.core.Copy)` — must *not* implement the trait
+- `not (T is std.core.Copy)` — must *not* implement the trait
 - Parentheses allowed for grouping
 
 Example:
 
 ```drift
 fn dup_if_possible<T>(value: T) -> T {
-    if T is lang.core.Copy {
+    if T is std.core.Copy {
         return value; // implicit copy
     } else if T is Dup {
         return value.dup();
@@ -974,7 +968,7 @@ trait Printable
 }
 
 trait NonCopy
-    require not (Self is lang.core.Copy)
+    require not (Self is std.core.Copy)
 {
     ...
 }
@@ -2885,7 +2879,7 @@ In both cases, the file handle is safely released exactly once.
 
 - Deterministic RAII: owned values run their destructor at end of liveness—scope exit, early return, or after being consumed by a finalizer. No deferred GC-style cleanup.
 - Move-only by default: moving a value consumes it; the source binding becomes invalid and is not dropped there. Drop runs exactly once on the final owner.
-- Copy types opt in: only `Copy` types may be implicitly duplicated; they must provide an O(1), non-allocating duplication path. The internal `BitCopy` predicate enables memcpy fast paths but is not user-visible.
+- Copy types opt in: only `Copy` types may be implicitly duplicated; they must provide an O(1), non-allocating duplication path. `Copy` does not imply “no drop” (e.g., `String` retains/releases on copy). The internal `BitCopy` predicate enables memcpy fast paths but is not user-visible.
 
 ## 16. Memory model
 

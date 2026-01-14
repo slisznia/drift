@@ -146,7 +146,7 @@ implement Show for Int {
 	pub fn show(self: Int) -> Int { return 0; }
 }
 
-pub struct Box<T> require T is main.Show { value: T }
+pub struct Box<T> require T is Show { value: T }
 
 fn main() nothrow -> Int{
 	val b: Box<Int> = Box<type Int>(1);
@@ -169,7 +169,7 @@ implement Show for Int {
 	pub fn show(self: Int) -> Int { return 0; }
 }
 
-pub struct Box<T> require T is main.Show { value: T }
+pub struct Box<T> require T is Show { value: T }
 
 fn main() nothrow -> Int{
 	val b: Box<String> = Box<type String>("s");

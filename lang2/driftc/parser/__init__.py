@@ -2235,8 +2235,30 @@ def parse_drift_workspace_to_hir(
 			if isinstance(st, parser_ast.ForStmt):
 				_resolve_types_in_expr(st.iter_expr)
 				_resolve_types_in_block(path, file_aliases, st.body)
-			if isinstance(st, parser_ast.ThrowStmt):
-				_resolve_types_in_expr(st.expr)
+				if isinstance(st, parser_ast.ThrowStmt):
+					_resolve_types_in_expr(st.expr)
+
+	def _resolve_trait_expr_in_file(
+		path: Path,
+		file_aliases: dict[str, str],
+		expr: parser_ast.TraitExpr | None,
+	) -> None:
+		if expr is None:
+			return
+		if isinstance(expr, parser_ast.TraitIs):
+			_resolve_type_expr_in_file(path, file_aliases, expr.trait, allow_traits=True)
+			return
+		if isinstance(expr, parser_ast.TraitAnd):
+			_resolve_trait_expr_in_file(path, file_aliases, expr.left)
+			_resolve_trait_expr_in_file(path, file_aliases, expr.right)
+			return
+		if isinstance(expr, parser_ast.TraitOr):
+			_resolve_trait_expr_in_file(path, file_aliases, expr.left)
+			_resolve_trait_expr_in_file(path, file_aliases, expr.right)
+			return
+		if isinstance(expr, parser_ast.TraitNot):
+			_resolve_trait_expr_in_file(path, file_aliases, expr.expr)
+			return
 
 	for mid, files in by_module.items():
 		for path, prog in files:
@@ -2246,16 +2268,21 @@ def parse_drift_workspace_to_hir(
 				for p in getattr(fn, "params", []) or []:
 					_resolve_type_expr_in_file(path, file_aliases, p.type_expr)
 				_resolve_type_expr_in_file(path, file_aliases, getattr(fn, "return_type", None))
+				_resolve_trait_expr_in_file(path, file_aliases, getattr(fn, "require", None).expr if getattr(fn, "require", None) is not None else None)
 				_resolve_types_in_block(path, file_aliases, fn.body)
+			for tr in getattr(prog, "traits", []) or []:
+				_resolve_trait_expr_in_file(path, file_aliases, getattr(tr, "require", None).expr if getattr(tr, "require", None) is not None else None)
 			for impl in getattr(prog, "implements", []) or []:
 				_resolve_type_expr_in_file(path, file_aliases, impl.target)
 				_resolve_type_expr_in_file(path, file_aliases, getattr(impl, "trait", None), allow_traits=True)
+				_resolve_trait_expr_in_file(path, file_aliases, getattr(impl, "require", None).expr if getattr(impl, "require", None) is not None else None)
 				for mfn in getattr(impl, "methods", []) or []:
 					for p in getattr(mfn, "params", []) or []:
 						_resolve_type_expr_in_file(path, file_aliases, p.type_expr)
 					_resolve_type_expr_in_file(path, file_aliases, getattr(mfn, "return_type", None))
 					_resolve_types_in_block(path, file_aliases, mfn.body)
 			for s in getattr(prog, "structs", []) or []:
+				_resolve_trait_expr_in_file(path, file_aliases, getattr(s, "require", None).expr if getattr(s, "require", None) is not None else None)
 				for f in getattr(s, "fields", []) or []:
 					_resolve_type_expr_in_file(path, file_aliases, f.type_expr)
 			for e in getattr(prog, "exceptions", []) or []:

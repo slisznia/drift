@@ -728,7 +728,7 @@ class TypeChecker:
 					return False
 				return bool(binding_mutable.get(place.base.local_id, False))
 			if hasattr(H, "HPlaceExpr") and isinstance(expr, getattr(H, "HPlaceExpr")):
-				cur = type_expr(expr.base)
+				cur = type_expr(expr.base, used_as_value=False)
 				for pr in expr.projections:
 					if isinstance(pr, H.HPlaceDeref):
 						if cur is None:
@@ -753,7 +753,7 @@ class TypeChecker:
 							cur = td.param_types[0]
 				return True
 			if isinstance(expr, H.HUnary) and expr.op is H.UnaryOp.DEREF:
-				ptr_ty = type_expr(expr.expr)
+				ptr_ty = type_expr(expr.expr, used_as_value=False)
 				if ptr_ty is None:
 					return False
 				ptr_def = self.type_table.get(ptr_ty)
@@ -2894,7 +2894,7 @@ class TypeChecker:
 				if fn_id is None:
 					applicable.append((decl, sig_inst, inst_subst))
 					continue
-				world = visible_trait_world or global_trait_world
+				world = global_trait_world or visible_trait_world
 				req = _require_for_fn(fn_id)
 				if req is None:
 					applicable.append((decl, sig_inst, inst_subst))
@@ -5194,7 +5194,7 @@ class TypeChecker:
 												if decl.fn_id is not None and decl.fn_id.module
 												else current_module_name
 											)
-											world = visible_trait_world or global_trait_world
+											world = global_trait_world or visible_trait_world
 											if world is None:
 												continue
 											subjects: set[object] = set()
@@ -5299,7 +5299,7 @@ class TypeChecker:
 									method_req_expr: parser_ast.TraitExpr | None = None
 									method_subst_map: dict[object, object] = {}
 									if decl.fn_id is not None:
-										world = visible_trait_world or global_trait_world
+										world = global_trait_world or visible_trait_world
 										req = _require_for_fn(decl.fn_id)
 										if req is not None:
 											subjects = set()
@@ -7630,7 +7630,7 @@ class TypeChecker:
 								if decl is None:
 									continue
 								if cand.is_pub:
-									if cand.def_module_id in visible_set:
+									if cand.def_module_id in visible_set or cand.def_module_id == current_module:
 										candidates.append(decl)
 									else:
 										hidden_candidates.append((decl, cand))
@@ -7772,7 +7772,7 @@ class TypeChecker:
 							method_def_mod = current_module_name
 							# Enforce method-level requirements after instantiation.
 							if decl.fn_id is not None:
-								world = visible_trait_world or global_trait_world
+								world = global_trait_world or visible_trait_world
 								req = _require_for_fn(decl.fn_id)
 								if req is not None:
 									subjects: set[object] = set()
@@ -8154,7 +8154,7 @@ class TypeChecker:
 												if decl.fn_id is not None and decl.fn_id.module
 												else current_module_name
 											)
-											world = visible_trait_world or global_trait_world
+											world = global_trait_world or visible_trait_world
 											if world is None:
 												continue
 											subjects: set[object] = set()
@@ -8266,7 +8266,7 @@ class TypeChecker:
 									method_req_expr: parser_ast.TraitExpr | None = None
 									method_subst_map: dict[object, object] = {}
 									if decl.fn_id is not None:
-										world = visible_trait_world or global_trait_world
+										world = global_trait_world or visible_trait_world
 										req = _require_for_fn(decl.fn_id)
 										if req is not None:
 											subjects: set[object] = set()
@@ -9398,7 +9398,7 @@ class TypeChecker:
 						)
 					)
 				if has_deref and hasattr(H, "HPlaceExpr") and isinstance(stmt.target, getattr(H, "HPlaceExpr")):
-					cur = type_expr(stmt.target.base)
+					cur = type_expr(stmt.target.base, used_as_value=False)
 					for pr in stmt.target.projections:
 						if isinstance(pr, H.HPlaceDeref):
 							ptr_def = self.type_table.get(cur)
@@ -9506,7 +9506,7 @@ class TypeChecker:
 							if subj in scope:
 								subst[subj] = _normalize_type_key(type_key_from_typeid(self.type_table, scope[subj]))
 								break
-					world = visible_trait_world or global_trait_world
+					world = global_trait_world or visible_trait_world
 					if world is None:
 						diagnostics.append(
 							_tc_diag(

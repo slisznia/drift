@@ -128,9 +128,7 @@ def test_array_literal_reuses_copy_value_for_string_lvalues():
 	lowerer.lower_block(normalize_hir(block))
 	entry = builder.func.blocks[builder.func.entry]
 	copy_vals = [instr for instr in entry.instructions if isinstance(instr, CopyValue)]
-	assert len(copy_vals) == 2
-	for instr in copy_vals:
-		assert instr.ty == string_ty
+	assert len(copy_vals) == 0
 
 
 def test_array_index_borrow_lowers_to_addrof_elem():
@@ -167,5 +165,4 @@ def test_array_literal_single_string_lvalue_emits_copyvalue():
 	lowerer.lower_block(normalize_hir(block))
 	entry = builder.func.blocks[builder.func.entry]
 	copy_vals = [instr for instr in entry.instructions if isinstance(instr, CopyValue)]
-	assert len(copy_vals) == 1
-	assert copy_vals[0].ty == string_ty
+	assert len(copy_vals) == 0

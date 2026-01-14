@@ -6,6 +6,7 @@ from pathlib import Path
 from lang2.driftc.module_lowered import flatten_modules
 from lang2.driftc.parser import parse_drift_workspace_to_hir, stdlib_root
 from lang2.driftc.type_checker import TypeChecker
+from lang2.driftc.test_helpers import build_linked_world
 
 
 def _write_file(path: Path, content: str) -> None:
@@ -23,6 +24,7 @@ def _typecheck_workspace(tmp_path: Path, content: str) -> list[str]:
 	)
 	assert diagnostics == []
 	func_hirs, signatures_by_id, _fn_ids = flatten_modules(modules)
+	linked_world, require_env = build_linked_world(type_table)
 	checker = TypeChecker(type_table)
 	messages: list[str] = []
 	for fn_id, hir in func_hirs.items():
@@ -40,6 +42,8 @@ def _typecheck_workspace(tmp_path: Path, content: str) -> list[str]:
 			param_mutable=param_mutable,
 			return_type=sig.return_type_id,
 			signatures_by_id=signatures_by_id,
+			linked_world=linked_world,
+			require_env=require_env,
 			current_module=0,
 		)
 		messages.extend(d.message for d in result.diagnostics)

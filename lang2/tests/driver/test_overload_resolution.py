@@ -11,6 +11,7 @@ from lang2.driftc.stage1.call_info import CallTargetKind
 from lang2.driftc.parser import parse_drift_workspace_to_hir, stdlib_root
 from lang2.driftc.module_lowered import flatten_modules
 from lang2.driftc.type_checker import TypeChecker
+from lang2.driftc.test_helpers import build_linked_world
 
 
 def _write_file(path: Path, content: str) -> None:
@@ -148,6 +149,7 @@ fn main() nothrow -> Int{
 	if main_sig.param_names and main_sig.param_type_ids:
 		param_types = {pname: pty for pname, pty in zip(main_sig.param_names, main_sig.param_type_ids)}
 	current_mod = module_ids.setdefault(main_sig.module, len(module_ids))
+	linked_world, require_env = build_linked_world(type_table)
 	tc = TypeChecker(type_table=type_table)
 	result = tc.check_function(
 		main_id,
@@ -156,6 +158,8 @@ fn main() nothrow -> Int{
 		return_type=main_sig.return_type_id,
 		signatures_by_id=signatures,
 		callable_registry=registry,
+		linked_world=linked_world,
+		require_env=require_env,
 		visible_modules=tuple(module_ids.values()),
 		current_module=current_mod,
 	)

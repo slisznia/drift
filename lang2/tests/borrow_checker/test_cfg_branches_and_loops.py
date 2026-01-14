@@ -38,7 +38,7 @@ def test_move_in_one_branch_does_not_affect_other():
 	)
 	bc = _checker_with_types({"x": "Unknown"})
 	diags = bc.check_block(block)
-	assert any("use after move" in d.message for d in diags)
+	assert any(d.code == "E_USE_AFTER_MOVE" for d in diags)
 	# Ensure no diagnostics were emitted inside the else branch (implicitly, since there are only use-after-move diags).
 
 
@@ -57,7 +57,7 @@ def test_move_in_both_branches_flags_after_join():
 	)
 	bc = _checker_with_types({"x": "Unknown"})
 	diags = bc.check_block(block)
-	assert any("use after move" in d.message for d in diags)
+	assert any(d.code == "E_USE_AFTER_MOVE" for d in diags)
 
 
 def test_loop_move_then_break_then_use():
@@ -78,4 +78,4 @@ def test_loop_move_then_break_then_use():
 	)
 	bc = _checker_with_types({"x": "Unknown"})
 	diags = bc.check_block(block)
-	assert any("use after move" in d.message for d in diags)
+	assert any(d.code == "E_USE_AFTER_MOVE" for d in diags)

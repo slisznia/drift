@@ -42,9 +42,11 @@ pub fn id<T>(x: T) nothrow -> T {
 		"""
 module lib
 
+import std.core as core;
+
 export { need };
 
-pub fn need<T>(x: T) nothrow -> Int require T is Copy {
+pub fn need<T>(x: T) nothrow -> Int require T is core.Copy {
 	return 1;
 }
 """.lstrip(),

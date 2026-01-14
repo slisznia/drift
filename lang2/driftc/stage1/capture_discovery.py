@@ -106,10 +106,10 @@ def discover_captures(lambda_expr: H.HLambda) -> CaptureDiscoveryResult:
 			return (expr.binding_id, [])
 		return None
 
-	def _walk_place_expr(place: H.HPlaceExpr, *, usage_kind: str) -> None:
+	def _walk_place_expr(place: H.HExpr, *, usage_kind: str) -> None:
 		flattened = _flatten_field_chain(place)
 		if flattened is None:
-			root = getattr(place.base, "binding_id", None)
+			root = getattr(getattr(place, "base", None), "binding_id", None)
 			if root is not None and root not in lambda_local_ids:
 				diags.append(
 					_cap_diag(
@@ -118,9 +118,10 @@ def discover_captures(lambda_expr: H.HLambda) -> CaptureDiscoveryResult:
 						span=getattr(place, "loc", Span()),
 					)
 				)
-			for proj in place.projections:
-				if isinstance(proj, H.HPlaceIndex):
-					_walk_expr(proj.index)
+			if isinstance(place, H.HPlaceExpr):
+				for proj in place.projections:
+					if isinstance(proj, H.HPlaceIndex):
+						_walk_expr(proj.index)
 			return
 		if flattened is not None:
 			root, fields = flattened
@@ -134,9 +135,10 @@ def discover_captures(lambda_expr: H.HLambda) -> CaptureDiscoveryResult:
 				move=usage_kind == "move",
 				write=usage_kind == "write",
 			)
-		for proj in place.projections:
-			if isinstance(proj, H.HPlaceIndex):
-				_walk_expr(proj.index)
+		if isinstance(place, H.HPlaceExpr):
+			for proj in place.projections:
+				if isinstance(proj, H.HPlaceIndex):
+					_walk_expr(proj.index)
 
 	def _walk_expr(e: H.HExpr) -> None:
 		# Skip nested lambdas; captures are per-lambda.
