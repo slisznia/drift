@@ -70,10 +70,9 @@ Define iterator traits and MVP constraints for collections/algorithms, aligned w
 - `for` evaluates its source expression exactly once, calls `Iterable.iter` exactly once, then loops on `next`.
 - Iterable coherence: for any concrete `Src`, at most one applicable `Iterable<Src, Item, Iter>` impl may exist (no ambiguity).
 - `Iterable.iter(x)` uses UFCS-style trait dispatch; this is a required language feature.
-- Iterator invalidation rule: any structural mutation of a collection invalidates all iterators derived from it; any method on an invalidated iterator/range raises `std.err:IteratorInvalidated(container: String, op: String)` (op is the method name, including `len`).
-- Bounds errors for `compare_at`/`swap` use `std.err:IndexError(container: String, index: Int)` with `container` set to the concrete type name.
-- Error payload determinism: `container` is the canonical type name without type arguments (e.g., `Array`, `HashMap`), no aliases; `op` is the exact trait method name (e.g., `next`, `prev`, `len`, `compare_at`, `swap`, `compare_key`).
-- `IteratorInvalidated.op` is stringly-typed; runtime registry should not define an enum.
+- Iterator invalidation rule: any structural mutation of a collection invalidates all iterators derived from it; any method on an invalidated iterator/range raises `std.err:IteratorInvalidated(container_id: String, op_id: IteratorOpId)`.
+- Bounds errors for `compare_at`/`swap` use `std.err:IndexError(container_id: String, index: Int)` with `container_id` set to the base nominal key.
+- Error payload determinism: `container_id` is the base nominal key without type arguments (e.g., `std.containers:Array`).
 - `Equatable` and `Comparable` live in `std.core.cmp` (low-level comparison module).
 - MVP container set in `std.containers`: Array, HashMap, TreeMap, HashSet, TreeSet, List, Queue, Deque.
 - Array API (MVP):
@@ -157,12 +156,50 @@ Define iterator traits and MVP constraints for collections/algorithms, aligned w
   - mutation invalidation (e2e)
   - Comparable/Permutable/BinarySearchable gating (driver)
   - local shadowing + function-returned iterable (driver)
+- 2026-01-13: Added `std.core.Diagnostic` trait, switched exception attrs to require Diagnostic, and introduced `std.err` with `IndexError(container_id, index)` + `IteratorInvalidated(container_id, op_id)`.
+- 2026-01-13: Added Array iterator invalidation checks (len/cap snapshot) and e2e payload tests for `IteratorInvalidated` + `IndexError` attrs.
+- 2026-01-13: Added e2e test `index_error_payload_oob` to validate bounds-check OOB emits `IndexError` attrs (`container_id`, `index`) via real indexing.
+- 2026-01-13: Made array index OOB catchable in MIR:
+  - Added `ArrayIndexLoadUnchecked` and lowered `arr[i]` to an explicit bounds check + `throw std.err:IndexError` (via MIR error construction and try-stack propagation), then unchecked load on the ok path.
+  - Added codegen support for `ArrayIndexLoadUnchecked` (no runtime bounds check).
+- 2026-01-13: Added typecheck guard for array literals:
+  - Non-empty array literals now require element type `Copy` (diagnostic `E-ARRAY-LITERAL-NON-COPY`).
+  - Added e2e compile-fail case `array_literal_non_copy_rejected`.
+- 2026-01-13: Centralized Array container_id constant:
+  - Added `lang2.driftc.core.container_ids.ARRAY_CONTAINER_ID` and used it for bounds checks + IndexError construction.
+  - Stdlib continues to expose `std.containers.array.ARRAY_CONTAINER_ID` for invalidation helpers.
+- 2026-01-13: Added e2e `iterator_op_id_mapping` to lock IteratorOpId → DiagnosticValue numeric mapping.
+- 2026-01-13: Pinned ABI-stable IteratorOpId tag mapping in `std.err` (`to_diag` is append-only, no reordering).
+- 2026-01-13: Fixed `iterator_op_id_mapping` e2e to use `to_diag()` + `DiagnosticValue::Int(-1)` fallback so `main` stays `nothrow`.
+- 2026-01-13: Resolved exception + DiagnosticValue integration issues: allowed fully-qualified exception ctors (`std.err:IndexError`) in grammar/parser, added `std.core.Diagnostic` scope defaults, fixed DVInit normalization for match expr value blocks, enabled Uint/Float DVInit, and allowed `DiagnosticValue` returns in LLVM codegen/zero-init.
+- 2026-01-13: Fixed `iterator_invalidated_payload` nothrow failures by removing `return` inside match arms and using value-based match expressions in the catch path.
+- 2026-01-13: Fixed exception payload plumbing for DiagnosticValue attrs:
+  - Root cause: `drift_error_new_with_payload` took DiagnosticValue by value, which was ABI-incorrect for a 24-byte struct (payload tag became garbage).
+  - Fix: changed `drift_error_new_with_payload` to take `DriftDiagnosticValue*`, updated LLVM declaration + callsites to pass a stack slot.
+- 2026-01-13: Fixed bounds-check error emission to use real exception metadata:
+  - Root cause: `drift_bounds_check_fail` used event_code=0 and printed/aborted.
+  - Fix: set deterministic event code for `std.err:IndexError`, attach attrs, and route through `drift_error_raise` (no stdout/stderr side effects).
+- 2026-01-13: Fixed runtime compilation for new bounds-check signature:
+  - Root cause: `array_runtime.c` forward-declared `drift_bounds_check_fail` with the old signature and pulled in a duplicate `DriftString` definition.
+  - Fix: updated the forward declaration to the new signature and avoided `DriftString` redefinition by using a forward declaration in `array_runtime.h`.
+- 2026-01-13: Fixed invalid LLVM IR for array header access through references:
+  - Root cause: `ArrayLen/ArrayCap` emitted `extractvalue` on `{...}*` for `&Array<T>`.
+  - Fix: load array header first when value type is a pointer.
+- 2026-01-13: Fixed LLVM IR verification failures from SSA phi nodes with a single incoming:
+  - Root cause: SSA pass could emit φ nodes with one predecessor.
+  - Fix: prune single-incoming φ nodes into AssignSSA after SSA renaming.
 
 ## Open Questions
 - Exact algorithm signatures in Drift syntax (defer until implementation).
 
 ## Next
-- TODO (blocked): Add a regression test that iterator errors carry canonical `container`/`op` strings (requires stable runtime error payload shape).
+- TODO (blocked): Add a regression test that iterator errors carry canonical `container_id`/`op_id` payloads (requires runtime error emission + test harness).
+
+## Issues Encountered (Recent) + Fixes
+- DiagnosticValue payload ABI mismatch: `drift_error_new_with_payload` was passed by value (24-byte struct), corrupting attrs. Fixed by switching to pointer parameter and updating LLVM declarations/calls to pass a stack slot.
+- Bounds-check error emission was non-exceptional: `drift_bounds_check_fail` used `event_code=0` and printed/aborted. Fixed by using the deterministic `std.err:IndexError` event code, attaching attrs, and routing through `drift_error_raise`.
+- Array header access through references emitted invalid IR (`extractvalue` on `{...}*`). Fixed by loading the header before `extractvalue` when the value type is a pointer.
+- SSA pass emitted single-incoming φ nodes. Fixed by pruning single-incoming φ nodes into AssignSSA during SSA renaming.
 
 ## Algorithms (Proposed)
 - for_each(it, f) -> SinglePassIterator<T>

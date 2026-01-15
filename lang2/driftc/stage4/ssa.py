@@ -434,6 +434,17 @@ class MirToSSA:
 
 		rename_block(func.entry)
 
+		# Prune trivial φ nodes (single incoming); replace with AssignSSA to keep IR verifiable.
+		for block in func.blocks.values():
+			new_instrs: list[MInstr] = []
+			for instr in block.instructions:
+				if isinstance(instr, Phi) and len(instr.incoming) == 1:
+					src = next(iter(instr.incoming.values()))
+					new_instrs.append(AssignSSA(dest=instr.dest, src=src))
+					continue
+				new_instrs.append(instr)
+			block.instructions = new_instrs
+
 		return SsaFunc(
 			func=func,
 			local_versions=counters,

@@ -194,6 +194,38 @@ def _install_copy_query(type_table: TypeTable, linked_world: LinkedWorld) -> Non
 	type_table.set_copy_query(_query_copy, allow_fallback=False)
 
 
+def _install_diagnostic_query(type_table: TypeTable, linked_world: LinkedWorld) -> None:
+	diag_key = _find_trait_key(linked_world.global_world, module="std.core", name="Diagnostic")
+	if diag_key is None:
+		std_modules = {"std.core", "std.iter", "std.containers", "std.algo", "std.err"}
+		if any(mod in std_modules for mod in linked_world.trait_worlds.keys()):
+			raise ValueError("stdlib missing std.core.Diagnostic trait metadata")
+		return
+	default_package = getattr(type_table, "package_id", None)
+	module_packages = getattr(type_table, "module_packages", None) or {}
+	env = TraitEnv(
+		default_module=None,
+		default_package=default_package,
+		module_packages=module_packages,
+		type_table=type_table,
+	)
+	world = linked_world.global_world
+
+	def _query_diag(tid: int) -> bool | None:
+		try:
+			subject = type_key_from_typeid(type_table, tid)
+		except Exception:
+			return None
+		res = prove_is(world, env, {}, subject, diag_key)
+		if res.status is ProofStatus.PROVED:
+			return True
+		if res.status is ProofStatus.REFUTED:
+			return False
+		return None
+
+	type_table.set_diagnostic_query(_query_diag, allow_fallback=False)
+
+
 def _build_linked_world(type_table: TypeTable | None) -> tuple[LinkedWorld | None, RequireEnv | None]:
 	trait_worlds = getattr(type_table, "trait_worlds", None) if type_table is not None else None
 	if not isinstance(trait_worlds, dict):
@@ -201,6 +233,7 @@ def _build_linked_world(type_table: TypeTable | None) -> tuple[LinkedWorld | Non
 	linked_world = link_trait_worlds(trait_worlds)
 	if type_table is not None:
 		_install_copy_query(type_table, linked_world)
+		_install_diagnostic_query(type_table, linked_world)
 	default_package = getattr(type_table, "package_id", None)
 	module_packages = getattr(type_table, "module_packages", None)
 	return linked_world, build_require_env(
@@ -2985,7 +3018,7 @@ def compile_to_llvm_ir_for_tests(
 			param_ids = list(sig.param_type_ids or [])
 			if sig.return_type_id is not None:
 				param_ids.append(sig.return_type_id)
-			if any(checked.type_table.get(tid).kind is TypeKind.TYPEVAR for tid in param_ids):
+			if any(checked.type_table.has_typevar(tid) for tid in param_ids):
 				generic_templates.add(fn_id)
 	if generic_templates:
 		mir_funcs = {fn_id: fn for fn_id, fn in mir_funcs.items() if fn_id not in generic_templates}

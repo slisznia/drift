@@ -26,6 +26,7 @@ from lang2.driftc.stage2 import (
 	ArrayElemAssign,
 	ArrayElemInitUnchecked,
 	ArrayIndexLoad,
+	ArrayIndexLoadUnchecked,
 	ArrayLen,
 	ArraySetLen,
 	CopyValue,
@@ -54,16 +55,16 @@ def test_array_literal_and_index_lowering():
 	)
 	builder = make_builder(FunctionId(module="main", name="f", ordinal=0))
 	HIRToMIR(builder, type_table=table).lower_block(normalize_hir(block))
-	entry = builder.func.blocks[builder.func.entry]
-	kinds = {type(instr) for instr in entry.instructions}
+	all_instrs = [instr for block in builder.func.blocks.values() for instr in block.instructions]
+	kinds = {type(instr) for instr in all_instrs}
 	assert ArrayAlloc in kinds
 	assert ArrayElemInitUnchecked in kinds
 	assert ArraySetLen in kinds
-	assert ArrayIndexLoad in kinds
+	assert ArrayIndexLoadUnchecked in kinds
 	assert ArrayLen in kinds
-	array_allocs = [instr for instr in entry.instructions if isinstance(instr, ArrayAlloc)]
+	array_allocs = [instr for instr in all_instrs if isinstance(instr, ArrayAlloc)]
 	assert array_allocs and array_allocs[0].elem_ty == int_ty
-	loads = [instr for instr in entry.instructions if isinstance(instr, ArrayIndexLoad)]
+	loads = [instr for instr in all_instrs if isinstance(instr, ArrayIndexLoadUnchecked)]
 	assert loads and loads[0].elem_ty == int_ty
 
 
@@ -98,16 +99,16 @@ def test_array_index_load_inserts_copyvalue_for_copy_elems():
 	lowerer = HIRToMIR(builder, type_table=table)
 	lowerer._local_types["xs"] = table.new_array(string_ty)
 	lowerer.lower_block(normalize_hir(block))
-	entry = builder.func.blocks[builder.func.entry]
+	all_instrs = [instr for block in builder.func.blocks.values() for instr in block.instructions]
 	load_idx = None
 	copy_idx = None
-	for idx, instr in enumerate(entry.instructions):
-		if isinstance(instr, ArrayIndexLoad):
+	for idx, instr in enumerate(all_instrs):
+		if isinstance(instr, ArrayIndexLoadUnchecked):
 			load_idx = idx
 		if isinstance(instr, CopyValue):
 			copy_idx = idx
 	if load_idx is None or copy_idx is None:
-		raise AssertionError("expected ArrayIndexLoad followed by CopyValue for Copy element type")
+		raise AssertionError("expected ArrayIndexLoadUnchecked followed by CopyValue for Copy element type")
 	assert copy_idx > load_idx
 
 

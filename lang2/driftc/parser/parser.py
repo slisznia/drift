@@ -1055,6 +1055,10 @@ def _build_trait_method_sig(tree: Tree) -> TraitMethodSig:
 	if idx < len(children) and _name(children[idx]) == "params":
 		params = [_build_param(p) for p in children[idx].children if isinstance(p, Tree)]
 		idx += 1
+	declared_nothrow = False
+	if idx < len(children) and isinstance(children[idx], Token) and children[idx].type == "NOTHROW":
+		declared_nothrow = True
+		idx += 1
 	return_sig = children[idx]
 	type_child = next(child for child in return_sig.children if isinstance(child, Tree))
 	return_type = _build_type_expr(type_child)
@@ -1065,6 +1069,7 @@ def _build_trait_method_sig(tree: Tree) -> TraitMethodSig:
 		loc=loc,
 		type_params=type_params,
 		type_param_locs=type_param_locs,
+		declared_nothrow=declared_nothrow,
 	)
 
 
@@ -2484,13 +2489,18 @@ def _build_exception_ctor(tree: Tree) -> ExceptionCtor:
 	  - Positional arguments must precede keyword arguments.
 	"""
 	name_tok = next((c for c in tree.children if isinstance(c, Token) and c.type == "NAME"), None)
-	if name_tok is None:
+	event_node = next((c for c in tree.children if isinstance(c, Tree) and _name(c) == "event_fqn"), None)
+	if name_tok is None and event_node is None:
 		raise ValueError("exception_ctor missing name")
+	if event_node is not None:
+		name = _fqn_from_tree(event_node)
+	else:
+		name = name_tok.value
 
 	# Grammar shape: NAME "(" [call_args] ")"
 	args_node = next((c for c in tree.children if isinstance(c, Tree) and _name(c) == "call_args"), None)
 	args, kwargs = _build_call_args(args_node)
-	return ExceptionCtor(name=name_tok.value, args=args, kwargs=kwargs, loc=_loc(tree))
+	return ExceptionCtor(name=name, args=args, kwargs=kwargs, loc=_loc(tree))
 
 
 def _build_postfix(tree: Tree) -> Expr:

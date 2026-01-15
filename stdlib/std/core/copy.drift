@@ -1,10 +1,15 @@
 module std.core
 
 export {
-	Copy
+	Copy,
+	Diagnostic
 };
 
 pub trait Copy {
+}
+
+pub trait Diagnostic {
+	fn to_diag(self: Self) -> DiagnosticValue;
 }
 
 implement Copy for Int {
@@ -26,4 +31,40 @@ implement Copy for Void {
 }
 
 implement<T> Copy for &T {
+}
+
+implement Diagnostic for Int {
+	pub fn to_diag(self: Int) nothrow -> DiagnosticValue {
+		return DiagnosticValue::Int(self);
+	}
+}
+
+implement Diagnostic for Uint {
+	pub fn to_diag(self: Uint) nothrow -> DiagnosticValue {
+		return DiagnosticValue::Int(self);
+	}
+}
+
+implement Diagnostic for Bool {
+	pub fn to_diag(self: Bool) nothrow -> DiagnosticValue {
+		return DiagnosticValue::Bool(self);
+	}
+}
+
+implement Diagnostic for Float {
+	pub fn to_diag(self: Float) nothrow -> DiagnosticValue {
+		return DiagnosticValue::Float(self);
+	}
+}
+
+implement Diagnostic for String {
+	pub fn to_diag(self: String) nothrow -> DiagnosticValue {
+		return DiagnosticValue::String(self);
+	}
+}
+
+implement Diagnostic for DiagnosticValue {
+	pub fn to_diag(self: DiagnosticValue) nothrow -> DiagnosticValue {
+		return move self;
+	}
 }

@@ -1272,6 +1272,13 @@ class TypeTable:
 		if hasattr(self, "_copy_cache"):
 			self._copy_cache.clear()  # type: ignore[attr-defined]
 
+	def set_diagnostic_query(self, query, *, allow_fallback: bool = False) -> None:
+		"""Install a Diagnostic query hook for trait-based checks."""
+		self._diagnostic_query = query  # type: ignore[attr-defined]
+		self._diagnostic_query_allow_fallback = bool(allow_fallback)  # type: ignore[attr-defined]
+		if hasattr(self, "_diagnostic_cache"):
+			self._diagnostic_cache.clear()  # type: ignore[attr-defined]
+
 	def is_copy(self, ty: TypeId) -> bool:
 		"""Return True if `ty` is Copy under MVP structural rules."""
 		if not hasattr(self, "_copy_cache"):
@@ -1349,6 +1356,42 @@ class TypeTable:
 				cache[ty] = False
 				return False
 		return _is_copy(ty)
+
+	def is_diagnostic(self, ty: TypeId) -> bool:
+		"""Return True if `ty` implements Diagnostic."""
+		if not hasattr(self, "_diagnostic_cache"):
+			self._diagnostic_cache = {}  # type: ignore[attr-defined]
+		cache: Dict[TypeId, bool] = getattr(self, "_diagnostic_cache")  # type: ignore[attr-defined]
+		if not hasattr(self, "_diagnostic_query"):
+			trait_worlds = getattr(self, "trait_worlds", None)
+			if isinstance(trait_worlds, dict) and any(
+				mod in {"std.core", "std.iter", "std.containers", "std.algo", "std.err"} for mod in trait_worlds.keys()
+			):
+				raise ValueError("Diagnostic query hook is missing while stdlib trait metadata is present")
+		if ty in cache:
+			return cache[ty]
+		if hasattr(self, "_diagnostic_query"):
+			query = getattr(self, "_diagnostic_query")  # type: ignore[attr-defined]
+			res = query(ty)
+			if res is True:
+				cache[ty] = True
+				return True
+			if res is False:
+				cache[ty] = False
+				return False
+			allow_fallback = bool(getattr(self, "_diagnostic_query_allow_fallback", False))  # type: ignore[attr-defined]
+			if not allow_fallback:
+				cache[ty] = False
+				return False
+		td = self.get(ty)
+		if td.kind is TypeKind.DIAGNOSTICVALUE:
+			cache[ty] = True
+			return True
+		if td.kind is TypeKind.SCALAR and td.name in {"Int", "Uint", "Bool", "Float", "String"}:
+			cache[ty] = True
+			return True
+		cache[ty] = False
+		return False
 
 	def is_bitcopy(self, ty: TypeId) -> bool:
 		"""

@@ -12,7 +12,7 @@ export {
 };
 
 pub trait Iterable<Src, Item, Iter> require Iter is SinglePassIterator<Item> {
-	fn iter(src: Src) -> Iter;
+	fn iter(src: Src) nothrow -> Iter;
 }
 
 pub trait SinglePassIterator<T> {

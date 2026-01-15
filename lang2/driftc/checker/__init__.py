@@ -2282,7 +2282,18 @@ class Checker:
 		from lang2.driftc import stage1 as H
 
 		if isinstance(expr, (H.HArrayLiteral, H.HIndex)):
-			ctx.infer(expr)
+			tid = ctx.infer(expr)
+			if isinstance(expr, H.HArrayLiteral) and expr.elements and tid is not None:
+				elem_ty = ctx.table.get(tid).param_types[0] if ctx.table.get(tid).param_types else None
+				if elem_ty is not None and not ctx.table.is_copy(elem_ty):
+					ctx._append_diag(
+						_chk_diag(
+							message="array literal element type must be Copy",
+							severity="error",
+							span=getattr(expr, "loc", Span()),
+							code="E-ARRAY-LITERAL-NON-COPY",
+						)
+					)
 
 	def _bitwise_validator_on_expr(self, expr: "H.HExpr", ctx: "_TypingContext") -> None:
 		"""
@@ -2534,8 +2545,8 @@ class Checker:
 		- exact coverage required (no missing/unknown/duplicates)
 
 		Attribute payload rule (Phase 2, MVP):
-		- exception field values must be DiagnosticValue or primitive literals
-		  (Int/Bool/String) that the compiler can auto-wrap into DiagnosticValue.
+		- exception field values must implement Diagnostic; primitive literals
+		  are allowed and wrapped into DiagnosticValue during lowering.
 		"""
 		from lang2.driftc import stage1 as H
 		from lang2.driftc.core.exception_ctor_args import KwArg as _KwArg, resolve_exception_ctor_args
@@ -2580,9 +2591,12 @@ class Checker:
 					continue
 				if hasattr(H, "HLiteralString") and isinstance(fexpr, getattr(H, "HLiteralString")):
 					continue
+				val_ty = ctx.infer(fexpr)
+				if val_ty is not None and ctx.table.is_diagnostic(val_ty):
+					continue
 				ctx._append_diag(
 					_chk_diag(
-						message="exception field value must be a DiagnosticValue or primitive literal",
+						message="exception field value must implement Diagnostic",
 						severity="error",
 						span=getattr(fexpr, "loc", getattr(stmt.value, "loc", Span())),
 					)

@@ -126,16 +126,23 @@ void __exc_attrs_get_dv(struct DriftDiagnosticValue* out, const struct DriftErro
     *out = *val;
 }
 
-struct DriftError* drift_error_new_with_payload(drift_error_code_t code, struct DriftString event_fqn, struct DriftString key, struct DriftDiagnosticValue payload) {
+struct DriftError* drift_error_new_with_payload(drift_error_code_t code, struct DriftString event_fqn, struct DriftString key, const struct DriftDiagnosticValue* payload) {
     struct DriftError* err = drift_error_new_dummy(code, event_fqn, (struct DriftString){0, NULL}, (struct DriftString){0, NULL});
     if (!err) {
         return NULL;
     }
-    drift_error_add_attr_dv(err, key, &payload);
+    if (payload) {
+        drift_error_add_attr_dv(err, key, payload);
+    }
     return err;
 }
 
 struct DriftError* drift_error_new(drift_error_code_t code, struct DriftString event_fqn) {
     struct DriftError* err = drift_error_new_dummy(code, event_fqn, (struct DriftString){0, NULL}, (struct DriftString){0, NULL});
     return err;
+}
+
+void drift_error_raise(struct DriftError* err) {
+    (void)err;
+    abort();
 }

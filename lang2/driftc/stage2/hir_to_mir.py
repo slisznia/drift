@@ -41,6 +41,7 @@ from lang2.driftc.stage1.call_info import (
 )
 from lang2.driftc.checker import FnSignature
 from lang2.driftc.core.function_id import FunctionId, function_symbol
+from lang2.driftc.core.container_ids import ARRAY_CONTAINER_ID
 from lang2.driftc.core.span import Span
 from lang2.driftc.core.types_core import (
 	TypeKind,
@@ -990,18 +991,104 @@ class HIRToMIR:
 			return dest
 		subject = self.lower_expr(expr.subject)
 		index = self.lower_expr(expr.index)
-		dest = self.b.new_temp()
 		elem_ty = self._infer_array_elem_type(expr.subject)
-		self.b.emit(M.ArrayIndexLoad(dest=dest, elem_ty=elem_ty, array=subject, index=index))
+
+		len_val = self.b.new_temp()
+		self.b.emit(M.ArrayLen(dest=len_val, array=subject))
+		self._local_types[len_val] = self._int_type
+		zero_val = self.b.new_temp()
+		self.b.emit(M.ConstInt(dest=zero_val, value=0))
+		self._local_types[zero_val] = self._int_type
+		lt_zero = self.b.new_temp()
+		self.b.emit(M.BinaryOpInstr(dest=lt_zero, op=M.BinaryOp.LT, left=index, right=zero_val))
+		ge_len = self.b.new_temp()
+		self.b.emit(M.BinaryOpInstr(dest=ge_len, op=M.BinaryOp.GE, left=index, right=len_val))
+		oob = self.b.new_temp()
+		self.b.emit(M.BinaryOpInstr(dest=oob, op=M.BinaryOp.OR, left=lt_zero, right=ge_len))
+
+		ok_block = self.b.new_block("idx_ok")
+		err_block = self.b.new_block("idx_err")
+		join_block = self.b.new_block("idx_join")
+		self.b.set_terminator(M.IfTerminator(cond=oob, then_target=err_block.name, else_target=ok_block.name))
+
+		tmp_local = f"__idx_tmp{self.b.new_temp()}"
+		self.b.ensure_local(tmp_local)
+		self._local_types[tmp_local] = elem_ty
+
+		self.b.set_block(err_block)
+		self._emit_index_error_throw(index_val=index)
+
+		self.b.set_block(ok_block)
+		dest = self.b.new_temp()
+		self.b.emit(M.ArrayIndexLoadUnchecked(dest=dest, elem_ty=elem_ty, array=subject, index=index))
+		self.b.emit(M.StoreLocal(local=tmp_local, value=dest))
+		self.b.set_terminator(M.Goto(target=join_block.name))
+
+		self.b.set_block(join_block)
+		loaded = self.b.new_temp()
+		self.b.emit(M.LoadLocal(dest=loaded, local=tmp_local))
+
 		if self._type_table.is_copy(elem_ty):
 			copy_dest = self.b.new_temp()
-			self.b.emit(M.CopyValue(dest=copy_dest, value=dest, ty=elem_ty))
+			self.b.emit(M.CopyValue(dest=copy_dest, value=loaded, ty=elem_ty))
 			self._local_types[copy_dest] = elem_ty
 			return copy_dest
 		td = self._type_table.get(elem_ty)
 		if td.kind is not TypeKind.TYPEVAR:
 			raise NotImplementedError("array index read requires Copy element type; borrow not supported in MVP")
-		return dest
+		return loaded
+
+	def _emit_index_error_throw(self, *, index_val: M.ValueId) -> None:
+		event_fqn = "std.err:IndexError"
+		schema = self._exception_schemas.get(event_fqn)
+		if schema is None:
+			schema_fields = ["container_id", "index"]
+		else:
+			_decl_fqn, schema_fields = schema
+		field_set = set(schema_fields)
+		for required in ("container_id", "index"):
+			if required not in field_set:
+				raise AssertionError(f"IndexError schema missing field {required!r} (checker bug)")
+
+		code_const = self._lookup_error_code(event_fqn=event_fqn)
+		code_val = self.b.new_temp()
+		self.b.emit(M.ConstUint64(dest=code_val, value=code_const))
+		self._local_types[code_val] = self._uint64_type
+		event_fqn_val = self.b.new_temp()
+		self.b.emit(M.ConstString(dest=event_fqn_val, value=event_fqn))
+
+		container_const = self.b.new_temp()
+		self.b.emit(M.ConstString(dest=container_const, value=ARRAY_CONTAINER_ID))
+		dv_container = self.b.new_temp()
+		self.b.emit(M.ConstructDV(dest=dv_container, dv_type_name="String", args=[container_const]))
+		self._local_types[dv_container] = self._dv_type
+		dv_index = self.b.new_temp()
+		self.b.emit(M.ConstructDV(dest=dv_index, dv_type_name="Int", args=[index_val]))
+		self._local_types[dv_index] = self._dv_type
+
+		name_to_dv = {"container_id": dv_container, "index": dv_index}
+		first_name = schema_fields[0]
+		first_dv = name_to_dv[first_name]
+		first_key = self.b.new_temp()
+		self.b.emit(M.ConstString(dest=first_key, value=first_name))
+		err_val = self.b.new_temp()
+		self.b.emit(
+			M.ConstructError(
+				dest=err_val,
+				code=code_val,
+				event_fqn=event_fqn_val,
+				payload=first_dv,
+				attr_key=first_key,
+			)
+		)
+		self._local_types[err_val] = self._type_table.ensure_error()
+		for name in schema_fields[1:]:
+			dv_val = name_to_dv[name]
+			key_val = self.b.new_temp()
+			self.b.emit(M.ConstString(dest=key_val, value=name))
+			self.b.emit(M.ErrorAddAttrDV(error=err_val, key=key_val, value=dv_val))
+
+		self._propagate_error(err_val)
 
 	def _visit_expr_HArrayLiteral(self, expr: H.HArrayLiteral) -> M.ValueId:
 		elem_ty = self._infer_array_literal_elem_type(expr)
@@ -2400,6 +2487,15 @@ class HIRToMIR:
 
 	def _visit_expr_HDVInit(self, expr: H.HDVInit) -> M.ValueId:
 		arg_vals = [self.lower_expr(a) for a in expr.args]
+		if len(expr.args) == 1 and self._expr_types:
+			arg_expr = expr.args[0]
+			arg_ty = self._expr_types.get(arg_expr.node_id)
+			if arg_ty == self._uint_type:
+				src_val = arg_vals[0]
+				conv = self.b.new_temp()
+				self.b.emit(M.IntFromUint(dest=conv, value=src_val))
+				self._local_types[conv] = self._int_type
+				arg_vals = [conv]
 		dest = self.b.new_temp()
 		self.b.emit(M.ConstructDV(dest=dest, dv_type_name=expr.dv_type_name, args=arg_vals))
 		return dest
@@ -3079,9 +3175,12 @@ class HIRToMIR:
 							kind_name = "String"
 						self.b.emit(M.ConstructDV(dest=dv_val, dv_type_name=kind_name, args=[inner_val]))
 					else:
-						raise AssertionError(
-							f"exception field {name!r} must be a DiagnosticValue or primitive literal (checker bug)"
-						)
+						dv_val = self.lower_expr(field_expr)
+						dv_ty = self._local_types.get(dv_val)
+						if dv_ty != self._dv_type:
+							raise AssertionError(
+								f"exception field {name!r} must lower to DiagnosticValue (checker bug)"
+							)
 					field_dvs.append((name, dv_val))
 
 				first_name, first_dv = field_dvs[0]
@@ -3605,6 +3704,7 @@ class HIRToMIR:
 
 		dest = self.b.new_temp()
 		self.b.emit(M.Call(dest=dest, fn_id=target_fn_id, args=arg_vals, can_throw=False))
+		self._local_types[dest] = info.sig.user_ret_type
 		return dest, info
 
 	def _lower_can_throw_call_value(
@@ -3660,6 +3760,7 @@ class HIRToMIR:
 		self.b.set_block(join_block)
 		dest = self.b.new_temp()
 		self.b.emit(M.LoadLocal(dest=dest, local=ok_local))
+		self._local_types[dest] = ok_ty
 		return dest
 
 	def _lower_can_throw_call_stmt(

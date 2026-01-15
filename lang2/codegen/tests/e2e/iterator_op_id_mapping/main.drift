@@ -1,0 +1,30 @@
+module main
+
+import std.err as err;
+import std.core as core;
+
+use trait core.Diagnostic;
+fn check(op: err.IteratorOpId, expected: Int) nothrow -> Int {
+	val dv = try op.to_diag() catch { DiagnosticValue::Int(-1) };
+	val i = dv.as_int();
+	match i {
+		Some(v) => {
+			if v == -1 { return 40 + expected; }
+			if v != expected {
+				return 20 + expected;
+			}
+		},
+		None => { return 30 + expected; },
+	}
+	return 0;
+}
+
+fn main() nothrow -> Int {
+	if check(err.IteratorOpId::Next(), 0) != 0 { return 20; }
+	if check(err.IteratorOpId::Prev(), 1) != 0 { return 21; }
+	if check(err.IteratorOpId::Len(), 2) != 0 { return 22; }
+	if check(err.IteratorOpId::CompareAt(), 3) != 0 { return 23; }
+	if check(err.IteratorOpId::Swap(), 4) != 0 { return 24; }
+	if check(err.IteratorOpId::CompareKey(), 5) != 0 { return 25; }
+	return 0;
+}

@@ -153,7 +153,7 @@ implement_item: PUB func_def -> implement_func_pub
 trait_def: TRAIT NAME type_params? require_clause? trait_body
 trait_body: "{" (trait_item | TERMINATOR)* "}"
 trait_item: trait_method_sig TERMINATOR*
-trait_method_sig: FN_KW ident type_params? "(" [params] ")" return_sig
+trait_method_sig: FN_KW ident type_params? "(" [params] ")" NOTHROW? return_sig
 
 type_expr: ref_type
          | fn_type
@@ -491,7 +491,8 @@ array_literal: "[" [expr (COMMA expr)*] "]"
 // - Positional args are allowed and map to declared exception fields by
 //   declaration order. Keyword args use `=` and follow the same rule as normal calls:
 //   positional arguments must precede keyword arguments.
-exception_ctor: NAME "(" [call_args] ")"
+exception_ctor: event_fqn "(" [call_args] ")"
+              | NAME "(" [call_args] ")"
 
 call_args: call_arg (COMMA call_arg)*
 call_arg: NAME EQUAL expr -> kwarg

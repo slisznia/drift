@@ -8,11 +8,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-typedef ptrdiff_t drift_isize;
-typedef size_t drift_usize;
-
-_Static_assert(sizeof(drift_isize) == sizeof(void *), "drift_isize must be pointer-sized");
-_Static_assert(sizeof(drift_usize) == sizeof(void *), "drift_usize must be pointer-sized");
+#include "../../runtime/error_dummy.h"
 
 typedef struct DriftArrayHeader {
 	drift_isize len;
@@ -21,9 +17,13 @@ typedef struct DriftArrayHeader {
 } DriftArrayHeader;
 
 __attribute__((noreturn))
-void drift_bounds_check_fail(drift_isize idx, drift_isize len);
+void drift_bounds_check_fail(struct DriftString container_id, drift_isize idx, drift_isize len);
 
 static unsigned char drift_zst_sentinel;
+static const char k_index_error_event[] = "std.err:IndexError";
+static const drift_error_code_t k_index_error_code = 1726084857549659354ULL;
+static const char k_container_key[] = "container_id";
+static const char k_index_key[] = "index";
 
 static size_t drift_round_up_pow2(size_t align) {
 	size_t p = 1;
@@ -72,15 +72,25 @@ void drift_free_array(void *data) {
 	free(data);
 }
 
-void drift_bounds_check(drift_isize idx, drift_isize len) {
+void drift_bounds_check(struct DriftString container_id, drift_isize idx, drift_isize len) {
 	if (idx < 0 || idx >= len) {
-		drift_bounds_check_fail(idx, len);
+		drift_bounds_check_fail(container_id, idx, len);
 	}
 }
 
 // Bounds check failure helper; for now, print and abort.
 __attribute__((noreturn))
-void drift_bounds_check_fail(drift_isize idx, drift_isize len) {
-	fprintf(stderr, "drift_bounds_check_fail: index %td out of bounds (len=%td)\n", idx, len);
-	abort();
+void drift_bounds_check_fail(struct DriftString container_id, drift_isize idx, drift_isize len) {
+	(void)len;
+	struct DriftString event_fqn = { (drift_isize)(sizeof(k_index_error_event) - 1), (char *)k_index_error_event };
+	struct DriftError *err = drift_error_new(k_index_error_code, event_fqn);
+	if (err) {
+		struct DriftString container_key = { (drift_isize)(sizeof(k_container_key) - 1), (char *)k_container_key };
+		struct DriftString index_key = { (drift_isize)(sizeof(k_index_key) - 1), (char *)k_index_key };
+		struct DriftDiagnosticValue dv_container = drift_diag_from_string(container_id);
+		struct DriftDiagnosticValue dv_index = drift_diag_from_int(idx);
+		drift_error_add_attr_dv(err, container_key, &dv_container);
+		drift_error_add_attr_dv(err, index_key, &dv_index);
+	}
+	drift_error_raise(err);
 }

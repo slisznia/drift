@@ -58,7 +58,7 @@ Contracts:
 - Bounds: if `i < 0` or `j < 0`, raise `std.err:IndexError`. Otherwise require
   `i < len` and `j < len`; out-of-range raises `IndexError`.
 - Invalidation: any method (`len`, `compare_at`, `swap`) on an invalidated
-  iterator/range raises `std.err:IteratorInvalidated(container, op)`.
+  iterator/range raises `std.err:IteratorInvalidated(container_id, op_id)`.
 - Stability: `len()` is stable for the duration of any `std.algo` operation on `&Self` / `&mut Self`.
 
 ### `for` lowering
@@ -199,9 +199,9 @@ trait BinarySearchable<T> require Self is std.iter.RandomAccessReadable<T> {
 
 Contracts:
 - Bounds/invalidation rules:
-  - if `i < 0` -> `std.err:IndexError(container, i)`
+- if `i < 0` -> `std.err:IndexError(container_id, i)`
   - else require `i < len()` -> otherwise `IndexError`
-  - invalidated -> `std.err:IteratorInvalidated(container, "compare_key")`
+- invalidated -> `std.err:IteratorInvalidated(container_id, IteratorOpId::CompareKey)`
 - `compare_key` must be coherent with `compare_at`/`Comparable` ordering.
 
 ## std.runtime
@@ -250,10 +250,18 @@ Semantics and invariants:
 ## std.err
 
 Standard exception events used by stdlib:
-- `IndexError(container: String, index: Int)`
-- `IteratorInvalidated(container: String, op: String)`
+- `IndexError(container_id: String, index: Int)`
+- `IteratorInvalidated(container_id: String, op_id: IteratorOpId)`
+
+Iterator op ids:
+- `IteratorOpId::Next`
+- `IteratorOpId::Prev`
+- `IteratorOpId::Len`
+- `IteratorOpId::CompareAt`
+- `IteratorOpId::Swap`
+- `IteratorOpId::CompareKey`
 
 Notes:
-- `container` is a canonical type name without type arguments (e.g., `Array`, `HashMap`), no aliases.
-- `op` is the exact trait method name (e.g., `next`, `prev`, `len`, `compare_at`, `swap`, `compare_key`) and is stringly-typed (no enum).
+- `container_id` is the base nominal key (package + module + name) with no type arguments.
 - `IndexError` is raised per the RandomAccess bounds rule (negative -> error; otherwise `i < len`).
+- IteratorOpId numeric tags are ABI-stable; values are append-only (no reordering).

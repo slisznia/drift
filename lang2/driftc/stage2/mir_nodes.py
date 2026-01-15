@@ -544,6 +544,15 @@ class ArrayIndexLoad(MInstr):
 
 
 @dataclass
+class ArrayIndexLoadUnchecked(MInstr):
+	"""dest = array[index] (no bounds check)."""
+	dest: ValueId
+	elem_ty: TypeId
+	array: ValueId
+	index: ValueId
+
+
+@dataclass
 class ArrayIndexStore(MInstr):
 	"""array[index] = value (typed array store)."""
 	elem_ty: TypeId
@@ -933,6 +942,7 @@ __all__ = [
 	"ArrayDrop",
 	"ArrayDup",
 	"ArrayIndexLoad",
+	"ArrayIndexLoadUnchecked",
 	"ArrayIndexStore",
 	"ArraySetLen",
 	"ArrayLen",

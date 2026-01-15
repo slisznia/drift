@@ -2012,6 +2012,16 @@ def parse_drift_workspace_to_hir(
 				seen.add(key)
 				trait_scope_by_module[mid].append(key)
 
+	for mid, prog in merged_programs.items():
+		origin_pkg = module_packages_for_scope.get(mid, package_id)
+		for tr in getattr(prog, "traits", []) or []:
+			key = TraitKey(package_id=origin_pkg, module=mid, name=tr.name)
+			seen = trait_scope_seen_by_module[mid]
+			if key in seen:
+				continue
+			seen.add(key)
+			trait_scope_by_module[mid].append(key)
+
 	for mid in merged_programs:
 		if mid in module_exports:
 			module_exports[mid]["trait_scope"] = list(trait_scope_by_module.get(mid, []))

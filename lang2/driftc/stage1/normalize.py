@@ -14,7 +14,183 @@ from . import hir_nodes as H
 from .borrow_materialize import BorrowMaterializeRewriter
 from .node_ids import assign_node_ids, assign_callsite_ids, validate_callsite_ids
 from .place_canonicalize import PlaceCanonicalizeRewriter
+from lang2.driftc.core.span import Span
 
+
+class DVInitRewriter:
+	"""
+	Rewrite DiagnosticValue qualified-member calls into HDVInit.
+
+	Example: DiagnosticValue::Int(1) -> HDVInit(dv_type_name="Int", args=[1])
+	"""
+
+	def rewrite_block(self, block: H.HBlock) -> H.HBlock:
+		new_stmts: list[H.HStmt] = []
+		for stmt in block.statements:
+			new_stmts.append(self._rewrite_stmt(stmt))
+		return H.HBlock(statements=new_stmts)
+
+	def _rewrite_stmt(self, stmt: H.HStmt) -> H.HStmt:
+		if isinstance(stmt, H.HExprStmt):
+			return H.HExprStmt(expr=self._rewrite_expr(stmt.expr))
+		if isinstance(stmt, H.HThrow):
+			return H.HThrow(value=self._rewrite_expr(stmt.value))
+		if isinstance(stmt, H.HReturn):
+			return H.HReturn(value=self._rewrite_expr(stmt.value) if stmt.value is not None else None)
+		if isinstance(stmt, H.HLet):
+			return H.HLet(
+				name=stmt.name,
+				value=self._rewrite_expr(stmt.value),
+				is_mutable=stmt.is_mutable,
+				declared_type_expr=stmt.declared_type_expr,
+				binding_id=stmt.binding_id,
+			)
+		if isinstance(stmt, H.HAssign):
+			return H.HAssign(
+				target=self._rewrite_expr(stmt.target),
+				value=self._rewrite_expr(stmt.value),
+			)
+		if isinstance(stmt, H.HIf):
+			return H.HIf(
+				cond=self._rewrite_expr(stmt.cond),
+				then_block=self.rewrite_block(stmt.then_block),
+				else_block=self.rewrite_block(stmt.else_block) if stmt.else_block else None,
+			)
+		if isinstance(stmt, H.HLoop):
+			return H.HLoop(body=self.rewrite_block(stmt.body))
+		if isinstance(stmt, H.HTry):
+			new_arms = []
+			for arm in stmt.catches:
+				new_arms.append(
+					H.HCatchArm(
+						event_fqn=arm.event_fqn,
+						binder=arm.binder,
+						block=self.rewrite_block(arm.block),
+					)
+				)
+			return H.HTry(body=self.rewrite_block(stmt.body), catches=new_arms)
+		if isinstance(stmt, H.HBlock):
+			return self.rewrite_block(stmt)
+		return stmt
+
+	def _rewrite_expr(self, expr: H.HExpr) -> H.HExpr:
+		if isinstance(expr, H.HCall):
+			fn = expr.fn
+			if hasattr(H, "HQualifiedMember") and isinstance(fn, getattr(H, "HQualifiedMember")):
+				base_te = getattr(fn, "base_type_expr", None)
+				base_name = getattr(base_te, "name", None) if base_te is not None else None
+				base_mod = None
+				if base_te is not None:
+					base_mod = getattr(base_te, "module_id", None) or getattr(base_te, "module_alias", None)
+				if base_name == "DiagnosticValue" and (base_mod is None or base_mod == "std.core"):
+					if not (getattr(expr, "kwargs", None) or []):
+						new_args = [self._rewrite_expr(a) for a in expr.args]
+						return H.HDVInit(dv_type_name=fn.member, args=new_args)
+			return H.HCall(
+				fn=self._rewrite_expr(expr.fn),
+				args=[self._rewrite_expr(a) for a in expr.args],
+				kwargs=[
+					H.HKwArg(name=kw.name, value=self._rewrite_expr(kw.value))
+					for kw in getattr(expr, "kwargs", []) or []
+				],
+				type_args=getattr(expr, "type_args", None),
+				origin=getattr(expr, "origin", None),
+			)
+		if isinstance(expr, H.HMethodCall):
+			return H.HMethodCall(
+				receiver=self._rewrite_expr(expr.receiver),
+				method_name=expr.method_name,
+				args=[self._rewrite_expr(a) for a in expr.args],
+				kwargs=[
+					H.HKwArg(name=kw.name, value=self._rewrite_expr(kw.value))
+					for kw in getattr(expr, "kwargs", []) or []
+				],
+			)
+		if isinstance(expr, H.HInvoke):
+			return H.HInvoke(
+				callee=self._rewrite_expr(expr.callee),
+				args=[self._rewrite_expr(a) for a in expr.args],
+				kwargs=[
+					H.HKwArg(name=kw.name, value=self._rewrite_expr(kw.value))
+					for kw in getattr(expr, "kwargs", []) or []
+				],
+			)
+		if isinstance(expr, H.HBinary):
+			return H.HBinary(
+				left=self._rewrite_expr(expr.left),
+				op=expr.op,
+				right=self._rewrite_expr(expr.right),
+			)
+		if isinstance(expr, H.HUnary):
+			return H.HUnary(op=expr.op, expr=self._rewrite_expr(expr.expr))
+		if isinstance(expr, H.HTernary):
+			return H.HTernary(
+				cond=self._rewrite_expr(expr.cond),
+				then_expr=self._rewrite_expr(expr.then_expr),
+				else_expr=self._rewrite_expr(expr.else_expr),
+			)
+		if isinstance(expr, H.HField):
+			return H.HField(subject=self._rewrite_expr(expr.subject), name=expr.name)
+		if isinstance(expr, H.HIndex):
+			return H.HIndex(subject=self._rewrite_expr(expr.subject), index=self._rewrite_expr(expr.index))
+		if isinstance(expr, H.HBorrow):
+			return H.HBorrow(subject=self._rewrite_expr(expr.subject), is_mut=expr.is_mut)
+		if hasattr(H, "HMove") and isinstance(expr, getattr(H, "HMove")):
+			return H.HMove(
+				subject=self._rewrite_expr(expr.subject),
+				loc=getattr(expr, "loc", Span()),
+				is_implicit=bool(getattr(expr, "is_implicit", False)),
+			)
+		if hasattr(H, "HCopy") and isinstance(expr, getattr(H, "HCopy")):
+			return H.HCopy(subject=self._rewrite_expr(expr.subject))
+		if isinstance(expr, H.HArrayLiteral):
+			return H.HArrayLiteral(elements=[self._rewrite_expr(e) for e in expr.elements])
+		if isinstance(expr, H.HExceptionInit):
+			return H.HExceptionInit(
+				event_fqn=expr.event_fqn,
+				pos_args=[self._rewrite_expr(a) for a in expr.pos_args],
+				kw_args=[
+					H.HKwArg(name=kw.name, value=self._rewrite_expr(kw.value))
+					for kw in expr.kw_args
+				],
+				loc=getattr(expr, "loc", None),
+			)
+		if hasattr(H, "HTryExpr") and isinstance(expr, getattr(H, "HTryExpr")):
+			new_arms = []
+			for arm in expr.arms:
+				new_arms.append(
+					H.HTryExprArm(
+						event_fqn=arm.event_fqn,
+						binder=arm.binder,
+						block=self.rewrite_block(arm.block),
+						result=self._rewrite_expr(arm.result) if arm.result is not None else None,
+					)
+				)
+			return H.HTryExpr(attempt=self._rewrite_expr(expr.attempt), arms=new_arms)
+		if hasattr(H, "HMatchExpr") and isinstance(expr, getattr(H, "HMatchExpr")):
+			new_arms = []
+			for arm in expr.arms:
+				new_arms.append(
+					H.HMatchArm(
+						ctor=arm.ctor,
+						binders=list(arm.binders),
+						block=self.rewrite_block(arm.block),
+						result=self._rewrite_expr(arm.result) if arm.result is not None else None,
+						pattern_arg_form=arm.pattern_arg_form,
+						binder_fields=arm.binder_fields,
+						binder_field_indices=list(arm.binder_field_indices),
+					)
+				)
+			return H.HMatchExpr(scrutinee=self._rewrite_expr(expr.scrutinee), arms=new_arms)
+		if hasattr(H, "HPlaceExpr") and isinstance(expr, getattr(H, "HPlaceExpr")):
+			new_projs = []
+			for proj in expr.projections:
+				if isinstance(proj, H.HPlaceIndex):
+					new_projs.append(H.HPlaceIndex(index=self._rewrite_expr(proj.index)))
+				else:
+					new_projs.append(proj)
+			return H.HPlaceExpr(base=expr.base, projections=new_projs)
+		return expr
 
 def _assign_missing_binding_ids(block: H.HBlock) -> None:
 	"""
@@ -274,6 +450,7 @@ def normalize_hir(block: H.HBlock) -> H.HBlock:
 	#    re-deriving place-ness from arbitrary expression trees.
 	block = BorrowMaterializeRewriter().rewrite_block(block)
 	block = PlaceCanonicalizeRewriter().rewrite_block(block)
+	block = DVInitRewriter().rewrite_block(block)
 	_assign_missing_binding_ids(block)
 	# Ensure stable per-function NodeIds for typed side tables.
 	assign_node_ids(block, start=1)

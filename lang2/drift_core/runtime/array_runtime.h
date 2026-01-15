@@ -15,10 +15,12 @@ typedef struct DriftArrayHeader {
 	void *data;
 } DriftArrayHeader;
 
+struct DriftString;
+
 void *drift_alloc_array(size_t elem_size, size_t elem_align, drift_isize len, drift_isize cap);
 void drift_free_array(void *data);
-void drift_bounds_check(drift_isize idx, drift_isize len);
+void drift_bounds_check(struct DriftString container_id, drift_isize idx, drift_isize len);
 __attribute__((noreturn))
-void drift_bounds_check_fail(drift_isize idx, drift_isize len);
+void drift_bounds_check_fail(struct DriftString container_id, drift_isize idx, drift_isize len);
 
 #endif // LANG2_ARRAY_RUNTIME_H

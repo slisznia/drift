@@ -617,7 +617,10 @@ class AstToHIR:
 			raise NotImplementedError(
 				"Exception constructor lowering requires a module name to build an event FQN"
 			)
-		fqn = f"{self._module_name}:{expr.name}"
+		if ":" in expr.name:
+			fqn = expr.name
+		else:
+			fqn = f"{self._module_name}:{expr.name}"
 		pos_args = [self.lower_expr(a) for a in getattr(expr, "args", [])]
 		kw_pairs = getattr(expr, "kwargs", []) or []
 		return H.HExceptionInit(
@@ -747,6 +750,12 @@ class AstToHIR:
 				return H.HUnary(op=e.op, expr=_rename_expr(e.expr, mapping))
 			if isinstance(e, H.HBinary):
 				return H.HBinary(op=e.op, left=_rename_expr(e.left, mapping), right=_rename_expr(e.right, mapping))
+			if isinstance(e, H.HTernary):
+				return H.HTernary(
+					cond=_rename_expr(e.cond, mapping),
+					then_expr=_rename_expr(e.then_expr, mapping),
+					else_expr=_rename_expr(e.else_expr, mapping),
+				)
 			if isinstance(e, H.HArrayLiteral):
 				return H.HArrayLiteral(elements=[_rename_expr(a, mapping) for a in e.elements])
 			if isinstance(e, H.HFString):

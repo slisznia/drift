@@ -789,6 +789,7 @@ def _trait_method_sig_key(
 ) -> tuple[object, ...]:
 	return (
 		method.name,
+		bool(getattr(method, "declared_nothrow", False)),
 		len(getattr(method, "type_params", []) or []),
 		_param_type_keys(
 			getattr(method, "params", None),

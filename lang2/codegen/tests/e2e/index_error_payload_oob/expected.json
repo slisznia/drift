@@ -1,0 +1,6 @@
+{
+  "description": "e2e: index error payload via bounds check",
+  "exit_code": 0,
+  "stderr": "",
+  "stdout": ""
+}

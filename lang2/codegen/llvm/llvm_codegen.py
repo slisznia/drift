@@ -42,10 +42,12 @@ from typing import Dict, List, Mapping, Optional
 
 from lang2.driftc.checker import FnInfo
 from lang2.driftc.core.function_id import FunctionId, function_symbol, function_ref_symbol
+from lang2.driftc.core.container_ids import ARRAY_CONTAINER_ID
 from lang2.driftc.stage1 import BinaryOp, UnaryOp
 from lang2.driftc.stage2 import (
 	ArrayCap,
 	ArrayIndexLoad,
+	ArrayIndexLoadUnchecked,
 	ArrayIndexStore,
 	ArrayLen,
 	ArrayLit,
@@ -329,7 +331,10 @@ def lower_module_to_llvm(
 		ok_abi_llty = ok_llty
 		if ret_tid is not None:
 			ok_abi_llty = type_builder._llvm_ok_abi_type_for_typeid(ret_tid)
-			impl_ret_llty = type_builder._llvm_type_for_typeid(ret_tid)
+			if type_builder._is_void_typeid(ret_tid):
+				impl_ret_llty = "void"
+			else:
+				impl_ret_llty = type_builder._llvm_type_for_typeid(ret_tid)
 		is_void_ret = ret_tid is not None and type_builder._is_void_typeid(ret_tid)
 		emit_ok_abi_llty = type_builder._llty(ok_abi_llty)
 		emit_impl_ret_llty = type_builder._llty(impl_ret_llty)
@@ -445,6 +450,7 @@ class LlvmModuleBuilder:
 	_struct_types_by_name: Dict[str, str] = field(default_factory=dict)
 	_variant_types_by_key: Dict[str, str] = field(default_factory=dict)
 	array_drop_helpers: Dict[str, str] = field(default_factory=dict)
+	string_literal_cache: Dict[str, tuple[str, str, int]] = field(default_factory=dict)
 
 	def _llty(self, ty: str) -> str:
 		if ty in (DRIFT_INT_TYPE, DRIFT_USIZE_TYPE):
@@ -715,8 +721,8 @@ class LlvmModuleBuilder:
 				[
 					f"declare i8* @drift_alloc_array({self._llty(DRIFT_USIZE_TYPE)}, {self._llty(DRIFT_USIZE_TYPE)}, {self._llty(DRIFT_INT_TYPE)}, {self._llty(DRIFT_INT_TYPE)})",
 					"declare void @drift_free_array(i8*)",
-					f"declare void @drift_bounds_check({self._llty(DRIFT_INT_TYPE)}, {self._llty(DRIFT_INT_TYPE)})",
-					f"declare void @drift_bounds_check_fail({self._llty(DRIFT_INT_TYPE)}, {self._llty(DRIFT_INT_TYPE)})",
+					f"declare void @drift_bounds_check({DRIFT_STRING_TYPE}, {self._llty(DRIFT_INT_TYPE)}, {self._llty(DRIFT_INT_TYPE)})",
+					f"declare void @drift_bounds_check_fail({DRIFT_STRING_TYPE}, {self._llty(DRIFT_INT_TYPE)}, {self._llty(DRIFT_INT_TYPE)})",
 					"",
 				]
 			)
@@ -769,9 +775,11 @@ class LlvmModuleBuilder:
 					f"declare {DRIFT_DV_TYPE} @drift_dv_missing()",
 					f"declare {DRIFT_DV_TYPE} @drift_dv_int({self._llty(DRIFT_INT_TYPE)})",
 					f"declare {DRIFT_DV_TYPE} @drift_dv_bool(i8)",
+					f"declare {DRIFT_DV_TYPE} @drift_dv_float(double)",
 					f"declare {DRIFT_DV_TYPE} @drift_dv_string({DRIFT_STRING_TYPE})",
 					f"declare i1 @drift_dv_as_int({DRIFT_DV_TYPE}*, {self._llty(DRIFT_INT_TYPE)}*)",
 					f"declare i1 @drift_dv_as_bool({DRIFT_DV_TYPE}*, i8*)",
+					f"declare i1 @drift_dv_as_float({DRIFT_DV_TYPE}*, double*)",
 					f"declare i1 @drift_dv_as_string({DRIFT_DV_TYPE}*, {DRIFT_STRING_TYPE}*)",
 					"",
 				]
@@ -780,7 +788,7 @@ class LlvmModuleBuilder:
 			lines.extend(
 				[
 					f"declare {DRIFT_ERROR_PTR} @drift_error_new({DRIFT_ERROR_CODE_TYPE}, {DRIFT_STRING_TYPE})",
-					f"declare {DRIFT_ERROR_PTR} @drift_error_new_with_payload({DRIFT_ERROR_CODE_TYPE}, {DRIFT_STRING_TYPE}, {DRIFT_STRING_TYPE}, {DRIFT_DV_TYPE})",
+					f"declare {DRIFT_ERROR_PTR} @drift_error_new_with_payload({DRIFT_ERROR_CODE_TYPE}, {DRIFT_STRING_TYPE}, {DRIFT_STRING_TYPE}, {DRIFT_DV_TYPE}*)",
 					f"declare void @drift_error_add_attr_dv({DRIFT_ERROR_PTR}, {DRIFT_STRING_TYPE}, {DRIFT_DV_TYPE}*)",
 					"",
 				]
@@ -842,6 +850,7 @@ class _FuncBuilder:
 	lines: List[str] = field(default_factory=list)
 	value_map: Dict[str, str] = field(default_factory=dict)
 	value_types: Dict[str, str] = field(default_factory=dict)
+	param_value_types: Dict[str, str] = field(default_factory=dict)
 	const_values: Dict[str, int] = field(default_factory=dict)
 	aliases: Dict[str, str] = field(default_factory=dict)
 	# Locals whose address is taken via AddrOfLocal. These locals must be
@@ -941,6 +950,7 @@ class _FuncBuilder:
 				emit_llty = self._llty(llty)
 				llvm_name = self._map_value(name)
 				self.value_types[llvm_name] = llty
+				self.param_value_types[llvm_name] = llty
 				param_parts.append(f"{emit_llty} {llvm_name}")
 		params_str = ", ".join(param_parts)
 		func_name = self.sym_name or self.func.name
@@ -968,6 +978,7 @@ class _FuncBuilder:
 	ArrayDrop,
 	ArrayDup,
 	ArrayIndexLoad,
+	ArrayIndexLoadUnchecked,
 	ArrayIndexStore,
 	ArraySetLen,
 				),
@@ -1229,6 +1240,8 @@ class _FuncBuilder:
 			self._lower_array_dup(instr)
 		elif isinstance(instr, ArrayIndexLoad):
 			self._lower_array_index_load(instr)
+		elif isinstance(instr, ArrayIndexLoadUnchecked):
+			self._lower_array_index_load_unchecked(instr)
 		elif isinstance(instr, ArrayIndexStore):
 			self._lower_array_index_store(instr)
 		elif isinstance(instr, ArrayLen):
@@ -1619,6 +1632,29 @@ class _FuncBuilder:
 			struct_llty = self._llvm_type_for_typeid(instr.struct_ty)
 			subject = self._map_value(instr.subject)
 			have_struct = self.value_types.get(subject)
+			if (
+				self.fn_info.signature is not None
+				and self.fn_info.signature.param_type_ids is not None
+			):
+				for param_index, param_name in enumerate(self.func.params):
+					if subject not in (f"%{param_name}", self._map_value(param_name)):
+						continue
+					param_ty_id = self.fn_info.signature.param_type_ids[param_index]
+					param_llty = self._llvm_type_for_typeid(param_ty_id)
+					if have_struct is None or have_struct == struct_llty:
+						have_struct = param_llty
+						self.value_types[subject] = have_struct
+					break
+			emit_struct_llty = self._llty(struct_llty)
+			param_llty = self.param_value_types.get(subject)
+			if param_llty and param_llty.endswith("*"):
+				have_struct = param_llty
+			if have_struct == f"{emit_struct_llty}*":
+				tmp_struct = self._fresh("structval")
+				self.lines.append(f"  {tmp_struct} = load {emit_struct_llty}, {emit_struct_llty}* {subject}")
+				self.value_types[tmp_struct] = struct_llty
+				subject = tmp_struct
+				have_struct = struct_llty
 			if have_struct is not None and have_struct != struct_llty:
 				raise NotImplementedError(
 					f"LLVM codegen v1: StructGetField subject type mismatch (have {have_struct}, expected {struct_llty})"
@@ -1795,6 +1831,15 @@ class _FuncBuilder:
 			if arg_ty == DRIFT_STRING_TYPE:
 				self.lines.append(f"  {dest} = call {DRIFT_DV_TYPE} @drift_dv_string({DRIFT_STRING_TYPE} {arg_val})")
 				return
+			float_llty = self._llvm_float_type()
+			if arg_ty == float_llty:
+				if float_llty == "float":
+					ext = self._fresh("dv_f64")
+					self.lines.append(f"  {ext} = fpext float {arg_val} to double")
+					self.lines.append(f"  {dest} = call {DRIFT_DV_TYPE} @drift_dv_float(double {ext})")
+					return
+				self.lines.append(f"  {dest} = call {DRIFT_DV_TYPE} @drift_dv_float(double {arg_val})")
+				return
 			raise NotImplementedError(
 				f"LLVM codegen v1: ConstructDV arg type {arg_ty} not supported (expected Int/Bool/String)"
 			)
@@ -1822,8 +1867,11 @@ class _FuncBuilder:
 				)
 			else:
 				# Attach payload via runtime helper; payload is expected to be a DiagnosticValue.
+				tmp_ptr = self._fresh("dvptr")
+				self.lines.append(f"  {tmp_ptr} = alloca {DRIFT_DV_TYPE}")
+				self.lines.append(f"  store {DRIFT_DV_TYPE} {payload}, {DRIFT_DV_TYPE}* {tmp_ptr}")
 				self.lines.append(
-					f"  {dest} = call {DRIFT_ERROR_PTR} @drift_error_new_with_payload({DRIFT_ERROR_CODE_TYPE} {code}, {DRIFT_STRING_TYPE} {event_fqn}, {DRIFT_STRING_TYPE} {attr_key}, {DRIFT_DV_TYPE} {payload})"
+					f"  {dest} = call {DRIFT_ERROR_PTR} @drift_error_new_with_payload({DRIFT_ERROR_CODE_TYPE} {code}, {DRIFT_STRING_TYPE} {event_fqn}, {DRIFT_STRING_TYPE} {attr_key}, {DRIFT_DV_TYPE}* {tmp_ptr})"
 				)
 		elif isinstance(instr, ErrorAttrsGetDV):
 			self.module.needs_dv_runtime = True
@@ -1988,6 +2036,33 @@ class _FuncBuilder:
 		self.lines.append(f"  {tmp0} = insertvalue {DRIFT_STRING_TYPE} undef, {self._llty(DRIFT_INT_TYPE)} {size}, 0")
 		self.lines.append(f"  {dest} = insertvalue {DRIFT_STRING_TYPE} {tmp0}, i8* {ptr}, 1")
 		self.value_types[dest] = DRIFT_STRING_TYPE
+
+	def _emit_string_literal_value(self, value: str) -> str:
+		utf8_bytes = value.encode("utf-8")
+		size = len(utf8_bytes)
+		cache = self.module.string_literal_cache
+		if value in cache:
+			global_name, header_llty, cached_size = cache[value]
+			size = cached_size
+		else:
+			global_name = f"@.str{len(self.module.consts)}"
+			header_llty = f"{{ {self._llty(DRIFT_INT_TYPE)}, {self._llty(DRIFT_INT_TYPE)}, [{size + 1} x i8] }}"
+			escaped = "".join(_escape_byte(b) for b in utf8_bytes) + "\\00"
+			self.module.consts.append(
+				f"{global_name} = private unnamed_addr constant {header_llty} "
+				f"{{ {self._llty(DRIFT_INT_TYPE)} 1, {self._llty(DRIFT_INT_TYPE)} 1, [{size + 1} x i8] c\"{escaped}\" }}"
+			)
+			cache[value] = (global_name, header_llty, size)
+		ptr = self._fresh("strptr")
+		self.lines.append(
+			f"  {ptr} = getelementptr inbounds {header_llty}, {header_llty}* {global_name}, i32 0, i32 2, i32 0"
+		)
+		tmp0 = self._fresh("str0")
+		self.lines.append(f"  {tmp0} = insertvalue {DRIFT_STRING_TYPE} undef, {self._llty(DRIFT_INT_TYPE)} {size}, 0")
+		dest = self._fresh("str")
+		self.lines.append(f"  {dest} = insertvalue {DRIFT_STRING_TYPE} {tmp0}, i8* {ptr}, 1")
+		self.value_types[dest] = DRIFT_STRING_TYPE
+		return dest
 
 	def _lower_call(self, instr: Call) -> None:
 		dest = self._map_value(instr.dest) if instr.dest else None
@@ -2302,6 +2377,8 @@ class _FuncBuilder:
 					self.value_types[val] = ty
 			if ty == DRIFT_STRING_TYPE:
 				self.lines.append(f"  ret {DRIFT_STRING_TYPE} {val}")
+			elif ty == DRIFT_DV_TYPE:
+				self.lines.append(f"  ret {DRIFT_DV_TYPE} {val}")
 			elif ty in (DRIFT_INT_TYPE, DRIFT_UINT_TYPE, "i1", "i8"):
 				self.lines.append(f"  ret {self._llty(ty)} {val}")
 			elif ty in ("double", "float"):
@@ -2320,7 +2397,7 @@ class _FuncBuilder:
 				self.lines.append(f"  ret {ty} {val}")
 			else:
 				raise NotImplementedError(
-					f"LLVM codegen v1: non-can-throw return must be Int, Float, String, &T, Struct, or Variant, got {ty}"
+					f"LLVM codegen v1: non-can-throw return must be Int, Float, String, DiagnosticValue, &T, Struct, or Variant, got {ty}"
 				)
 			return
 
@@ -2722,9 +2799,11 @@ class _FuncBuilder:
 			return f"{inner_llty}*", key
 		if td.kind is TypeKind.FUNCTION:
 			return self._llvm_type_for_typeid(ty_id), key
+		if td.kind is TypeKind.DIAGNOSTICVALUE:
+			return DRIFT_DV_TYPE, key
 		if td.kind in (TypeKind.STRUCT, TypeKind.VARIANT):
 			return self._llvm_type_for_typeid(ty_id), key
-		supported = "Int, Uint, Uint64, Bool, Byte, Float, String, Void, Ref<T>, Struct, Variant, FnPtr"
+		supported = "Int, Uint, Uint64, Bool, Byte, Float, String, DiagnosticValue, Void, Ref<T>, Struct, Variant, FnPtr"
 		raise NotImplementedError(
 			f"LLVM codegen v1: FnResult ok type {key} is not supported yet; supported ok payloads: {supported}"
 		)
@@ -2911,6 +2990,13 @@ class _FuncBuilder:
 			# Typed pointer null as an SSA value.
 			self.lines.append(f"  {dest} = select i1 1, {llty} null, {llty} null")
 			self.value_types[dest] = llty
+			return
+
+		if td.kind is TypeKind.DIAGNOSTICVALUE:
+			self.lines.append(
+				f"  {dest} = select i1 1, {DRIFT_DV_TYPE} zeroinitializer, {DRIFT_DV_TYPE} zeroinitializer"
+			)
+			self.value_types[dest] = DRIFT_DV_TYPE
 			return
 
 		# Array runtime representation is a fixed 3-field aggregate in v1:
@@ -3948,6 +4034,25 @@ class _FuncBuilder:
 		else:
 			self.value_types[dest] = elem_val_llty
 
+	def _lower_array_index_load_unchecked(self, instr: ArrayIndexLoadUnchecked) -> None:
+		"""Lower ArrayIndexLoadUnchecked without bounds checks."""
+		dest = self._map_value(instr.dest)
+		array = self._map_value(instr.array)
+		index = self._map_value(instr.index)
+		elem_llty = self._llvm_array_elem_type(instr.elem_ty)
+		elem_val_llty = self._llvm_type_for_typeid(instr.elem_ty)
+		arr_llty = self._llvm_array_type(elem_llty)
+		ptr_tmp = self._lower_array_index_addr_unchecked(array=array, index=index, elem_llty=elem_llty, arr_llty=arr_llty)
+		raw = dest
+		if self._is_bool_type(instr.elem_ty):
+			raw = self._fresh("bool8")
+		self.lines.append(f"  {raw} = load {elem_llty}, {elem_llty}* {ptr_tmp}")
+		if self._is_bool_type(instr.elem_ty):
+			self._bool_from_storage(raw, dest=dest)
+			self.value_types[dest] = "i1"
+		else:
+			self.value_types[dest] = elem_val_llty
+
 	def _lower_array_index_store(self, instr: ArrayIndexStore) -> None:
 		"""Lower ArrayIndexStore with bounds checks and a store into data[idx]."""
 		array = self._map_value(instr.array)
@@ -3999,9 +4104,31 @@ class _FuncBuilder:
 		self.lines.append(f"  {len_tmp} = extractvalue {arr_llty} {array}, 0")
 		self.lines.append(f"  {data_tmp} = extractvalue {arr_llty} {array}, 2")
 		self.module.needs_array_helpers = True
+		container_id = self._emit_string_literal_value(ARRAY_CONTAINER_ID)
 		self.lines.append(
-			f"  call void @drift_bounds_check({self._llty(DRIFT_INT_TYPE)} {index}, {self._llty(DRIFT_INT_TYPE)} {len_tmp})"
+			f"  call void @drift_bounds_check({DRIFT_STRING_TYPE} {container_id}, {self._llty(DRIFT_INT_TYPE)} {index}, {self._llty(DRIFT_INT_TYPE)} {len_tmp})"
 		)
+		idx_val = index
+		ptr_tmp = self._fresh("eltptr")
+		idx_llty = self._llty(DRIFT_INT_TYPE)
+		self.lines.append(
+			f"  {ptr_tmp} = getelementptr {elem_llty}, {elem_llty}* {data_tmp}, {idx_llty} {idx_val}"
+		)
+		return ptr_tmp
+
+	def _lower_array_index_addr_unchecked(self, *, array: str, index: str, elem_llty: str, arr_llty: str) -> str:
+		"""
+		Compute `&array[index]` without bounds checks and return an `{elem_llty}*`.
+		"""
+		idx_ty = self.value_types.get(index)
+		if idx_ty != DRIFT_INT_TYPE:
+			raise NotImplementedError(
+				f"LLVM codegen v1: array index must be Int, got {idx_ty}"
+			)
+		len_tmp = self._fresh("len")
+		data_tmp = self._fresh("data")
+		self.lines.append(f"  {len_tmp} = extractvalue {arr_llty} {array}, 0")
+		self.lines.append(f"  {data_tmp} = extractvalue {arr_llty} {array}, 2")
 		idx_val = index
 		ptr_tmp = self._fresh("eltptr")
 		idx_llty = self._llty(DRIFT_INT_TYPE)
@@ -4017,6 +4144,12 @@ class _FuncBuilder:
 		arr_llty = self.value_types.get(array)
 		if arr_llty is None:
 			raise AssertionError("LLVM codegen v1: ArrayLen missing LLVM type for array value (compiler bug)")
+		if arr_llty.endswith("*"):
+			arr_val = self._fresh("arrval")
+			self.lines.append(f"  {arr_val} = load {arr_llty[:-1]}, {arr_llty} {array}")
+			self.value_types[arr_val] = arr_llty[:-1]
+			array = arr_val
+			arr_llty = arr_llty[:-1]
 		# ArrayLen now applies only to array values; strings use StringLen MIR.
 		self.lines.append(f"  {dest} = extractvalue {arr_llty} {array}, 0")
 		self.value_types[dest] = DRIFT_INT_TYPE
@@ -4028,6 +4161,12 @@ class _FuncBuilder:
 		arr_llty = self.value_types.get(array)
 		if arr_llty is None:
 			raise AssertionError("LLVM codegen v1: ArrayCap missing LLVM type for array value (compiler bug)")
+		if arr_llty.endswith("*"):
+			arr_val = self._fresh("arrval")
+			self.lines.append(f"  {arr_val} = load {arr_llty[:-1]}, {arr_llty} {array}")
+			self.value_types[arr_val] = arr_llty[:-1]
+			array = arr_val
+			arr_llty = arr_llty[:-1]
 		self.lines.append(f"  {dest} = extractvalue {arr_llty} {array}, 1")
 		self.value_types[dest] = DRIFT_INT_TYPE
 

@@ -2,11 +2,14 @@ module std.containers
 
 import std.iter as iter;
 import std.core as core;
+import std.err as err;
 
 export {
 	ArrayMoveIter,
 	ArrayBorrowIter
 };
+
+pub const ARRAY_CONTAINER_ID: String = "std.containers:Array";
 
 pub struct ArrayMoveIter<T> {
 	arr: Array<T>,
@@ -15,11 +18,13 @@ pub struct ArrayMoveIter<T> {
 
 pub struct ArrayBorrowIter<T> {
 	arr: &Array<T>,
-	idx: Int
+	idx: Int,
+	len_snapshot: Int,
+	cap_snapshot: Int
 }
 
 implement<T> iter.Iterable<Array<T>, T, ArrayMoveIter<T>> for Array<T> require T is core.Copy {
-	pub fn iter(var self: Array<T>) -> ArrayMoveIter<T> {
+	pub fn iter(var self: Array<T>) nothrow -> ArrayMoveIter<T> {
 		return ArrayMoveIter(arr = move self, idx = 0);
 	}
 }
@@ -37,13 +42,16 @@ implement<T> iter.SinglePassIterator<T> for ArrayMoveIter<T> require T is core.C
 }
 
 implement<T> iter.Iterable<&Array<T>, &T, ArrayBorrowIter<T>> for &Array<T> {
-	pub fn iter(self: &Array<T>) -> ArrayBorrowIter<T> {
-		return ArrayBorrowIter(arr = self, idx = 0);
+	pub fn iter(self: &Array<T>) nothrow -> ArrayBorrowIter<T> {
+		return ArrayBorrowIter(arr = self, idx = 0, len_snapshot = self.len, cap_snapshot = self.cap);
 	}
 }
 
 implement<T> iter.SinglePassIterator<&T> for ArrayBorrowIter<T> {
 	pub fn next(self: &mut ArrayBorrowIter<T>) -> Optional<&T> {
+		if self.arr.len != self.len_snapshot or self.arr.cap != self.cap_snapshot {
+			err.throw_iterator_invalidated(ARRAY_CONTAINER_ID, err.IteratorOpId::Next());
+		}
 		val len = self.arr.len;
 		if self.idx > len {
 			self.idx = len;
@@ -66,6 +74,9 @@ implement<T> core.Copy for ArrayBorrowIter<T> {
 
 implement<T> iter.BidirectionalIterator<&T> for ArrayBorrowIter<T> {
 	pub fn prev(self: &mut ArrayBorrowIter<T>) -> Optional<&T> {
+		if self.arr.len != self.len_snapshot or self.arr.cap != self.cap_snapshot {
+			err.throw_iterator_invalidated(ARRAY_CONTAINER_ID, err.IteratorOpId::Prev());
+		}
 		val len = self.arr.len;
 		if self.idx > len {
 			self.idx = len;

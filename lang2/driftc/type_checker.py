@@ -610,6 +610,58 @@ class TypeChecker:
 			if has_call and not has_callsite:
 				H.assign_callsite_ids(body)
 
+		next_callsite_id: int | None = None
+
+		def _max_callsite_id(block: H.HBlock) -> int:
+			highest = -1
+
+			def _walk_expr(expr: H.HExpr) -> None:
+				nonlocal highest
+				csid = getattr(expr, "callsite_id", None)
+				if isinstance(csid, int):
+					highest = max(highest, csid)
+				for child in getattr(expr, "__dict__", {}).values():
+					if isinstance(child, H.HExpr):
+						_walk_expr(child)
+					elif isinstance(child, H.HBlock):
+						_walk_block(child)
+					elif isinstance(child, list):
+						for it in child:
+							if isinstance(it, H.HExpr):
+								_walk_expr(it)
+							elif isinstance(it, H.HBlock):
+								_walk_block(it)
+
+			def _walk_block(b: H.HBlock) -> None:
+				for st in b.statements:
+					if isinstance(st, H.HExprStmt):
+						_walk_expr(st.expr)
+					elif isinstance(st, H.HReturn) and st.value is not None:
+						_walk_expr(st.value)
+					else:
+						for child in getattr(st, "__dict__", {}).values():
+							if isinstance(child, H.HExpr):
+								_walk_expr(child)
+							elif isinstance(child, H.HBlock):
+								_walk_block(child)
+							elif isinstance(child, list):
+								for it in child:
+									if isinstance(it, H.HExpr):
+										_walk_expr(it)
+									elif isinstance(it, H.HBlock):
+										_walk_block(it)
+
+			_walk_block(block)
+			return highest
+
+		def _alloc_callsite_id() -> int:
+			nonlocal next_callsite_id
+			if next_callsite_id is None:
+				next_callsite_id = _max_callsite_id(body) + 1
+			csid = next_callsite_id
+			next_callsite_id += 1
+			return csid
+
 		def _format_visibility_chain(chain: tuple[str, ...], max_hops: int = 4) -> str:
 			if not chain:
 				return "<unknown>"
@@ -4348,18 +4400,23 @@ class TypeChecker:
 						if arm.result is not None:
 							arm_value_ty = type_expr(arm.result)
 						elif used_as_value:
-							# Allow diverging arms to omit a value in MVP. We treat a block as
-							# diverging when it ends with a terminator statement.
+							# For value-block arms, allow a trailing expression statement to
+							# supply the arm's result type.
 							last = arm.block.statements[-1] if arm.block.statements else None
-							diverges = isinstance(last, (H.HReturn, H.HBreak, H.HContinue, H.HThrow, H.HRethrow))
-							if not diverges:
-								diagnostics.append(
-									_tc_diag(
-										message="E-MATCH-ARM-NO-VALUE: match arm must end with an expression when match result is used",
-										severity="error",
-										span=getattr(arm, "loc", Span()),
+							if isinstance(last, H.HExprStmt):
+								arm_value_ty = type_expr(last.expr)
+							else:
+								# Allow diverging arms to omit a value in MVP. We treat a block as
+								# diverging when it ends with a terminator statement.
+								diverges = isinstance(last, (H.HReturn, H.HBreak, H.HContinue, H.HThrow, H.HRethrow))
+								if not diverges:
+									diagnostics.append(
+										_tc_diag(
+											message="E-MATCH-ARM-NO-VALUE: match arm must end with an expression when match result is used",
+											severity="error",
+											span=getattr(arm, "loc", Span()),
+										)
 									)
-								)
 						if used_as_value and arm_value_ty is not None:
 							if result_ty is None:
 								result_ty = arm_value_ty
@@ -9141,23 +9198,51 @@ class TypeChecker:
 				values_to_validate = [v for _name, v in resolved]
 				if decl_fields is None:
 					# Unknown schema: we cannot map positional args to names, but we
-					# still validate that provided values are DV or supported literals.
+					# still validate that provided values implement Diagnostic.
 					values_to_validate = list(expr.pos_args) + [kw.value for kw in expr.kw_args]
 
+				replacements: dict[int, H.HExpr] = {}
 				for val_expr in values_to_validate:
 					val_ty = type_expr(val_expr)
-					is_primitive_literal = isinstance(val_expr, (H.HLiteralInt, H.HLiteralBool, H.HLiteralString))
-					if val_ty != self._dv and not is_primitive_literal:
+					if val_ty == self._dv:
+						continue
+					if not self.type_table.is_diagnostic(val_ty):
 						diagnostics.append(
 							_tc_diag(
 								message=(
-									"exception field value must be a DiagnosticValue or a primitive literal "
-									"(Int/Bool/String)"
+									"exception field value must implement Diagnostic"
 								),
 								severity="error",
 								span=getattr(val_expr, "loc", Span()),
 							)
 						)
+						continue
+					if isinstance(val_expr, (H.HLiteralInt, H.HLiteralBool, H.HLiteralString)):
+						# Primitive literals are still accepted; lowering wraps them as DiagnosticValue.
+						continue
+					if isinstance(val_expr, H.HDVInit):
+						continue
+					if val_ty in (self._int, self._uint, self._bool, self._string, self._float):
+						kind_name = "Int"
+						if val_ty == self._bool:
+							kind_name = "Bool"
+						elif val_ty == self._string:
+							kind_name = "String"
+						elif val_ty == self._float:
+							kind_name = "Float"
+						dv_init = H.HDVInit(dv_type_name=kind_name, args=[val_expr])
+						type_expr(dv_init)
+						replacements[id(val_expr)] = dv_init
+						continue
+					to_diag_call = H.HMethodCall(receiver=val_expr, method_name="to_diag", args=[])
+					to_diag_call.callsite_id = _alloc_callsite_id()
+					type_expr(to_diag_call)
+					replacements[id(val_expr)] = to_diag_call
+
+				if replacements:
+					expr.pos_args = [replacements.get(id(a), a) for a in expr.pos_args]
+					for kw in expr.kw_args:
+						kw.value = replacements.get(id(kw.value), kw.value)
 				return record_expr(expr, self._dv)
 
 			# DiagnosticValue constructors.
@@ -9175,7 +9260,7 @@ class TypeChecker:
 						)
 						return record_expr(expr, self._unknown)
 					inner_ty = arg_types[0]
-					if inner_ty not in (self._int, self._bool, self._string):
+					if inner_ty not in (self._int, self._uint, self._bool, self._string, self._float):
 						diagnostics.append(
 							_tc_diag(
 								message="unsupported DiagnosticValue constructor argument type",

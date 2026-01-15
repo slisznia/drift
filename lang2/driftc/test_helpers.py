@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from lang2.driftc.core.types_core import TypeTable
 from lang2.driftc.traits.linked_world import LinkedWorld, RequireEnv, build_require_env, link_trait_worlds
-from lang2.driftc.driftc import _install_copy_query
+from lang2.driftc.driftc import _install_copy_query, _install_diagnostic_query
 from lang2.driftc.module_lowered import ModuleLowered
 from lang2.driftc.traits.world import TypeKey
 
@@ -39,6 +39,7 @@ def build_linked_world(type_table: TypeTable | None) -> tuple[LinkedWorld, Requi
 	linked_world = link_trait_worlds(trait_worlds)
 	if type_table is not None:
 		_install_copy_query(type_table, linked_world)
+		_install_diagnostic_query(type_table, linked_world)
 	default_package = getattr(type_table, "package_id", None)
 	module_packages = getattr(type_table, "module_packages", None)
 	return linked_world, build_require_env(

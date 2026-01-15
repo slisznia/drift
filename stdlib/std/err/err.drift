@@ -1,0 +1,60 @@
+module std.err
+
+import std.core as core;
+
+use trait core.Diagnostic;
+
+export {
+	IteratorOpId,
+	IndexError,
+	IteratorInvalidated,
+	throw_iterator_invalidated
+};
+
+pub variant IteratorOpId {
+	Next,
+	Prev,
+	Len,
+	CompareAt,
+	Swap,
+	CompareKey,
+}
+
+pub exception IndexError(container_id: String, index: Int);
+pub exception IteratorInvalidated(container_id: String, op_id: IteratorOpId);
+
+pub fn throw_iterator_invalidated(container_id: String, op_id: IteratorOpId) -> Void {
+	throw IteratorInvalidated(
+		container_id = container_id,
+		op_id = op_id
+	);
+}
+
+implement core.Copy for IteratorOpId {
+}
+
+implement core.Diagnostic for IteratorOpId {
+	pub fn to_diag(self: IteratorOpId) nothrow -> DiagnosticValue {
+		// ABI-stable numeric tags: append-only; never reorder.
+		return match self {
+			Next => {
+				DiagnosticValue::Int(0)
+			},
+			Prev => {
+				DiagnosticValue::Int(1)
+			},
+			Len => {
+				DiagnosticValue::Int(2)
+			},
+			CompareAt => {
+				DiagnosticValue::Int(3)
+			},
+			Swap => {
+				DiagnosticValue::Int(4)
+			},
+			CompareKey => {
+				DiagnosticValue::Int(5)
+			},
+		};
+	}
+}

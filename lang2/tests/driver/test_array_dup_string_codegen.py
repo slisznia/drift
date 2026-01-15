@@ -124,5 +124,7 @@ fn main() nothrow -> Int {
 	)
 	assert not checked.diagnostics
 	main_ir = _extract_llvm_function(ir, "main")
-	assert "drift_bounds_check" in main_ir
+	assert "drift_bounds_check" not in main_ir
+	assert "drift_error_new" in main_ir
+	assert "drift_error_add_attr_dv" in main_ir
 	assert "-1" in main_ir

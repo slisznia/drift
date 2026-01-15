@@ -19,7 +19,7 @@ Drift avoids the foot-guns that plague many systems languages:
 - No raw pointers in userland.
 - No pointer arithmetic.
 - Clear ownership and deterministic destruction (RAII).
-- Explicit moves instead of silent copies.
+- Explicit copies; moves are implicit in consuming positions.
 
 Yet it doesn’t enforce safety by making everything slow or hiding costs behind a garbage collector.
 
@@ -29,7 +29,7 @@ High-level code stays high-level by default. Low-level control appears only when
 
 ### 1.3. Move semantics everywhere
 
-Passing by value consumes unless the type is `Copy` (in which case the compiler may duplicate implicitly). Moves are cheap; duplication is explicit.
+Passing by value consumes unless the type is `Copy` (in which case the compiler may duplicate implicitly). Moves are implicit in consuming positions; duplication is explicit.
 
 ### 1.4. Zero-cost abstractions
 
@@ -146,8 +146,8 @@ All modules compile down to a canonical Drift Module IR (DMIR) that can be crypt
 
 | Concept | Keyword / Syntax | Meaning |
 |---|---|---|
-| Immutable binding | `val` | Cannot be rebound or moved |
-| Mutable binding | `var` | Can mutate or transfer ownership |
+| Immutable binding | `val` | Cannot be rebound; may be moved/consumed |
+| Mutable binding | `var` | Can mutate; may be moved/consumed |
 | Const reference | `&T` | Shared, read-only access (C++: `T const&`) |
 | Mutable reference | `&mut T` | Exclusive, mutable access (C++: `T&`) |
 | Ownership transfer | `move x` | Moves value, invalidating source |
@@ -157,7 +157,7 @@ All modules compile down to a canonical Drift Module IR (DMIR) that can be crypt
 
 `val`/`var` bindings may omit the type annotation when the right-hand expression makes the type unambiguous. For example, `val greeting = "hello"` infers `String`, while `val nums = [1, 2, 3]` infers `Array<Int>`. Add an explicit `: Type` when inference fails or when you want to document the intent.
 
-Function parameters are `val` by default (not movable). Use `var` to opt into owned, movable parameters: `fn id(var x: File) -> File { return move x; }`.
+Function parameters are `val` by default (owned, immutable). Use `var` for mutable parameters: `fn id(var x: File) -> File { return move x; }`.
 
 **Statement terminators:** Simple statements end with `;`. Compound statements that carry a block (`if`/`while`/`for`/`try`/`match`) are self-terminating. Newlines are whitespace only. In a normal block, an expression statement must be a **postfix expression** (call, member access, index, literal, or name) and end with `;` to avoid ambiguity with statement-form `try`. In a value-producing block (e.g., lambda bodies, match arms, try/catch expression arms), the final expression must **not** end with `;`.
 
@@ -374,7 +374,7 @@ Borrowing from rvalues (temporaries, moved values) is an error. The explicit for
 Receivers inside an `implement` block are written with an explicit mode: `T` (by value), `&T` (shared borrow), or `&mut T` (exclusive borrow):
 
 - A method receiver must be spelled as the **first parameter** and must be named `self` for consistency. Valid forms are `self: T`, `self: &T`, and `self: &mut T`. Any other first-parameter name in an `implement` method is a compile-time error.
-- A call on an lvalue prefers `self: &T`, then `self: &mut T`, then `self: T` (which copies if `Copy`, otherwise requires `move obj`).
+- A call on an lvalue prefers `self: &T`, then `self: &mut T`, then `self: T` (copies if `Copy`, otherwise consumes the receiver).
 - A call on an rvalue (`move obj`, `make()`) can bind only to a `self` receiver; borrowed receivers are not allowed on rvalues.
 
 These rules keep borrowing consistent across free functions, methods, and control-flow desugarings.
@@ -478,17 +478,17 @@ MVP restriction: `move` operands must be addressable local/parameter bindings. M
 ### 4.1. Core rules
 | Aspect | Description |
 |---------|-------------|
-| **Move target** | Must be an owned (`var`) value. |
+| **Move target** | Must be an owned binding (`val` or `var`). |
 | **Copy types** | `x` copies; `move x` moves. |
-| **Non-copyable types** | Must use `move x`; plain `x` is a compile error. |
-| **Immutable (`val`)** | Cannot move from immutable bindings. |
+| **Non-copyable types** | Consuming positions move; `copy x` is a compile error. |
+| **Immutable (`val`)** | Cannot rebind; may be moved/consumed. |
 | **Borrowed (`&`, `&mut`)** | Cannot move from non-owning references. |
 
 ---
 
 ### 4.2. Default: move-only types
 
-Every type is **move-only by default**. If you define a struct and do nothing else, the compiler will refuse to copy it; the only way to pass or assign it by value is to move with `move x`.
+Every type is **move-only by default**. If you define a struct and do nothing else, the compiler will refuse to copy it; passing or assigning it by value consumes it. `move x` is the explicit form.
 
 ```drift
 // Move-only by default
@@ -498,13 +498,14 @@ struct File {
 
 var f = open("log.txt");
 
-var g = f; // ❌ cannot copy move-only type; use a move
-var h = move f; // ✅ move ownership
+var g = f; // ✅ moves ownership
+use_file(f); // ❌ error: use after move
+var h = move g; // ✅ explicit move ownership
 
 fn use_file(x: File) -> Void { ... }
 
-use_file(f); // ❌ copy required
-use_file(move f); // ✅ move into the call
+use_file(f); // ✅ consumes f (implicit move)
+use_file(move h); // ✅ explicit move into the call
 ```
 
 This design keeps ownership explicit: you opt *out* of move-only semantics only when cheap copies are well-defined.
@@ -524,7 +525,7 @@ var b = a; // ✅ copies `a` because Job is Copy
 
 ### 4.4. Explicit copy expression
 
-Use the `copy <expr>` expression to force a duplicate of a `Copy` value. It fails at compile time if the operand is not `Copy`. In MVP, the operand must be an **lvalue/place** (local/param/field/index). This works anywhere an expression is allowed (call arguments, closure captures, `val`/`var` bindings) and leaves the original binding usable. By-value passing does **not** implicitly move non-`Copy` values; passing a non-`Copy` value by-value requires an explicit `move`. `copy` is how you make the intent to duplicate explicit.
+Use the `copy <expr>` expression to force a duplicate of a `Copy` value. It fails at compile time if the operand is not `Copy`. In MVP, the operand must be an **lvalue/place** (local/param/field/index). This works anywhere an expression is allowed (call arguments, closure captures, `val`/`var` bindings) and leaves the original binding usable. By-value passing **does** implicitly move non-`Copy` values in consuming positions; `copy` is how you make the intent to duplicate explicit.
 
 Copying still respects ownership rules: `self: &T` indicates the value is borrowed for the duration of the copy, after which both the original and the newly returned value remain valid.
 
@@ -2555,7 +2556,7 @@ struct Error {
 }
 
 exception IndexError {
-    container: String,
+    container_id: String,
     index: Int,
 }
 ```

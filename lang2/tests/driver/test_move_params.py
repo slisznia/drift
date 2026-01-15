@@ -22,6 +22,7 @@ def _typecheck_workspace(tmp_path: Path, content: str) -> list[str]:
 		module_paths=[tmp_path],
 		stdlib_root=stdlib_root(),
 	)
+	module_deps = _deps if isinstance(_deps, dict) else {}
 	assert diagnostics == []
 	func_hirs, signatures_by_id, _fn_ids = flatten_modules(modules)
 	linked_world, require_env = build_linked_world(type_table)
@@ -30,6 +31,8 @@ def _typecheck_workspace(tmp_path: Path, content: str) -> list[str]:
 	for fn_id, hir in func_hirs.items():
 		sig = signatures_by_id.get(fn_id)
 		if sig is None or sig.param_names is None or sig.param_type_ids is None:
+			continue
+		if sig.module != "main":
 			continue
 		param_types = {pname: pty for pname, pty in zip(sig.param_names, sig.param_type_ids)}
 		param_mutable = None
@@ -45,6 +48,7 @@ def _typecheck_workspace(tmp_path: Path, content: str) -> list[str]:
 			linked_world=linked_world,
 			require_env=require_env,
 			current_module=0,
+			visibility_imports=set(module_deps.get(sig.module or fn_id.module, set())),
 		)
 		messages.extend(d.message for d in result.diagnostics)
 	return messages

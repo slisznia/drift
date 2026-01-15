@@ -2,7 +2,7 @@
   "description": "e2e: exception attrs reject nonprimitive",
   "diagnostics": [
     {
-      "message_contains": "exception field value must be a DiagnosticValue"
+      "message_contains": "exception field value must implement Diagnostic"
     }
   ],
   "exit_code": 1

@@ -2,8 +2,8 @@ module m
 
 exception E(code: Int)
 
-fn mk() -> Int { return 5; }
+struct S { x: Int }
 
 fn main() nothrow -> Int{
-    throw E(code = mk());
+    throw E(code = S(x = 5));
 }

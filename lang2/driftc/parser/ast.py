@@ -545,6 +545,7 @@ class TraitMethodSig:
 	loc: Located
 	type_params: List[str] = field(default_factory=list)
 	type_param_locs: List[Located] = field(default_factory=list)
+	declared_nothrow: bool = False
 
 
 @dataclass

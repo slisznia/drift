@@ -60,6 +60,7 @@ from .mir_nodes import (
 	ArrayDrop,
 	ArrayDup,
 	ArrayIndexLoad,
+	ArrayIndexLoadUnchecked,
 	ArrayIndexStore,
 	ArraySetLen,
 	ArrayLen,
