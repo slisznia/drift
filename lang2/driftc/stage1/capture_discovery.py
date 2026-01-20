@@ -177,6 +177,18 @@ def discover_captures(lambda_expr: H.HLambda) -> CaptureDiscoveryResult:
 		for child in _iter_expr_children(e):
 			_walk_expr(child)
 
+	def _iter_expr_children(e: H.HExpr) -> list[H.HExpr]:
+		children: list[H.HExpr] = []
+		for field_name in getattr(e, "__dataclass_fields__", {}) or {}:
+			val = getattr(e, field_name, None)
+			if isinstance(val, H.HExpr):
+				children.append(val)
+			elif isinstance(val, list):
+				for item in val:
+					if isinstance(item, H.HExpr):
+						children.append(item)
+		return children
+
 	def _walk_stmt(s: H.HStmt) -> None:
 		_record_local_from_stmt(s)
 		if isinstance(s, H.HBlock):
@@ -229,18 +241,6 @@ def discover_captures(lambda_expr: H.HLambda) -> CaptureDiscoveryResult:
 			_walk_expr(s)
 		elif isinstance(s, H.HTryExpr):
 			_walk_expr(s)
-
-	def _iter_expr_children(e: H.HExpr) -> list[H.HExpr]:
-		children: list[H.HExpr] = []
-		for field_name in getattr(e, "__dataclass_fields__", {}) or {}:
-			val = getattr(e, field_name, None)
-			if isinstance(val, H.HExpr):
-				children.append(val)
-			elif isinstance(val, list):
-				for item in val:
-					if isinstance(item, H.HExpr):
-						children.append(item)
-		return children
 
 	def _kind_from_explicit(kind: str, span: Span) -> C.HCaptureKind | None:
 		if kind == "ref":

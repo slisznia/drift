@@ -8,8 +8,35 @@ The real compiler can extend this with richer location/types as needed.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import hashlib
+import re
 
 from .span import Span
+
+
+_CODE_PREFIX_RE = re.compile(r"^(?P<code>[A-Z][A-Z0-9_-]*)(?:\\b|:)")
+_QUOTED_RE = re.compile(r"([\"']).*?\\1")
+_NUMBER_RE = re.compile(r"\\b\\d+(?:\\.\\d+)?\\b")
+_HEX_RE = re.compile(r"\\b0x[0-9a-fA-F]+\\b")
+
+
+def _normalize_diag_message(message: str) -> str:
+	msg = _QUOTED_RE.sub("<str>", message)
+	msg = _HEX_RE.sub("<hex>", msg)
+	msg = _NUMBER_RE.sub("<num>", msg)
+	return msg
+
+
+def _auto_diag_code(message: str, severity: str | None) -> str:
+	# Use explicit E-XYZ prefix if present.
+	prefix = _CODE_PREFIX_RE.match(message or "")
+	if prefix is not None:
+		return prefix.group("code")
+	sev = (severity or "error").lower()
+	sev_tag = "W" if sev.startswith("warn") else "E" if sev.startswith("err") else "I"
+	norm = _normalize_diag_message(message or "")
+	digest = hashlib.sha1(norm.encode("utf-8")).hexdigest()[:8]
+	return f"{sev_tag}-AUTO-{digest}"
 
 
 @dataclass
@@ -34,3 +61,5 @@ class Diagnostic:
 		# can rely on a structured object instead of None.
 		if self.span is None:  # type: ignore[unreachable]
 			self.span = Span()
+		if self.code is None:
+			self.code = _auto_diag_code(self.message, self.severity)

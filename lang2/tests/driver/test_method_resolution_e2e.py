@@ -420,7 +420,7 @@ fn main() nothrow -> Int{
 	assert exit_code == 0
 
 
-def test_receiver_prefers_ref_over_ref_mut(tmp_path: Path) -> None:
+def test_receiver_prefers_ref_mut_over_ref(tmp_path: Path) -> None:
 	main_block, call_resolutions, _signatures = _resolve_main_block(
 		tmp_path,
 		"""
@@ -443,7 +443,7 @@ fn main() nothrow -> Int{
 	assert len(calls) == 1
 	res = call_resolutions.get(calls[0].node_id)
 	assert res is not None
-	assert res.decl.self_mode == SelfMode.SELF_BY_REF
+	assert res.decl.self_mode == SelfMode.SELF_BY_REF_MUT
 
 
 def test_receiver_prefers_ref_mut_over_value(tmp_path: Path) -> None:

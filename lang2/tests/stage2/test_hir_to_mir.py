@@ -45,6 +45,7 @@ from lang2.driftc.stage1 import (
 from lang2.driftc.stage1.call_info import CallInfo, CallSig, CallTarget
 from lang2.driftc.core.types_core import TypeTable, VariantArmSchema, VariantFieldSchema
 from lang2.driftc.core.generic_type_expr import GenericTypeExpr
+from lang2.driftc.core.type_resolve_common import resolve_opaque_type
 from lang2.driftc.parser.ast import TypeExpr
 from lang2.driftc.stage1.normalize import normalize_hir
 from lang2.driftc.stage2 import (
@@ -75,6 +76,34 @@ def _build_and_lower(block: HBlock):
 	assign_node_ids(hir_norm)
 	assign_callsite_ids(hir_norm)
 	call_info_by_callsite_id: dict[int, CallInfo] = {}
+	def _walk_expr(expr: object) -> None:
+		if isinstance(expr, HCall):
+			if isinstance(expr.fn, HVar):
+				int_ty = type_table.ensure_int()
+				param_types = tuple(int_ty for _ in expr.args)
+				info = CallInfo(
+					target=CallTarget.direct(_fn_id(expr.fn.name)),
+					sig=CallSig(param_types=param_types, user_ret_type=int_ty, can_throw=False),
+				)
+				csid = getattr(expr, "callsite_id", None)
+				if isinstance(csid, int):
+					call_info_by_callsite_id[csid] = info
+			for arg in list(expr.args):
+				_walk_expr(arg)
+			for kw in list(expr.kwargs or []):
+				_walk_expr(kw.value)
+			return
+
+	def _walk_stmt(stmt: object) -> None:
+		if isinstance(stmt, HExprStmt):
+			_walk_expr(stmt.expr)
+		elif isinstance(stmt, HLet):
+			_walk_expr(stmt.value)
+		elif isinstance(stmt, HAssign):
+			_walk_expr(stmt.value)
+		elif isinstance(stmt, HReturn):
+			if stmt.value is not None:
+				_walk_expr(stmt.value)
 	for stmt in hir_norm.statements:
 		if isinstance(stmt, HExprStmt) and isinstance(stmt.expr, HCall) and isinstance(stmt.expr.fn, HVar):
 			int_ty = type_table.ensure_int()
@@ -114,6 +143,23 @@ def _lower_with_call_info(block: HBlock, type_table: TypeTable) -> object:
 				csid = getattr(expr, "callsite_id", None)
 				if isinstance(csid, int):
 					call_info_by_callsite_id[csid] = info
+			elif isinstance(expr.fn, HQualifiedMember):
+				base_te = expr.fn.base_type_expr
+				base_tid = resolve_opaque_type(base_te, type_table, module_id=getattr(base_te, "module_id", None))
+				inst_tid = base_tid
+				if type_table.get_variant_instance(inst_tid) is None:
+					inst_tid = type_table.ensure_instantiated(base_tid, [])
+				inst = type_table.get_variant_instance(inst_tid)
+				if inst is not None:
+					arm_def = inst.arms_by_name.get(expr.fn.member)
+					if arm_def is not None:
+						info = CallInfo(
+							target=CallTarget.constructor(inst_tid, expr.fn.member),
+							sig=CallSig(param_types=tuple(arm_def.field_types), user_ret_type=inst_tid, can_throw=False),
+						)
+						csid = getattr(expr, "callsite_id", None)
+						if isinstance(csid, int):
+							call_info_by_callsite_id[csid] = info
 			for arg in list(expr.args):
 				_walk_expr(arg)
 			for kw in list(expr.kwargs or []):
@@ -191,7 +237,7 @@ def test_if_lowering():
 	assert isinstance(then_block.terminator, Goto)
 
 
-def test_variant_ctor_kwargs_eval_order_is_source_order() -> None:
+def test_variant_ctor_args_eval_order_is_source_order() -> None:
 	type_table = TypeTable()
 	int_ty = type_table.ensure_int()
 
@@ -215,14 +261,66 @@ def test_variant_ctor_kwargs_eval_order_is_source_order() -> None:
 	ctor = HQualifiedMember(base_type_expr=pair_te, member="Mk")
 	call = HCall(
 		fn=ctor,
-		args=[],
-		kwargs=[
-			HKwArg(name="b", value=HCall(fn=HVar("f"), args=[HLiteralInt(1)], kwargs=[])),
-			HKwArg(name="a", value=HCall(fn=HVar("f"), args=[HLiteralInt(2)], kwargs=[])),
+		args=[
+			HCall(fn=HVar("f"), args=[HLiteralInt(1)], kwargs=[]),
+			HCall(fn=HVar("f"), args=[HLiteralInt(2)], kwargs=[]),
 		],
+		kwargs=[],
 	)
 	block = HBlock(statements=[HExprStmt(expr=call)])
-	func = _lower_with_call_info(block, type_table)
+	assign_node_ids(block)
+	assign_callsite_ids(block)
+	callsite_id = getattr(call, "callsite_id", None)
+	call_info_by_callsite_id: dict[int, CallInfo] = {}
+	def _walk_expr(expr: object) -> None:
+		if isinstance(expr, HCall):
+			if isinstance(expr.fn, HVar):
+				int_ty = type_table.ensure_int()
+				param_types = tuple(int_ty for _ in expr.args)
+				info = CallInfo(
+					target=CallTarget.direct(_fn_id(expr.fn.name)),
+					sig=CallSig(param_types=param_types, user_ret_type=int_ty, can_throw=False),
+				)
+				csid = getattr(expr, "callsite_id", None)
+				if isinstance(csid, int):
+					call_info_by_callsite_id[csid] = info
+			for arg in list(expr.args):
+				_walk_expr(arg)
+			for kw in list(expr.kwargs or []):
+				_walk_expr(kw.value)
+			return
+
+	def _walk_stmt(stmt: object) -> None:
+		if isinstance(stmt, HExprStmt):
+			_walk_expr(stmt.expr)
+		elif isinstance(stmt, HLet):
+			_walk_expr(stmt.value)
+		elif isinstance(stmt, HAssign):
+			_walk_expr(stmt.value)
+		elif isinstance(stmt, HReturn):
+			if stmt.value is not None:
+				_walk_expr(stmt.value)
+	inst_id = type_table.ensure_instantiated(pair_base, [])
+	inst = type_table.get_variant_instance(inst_id)
+	assert inst is not None
+	arm_def = inst.arms_by_name["Mk"]
+	info = CallInfo(
+		target=CallTarget.constructor(
+			inst_id,
+			"Mk",
+			ctor_arg_field_indices=(1, 0),
+		),
+		sig=CallSig(param_types=tuple(arm_def.field_types), user_ret_type=inst_id, can_throw=False),
+	)
+	if isinstance(callsite_id, int):
+		call_info_by_callsite_id[callsite_id] = info
+	builder = make_builder(FunctionId(module="main", name="test_func", ordinal=0))
+	hir_norm = normalize_hir(block)
+	for stmt in hir_norm.statements:
+		_walk_stmt(stmt)
+	lowerer = HIRToMIR(builder, type_table=type_table, call_info_by_callsite_id=call_info_by_callsite_id)
+	lowerer.lower_block(hir_norm)
+	func = builder.func
 	entry = func.blocks[func.entry]
 	const_vals = {op.dest: op.value for op in entry.instructions if isinstance(op, ConstInt)}
 	calls = [op for op in entry.instructions if isinstance(op, Call) and op.fn_id.name == "f"]

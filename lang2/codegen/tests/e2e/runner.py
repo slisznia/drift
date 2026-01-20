@@ -139,6 +139,11 @@ def _run_case(case_dir: Path) -> str:
 			*[str(p) for p in drift_files],
 			"--json",
 		]
+		stdlib_path = stdlib_root()
+		if stdlib_path is not None:
+			cmd.extend(["--stdlib-root", str(stdlib_path)])
+		if allow_reserved:
+			cmd.append("--dev")
 		if allow_reserved:
 			cmd.insert(3, "--dev")
 		res = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True)
@@ -165,6 +170,9 @@ def _run_case(case_dir: Path) -> str:
 				match_found = True
 				break
 			if not match_found:
+				if os.environ.get("E2E_DEBUG_DIAGS"):
+					diag_text = "; ".join(d.get("message", "") for d in diags)
+					return f"FAIL (missing expected diagnostic: {diag_text})"
 				return "FAIL (missing expected diagnostic)"
 		return "ok"
 	# Always parse using the workspace loader (even for single-file cases) so
@@ -185,6 +193,7 @@ def _run_case(case_dir: Path) -> str:
 		drift_files,
 		module_paths=[case_dir / mp for mp in module_paths] or None,
 		stdlib_root=stdlib_root(),
+		test_build_only=True,
 	)
 	func_hirs, signatures, fn_ids_by_name = flatten_modules(modules)
 	origin_by_fn_id: dict[object, Path] = {}
@@ -269,9 +278,15 @@ def _run_case(case_dir: Path) -> str:
 				match_found = True
 				break
 			if not match_found:
+				if os.environ.get("E2E_DEBUG_DIAGS"):
+					diag_text = "; ".join(d.message for d in checked_diags)
+					return f"FAIL (missing expected diagnostic: {diag_text})"
 				return "FAIL (missing expected diagnostic)"
 		return "ok"
 	if checked_diags:
+		if os.environ.get("E2E_DEBUG_DIAGS"):
+			diag_text = "; ".join(d.message for d in checked_diags)
+			return f"FAIL (unexpected checker diagnostics: {diag_text})"
 		return "FAIL (unexpected checker diagnostics)"
 
 	if checked.diagnostics:

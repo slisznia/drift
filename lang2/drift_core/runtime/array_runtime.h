@@ -12,6 +12,7 @@ _Static_assert(sizeof(drift_usize) == sizeof(void *), "drift_usize must be point
 typedef struct DriftArrayHeader {
 	drift_isize len;
 	drift_isize cap;
+	drift_isize gen;
 	void *data;
 } DriftArrayHeader;
 

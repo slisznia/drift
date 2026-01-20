@@ -12,3 +12,43 @@ pub trait Equatable {
 pub trait Comparable require Self is Equatable {
 	fn cmp(self: &Self, other: &Self) -> Int;
 }
+
+implement Equatable for Int {
+	pub fn eq(self: &Int, other: &Int) -> Bool {
+		return *self == *other;
+	}
+}
+
+implement Comparable for Int {
+	pub fn cmp(self: &Int, other: &Int) -> Int {
+		val a = *self;
+		val b = *other;
+		if a < b {
+			return -1;
+		}
+		if a > b {
+			return 1;
+		}
+		return 0;
+	}
+}
+
+implement Equatable for Uint {
+	pub fn eq(self: &Uint, other: &Uint) -> Bool {
+		return *self == *other;
+	}
+}
+
+implement Comparable for Uint {
+	pub fn cmp(self: &Uint, other: &Uint) -> Int {
+		val a = *self;
+		val b = *other;
+		if a < b {
+			return -1;
+		}
+		if a > b {
+			return 1;
+		}
+		return 0;
+	}
+}

@@ -17,6 +17,7 @@ class StructDef:
     fields: List[StructField]
     loc: "Located"
     is_pub: bool = False
+    test_build_only: bool = False
     require: Optional["RequireClause"] = None
     type_params: List[str] = field(default_factory=list)
     type_param_locs: List["Located"] = field(default_factory=list)
@@ -34,6 +35,7 @@ class ExceptionDef:
     args: List[ExceptionArg]
     loc: "Located"
     is_pub: bool = False
+    test_build_only: bool = False
     domain: Optional[str] = None
 
 
@@ -210,6 +212,8 @@ class FunctionDef:
 	loc: Located
 	declared_nothrow: bool = False
 	is_pub: bool = False
+	test_build_only: bool = False
+	is_intrinsic: bool = False
 	type_param_locs: List[Located] = field(default_factory=list)
 	require: Optional["RequireClause"] = None
 	is_method: bool = False
@@ -493,6 +497,7 @@ class ConstDef:
 	type_expr: TypeExpr
 	value: "Expr"
 	is_pub: bool = False
+	test_build_only: bool = False
 
 
 @dataclass
@@ -535,6 +540,7 @@ class VariantDef:
 	arms: List[VariantArm]
 	loc: Located
 	is_pub: bool = False
+	test_build_only: bool = False
 
 
 @dataclass
@@ -554,6 +560,7 @@ class TraitDef:
 	methods: List[TraitMethodSig]
 	loc: Located
 	is_pub: bool = False
+	test_build_only: bool = False
 	require: Optional["RequireClause"] = None
 	type_params: List[str] = field(default_factory=list)
 	type_param_locs: List[Located] = field(default_factory=list)
@@ -564,6 +571,7 @@ class ImplementDef:
     target: TypeExpr
     loc: Located
     is_pub: bool = False
+    test_build_only: bool = False
     type_params: List[str] = field(default_factory=list)
     type_param_locs: List[Located] = field(default_factory=list)
     trait: Optional[TypeExpr] = None

@@ -1,0 +1,30 @@
+module std.mem
+
+export { RawBuffer, alloc_uninit, dealloc, capacity, ptr_at_ref, ptr_at_mut, write, read, replace, swap };
+
+pub struct RawBuffer<T> {
+	ptr: &mut Byte
+	cap: Int
+}
+
+pub const RAW_BUFFER_CONTAINER_ID: String = "std.mem:RawBuffer";
+
+@intrinsic pub fn alloc_uninit<T>(cap: Int) -> RawBuffer<T>;
+
+@intrinsic pub fn dealloc<T>(buf: RawBuffer<T>) -> Void;
+
+pub fn capacity<T>(buf: &RawBuffer<T>) -> Int {
+	return buf.cap;
+}
+
+@intrinsic pub fn ptr_at_ref<T>(buf: &RawBuffer<T>, i: Int) -> &T;
+
+@intrinsic pub fn ptr_at_mut<T>(buf: &mut RawBuffer<T>, i: Int) -> &mut T;
+
+@intrinsic pub fn write<T>(buf: &mut RawBuffer<T>, i: Int, v: T) -> Void;
+
+@intrinsic pub fn read<T>(buf: &mut RawBuffer<T>, i: Int) -> T;
+
+@intrinsic pub fn replace<T>(ptr: &mut T, v: T) -> T;
+
+@intrinsic pub fn swap<T>(a: &mut T, b: &mut T) -> Void;

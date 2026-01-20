@@ -42,7 +42,7 @@ from typing import Dict, List, Mapping, Optional
 
 from lang2.driftc.checker import FnInfo
 from lang2.driftc.core.function_id import FunctionId, function_symbol, function_ref_symbol
-from lang2.driftc.core.container_ids import ARRAY_CONTAINER_ID
+from lang2.driftc.core.container_ids import ARRAY_CONTAINER_ID, RAW_BUFFER_CONTAINER_ID
 from lang2.driftc.stage1 import BinaryOp, UnaryOp
 from lang2.driftc.stage2 import (
 	ArrayCap,
@@ -50,6 +50,7 @@ from lang2.driftc.stage2 import (
 	ArrayIndexLoadUnchecked,
 	ArrayIndexStore,
 	ArrayLen,
+	ArrayGen,
 	ArrayLit,
 	ArrayAlloc,
 	ArrayElemInit,
@@ -60,6 +61,12 @@ from lang2.driftc.stage2 import (
 	ArrayDrop,
 	ArrayDup,
 	ArraySetLen,
+	ArraySetGen,
+	RawBufferAlloc,
+	RawBufferDealloc,
+	RawBufferPtrAt,
+	RawBufferRead,
+	RawBufferWrite,
 	AssignSSA,
 	BinaryOpInstr,
 	Call,
@@ -392,7 +399,7 @@ def lower_module_to_llvm(
 		mod.emit_func("\n".join(lines))
 
 	if argv_wrapper is not None:
-		array_llty = f"{{ {mod._llty(DRIFT_INT_TYPE)}, {mod._llty(DRIFT_INT_TYPE)}, {DRIFT_STRING_TYPE}* }}"
+		array_llty = f"{{ {mod._llty(DRIFT_INT_TYPE)}, {mod._llty(DRIFT_INT_TYPE)}, {mod._llty(DRIFT_INT_TYPE)}, {DRIFT_STRING_TYPE}* }}"
 		mod.emit_argv_entry_wrapper(user_main=argv_wrapper, array_type=array_llty)
 	return mod
 
@@ -464,7 +471,7 @@ class LlvmModuleBuilder:
 				f"{DRIFT_ERROR_TYPE} = type {{ {DRIFT_ERROR_CODE_TYPE}, {DRIFT_STRING_TYPE}, i8*, {self._llty(DRIFT_USIZE_TYPE)}, i8*, {self._llty(DRIFT_USIZE_TYPE)} }}",
 				f"{FNRESULT_INT_ERROR} = type {{ i1, {self._llty(DRIFT_INT_TYPE)}, {DRIFT_ERROR_PTR} }}",
 				f"{DRIFT_DV_TYPE} = type {{ i8, [7 x i8], [2 x i64] }}",
-				f"%DriftArrayHeader = type {{ {self._llty(DRIFT_INT_TYPE)}, {self._llty(DRIFT_INT_TYPE)}, i8* }}",
+				f"%DriftArrayHeader = type {{ {self._llty(DRIFT_INT_TYPE)}, {self._llty(DRIFT_INT_TYPE)}, {self._llty(DRIFT_INT_TYPE)}, i8* }}",
 			]
 		)
 		# Seed the canonical FnResult types for supported ok payloads.
@@ -689,11 +696,12 @@ class LlvmModuleBuilder:
 			"  %arr = load %DriftArrayHeader, %DriftArrayHeader* %arr.ptr",
 			"  %len = extractvalue %DriftArrayHeader %arr, 0",
 			"  %cap = extractvalue %DriftArrayHeader %arr, 1",
-			"  %data_raw = extractvalue %DriftArrayHeader %arr, 2",
+			"  %data_raw = extractvalue %DriftArrayHeader %arr, 3",
 			"  %data = bitcast i8* %data_raw to %DriftString*",
 			f"  %tmp0 = insertvalue {array_type} undef, {self._llty(DRIFT_INT_TYPE)} %len, 0",
 			f"  %tmp1 = insertvalue {array_type} %tmp0, {self._llty(DRIFT_INT_TYPE)} %cap, 1",
-			f"  %argv_typed = insertvalue {array_type} %tmp1, %DriftString* %data, 2",
+			f"  %tmp2 = insertvalue {array_type} %tmp1, {self._llty(DRIFT_INT_TYPE)} 0, 2",
+			f"  %argv_typed = insertvalue {array_type} %tmp2, %DriftString* %data, 3",
 			f"  %ret = call {self._llty(DRIFT_INT_TYPE)} {_llvm_fn_sym(user_main)}({array_type} %argv_typed)",
 			f"  %trunc = trunc {self._llty(DRIFT_INT_TYPE)} %ret to i32",
 			"  ret i32 %trunc",
@@ -713,7 +721,7 @@ class LlvmModuleBuilder:
 				lines.append(f"{_llvm_comdat_sym(name)} = comdat any")
 			lines.append("")
 		if self.needs_argv_helper:
-			array_type = self.array_string_type or f"{{ {self._llty(DRIFT_INT_TYPE)}, {self._llty(DRIFT_INT_TYPE)}, {DRIFT_STRING_TYPE}* }}"
+			array_type = self.array_string_type or f"{{ {self._llty(DRIFT_INT_TYPE)}, {self._llty(DRIFT_INT_TYPE)}, {self._llty(DRIFT_INT_TYPE)}, {DRIFT_STRING_TYPE}* }}"
 			lines.append("declare void @drift_build_argv(%DriftArrayHeader*, i32, i8**)")
 			lines.append("")
 		if self.needs_array_helpers:
@@ -1222,6 +1230,8 @@ class _FuncBuilder:
 			self._lower_array_alloc(instr)
 		elif isinstance(instr, ArraySetLen):
 			self._lower_array_set_len(instr)
+		elif isinstance(instr, ArraySetGen):
+			self._lower_array_set_gen(instr)
 		elif isinstance(instr, ArrayLit):
 			self._lower_array_lit(instr)
 		elif isinstance(instr, ArrayElemInit):
@@ -1248,6 +1258,18 @@ class _FuncBuilder:
 			self._lower_array_len(instr)
 		elif isinstance(instr, ArrayCap):
 			self._lower_array_cap(instr)
+		elif isinstance(instr, ArrayGen):
+			self._lower_array_gen(instr)
+		elif isinstance(instr, RawBufferAlloc):
+			self._lower_raw_buffer_alloc(instr)
+		elif isinstance(instr, RawBufferDealloc):
+			self._lower_raw_buffer_dealloc(instr)
+		elif isinstance(instr, RawBufferPtrAt):
+			self._lower_raw_buffer_ptr_at(instr)
+		elif isinstance(instr, RawBufferWrite):
+			self._lower_raw_buffer_write(instr)
+		elif isinstance(instr, RawBufferRead):
+			self._lower_raw_buffer_read(instr)
 		elif isinstance(instr, StringLen):
 			dest = self._map_value(instr.dest)
 			val = self._map_value(instr.value)
@@ -2473,8 +2495,8 @@ class _FuncBuilder:
 			self._size_align_cache[ty_id] = out
 			return out
 		if td.kind is TypeKind.ARRAY:
-			# Current array value lowering is a 3-word header (len, cap, data ptr).
-			out = (word_bytes * 3, word_bytes)
+			# Current array value lowering is a 4-word header (len, cap, gen, data ptr).
+			out = (word_bytes * 4, word_bytes)
 			self._size_align_cache[ty_id] = out
 			return out
 		if td.kind is TypeKind.STRUCT:
@@ -2999,8 +3021,8 @@ class _FuncBuilder:
 			self.value_types[dest] = DRIFT_DV_TYPE
 			return
 
-		# Array runtime representation is a fixed 3-field aggregate in v1:
-		#   { len: i64, cap: i64, data: <elem>* }
+		# Array runtime representation is a fixed 4-field aggregate in v1:
+		#   { len: i64, cap: i64, gen: i64, data: <elem>* }
 		if td.kind is TypeKind.ARRAY and td.param_types:
 			elem_llty = self._emit_storage_type_for_typeid(td.param_types[0])
 			arr_llty = self._llvm_array_type(elem_llty)
@@ -3008,7 +3030,9 @@ class _FuncBuilder:
 			self.lines.append(f"  {tmp0} = insertvalue {arr_llty} undef, {self._llty(DRIFT_INT_TYPE)} 0, 0")
 			tmp1 = self._fresh("zero_arr")
 			self.lines.append(f"  {tmp1} = insertvalue {arr_llty} {tmp0}, {self._llty(DRIFT_INT_TYPE)} 0, 1")
-			self.lines.append(f"  {dest} = insertvalue {arr_llty} {tmp1}, {elem_llty}* null, 2")
+			tmp2 = self._fresh("zero_arr")
+			self.lines.append(f"  {tmp2} = insertvalue {arr_llty} {tmp1}, {self._llty(DRIFT_INT_TYPE)} 0, 2")
+			self.lines.append(f"  {dest} = insertvalue {arr_llty} {tmp2}, {elem_llty}* null, 3")
 			self.value_types[dest] = arr_llty
 			return
 
@@ -3332,19 +3356,21 @@ class _FuncBuilder:
 		# Bitcast to elem*
 		tmp_data = self._fresh("data")
 		self.lines.append(f"  {tmp_data} = bitcast i8* {tmp_alloc} to {elem_llty}*")
-		# Build the array struct {len=0, cap, data}, then set len after init.
+		# Build the array struct {len=0, cap, gen=0, data}, then set len after init.
 		tmp0 = self._fresh("arrh0")
 		tmp1 = self._fresh("arrh1")
-		tmp2 = self._fresh("arrh2")
 		self.lines.append(f"  {tmp0} = insertvalue {arr_llty} undef, {self._llty(DRIFT_INT_TYPE)} 0, 0")
 		self.lines.append(f"  {tmp1} = insertvalue {arr_llty} {tmp0}, {self._llty(DRIFT_INT_TYPE)} {cap_const}, 1")
-		self.lines.append(f"  {tmp2} = insertvalue {arr_llty} {tmp1}, {elem_llty}* {tmp_data}, 2")
+		tmp2 = self._fresh("arrh2")
+		self.lines.append(f"  {tmp2} = insertvalue {arr_llty} {tmp1}, {self._llty(DRIFT_INT_TYPE)} 0, 2")
+		tmp3 = self._fresh("arrh3")
+		self.lines.append(f"  {tmp3} = insertvalue {arr_llty} {tmp2}, {elem_llty}* {tmp_data}, 3")
 		# Store elements
 		if self.type_table is None:
 			raise NotImplementedError("LLVM codegen v1: ArrayLit requires a TypeTable")
 		td = self.type_table.get(instr.elem_ty)
 		if not self.type_table.is_copy(instr.elem_ty) and td.kind is not TypeKind.VOID:
-			raise NotImplementedError("LLVM codegen v1: ArrayLit element type must be Copy in v1")
+				raise AssertionError("internal: non-Copy ArrayLit reached codegen")
 		is_bool = self._is_bool_type(instr.elem_ty)
 		needs_copy = self.type_table.is_copy(instr.elem_ty) and not self.type_table.is_bitcopy(instr.elem_ty)
 		for idx, elem in enumerate(instr.elements):
@@ -3358,7 +3384,7 @@ class _FuncBuilder:
 				f"  {tmp_ptr} = getelementptr inbounds {elem_llty}, {elem_llty}* {tmp_data}, {self._llty(DRIFT_INT_TYPE)} {idx}"
 			)
 			self.lines.append(f"  store {elem_llty} {elem_val}, {elem_llty}* {tmp_ptr}")
-		self.lines.append(f"  {dest} = insertvalue {arr_llty} {tmp2}, {self._llty(DRIFT_INT_TYPE)} {count}, 0")
+		self.lines.append(f"  {dest} = insertvalue {arr_llty} {tmp3}, {self._llty(DRIFT_INT_TYPE)} {count}, 0")
 		self.value_types[dest] = arr_llty
 
 	def _lower_array_alloc(self, instr: ArrayAlloc) -> None:
@@ -3386,7 +3412,9 @@ class _FuncBuilder:
 		tmp1 = self._fresh("arrh1")
 		self.lines.append(f"  {tmp0} = insertvalue {arr_llty} undef, {self._llty(DRIFT_INT_TYPE)} {zero_len}, 0")
 		self.lines.append(f"  {tmp1} = insertvalue {arr_llty} {tmp0}, {self._llty(DRIFT_INT_TYPE)} {cap_val}, 1")
-		self.lines.append(f"  {dest} = insertvalue {arr_llty} {tmp1}, {elem_llty}* {tmp_data}, 2")
+		tmp2 = self._fresh("arrh2")
+		self.lines.append(f"  {tmp2} = insertvalue {arr_llty} {tmp1}, {self._llty(DRIFT_INT_TYPE)} 0, 2")
+		self.lines.append(f"  {dest} = insertvalue {arr_llty} {tmp2}, {elem_llty}* {tmp_data}, 3")
 		self.value_types[dest] = arr_llty
 
 	def _lower_array_elem_init(self, instr: ArrayElemInit) -> None:
@@ -3412,7 +3440,7 @@ class _FuncBuilder:
 		elem_llty = self._llvm_array_elem_type(instr.elem_ty)
 		arr_llty = self._llvm_array_type(elem_llty)
 		data_tmp = self._fresh("data")
-		self.lines.append(f"  {data_tmp} = extractvalue {arr_llty} {array}, 2")
+		self.lines.append(f"  {data_tmp} = extractvalue {arr_llty} {array}, 3")
 		ptr_tmp = self._fresh("eltptr")
 		self.lines.append(
 			f"  {ptr_tmp} = getelementptr inbounds {elem_llty}, {elem_llty}* {data_tmp}, {self._llty(DRIFT_INT_TYPE)} {index}"
@@ -3482,7 +3510,7 @@ class _FuncBuilder:
 		len_tmp = self._fresh("len")
 		data_tmp = self._fresh("data")
 		self.lines.append(f"  {len_tmp} = extractvalue {arr_llty} {array}, 0")
-		self.lines.append(f"  {data_tmp} = extractvalue {arr_llty} {array}, 2")
+		self.lines.append(f"  {data_tmp} = extractvalue {arr_llty} {array}, 3")
 		if self._type_needs_drop(instr.elem_ty):
 			helper = self._ensure_array_drop_helper(instr.elem_ty)
 			self.lines.append(f"  call void @{helper}({self._llty(DRIFT_INT_TYPE)} {len_tmp}, {elem_llty}* {data_tmp})")
@@ -3502,13 +3530,15 @@ class _FuncBuilder:
 		bitcopy = True
 		if self.type_table is not None:
 			bitcopy = self.type_table.is_bitcopy(instr.elem_ty)
-		# Extract len, cap, data
+		# Extract len, cap, gen, data
 		len_tmp = self._fresh("len")
 		cap_tmp = self._fresh("cap")
+		gen_tmp = self._fresh("gen")
 		data_tmp = self._fresh("data")
 		self.lines.append(f"  {len_tmp} = extractvalue {arr_llty} {array}, 0")
 		self.lines.append(f"  {cap_tmp} = extractvalue {arr_llty} {array}, 1")
-		self.lines.append(f"  {data_tmp} = extractvalue {arr_llty} {array}, 2")
+		self.lines.append(f"  {gen_tmp} = extractvalue {arr_llty} {array}, 2")
+		self.lines.append(f"  {data_tmp} = extractvalue {arr_llty} {array}, 3")
 		# Allocate backing store (preserve capacity)
 		tmp_alloc = self._fresh("arr")
 		self.lines.append(
@@ -3578,12 +3608,14 @@ class _FuncBuilder:
 			self.lines.append(f"  store {self._llty(DRIFT_INT_TYPE)} {next_val}, {self._llty(DRIFT_INT_TYPE)}* {idx_ptr}")
 			self.lines.append(f"  br label {cond_block}")
 			self.lines.append(f"{done_block[1:]}:")
-		# Build the array struct {len, cap, data}
+		# Build the array struct {len, cap, gen, data}
 		tmp0 = self._fresh("arrh0")
 		tmp1 = self._fresh("arrh1")
 		self.lines.append(f"  {tmp0} = insertvalue {arr_llty} undef, {self._llty(DRIFT_INT_TYPE)} {len_tmp}, 0")
 		self.lines.append(f"  {tmp1} = insertvalue {arr_llty} {tmp0}, {self._llty(DRIFT_INT_TYPE)} {cap_tmp}, 1")
-		self.lines.append(f"  {dest} = insertvalue {arr_llty} {tmp1}, {elem_llty}* {tmp_data}, 2")
+		tmp2 = self._fresh("arrh2")
+		self.lines.append(f"  {tmp2} = insertvalue {arr_llty} {tmp1}, {self._llty(DRIFT_INT_TYPE)} {gen_tmp}, 2")
+		self.lines.append(f"  {dest} = insertvalue {arr_llty} {tmp2}, {elem_llty}* {tmp_data}, 3")
 		self.value_types[dest] = arr_llty
 
 	def _emit_copy_value(self, ty_id: TypeId, value: str) -> str:
@@ -3765,7 +3797,7 @@ class _FuncBuilder:
 			len_tmp = self._fresh("len")
 			data_tmp = self._fresh("data")
 			self.lines.append(f"  {len_tmp} = extractvalue {arr_llty} {value}, 0")
-			self.lines.append(f"  {data_tmp} = extractvalue {arr_llty} {value}, 2")
+			self.lines.append(f"  {data_tmp} = extractvalue {arr_llty} {value}, 3")
 			if self._type_needs_drop(elem_ty):
 				helper = self._ensure_array_drop_helper(elem_ty)
 				self.lines.append(f"  call void @{helper}({self._llty(DRIFT_INT_TYPE)} {len_tmp}, {elem_llty}* {data_tmp})")
@@ -3885,8 +3917,8 @@ class _FuncBuilder:
 				inner_llty = self._llvm_array_elem_type(inner_elem)
 				arr_len = fresh("len")
 				arr_data = fresh("data")
-				lines.append(f"  {arr_len} = extractvalue {{ {self._llty(DRIFT_INT_TYPE)}, {self._llty(DRIFT_INT_TYPE)}, {inner_llty}* }} {val}, 0")
-				lines.append(f"  {arr_data} = extractvalue {{ {self._llty(DRIFT_INT_TYPE)}, {self._llty(DRIFT_INT_TYPE)}, {inner_llty}* }} {val}, 2")
+				lines.append(f"  {arr_len} = extractvalue {{ {self._llty(DRIFT_INT_TYPE)}, {self._llty(DRIFT_INT_TYPE)}, {self._llty(DRIFT_INT_TYPE)}, {inner_llty}* }} {val}, 0")
+				lines.append(f"  {arr_data} = extractvalue {{ {self._llty(DRIFT_INT_TYPE)}, {self._llty(DRIFT_INT_TYPE)}, {self._llty(DRIFT_INT_TYPE)}, {inner_llty}* }} {val}, 3")
 				if self._type_needs_drop(inner_elem):
 					helper = self._ensure_array_drop_helper(inner_elem)
 					lines.append(f"  call void @{helper}({self._llty(DRIFT_INT_TYPE)} {arr_len}, {inner_llty}* {arr_data})")
@@ -4085,6 +4117,19 @@ class _FuncBuilder:
 		self.value_map[instr.dest] = tmp0
 		self.value_types[self._map_value(instr.dest)] = arr_llty
 
+	def _lower_array_set_gen(self, instr: ArraySetGen) -> None:
+		"""Lower ArraySetGen by rebuilding the array header with a new gen."""
+		dest = self._map_value(instr.dest)
+		array = self._map_value(instr.array)
+		gen = self._map_value(instr.gen)
+		arr_llty = self._type_of(instr.array)
+		if arr_llty is None:
+			raise AssertionError("ArraySetGen requires array LLVM type")
+		tmp0 = self._fresh("arr_gen")
+		self.lines.append(f"  {tmp0} = insertvalue {arr_llty} {array}, {self._llty(DRIFT_INT_TYPE)} {gen}, 2")
+		self.value_map[instr.dest] = tmp0
+		self.value_types[self._map_value(instr.dest)] = arr_llty
+
 	def _lower_array_index_addr(self, *, array: str, index: str, elem_llty: str, arr_llty: str) -> str:
 		"""
 		Compute `&array[index]` with bounds checks and return an `{elem_llty}*`.
@@ -4102,7 +4147,7 @@ class _FuncBuilder:
 		len_tmp = self._fresh("len")
 		data_tmp = self._fresh("data")
 		self.lines.append(f"  {len_tmp} = extractvalue {arr_llty} {array}, 0")
-		self.lines.append(f"  {data_tmp} = extractvalue {arr_llty} {array}, 2")
+		self.lines.append(f"  {data_tmp} = extractvalue {arr_llty} {array}, 3")
 		self.module.needs_array_helpers = True
 		container_id = self._emit_string_literal_value(ARRAY_CONTAINER_ID)
 		self.lines.append(
@@ -4128,7 +4173,7 @@ class _FuncBuilder:
 		len_tmp = self._fresh("len")
 		data_tmp = self._fresh("data")
 		self.lines.append(f"  {len_tmp} = extractvalue {arr_llty} {array}, 0")
-		self.lines.append(f"  {data_tmp} = extractvalue {arr_llty} {array}, 2")
+		self.lines.append(f"  {data_tmp} = extractvalue {arr_llty} {array}, 3")
 		idx_val = index
 		ptr_tmp = self._fresh("eltptr")
 		idx_llty = self._llty(DRIFT_INT_TYPE)
@@ -4170,8 +4215,143 @@ class _FuncBuilder:
 		self.lines.append(f"  {dest} = extractvalue {arr_llty} {array}, 1")
 		self.value_types[dest] = DRIFT_INT_TYPE
 
+	def _lower_array_gen(self, instr: ArrayGen) -> None:
+		"""Lower ArrayGen by extracting the gen field (index 2)."""
+		dest = self._map_value(instr.dest)
+		array = self._map_value(instr.array)
+		arr_llty = self.value_types.get(array)
+		if arr_llty is None:
+			raise AssertionError("LLVM codegen v1: ArrayGen missing LLVM type for array value (compiler bug)")
+		if arr_llty.endswith("*"):
+			arr_val = self._fresh("arrval")
+			self.lines.append(f"  {arr_val} = load {arr_llty[:-1]}, {arr_llty} {array}")
+			self.value_types[arr_val] = arr_llty[:-1]
+			array = arr_val
+			arr_llty = arr_llty[:-1]
+		self.lines.append(f"  {dest} = extractvalue {arr_llty} {array}, 2")
+		self.value_types[dest] = DRIFT_INT_TYPE
+
+	def _raw_buffer_value(self, raw_val: str, raw_llty: str) -> tuple[str, str]:
+		buf_llty = self.value_types.get(raw_val, raw_llty)
+		if buf_llty.endswith("*"):
+			buf_val = self._fresh("rawbuf")
+			self.lines.append(f"  {buf_val} = load {buf_llty[:-1]}, {buf_llty} {raw_val}")
+			self.value_types[buf_val] = buf_llty[:-1]
+			return buf_val, buf_llty[:-1]
+		return raw_val, buf_llty
+
+	def _lower_raw_buffer_alloc(self, instr: RawBufferAlloc) -> None:
+		dest = self._map_value(instr.dest)
+		raw_llty = self._llvm_type_for_typeid(instr.raw_ty)
+		elem_llty = self._llvm_array_elem_type(instr.elem_ty)
+		elem_size, elem_align = self._array_elem_layout(instr.elem_ty, elem_llty)
+		cap_val = self._map_value(instr.cap)
+		self.module.needs_array_helpers = True
+		tmp_alloc = self._fresh("raw")
+		zero_len = self._fresh("len0")
+		self.lines.append(f"  {zero_len} = add {self._llty(DRIFT_INT_TYPE)} 0, 0")
+		self.lines.append(
+			f"  {tmp_alloc} = call i8* @drift_alloc_array({self._llty(DRIFT_USIZE_TYPE)} {elem_size}, {self._llty(DRIFT_USIZE_TYPE)} {elem_align}, {self._llty(DRIFT_INT_TYPE)} {zero_len}, {self._llty(DRIFT_INT_TYPE)} {cap_val})"
+		)
+		tmp0 = self._fresh("raw0")
+		tmp1 = self._fresh("raw1")
+		self.lines.append(f"  {tmp0} = insertvalue {raw_llty} undef, i8* {tmp_alloc}, 0")
+		self.lines.append(f"  {tmp1} = insertvalue {raw_llty} {tmp0}, {self._llty(DRIFT_INT_TYPE)} {cap_val}, 1")
+		self.value_map[instr.dest] = tmp1
+		self.value_types[tmp1] = raw_llty
+
+	def _lower_raw_buffer_dealloc(self, instr: RawBufferDealloc) -> None:
+		raw_val = self._map_value(instr.buffer)
+		raw_llty = self._llvm_type_for_typeid(instr.raw_ty)
+		buf_val, buf_llty = self._raw_buffer_value(raw_val, raw_llty)
+		ptr_tmp = self._fresh("rawptr")
+		self.module.needs_array_helpers = True
+		self.lines.append(f"  {ptr_tmp} = extractvalue {buf_llty} {buf_val}, 0")
+		self.lines.append(f"  call void @drift_free_array(i8* {ptr_tmp})")
+
+	def _lower_raw_buffer_ptr_at(self, instr: RawBufferPtrAt) -> None:
+		dest = self._map_value(instr.dest)
+		raw_val = self._map_value(instr.buffer)
+		raw_llty = self._llvm_type_for_typeid(instr.raw_ty)
+		buf_val, buf_llty = self._raw_buffer_value(raw_val, raw_llty)
+		ptr_tmp = self._fresh("rawptr")
+		cap_tmp = self._fresh("rawcap")
+		self.lines.append(f"  {ptr_tmp} = extractvalue {buf_llty} {buf_val}, 0")
+		self.lines.append(f"  {cap_tmp} = extractvalue {buf_llty} {buf_val}, 1")
+		elem_llty = self._llvm_array_elem_type(instr.elem_ty)
+		elem_size, _elem_align = self._array_elem_layout(instr.elem_ty, elem_llty)
+		idx_val = self._map_value(instr.index)
+		self.module.needs_array_helpers = True
+		container_id = self._emit_string_literal_value(RAW_BUFFER_CONTAINER_ID)
+		self.lines.append(
+			f"  call void @drift_bounds_check({DRIFT_STRING_TYPE} {container_id}, {self._llty(DRIFT_INT_TYPE)} {idx_val}, {self._llty(DRIFT_INT_TYPE)} {cap_tmp})"
+		)
+		offset = self._fresh("rawoff")
+		self.lines.append(f"  {offset} = mul {self._llty(DRIFT_INT_TYPE)} {idx_val}, {elem_size}")
+		ptr_i8 = self._fresh("rawp")
+		self.lines.append(f"  {ptr_i8} = getelementptr i8, i8* {ptr_tmp}, {self._llty(DRIFT_INT_TYPE)} {offset}")
+		self.lines.append(f"  {dest} = bitcast i8* {ptr_i8} to {elem_llty}*")
+		self.value_types[dest] = f"{elem_llty}*"
+
+	def _lower_raw_buffer_write(self, instr: RawBufferWrite) -> None:
+		raw_val = self._map_value(instr.buffer)
+		raw_llty = self._llvm_type_for_typeid(instr.raw_ty)
+		buf_val, buf_llty = self._raw_buffer_value(raw_val, raw_llty)
+		ptr_tmp = self._fresh("rawptr")
+		cap_tmp = self._fresh("rawcap")
+		self.lines.append(f"  {ptr_tmp} = extractvalue {buf_llty} {buf_val}, 0")
+		self.lines.append(f"  {cap_tmp} = extractvalue {buf_llty} {buf_val}, 1")
+		elem_llty = self._llvm_array_elem_type(instr.elem_ty)
+		elem_size, _elem_align = self._array_elem_layout(instr.elem_ty, elem_llty)
+		idx_val = self._map_value(instr.index)
+		self.module.needs_array_helpers = True
+		container_id = self._emit_string_literal_value(RAW_BUFFER_CONTAINER_ID)
+		self.lines.append(
+			f"  call void @drift_bounds_check({DRIFT_STRING_TYPE} {container_id}, {self._llty(DRIFT_INT_TYPE)} {idx_val}, {self._llty(DRIFT_INT_TYPE)} {cap_tmp})"
+		)
+		offset = self._fresh("rawoff")
+		self.lines.append(f"  {offset} = mul {self._llty(DRIFT_INT_TYPE)} {idx_val}, {elem_size}")
+		ptr_i8 = self._fresh("rawp")
+		self.lines.append(f"  {ptr_i8} = getelementptr i8, i8* {ptr_tmp}, {self._llty(DRIFT_INT_TYPE)} {offset}")
+		ptr_t = self._fresh("rawt")
+		self.lines.append(f"  {ptr_t} = bitcast i8* {ptr_i8} to {elem_llty}*")
+		value = self._map_value(instr.value)
+		if self._is_bool_type(instr.elem_ty):
+			value = self._bool_to_storage(value)
+		self.lines.append(f"  store {elem_llty} {value}, {elem_llty}* {ptr_t}")
+
+	def _lower_raw_buffer_read(self, instr: RawBufferRead) -> None:
+		dest = self._map_value(instr.dest)
+		raw_val = self._map_value(instr.buffer)
+		raw_llty = self._llvm_type_for_typeid(instr.raw_ty)
+		buf_val, buf_llty = self._raw_buffer_value(raw_val, raw_llty)
+		ptr_tmp = self._fresh("rawptr")
+		cap_tmp = self._fresh("rawcap")
+		self.lines.append(f"  {ptr_tmp} = extractvalue {buf_llty} {buf_val}, 0")
+		self.lines.append(f"  {cap_tmp} = extractvalue {buf_llty} {buf_val}, 1")
+		elem_llty = self._llvm_array_elem_type(instr.elem_ty)
+		elem_size, _elem_align = self._array_elem_layout(instr.elem_ty, elem_llty)
+		idx_val = self._map_value(instr.index)
+		self.module.needs_array_helpers = True
+		container_id = self._emit_string_literal_value(RAW_BUFFER_CONTAINER_ID)
+		self.lines.append(
+			f"  call void @drift_bounds_check({DRIFT_STRING_TYPE} {container_id}, {self._llty(DRIFT_INT_TYPE)} {idx_val}, {self._llty(DRIFT_INT_TYPE)} {cap_tmp})"
+		)
+		offset = self._fresh("rawoff")
+		self.lines.append(f"  {offset} = mul {self._llty(DRIFT_INT_TYPE)} {idx_val}, {elem_size}")
+		ptr_i8 = self._fresh("rawp")
+		self.lines.append(f"  {ptr_i8} = getelementptr i8, i8* {ptr_tmp}, {self._llty(DRIFT_INT_TYPE)} {offset}")
+		ptr_t = self._fresh("rawt")
+		self.lines.append(f"  {ptr_t} = bitcast i8* {ptr_i8} to {elem_llty}*")
+		self.lines.append(f"  {dest} = load {elem_llty}, {elem_llty}* {ptr_t}")
+		if self._is_bool_type(instr.elem_ty):
+			self._bool_from_storage(dest, dest=dest)
+			self.value_types[dest] = "i1"
+			return
+		self.value_types[dest] = elem_llty
+
 	def _llvm_array_type(self, elem_llty: str) -> str:
-		return f"{{ {self._llty(DRIFT_INT_TYPE)}, {self._llty(DRIFT_INT_TYPE)}, {elem_llty}* }}"
+		return f"{{ {self._llty(DRIFT_INT_TYPE)}, {self._llty(DRIFT_INT_TYPE)}, {self._llty(DRIFT_INT_TYPE)}, {elem_llty}* }}"
 
 	def _llvm_array_elem_type(self, elem_ty: int) -> str:
 		"""

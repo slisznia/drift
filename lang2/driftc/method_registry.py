@@ -264,6 +264,20 @@ class CallableRegistry:
 					result.append(decl)
 		return result
 
+	def get_method_candidates_unscoped(
+		self,
+		*,
+		receiver_nominal_type_id: TypeId,
+		name: str,
+	) -> List[CallableDecl]:
+		"""Return all method candidates by name without visibility filtering."""
+		result: List[CallableDecl] = []
+		for _mod_id, bucket in self._methods_by_module.items():
+			cands = bucket.get((receiver_nominal_type_id, name), [])
+			if cands:
+				result.extend(cands)
+		return result
+
 	def get_by_id(self, callable_id: CallableId) -> CallableDecl:
 		return self._by_id[callable_id]
 

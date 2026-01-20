@@ -34,6 +34,8 @@ THROW.2: /throw\b/
 NOTHROW.2: /nothrow\b/
 VARIANT.2: /variant\b/
 TOMBSTONE.2: /@tombstone\b/
+TEST_BUILD_ONLY.2: /@test_build_only\b/
+INTRINSIC.2: /@intrinsic\b/
 MATCH.2: /match\b/
 DEFAULT.2: /default\b/
 # Note: `>>=` must be recognized before `>>` (longest match).
@@ -116,14 +118,14 @@ module_decl: MODULE module_path
 module_path: NAME (DOT NAME)*
 ident: NAME | MOVE | COPY
 
-?item: pub_item
-     | func_def
-     | const_def
-     | struct_def
-     | exception_def
-     | variant_def
-     | trait_def
-     | implement_def
+?item: test_build_only_marker? intrinsic_marker? pub_item
+     | test_build_only_marker? intrinsic_marker? func_def
+     | test_build_only_marker? const_def
+     | test_build_only_marker? struct_def
+     | test_build_only_marker? exception_def
+     | test_build_only_marker? variant_def
+     | test_build_only_marker? trait_def
+     | test_build_only_marker? implement_def
      | use_trait_stmt TERMINATOR
      | import_stmt TERMINATOR
      | export_stmt TERMINATOR
@@ -138,7 +140,7 @@ pub_item: PUB (func_def | const_def | struct_def | exception_def | variant_def |
 # - consts are values (not types) and may be exported/imported like functions.
 const_def: CONST NAME COLON type_expr EQUAL expr TERMINATOR
 
-func_def: FN_KW ident type_params? "(" [params] ")" NOTHROW? return_sig require_clause? block
+func_def: FN_KW ident type_params? "(" [params] ")" NOTHROW? return_sig require_clause? (block | TERMINATOR)
 return_sig: ARROW type_expr
 
 params: param (COMMA param)*
@@ -147,8 +149,8 @@ param: (VAR | VAL)? ident COLON type_expr
 # implement Trait for Type { fn ... }
 implement_def: "implement" type_params? type_expr ("for" type_expr)? require_clause? implement_body
 implement_body: "{" (implement_item | TERMINATOR)* "}"
-implement_item: PUB func_def -> implement_func_pub
-             | func_def      -> implement_func
+implement_item: test_build_only_marker? PUB func_def -> implement_func_pub
+             | test_build_only_marker? func_def      -> implement_func
 
 trait_def: TRAIT NAME type_params? require_clause? trait_body
 trait_body: "{" (trait_item | TERMINATOR)* "}"
@@ -300,6 +302,8 @@ type_params: ("<" | TYPE_LT) NAME (COMMA NAME)* (">" | TYPE_GT)
 variant_body: "{" (variant_arm (COMMA | TERMINATOR)*)+ "}"
 variant_arm: tombstone_marker? NAME variant_fields?
 tombstone_marker: TOMBSTONE
+test_build_only_marker: TEST_BUILD_ONLY
+intrinsic_marker: INTRINSIC
 variant_fields: "(" [variant_field_list] ")"
 variant_field_list: variant_field (COMMA variant_field)*
 variant_field: NAME COLON type_expr

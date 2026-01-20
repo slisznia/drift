@@ -1031,12 +1031,14 @@ class AstToHIR:
 			)
 			iterable_is_move = True
 		iterable_name = self._fresh_temp("__for_iterable")
-		iterable_let = H.HLet(name=iterable_name, value=iterable_expr)
+		iterable_bid = self._alloc_binding(iterable_name)
+		iterable_let = H.HLet(name=iterable_name, value=iterable_expr, binding_id=iterable_bid)
 
 		# 2) Build iterator: __for_iter = std.iter.Iterable.iter(__for_iterable)
 		iter_name = self._fresh_temp("__for_iter")
+		iter_bid = self._alloc_binding(iter_name)
 		iter_trait = ast.TypeNameRef(name="Iterable", module_id="std.iter")
-		iter_arg = H.HVar(iterable_name)
+		iter_arg = H.HVar(iterable_name, binding_id=iterable_bid)
 		if iterable_is_move and hasattr(H, "HMove"):
 			iter_arg = H.HMove(
 				subject=iter_arg,
@@ -1048,11 +1050,11 @@ class AstToHIR:
 			args=[iter_arg],
 			origin="for_iter",
 		)
-		iter_let = H.HLet(name=iter_name, value=iter_call, is_mutable=True)
+		iter_let = H.HLet(name=iter_name, value=iter_call, binding_id=iter_bid, is_mutable=True)
 
 		# 3) In loop: match std.iter.SinglePassIterator.next(__for_iter) { ... }
 		next_trait = ast.TypeNameRef(name="SinglePassIterator", module_id="std.iter")
-		iter_arg = H.HVar(iter_name)
+		iter_arg = H.HVar(iter_name, binding_id=iter_bid)
 		iter_arg = H.HBorrow(subject=iter_arg, is_mut=True)
 		next_call = H.HCall(
 			fn=H.HQualifiedMember(base_type_expr=next_trait, member="next"),

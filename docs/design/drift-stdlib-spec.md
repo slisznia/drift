@@ -99,7 +99,9 @@ Pinned MVP container set:
 
 Array API (MVP):
 - Indexing:
-  - `arr[i]` returns `T` (throws `IndexError` on OOB; only allowed for Copy elements).
+  - `arr[i]` is a place expression. In value context it yields a copy **only if `T is Copy`** (throws `IndexError` on OOB).
+  - `&arr[i]` yields `&T` (throws `IndexError` on OOB).
+  - `&mut arr[i]` yields `&mut T` (throws `IndexError` on OOB; subject to borrow rules).
   - `arr.get(i) -> Optional<&T>` returns `None` on OOB.
 - Mutation:
   - `push(value: T) -> Void` appends to the tail.
@@ -124,7 +126,7 @@ Pinned iterator capability matrix (per iter form):
   - `iter(self: T)`: SinglePass, MultiPass, Bidirectional
   - `iter(self: &T)`: SinglePass, MultiPass, Bidirectional
   - `iter(self: &mut T)`: SinglePass
-- Deque (no RandomAccess* in MVP):
+- Deque (RandomAccessReadable/Permutable available via DequeRange/DequeRangeMut in MVP):
   - `iter(self: T)`: SinglePass, MultiPass, Bidirectional
   - `iter(self: &T)`: SinglePass, MultiPass, Bidirectional
   - `iter(self: &mut T)`: SinglePass
@@ -142,9 +144,16 @@ Pinned iterator capability matrix (per iter form):
   - `iter(self: &mut T)`: SinglePass
 
 Structural mutation (MVP):
-- Any operation that can change length or internal shape is a structural mutation.
-- All methods that mutate container contents are treated as structural in MVP and
-  invalidate existing iterators.
+- Defined as any operation that can change length, capacity, or layout.
+
+Container invalidation contract (MVP):
+- Ranges/iterators must define and enforce a validity rule (e.g., a `gen` snapshot) and throw `IteratorInvalidated` when violated.
+- The compiler does not update container state for user-defined containers; container implementers are responsible for maintaining their own invalidation mechanism.
+
+Deque implementation note (MVP):
+- Deque uses a ring buffer internally (O(1) front/back ops) while keeping the public API stable.
+- Element writes (including swap/set) do not invalidate iterators/ranges.
+- `gen` increments only when an operation actually changes array structure (length or capacity changes, or backing storage is reallocated/moved). No-op reserves/shrinks do not increment `gen`; element-only updates (`set`, `swap`) do not invalidate.
 
 ## std.core.cmp
 
@@ -185,7 +194,7 @@ tracked below for MVP:
 | `fold` | `SinglePassIterator<T>` |
 | `min` / `max` | `SinglePassIterator<T>` + `T is Comparable` |
 | `equal` | `SinglePassIterator<T>` + `T is Equatable` (consumes both) |
-| `sort_in_place` | `RandomAccessPermutable<T>` + `T is Comparable` |
+| `sort_in_place` | `RandomAccessPermutable<T>` |
 | `binary_search` | `BinarySearchable<T>` + `T is Comparable` (key passed by `&T`) |
 
 ### Algorithm-specific capability traits

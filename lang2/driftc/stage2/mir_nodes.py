@@ -570,6 +570,14 @@ class ArraySetLen(MInstr):
 
 
 @dataclass
+class ArraySetGen(MInstr):
+	"""dest = array with updated gen field."""
+	dest: ValueId
+	array: ValueId
+	gen: ValueId
+
+
+@dataclass
 class ArrayLen(MInstr):
 	"""dest = len(array) as Int."""
 	dest: ValueId
@@ -581,6 +589,59 @@ class ArrayCap(MInstr):
 	"""dest = cap(array) as Int."""
 	dest: ValueId
 	array: ValueId
+
+
+@dataclass
+class ArrayGen(MInstr):
+	"""dest = gen(array) as Int."""
+	dest: ValueId
+	array: ValueId
+
+
+@dataclass
+class RawBufferAlloc(MInstr):
+	"""dest = allocate RawBuffer for element type with given capacity."""
+	dest: ValueId
+	raw_ty: TypeId
+	elem_ty: TypeId
+	cap: ValueId
+
+
+@dataclass
+class RawBufferDealloc(MInstr):
+	"""deallocate RawBuffer."""
+	buffer: ValueId
+	raw_ty: TypeId
+
+
+@dataclass
+class RawBufferPtrAt(MInstr):
+	"""dest = &mut elem at index in RawBuffer (no bounds check)."""
+	dest: ValueId
+	buffer: ValueId
+	raw_ty: TypeId
+	elem_ty: TypeId
+	index: ValueId
+
+
+@dataclass
+class RawBufferWrite(MInstr):
+	"""write value into RawBuffer slot (no bounds check)."""
+	buffer: ValueId
+	raw_ty: TypeId
+	elem_ty: TypeId
+	index: ValueId
+	value: ValueId
+
+
+@dataclass
+class RawBufferRead(MInstr):
+	"""read value from RawBuffer slot (moves out, slot becomes uninit)."""
+	dest: ValueId
+	buffer: ValueId
+	raw_ty: TypeId
+	elem_ty: TypeId
+	index: ValueId
 
 
 @dataclass
@@ -947,6 +1008,12 @@ __all__ = [
 	"ArraySetLen",
 	"ArrayLen",
 	"ArrayCap",
+	"ArrayGen",
+	"RawBufferAlloc",
+	"RawBufferDealloc",
+	"RawBufferPtrAt",
+	"RawBufferWrite",
+	"RawBufferRead",
 	"Call",
 	"CallIndirect",
 	"ConstructDV",

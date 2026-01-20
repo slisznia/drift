@@ -1,0 +1,39 @@
+module main
+
+import std.containers;
+import std.err;
+
+fn main() nothrow -> Int {
+val dq: std.containers.Deque<Int> = std.containers.deque_new<type Int>();
+	dq.push_back(1);
+	try {
+		val _ = dq.at(3);
+		return 10;
+	} catch std.err:IndexError(e) {
+		val dv_c = e.attrs["container_id"];
+		val dv_i = e.attrs["index"];
+		val c = dv_c.as_string();
+		val i = dv_i.as_int();
+		match c {
+			Some(s) => {
+				if s != "std.containers:Deque" {
+					return 20;
+				}
+			},
+			None => {
+				return 21;
+			},
+		}
+		match i {
+			Some(v) => {
+				if v != 3 {
+					return 22;
+				}
+			},
+			None => {
+				return 23;
+			},
+		}
+		return 0;
+	}
+}

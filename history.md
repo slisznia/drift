@@ -153,3 +153,81 @@
 - Enforced module ownership determinism: module_ids globally unique, linker populates host.module_packages (lang.core seeded), type_key_string requires provider mapping for imports.
 - Added template instantiation caching, deep has_typevar, module-scoped scalar nominals, and multiple regression tests to lock invariants.
 - LLVM backend updates: float width support, export wrapper Bool ABI coercion, array drop helper SSA fix + verifier test, and variant payload alignment guards.
+## 2026-01-13 – Iterators, move semantics, and exception payload plumbing
+- Pinned iterator trait surfaces (`std.iter`) and `for` UFCS lowering with deterministic diagnostics; added driver/e2e coverage for shadowing, function-returned iterables, and capability gating.
+- Established `std.core.Copy`/`std.core.Diagnostic` traits and centralized Copy checks in the compiler; added `E_USE_AFTER_MOVE` diagnostics and consuming-position move tracking in the borrow checker.
+- Implemented non-Copy array mutation via move-out/tombstone semantics (String/Array/Struct/Variant with `@tombstone` arm), plus required schema validation.
+- Added `std.err:IndexError` and `std.err:IteratorInvalidated` exception events; wired bounds checks and iterator invalidation to throw with structured attrs.
+- Made array OOB catchable in MIR (`ArrayIndexLoadUnchecked`) and removed runtime bounds-check abort path.
+- Centralized Array container_id (`std.containers:Array`) in compiler constants and pinned `IteratorOpId` numeric ABI mapping via `to_diag`.
+- Added Copy-only array literal enforcement in typecheck and e2e coverage; kept codegen as internal backstop.
+## 2026-01-15 – ArrayRange invalidation + borrow-check fixes
+- Fixed ArrayRangeMut swap receiver to use `self.arr.swap(...)` (avoids non-lvalue deref receiver in MIR lowering).
+- Updated MIR expr typing to prefer local binding types for `HVar` (stabilizes struct field access in stdlib lowering).
+- Allowed mutable borrow for receivers typed as `&mut T` in type checker (removes false “mutable Array receiver” diagnostics).
+- Added driver borrow-check tests for array element borrow conflicts/disjoint indices.
+## 2026-01-16 – UFCS uniform call resolution
+- Added `CallTargetKind.CONSTRUCTOR` to carry variant ctor metadata in CallInfo and lower constructor calls via CallInfo.
+- Removed HQualifiedMember special-case lowering in MIR; qualified calls now route through uniform call resolution.
+- Allowed trait UFCS calls on non-lvalue reference receivers (e.g., `Comparable::cmp(&T, &T)`).
+## 2026-01-17 – Array header layout + LLVM test alignment
+- Updated LLVM array header layout to include `gen` and fixed nested array drop helper extract indices.
+- Updated LLVM array header tests for the new layout and skipped LLVM-verify test when llvmlite is unavailable.
+- Synced runtime Array header layout for argv helpers and initialized gen in argv construction.
+- Pinned gen semantics to “actual structural change” and added reserve no-op vs growth invalidation e2e.
+## 2026-01-18 – Binary search in std.algo
+- Implemented `std.algo.binary_search` on `BinarySearchable + Comparable`.
+- Added e2e tests for basic/duplicate binary_search and driver diagnostics tests for missing Comparable and key-type mismatch.
+## 2026-01-19 – Trait UFCS fixes for type-parameter receivers
+- Fixed UFCS trait method resolution for type-param receivers by honoring require-bound type args; unblocked `BinarySearchable::compare_key` in std.algo and swap e2e coverage.
+## 2026-01-20 – Diagnostic codes stabilization
+- Added deterministic auto-codes for diagnostics without explicit codes (prefix-detected or hashed), ensuring stable `Diagnostic.code` values across phases.
+## 2026-02-01 – Deque container + non-Array payload tests
+- Added `Deque` container with `DequeRange`/`DequeRangeMut` and `DEQUE_CONTAINER_ID` in stdlib.
+- Added non-Array OOB payload e2e test (`deque_index_error_payload_oob`).
+- Added non-Array range invalidation e2e tests for `compare_at`/`swap` (`deque_range_compare_at_invalidated`, `deque_range_swap_invalidated`).
+## 2026-02-02 – Module-qualified calls + struct-field gen access
+- Module-qualified free calls now resolve via a global module-name map from signatures/registry, fixing `std.err.throw_iterator_invalidated` resolution in stdlib.
+- HField len/cap/gen sugar now yields struct fields when present, allowing `Deque.gen` access without bogus `len(x)` errors.
+## 2026-01-21 – Sort requirement simplification
+- Removed the `Comparable` requirement from `std.algo.sort_in_place`; ordering is defined by `compare_at` on RandomAccess ranges.
+## 2026-01-22 – Iterator work-progress cleanup
+- Trimmed iterator work-progress to outstanding items only (no functional changes).
+## 2026-01-23 – UFCS receiver fixes for std.algo sort_in_place
+- Adjusted `sort_in_place` UFCS calls to use `r` (removed `&*r`) and allowed `&mut T` receivers to satisfy `&T` in UFCS compatibility checks.
+- Relaxed trait impl visibility blocking so UFCS trait calls resolve against non-local impls.
+- Updated driver tests for `sort_in_place` to allow can-throw entrypoints.
+## 2026-01-14 – Mutable iteration + Optional<&mut> borrow tracking
+- Added `ArrayBorrowMutIter` and `Iterable<&mut Array<T>, &mut T>` in stdlib; exported mut iterator type for use in signatures.
+- Borrow checker now treats Optional<&T>/Optional<&mut T> bindings as ref bindings and tracks borrows through explicit `&/&mut` call arguments.
+- Added driver coverage for `for x in &mut xs`, `next()` re-entrancy errors, and safe `next()` after borrow scope ends.
+## 2026-01-24 – Trait method resolution for instantiations + guard scoping
+- Resolved trait-method dot calls in instantiated generic bodies to direct impls (avoids missing CallInfo in std.algo).
+- Deferred diagnostics for ambiguous generic trait guards (OR/NOT), restoring guard scoping behavior.
+## 2026-01-25 – Type checker method-call refactor
+- Extracted `HMethodCall` handling into `_type_method_call` helper to reduce nesting and stabilize indentation in `type_checker.py`.
+- Removed the unreachable post-method-call expr handling block from the helper (kept in `type_expr`).
+## 2026-01-12 – Qualified-member call consolidation cleanup
+- Prioritized trait UFCS resolution for `HCall` qualified members before variant constructor resolution, preventing false `E-QMEM-NONVARIANT` errors for `Trait::method(...)` (e.g., `cmp.Comparable::cmp`).
+- Removed legacy qualified-member ctor resolution inside method-call handling that could leave `ctor_sig` uninitialized and reintroduce duplicate inference paths.
+- Restored `for` AST → MIR CFG test by ensuring all stdlib UFCS calls produce CallInfo in typed mode.
+## 2026-01-26 – Trait impl visibility + require-arg substitution for method calls
+- Trait method resolution for type-parameter receivers now injects trait type arguments from `require` into method signatures in the fallback trait-resolution path.
+- Public trait impls are now visible across modules for method resolution (removed module visibility gate for trait impl candidates).
+## 2026-01-27 – Ref-mut preference + trait guard diagnostics alignment
+- Method resolution now prefers `&mut` over shared `&` when both receivers match, fixing `Iterable::iter(&mut xs)` to resolve the mut iterator impl.
+- Updated trait-guard scoping tests to expect missing-require diagnostics for OR/NOT guards.
+- Trait dot-call tests now avoid `nothrow` so can-throw trait methods are accepted in MVP.
+## 2026-01-28 – Trait method resolution for instantiations
+- Relaxed trait impl visibility filtering during generic instantiations so std.algo method calls resolve against caller-provided impls.
+## 2026-01-29 – test-build-only annotations
+- Added @test_build_only annotation (grammar+parser) and compiler flag --test-build-only; non-test builds ignore annotated items.
+- Filtered test-only items and exports during parse, and wired e2e runner to enable test-build-only.
+## 2026-01-30 – Preserve marker trait impls under test-build-only filtering
+- Kept empty `implement` blocks during @test_build_only filtering so marker traits (e.g., `Copy`) remain available; restored Copy query behavior in typed pipelines.
+## 2026-01-30 – Constructor resolution consolidation
+- Routed struct constructor argument mapping through call_resolver to reduce duplicate ctor resolution paths in the type checker.
+## 2026-01-17 – Generic signature resolution + ctor inference fixes
+- Signature normalization now resolves param/return TypeIds with impl/type param maps for generic signatures (prevents generic return types from collapsing to concrete bases).
+- Instantiation substitution now maps impl/type params directly to impl_args/fn_args (ensures instantiated return types are concrete).
+- Struct ctor resolution now prefers expected-type struct instances when base matches, fixing ArrayMoveIter ctor inference in return positions and restoring typed CallInfo in stdlib.

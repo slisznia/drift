@@ -1,0 +1,16 @@
+module main
+
+import std.algo as algo;
+import std.containers as containers;
+
+fn main() nothrow -> Int {
+	var arr = [2, 1, 2, 1];
+	var r = arr.range_mut();
+	try {
+		algo.sort_in_place<type containers.ArrayRangeMut<Int>, Int>(&mut r);
+	} catch _ {
+		return 10;
+	}
+	val ok = (arr[0] <= arr[1]) and (arr[1] <= arr[2]) and (arr[2] <= arr[3]);
+	return ok ? 0 : 10;
+}

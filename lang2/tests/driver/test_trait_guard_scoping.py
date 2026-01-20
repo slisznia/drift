@@ -231,7 +231,7 @@ fn f<T>(x: T) -> Int {
 		if branch == "then"
 		for d in diags
 	]
-	assert any("no matching method 'show'" in msg for msg in then_diags)
+	assert any("requirement not satisfied" in msg for msg in then_diags)
 
 
 def test_trait_guard_not_does_not_add_scope(tmp_path: Path) -> None:
@@ -266,4 +266,4 @@ fn f<T>(x: T) -> Int {
 		if branch == "then"
 		for d in diags
 	]
-	assert any("no matching method 'show'" in msg for msg in then_diags)
+	assert any("requirement not satisfied" in msg for msg in then_diags)

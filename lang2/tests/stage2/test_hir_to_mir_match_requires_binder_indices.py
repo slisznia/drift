@@ -13,8 +13,11 @@ from lang2.driftc import stage1 as H
 from lang2.driftc.core.generic_type_expr import GenericTypeExpr
 from lang2.driftc.core.types_core import TypeTable, VariantArmSchema, VariantFieldSchema
 from lang2.driftc.core.function_id import FunctionId
+from lang2.driftc.core.type_resolve_common import resolve_opaque_type
 from lang2.driftc.parser.ast import TypeExpr
 from lang2.driftc.stage2 import HIRToMIR, make_builder
+from lang2.driftc.stage1 import assign_node_ids, assign_callsite_ids
+from lang2.driftc.stage1.call_info import CallInfo, CallSig, CallTarget
 
 
 def test_match_missing_binder_field_indices_is_a_checker_bug() -> None:
@@ -76,8 +79,29 @@ def test_match_missing_binder_field_indices_is_a_checker_bug() -> None:
 			),
 		]
 	)
+	assign_node_ids(hir)
+	assign_callsite_ids(hir)
+	call_info_by_callsite_id: dict[int, CallInfo] = {}
+	for stmt in hir.statements:
+		if isinstance(stmt, H.HLet) and isinstance(stmt.value, H.HCall) and isinstance(stmt.value.fn, H.HQualifiedMember):
+			base_te = stmt.value.fn.base_type_expr
+			base_tid = resolve_opaque_type(base_te, type_table, module_id=getattr(base_te, "module_id", None))
+			inst_tid = base_tid
+			if type_table.get_variant_instance(inst_tid) is None:
+				inst_tid = type_table.ensure_instantiated(base_tid, [])
+			inst = type_table.get_variant_instance(inst_tid)
+			if inst is not None:
+				arm_def = inst.arms_by_name.get(stmt.value.fn.member)
+				if arm_def is not None:
+					info = CallInfo(
+						target=CallTarget.constructor(inst_tid, stmt.value.fn.member),
+						sig=CallSig(param_types=tuple(arm_def.field_types), user_ret_type=inst_tid, can_throw=False),
+					)
+					csid = getattr(stmt.value, "callsite_id", None)
+					if isinstance(csid, int):
+						call_info_by_callsite_id[csid] = info
 	builder = make_builder(FunctionId(module="main", name="main", ordinal=0))
-	lower = HIRToMIR(builder, type_table=type_table)
+	lower = HIRToMIR(builder, type_table=type_table, call_info_by_callsite_id=call_info_by_callsite_id)
 	try:
 		lower.lower_block(hir)
 		raise AssertionError("expected MIR lowering to reject missing binder_field_indices")
@@ -140,5 +164,26 @@ def test_match_with_positional_binders_lowers_with_indices() -> None:
 			),
 		]
 	)
+	assign_node_ids(hir)
+	assign_callsite_ids(hir)
+	call_info_by_callsite_id: dict[int, CallInfo] = {}
+	for stmt in hir.statements:
+		if isinstance(stmt, H.HLet) and isinstance(stmt.value, H.HCall) and isinstance(stmt.value.fn, H.HQualifiedMember):
+			base_te = stmt.value.fn.base_type_expr
+			base_tid = resolve_opaque_type(base_te, type_table, module_id=getattr(base_te, "module_id", None))
+			inst_tid = base_tid
+			if type_table.get_variant_instance(inst_tid) is None:
+				inst_tid = type_table.ensure_instantiated(base_tid, [])
+			inst = type_table.get_variant_instance(inst_tid)
+			if inst is not None:
+				arm_def = inst.arms_by_name.get(stmt.value.fn.member)
+				if arm_def is not None:
+					info = CallInfo(
+						target=CallTarget.constructor(inst_tid, stmt.value.fn.member),
+						sig=CallSig(param_types=tuple(arm_def.field_types), user_ret_type=inst_tid, can_throw=False),
+					)
+					csid = getattr(stmt.value, "callsite_id", None)
+					if isinstance(csid, int):
+						call_info_by_callsite_id[csid] = info
 	builder = make_builder(FunctionId(module="main", name="main", ordinal=0))
-	HIRToMIR(builder, type_table=type_table).lower_block(hir)
+	HIRToMIR(builder, type_table=type_table, call_info_by_callsite_id=call_info_by_callsite_id).lower_block(hir)

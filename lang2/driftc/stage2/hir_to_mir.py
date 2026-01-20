@@ -31,6 +31,7 @@ from typing import List, Set, Mapping, Optional
 
 from lang2.driftc import stage1 as H
 from lang2.driftc.stage1 import closures as C
+from lang2.driftc.stage1.place_expr import place_expr_from_lvalue_expr
 from lang2.driftc.stage1.call_info import (
 	CallInfo,
 	CallSig,
@@ -939,22 +940,9 @@ class HIRToMIR:
 			if key is not None and key in self._lambda_capture_slots:
 				return self._load_capture_from_env(self._lambda_capture_slots[key])
 		subject = self.lower_expr(expr.subject)
-		# Array/String len/capacity sugar: field access produces ArrayLen/ArrayCap/StringLen.
-		if expr.name == "len":
-			dest = self.b.new_temp()
-			subj_ty = self._infer_expr_type(expr.subject)
-			self._lower_len(subj_ty, subject, dest)
-			return dest
-		if expr.name in ("cap", "capacity"):
-			dest = self.b.new_temp()
-			self.b.emit(M.ArrayCap(dest=dest, array=subject))
-			return dest
-		if expr.name == "attrs":
-			raise NotImplementedError("attrs view must be indexed: Error.attrs[\"key\"]")
-		# Struct field access.
 		subj_ty = self._infer_expr_type(expr.subject)
 		if subj_ty is None:
-			raise AssertionError("struct field type unknown in MIR lowering (checker bug)")
+			raise AssertionError("field subject type unknown in MIR lowering (checker bug)")
 		sub_def = self._type_table.get(subj_ty)
 		if sub_def.kind is TypeKind.REF and sub_def.param_types:
 			inner_ty = sub_def.param_types[0]
@@ -963,6 +951,29 @@ class HIRToMIR:
 			subject = loaded
 			subj_ty = inner_ty
 			sub_def = self._type_table.get(subj_ty)
+		if expr.name in ("len", "cap", "capacity", "gen") and sub_def.kind is TypeKind.STRUCT:
+			info = self._type_table.struct_field(subj_ty, expr.name)
+			if info is not None:
+				field_idx, field_ty = info
+				dest = self.b.new_temp()
+				self.b.emit(M.StructGetField(dest=dest, subject=subject, struct_ty=subj_ty, field_index=field_idx, field_ty=field_ty))
+				return dest
+		# Array/String len/capacity sugar: field access produces ArrayLen/ArrayCap/StringLen.
+		if expr.name == "len":
+			dest = self.b.new_temp()
+			self._lower_len(subj_ty, subject, dest)
+			return dest
+		if expr.name in ("cap", "capacity"):
+			dest = self.b.new_temp()
+			self.b.emit(M.ArrayCap(dest=dest, array=subject))
+			return dest
+		if expr.name == "gen":
+			dest = self.b.new_temp()
+			self.b.emit(M.ArrayGen(dest=dest, array=subject))
+			return dest
+		if expr.name == "attrs":
+			raise NotImplementedError("attrs view must be indexed: Error.attrs[\"key\"]")
+		# Struct field access.
 		if sub_def.kind is not TypeKind.STRUCT:
 			raise NotImplementedError(f"field access is only supported on structs in v1 (have {sub_def.kind})")
 		info = self._type_table.struct_field(subj_ty, expr.name)
@@ -1153,12 +1164,18 @@ class HIRToMIR:
 	) -> M.ValueId:
 		if intrinsic is IntrinsicKind.SWAP:
 			raise AssertionError("swap(...) used in expression context (checker bug)")
+		if intrinsic is IntrinsicKind.RAW_DEALLOC:
+			raise AssertionError("dealloc(...) used in expression context (checker bug)")
+		if intrinsic is IntrinsicKind.RAW_WRITE:
+			raise AssertionError("write(...) used in expression context (checker bug)")
 		if intrinsic is IntrinsicKind.REPLACE:
 			if getattr(expr, "kwargs", None):
 				raise AssertionError("replace(...) does not accept keyword arguments (checker bug)")
 			if len(expr.args) != 2:
 				raise AssertionError("replace(...) arity mismatch reached MIR lowering (checker bug)")
 			place_expr = expr.args[0]
+			if isinstance(place_expr, H.HBorrow) and place_expr.is_mut:
+				place_expr = place_expr_from_lvalue_expr(place_expr.subject)
 			new_expr = expr.args[1]
 			if not (hasattr(H, "HPlaceExpr") and isinstance(place_expr, getattr(H, "HPlaceExpr"))):
 				raise AssertionError("replace(place, v): non-canonical place reached MIR lowering (normalize/typechecker bug)")
@@ -1169,6 +1186,56 @@ class HIRToMIR:
 			self.b.emit(M.StoreRef(ptr=ptr, value=new_val, inner_ty=inner_ty))
 			self._local_types[old_val] = inner_ty
 			return old_val
+		if intrinsic is IntrinsicKind.RAW_ALLOC:
+			if getattr(expr, "kwargs", None):
+				raise AssertionError("alloc_uninit(...) does not accept keyword arguments (checker bug)")
+			if len(expr.args) != 1:
+				raise AssertionError("alloc_uninit(...) arity mismatch reached MIR lowering (checker bug)")
+			if info is None:
+				raise AssertionError("alloc_uninit(...) missing CallInfo (checker bug)")
+			raw_ty = info.sig.user_ret_type
+			elem_ty = self._raw_buffer_elem_type(raw_ty)
+			if elem_ty is self._unknown_type:
+				raise AssertionError("alloc_uninit(...) missing RawBuffer element type (checker bug)")
+			cap_val = self.lower_expr(expr.args[0])
+			dest = self.b.new_temp()
+			self.b.emit(M.RawBufferAlloc(dest=dest, raw_ty=raw_ty, elem_ty=elem_ty, cap=cap_val))
+			self._local_types[dest] = raw_ty
+			return dest
+		if intrinsic in (IntrinsicKind.RAW_PTR_AT_REF, IntrinsicKind.RAW_PTR_AT_MUT):
+			if getattr(expr, "kwargs", None):
+				raise AssertionError("ptr_at(...) does not accept keyword arguments (checker bug)")
+			if len(expr.args) != 2:
+				raise AssertionError("ptr_at(...) arity mismatch reached MIR lowering (checker bug)")
+			if info is None or not info.sig.param_types:
+				raise AssertionError("ptr_at(...) missing CallInfo (checker bug)")
+			raw_param = self._unwrap_ref_type(info.sig.param_types[0])
+			elem_ty = self._raw_buffer_elem_type(raw_param)
+			if elem_ty is self._unknown_type:
+				raise AssertionError("ptr_at(...) missing RawBuffer element type (checker bug)")
+			buf_val = self.lower_expr(expr.args[0])
+			idx_val = self.lower_expr(expr.args[1])
+			dest = self.b.new_temp()
+			self.b.emit(M.RawBufferPtrAt(dest=dest, buffer=buf_val, raw_ty=raw_param, elem_ty=elem_ty, index=idx_val))
+			self._local_types[dest] = info.sig.user_ret_type
+			return dest
+		if intrinsic is IntrinsicKind.RAW_READ:
+			if getattr(expr, "kwargs", None):
+				raise AssertionError("read(...) does not accept keyword arguments (checker bug)")
+			if len(expr.args) != 2:
+				raise AssertionError("read(...) arity mismatch reached MIR lowering (checker bug)")
+			if info is None or not info.sig.param_types:
+				raise AssertionError("read(...) missing CallInfo (checker bug)")
+			raw_param = self._unwrap_ref_type(info.sig.param_types[0])
+			elem_ty = self._raw_buffer_elem_type(raw_param)
+			if elem_ty is self._unknown_type:
+				raise AssertionError("read(...) missing RawBuffer element type (checker bug)")
+			buf_val = self.lower_expr(expr.args[0])
+			idx_val = self.lower_expr(expr.args[1])
+			dest = self.b.new_temp()
+			self.b.emit(M.RawBufferRead(dest=dest, buffer=buf_val, raw_ty=raw_param, elem_ty=elem_ty, index=idx_val))
+			self._local_types[dest] = elem_ty
+			return dest
 		if intrinsic is IntrinsicKind.BYTE_LENGTH:
 			name = intrinsic.value
 			if getattr(expr, "kwargs", None):
@@ -1230,102 +1297,35 @@ class HIRToMIR:
 			return self._lower_lambda_immediate_call(expr.fn, expr.args)
 		if hasattr(H, "HQualifiedMember") and isinstance(expr.fn, getattr(H, "HQualifiedMember")):
 			info = self._call_info_for_expr_optional(expr)
-			skip_ufcs_info = False
-			if info is not None and info.target.kind is CallTargetKind.INDIRECT:
-				info = None
-				skip_ufcs_info = True
-			if info is None:
-				if not skip_ufcs_info:
-					info = self._call_info_from_ufcs(expr)
-					if info is not None and info.target.kind is CallTargetKind.INDIRECT:
-						# Constructor calls record indirect call info during type checking;
-						# MIR lowering handles them as direct variant construction instead.
-						info = None
-			if info is not None:
-				if getattr(expr, "kwargs", None):
-					raise AssertionError("keyword arguments reached MIR lowering for a UFCS call (checker bug)")
-				if info.target.kind is CallTargetKind.INTRINSIC:
-					intrinsic = info.target.intrinsic
-					if intrinsic is None:
-						raise AssertionError("intrinsic call missing name (typecheck/call-info bug)")
-					return self._lower_intrinsic_call_expr(expr, intrinsic, info=info)
-				result = self._lower_call_with_info(expr, info)
-				if result is None:
-					raise AssertionError("Void-returning call used in expression context (checker bug)")
-				if info.sig.can_throw:
-					ok_tid = info.sig.user_ret_type
-					def emit_call() -> M.ValueId:
-						return result
-					return self._lower_can_throw_call_value(emit_call=emit_call, ok_ty=ok_tid)
-				return result
-			qm = expr.fn
-			cur_mod = self._current_module_name()
-			base_te = getattr(qm, "base_type_expr", None)
-			base_is_variant = False
-			if base_te is not None:
-				try:
-					base_tid = resolve_opaque_type(base_te, self._type_table, module_id=cur_mod)
-					base_def = self._type_table.get(base_tid)
-					base_is_variant = base_def.kind is TypeKind.VARIANT
-					if not base_is_variant:
-						name = getattr(base_te, "name", None)
-						if isinstance(name, str):
-							base_is_variant = (
-								self._type_table.get_variant_base(module_id=cur_mod, name=name)
-								or self._type_table.get_variant_base(module_id="lang.core", name=name)
-							) is not None
-				except Exception:
-					base_is_variant = False
-			if not base_is_variant:
+			if info is None and self._typed_mode != "none":
 				raise AssertionError("missing CallInfo for qualified member call (checker bug)")
-			expected = self._current_expected_type()
-			variant_ty = self._infer_qualified_ctor_variant_type(
-				qm, expr.args, getattr(expr, "kwargs", []) or [], expected_type=expected
-			)
-			if variant_ty is None:
-				raise AssertionError("qualified constructor call cannot determine variant type (checker bug)")
-			inst = self._type_table.get_variant_instance(variant_ty)
-			if inst is None:
-				raise AssertionError("qualified constructor call variant instance missing (type table bug)")
-			arm_def = inst.arms_by_name.get(qm.member)
-			if arm_def is None:
-				raise AssertionError("unknown constructor reached MIR lowering (checker bug)")
-			pos_args = list(expr.args)
-			kw_pairs = list(getattr(expr, "kwargs", []) or [])
-			if pos_args and kw_pairs:
-				raise AssertionError("variant constructor does not allow mixing positional and named arguments (checker bug)")
-
-			field_names = list(getattr(arm_def, "field_names", []) or [])
-			field_types = list(arm_def.field_types)
-			if len(field_names) != len(field_types):
-				raise AssertionError("variant ctor schema/type mismatch reached MIR lowering (checker bug)")
-
-			ordered: list[M.ValueId | None] = [None] * len(field_types)
-			# Evaluate arguments left-to-right as written, but pass them in field order.
-			if kw_pairs:
-				for kw in kw_pairs:
-					try:
-						field_idx = field_names.index(kw.name)
-					except ValueError as err:
-						raise AssertionError("unknown variant ctor field reached MIR lowering (checker bug)") from err
-					if ordered[field_idx] is not None:
-						raise AssertionError("duplicate variant ctor field reached MIR lowering (checker bug)")
-					ordered[field_idx] = self.lower_expr(kw.value, expected_type=field_types[field_idx])
-			else:
-				if len(pos_args) != len(field_types):
-					raise AssertionError("variant constructor arity mismatch reached MIR lowering (checker bug)")
-				for idx, (arg_expr, fty) in enumerate(zip(pos_args, field_types)):
-					ordered[idx] = self.lower_expr(arg_expr, expected_type=fty)
-			if any(v is None for v in ordered):
-				raise AssertionError("missing variant ctor field reached MIR lowering (checker bug)")
-			arg_vals = [v for v in ordered if v is not None]
-			dest = self.b.new_temp()
-			self.b.emit(M.ConstructVariant(dest=dest, variant_ty=variant_ty, ctor=qm.member, args=arg_vals))
-			self._local_types[dest] = variant_ty
-			return dest
+			if info is None:
+				info = self._call_info_from_ufcs(expr)
+			if info is None:
+				raise AssertionError("missing CallInfo for qualified member call (checker bug)")
+			if getattr(expr, "kwargs", None) and info.target.kind is not CallTargetKind.CONSTRUCTOR:
+				raise AssertionError("keyword arguments reached MIR lowering for a UFCS call (checker bug)")
+			if info.target.kind is CallTargetKind.INTRINSIC:
+				intrinsic = info.target.intrinsic
+				if intrinsic is None:
+					raise AssertionError("intrinsic call missing name (typecheck/call-info bug)")
+				return self._lower_intrinsic_call_expr(expr, intrinsic, info=info)
+			result = self._lower_call_with_info(expr, info)
+			if result is None:
+				raise AssertionError("Void-returning call used in expression context (checker bug)")
+			if info.sig.can_throw:
+				ok_tid = info.sig.user_ret_type
+				def emit_call() -> M.ValueId:
+					return result
+				return self._lower_can_throw_call_value(emit_call=emit_call, ok_ty=ok_tid)
+			return result
 		if isinstance(expr.fn, H.HVar):
 			name = expr.fn.name
 			info = self._call_info_for_expr_optional(expr)
+			if info is None and self._typed_mode != "none":
+				raise AssertionError(
+					f"missing call info for HCall callsite_id={getattr(expr, 'callsite_id', None)} (typecheck/call-info bug)"
+				)
 			if info is not None and info.target.kind is CallTargetKind.INTRINSIC:
 				intrinsic = info.target.intrinsic
 				if intrinsic is None:
@@ -1349,7 +1349,7 @@ class HIRToMIR:
 					if struct_ty is not None:
 						info = None
 			if info is not None:
-				if getattr(expr, "kwargs", None):
+				if getattr(expr, "kwargs", None) and info.target.kind is not CallTargetKind.CONSTRUCTOR:
 					cur_mod = self._current_module_name()
 					fn_module = getattr(expr.fn, "module_id", None)
 					if isinstance(fn_module, str):
@@ -1376,6 +1376,8 @@ class HIRToMIR:
 			# MVP rule: constructor calls require an expected variant type from
 			# context (annotation, return type, etc.). Stage2 threads that expected
 			# type hint through `lower_expr(..., expected_type=...)`.
+			if self._typed_mode != "none":
+				raise AssertionError("variant constructor reached MIR fallback in typed mode (checker bug)")
 			expected = self._current_expected_type()
 			if expected is not None:
 				td = self._type_table.get(expected)
@@ -1385,6 +1387,10 @@ class HIRToMIR:
 						arm_def = inst.arms_by_name[name]
 						pos_args = list(expr.args)
 						kw_pairs = list(getattr(expr, "kwargs", []) or [])
+						if self._typed_mode != "none" and kw_pairs:
+							raise AssertionError(
+								"keyword arguments reached MIR lowering for a constructor in typed mode (checker bug)"
+							)
 						if pos_args and kw_pairs:
 							raise AssertionError("variant constructor does not allow mixing positional and named arguments (checker bug)")
 
@@ -1439,6 +1445,8 @@ class HIRToMIR:
 						kind=TypeKind.STRUCT, name=name
 					)
 			if struct_ty is not None:
+				if self._typed_mode != "none":
+					raise AssertionError("struct constructor reached MIR fallback in typed mode (checker bug)")
 				struct_def = self._type_table.get(struct_ty)
 				if struct_def.kind is not TypeKind.STRUCT:
 					raise AssertionError("struct schema name resolved to non-STRUCT TypeId (checker bug)")
@@ -1898,6 +1906,11 @@ class HIRToMIR:
 		self.b.emit(M.ConstInt(dest=dest, value=value))
 		return dest
 
+	def _const_bool(self, value: bool) -> M.ValueId:
+		dest = self.b.new_temp()
+		self.b.emit(M.ConstBool(dest=dest, value=value))
+		return dest
+
 	def _addr_taken_local(self, name_hint: str, ty: TypeId, init_value: M.ValueId) -> str:
 		"""
 		Create a local and take its address so SSA leaves it as storage.
@@ -1941,11 +1954,15 @@ class HIRToMIR:
 			"insert",
 			"remove",
 			"swap_remove",
+			"swap",
 			"clear",
 			"reserve",
 			"shrink_to_fit",
 			"get",
+			"ref_at",
 			"set",
+			"range",
+			"range_mut",
 		):
 			return False, None
 
@@ -1955,20 +1972,21 @@ class HIRToMIR:
 		recv_def = self._type_table.get(recv_ty)
 		array_ty = recv_ty
 		recv_ptr: M.ValueId | None = None
+		recv_is_mut = name not in ("get", "range")
+		if name == "range_mut":
+			recv_is_mut = True
+		if name == "range":
+			recv_is_mut = False
 		if recv_def.kind is TypeKind.REF and recv_def.param_types:
 			array_ty = recv_def.param_types[0]
 			recv_ptr = self.lower_expr(expr.receiver)
 		else:
-			place_expr = None
-			if hasattr(H, "HPlaceExpr") and isinstance(expr.receiver, getattr(H, "HPlaceExpr")):
-				place_expr = expr.receiver
-			elif isinstance(expr.receiver, H.HVar):
-				place_expr = H.HPlaceExpr(base=expr.receiver, projections=[], loc=Span())
+			place_expr = place_expr_from_lvalue_expr(expr.receiver)
 			if place_expr is None:
 				raise NotImplementedError("Array method requires an lvalue receiver in MVP")
 			recv_ptr, _inner = self._lower_addr_of_place(
 				place_expr,
-				is_mut=name not in ("get",),
+				is_mut=recv_is_mut,
 			)
 		if recv_ptr is None:
 			raise AssertionError("array method missing receiver address (checker bug)")
@@ -1979,6 +1997,32 @@ class HIRToMIR:
 
 		array_val = self.b.new_temp()
 		self.b.emit(M.LoadRef(dest=array_val, ptr=recv_ptr, inner_ty=array_ty))
+
+		def _next_gen(array_in: M.ValueId) -> M.ValueId:
+			gen_val = self.b.new_temp()
+			self.b.emit(M.ArrayGen(dest=gen_val, array=array_in))
+			one = self._const_int(1)
+			next_val = self.b.new_temp()
+			self.b.emit(M.BinaryOpInstr(dest=next_val, op=H.BinaryOp.ADD, left=gen_val, right=one))
+			return next_val
+
+		def _set_gen(array_in: M.ValueId, gen_val: M.ValueId) -> M.ValueId:
+			out = self.b.new_temp()
+			self.b.emit(M.ArraySetGen(dest=out, array=array_in, gen=gen_val))
+			return out
+
+		if name in ("range", "range_mut"):
+			if not want_value:
+				return True, None
+			ret_ty = self._infer_expr_type(expr)
+			if ret_ty is None:
+				raise AssertionError("array range type unknown in MIR lowering (checker bug)")
+			gen_val = self.b.new_temp()
+			self.b.emit(M.ArrayGen(dest=gen_val, array=array_val))
+			dest = self.b.new_temp()
+			self.b.emit(M.ConstructStruct(dest=dest, struct_ty=ret_ty, args=[recv_ptr, gen_val]))
+			self._local_types[dest] = ret_ty
+			return True, dest
 
 		if name == "get":
 			if not want_value:
@@ -2043,6 +2087,25 @@ class HIRToMIR:
 			self.b.emit(M.LoadLocal(dest=out, local=res_local))
 			return True, out
 
+		if name == "ref_at":
+			if not want_value:
+				return True, None
+			if len(expr.args) != 1:
+				raise AssertionError("Array.ref_at arity mismatch reached MIR lowering (checker bug)")
+			idx_val = self.lower_expr(expr.args[0], expected_type=self._int_type)
+			ptr = self.b.new_temp()
+			self.b.emit(
+				M.AddrOfArrayElem(
+					dest=ptr,
+					array=array_val,
+					index=idx_val,
+					inner_ty=elem_ty,
+					is_mut=False,
+				)
+			)
+			self._local_types[ptr] = self._type_table.ensure_ref(elem_ty)
+			return True, ptr
+
 		if name == "pop":
 			if len(expr.args) != 0:
 				raise AssertionError("Array.pop arity mismatch reached MIR lowering (checker bug)")
@@ -2079,7 +2142,9 @@ class HIRToMIR:
 			self.b.emit(M.BinaryOpInstr(dest=new_len, op=H.BinaryOp.SUB, left=len_val, right=one))
 			new_arr = self.b.new_temp()
 			self.b.emit(M.ArraySetLen(dest=new_arr, array=array_val, length=new_len))
-			self.b.emit(M.StoreRef(ptr=recv_ptr, value=new_arr, inner_ty=array_ty))
+			next_gen = _next_gen(array_val)
+			new_arr_gen = _set_gen(new_arr, next_gen)
+			self.b.emit(M.StoreRef(ptr=recv_ptr, value=new_arr_gen, inner_ty=array_ty))
 			some_val = self._emit_optional_some(opt_ty, val)
 			self.b.emit(M.StoreLocal(local=res_local, value=some_val))
 			self.b.set_terminator(M.Goto(target=join_block.name))
@@ -2188,7 +2253,7 @@ class HIRToMIR:
 			self.b.emit(M.ArrayDrop(elem_ty=elem_ty, array=old_zero))
 			return new_arr_len
 
-		def ensure_capacity(array_in: M.ValueId, *, len_val: M.ValueId, cap_val: M.ValueId, extra: M.ValueId) -> M.ValueId:
+		def ensure_capacity(array_in: M.ValueId, *, len_val: M.ValueId, cap_val: M.ValueId, extra: M.ValueId) -> tuple[M.ValueId, M.ValueId]:
 			need = self.b.new_temp()
 			self.b.emit(M.BinaryOpInstr(dest=need, op=H.BinaryOp.ADD, left=len_val, right=extra))
 			# If len < cap and need <= cap, reuse. Otherwise grow.
@@ -2200,23 +2265,34 @@ class HIRToMIR:
 			arr_local = f"__array_cap_arr{self.b.new_temp()}"
 			self.b.ensure_local(arr_local)
 			self._local_types[arr_local] = array_ty
+			grew_local = f"__array_cap_grew{self.b.new_temp()}"
+			self.b.ensure_local(grew_local)
+			self._local_types[grew_local] = self._bool_type
 			self.b.set_terminator(
 				M.IfTerminator(cond=need_ok, then_target=ok_block.name, else_target=grow_block.name)
 			)
 
 			self.b.set_block(ok_block)
 			self.b.emit(M.StoreLocal(local=arr_local, value=array_in))
+			grew_false = self.b.new_temp()
+			self.b.emit(M.ConstBool(dest=grew_false, value=False))
+			self.b.emit(M.StoreLocal(local=grew_local, value=grew_false))
 			self.b.set_terminator(M.Goto(target=join_block.name))
 
 			self.b.set_block(grow_block)
 			new_arr = grow_array(array_in, len_val=len_val, cap_val=cap_val, need_val=need)
 			self.b.emit(M.StoreLocal(local=arr_local, value=new_arr))
+			grew_true = self.b.new_temp()
+			self.b.emit(M.ConstBool(dest=grew_true, value=True))
+			self.b.emit(M.StoreLocal(local=grew_local, value=grew_true))
 			self.b.set_terminator(M.Goto(target=join_block.name))
 
 			self.b.set_block(join_block)
 			out = self.b.new_temp()
 			self.b.emit(M.LoadLocal(dest=out, local=arr_local))
-			return out
+			grew = self.b.new_temp()
+			self.b.emit(M.LoadLocal(dest=grew, local=grew_local))
+			return out, grew
 
 		if name in ("push", "insert"):
 			if name == "push" and len(expr.args) != 1:
@@ -2229,8 +2305,9 @@ class HIRToMIR:
 			self.b.emit(M.ArrayLen(dest=len_val, array=array_val))
 			cap_val = self.b.new_temp()
 			self.b.emit(M.ArrayCap(dest=cap_val, array=array_val))
+			next_gen = _next_gen(array_val)
 			one = self._const_int(1)
-			array_val2 = ensure_capacity(array_val, len_val=len_val, cap_val=cap_val, extra=one)
+			array_val2, _grew = ensure_capacity(array_val, len_val=len_val, cap_val=cap_val, extra=one)
 			array_val = array_val2
 			if name == "push":
 				self.b.emit(M.ArrayElemInitUnchecked(elem_ty=elem_ty, array=array_val, index=len_val, value=val))
@@ -2238,7 +2315,8 @@ class HIRToMIR:
 				self.b.emit(M.BinaryOpInstr(dest=new_len, op=H.BinaryOp.ADD, left=len_val, right=one))
 				new_arr = self.b.new_temp()
 				self.b.emit(M.ArraySetLen(dest=new_arr, array=array_val, length=new_len))
-				self.b.emit(M.StoreRef(ptr=recv_ptr, value=new_arr, inner_ty=array_ty))
+				new_arr_gen = _set_gen(new_arr, next_gen)
+				self.b.emit(M.StoreRef(ptr=recv_ptr, value=new_arr_gen, inner_ty=array_ty))
 				return True, None
 			# insert
 			idx_val = self.lower_expr(expr.args[0], expected_type=self._int_type)
@@ -2257,7 +2335,8 @@ class HIRToMIR:
 			self.b.emit(M.BinaryOpInstr(dest=new_len, op=H.BinaryOp.ADD, left=len_val, right=one))
 			new_arr = self.b.new_temp()
 			self.b.emit(M.ArraySetLen(dest=new_arr, array=array_val, length=new_len))
-			self.b.emit(M.StoreRef(ptr=recv_ptr, value=new_arr, inner_ty=array_ty))
+			new_arr_gen = _set_gen(new_arr, next_gen)
+			self.b.emit(M.StoreRef(ptr=recv_ptr, value=new_arr_gen, inner_ty=array_ty))
 			self.b.set_terminator(M.Goto(target=join_block.name))
 
 			self.b.set_block(shift_block)
@@ -2305,7 +2384,8 @@ class HIRToMIR:
 			self.b.emit(M.BinaryOpInstr(dest=new_len, op=H.BinaryOp.ADD, left=len_val, right=one))
 			new_arr = self.b.new_temp()
 			self.b.emit(M.ArraySetLen(dest=new_arr, array=array_val, length=new_len))
-			self.b.emit(M.StoreRef(ptr=recv_ptr, value=new_arr, inner_ty=array_ty))
+			new_arr_gen = _set_gen(new_arr, next_gen)
+			self.b.emit(M.StoreRef(ptr=recv_ptr, value=new_arr_gen, inner_ty=array_ty))
 			self.b.set_terminator(M.Goto(target=join_block.name))
 
 			self.b.set_block(join_block)
@@ -2319,6 +2399,7 @@ class HIRToMIR:
 			idx_val = self.lower_expr(expr.args[0], expected_type=self._int_type)
 			len_val = self.b.new_temp()
 			self.b.emit(M.ArrayLen(dest=len_val, array=array_val))
+			next_gen = _next_gen(array_val)
 			one = self._const_int(1)
 			val = self._array_elem_take_value(elem_ty=elem_ty, array=array_val, index=idx_val)
 			last_idx = self.b.new_temp()
@@ -2375,8 +2456,57 @@ class HIRToMIR:
 			self.b.emit(M.BinaryOpInstr(dest=new_len, op=H.BinaryOp.SUB, left=len_val, right=one))
 			new_arr = self.b.new_temp()
 			self.b.emit(M.ArraySetLen(dest=new_arr, array=array_val, length=new_len))
-			self.b.emit(M.StoreRef(ptr=recv_ptr, value=new_arr, inner_ty=array_ty))
+			new_arr_gen = _set_gen(new_arr, next_gen)
+			self.b.emit(M.StoreRef(ptr=recv_ptr, value=new_arr_gen, inner_ty=array_ty))
 			return True, val
+
+		if name == "swap":
+			if len(expr.args) != 2:
+				raise AssertionError("Array.swap arity mismatch reached MIR lowering (checker bug)")
+			idx_a = self.lower_expr(expr.args[0], expected_type=self._int_type)
+			idx_b = self.lower_expr(expr.args[1], expected_type=self._int_type)
+			# Bounds-check both indices.
+			tmp_a = self.b.new_temp()
+			self.b.emit(
+				M.AddrOfArrayElem(
+					dest=tmp_a,
+					array=array_val,
+					index=idx_a,
+					inner_ty=elem_ty,
+					is_mut=True,
+				)
+			)
+			tmp_b = self.b.new_temp()
+			self.b.emit(
+				M.AddrOfArrayElem(
+					dest=tmp_b,
+					array=array_val,
+					index=idx_b,
+					inner_ty=elem_ty,
+					is_mut=True,
+				)
+			)
+			is_same = self.b.new_temp()
+			self.b.emit(M.BinaryOpInstr(dest=is_same, op=H.BinaryOp.EQ, left=idx_a, right=idx_b))
+			same_block = self.b.new_block("array_swap_same")
+			swap_block = self.b.new_block("array_swap_do")
+			join_block = self.b.new_block("array_swap_join")
+			self.b.set_terminator(
+				M.IfTerminator(cond=is_same, then_target=same_block.name, else_target=swap_block.name)
+			)
+
+			self.b.set_block(same_block)
+			self.b.set_terminator(M.Goto(target=join_block.name))
+
+			self.b.set_block(swap_block)
+			val_a = self._array_elem_take_value(elem_ty=elem_ty, array=array_val, index=idx_a)
+			val_b = self._array_elem_take_value(elem_ty=elem_ty, array=array_val, index=idx_b)
+			self.b.emit(M.ArrayElemInitUnchecked(elem_ty=elem_ty, array=array_val, index=idx_a, value=val_b))
+			self.b.emit(M.ArrayElemInitUnchecked(elem_ty=elem_ty, array=array_val, index=idx_b, value=val_a))
+			self.b.set_terminator(M.Goto(target=join_block.name))
+
+			self.b.set_block(join_block)
+			return True, None
 
 		if name == "set":
 			if len(expr.args) != 2:
@@ -2392,6 +2522,7 @@ class HIRToMIR:
 					raise AssertionError("Array.clear arity mismatch reached MIR lowering (checker bug)")
 				len_val = self.b.new_temp()
 				self.b.emit(M.ArrayLen(dest=len_val, array=array_val))
+				next_gen = _next_gen(array_val)
 				zero = self._const_int(0)
 				idx_local = self._addr_taken_local("__array_clear_i", self._int_type, self._const_int(0))
 				self.b.emit(M.StoreLocal(local=idx_local, value=zero))
@@ -2419,7 +2550,8 @@ class HIRToMIR:
 				self.b.set_block(exit_block)
 				new_arr = self.b.new_temp()
 				self.b.emit(M.ArraySetLen(dest=new_arr, array=array_val, length=zero))
-				self.b.emit(M.StoreRef(ptr=recv_ptr, value=new_arr, inner_ty=array_ty))
+				new_arr_gen = _set_gen(new_arr, next_gen)
+				self.b.emit(M.StoreRef(ptr=recv_ptr, value=new_arr_gen, inner_ty=array_ty))
 				return True, None
 
 			if name == "reserve":
@@ -2442,7 +2574,20 @@ class HIRToMIR:
 				self.b.emit(M.ArrayLen(dest=len_val, array=array_val))
 				cap_val = self.b.new_temp()
 				self.b.emit(M.ArrayCap(dest=cap_val, array=array_val))
-				new_arr = ensure_capacity(array_val, len_val=len_val, cap_val=cap_val, extra=add_val)
+				next_gen = _next_gen(array_val)
+				new_arr, grew = ensure_capacity(array_val, len_val=len_val, cap_val=cap_val, extra=add_val)
+				bump_block = self.b.new_block("array_reserve_bump")
+				store_block = self.b.new_block("array_reserve_store")
+				self.b.set_terminator(
+					M.IfTerminator(cond=grew, then_target=bump_block.name, else_target=store_block.name)
+				)
+
+				self.b.set_block(bump_block)
+				new_arr_gen = _set_gen(new_arr, next_gen)
+				self.b.emit(M.StoreRef(ptr=recv_ptr, value=new_arr_gen, inner_ty=array_ty))
+				self.b.set_terminator(M.Goto(target=join_block.name))
+
+				self.b.set_block(store_block)
 				self.b.emit(M.StoreRef(ptr=recv_ptr, value=new_arr, inner_ty=array_ty))
 				self.b.set_terminator(M.Goto(target=join_block.name))
 
@@ -2456,6 +2601,7 @@ class HIRToMIR:
 			self.b.emit(M.ArrayLen(dest=len_val, array=array_val))
 			cap_val = self.b.new_temp()
 			self.b.emit(M.ArrayCap(dest=cap_val, array=array_val))
+			next_gen = _next_gen(array_val)
 			needs = self.b.new_temp()
 			self.b.emit(M.BinaryOpInstr(dest=needs, op=H.BinaryOp.LT, left=len_val, right=cap_val))
 			do_block = self.b.new_block("array_shrink_do")
@@ -2465,7 +2611,8 @@ class HIRToMIR:
 
 			self.b.set_block(do_block)
 			new_arr = shrink_array(array_val, len_val=len_val)
-			self.b.emit(M.StoreRef(ptr=recv_ptr, value=new_arr, inner_ty=array_ty))
+			new_arr_gen = _set_gen(new_arr, next_gen)
+			self.b.emit(M.StoreRef(ptr=recv_ptr, value=new_arr_gen, inner_ty=array_ty))
 			self.b.set_terminator(M.Goto(target=join_block.name))
 
 			self.b.set_block(skip_block)
@@ -2559,6 +2706,43 @@ class HIRToMIR:
 		self.b.set_block(join_block)
 		dest = self.b.new_temp()
 		self.b.emit(M.LoadLocal(dest=dest, local=temp_local))
+		return dest
+
+	def _visit_expr_HQualifiedMember(self, expr: H.HQualifiedMember) -> M.ValueId:
+		if self._typed_mode != "none":
+			raise AssertionError("qualified member reached MIR lowering in typed mode (checker bug)")
+		base_te = getattr(expr, "base_type_expr", None)
+		if base_te is None:
+			raise AssertionError("qualified member missing base type (checker bug)")
+		cur_mod = self._current_module_name()
+		base_tid = resolve_opaque_type(base_te, self._type_table, module_id=getattr(base_te, "module_id", None) or cur_mod, allow_generic_base=True)
+		base_def = self._type_table.get(base_tid)
+		if base_def.kind is not TypeKind.VARIANT:
+			raise AssertionError("qualified member base is not a variant in typed mode (checker bug)")
+		schema = self._type_table.get_variant_schema(base_tid)
+		if schema is None:
+			raise AssertionError("missing variant schema for qualified member (type table bug)")
+		type_arg_exprs = list(getattr(base_te, "args", []) or [])
+		if schema.type_params:
+			if len(type_arg_exprs) != len(schema.type_params):
+				raise AssertionError("qualified member missing type arguments in typed mode (checker bug)")
+			type_arg_ids = [resolve_opaque_type(a, self._type_table, module_id=getattr(base_te, "module_id", None) or cur_mod) for a in type_arg_exprs]
+			inst_id = self._type_table.ensure_variant_instantiated(base_tid, type_arg_ids)
+		else:
+			if type_arg_exprs:
+				raise AssertionError("qualified member has type arguments for non-generic variant (checker bug)")
+			inst_id = base_tid
+		inst = self._type_table.get_variant_instance(inst_id)
+		if inst is None:
+			raise AssertionError("variant instance missing for qualified member (type table bug)")
+		arm_inst = inst.arms_by_name.get(expr.member)
+		if arm_inst is None:
+			raise AssertionError("qualified member constructor missing (checker bug)")
+		if arm_inst.field_types:
+			raise AssertionError("qualified member for non-empty constructor reached MIR lowering (checker bug)")
+		dest = self.b.new_temp()
+		self.b.emit(M.ConstructVariant(dest=dest, variant_ty=inst_id, ctor=expr.member, args=[]))
+		self._local_types[dest] = inst_id
 		return dest
 
 	def _visit_expr_HTryExpr(self, expr: H.HTryExpr) -> M.ValueId:
@@ -2748,6 +2932,10 @@ class HIRToMIR:
 						raise AssertionError("swap(a, b): arity mismatch reached MIR lowering (checker bug)")
 					a_expr = stmt.expr.args[0]
 					b_expr = stmt.expr.args[1]
+					if isinstance(a_expr, H.HBorrow) and a_expr.is_mut:
+						a_expr = place_expr_from_lvalue_expr(a_expr.subject)
+					if isinstance(b_expr, H.HBorrow) and b_expr.is_mut:
+						b_expr = place_expr_from_lvalue_expr(b_expr.subject)
 					if not (
 						hasattr(H, "HPlaceExpr")
 						and isinstance(a_expr, getattr(H, "HPlaceExpr"))
@@ -2766,6 +2954,27 @@ class HIRToMIR:
 					self.b.emit(M.LoadRef(dest=b_val, ptr=b_ptr, inner_ty=b_ty))
 					self.b.emit(M.StoreRef(ptr=a_ptr, value=b_val, inner_ty=a_ty))
 					self.b.emit(M.StoreRef(ptr=b_ptr, value=a_val, inner_ty=b_ty))
+					return
+				if intrinsic is IntrinsicKind.RAW_DEALLOC:
+					if len(stmt.expr.args) != 1:
+						raise AssertionError("dealloc(buf): arity mismatch reached MIR lowering (checker bug)")
+					info = self._call_info_for(stmt.expr)
+					raw_param = self._unwrap_ref_type(info.sig.param_types[0]) if info.sig.param_types else self._unknown_type
+					buf_val = self.lower_expr(stmt.expr.args[0])
+					self.b.emit(M.RawBufferDealloc(buffer=buf_val, raw_ty=raw_param))
+					return
+				if intrinsic is IntrinsicKind.RAW_WRITE:
+					if len(stmt.expr.args) != 3:
+						raise AssertionError("write(buf, i, v): arity mismatch reached MIR lowering (checker bug)")
+					info = self._call_info_for(stmt.expr)
+					raw_param = self._unwrap_ref_type(info.sig.param_types[0]) if info.sig.param_types else self._unknown_type
+					elem_ty = self._raw_buffer_elem_type(raw_param)
+					if elem_ty is self._unknown_type:
+						raise AssertionError("write(...) missing RawBuffer element type (checker bug)")
+					buf_val = self.lower_expr(stmt.expr.args[0])
+					idx_val = self.lower_expr(stmt.expr.args[1])
+					val_val = self.lower_expr(stmt.expr.args[2])
+					self.b.emit(M.RawBufferWrite(buffer=buf_val, raw_ty=raw_param, elem_ty=elem_ty, index=idx_val, value=val_val))
 					return
 				self.lower_expr(stmt.expr)
 				return
@@ -3437,6 +3646,22 @@ class HIRToMIR:
 			return first
 		return self._unknown_type
 
+	def _unwrap_ref_type(self, ty: TypeId) -> TypeId:
+		td = self._type_table.get(ty)
+		if td.kind is TypeKind.REF and td.param_types:
+			return td.param_types[0]
+		return ty
+
+	def _raw_buffer_elem_type(self, raw_ty: TypeId) -> TypeId:
+		inst = self._type_table.get_struct_instance(raw_ty)
+		if inst is None:
+			return self._unknown_type
+		base_td = self._type_table.get(inst.base_id)
+		if base_td.kind is TypeKind.STRUCT and base_td.module_id == "std.mem" and base_td.name == "RawBuffer":
+			if inst.type_args:
+				return inst.type_args[0]
+		return self._unknown_type
+
 	def _call_info_for_expr_optional(self, expr: H.HExpr) -> CallInfo | None:
 		csid = getattr(expr, "callsite_id", None)
 		if isinstance(csid, int):
@@ -3494,6 +3719,8 @@ class HIRToMIR:
 		# Invariant: all direct calls from HIR must have CallInfo and produce MIR
 		# Call instructions with an explicit can_throw flag.
 		info = self._call_info_for(expr)
+		if info.target.kind is CallTargetKind.CONSTRUCTOR:
+			return self._lower_constructor_call(expr, info)
 		if info.target.kind is CallTargetKind.INTRINSIC:
 			raise AssertionError("intrinsic call reached _lower_call (typecheck/call-info bug)")
 		if info.target.kind is CallTargetKind.INDIRECT:
@@ -3520,6 +3747,8 @@ class HIRToMIR:
 		return dest
 
 	def _lower_call_with_info(self, expr: H.HCall, info: CallInfo) -> M.ValueId | None:
+		if info.target.kind is CallTargetKind.CONSTRUCTOR:
+			return self._lower_constructor_call(expr, info)
 		if info.target.kind is CallTargetKind.INTRINSIC:
 			raise AssertionError("intrinsic call reached _lower_call_with_info (typecheck/call-info bug)")
 		if info.target.kind is CallTargetKind.INDIRECT:
@@ -3539,6 +3768,76 @@ class HIRToMIR:
 		dest = self.b.new_temp()
 		self.b.emit(M.Call(dest=dest, fn_id=target_fn_id, args=arg_vals, can_throw=False))
 		self._local_types[dest] = info.sig.user_ret_type
+		return dest
+
+	def _lower_constructor_call(self, expr: H.HCall, info: CallInfo) -> M.ValueId:
+		variant_ty = info.target.variant_type_id
+		struct_ty = info.target.struct_type_id
+		ctor_name = info.target.ctor_name
+		ctor_arg_field_indices = info.target.ctor_arg_field_indices
+		pos_args = list(expr.args)
+		kw_pairs = list(getattr(expr, "kwargs", []) or [])
+		if pos_args and kw_pairs:
+			raise AssertionError("constructor does not allow mixing positional and named arguments (checker bug)")
+		if variant_ty is not None:
+			if ctor_name is None:
+				raise AssertionError("constructor call missing variant metadata (typecheck/call-info bug)")
+			inst = self._type_table.get_variant_instance(variant_ty)
+			if inst is None:
+				raise AssertionError("variant instance missing for constructor call (type table bug)")
+			arm_def = inst.arms_by_name.get(ctor_name)
+			if arm_def is None:
+				raise AssertionError("unknown constructor reached MIR lowering (checker bug)")
+			field_names = list(getattr(arm_def, "field_names", []) or [])
+			field_types = list(arm_def.field_types)
+			if len(field_names) != len(field_types):
+				raise AssertionError("variant ctor schema/type mismatch reached MIR lowering (checker bug)")
+		elif struct_ty is not None:
+			struct_def = self._type_table.get(struct_ty)
+			if struct_def.kind is not TypeKind.STRUCT:
+				raise AssertionError("constructor call resolved to non-STRUCT (checker bug)")
+			struct_inst = self._type_table.get_struct_instance(struct_ty)
+			if struct_inst is not None:
+				field_names = list(struct_inst.field_names)
+				field_types = list(struct_inst.field_types)
+			else:
+				field_names = list(struct_def.field_names or [])
+				field_types = list(struct_def.param_types)
+			if len(field_names) != len(field_types):
+				raise AssertionError("struct ctor schema/type mismatch reached MIR lowering (checker bug)")
+		else:
+			raise AssertionError("constructor call missing variant/struct metadata (typecheck/call-info bug)")
+		ordered: list[M.ValueId | None] = [None] * len(field_types)
+		if kw_pairs:
+			raise AssertionError("keyword arguments reached MIR lowering for a constructor (checker bug)")
+		if ctor_arg_field_indices is not None:
+			if len(pos_args) != len(ctor_arg_field_indices):
+				raise AssertionError("constructor arg mapping arity mismatch reached MIR lowering (checker bug)")
+			arg_vals = [self.lower_expr(arg_expr) for arg_expr in pos_args]
+			if len(arg_vals) != len(ctor_arg_field_indices):
+				raise AssertionError("constructor arg mapping length mismatch (checker bug)")
+			ordered = [None] * len(field_types)
+			for arg_val, field_idx in zip(arg_vals, ctor_arg_field_indices):
+				if field_idx < 0 or field_idx >= len(field_types):
+					raise AssertionError("constructor field index out of range (checker bug)")
+				if ordered[field_idx] is not None:
+					raise AssertionError("constructor arg mapping duplicates field (checker bug)")
+				ordered[field_idx] = arg_val
+		else:
+			if len(pos_args) != len(field_types):
+				raise AssertionError("constructor arity mismatch reached MIR lowering (checker bug)")
+			for idx, (arg_expr, fty) in enumerate(zip(pos_args, field_types)):
+				ordered[idx] = self.lower_expr(arg_expr, expected_type=fty)
+		if any(v is None for v in ordered):
+			raise AssertionError("missing constructor field reached MIR lowering (checker bug)")
+		arg_vals = [v for v in ordered if v is not None]
+		dest = self.b.new_temp()
+		if variant_ty is not None:
+			self.b.emit(M.ConstructVariant(dest=dest, variant_ty=variant_ty, ctor=ctor_name, args=arg_vals))
+			self._local_types[dest] = variant_ty
+		else:
+			self.b.emit(M.ConstructStruct(dest=dest, struct_ty=struct_ty, args=arg_vals))
+			self._local_types[dest] = struct_ty
 		return dest
 
 	def _call_info_from_resolution(self, expr: H.HExpr) -> CallInfo | None:
@@ -3811,6 +4110,25 @@ class HIRToMIR:
 		This is intentionally conservative: it only returns a TypeId when the type
 		can be inferred locally (literals, some builtins, locals with known types).
 		"""
+		if isinstance(expr, H.HVar):
+			if self._lambda_capture_slots is not None:
+				key = self._capture_key_for_expr(expr)
+				if key is not None and self._lambda_env_field_types is not None and key in self._lambda_capture_slots:
+					slot = self._lambda_capture_slots[key]
+					field_ty = self._lambda_env_field_types[slot]
+					if self._lambda_capture_kinds is not None and slot < len(self._lambda_capture_kinds):
+						kind = self._lambda_capture_kinds[slot]
+						if kind in (C.HCaptureKind.REF, C.HCaptureKind.REF_MUT):
+							if not self._lambda_capture_ref_is_value:
+								return field_ty
+							td = self._type_table.get(field_ty)
+							if td.kind is TypeKind.REF and td.param_types:
+								return td.param_types[0]
+					return field_ty
+			local_name = self._canonical_local(getattr(expr, "binding_id", None), expr.name)
+			local_ty = self._local_types.get(local_name)
+			if local_ty is not None:
+				return local_ty
 		if self._expr_types and self._typed_mode != "none":
 			known = self._expr_types.get(expr.node_id)
 			if known is not None:
@@ -3847,6 +4165,9 @@ class HIRToMIR:
 				return first
 			return None
 		if isinstance(expr, H.HCall) and hasattr(H, "HQualifiedMember") and isinstance(expr.fn, getattr(H, "HQualifiedMember")):
+			info = self._call_info_for_expr_optional(expr)
+			if info is not None:
+				return info.sig.user_ret_type
 			return self._infer_qualified_ctor_variant_type(expr.fn, expr.args)
 		if isinstance(expr, H.HCall) and isinstance(expr.fn, H.HVar):
 			info = self._call_info_for_expr_optional(expr)
@@ -3909,23 +4230,6 @@ class HIRToMIR:
 		if isinstance(expr, H.HArrayLiteral):
 			elem_ty = self._infer_array_literal_elem_type(expr)
 			return self._type_table.new_array(elem_ty)
-		if isinstance(expr, H.HVar):
-			if self._lambda_capture_slots is not None:
-				key = self._capture_key_for_expr(expr)
-				if key is not None and self._lambda_env_field_types is not None and key in self._lambda_capture_slots:
-					slot = self._lambda_capture_slots[key]
-					field_ty = self._lambda_env_field_types[slot]
-					if self._lambda_capture_kinds is not None and slot < len(self._lambda_capture_kinds):
-						kind = self._lambda_capture_kinds[slot]
-						if kind in (C.HCaptureKind.REF, C.HCaptureKind.REF_MUT):
-							if not self._lambda_capture_ref_is_value:
-								return field_ty
-							td = self._type_table.get(field_ty)
-							if td.kind is TypeKind.REF and td.param_types:
-								return td.param_types[0]
-					return field_ty
-			local_name = self._canonical_local(getattr(expr, "binding_id", None), expr.name)
-			return self._local_types.get(local_name)
 		if isinstance(expr, H.HField):
 			if self._lambda_capture_slots is not None:
 				key = self._capture_key_for_expr(expr)

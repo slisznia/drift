@@ -1,0 +1,36 @@
+module main
+
+import std.err;
+import std.iter as iter;
+
+fn main() nothrow -> Int {
+	var arr = [1, 2];
+	var r = arr.range();
+	arr.push(3);
+	val out: Int = try iter.RandomAccessReadable::len(&r) catch std.err:IteratorInvalidated(e) {
+		val dv_c = e.attrs["container_id"];
+		val dv_o = e.attrs["op_id"];
+		val c = dv_c.as_string();
+		val o = dv_o.as_int();
+		val c_code: Int = match c {
+			Some(s) => {
+				(s != "std.containers:Array") ? 10 : 0
+			},
+			None => {
+				11
+			},
+		};
+		val o_code: Int = match o {
+			Some(v) => {
+				(v != 2) ? 12 : 0
+			},
+			None => {
+				13
+			},
+		};
+		(c_code != 0) ? c_code : ((o_code != 0) ? o_code : 0)
+	} catch {
+		99
+	};
+	return out;
+}

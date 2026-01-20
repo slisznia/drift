@@ -1,0 +1,15 @@
+module main
+
+import std.algo as algo;
+
+fn main() -> Int {
+	var arr = [1, 2, 2, 2, 3];
+	var r = arr.range();
+	val idx = algo.binary_search(&r, &2);
+	return match idx {
+		Some(i) => {
+			(i >= 1 and i <= 3) ? 0 : 10
+		},
+		None => 11,
+	};
+}

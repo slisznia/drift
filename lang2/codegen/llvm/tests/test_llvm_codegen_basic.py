@@ -240,7 +240,8 @@ def test_codegen_fnresult_ref_err_zero_ok_slot():
 
 def test_codegen_nested_array_drop_helper_verifies():
 	"""Nested array drop helpers should emit verifiable LLVM IR."""
-	import llvmlite.binding as llvm
+	import pytest
+	llvm = pytest.importorskip("llvmlite.binding")
 
 	table = TypeTable()
 	string_ty = table.ensure_string()

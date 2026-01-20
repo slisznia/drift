@@ -47,6 +47,7 @@ from lang2.driftc.core.type_resolve_common import resolve_opaque_type
 from lang2.driftc.core.generic_type_expr import GenericTypeExpr
 from lang2.driftc.impl_index import ImplMeta, ImplMethodMeta
 from lang2.driftc.module_lowered import ModuleLowered
+from lang2.driftc.stage1 import assign_callsite_ids
 if TYPE_CHECKING:
 	from lang2.driftc.traits.world import TraitKey
 
@@ -708,7 +709,7 @@ def _decl_from_parser_fn(
 		)
 		for p in fn.params
 	]
-	return _FrontendDecl(
+	decl = _FrontendDecl(
 		fn_id,
 		fn.name,
 		fn.orig_name,
@@ -726,6 +727,8 @@ def _decl_from_parser_fn(
 		impl_type_param_locs,
 		impl_owner,
 	)
+	decl.is_intrinsic = bool(getattr(fn, "is_intrinsic", False))
+	return decl
 
 
 def _diagnostic(message: str, loc: object | None) -> Diagnostic:
@@ -895,6 +898,59 @@ def _relabel_diagnostics(diags: list[Diagnostic], label_by_path: dict[str, str])
 				diag.span = replace(span, file=label)
 
 
+def _filter_test_build_only(prog: parser_ast.Program, *, test_build_only: bool) -> parser_ast.Program:
+	if test_build_only:
+		return prog
+	test_only_names: set[str] = set()
+	for fn in getattr(prog, "functions", []) or []:
+		if getattr(fn, "test_build_only", False):
+			test_only_names.add(fn.name)
+	for c in getattr(prog, "consts", []) or []:
+		if getattr(c, "test_build_only", False):
+			test_only_names.add(c.name)
+	for s in getattr(prog, "structs", []) or []:
+		if getattr(s, "test_build_only", False):
+			test_only_names.add(s.name)
+	for v in getattr(prog, "variants", []) or []:
+		if getattr(v, "test_build_only", False):
+			test_only_names.add(v.name)
+	for e in getattr(prog, "exceptions", []) or []:
+		if getattr(e, "test_build_only", False):
+			test_only_names.add(e.name)
+	for t in getattr(prog, "traits", []) or []:
+		if getattr(t, "test_build_only", False):
+			test_only_names.add(t.name)
+
+	prog.functions = [fn for fn in getattr(prog, "functions", []) or [] if not getattr(fn, "test_build_only", False)]
+	prog.consts = [c for c in getattr(prog, "consts", []) or [] if not getattr(c, "test_build_only", False)]
+	prog.structs = [s for s in getattr(prog, "structs", []) or [] if not getattr(s, "test_build_only", False)]
+	prog.variants = [v for v in getattr(prog, "variants", []) or [] if not getattr(v, "test_build_only", False)]
+	prog.exceptions = [e for e in getattr(prog, "exceptions", []) or [] if not getattr(e, "test_build_only", False)]
+	prog.traits = [t for t in getattr(prog, "traits", []) or [] if not getattr(t, "test_build_only", False)]
+
+	impls: list[parser_ast.ImplementDef] = []
+	for impl in getattr(prog, "implements", []) or []:
+		if getattr(impl, "test_build_only", False):
+			continue
+		impl.methods = [m for m in getattr(impl, "methods", []) or [] if not getattr(m, "test_build_only", False)]
+		impls.append(impl)
+	prog.implements = impls
+
+	exports: list[parser_ast.ExportStmt] = []
+	for exp in getattr(prog, "exports", []) or []:
+		items: list[parser_ast.ExportItem] = []
+		for item in getattr(exp, "items", []) or []:
+			if isinstance(item, parser_ast.ExportName) and item.name in test_only_names:
+				continue
+			items.append(item)
+		if not items:
+			continue
+		exp.items = items
+		exports.append(exp)
+	prog.exports = exports
+	return prog
+
+
 def _diag_duplicate(
 	*,
 	kind: str,
@@ -958,6 +1014,7 @@ def parse_drift_files_to_hir(
 	paths: list[Path],
 	*,
 	package_id: str | None = None,
+	test_build_only: bool = False,
 	) -> Tuple[ModuleLowered, "TypeTable", Dict[str, int], List[Diagnostic]]:
 	"""
 	Parse and lower a set of Drift source files into a single module unit.
@@ -1093,6 +1150,7 @@ def parse_drift_files_to_hir(
 		return empty, TypeTable(), {}, diagnostics
 
 	path, prog = programs[0]
+	prog = _filter_test_build_only(prog, test_build_only=test_build_only)
 	func_hirs, sigs, fn_ids, table, excs, impl_metas, diags = _lower_parsed_program_to_hir(
 		prog,
 		diagnostics=diagnostics,
@@ -1112,6 +1170,8 @@ def parse_drift_files_to_hir(
 		impl_defs=list(impl_metas),
 		origin_by_fn_id=origins,
 	)
+	for block in func_hirs.values():
+		assign_callsite_ids(block, start=0)
 	return module, table, excs, diags
 
 
@@ -1123,6 +1183,7 @@ def parse_drift_workspace_to_hir(
 	external_module_packages: dict[str, str] | None = None,
 	package_id: str | None = None,
 	stdlib_root: Path | None = None,
+	test_build_only: bool = False,
 	) -> Tuple[
 	Dict[str, ModuleLowered],
 	"TypeTable",
@@ -1257,6 +1318,7 @@ def parse_drift_workspace_to_hir(
 	root_file_by_module: dict[str, dict[Path, Path]] = {}
 	for path, prog in parsed:
 		is_user_file = path.resolve() in user_path_set
+		prog = _filter_test_build_only(prog, test_build_only=test_build_only)
 		if module_paths:
 			root = _file_root_for_path(path)
 			if root is None:
@@ -1923,8 +1985,10 @@ def parse_drift_workspace_to_hir(
 				continue
 			if isinstance(mod, str) and isinstance(pkg, str):
 				module_packages_for_scope.setdefault(mod, pkg)
-	if package_id is not None:
-		for mod in merged_programs:
+	for mod in merged_programs:
+		if mod.startswith("std."):
+			module_packages_for_scope.setdefault(mod, "std")
+		elif package_id is not None:
 			module_packages_for_scope.setdefault(mod, package_id)
 	module_packages_for_scope.setdefault("lang.core", "lang.core")
 
@@ -1964,9 +2028,11 @@ def parse_drift_workspace_to_hir(
 			for tr in getattr(prog, "used_traits", []) or []:
 				ref_path = list(getattr(tr, "module_path", []) or [])
 				if not ref_path:
-					continue
-				alias = ".".join(ref_path)
-				mod = module_aliases.get(alias)
+					mod = mid
+					alias = mid
+				else:
+					alias = ".".join(ref_path)
+					mod = module_aliases.get(alias)
 				span = _span_in_file(path, getattr(tr, "loc", None))
 				if mod is None:
 					diagnostics.append(
@@ -1986,23 +2052,24 @@ def parse_drift_workspace_to_hir(
 						)
 					)
 					continue
-				exported_traits = _exported_traits_for_module(mod)
-				if tr.name not in exported_traits:
-					available = ", ".join(sorted(exported_traits))
-					notes = (
-						[f"available exported traits: {available}"]
-						if available
-						else [f"module '{mod}' exports no traits (private by default)"]
-					)
-					diagnostics.append(
-						_p_diag(
-							message=f"module '{mod}' does not export trait '{tr.name}'",
-							severity="error",
-							span=span,
-							notes=notes,
+				if mod != mid:
+					exported_traits = _exported_traits_for_module(mod)
+					if tr.name not in exported_traits:
+						available = ", ".join(sorted(exported_traits))
+						notes = (
+							[f"available exported traits: {available}"]
+							if available
+							else [f"module '{mod}' exports no traits (private by default)"]
 						)
-					)
-					continue
+						diagnostics.append(
+							_p_diag(
+								message=f"module '{mod}' does not export trait '{tr.name}'",
+								severity="error",
+								span=span,
+								notes=notes,
+							)
+						)
+						continue
 				origin_mod, origin_name = _resolve_trait_origin(mod, tr.name)
 				origin_pkg = module_packages_for_scope.get(origin_mod, package_id)
 				key = TraitKey(package_id=origin_pkg, module=origin_mod, name=origin_name)
@@ -2161,6 +2228,8 @@ def parse_drift_workspace_to_hir(
 						_resolve_types_in_expr(a)
 					for kw in getattr(expr, "kwargs", []) or []:
 						_resolve_types_in_expr(kw.value)
+					for t in getattr(expr, "type_args", []) or []:
+						_resolve_type_expr_in_file(path, file_aliases, t, allow_traits=False)
 					return
 				if isinstance(expr, parser_ast.Attr):
 					_resolve_types_in_expr(expr.value)
@@ -2383,6 +2452,9 @@ def parse_drift_workspace_to_hir(
 			if not isinstance(mod, str) or not isinstance(pkg, str):
 				continue
 			shared_type_table.module_packages.setdefault(mod, pkg)
+	for mod in merged_programs:
+		if mod.startswith("std."):
+			shared_type_table.module_packages.setdefault(mod, "std")
 	shared_type_table.module_packages.setdefault("lang.core", "lang.core")
 	_prime_builtins(shared_type_table)
 	# Pre-declare all nominal type names across the workspace before lowering any
@@ -2832,6 +2904,23 @@ def parse_drift_workspace_to_hir(
 						# Preserve the rewritten call and ignore the original callee expression.
 						return q
 				return expr
+			if isinstance(expr, getattr(H, "HInvoke", ())):
+				expr.callee = walk_expr(expr.callee, bound=bound)
+				expr.args = [walk_expr(a, bound=bound) for a in expr.args]
+				for kw in getattr(expr, "kwargs", []) or []:
+					if getattr(kw, "value", None) is not None:
+						kw.value = walk_expr(kw.value, bound=bound)
+				if isinstance(expr.callee, H.HField) and isinstance(expr.callee.subject, H.HVar):
+					q = _rewrite_module_qualified_call(
+						receiver=expr.callee.subject,
+						member=expr.callee.name,
+						args=expr.args,
+						kwargs=getattr(expr, "kwargs", []) or [],
+						type_args=getattr(expr, "type_args", None),
+					)
+					if isinstance(q, H.HCall):
+						return q
+				return expr
 
 			if isinstance(expr, H.HVar):
 				expr.name = rewrite_const_name(expr.name, bound=bound)
@@ -3021,6 +3110,9 @@ def parse_drift_workspace_to_hir(
 				if module_file_by_id.get(mid) is not None
 			},
 		)
+	for module in modules.values():
+		for block in module.func_hirs.values():
+			assign_callsite_ids(block, start=0)
 
 	return modules, shared_type_table, exc_catalog, module_exports, deps, diagnostics
 
@@ -3304,6 +3396,8 @@ def _lower_parsed_program_to_hir(
 		name_ord[fn.name] = ordinal + 1
 		fn_id = FunctionId(module=module_id, name=fn.name, ordinal=ordinal)
 		fn_ids_by_name.setdefault(function_symbol(fn_id), []).append(fn_id)
+		if getattr(fn, "require", None) is not None:
+			world.requires_by_fn[fn_id] = fn.require.expr
 		decl_decl = _decl_from_parser_fn(fn, fn_id=fn_id)
 		decl_decl.module = module_id
 		# Reject FnResult in surface type annotations (return or parameter types).
@@ -3527,6 +3621,7 @@ def parse_drift_to_hir(
 	path: Path,
 	*,
 	package_id: str | None = None,
+	test_build_only: bool = False,
 ) -> Tuple[ModuleLowered, "TypeTable", Dict[str, int], List[Diagnostic]]:
 	"""
 	Parse a Drift source file into lang2 HIR blocks + FnSignatures + TypeTable.
@@ -3538,6 +3633,7 @@ def parse_drift_to_hir(
 	source = path.read_text()
 	try:
 		prog = _parser.parse_program(source)
+		prog = _filter_test_build_only(prog, test_build_only=test_build_only)
 	except _parser.FStringParseError as err:
 		empty = ModuleLowered(
 			module_id="main",

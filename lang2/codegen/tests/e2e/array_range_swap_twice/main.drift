@@ -1,0 +1,15 @@
+module main
+
+import std.iter as iter;
+
+fn main() nothrow -> Int {
+	var arr = [1, 2, 3];
+	var r = arr.range_mut();
+	try {
+		iter.RandomAccessPermutable::swap(&mut r, 0, 2);
+		iter.RandomAccessPermutable::swap(&mut r, 0, 2);
+	} catch {
+		return 99;
+	}
+	return arr[0] * 100 + arr[1] * 10 + arr[2];
+}

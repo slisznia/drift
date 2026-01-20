@@ -69,17 +69,17 @@ def test_std_mem_swap_is_intrinsic(tmp_path: Path, capsys: pytest.CaptureFixture
 	_write_file(
 		mod_root / "main" / "main.drift",
 		"""
-module main
+module std.mem.test
 
 import std.mem as mem;
 
-fn main() nothrow -> Int {
-	var x: Int = 1;
-	var y: Int = 2;
-	val r = &x;
-	mem.swap(x, y);
-	return 0;
-}
+	fn main() nothrow -> Int {
+		var x: Int = 1;
+		var y: Int = 2;
+		val r = &x;
+		mem.swap(&mut x, &mut y);
+		return 0;
+	}
 """.lstrip(),
 	)
 	paths = sorted(set(paths + list(mod_root.rglob("*.drift"))))

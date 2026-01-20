@@ -22,14 +22,7 @@ def _raw_can_throw(raw: object) -> bool:
 	return bool(val)
 
 
-def resolve_opaque_type(
-	raw: object,
-	table: TypeTable,
-	*,
-	module_id: str | None = None,
-	type_params: dict[str, TypeParamId] | None = None,
-	allow_generic_base: bool = False,
-) -> TypeId:
+def resolve_opaque_type(raw: object, table: TypeTable, *, module_id: str | None = None, type_params: dict[str, TypeParamId | TypeId] | None = None, allow_generic_base: bool = False) -> TypeId:
 	"""
 	Map a raw type shape (TypeExpr-like, string, tuple, or TypeId) to a TypeId.
 
@@ -51,7 +44,10 @@ def resolve_opaque_type(
 		args = getattr(raw, "args")
 		origin_mod = getattr(raw, "module_id", None) or module_id
 		if type_params and name in type_params and not args:
-			return table.ensure_typevar(type_params[name], name=name)
+			param_val = type_params[name]
+			if isinstance(param_val, TypeId):
+				return param_val
+			return table.ensure_typevar(param_val, name=name)
 		if name in {"&", "&mut"}:
 			inner = resolve_opaque_type(
 				args[0] if args else None,

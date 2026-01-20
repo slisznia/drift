@@ -9,7 +9,7 @@ pub trait Copy {
 }
 
 pub trait Diagnostic {
-	fn to_diag(self: Self) -> DiagnosticValue;
+	fn to_diag(self: Self) nothrow -> DiagnosticValue;
 }
 
 implement Copy for Int {

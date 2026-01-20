@@ -310,6 +310,14 @@ Sugar for “build the default target” using the project file in the current d
 driftc --project=/path/to/drift-project.json --target cli
 ```
 
+### Test-build-only items
+```bash
+driftc --test-build-only
+```
+
+Enables compilation of declarations annotated with `@test_build_only`. In normal
+builds those items are ignored (not visible, not exported).
+
 ---
 
 ## 11. Lockfile (`drift-project.lock.json`)

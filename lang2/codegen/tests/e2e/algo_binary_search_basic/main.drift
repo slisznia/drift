@@ -1,0 +1,13 @@
+module main
+
+import std.algo as algo;
+
+fn main() -> Int {
+	var arr = [1, 3, 5, 7, 9];
+	var r = arr.range();
+	val idx = algo.binary_search(&r, &5);
+	return match idx {
+		Some(i) => i,
+		None => -1,
+	};
+}

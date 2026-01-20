@@ -81,7 +81,7 @@ def test_array_literal_and_index_ir_contains_alloc_and_load():
 	assert "call i8* @drift_alloc_array" in ir
 	assert "drift_bounds_check" in ir
 	assert f"getelementptr {word_ty}" in ir
-	assert f"extractvalue {{ {word_ty}, {word_ty}, {word_ty}* }}" in ir
+	assert f"extractvalue {{ {word_ty}, {word_ty}, {word_ty}, {word_ty}* }}" in ir
 
 
 def test_array_index_store_ir_contains_store():

@@ -140,23 +140,28 @@ def resolve_program_signatures(
 		if is_method and getattr(decl, "impl_target", None) is not None:
 			target_expr = decl.impl_target
 			origin_mod = getattr(target_expr, "module_id", None) or module_name
+			target_base_expr = target_expr
+			if target_expr.name in {"&", "&mut"} and getattr(target_expr, "args", None):
+				target_base_expr = target_expr.args[0]
 			base_id = None
 			if origin_mod is not None:
-				base_id = table.get_struct_base(module_id=origin_mod, name=target_expr.name)
+				base_id = table.get_struct_base(module_id=origin_mod, name=target_base_expr.name)
 			if base_id is None and origin_mod is not None:
-				base_id = table.get_variant_base(module_id=origin_mod, name=target_expr.name)
+				base_id = table.get_variant_base(module_id=origin_mod, name=target_base_expr.name)
 			if base_id is None:
 				impl_target_type_id = resolve_opaque_type(
-					target_expr,
+					target_base_expr,
 					table,
 					module_id=origin_mod,
 					type_params=impl_type_param_map,
 				)
 			else:
 				impl_target_type_id = base_id
-			target_for_args = target_expr
-			if target_expr.name in {"&", "&mut"} and getattr(target_expr, "args", None):
-				target_for_args = target_expr.args[0]
+			if impl_target_type_id is not None:
+				td = table.get(impl_target_type_id)
+				if td.kind is TypeKind.ARRAY:
+					impl_target_type_id = table.array_base_id()
+			target_for_args = target_base_expr
 			if getattr(target_for_args, "args", None):
 				arg_mod = getattr(target_for_args, "module_id", None) or origin_mod
 				impl_target_type_args = [

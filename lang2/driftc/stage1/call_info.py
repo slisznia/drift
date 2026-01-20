@@ -25,6 +25,8 @@ class CallTargetKind(Enum):
 	DIRECT = auto()
 	INDIRECT = auto()
 	INTRINSIC = auto()
+	CONSTRUCTOR = auto()
+	TRAIT = auto()
 
 
 class IntrinsicKind(Enum):
@@ -34,6 +36,13 @@ class IntrinsicKind(Enum):
 	BYTE_LENGTH = "byte_length"
 	STRING_EQ = "string_eq"
 	STRING_CONCAT = "string_concat"
+	RAW_ALLOC = "raw_alloc"
+	RAW_DEALLOC = "raw_dealloc"
+	RAW_CAPACITY = "raw_capacity"
+	RAW_PTR_AT_REF = "raw_ptr_at_ref"
+	RAW_PTR_AT_MUT = "raw_ptr_at_mut"
+	RAW_WRITE = "raw_write"
+	RAW_READ = "raw_read"
 
 
 
@@ -43,6 +52,12 @@ class CallTarget:
 	symbol: SymbolId | None = None
 	callee_node_id: int | None = None
 	intrinsic: IntrinsicKind | None = None
+	variant_type_id: TypeId | None = None
+	struct_type_id: TypeId | None = None
+	ctor_name: str | None = None
+	ctor_arg_field_indices: Tuple[int, ...] | None = None
+	trait_key: object | None = None
+	method_name: str | None = None
 
 	@staticmethod
 	def direct(symbol: SymbolId) -> "CallTarget":
@@ -55,6 +70,36 @@ class CallTarget:
 	@staticmethod
 	def intrinsic(kind: IntrinsicKind) -> "CallTarget":
 		return CallTarget(kind=CallTargetKind.INTRINSIC, intrinsic=kind)
+
+	@staticmethod
+	def constructor(
+		variant_type_id: TypeId,
+		ctor_name: str,
+		*,
+		ctor_arg_field_indices: Tuple[int, ...] | None = None,
+	) -> "CallTarget":
+		return CallTarget(
+			kind=CallTargetKind.CONSTRUCTOR,
+			variant_type_id=variant_type_id,
+			ctor_name=ctor_name,
+			ctor_arg_field_indices=ctor_arg_field_indices,
+		)
+
+	@staticmethod
+	def constructor_struct(
+		struct_type_id: TypeId,
+		*,
+		ctor_arg_field_indices: Tuple[int, ...] | None = None,
+	) -> "CallTarget":
+		return CallTarget(
+			kind=CallTargetKind.CONSTRUCTOR,
+			struct_type_id=struct_type_id,
+			ctor_arg_field_indices=ctor_arg_field_indices,
+		)
+
+	@staticmethod
+	def trait(trait_key: object, method_name: str) -> "CallTarget":
+		return CallTarget(kind=CallTargetKind.TRAIT, trait_key=trait_key, method_name=method_name)
 
 
 @dataclass(frozen=True)

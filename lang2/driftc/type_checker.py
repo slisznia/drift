@@ -20,7 +20,7 @@ from enum import Enum, auto
 from typing import Dict, List, Optional, Mapping, Tuple
 
 from lang2.driftc import stage1 as H
-from lang2.driftc.stage1.call_info import CallInfo, CallSig, CallTarget, IntrinsicKind
+from lang2.driftc.stage1.call_info import CallInfo, CallSig, CallTarget, CallTargetKind, IntrinsicKind
 from lang2.driftc.stage1.node_ids import assign_node_ids
 from lang2.driftc.stage1.capture_discovery import discover_captures
 from lang2.driftc.stage1.place_expr import place_expr_from_lvalue_expr
@@ -117,9 +117,11 @@ from lang2.driftc.traits.linked_world import (
 	LinkedWorld,
 	RequireEnv,
 	BOOL_TRUE,
+	build_require_env,
 	link_trait_worlds,
 )
-from lang2.driftc.method_resolver import MethodResolution, ResolutionError, resolve_method_call
+from lang2.driftc.method_resolver import MethodResolution, ResolutionError
+from lang2.driftc.checker.call_resolver import MethodCallResult, make_call_ctx, make_method_ctx, make_resolver_ctx, resolve_call_expr, resolve_method_call, resolve_qualified_member_call, resolve_qualified_member_ufcs
 from lang2.driftc.parser import ast as parser_ast
 from lang2.driftc.traits.solver import (
 	Env as TraitEnv,
@@ -493,6 +495,7 @@ class TypeChecker:
 		param_types: Mapping[str, TypeId] | None = None,
 		param_mutable: Mapping[str, bool] | None = None,
 		return_type: TypeId | None = None,
+		preseed_type_params: Mapping[str, TypeId] | None = None,
 		preseed_binding_types: Mapping[int, TypeId] | None = None,
 		preseed_binding_names: Mapping[int, str] | None = None,
 		preseed_binding_mutable: Mapping[int, bool] | None = None,
@@ -506,6 +509,7 @@ class TypeChecker:
 		trait_index: GlobalTraitIndex | None = None,
 		trait_impl_index: GlobalTraitImplIndex | None = None,
 		trait_scope_by_module: Mapping[str, list[TraitKey]] | None = None,
+		trait_key_for_id: Callable[[int], TraitKey | None] | None = None,
 		linked_world: LinkedWorld | None = None,
 		require_env: RequireEnv | None = None,
 		visible_modules: Optional[Tuple[ModuleId, ...]] = None,
@@ -561,14 +565,11 @@ class TypeChecker:
 				self._next_binding_id = max_preseed + 1
 		if callable_registry is not None:
 			has_call = False
-			has_callsite = False
 
 			def _scan_expr(expr: H.HExpr) -> None:
-				nonlocal has_call, has_callsite
+				nonlocal has_call
 				if isinstance(expr, (H.HCall, H.HMethodCall, H.HInvoke)):
 					has_call = True
-					if isinstance(getattr(expr, "callsite_id", None), int):
-						has_callsite = True
 				if isinstance(expr, H.HCall) and isinstance(expr.fn, H.HLambda):
 					lam = expr.fn
 					if getattr(lam, "body_expr", None) is not None:
@@ -607,7 +608,7 @@ class TypeChecker:
 										_scan_block(it)
 
 			_scan_block(body)
-			if has_call and not has_callsite:
+			if has_call:
 				H.assign_callsite_ids(body)
 
 		next_callsite_id: int | None = None
@@ -770,8 +771,31 @@ class TypeChecker:
 			return place_from_expr(expr, base_lookup=_receiver_base_lookup)
 
 		def _receiver_can_mut_borrow(expr: H.HExpr, place: Optional[Place]) -> bool:
+			ref_ty = type_expr(expr, used_as_value=False)
+			if ref_ty is not None:
+				ref_def = self.type_table.get(ref_ty)
+				if ref_def.kind is TypeKind.REF and bool(ref_def.ref_mut):
+					return True
+			if hasattr(H, "HPlaceExpr") and isinstance(expr, getattr(H, "HPlaceExpr")):
+				base_ty = type_expr(expr.base, used_as_value=False)
+				if base_ty is not None:
+					base_def = self.type_table.get(base_ty)
+					if base_def.kind is TypeKind.REF and bool(base_def.ref_mut):
+						return True
 			if isinstance(expr, H.HBorrow):
 				return bool(expr.is_mut)
+			if isinstance(expr, H.HField):
+				sub_ty = type_expr(expr.subject, used_as_value=False)
+				if sub_ty is None:
+					return False
+				sub_def = self.type_table.get(sub_ty)
+				return sub_def.kind is TypeKind.REF and bool(sub_def.ref_mut)
+			if isinstance(expr, H.HIndex):
+				sub_ty = type_expr(expr.subject, used_as_value=False)
+				if sub_ty is None:
+					return False
+				sub_def = self.type_table.get(sub_ty)
+				return sub_def.kind is TypeKind.REF and bool(sub_def.ref_mut)
 			if place is None:
 				return False
 			has_deref = any(isinstance(p, DerefProj) for p in place.projections)
@@ -822,15 +846,15 @@ class TypeChecker:
 			if self_mode is None:
 				return None
 			if not receiver_is_lvalue:
-				return 2 if self_mode is SelfMode.SELF_BY_VALUE else None
+				return 0 if self_mode is SelfMode.SELF_BY_VALUE else None
 			if self_mode is SelfMode.SELF_BY_REF:
-				return 0
+				return 1
 			if self_mode is SelfMode.SELF_BY_REF_MUT:
 				if autoborrow is SelfMode.SELF_BY_REF_MUT and not receiver_can_mut_borrow:
 					return None
-				return 1
-			if self_mode is SelfMode.SELF_BY_VALUE:
 				return 2
+			if self_mode is SelfMode.SELF_BY_VALUE:
+				return 0
 			return None
 
 		def _infer_receiver_arg_type(
@@ -856,6 +880,16 @@ class TypeChecker:
 					return self.type_table.ensure_ref_mut(recv_ty)
 				return recv_ty
 			return recv_ty
+
+		def _self_mode_from_sig(sig: FnSignature) -> SelfMode:
+			param_type_ids = getattr(sig, "param_type_ids", None)
+			if param_type_ids is None:
+				param_type_ids = list(getattr(sig, "param_types", ()) or ())
+			if param_type_ids:
+				param0 = self.type_table.get(param_type_ids[0])
+				if param0.kind is TypeKind.REF:
+					return SelfMode.SELF_BY_REF_MUT if param0.ref_mut else SelfMode.SELF_BY_REF
+			return SelfMode.SELF_BY_VALUE
 		# Borrow exclusivity (MVP): tracked within a single statement/expression.
 		#
 		# Key by Place (not binding id) so this mechanism naturally extends to
@@ -867,6 +901,7 @@ class TypeChecker:
 		#   - `&mut x` conflicts with any other borrow of `x` in the same statement
 		#   - `&x` conflicts with a prior `&mut x` in the same statement
 		borrows_in_stmt: Dict[Place, str] = {}
+		borrow_expr_ids_in_stmt: set[int] = set()
 		def _ref_param_info(param_ty: TypeId) -> tuple[bool, TypeId] | None:
 			pdef = self.type_table.get(param_ty)
 			if pdef.kind is not TypeKind.REF or not pdef.param_types:
@@ -1076,6 +1111,8 @@ class TypeChecker:
 		default_package = getattr(self.type_table, "package_id", None)
 		module_packages = getattr(self.type_table, "module_packages", None)
 		require_env_local = require_env
+		if require_env_local is None and linked_world is not None:
+			require_env_local = build_require_env(linked_world, default_package=default_package, module_packages=module_packages or {})
 		if require_env_local is None and has_trait_worlds:
 			require_env_local = RequireEnv(
 				requires_by_fn={},
@@ -1086,6 +1123,9 @@ class TypeChecker:
 		type_param_map: dict[str, TypeParamId] = {}
 		type_param_names: dict[TypeParamId, str] = {}
 		fn_require_assumed: set[tuple[object, TraitKey]] = set()
+		if preseed_type_params:
+			for _name, _tid in preseed_type_params.items():
+				type_param_map[_name] = _tid
 
 		def _require_for_fn(fid: FunctionId) -> parser_ast.TraitExpr | None:
 			if require_env_local is not None:
@@ -1397,8 +1437,10 @@ class TypeChecker:
 		if signatures_by_id is not None:
 			sig = signatures_by_id.get(fn_id)
 			if sig is not None:
-				type_param_map = {p.name: p.id for p in getattr(sig, "type_params", []) or []}
-				type_param_names = {p.id: p.name for p in getattr(sig, "type_params", []) or []}
+				for p in (list(getattr(sig, "impl_type_params", []) or []) + list(getattr(sig, "type_params", []) or [])):
+					if p.name not in type_param_map:
+						type_param_map[p.name] = p.id
+				type_param_names = {p.id: p.name for p in (list(getattr(sig, "impl_type_params", []) or []) + list(getattr(sig, "type_params", []) or []))}
 
 		def _traits_in_scope() -> list[TraitKey]:
 			extra: list[TraitKey] = []
@@ -1745,7 +1787,9 @@ class TypeChecker:
 			chosen_fn_id, chosen_sig, call_sig_tuple = matches[0]
 			return _build_resolution(chosen_fn_id, chosen_sig, call_sig_tuple)
 
-		def _lambda_can_throw(lam: H.HLambda, call_info: Mapping[int, CallInfo]) -> bool:
+		def _lambda_can_throw(lam: H.HLambda, call_info: Mapping[int, CallInfo] | None) -> bool:
+			if call_info is None:
+				call_info = {}
 			def expr_can_throw(expr: H.HExpr) -> bool:
 				if isinstance(expr, H.HCall):
 					info = call_info.get(getattr(expr, "callsite_id", None))
@@ -2575,6 +2619,8 @@ class TypeChecker:
 				if td_param.kind is TypeKind.REF and td_param.ref_mut is False and td_param.param_types:
 					if td_param.param_types[0] == receiver_type:
 						return True, SelfMode.SELF_BY_REF
+					if td_recv.kind is TypeKind.REF and td_recv.ref_mut is True and td_recv.param_types and td_param.param_types[0] == td_recv.param_types[0]:
+						return True, SelfMode.SELF_BY_REF
 				return False, None
 			if self_mode is SelfMode.SELF_BY_REF_MUT:
 				if receiver_type == param_self and td_recv.kind is TypeKind.REF and td_recv.ref_mut is True:
@@ -3083,6 +3129,12 @@ class TypeChecker:
 			can_throw: bool,
 			target: CallTarget,
 		) -> None:
+			if target.kind is CallTargetKind.DIRECT and target.symbol is not None and signatures_by_id is not None:
+				sig = signatures_by_id.get(target.symbol)
+				if sig is not None and (getattr(sig, "is_exported_entrypoint", False) or getattr(sig, "is_extern", False)):
+					callee_mod = target.symbol.module if target.symbol.module else getattr(sig, "module", None)
+					if callee_mod is not None and callee_mod != current_module_name:
+						can_throw = True
 			info = CallInfo(
 				target=target,
 				sig=CallSig(param_types=tuple(param_types), user_ret_type=return_type, can_throw=bool(can_throw)),
@@ -3098,6 +3150,9 @@ class TypeChecker:
 						span=getattr(expr, "span", Span()),
 					)
 				)
+
+		def record_call_resolution(expr: H.HCall, resolution: CallableDecl | MethodResolution) -> None:
+			call_resolutions[expr.node_id] = resolution
 
 		def record_invoke_call_info(
 			expr: "H.HInvoke",
@@ -3253,6 +3308,29 @@ class TypeChecker:
 		) -> TypeId:
 			nonlocal return_type
 			nonlocal catch_depth
+			def _resolve_struct_field_type(struct_id: TypeId, field_name: str) -> tuple[int, TypeId] | None:
+				info = self.type_table.struct_field(struct_id, field_name)
+				if info is not None:
+					idx, field_ty = info
+					field_def = self.type_table.get(field_ty)
+					if field_def.kind is not TypeKind.UNKNOWN:
+						return info
+				schema = self.type_table.struct_bases.get(struct_id)
+				if schema is None or not schema.type_params:
+					return info
+				type_args: list[TypeId] = []
+				for tp_name in schema.type_params:
+					tp_id = type_param_map.get(tp_name)
+					if tp_id is None:
+						type_args.append(self._unknown)
+					else:
+						type_args.append(self.type_table.ensure_typevar(tp_id, name=tp_name))
+				if sig is not None and sig.impl_target_type_id == struct_id and sig.impl_target_type_args and len(sig.impl_target_type_args) == len(schema.type_params):
+					for idx, arg in enumerate(sig.impl_target_type_args):
+						if idx < len(type_args) and type_args[idx] == self._unknown:
+							type_args[idx] = arg
+				inst_id = self.type_table.ensure_struct_template(struct_id, type_args) if any(self.type_table.has_typevar(t) for t in type_args) else self.type_table.ensure_struct_instantiated(struct_id, type_args)
+				return self.type_table.struct_field(inst_id, field_name)
 			# Literals.
 			if isinstance(expr, H.HLiteralInt):
 				if expected_type == self._uint:
@@ -3445,6 +3523,7 @@ class TypeChecker:
 			if isinstance(expr, H.HLambda):
 				expected_fn = _expected_function_shape(expected_type) if expected_type is not None else None
 				lambda_type_error = False
+				allow_capture_invoke = bool(getattr(expr, "allow_capture_invoke", False))
 				if expected_fn is not None and len(expr.params) != len(expected_fn[0]):
 					pretty = self._pretty_type_name(expected_type, current_module=current_module_name)
 					diagnostics.append(
@@ -3549,6 +3628,10 @@ class TypeChecker:
 				actual_can_throw = _lambda_can_throw(expr, call_info_by_callsite_id)
 				expr.can_throw_effective = bool(actual_can_throw)
 				if expected_fn is not None:
+					if allow_capture_invoke:
+						if lambda_type_error:
+							return record_expr(expr, self._unknown)
+						return record_expr(expr, expected_type)
 					# Captureless lambda -> function pointer coercion.
 					if lambda_type_error:
 						return record_expr(expr, self._unknown)
@@ -3858,7 +3941,7 @@ class TypeChecker:
 					first_loc = getattr((expr.type_args or [None])[0], "loc", None)
 					call_type_args_span = Span.from_loc(first_loc)
 				type_arg_ids = [
-					resolve_opaque_type(t, self.type_table, module_id=current_module_name)
+					resolve_opaque_type(t, self.type_table, module_id=current_module_name, type_params=type_param_map)
 					for t in (expr.type_args or [])
 				]
 
@@ -3967,255 +4050,31 @@ class TypeChecker:
 						)
 					)
 					return record_expr(expr, self._unknown)
-
 				if hasattr(H, "HQualifiedMember") and isinstance(expr.fn, getattr(H, "HQualifiedMember")):
-					qm = expr.fn
-					base_te = getattr(qm, "base_type_expr", None)
-					if base_te is not None and getattr(base_te, "args", None):
-						diagnostics.append(
-							_tc_diag(
-								message="E-QMEM-DUP-TYPEARGS: qualified member may specify type arguments only once",
-								severity="error",
-								span=getattr(expr, "loc", Span()),
-							)
-						)
-						return record_expr(expr, self._unknown)
-					base_tid = resolve_opaque_type(base_te, self.type_table, module_id=current_module_name, allow_generic_base=True)
-					try:
-						base_def = self.type_table.get(base_tid)
-					except Exception:
-						base_def = None
-					if base_def is None or base_def.kind is not TypeKind.VARIANT:
-						name = getattr(base_te, "name", None)
-						if isinstance(name, str):
-							vb = self.type_table.get_variant_base(module_id=current_module_name, name=name) or self.type_table.get_variant_base(
-								module_id="lang.core", name=name
-							)
-							if vb is not None:
-								base_tid = vb
-								base_def = self.type_table.get(base_tid)
-					if base_def is None or base_def.kind is not TypeKind.VARIANT:
-						diagnostics.append(
-							_tc_diag(
-								message="E-QMEM-NONVARIANT: qualified member base is not a variant type",
-								severity="error",
-								span=getattr(qm, "loc", getattr(expr, "loc", Span())),
-							)
-						)
-						return record_expr(expr, self._unknown)
-					schema = self.type_table.get_variant_schema(base_tid)
-					if schema is None:
-						diagnostics.append(
-							_tc_diag(
-								message="internal: missing variant schema for qualified member base (compiler bug)",
-								severity="error",
-								span=getattr(qm, "loc", getattr(expr, "loc", Span())),
-							)
-						)
-						return record_expr(expr, self._unknown)
-					arm_schema = next((a for a in schema.arms if a.name == qm.member), None)
-					if arm_schema is None:
-						ctors = self._format_ctor_signature_list(schema=schema, instance=None, current_module=current_module_name)
-						diagnostics.append(
-							_tc_diag(
-								message=(
-									f"E-QMEM-NO-CTOR: constructor '{qm.member}' not found in variant "
-									f"'{self._pretty_type_name(base_tid, current_module=current_module_name)}'. "
-									f"Available constructors: {', '.join(ctors)}"
-								),
-								severity="error",
-								span=getattr(qm, "loc", getattr(expr, "loc", Span())),
-							)
-						)
-						return record_expr(expr, self._unknown)
-
-					type_params: list[TypeParam] = []
-					typevar_ids: list[TypeId] = []
-					if schema.type_params:
-						owner = FunctionId(module="lang.__internal", name=f"__variant_{schema.module_id}::{schema.name}", ordinal=0)
-						for idx, tp_name in enumerate(schema.type_params):
-							param_id = TypeParamId(owner=owner, index=idx)
-							type_params.append(TypeParam(id=param_id, name=tp_name, span=None))
-							typevar_ids.append(self.type_table.ensure_typevar(param_id, name=tp_name))
-
-					type_cache: dict[tuple[TypeId, tuple[TypeId, ...]], TypeId] = {}
-
-					def _lower_generic_expr(expr: GenericTypeExpr) -> TypeId:
-						if expr.param_index is not None:
-							idx = int(expr.param_index)
-							if 0 <= idx < len(typevar_ids):
-								return typevar_ids[idx]
-							return self._unknown
-						name = expr.name
-						if name in FIXED_WIDTH_TYPE_NAMES:
-							if _fixed_width_allowed(expr.module_id or schema.module_id or current_module_name):
-								return self.type_table.ensure_named(name, module_id=expr.module_id or schema.module_id)
-							diagnostics.append(
-								_tc_diag(
-									message=(
-										f"fixed-width type '{name}' is reserved in v1; "
-										"use Int/Uint/Float or Byte"
-									),
-									code="E_FIXED_WIDTH_RESERVED",
-									severity="error",
-									span=Span(),
-								)
-							)
-							return self._unknown
-						if name == "Int":
-							return self._int
-						if name == "Uint":
-							return self._uint
-						if name in ("Uint64", "u64"):
-							return self._uint64
-						if name == "Byte":
-							return self.type_table.ensure_byte()
-						if name == "Bool":
-							return self._bool
-						if name == "Float":
-							return self._float
-						if name == "String":
-							return self._string
-						if name == "Void":
-							return self._void
-						if name == "Error":
-							return self._error
-						if name == "DiagnosticValue":
-							return self._dv
-						if name == "Unknown":
-							return self._unknown
-						if name in {"&", "&mut"} and expr.args:
-							inner = _lower_generic_expr(expr.args[0])
-							return self.type_table.ensure_ref_mut(inner) if name == "&mut" else self.type_table.ensure_ref(inner)
-						if name == "Array" and expr.args:
-							elem = _lower_generic_expr(expr.args[0])
-							span = Span.from_loc(getattr(expr.args[0], "loc", None)) if expr.args else Span()
-							if _reject_zst_array(elem, span=span):
-								return self._unknown
-							return self.type_table.new_array(elem)
-						origin_mod = expr.module_id or schema.module_id
-						base_id = (
-							self.type_table.get_nominal(kind=TypeKind.STRUCT, module_id=origin_mod, name=name)
-							or self.type_table.get_nominal(kind=TypeKind.VARIANT, module_id=origin_mod, name=name)
-							or self.type_table.ensure_named(name, module_id=origin_mod)
-						)
-						if expr.args:
-							if base_id in self.type_table.struct_bases:
-								schema = self.type_table.struct_bases.get(base_id)
-								if schema is not None and not schema.type_params:
-									diagnostics.append(
-										_tc_diag(
-											message=f"type '{name}' is not generic",
-											code="E-TYPE-NOT-GENERIC",
-											severity="error",
-											span=Span.from_loc(getattr(expr, "loc", None)),
-										)
-									)
-									return self._unknown
-							elif base_id in self.type_table.variant_schemas:
-								schema = self.type_table.variant_schemas.get(base_id)
-								if schema is not None and not schema.type_params:
-									diagnostics.append(
-										_tc_diag(
-											message=f"type '{name}' is not generic",
-											code="E-TYPE-NOT-GENERIC",
-											severity="error",
-											span=Span.from_loc(getattr(expr, "loc", None)),
-										)
-									)
-									return self._unknown
-							else:
-								diagnostics.append(
-									_tc_diag(
-										message=f"unknown generic type '{name}'",
-										code="E-TYPE-UNKNOWN",
-										severity="error",
-										span=Span.from_loc(getattr(expr, "loc", None)),
-									)
-								)
-								return self._unknown
-						if expr.args:
-							arg_ids = [_lower_generic_expr(a) for a in expr.args]
-							if base_id in self.type_table.variant_schemas:
-								if any(self.type_table.get(a).kind is TypeKind.TYPEVAR for a in arg_ids):
-									key = (base_id, tuple(arg_ids))
-									if key not in type_cache:
-										td = self.type_table.get(base_id)
-										type_cache[key] = self.type_table._add(
-											TypeKind.VARIANT,
-											td.name,
-											list(arg_ids),
-											register_named=False,
-											module_id=td.module_id,
-										)
-									return type_cache[key]
-								return self.type_table.ensure_instantiated(base_id, arg_ids)
-						return base_id
-
-					param_type_ids: list[TypeId] = []
-					for f in arm_schema.fields:
-						param_type_ids.append(_lower_generic_expr(f.type_expr))
-					ret_type_id = base_tid
-					if schema.type_params:
-						ret_type_id = _lower_generic_expr(
-							GenericTypeExpr.named(schema.name, args=[GenericTypeExpr.param(i) for i in range(len(schema.type_params))], module_id=schema.module_id)
-						)
-					ctor_sig = FnSignature(
-						name=qm.member,
-						param_type_ids=param_type_ids,
-						return_type_id=ret_type_id,
-						type_params=type_params,
-						module=current_module_name,
-					)
-
-					inst_res = _instantiate_sig(
-						sig=ctor_sig,
+					preseed = preseed_type_params or {}
+					call_ctx = make_call_ctx(type_table=self.type_table, diagnostics=diagnostics, current_module_name=current_module_name, current_module=current_module, default_package=default_package, module_packages=module_packages, type_param_map=type_param_map, preseed_type_params=preseed, type_param_names=type_param_names, current_fn_id=fn_id, int_ty=self._int, uint_ty=self._uint, uint64_ty=self._uint64, byte_ty=self.type_table.ensure_byte(), bool_ty=self._bool, float_ty=self._float, string_ty=self._string, void_ty=self._void, error_ty=self._error, dv_ty=self._dv, unknown_ty=self._unknown, signatures_by_id=signatures_by_id, callable_registry=callable_registry, trait_index=trait_index, trait_impl_index=trait_impl_index, impl_index=impl_index, visible_modules=visible_modules, visible_trait_world=visible_trait_world, global_trait_world=global_trait_world, trait_scope_by_module=trait_scope_by_module, require_env_local=require_env_local, fn_require_assumed=fn_require_assumed, binding_mutable=binding_mutable, traits_in_scope=_traits_in_scope, trait_key_for_id=trait_key_for_id, tc_diag=_tc_diag, type_expr=type_expr, optional_variant_type=self._optional_variant_type, unwrap_ref_type=_unwrap_ref_type, struct_base_and_args=_struct_base_and_args, receiver_place=_receiver_place, receiver_can_mut_borrow=_receiver_can_mut_borrow, receiver_compat=_receiver_compat, receiver_preference=_receiver_preference, args_match_params=_args_match_params, coerce_args_for_params=_coerce_args_for_params, infer_receiver_arg_type=_infer_receiver_arg_type, instantiate_sig_with_subst=_instantiate_sig_with_subst, apply_autoborrow_args=_apply_autoborrow_args, label_typeid=_label_typeid, trait_label=_trait_label, require_for_fn=_require_for_fn, extract_conjunctive_facts=_extract_conjunctive_facts, subject_name=_subject_name, normalize_type_key=_normalize_type_key, collect_trait_subjects=_collect_trait_subjects, require_failure=_require_failure, format_failure_message=_format_failure_message, failure_code=_failure_code, pick_best_failure=_pick_best_failure, param_scope_map=_param_scope_map, candidate_key_for_decl=_candidate_key_for_decl, visibility_note=_visibility_note, intrinsic_method_fn_id=_intrinsic_method_fn_id, instantiate_sig=_instantiate_sig, self_mode_from_sig=_self_mode_from_sig, match_impl_type_args=_match_impl_type_args, fixed_width_allowed=_fixed_width_allowed, reject_zst_array=_reject_zst_array, pretty_type_name=self._pretty_type_name, format_ctor_signature_list=self._format_ctor_signature_list, enforce_struct_requires=_enforce_struct_requires, ensure_field_visible=_ensure_field_visible, visible_modules_for_free_call=_visible_modules_for_free_call, module_ids_by_name=module_ids_by_name, visibility_provenance=visibility_provenance, infer=_infer, format_infer_failure=_format_infer_failure, lambda_can_throw=_lambda_can_throw, record_call_resolution=record_call_resolution, record_instantiation=record_instantiation)
+					ctor_res = resolve_qualified_member_call(
+						make_resolver_ctx(call_ctx),
+						expr.fn,
+						arg_exprs=[],
 						arg_types=[],
+						kw_pairs=[],
 						expected_type=None,
-						explicit_type_args=type_arg_ids,
+						type_arg_ids=type_arg_ids,
 						allow_infer=False,
-						diag_span=call_type_args_span or getattr(expr, "loc", Span()),
-						call_kind="ctor",
-						call_name=qm.member,
+						call_type_args_span=call_type_args_span,
 					)
-					if inst_res.error and inst_res.error.kind is InferErrorKind.TYPEARG_COUNT:
-						diagnostics.append(
-							_tc_diag(
-								message=(
-									f"E-QMEM-TYPEARGS-ARITY: expected {len(schema.type_params)} type arguments, got {len(type_arg_ids)}"
-								),
-								severity="error",
-								span=call_type_args_span or getattr(expr, "loc", Span()),
-							)
+					if ctor_res is not None and ctor_res.inst_params is not None and ctor_res.inst_return is not None:
+						return record_expr(expr, self.type_table.new_function(list(ctor_res.inst_params), ctor_res.inst_return))
+					diagnostics.append(
+						_tc_diag(
+							message="E-TYPEAPP-TARGET: type application requires a named callable target",
+							severity="error",
+							span=getattr(expr, "loc", Span()),
 						)
-						return record_expr(expr, self._unknown)
-					if inst_res.error and inst_res.error.kind is InferErrorKind.NO_TYPEPARAMS:
-						diagnostics.append(
-							_tc_diag(
-								message=(
-									"constructor does not accept type arguments; use the non-generic form instead"
-								),
-								severity="error",
-								span=call_type_args_span or getattr(expr, "loc", Span()),
-							)
-						)
-						return record_expr(expr, self._unknown)
-					if inst_res.error:
-						return record_expr(expr, self._unknown)
-					if inst_res.inst_params is None or inst_res.inst_return is None:
-						return record_expr(expr, self._unknown)
-					inst_return = inst_res.inst_return
-
-					return record_expr(expr, self.type_table.new_function(list(inst_res.inst_params), inst_res.inst_return))
-
-				diagnostics.append(
-					_tc_diag(
-						message="E-TYPEAPP-TARGET: type application requires a named callable target",
-						severity="error",
-						span=getattr(expr, "loc", Span()),
 					)
-				)
-				return record_expr(expr, self._unknown)
+					return record_expr(expr, self._unknown)
+
 
 			# `match` expression (statement-form match is parsed separately; this
 			# branch only handles expression-form matches).
@@ -4463,6 +4322,13 @@ class TypeChecker:
 
 			# Borrow.
 			if isinstance(expr, H.HBorrow):
+				expr_id = getattr(expr, "node_id", None)
+				if expr_id is None:
+					expr_id = id(expr)
+				if expr_id in borrow_expr_ids_in_stmt:
+					inner_ty = type_expr(expr.subject, used_as_value=False)
+					ref_ty = self.type_table.ensure_ref_mut(inner_ty) if expr.is_mut else self.type_table.ensure_ref(inner_ty)
+					return record_expr(expr, ref_ty)
 				# Guardrail: do not materialize `&mut (move x)` into a temp. This would
 				# turn an explicit ownership transfer into an implicit "store then
 				# borrow" pattern, which is a semantic expansion we want to avoid.
@@ -4652,6 +4518,7 @@ class TypeChecker:
 						)
 						break
 					borrows_in_stmt[place] = "mut"
+					borrow_expr_ids_in_stmt.add(expr_id)
 				else:
 					conflict = False
 					for existing, kind in borrows_in_stmt.items():
@@ -4668,6 +4535,7 @@ class TypeChecker:
 							)
 							break
 					borrows_in_stmt.setdefault(place, "shared")
+					borrow_expr_ids_in_stmt.add(expr_id)
 
 				ref_ty = self.type_table.ensure_ref_mut(inner_ty) if expr.is_mut else self.type_table.ensure_ref(inner_ty)
 				return record_expr(expr, ref_ty)
@@ -4781,2515 +4649,10 @@ class TypeChecker:
 
 			# Calls.
 			if isinstance(expr, H.HCall):
-				if getattr(expr, "type_args", None) and not (
-					isinstance(expr.fn, H.HVar)
-					or (hasattr(H, "HQualifiedMember") and isinstance(expr.fn, getattr(H, "HQualifiedMember")))
-				):
-					diagnostics.append(
-						_tc_diag(
-							message="E-TYPEARGS-NOT-ALLOWED: type arguments are only supported on named call targets",
-							severity="error",
-							span=getattr(expr, "loc", Span()),
-						)
-					)
-					return record_expr(expr, self._unknown)
-				# Immediate-call lambda: typecheck the lambda body against the
-				# argument types and any expected return type.
-				if isinstance(expr.fn, H.HLambda):
-					lam = expr.fn
-					if getattr(expr, "kwargs", None):
-						diagnostics.append(
-							_tc_diag(
-								message="keyword arguments are only supported for struct constructors in MVP",
-								severity="error",
-								span=getattr(expr, "loc", Span()),
-							)
-						)
-						return record_expr(expr, self._unknown)
-					arg_types = [type_expr(a) for a in expr.args]
-					if len(arg_types) != len(lam.params):
-						diagnostics.append(
-							_tc_diag(
-								message=f"lambda expects {len(lam.params)} arguments, got {len(arg_types)}",
-								severity="error",
-								span=getattr(expr, "loc", Span()),
-							)
-						)
-						return record_expr(expr, self._unknown)
-					lambda_ret_type: TypeId | None = None
-					if getattr(lam, "ret_type", None) is not None:
-						try:
-							lambda_ret_type = resolve_opaque_type(lam.ret_type, self.type_table, module_id=current_module_name)
-						except Exception:
-							lambda_ret_type = None
-					if expected_type is not None:
-						lambda_ret_type = expected_type
-					scope_env.append({})
-					scope_bindings.append({})
-					lambda_param_types: list[TypeId] = []
-					for idx, param in enumerate(lam.params):
-						if getattr(param, "binding_id", None) is None:
-							param.binding_id = self._alloc_param_id()
-						param_type: TypeId = self._unknown
-						if getattr(param, "type", None) is not None:
-							try:
-								param_type = resolve_opaque_type(param.type, self.type_table, module_id=current_module_name)
-							except Exception:
-								param_type = self._unknown
-							arg_ty = arg_types[idx]
-							if arg_ty is not None and param_type != arg_ty:
-								param_pretty = self._pretty_type_name(param_type, current_module=current_module_name)
-								arg_pretty = self._pretty_type_name(arg_ty, current_module=current_module_name)
-								diagnostics.append(
-									_tc_diag(
-										message=(
-											f"lambda parameter '{param.name}' has type {param_pretty} "
-											f"but argument is {arg_pretty}"
-										),
-										severity="error",
-										span=getattr(param, "loc", Span()),
-									)
-								)
-						else:
-							arg_ty = arg_types[idx]
-							if arg_ty is not None:
-								param_type = arg_ty
-						scope_env[-1][param.name] = param_type
-						scope_bindings[-1][param.name] = param.binding_id
-						binding_types[param.binding_id] = param_type
-						binding_names[param.binding_id] = param.name
-						binding_mutable[param.binding_id] = bool(getattr(param, "is_mutable", False))
-						binding_place_kind[param.binding_id] = PlaceKind.PARAM
-						lambda_param_types.append(param_type)
-					capture_kinds: dict[int, str] = {}
-					if lam.explicit_captures is not None:
-						for cap in lam.explicit_captures:
-							root_id = getattr(cap, "binding_id", None)
-							if root_id is None:
-								continue
-							capture_kinds[int(root_id)] = cap.kind
-							root_ty = binding_types.get(root_id, self._unknown)
-							if cap.kind == "ref_mut":
-								cap_ty = self.type_table.ensure_ref_mut(root_ty)
-							elif cap.kind == "ref":
-								cap_ty = self.type_table.ensure_ref(root_ty)
-							else:
-								cap_ty = root_ty
-							scope_env[-1][cap.name] = cap_ty
-							scope_bindings[-1][cap.name] = root_id
-					if capture_kinds:
-						explicit_capture_stack.append(capture_kinds)
-					saved_return_type = return_type
-					return_type = lambda_ret_type
-					if lam.body_expr is not None:
-						type_expr(lam.body_expr, expected_type=lambda_ret_type)
-					if lam.body_block is not None:
-						type_block(lam.body_block)
-					return_type = saved_return_type
-					if capture_kinds:
-						explicit_capture_stack.pop()
-					if not lam.captures:
-						res = discover_captures(lam)
-						diagnostics.extend(res.diagnostics)
-						lam.captures = res.captures
-					scope_env.pop()
-					scope_bindings.pop()
-					call_ret = lambda_ret_type or self._unknown
-					can_throw = _lambda_can_throw(lam, call_info_by_callsite_id)
-					lam.can_throw_effective = bool(can_throw)
-					fn_ty = self.type_table.ensure_function(
-						lambda_param_types,
-						call_ret,
-						can_throw=bool(can_throw),
-					)
-					expr_types[lam.node_id] = fn_ty
-					record_call_info(
-						expr,
-						param_types=lambda_param_types,
-						return_type=call_ret,
-						can_throw=can_throw,
-						target=CallTarget.indirect(lam.node_id),
-					)
-					return record_expr(expr, call_ret)
-				# Qualified type member call: `TypeRef::member(args...)`.
-				#
-				# MVP: only variant constructors are supported, and the qualified
-				# member must be called (bare `TypeRef::member` is rejected above).
-				if hasattr(H, "HQualifiedMember") and isinstance(expr.fn, getattr(H, "HQualifiedMember")):
-					qm = expr.fn
-					kw_pairs = getattr(expr, "kwargs", []) or []
-
-					base_te = getattr(qm, "base_type_expr", None)
-					call_type_args = getattr(expr, "type_args", None) or []
-					call_type_args_span = None
-					type_arg_ids: list[TypeId] | None = None
-					if call_type_args:
-						first_loc = getattr(call_type_args[0], "loc", None)
-						if first_loc is not None:
-							call_type_args_span = Span.from_loc(first_loc)
-						type_arg_ids = [
-							resolve_opaque_type(t, self.type_table, module_id=current_module_name)
-							for t in call_type_args
-						]
-					if (
-						trait_index is not None
-						and trait_impl_index is not None
-						and base_te is not None
-						and not (getattr(base_te, "args", None) or [])
-					):
-						trait_key = trait_key_from_expr(
-							base_te,
-							default_module=current_module_name,
-							default_package=default_package,
-							module_packages=module_packages,
-						)
-						base_mod = getattr(base_te, "module_id", None) or getattr(base_te, "module_alias", None)
-						base_name = getattr(base_te, "name", None)
-						call_origin = getattr(expr, "origin", None)
-						if trait_key not in trait_index.traits_by_id:
-							if (
-								call_origin == "for_iter"
-								and base_mod == "std.iter"
-								and base_name == "Iterable"
-								and qm.member == "iter"
-							):
-								diagnostics.append(
-									_tc_diag(
-										message="type is not iterable",
-										code="E-NOT-ITERABLE",
-										severity="error",
-										span=getattr(expr, "loc", Span()),
-									)
-								)
-								return record_expr(expr, self._unknown)
-							if (
-								call_origin == "for_next"
-								and base_mod == "std.iter"
-								and base_name == "SinglePassIterator"
-								and qm.member == "next"
-							):
-								diagnostics.append(
-									_tc_diag(
-										message="iter() result is not an iterator",
-										code="E-ITER-RESULT-NOT-ITERATOR",
-										severity="error",
-										span=getattr(expr, "loc", Span()),
-									)
-								)
-								return record_expr(expr, self._unknown)
-						if trait_key in trait_index.traits_by_id:
-							if kw_pairs:
-								diagnostics.append(
-									_tc_diag(
-										message="keyword arguments are not supported for UFCS method calls in MVP",
-										severity="error",
-										span=getattr(kw_pairs[0], "loc", getattr(expr, "loc", Span())),
-									)
-								)
-								return record_expr(expr, self._unknown)
-							if not expr.args:
-								diagnostics.append(
-									_tc_diag(
-										message="UFCS call requires a receiver argument",
-										severity="error",
-										span=getattr(expr, "loc", Span()),
-									)
-								)
-								return record_expr(expr, self._unknown)
-							recv_ty = type_expr(expr.args[0], used_as_value=False)
-							arg_types = [type_expr(a) for a in expr.args[1:]]
-							receiver_place = _receiver_place(expr.args[0])
-							receiver_is_lvalue = receiver_place is not None
-							receiver_can_mut_borrow = _receiver_can_mut_borrow(expr.args[0], receiver_place)
-							receiver_nominal = _unwrap_ref_type(recv_ty)
-							receiver_base, receiver_args = _struct_base_and_args(receiver_nominal)
-							recv_def = self.type_table.get(receiver_nominal)
-							recv_type_param_id = recv_def.type_param_id if recv_def.kind is TypeKind.TYPEVAR else None
-							recv_type_key = None
-							if recv_type_param_id is not None:
-								recv_type_key = _normalize_type_key(
-									type_key_from_typeid(self.type_table, receiver_nominal)
-								)
-							visible_set = set(visible_modules or (current_module,))
-							missing_visible = set()
-							if trait_impl_index.missing_modules:
-								missing_visible = trait_impl_index.missing_modules & visible_set
-							if missing_visible:
-								mod_names = [
-									trait_impl_index.module_names_by_id.get(mid, str(mid))
-									for mid in sorted(missing_visible)
-								]
-								raise ResolutionError(
-									"missing impl metadata for visible modules: " + ", ".join(mod_names),
-									span=getattr(expr, "loc", Span()),
-								)
-							trait_candidates: list[
-								tuple[
-									MethodResolution,
-									TraitImplCandidate,
-									Tuple[TypeId, ...],
-									Tuple[TypeId, ...],
-									Tuple[TypeId, ...],
-									int,
-								]
-							] = []
-							trait_require_info: dict[object, tuple[parser_ast.TraitExpr, dict[object, object], str, dict[TypeParamId, tuple[str, int]]]] = {}
-							trait_hidden: list[tuple[CallableDecl, TraitImplCandidate, TraitKey]] = []
-							trait_require_failures: list[ProofFailure] = []
-							trait_type_arg_counts: set[int] = set()
-							trait_saw_typed_nongeneric = False
-							trait_saw_infer_incomplete = False
-							trait_infer_failures: list[InferResult] = []
-							if trait_index.is_missing(trait_key):
-								raise ResolutionError(
-									f"missing trait metadata for '{_trait_label(trait_key)}'",
-									span=getattr(expr, "loc", Span()),
-								)
-							if trait_index.has_method(trait_key, qm.member):
-								if recv_type_param_id is not None:
-									if (
-										(recv_type_param_id, trait_key) in fn_require_assumed
-										or (recv_type_key, trait_key) in fn_require_assumed
-									):
-										trait_def = trait_index.traits_by_id.get(trait_key)
-										method_sig = None
-										if trait_def is not None:
-											for method in getattr(trait_def, "methods", []) or []:
-												if getattr(method, "name", None) == qm.member:
-													method_sig = method
-													break
-										if method_sig is not None:
-											type_param_map = {"Self": recv_type_param_id}
-											param_type_ids: list[TypeId] = []
-											param_names: list[str] = []
-											for param in list(getattr(method_sig, "params", []) or []):
-												param_names.append(param.name)
-												if param.type_expr is None:
-													if param.name != "self":
-														param_type_ids = []
-														break
-													param_type_ids.append(receiver_nominal)
-													continue
-												param_type_ids.append(
-													resolve_opaque_type(
-														param.type_expr,
-														self.type_table,
-														module_id=trait_key.module or current_module_name,
-														type_params=type_param_map,
-													)
-												)
-											if param_type_ids:
-												ret_id = resolve_opaque_type(
-													method_sig.return_type,
-													self.type_table,
-													module_id=trait_key.module or current_module_name,
-													type_params=type_param_map,
-												)
-												self_mode = SelfMode.SELF_BY_VALUE
-												if param_type_ids:
-													param0 = self.type_table.get(param_type_ids[0])
-													if param0.kind is TypeKind.REF:
-														self_mode = (
-															SelfMode.SELF_BY_REF_MUT
-															if param0.ref_mut
-															else SelfMode.SELF_BY_REF
-														)
-												trait_sig = FnSignature(
-													name=method_sig.name,
-													method_name=method_sig.name,
-													param_type_ids=param_type_ids,
-													return_type_id=ret_id,
-													param_names=param_names if param_names else None,
-													is_method=True,
-													self_mode={SelfMode.SELF_BY_VALUE: "value", SelfMode.SELF_BY_REF: "ref", SelfMode.SELF_BY_REF_MUT: "ref_mut"}[
-														self_mode
-													],
-													module=trait_key.module or current_module_name,
-												)
-												inst_arg_types = [recv_ty, *arg_types]
-												if trait_sig.param_type_ids:
-													inst_arg_types = [
-														recv_ty,
-														*_coerce_args_for_params(
-															list(trait_sig.param_type_ids[1:]),
-															arg_types,
-														),
-													]
-												inst_res = _instantiate_sig_with_subst(
-													sig=trait_sig,
-													arg_types=inst_arg_types,
-													expected_type=expected_type,
-													explicit_type_args=type_arg_ids,
-													allow_infer=True,
-													diag_span=call_type_args_span or getattr(expr, "loc", Span()),
-													call_kind="method",
-													call_name=method_sig.name,
-													receiver_type=recv_ty,
-												)
-												if inst_res.error and inst_res.error.kind is InferErrorKind.NO_TYPEPARAMS and type_arg_ids:
-													trait_saw_typed_nongeneric = True
-												elif inst_res.error and inst_res.error.kind is InferErrorKind.TYPEARG_COUNT and type_arg_ids:
-													if inst_res.error.expected_count is not None:
-														trait_type_arg_counts.add(inst_res.error.expected_count)
-												elif inst_res.error and inst_res.error.kind in {InferErrorKind.CANNOT_INFER, InferErrorKind.CONFLICT}:
-													trait_saw_infer_incomplete = True
-													trait_infer_failures.append(inst_res)
-												elif not inst_res.error and inst_res.inst_params and inst_res.inst_return is not None:
-													trait_decl = CallableDecl(
-														callable_id=-1,
-														name=method_sig.name,
-														kind=CallableKind.METHOD_TRAIT,
-														module_id=0,
-														visibility=Visibility.public(),
-														signature=CallableSignature(
-															param_types=tuple(param_type_ids),
-															result_type=ret_id,
-														),
-														fn_id=FunctionId(
-															module=trait_key.module or current_module_name,
-															name=method_sig.name,
-															ordinal=0,
-														),
-														impl_target_type_id=None,
-														self_mode=self_mode,
-													)
-													ok, autoborrow = _receiver_compat(recv_ty, inst_res.inst_params[0], self_mode)
-													if ok and _args_match_params(list(inst_res.inst_params[1:]), arg_types):
-														pref = _receiver_preference(
-															self_mode,
-															receiver_is_lvalue=receiver_is_lvalue,
-															receiver_can_mut_borrow=receiver_can_mut_borrow,
-															autoborrow=autoborrow,
-														)
-														if pref is not None:
-															trait_candidates.append(
-																(
-																	MethodResolution(
-																		decl=trait_decl,
-																		receiver_autoborrow=autoborrow,
-																		result_type=inst_res.inst_return,
-																	),
-																	TraitImplCandidate(
-																		fn_id=trait_decl.fn_id,
-																		name=method_sig.name,
-																		trait=trait_key,
-																		def_module_id=0,
-																		is_pub=True,
-																		impl_id=-1,
-																		impl_loc=None,
-																		method_loc=Span.from_loc(getattr(method_sig, "loc", None)),
-																		require_expr=None,
-																	),
-																	(),
-																	tuple(inst_res.subst.args) if inst_res.subst is not None else (),
-																	tuple(inst_res.inst_params),
-																	pref,
-																)
-															)
-								for cand in trait_impl_index.get_candidates(trait_key, receiver_base, qm.member):
-									decl = callable_registry.get_by_fn_id(cand.fn_id) if callable_registry else None
-									if decl is None:
-										continue
-									if cand.def_module_id not in visible_set:
-										trait_hidden.append((decl, cand, trait_key))
-										continue
-									if not cand.is_pub and cand.def_module_id != current_module:
-										trait_hidden.append((decl, cand, trait_key))
-										continue
-									sig = signatures_by_id.get(decl.fn_id) if signatures_by_id is not None else None
-									if sig is None:
-										continue
-									if sig.param_type_ids is None and sig.param_types is not None:
-										local_type_params = {p.name: p.id for p in sig.type_params}
-										param_type_ids = [
-											resolve_opaque_type(
-												p,
-												self.type_table,
-												module_id=sig.module,
-												type_params=local_type_params,
-											)
-											for p in sig.param_types
-										]
-										sig = replace(sig, param_type_ids=param_type_ids)
-									if sig.return_type_id is None and sig.return_type is not None:
-										local_type_params = {p.name: p.id for p in sig.type_params}
-										ret_id = resolve_opaque_type(
-											sig.return_type,
-											self.type_table,
-											module_id=sig.module,
-											type_params=local_type_params,
-										)
-										sig = replace(sig, return_type_id=ret_id)
-									if sig.param_type_ids is None or sig.return_type_id is None:
-										continue
-									impl_subst: Subst | None = None
-									impl_req_expr: parser_ast.TraitExpr | None = None
-									impl_subst_map: dict[object, object] = {}
-									if sig.impl_target_type_args:
-										impl_type_params = list(getattr(sig, "impl_type_params", []) or [])
-										if not impl_type_params:
-											if receiver_args != sig.impl_target_type_args:
-												continue
-											impl_subst = None
-										else:
-											impl_subst = _match_impl_type_args(
-												template_args=sig.impl_target_type_args,
-												recv_args=receiver_args,
-												impl_type_params=impl_type_params,
-											)
-											if impl_subst is None:
-												continue
-										if impl_subst is not None:
-											inst_param_ids = [
-												apply_subst(t, impl_subst, self.type_table) for t in sig.param_type_ids
-											]
-											inst_return_id = apply_subst(sig.return_type_id, impl_subst, self.type_table)
-											sig = replace(sig, param_type_ids=inst_param_ids, return_type_id=inst_return_id)
-										if cand.require_expr is not None:
-											def_mod = (
-												decl.fn_id.module
-												if decl.fn_id is not None and decl.fn_id.module
-												else current_module_name
-											)
-											world = global_trait_world or visible_trait_world
-											if world is None:
-												continue
-											subjects: set[object] = set()
-											_collect_trait_subjects(cand.require_expr, subjects)
-											subst: dict[object, object] = {}
-											if impl_subst is not None and impl_type_params:
-												for tp in impl_type_params:
-													idx = int(tp.id.index)
-													if idx < len(impl_subst.args):
-														key = _normalize_type_key(
-															type_key_from_typeid(self.type_table, impl_subst.args[idx])
-														)
-														subst[tp.id] = key
-														subst[tp.name] = key
-											for subj in subjects:
-												if subj in subst:
-													continue
-												if isinstance(subj, str):
-													try:
-														ty_expr = parser_ast.TypeExpr(
-															name=subj,
-															args=[],
-															module_alias=None,
-															module_id=None,
-															loc=getattr(cand.require_expr, "loc", None),
-														)
-														ty_id = resolve_opaque_type(
-															ty_expr, self.type_table, module_id=def_mod
-														)
-														subst[subj] = _normalize_type_key(
-															type_key_from_typeid(self.type_table, ty_id)
-														)
-													except Exception:
-														continue
-											env = TraitEnv(
-												type_table=self.type_table,
-												default_module=def_mod,
-												default_package=default_package,
-												module_packages=module_packages or {},
-												assumed_true=set(fn_require_assumed),
-											)
-											res = prove_expr(world, env, subst, cand.require_expr)
-											if res.status is not ProofStatus.PROVED:
-												failure = _require_failure(
-													req_expr=cand.require_expr,
-													subst=subst,
-													origin=ObligationOrigin(
-														kind=ObligationOriginKind.IMPL_REQUIRE,
-														label=f"impl for trait '{trait_key.name}'",
-														span=cand.impl_loc,
-													),
-													span=getattr(expr, "loc", Span()),
-													env=env,
-													world=world,
-													result=res,
-												)
-												if failure is not None:
-													trait_require_failures.append(failure)
-												continue
-											impl_req_expr = cand.require_expr
-											impl_subst_map = subst
-
-									inst_arg_types = [recv_ty, *arg_types]
-									if sig.param_type_ids:
-										inst_arg_types = [
-											recv_ty,
-											*_coerce_args_for_params(
-												list(sig.param_type_ids[1:]),
-												arg_types,
-											),
-										]
-									inst_res = _instantiate_sig_with_subst(
-										sig=sig,
-										arg_types=inst_arg_types,
-										expected_type=expected_type,
-										explicit_type_args=type_arg_ids,
-										allow_infer=True,
-										diag_span=call_type_args_span or getattr(expr, "loc", Span()),
-										call_kind="method",
-										call_name=qm.member,
-										receiver_type=recv_ty,
-									)
-									if inst_res.error and inst_res.error.kind is InferErrorKind.NO_TYPEPARAMS and type_arg_ids:
-										trait_saw_typed_nongeneric = True
-										continue
-									if inst_res.error and inst_res.error.kind is InferErrorKind.TYPEARG_COUNT and type_arg_ids:
-										if inst_res.error.expected_count is not None:
-											trait_type_arg_counts.add(inst_res.error.expected_count)
-										continue
-									if inst_res.error and inst_res.error.kind in {InferErrorKind.CANNOT_INFER, InferErrorKind.CONFLICT}:
-										trait_saw_infer_incomplete = True
-										trait_infer_failures.append(inst_res)
-										continue
-									if inst_res.error:
-										continue
-
-									if inst_res.inst_params is None or inst_res.inst_return is None:
-										continue
-									inst_subst = inst_res.subst
-									inst_params = inst_res.inst_params
-									inst_return = inst_res.inst_return
-									method_req_expr: parser_ast.TraitExpr | None = None
-									method_subst_map: dict[object, object] = {}
-									if decl.fn_id is not None:
-										world = global_trait_world or visible_trait_world
-										req = _require_for_fn(decl.fn_id)
-										if req is not None:
-											subjects = set()
-											_collect_trait_subjects(req, subjects)
-											subst = {}
-											if inst_subst is not None and sig.type_params:
-												for idx, tp in enumerate(sig.type_params):
-													if tp.id in subjects or tp.name in subjects:
-														if idx < len(inst_subst.args):
-															key = _normalize_type_key(
-																type_key_from_typeid(self.type_table, inst_subst.args[idx])
-															)
-															subst[tp.id] = key
-															subst[tp.name] = key
-											env = TraitEnv(
-												type_table=self.type_table,
-												default_module=decl.fn_id.module or current_module_name,
-												default_package=default_package,
-												module_packages=module_packages or {},
-												assumed_true=set(fn_require_assumed),
-											)
-											res = prove_expr(world, env, subst, req)
-											if res.status is not ProofStatus.PROVED:
-												failure = _require_failure(
-													req_expr=req,
-													subst=subst,
-													origin=ObligationOrigin(
-														kind=ObligationOriginKind.CALLEE_REQUIRE,
-														label=f"method '{qm.member}'",
-														span=Span.from_loc(getattr(req, "loc", None)),
-													),
-													span=getattr(expr, "loc", Span()),
-													env=env,
-													world=world,
-													result=res,
-												)
-												if failure is not None:
-													trait_require_failures.append(failure)
-												continue
-											method_req_expr = req
-											method_subst_map = subst
-									if len(inst_params) - 1 != len(arg_types):
-										continue
-									ok, autoborrow = _receiver_compat(recv_ty, inst_params[0], decl.self_mode)
-									if not ok:
-										continue
-									if _args_match_params(list(inst_params[1:]), arg_types):
-										pref = _receiver_preference(
-											decl.self_mode,
-											receiver_is_lvalue=receiver_is_lvalue,
-											receiver_can_mut_borrow=receiver_can_mut_borrow,
-											autoborrow=autoborrow,
-										)
-										if pref is None:
-											continue
-										impl_args = tuple(impl_subst.args) if impl_subst is not None else ()
-										fn_args = tuple(inst_subst.args) if inst_subst is not None else ()
-										trait_candidates.append(
-											(
-												MethodResolution(
-													decl=decl,
-													receiver_autoborrow=autoborrow,
-													result_type=inst_return,
-												),
-												cand,
-												impl_args,
-												fn_args,
-												tuple(inst_params),
-												pref,
-											)
-										)
-										cand_req = _combine_require(impl_req_expr, method_req_expr)
-										if cand_req is not None:
-											merged_subst = dict(impl_subst_map)
-											merged_subst.update(method_subst_map)
-											cand_key = _candidate_key_for_decl(decl)
-											scope_map = _param_scope_map(sig)
-											trait_require_info[cand_key] = (
-												cand_req,
-												merged_subst,
-												decl.fn_id.module or current_module_name,
-												scope_map,
-											)
-
-								if trait_candidates:
-									best_pref = min(pref for _res, _cand, _impl_args, _fn_args, _inst_params, pref in trait_candidates)
-									best = [item for item in trait_candidates if item[5] == best_pref]
-									best = _dedupe_by_key(
-										best,
-										lambda item: _candidate_key_for_decl(item[0].decl),
-									)
-									if len(best) > 1:
-										best = _pick_most_specific_items(
-											best,
-											lambda item: _candidate_key_for_decl(item[0].decl),
-											trait_require_info,
-										)
-									if len(best) > 1:
-										labels: list[str] = []
-										notes: list[str] = []
-										seen_labels: set[str] = set()
-
-										def _trait_ambig_key(
-											item: tuple[
-												MethodResolution,
-												TraitImplCandidate,
-												Tuple[TypeId, ...],
-												Tuple[TypeId, ...],
-												Tuple[TypeId, ...],
-												int,
-											],
-										) -> tuple[str, str, int]:
-											res, cand, _impl_args, _fn_args, _inst_params, _pref = item
-											trait_label = (
-												f"{cand.trait.module}.{cand.trait.name}"
-												if cand.trait.module
-												else cand.trait.name
-											)
-											mod_label = (
-												res.decl.fn_id.module
-												if res.decl.fn_id and res.decl.fn_id.module
-												else str(res.decl.module_id)
-											)
-											return (trait_label, mod_label, int(cand.impl_id))
-
-										for res, cand, _impl_args, _fn_args, _inst_params, _pref in sorted(
-											best, key=_trait_ambig_key
-										):
-											trait_label = (
-												f"{cand.trait.module}.{cand.trait.name}"
-												if cand.trait.module
-												else cand.trait.name
-											)
-											mod_label = (
-												res.decl.fn_id.module
-												if res.decl.fn_id and res.decl.fn_id.module
-												else str(res.decl.module_id)
-											)
-											label = f"{trait_label}@{mod_label}"
-											if label not in seen_labels:
-												labels.append(label)
-												seen_labels.add(label)
-											chain_note = _visibility_note(cand.def_module_id)
-											if chain_note:
-												notes.append(f"{label} {chain_note}")
-										label_str = ", ".join(labels)
-										recv_label = _label_typeid(recv_ty)
-										raise ResolutionError(
-											f"ambiguous method '{qm.member}' for receiver {recv_label} and args {arg_types}; candidates from traits: {label_str}",
-											span=getattr(expr, "loc", Span()),
-											notes=notes,
-											code="E-METHOD-AMBIGUOUS",
-										)
-									resolution, _cand, impl_args, fn_args, inst_params, _pref = best[0]
-									call_resolutions[expr.node_id] = resolution
-									result_type = resolution.result_type or resolution.decl.signature.result_type
-									target_fn_id = resolution.decl.fn_id
-									if target_fn_id is None:
-										raise ResolutionError(
-											f"missing function id for method '{expr.method_name}' (compiler bug)",
-											span=getattr(expr, "loc", Span()),
-										)
-									sig_for_throw = signatures_by_id.get(target_fn_id) if signatures_by_id is not None else None
-									if sig_for_throw is None:
-										call_can_throw = True
-									elif sig_for_throw.declared_can_throw is None:
-										diagnostics.append(
-											_tc_diag(
-												message="internal: signature missing declared_can_throw (checker bug)",
-												severity="error",
-												span=Span(),
-											)
-										)
-										call_can_throw = True
-									else:
-										call_can_throw = bool(sig_for_throw.declared_can_throw)
-									applied = _apply_method_boundary(
-										expr,
-										target_fn_id=target_fn_id,
-										sig_for_throw=sig_for_throw,
-										call_can_throw=call_can_throw,
-									)
-									if applied is None:
-										return record_expr(expr, self._unknown)
-									target_fn_id, call_can_throw = applied
-									updated_arg_types, had_autoborrow_error = _apply_autoborrow_args(
-										expr.args,
-										arg_types,
-										list(inst_params[1:]),
-										span=getattr(expr, "loc", Span()),
-									)
-									arg_types = updated_arg_types
-									if had_autoborrow_error:
-										record_method_call_info(
-											expr,
-											param_types=list(inst_params),
-											return_type=result_type or self._unknown,
-											can_throw=call_can_throw,
-											target=target_fn_id,
-										)
-										return record_expr(expr, self._unknown)
-									record_method_call_info(
-										expr,
-										param_types=list(inst_params),
-										return_type=result_type or self._unknown,
-										can_throw=call_can_throw,
-										target=target_fn_id,
-									)
-									record_instantiation(
-										callsite_id=getattr(expr, "callsite_id", None),
-										target_fn_id=resolution.decl.fn_id,
-										impl_args=impl_args,
-										fn_args=fn_args,
-									)
-									return record_expr(expr, result_type)
-							if trait_hidden:
-								mod_names: list[str] = []
-								notes: list[str] = []
-								for decl, cand, _ in trait_hidden:
-									mod = (
-										decl.fn_id.module
-										if decl.fn_id is not None and decl.fn_id.module
-										else str(cand.def_module_id)
-									)
-									trait_name = f"{trait_key.module}.{trait_key.name}" if trait_key.module else trait_key.name
-									mod_names.append(f"{trait_name}@{mod}")
-									span = cand.method_loc or cand.impl_loc
-									chain_note = _visibility_note(cand.def_module_id)
-									if span and span.line is not None:
-										loc = f"{span.file}:{span.line}:{span.column}" if span.file else f"line {span.line}"
-										note = f"candidate in trait '{trait_name}' at {loc}"
-									else:
-										note = f"candidate in trait '{trait_name}'"
-									if chain_note:
-										note = f"{note}; {chain_note}"
-									notes.append(note)
-								mod_list = ", ".join(sorted(set(mod_names)))
-								diagnostics.append(
-									_tc_diag(
-										message=(
-											f"method '{qm.member}' exists but is not visible here; "
-											f"candidates from traits: {mod_list}"
-										),
-										severity="error",
-										span=getattr(expr, "loc", Span()),
-										notes=notes,
-									)
-								)
-								return record_expr(expr, self._unknown)
-							if type_arg_ids and trait_type_arg_counts:
-								exp = ", ".join(str(n) for n in sorted(trait_type_arg_counts))
-								raise ResolutionError(
-									f"type argument count mismatch for method '{qm.member}': expected one of ({exp}), got {len(type_arg_ids)}",
-									span=call_type_args_span,
-								)
-							if type_arg_ids and trait_saw_typed_nongeneric:
-								raise ResolutionError(
-									f"type arguments require a generic method signature for '{qm.member}'",
-									span=call_type_args_span,
-								)
-							if trait_saw_infer_incomplete:
-								failure = trait_infer_failures[0] if trait_infer_failures else None
-								ctx = failure.context if failure and failure.context is not None else InferContext(
-									call_kind="method",
-									call_name=qm.member,
-									span=call_type_args_span or getattr(expr, "loc", Span()),
-									type_param_ids=[],
-									type_param_names={},
-									param_types=[],
-									param_names=None,
-									return_type=None,
-									arg_types=[],
-								)
-								res = failure if failure is not None else InferResult(
-									ok=False,
-									subst=None,
-									inst_params=None,
-									inst_return=None,
-									error=InferError(kind=InferErrorKind.CANNOT_INFER),
-									context=ctx,
-								)
-								msg, notes = _format_infer_failure(ctx, res)
-								raise ResolutionError(msg, span=call_type_args_span, notes=notes)
-							if trait_require_failures:
-								failure = _pick_best_failure(trait_require_failures)
-								diagnostics.append(
-									_tc_diag(
-										message=_format_failure_message(failure) if failure is not None else "trait requirements not met",
-										code=_failure_code(failure) if failure is not None else None,
-										severity="error",
-										span=(failure.obligation.span if failure is not None else None)
-										or getattr(expr, "loc", Span()),
-										notes=list(getattr(failure.obligation, "notes", []) or []) if failure is not None else None,
-									)
-								)
-								return record_expr(expr, self._unknown)
-							base_te = getattr(qm, "base_type_expr", None)
-							base_mod = getattr(base_te, "module_id", None) or getattr(base_te, "module_alias", None)
-							base_name = getattr(base_te, "name", None)
-							call_origin = getattr(expr, "origin", None)
-							if (
-								call_origin == "for_iter"
-								and base_mod == "std.iter"
-								and base_name == "Iterable"
-								and qm.member == "iter"
-							):
-								diagnostics.append(
-									_tc_diag(
-										message="type is not iterable",
-										code="E-NOT-ITERABLE",
-										severity="error",
-										span=getattr(expr, "loc", Span()),
-									)
-								)
-								return record_expr(expr, self._unknown)
-							if (
-								call_origin == "for_next"
-								and base_mod == "std.iter"
-								and base_name == "SinglePassIterator"
-								and qm.member == "next"
-							):
-								diagnostics.append(
-									_tc_diag(
-										message="iter() result is not an iterator",
-										code="E-ITER-RESULT-NOT-ITERATOR",
-										severity="error",
-										span=getattr(expr, "loc", Span()),
-									)
-								)
-								return record_expr(expr, self._unknown)
-							recv_label = _label_typeid(recv_ty)
-							diagnostics.append(
-								_tc_diag(
-									message=f"no matching method '{qm.member}' for receiver {recv_label} and args {arg_types}",
-									severity="error",
-									span=getattr(expr, "loc", Span()),
-								)
-							)
-							return record_expr(expr, self._unknown)
-					if base_te is not None and call_type_args:
-						if getattr(base_te, "args", []) or []:
-							diagnostics.append(
-								_tc_diag(
-									message="E-QMEM-DUP-TYPEARGS: qualified member may specify type arguments only once",
-									severity="error",
-									span=getattr(expr, "loc", Span()),
-								)
-							)
-							return record_expr(expr, self._unknown)
-						base_te = replace(base_te, args=list(call_type_args))
-					base_tid = resolve_opaque_type(base_te, self.type_table, module_id=current_module_name, allow_generic_base=True)
-					# TypeRef without explicit module context may refer to lang.core
-					# variants (e.g., `Optional`). Prefer that base when present.
-					try:
-						base_def = self.type_table.get(base_tid)
-					except Exception:
-						base_def = None
-					if base_def is None or base_def.kind is not TypeKind.VARIANT:
-						name = getattr(base_te, "name", None)
-						if isinstance(name, str):
-							vb = self.type_table.get_variant_base(module_id=current_module_name, name=name) or self.type_table.get_variant_base(
-								module_id="lang.core", name=name
-							)
-							if vb is not None:
-								base_tid = vb
-								base_def = self.type_table.get(base_tid)
-
-					if base_def is None or base_def.kind is not TypeKind.VARIANT:
-						diagnostics.append(
-							_tc_diag(
-								message="E-QMEM-NONVARIANT: qualified member base is not a variant type",
-								severity="error",
-								span=getattr(qm, "loc", getattr(expr, "loc", Span())),
-							)
-						)
-						return record_expr(expr, self._unknown)
-
-					schema = self.type_table.get_variant_schema(base_tid)
-					if schema is None:
-						diagnostics.append(
-							_tc_diag(
-								message="internal: missing variant schema for qualified member base (compiler bug)",
-								severity="error",
-								span=getattr(qm, "loc", getattr(expr, "loc", Span())),
-							)
-						)
-						return record_expr(expr, self._unknown)
-
-					# Validate and map ctor arguments. For MVP:
-					# - positional args require exact arity
-					# - named args require all fields, no mixing, no unknown/dup/missing
-					arm_schema = next((a for a in schema.arms if a.name == qm.member), None)
-					if arm_schema is None:
-						ctors = self._format_ctor_signature_list(schema=schema, instance=None, current_module=current_module_name)
-						diagnostics.append(
-							_tc_diag(
-								message=(
-									f"E-QMEM-NO-CTOR: constructor '{qm.member}' not found in variant "
-									f"'{self._pretty_type_name(base_tid, current_module=current_module_name)}'. "
-									f"Available constructors: {', '.join(ctors)}"
-								),
-								severity="error",
-								span=getattr(qm, "loc", getattr(expr, "loc", Span())),
-							)
-						)
-						return record_expr(expr, self._unknown)
-
-					field_names = [f.name for f in arm_schema.fields]
-					mapped_types: list[TypeId | None] = [None] * len(field_names)
-					mapped_spans: list[Span] = [getattr(expr, "loc", Span())] * len(field_names)
-
-					if kw_pairs and expr.args:
-						diagnostics.append(
-							_tc_diag(
-								message=(
-									f"E-QMEM-MIXED-ARGS: constructor '{qm.member}' does not allow mixing positional "
-									"and named arguments"
-								),
-								severity="error",
-								span=getattr(expr, "loc", Span()),
-							)
-						)
-						return record_expr(expr, self._unknown)
-
-					if kw_pairs:
-						# Typecheck keyword values (in written order) and place them in field order.
-						for kw in kw_pairs:
-							try:
-								field_idx = field_names.index(kw.name)
-							except ValueError:
-								diagnostics.append(
-									_tc_diag(
-										message=f"unknown field '{kw.name}' for constructor '{qm.member}'",
-										severity="error",
-										span=getattr(kw, "loc", getattr(expr, "loc", Span())),
-									)
-								)
-								continue
-							if mapped_types[field_idx] is not None:
-								diagnostics.append(
-									_tc_diag(
-										message=f"duplicate field '{kw.name}' for constructor '{qm.member}'",
-										severity="error",
-										span=getattr(kw, "loc", getattr(expr, "loc", Span())),
-									)
-								)
-								continue
-							mapped_types[field_idx] = type_expr(kw.value)
-							mapped_spans[field_idx] = getattr(kw.value, "loc", getattr(expr, "loc", Span()))
-					else:
-						# Positional arguments in declaration order.
-						if len(expr.args) != len(field_names):
-							diagnostics.append(
-								_tc_diag(
-									message=f"E-QMEM-ARITY: constructor '{qm.member}' expects {len(field_names)} arguments, got {len(expr.args)}",
-									severity="error",
-									span=getattr(expr, "loc", Span()),
-								)
-							)
-							return record_expr(expr, self._unknown)
-						for idx, a in enumerate(expr.args):
-							mapped_types[idx] = type_expr(a)
-							mapped_spans[idx] = getattr(a, "loc", getattr(expr, "loc", Span()))
-
-					for idx, ty in enumerate(mapped_types):
-						if ty is None:
-							diagnostics.append(
-								_tc_diag(
-									message=f"missing field '{field_names[idx]}' for constructor '{qm.member}'",
-									severity="error",
-									span=getattr(expr, "loc", Span()),
-								)
-							)
-
-					arg_types = [t if t is not None else self._unknown for t in mapped_types]
-
-					# Build a constructor template and instantiate via the shared helper.
-					type_params: list[TypeParam] = []
-					typevar_ids: list[TypeId] = []
-					if schema.type_params:
-						owner = FunctionId(module="lang.__internal", name=f"__variant_{schema.module_id}::{schema.name}", ordinal=0)
-						for idx, tp_name in enumerate(schema.type_params):
-							param_id = TypeParamId(owner=owner, index=idx)
-							type_params.append(TypeParam(id=param_id, name=tp_name, span=None))
-							typevar_ids.append(self.type_table.ensure_typevar(param_id, name=tp_name))
-
-					type_cache: dict[tuple[TypeId, tuple[TypeId, ...]], TypeId] = {}
-
-					def _lower_generic_expr(expr: GenericTypeExpr) -> TypeId:
-						if expr.param_index is not None:
-							idx = int(expr.param_index)
-							if 0 <= idx < len(typevar_ids):
-								return typevar_ids[idx]
-							return self._unknown
-						name = expr.name
-						if name in FIXED_WIDTH_TYPE_NAMES:
-							if _fixed_width_allowed(expr.module_id or schema.module_id or current_module_name):
-								return self.type_table.ensure_named(name, module_id=expr.module_id or schema.module_id)
-							diagnostics.append(
-								_tc_diag(
-									message=(
-										f"fixed-width type '{name}' is reserved in v1; "
-										"use Int/Uint/Float or Byte"
-									),
-									code="E_FIXED_WIDTH_RESERVED",
-									severity="error",
-									span=Span(),
-								)
-							)
-							return self._unknown
-						if name == "Int":
-							return self._int
-						if name == "Uint":
-							return self._uint
-						if name == "Byte":
-							return self.type_table.ensure_byte()
-						if name == "Bool":
-							return self._bool
-						if name == "Float":
-							return self._float
-						if name == "String":
-							return self._string
-						if name == "Void":
-							return self._void
-						if name == "Error":
-							return self._error
-						if name == "DiagnosticValue":
-							return self._dv
-						if name == "Unknown":
-							return self._unknown
-						if name in {"&", "&mut"} and expr.args:
-							inner = _lower_generic_expr(expr.args[0])
-							return self.type_table.ensure_ref_mut(inner) if name == "&mut" else self.type_table.ensure_ref(inner)
-						if name == "Array" and expr.args:
-							elem = _lower_generic_expr(expr.args[0])
-							span = Span.from_loc(getattr(expr.args[0], "loc", None)) if expr.args else Span()
-							if _reject_zst_array(elem, span=span):
-								return self._unknown
-							return self.type_table.new_array(elem)
-						origin_mod = expr.module_id or schema.module_id
-						base_id = (
-							self.type_table.get_nominal(kind=TypeKind.STRUCT, module_id=origin_mod, name=name)
-							or self.type_table.get_nominal(kind=TypeKind.VARIANT, module_id=origin_mod, name=name)
-							or self.type_table.ensure_named(name, module_id=origin_mod)
-						)
-						if expr.args:
-							if base_id in self.type_table.struct_bases:
-								schema = self.type_table.struct_bases.get(base_id)
-								if schema is not None and not schema.type_params:
-									diagnostics.append(
-										_tc_diag(
-											message=f"type '{name}' is not generic",
-											code="E-TYPE-NOT-GENERIC",
-											severity="error",
-											span=Span.from_loc(getattr(expr, "loc", None)),
-										)
-									)
-									return self._unknown
-							elif base_id in self.type_table.variant_schemas:
-								schema = self.type_table.variant_schemas.get(base_id)
-								if schema is not None and not schema.type_params:
-									diagnostics.append(
-										_tc_diag(
-											message=f"type '{name}' is not generic",
-											code="E-TYPE-NOT-GENERIC",
-											severity="error",
-											span=Span.from_loc(getattr(expr, "loc", None)),
-										)
-									)
-									return self._unknown
-							else:
-								diagnostics.append(
-									_tc_diag(
-										message=f"unknown generic type '{name}'",
-										code="E-TYPE-UNKNOWN",
-										severity="error",
-										span=Span.from_loc(getattr(expr, "loc", None)),
-									)
-								)
-								return self._unknown
-						if expr.args:
-							arg_ids = [_lower_generic_expr(a) for a in expr.args]
-							if base_id in self.type_table.variant_schemas:
-								if any(self.type_table.get(a).kind is TypeKind.TYPEVAR for a in arg_ids):
-									key = (base_id, tuple(arg_ids))
-									if key not in type_cache:
-										td = self.type_table.get(base_id)
-										type_cache[key] = self.type_table._add(
-											TypeKind.VARIANT,
-											td.name,
-											list(arg_ids),
-											register_named=False,
-											module_id=td.module_id,
-										)
-									return type_cache[key]
-								return self.type_table.ensure_instantiated(base_id, arg_ids)
-						return base_id
-
-					param_type_ids: list[TypeId] = []
-					for f in arm_schema.fields:
-						param_type_ids.append(_lower_generic_expr(f.type_expr))
-					ret_type_id = base_tid
-					if schema.type_params:
-						ret_type_id = _lower_generic_expr(
-							GenericTypeExpr.named(schema.name, args=[GenericTypeExpr.param(i) for i in range(len(schema.type_params))], module_id=schema.module_id)
-						)
-					ctor_sig = FnSignature(
-						name=qm.member,
-						param_type_ids=param_type_ids,
-						return_type_id=ret_type_id,
-						type_params=type_params,
-						module=current_module_name,
-					)
-
-					explicit_type_args: list[TypeId] | None = None
-					if getattr(base_te, "args", []) or []:
-						explicit_type_args = [
-							resolve_opaque_type(t, self.type_table, module_id=current_module_name)
-							for t in (base_te.args or [])
-						]
-					elif call_type_args:
-						explicit_type_args = [
-							resolve_opaque_type(t, self.type_table, module_id=current_module_name)
-							for t in call_type_args
-						]
-					inst_res = _instantiate_sig(
-						sig=ctor_sig,
-						arg_types=arg_types,
-						expected_type=expected_type,
-						explicit_type_args=explicit_type_args,
-						allow_infer=True,
-						diag_span=call_type_args_span or getattr(expr, "loc", Span()),
-						call_kind="ctor",
-						call_name=qm.member,
-					)
-					if inst_res.error and inst_res.error.kind is InferErrorKind.TYPEARG_COUNT:
-						span = call_type_args_span or getattr(expr, "loc", Span())
-						diagnostics.append(
-							_tc_diag(
-								message=(
-									f"E-QMEM-TYPEARGS-ARITY: expected {len(schema.type_params)} type arguments, got {len(explicit_type_args or [])}"
-								),
-								severity="error",
-								span=span,
-							)
-						)
-						return record_expr(expr, self._unknown)
-					if inst_res.error and inst_res.error.kind in {InferErrorKind.CANNOT_INFER, InferErrorKind.CONFLICT}:
-						msg, notes = _format_infer_failure(
-							inst_res.context
-							or InferContext(
-								call_kind="ctor",
-								call_name=qm.member,
-								span=getattr(expr, "loc", Span()),
-								type_param_ids=[],
-								type_param_names={},
-								param_types=[],
-								param_names=None,
-								return_type=None,
-								arg_types=[],
-							),
-							inst_res,
-						)
-						hint = (
-							"Hint: qualify the constructor (e.g., `Optional<T>::None()` or `Optional::None<type T>()`)."
-						)
-						notes = [*notes, hint, "underconstrained"]
-						diagnostics.append(
-							_tc_diag(
-								message=f"E-QMEM-CANNOT-INFER: {msg} (underconstrained). {hint}",
-								severity="error",
-								span=getattr(expr, "loc", Span()),
-								notes=notes,
-							)
-						)
-						return record_expr(expr, self._unknown)
-					if inst_res.error:
-						msg, notes = _format_infer_failure(
-							inst_res.context
-							or InferContext(
-								call_kind="ctor",
-								call_name=qm.member,
-								span=getattr(expr, "loc", Span()),
-								type_param_ids=[],
-								type_param_names={},
-								param_types=[],
-								param_names=None,
-								return_type=None,
-								arg_types=[],
-							),
-							inst_res,
-						)
-						diagnostics.append(
-							_tc_diag(message=msg, severity="error", span=getattr(expr, "loc", Span()), notes=notes)
-						)
-						return record_expr(expr, self._unknown)
-					if inst_res.inst_params is None or inst_res.inst_return is None:
-						return record_expr(expr, self._unknown)
-					inst_return = inst_res.inst_return
-
-					if len(inst_res.inst_params) != len(field_names):
-						diagnostics.append(
-							_tc_diag(
-								message=f"E-QMEM-ARITY: constructor '{qm.member}' expects {len(field_names)} arguments, got {len(inst_res.inst_params)}",
-								severity="error",
-								span=getattr(expr, "loc", Span()),
-							)
-						)
-						return record_expr(expr, self._unknown)
-
-					for idx, want in enumerate(inst_res.inst_params):
-						arg_expr: H.HExpr | None = None
-						if kw_pairs:
-							for kw in kw_pairs:
-								if kw.name == field_names[idx]:
-									arg_expr = kw.value
-									break
-						else:
-							arg_expr = expr.args[idx] if idx < len(expr.args) else None
-						have = mapped_types[idx]
-						if arg_expr is not None:
-							have = type_expr(arg_expr, expected_type=want)
-						if have is not None and have != want:
-							diagnostics.append(
-								_tc_diag(
-									message=(
-										f"constructor '{qm.member}' field '{field_names[idx]}' type mismatch "
-										f"(have {self.type_table.get(have).name}, expected {self.type_table.get(want).name})"
-									),
-									severity="error",
-									span=mapped_spans[idx],
-								)
-							)
-
-					inst_tid = inst_return
-					td_ret = self.type_table.get(inst_tid)
-					if td_ret.kind is TypeKind.VARIANT and schema.type_params:
-						args = list(td_ret.param_types)
-						if not any(self.type_table.has_typevar(a) for a in args):
-							base_inst = self.type_table.variant_instances.get(base_tid)
-							base_id = base_inst.base_id if base_inst is not None else base_tid
-							inst_tid = self.type_table.ensure_instantiated(base_id, args)
-					inst = self.type_table.get_variant_instance(inst_tid)
-					if inst is None:
-						diagnostics.append(
-							_tc_diag(
-								message="internal: variant instance missing for qualified member base (compiler bug)",
-								severity="error",
-								span=getattr(qm, "loc", getattr(expr, "loc", Span())),
-							)
-						)
-						return record_expr(expr, self._unknown)
-					arm_def = inst.arms_by_name.get(qm.member)
-					if arm_def is None:
-						ctors = self._format_ctor_signature_list(
-							schema=schema, instance=inst, current_module=current_module_name
-						)
-						diagnostics.append(
-							_tc_diag(
-								message=(
-									f"E-QMEM-NO-CTOR: constructor '{qm.member}' not found in variant "
-									f"'{self._pretty_type_name(inst_tid, current_module=current_module_name)}'. "
-									f"Available constructors: {', '.join(ctors)}"
-								),
-								severity="error",
-								span=getattr(qm, "loc", getattr(expr, "loc", Span())),
-							)
-						)
-						return record_expr(expr, self._unknown)
-					if len(arm_def.field_types) != len(field_names):
-						diagnostics.append(
-							_tc_diag(
-								message="internal: variant ctor schema/type mismatch (compiler bug)",
-								severity="error",
-								span=getattr(expr, "loc", Span()),
-							)
-						)
-						return record_expr(expr, inst_tid)
-					for idx, want in enumerate(arm_def.field_types):
-						arg_expr: H.HExpr | None = None
-						# Re-typecheck with expected field types for better diagnostics.
-						if kw_pairs:
-							# Find the kw expression for this field (if any) for span.
-							for kw in kw_pairs:
-								if kw.name == field_names[idx]:
-									arg_expr = kw.value
-									break
-						else:
-							arg_expr = expr.args[idx] if idx < len(expr.args) else None
-						have = mapped_types[idx]
-						if arg_expr is not None:
-							have = type_expr(arg_expr, expected_type=want)
-						if have is not None and have != want:
-							diagnostics.append(
-								_tc_diag(
-									message=(
-										f"constructor '{qm.member}' field '{field_names[idx]}' type mismatch "
-										f"(have {self.type_table.get(have).name}, expected {self.type_table.get(want).name})"
-									),
-									severity="error",
-									span=mapped_spans[idx],
-								)
-							)
-					record_call_info(
-						expr,
-						param_types=list(arm_def.field_types),
-						return_type=inst_tid,
-						can_throw=False,
-						target=CallTarget.indirect(expr.node_id),
-					)
-					return record_expr(expr, inst_tid)
-
-				# Variant constructor call in expression position.
-				#
-				# MVP rule: constructor calls require an *expected* variant type from
-				# context (annotation, parameter type, return type, etc.). Without an
-				# expected type we do not guess which variant the constructor belongs to.
-				if isinstance(expr.fn, H.HVar) and expected_type is not None:
-					try:
-						exp_def = self.type_table.get(expected_type)
-					except Exception:
-						exp_def = None
-					if exp_def is not None and exp_def.kind is TypeKind.VARIANT:
-						inst = self.type_table.get_variant_instance(expected_type)
-						if inst is not None and expr.fn.name in inst.arms_by_name:
-							arm_def = inst.arms_by_name[expr.fn.name]
-							kw_pairs = getattr(expr, "kwargs", []) or []
-							if kw_pairs and expr.args:
-								diagnostics.append(
-									_tc_diag(
-										message=(
-											f"constructor '{arm_def.name}' does not allow mixing positional and named arguments"
-										),
-										severity="error",
-										span=getattr(expr, "loc", Span()),
-									)
-								)
-								return record_expr(expr, self._unknown)
-
-							field_names = list(getattr(arm_def, "field_names", []) or [])
-							field_types = list(arm_def.field_types)
-							if len(field_names) != len(field_types):
-								diagnostics.append(
-									_tc_diag(
-										message="internal: variant ctor schema/type mismatch (compiler bug)",
-										severity="error",
-										span=getattr(expr, "loc", Span()),
-									)
-								)
-								return record_expr(expr, expected_type)
-
-							mapped_types: list[TypeId | None] = [None] * len(field_names)
-							mapped_spans: list[Span] = [getattr(expr, "loc", Span())] * len(field_names)
-
-							if kw_pairs:
-								for kw in kw_pairs:
-									try:
-										field_idx = field_names.index(kw.name)
-									except ValueError:
-										diagnostics.append(
-											_tc_diag(
-												message=f"unknown field '{kw.name}' for constructor '{arm_def.name}'",
-												severity="error",
-												span=getattr(kw, "loc", getattr(expr, "loc", Span())),
-											)
-										)
-										continue
-									if mapped_types[field_idx] is not None:
-										diagnostics.append(
-											_tc_diag(
-												message=f"duplicate field '{kw.name}' for constructor '{arm_def.name}'",
-												severity="error",
-												span=getattr(kw, "loc", getattr(expr, "loc", Span())),
-											)
-										)
-										continue
-									mapped_types[field_idx] = type_expr(kw.value, expected_type=field_types[field_idx])
-									mapped_spans[field_idx] = getattr(kw.value, "loc", getattr(expr, "loc", Span()))
-							else:
-								if len(expr.args) != len(field_types):
-									diagnostics.append(
-										_tc_diag(
-											message=(
-												f"constructor '{arm_def.name}' expects {len(field_types)} arguments, got {len(expr.args)}"
-											),
-											severity="error",
-											span=getattr(expr, "loc", Span()),
-										)
-									)
-									return record_expr(expr, self._unknown)
-								for idx, (arg, want) in enumerate(zip(expr.args, field_types)):
-									mapped_types[idx] = type_expr(arg, expected_type=want)
-									mapped_spans[idx] = getattr(arg, "loc", getattr(expr, "loc", Span()))
-
-							for idx, want in enumerate(field_types):
-								if mapped_types[idx] is None:
-									diagnostics.append(
-										_tc_diag(
-											message=f"missing field '{field_names[idx]}' for constructor '{arm_def.name}'",
-											severity="error",
-											span=getattr(expr, "loc", Span()),
-										)
-									)
-									continue
-								have = mapped_types[idx]
-								if have is not None and have != want:
-									diagnostics.append(
-										_tc_diag(
-											message=(
-												f"constructor '{arm_def.name}' field '{field_names[idx]}' type mismatch "
-												f"(have {self.type_table.get(have).name}, expected {self.type_table.get(want).name})"
-											),
-											severity="error",
-											span=mapped_spans[idx],
-										)
-									)
-							record_call_info(
-								expr,
-								param_types=field_types,
-								return_type=expected_type,
-								can_throw=False,
-								target=CallTarget.indirect(expr.node_id),
-							)
-							return record_expr(expr, expected_type)
-
-				# Always type fn and args first for side-effects/subexpressions.
-				#
-				# Special-case struct constructors: `Point(1, 2)` uses a call-like
-				# surface form but is not a function call. In that case we must *not*
-				# type-check `expr.fn` as a normal expression (`Point` is a type name,
-				# not a value), otherwise we'd emit a misleading "unknown variable"
-				# diagnostic before the constructor path has a chance to fire.
-				should_type_fn = True
-				is_struct_ctor = False
-				if isinstance(expr.fn, H.HVar):
-					# Builtins that look like calls but are not normal function values.
-					# We must not type-check `expr.fn` as a variable, otherwise we'd emit
-					# misleading "unknown variable" diagnostics before the builtin path
-					# fires.
-					if expr.fn.name in ("byte_length",):
-						should_type_fn = False
-					struct_ctor_tid: TypeId | None = None
-					if expr.fn.module_id is not None:
-						struct_ctor_tid = self.type_table.get_nominal(
-							kind=TypeKind.STRUCT, module_id=expr.fn.module_id, name=expr.fn.name
-						)
-					else:
-						struct_ctor_tid = self.type_table.get_nominal(
-							kind=TypeKind.STRUCT, module_id=current_module_name, name=expr.fn.name
-						) or self.type_table.find_unique_nominal_by_name(kind=TypeKind.STRUCT, name=expr.fn.name)
-					known_callable = False
-					if callable_registry is not None:
-						candidates = callable_registry.get_free_candidates(
-							name=expr.fn.name,
-							visible_modules=_visible_modules_for_free_call(expr.fn.module_id),
-							include_private_in=current_module if expr.fn.module_id is None else None,
-						)
-						known_callable = bool(candidates)
-					is_struct_ctor = struct_ctor_tid is not None and not known_callable
-					if is_struct_ctor:
-						should_type_fn = False
-					if callable_registry is not None:
-						should_type_fn = False
-				if should_type_fn:
-					type_expr(expr.fn)
-				kw_pairs = getattr(expr, "kwargs", []) or []
-				# When a call signature is known by name, use its parameter types as
-				# expected types for arguments. This enables constructor calls inside
-				# arguments, e.g. `takes_opt(Some(1))` where `takes_opt` expects
-				# `Optional<Int>`.
-				arg_types: list[TypeId] = []
-				kw_types: list[TypeId] = []
-				if not is_struct_ctor:
-					arg_types = [type_expr(a) for a in expr.args]
-					kw_types = [type_expr(k.value) for k in kw_pairs]
-
-				def _type_ctor_args(field_names: list[str], field_types: list[TypeId]) -> None:
-					nonlocal arg_types
-					nonlocal kw_types
-					if not is_struct_ctor:
-						return
-					if arg_types or kw_types:
-						return
-					arg_types = []
-					for idx, arg_expr in enumerate(expr.args):
-						expected = field_types[idx] if idx < len(field_types) else None
-						arg_types.append(type_expr(arg_expr, expected_type=expected))
-					kw_types = []
-					for kw in kw_pairs:
-						expected = None
-						if kw.name in field_names:
-							expected = field_types[field_names.index(kw.name)]
-						kw_types.append(type_expr(kw.value, expected_type=expected))
-				def _std_mem_intrinsic_kind(fn_id: FunctionId | None) -> IntrinsicKind | None:
-					if fn_id is None or fn_id.module != "std.mem":
-						return None
-					if fn_id.name == "swap":
-						return IntrinsicKind.SWAP
-					if fn_id.name == "replace":
-						return IntrinsicKind.REPLACE
-					return None
-
-				if isinstance(expr.fn, H.HVar) and expr.fn.name == "byte_length" and len(expr.args) == 1:
-					if kw_pairs:
-						diagnostics.append(
-							_tc_diag(
-								message=f"{expr.fn.name} does not support keyword arguments",
-								severity="error",
-								span=kw_pairs[0].loc if hasattr(kw_pairs[0], "loc") else getattr(expr, "loc", Span()),
-							)
-						)
-						return record_expr(expr, self._unknown)
-					param_type = self.type_table.ensure_ref(self._string)
-					updated_arg_types, had_autoborrow_error = _apply_autoborrow_args(
-						expr.args,
-						arg_types,
-						[param_type],
-						span=getattr(expr, "loc", Span()),
-					)
-					if had_autoborrow_error:
-						record_call_info(
-							expr,
-							param_types=[param_type],
-							return_type=self._uint,
-							can_throw=False,
-							target=CallTarget.intrinsic(IntrinsicKind.BYTE_LENGTH),
-						)
-						return record_expr(expr, self._unknown)
-					arg_ty = updated_arg_types[0] if updated_arg_types else None
-					if arg_ty is None:
-						return record_expr(expr, self._unknown)
-					if arg_ty != param_type:
-						td_arg = self.type_table.get(arg_ty)
-						pretty = td_arg.name if arg_ty is not None else "Unknown"
-						diagnostics.append(
-							_tc_diag(
-								message=f"{expr.fn.name}(x) requires &String operands (have '{pretty}')",
-								severity="error",
-								span=getattr(expr, "loc", Span()),
-							)
-						)
-						return record_expr(expr, self._unknown)
-					ret_ty = self._int
-					intrinsic_kind = IntrinsicKind.BYTE_LENGTH
-					record_call_info(
-						expr,
-						param_types=[param_type],
-						return_type=ret_ty,
-						can_throw=False,
-						target=CallTarget.intrinsic(intrinsic_kind),
-					)
-					return record_expr(expr, ret_ty)
-
-				if isinstance(expr.fn, H.HVar) and expr.fn.name in ("string_eq", "string_concat") and len(expr.args) == 2:
-					if kw_pairs:
-						diagnostics.append(
-							_tc_diag(
-								message=f"{expr.fn.name} does not support keyword arguments",
-								severity="error",
-								span=kw_pairs[0].loc if hasattr(kw_pairs[0], "loc") else getattr(expr, "loc", Span()),
-							)
-						)
-						return record_expr(expr, self._unknown)
-					if len(arg_types) != 2:
-						diagnostics.append(
-							_tc_diag(
-								message=f"{expr.fn.name} expects 2 arguments, got {len(arg_types)}",
-								severity="error",
-								span=getattr(expr, "loc", Span()),
-							)
-						)
-						return record_expr(expr, self._unknown)
-					if any(t is None or t != self._string for t in arg_types):
-						diagnostics.append(
-							_tc_diag(
-								message=f"{expr.fn.name} requires String operands",
-								severity="error",
-								span=getattr(expr, "loc", Span()),
-							)
-						)
-						return record_expr(expr, self._unknown)
-					if expr.fn.name == "string_eq":
-						ret_ty = self._bool
-						intrinsic_kind = IntrinsicKind.STRING_EQ
-					else:
-						ret_ty = self._string
-						intrinsic_kind = IntrinsicKind.STRING_CONCAT
-					record_call_info(
-						expr,
-						param_types=[self._string, self._string],
-						return_type=ret_ty,
-						can_throw=False,
-						target=CallTarget.intrinsic(intrinsic_kind),
-					)
-					return record_expr(expr, ret_ty)
-
-				# Struct constructor: `Point(1, 2)` constructs a `struct Point`.
-				#
-				# In v1, struct initialization uses a call-like surface form. This is a
-				# language-level construct (not a function call) and must work even when
-				# a callable registry is present.
-				#
-				# We only treat the call as a constructor when there is no known callable
-				# signature for the same name (to avoid ambiguity if user code later
-				# allows a free function named `Point`).
-				def _resolve_struct_ctor_type_id(name: str, module_name: str | None) -> TypeId | None:
-					if module_name is not None:
-						return self.type_table.get_nominal(kind=TypeKind.STRUCT, module_id=module_name, name=name)
-					# Unqualified constructor: resolve in the current module first.
-					local = self.type_table.get_nominal(kind=TypeKind.STRUCT, module_id=current_module_name, name=name)
-					if local is not None:
-						return local
-					# Fallback: accept only when the name is unique across all modules.
-					return self.type_table.find_unique_nominal_by_name(kind=TypeKind.STRUCT, name=name)
-
-				struct_id: TypeId | None = None
-				struct_name: str | None = None
-				call_type_args = getattr(expr, "type_args", None) or []
-				type_arg_ids: list[TypeId] | None = None
-				call_type_args_span = None
-				if call_type_args:
-					first_loc = getattr(call_type_args[0], "loc", None)
-					if first_loc is not None:
-						call_type_args_span = Span.from_loc(first_loc)
-					type_arg_ids = [
-						resolve_opaque_type(t, self.type_table, module_id=current_module_name)
-						for t in call_type_args
-					]
-				if isinstance(expr.fn, H.HVar):
-					struct_id = _resolve_struct_ctor_type_id(expr.fn.name, getattr(expr.fn, "module_id", None))
-					struct_name = expr.fn.name
-
-				known_callable = False
-				if callable_registry is not None and isinstance(expr.fn, H.HVar):
-					candidates = callable_registry.get_free_candidates(
-						name=expr.fn.name,
-						visible_modules=_visible_modules_for_free_call(expr.fn.module_id),
-						include_private_in=current_module if expr.fn.module_id is None else None,
-					)
-					known_callable = bool(candidates)
-				if not known_callable and isinstance(expr.fn, H.HVar) and struct_id is not None:
-					struct_schema = self.type_table.get_struct_schema(struct_id)
-					if struct_schema is not None and struct_schema.type_params:
-						if not type_arg_ids:
-							inferred: list[TypeId] | None = None
-							if expected_type is not None:
-								exp_inst = self.type_table.get_struct_instance(expected_type)
-								if exp_inst is not None and exp_inst.base_id == struct_id:
-									inferred = list(exp_inst.type_args)
-							if inferred is None:
-								field_names: list[str] = []
-								field_types: list[TypeId] = []
-								param_ids = self.type_table.get_struct_type_param_ids(struct_id) or []
-								typevar_ids: list[TypeId] = []
-								for idx, tp_name in enumerate(struct_schema.type_params):
-									if idx < len(param_ids):
-										typevar_ids.append(self.type_table.ensure_typevar(param_ids[idx], name=tp_name))
-
-								type_cache: dict[tuple[TypeId, tuple[TypeId, ...]], TypeId] = {}
-
-								def _lower_generic_expr(expr: GenericTypeExpr) -> TypeId:
-									if expr.param_index is not None:
-										idx = int(expr.param_index)
-										if 0 <= idx < len(typevar_ids):
-											return typevar_ids[idx]
-										return self._unknown
-									name = expr.name
-									if name in FIXED_WIDTH_TYPE_NAMES:
-										if _fixed_width_allowed(expr.module_id or struct_schema.module_id or current_module_name):
-											return self.type_table.ensure_named(name, module_id=expr.module_id or struct_schema.module_id)
-										diagnostics.append(
-											_tc_diag(
-												message=(
-													f"fixed-width type '{name}' is reserved in v1; "
-													"use Int/Uint/Float or Byte"
-												),
-												code="E_FIXED_WIDTH_RESERVED",
-												severity="error",
-												span=Span(),
-											)
-										)
-										return self._unknown
-									if name == "Int":
-										return self._int
-									if name == "Uint":
-										return self._uint
-									if name == "Byte":
-										return self.type_table.ensure_byte()
-									if name == "Bool":
-										return self._bool
-									if name == "Float":
-										return self._float
-									if name == "String":
-										return self._string
-									if name == "Void":
-										return self._void
-									if name == "Error":
-										return self._error
-									if name == "DiagnosticValue":
-										return self._dv
-									if name == "Unknown":
-										return self._unknown
-									if name in {"&", "&mut"} and expr.args:
-										inner = _lower_generic_expr(expr.args[0])
-										return self.type_table.ensure_ref_mut(inner) if name == "&mut" else self.type_table.ensure_ref(inner)
-									if name == "Array" and expr.args:
-										elem = _lower_generic_expr(expr.args[0])
-										span = Span.from_loc(getattr(expr.args[0], "loc", None)) if expr.args else Span()
-										if _reject_zst_array(elem, span=span):
-											return self._unknown
-										return self.type_table.new_array(elem)
-									origin_mod = expr.module_id or struct_schema.module_id
-									base_id = (
-										self.type_table.get_nominal(kind=TypeKind.STRUCT, module_id=origin_mod, name=name)
-										or self.type_table.get_nominal(kind=TypeKind.VARIANT, module_id=origin_mod, name=name)
-										or self.type_table.ensure_named(name, module_id=origin_mod)
-									)
-									if expr.args:
-										if base_id in self.type_table.struct_bases:
-											base_schema = self.type_table.struct_bases.get(base_id)
-											if base_schema is not None and not base_schema.type_params:
-												diagnostics.append(
-													_tc_diag(
-														message=f"type '{name}' is not generic",
-														code="E-TYPE-NOT-GENERIC",
-														severity="error",
-														span=Span.from_loc(getattr(expr, "loc", None)),
-													)
-												)
-												return self._unknown
-										elif base_id in self.type_table.variant_schemas:
-											base_schema = self.type_table.variant_schemas.get(base_id)
-											if base_schema is not None and not base_schema.type_params:
-												diagnostics.append(
-													_tc_diag(
-														message=f"type '{name}' is not generic",
-														code="E-TYPE-NOT-GENERIC",
-														severity="error",
-														span=Span.from_loc(getattr(expr, "loc", None)),
-													)
-												)
-												return self._unknown
-										else:
-											diagnostics.append(
-												_tc_diag(
-													message=f"unknown generic type '{name}'",
-													code="E-TYPE-UNKNOWN",
-													severity="error",
-													span=Span.from_loc(getattr(expr, "loc", None)),
-												)
-											)
-											return self._unknown
-									if expr.args:
-										arg_ids = [_lower_generic_expr(a) for a in expr.args]
-										if base_id in self.type_table.variant_schemas:
-											if any(self.type_table.get(a).kind is TypeKind.TYPEVAR for a in arg_ids):
-												key = (base_id, tuple(arg_ids))
-												if key not in type_cache:
-													td = self.type_table.get(base_id)
-													type_cache[key] = self.type_table._add(
-														TypeKind.VARIANT,
-														td.name,
-														list(arg_ids),
-														register_named=False,
-														module_id=td.module_id,
-													)
-												return type_cache[key]
-											return self.type_table.ensure_instantiated(base_id, arg_ids)
-										if base_id in self.type_table.struct_bases:
-											if any(self.type_table.get(a).kind is TypeKind.TYPEVAR for a in arg_ids):
-												key = (base_id, tuple(arg_ids))
-												if key not in type_cache:
-													td = self.type_table.get(base_id)
-													type_cache[key] = self.type_table._add(
-														TypeKind.STRUCT,
-														td.name,
-														list(arg_ids),
-														register_named=False,
-														module_id=td.module_id,
-													)
-												return type_cache[key]
-											return self.type_table.ensure_struct_instantiated(base_id, arg_ids)
-									return base_id
-
-								field_names = [f.name for f in struct_schema.fields]
-								field_types = [_lower_generic_expr(f.type_expr) for f in struct_schema.fields]
-								_type_ctor_args(field_names, field_types)
-								mapped_types: list[Optional[TypeId]] = [None] * len(field_types)
-								for idx, ty in enumerate(arg_types):
-									if idx < len(mapped_types):
-										mapped_types[idx] = ty
-								for kw, kw_ty in zip(kw_pairs, kw_types):
-									if kw.name in field_names:
-										field_idx = field_names.index(kw.name)
-										mapped_types[field_idx] = kw_ty
-								template_types: list[TypeId] = []
-								template_field_names: list[str] = []
-								actual_types: list[TypeId] = []
-								for field_name, tmpl, have in zip(field_names, field_types, mapped_types):
-									if have is None:
-										continue
-									template_types.append(tmpl)
-									template_field_names.append(field_name)
-									actual_types.append(have)
-								if template_types:
-									type_params: list[TypeParam] = []
-									for idx, tp_name in enumerate(struct_schema.type_params):
-										if idx < len(param_ids):
-											type_params.append(TypeParam(id=param_ids[idx], name=tp_name, span=None))
-									if type_params:
-										ctx = InferContext(
-											call_kind="ctor",
-											call_name=struct_name or "<struct>",
-											span=call_type_args_span or getattr(expr, "loc", Span()),
-											type_param_ids=[p.id for p in type_params],
-											type_param_names={p.id: p.name for p in type_params},
-											param_types=template_types,
-											param_names=template_field_names,
-											return_type=None,
-											arg_types=actual_types,
-										)
-										res = _infer(ctx)
-										if res.ok and res.subst is not None:
-											inferred = list(res.subst.args)
-										elif res.error is not None:
-											msg, notes = _format_infer_failure(ctx, res)
-											diagnostics.append(
-												_tc_diag(
-													message=msg,
-													severity="error",
-													span=call_type_args_span or getattr(expr, "loc", Span()),
-													notes=notes,
-												)
-											)
-											return record_expr(expr, self._unknown)
-							if inferred:
-								type_arg_ids = inferred
-							else:
-								type_param_names = {
-									pid: name for pid, name in zip(param_ids, struct_schema.type_params)
-								}
-								ctx = InferContext(
-									call_kind="ctor",
-									call_name=struct_name or "<struct>",
-									span=call_type_args_span or getattr(expr, "loc", Span()),
-									type_param_ids=list(param_ids),
-									type_param_names=type_param_names,
-									param_types=[],
-									param_names=None,
-									return_type=None,
-									arg_types=[],
-								)
-								res = InferResult(
-									ok=False,
-									subst=None,
-									inst_params=None,
-									inst_return=None,
-									error=InferError(
-										kind=InferErrorKind.CANNOT_INFER,
-										missing_params=list(param_ids),
-									),
-									context=ctx,
-								)
-								msg, notes = _format_infer_failure(ctx, res)
-								diagnostics.append(
-									_tc_diag(
-										message=msg,
-										severity="error",
-										span=call_type_args_span or getattr(expr, "loc", Span()),
-										notes=notes,
-									)
-								)
-								return record_expr(expr, self._unknown)
-						try:
-							if any(self.type_table.has_typevar(t) for t in type_arg_ids):
-								struct_id = self.type_table.ensure_struct_template(struct_id, type_arg_ids)
-							else:
-								struct_id = self.type_table.ensure_struct_instantiated(struct_id, type_arg_ids)
-						except ValueError as err:
-							diagnostics.append(
-								_tc_diag(
-									message=str(err),
-									severity="error",
-									span=call_type_args_span or getattr(expr, "loc", Span()),
-								)
-							)
-							return record_expr(expr, self._unknown)
-						_enforce_struct_requires(struct_id, call_type_args_span or getattr(expr, "loc", Span()))
-					elif type_arg_ids:
-						diagnostics.append(
-							_tc_diag(
-								message=f"type arguments require a generic struct for '{struct_name}'",
-								severity="error",
-								span=call_type_args_span or getattr(expr, "loc", Span()),
-							)
-						)
-						return record_expr(expr, self._unknown)
-					struct_def = self.type_table.get(struct_id)
-					if struct_def.kind is not TypeKind.STRUCT:
-						diagnostics.append(
-							_tc_diag(
-								message=f"internal: struct schema '{struct_name}' is not a STRUCT TypeId",
-								severity="error",
-								span=getattr(expr, "loc", Span()),
-							)
-						)
-						return record_expr(expr, self._unknown)
-					struct_inst = self.type_table.get_struct_instance(struct_id)
-					if struct_inst is not None:
-						field_names = list(struct_inst.field_names)
-						field_types = list(struct_inst.field_types)
-					else:
-						field_names = list(struct_def.field_names or [])
-						field_types = list(struct_def.param_types)
-					for fname in field_names:
-						_ensure_field_visible(struct_id, fname, getattr(expr, "loc", Span()))
-					_type_ctor_args(field_names, field_types)
-					record_call_info(
-						expr,
-						param_types=field_types,
-						return_type=struct_id,
-						can_throw=False,
-						target=CallTarget.indirect(expr.node_id),
-					)
-					if len(field_names) != len(field_types):
-						diagnostics.append(
-							_tc_diag(
-								message=f"internal: struct '{struct_name}' schema/type mismatch",
-								severity="error",
-								span=getattr(expr, "loc", Span()),
-							)
-						)
-						return record_expr(expr, struct_id)
-					if len(arg_types) > len(field_types):
-						diagnostics.append(
-							_tc_diag(
-								message=f"struct '{struct_name}' constructor expects {len(field_types)} args, got {len(arg_types)}",
-								severity="error",
-								span=getattr(expr, "loc", Span()),
-							)
-						)
-						return record_expr(expr, struct_id)
-
-					# Map positional + keyword args to fields in declaration order.
-					mapped_types: list[Optional[TypeId]] = [None] * len(field_types)
-					mapped_spans: list[Span] = [getattr(expr, "loc", Span())] * len(field_types)
-
-					for idx, (ty, arg_expr) in enumerate(zip(arg_types, expr.args)):
-						mapped_types[idx] = ty
-						mapped_spans[idx] = getattr(arg_expr, "loc", getattr(expr, "loc", Span()))
-
-					for kw, kw_ty in zip(kw_pairs, kw_types):
-						try:
-							field_idx = field_names.index(kw.name)
-						except ValueError:
-							diagnostics.append(
-								_tc_diag(
-									message=f"unknown field '{kw.name}' for struct '{struct_name}'",
-									severity="error",
-									span=getattr(kw, "loc", getattr(expr, "loc", Span())),
-								)
-							)
-							continue
-						if field_idx < len(arg_types):
-							diagnostics.append(
-								_tc_diag(
-									message=f"duplicate field '{kw.name}' for struct '{struct_name}' (already provided positionally)",
-									severity="error",
-									span=getattr(kw, "loc", getattr(expr, "loc", Span())),
-								)
-							)
-							continue
-						if mapped_types[field_idx] is not None:
-							diagnostics.append(
-								_tc_diag(
-									message=f"duplicate field '{kw.name}' for struct '{struct_name}'",
-									severity="error",
-									span=getattr(kw, "loc", getattr(expr, "loc", Span())),
-								)
-							)
-							continue
-						mapped_types[field_idx] = kw_ty
-						mapped_spans[field_idx] = getattr(kw.value, "loc", getattr(expr, "loc", Span()))
-
-					for idx, (have, want) in enumerate(zip(mapped_types, field_types)):
-						if have is None:
-							diagnostics.append(
-								_tc_diag(
-									message=f"missing field '{field_names[idx]}' for struct '{struct_name}' constructor",
-									severity="error",
-									span=getattr(expr, "loc", Span()),
-								)
-							)
-							continue
-						if have != want:
-							diagnostics.append(
-								_tc_diag(
-									message=(
-										f"struct '{struct_name}' field '{field_names[idx]}' type mismatch "
-										f"(have {self.type_table.get(have).name}, expected {self.type_table.get(want).name})"
-									),
-									severity="error",
-									span=mapped_spans[idx],
-								)
-							)
-					return record_expr(expr, struct_id)
-
-				# Call through a function-typed local value.
-				if isinstance(expr.fn, H.HVar) and expr.fn.binding_id is not None:
-					fn_ty = binding_types.get(expr.fn.binding_id)
-					if fn_ty is not None and self.type_table.get(fn_ty).kind is TypeKind.FUNCTION:
-						if getattr(expr, "type_args", None):
-							diagnostics.append(
-								_tc_diag(
-									message="type arguments are not supported on function values; apply them on the named function",
-									severity="error",
-									span=getattr(expr, "loc", Span()),
-								)
-							)
-							return record_expr(expr, self._unknown)
-						if kw_pairs:
-							diagnostics.append(
-								_tc_diag(
-									message="keyword arguments are not supported on function values in MVP",
-									severity="error",
-									span=getattr(expr, "loc", Span()),
-								)
-							)
-							return record_expr(expr, self._unknown)
-						td_fn = self.type_table.get(fn_ty)
-						fn_params = list(td_fn.param_types[:-1]) if td_fn.param_types else []
-						fn_ret = td_fn.param_types[-1] if td_fn.param_types else self._unknown
-						if len(fn_params) != len(arg_types):
-							diagnostics.append(
-								_tc_diag(
-									message=f"function value expects {len(fn_params)} arguments, got {len(arg_types)}",
-									severity="error",
-									span=getattr(expr, "loc", Span()),
-								)
-							)
-							return record_expr(expr, fn_ret)
-						updated_arg_types, had_autoborrow_error = _apply_autoborrow_args(
-							expr.args,
-							arg_types,
-							fn_params,
-							span=getattr(expr, "loc", Span()),
-						)
-						arg_types = updated_arg_types
-						if had_autoborrow_error:
-							record_call_info(
-								expr,
-								param_types=fn_params,
-								return_type=fn_ret,
-								can_throw=td_fn.can_throw(),
-								target=CallTarget.indirect(expr.fn.node_id),
-							)
-							return record_expr(expr, fn_ret)
-						for want, have in zip(fn_params, arg_types):
-							if have is not None and want != have:
-								diagnostics.append(
-									_tc_diag(
-										message=(
-											f"function value argument type mismatch (have {self.type_table.get(have).name}, "
-											f"expected {self.type_table.get(want).name})"
-										),
-										severity="error",
-										span=getattr(expr, "loc", Span()),
-								)
-							)
-						record_call_info(
-							expr,
-							param_types=fn_params,
-							return_type=fn_ret,
-							can_throw=td_fn.can_throw(),
-							target=CallTarget.indirect(expr.fn.node_id),
-						)
-						return record_expr(expr, fn_ret)
-
-				if kw_pairs:
-					diagnostics.append(
-						_tc_diag(
-							message="keyword arguments are only supported for struct constructors in MVP",
-							severity="error",
-							span=getattr(kw_pairs[0], "loc", getattr(expr, "loc", Span())),
-						)
-					)
-					return record_expr(expr, self._unknown)
-
-				# Try registry-based resolution when available.
-				if callable_registry and isinstance(expr.fn, H.HVar):
-					try:
-						type_arg_ids: List[TypeId] | None = None
-						call_type_args_span = None
-						if getattr(expr, "type_args", None):
-							type_arg_ids = [
-								resolve_opaque_type(t, self.type_table, module_id=current_module_name)
-								for t in (expr.type_args or [])
-							]
-							first_loc = getattr((expr.type_args or [None])[0], "loc", None)
-							call_type_args_span = Span.from_loc(first_loc)
-						decl, inst_sig, inst_subst = _resolve_free_call_with_require(
-							name=expr.fn.name,
-							module_name=getattr(expr.fn, "module_id", None),
-							arg_types=arg_types,
-							call_type_args=type_arg_ids,
-							call_type_args_span=call_type_args_span or getattr(expr, "loc", Span()),
-							expected_type=expected_type,
-						)
-						updated_arg_types, had_autoborrow_error = _apply_autoborrow_args(
-							expr.args,
-							arg_types,
-							list(inst_sig.param_types),
-							span=getattr(expr, "loc", Span()),
-						)
-						arg_types = updated_arg_types
-						if had_autoborrow_error:
-							call_can_throw = True
-							if decl.fn_id is not None and signatures_by_id is not None:
-								sig_for_throw = signatures_by_id.get(decl.fn_id)
-								if sig_for_throw is not None:
-									if sig_for_throw.declared_can_throw is None:
-										diagnostics.append(
-											_tc_diag(
-												message="internal: signature missing declared_can_throw (checker bug)",
-												severity="error",
-												span=Span(),
-											)
-										)
-										call_can_throw = True
-									else:
-										call_can_throw = bool(sig_for_throw.declared_can_throw)
-							target = (
-								CallTarget.direct(decl.fn_id)
-								if decl.fn_id is not None
-								else CallTarget.indirect(expr.fn.node_id)
-							)
-							record_call_info(
-								expr,
-								param_types=list(inst_sig.param_types),
-								return_type=inst_sig.result_type,
-								can_throw=call_can_throw,
-								target=target,
-							)
-							return record_expr(expr, inst_sig.result_type or self._unknown)
-						if decl.fn_id is not None:
-							expr.fn.module_id = decl.fn_id.module
-						call_resolutions[expr.node_id] = decl
-						intrinsic_kind = _std_mem_intrinsic_kind(decl.fn_id)
-						if intrinsic_kind is not None:
-							diag_start = len(diagnostics)
-							if kw_pairs:
-								diagnostics.append(
-									_tc_diag(
-										message=f"{decl.fn_id.name} does not support keyword arguments",
-										severity="error",
-										span=kw_pairs[0].loc if hasattr(kw_pairs[0], "loc") else getattr(expr, "loc", Span()),
-									)
-								)
-							def _base_lookup(hv: object) -> Optional[PlaceBase]:
-								bid = getattr(hv, "binding_id", None)
-								if bid is None:
-									return None
-								kind = binding_place_kind.get(bid, PlaceKind.LOCAL)
-								name = hv.name if hasattr(hv, "name") else str(hv)
-								return PlaceBase(kind=kind, local_id=bid, name=name)
-
-							def _require_writable_place(place_expr: H.HExpr, span: Span) -> None:
-								place = place_from_expr(place_expr, base_lookup=_base_lookup)
-								if place is None:
-									return
-								# If the place includes a deref projection, mutability is provided by
-								# the reference type (`&mut`) rather than the base binding being `var`.
-								has_deref = any(isinstance(p, DerefProj) for p in place.projections)
-								if not has_deref and place.base.local_id is not None and not binding_mutable.get(
-									place.base.local_id, False
-								):
-									diagnostics.append(
-										_tc_diag(
-											message="write requires an owned mutable binding declared with var",
-											severity="error",
-											span=span,
-										)
-									)
-								# Validate deref projections are through `&mut` refs.
-								if has_deref and hasattr(H, "HPlaceExpr") and isinstance(place_expr, getattr(H, "HPlaceExpr")):
-									cur = type_expr(place_expr.base)
-									for pr in place_expr.projections:
-										if isinstance(pr, H.HPlaceDeref):
-											if cur is None:
-												break
-											ptr_def = self.type_table.get(cur)
-											if ptr_def.kind is not TypeKind.REF or not ptr_def.ref_mut:
-												diagnostics.append(
-													_tc_diag(
-														message=(
-															"cannot write through *p unless p is a mutable reference (&mut T)"
-														),
-														severity="error",
-														span=span,
-													)
-												)
-												return
-											if ptr_def.param_types:
-												cur = ptr_def.param_types[0]
-											continue
-										if isinstance(pr, H.HPlaceField):
-											if cur is None:
-												break
-											td = self.type_table.get(cur)
-											if td.kind is TypeKind.STRUCT:
-												info = self.type_table.struct_field(cur, pr.name)
-												if info is not None:
-													_, cur = info
-											continue
-										if isinstance(pr, H.HPlaceIndex):
-											if cur is None:
-												break
-											td = self.type_table.get(cur)
-											if td.kind is TypeKind.ARRAY and td.param_types:
-												cur = td.param_types[0]
-											continue
-							arg0 = arg_types[0] if len(arg_types) > 0 else None
-							arg1 = arg_types[1] if len(arg_types) > 1 else None
-							if intrinsic_kind is IntrinsicKind.SWAP:
-								if len(expr.args) != 2:
-									diagnostics.append(
-										_tc_diag(
-											message="swap expects exactly 2 arguments",
-											severity="error",
-											span=getattr(expr, "loc", Span()),
-										)
-									)
-									return record_expr(expr, self._void)
-								a, b = expr.args
-								pa = place_from_expr(a, base_lookup=_base_lookup)
-								pb = place_from_expr(b, base_lookup=_base_lookup)
-								if pa is None:
-									diagnostics.append(
-										_tc_diag(
-											message="swap argument 0 must be an addressable place",
-											severity="error",
-											span=getattr(a, "loc", getattr(expr, "loc", Span())),
-										)
-									)
-								if pb is None:
-									diagnostics.append(
-										_tc_diag(
-											message="swap argument 1 must be an addressable place",
-											severity="error",
-											span=getattr(b, "loc", getattr(expr, "loc", Span())),
-										)
-									)
-								if pa is not None:
-									_require_writable_place(a, getattr(a, "loc", getattr(expr, "loc", Span())))
-								if pb is not None:
-									_require_writable_place(b, getattr(b, "loc", getattr(expr, "loc", Span())))
-								if arg0 is not None and arg1 is not None and arg0 != arg1:
-									diagnostics.append(
-										_tc_diag(
-											message="swap requires both places to have the same type",
-											severity="error",
-											span=getattr(expr, "loc", Span()),
-										)
-									)
-								if pa is not None and pb is not None and places_overlap(pa, pb):
-									diagnostics.append(
-										_tc_diag(
-											message="swap operands must be distinct non-overlapping places",
-											severity="error",
-											span=getattr(expr, "loc", Span()),
-										)
-									)
-								if len(diagnostics) > diag_start:
-									return record_expr(expr, self._void)
-								param_types = (
-									arg0 if arg0 is not None else self._unknown,
-									arg1 if arg1 is not None else self._unknown,
-								)
-								record_call_info(
-									expr,
-									param_types=list(param_types),
-									return_type=self._void,
-									can_throw=False,
-									target=CallTarget.intrinsic(intrinsic_kind),
-								)
-								return record_expr(expr, self._void)
-							if intrinsic_kind is IntrinsicKind.REPLACE:
-								if len(expr.args) != 2:
-									diagnostics.append(
-										_tc_diag(
-											message="replace expects exactly 2 arguments",
-											severity="error",
-											span=getattr(expr, "loc", Span()),
-										)
-									)
-									return record_expr(expr, self._unknown)
-								place_expr, new_val_expr = expr.args
-								place = place_from_expr(place_expr, base_lookup=_base_lookup)
-								if place is None:
-									diagnostics.append(
-										_tc_diag(
-											message="replace argument 0 must be an addressable place",
-											severity="error",
-											span=getattr(place_expr, "loc", getattr(expr, "loc", Span())),
-										)
-									)
-									return record_expr(expr, self._unknown)
-								_require_writable_place(place_expr, getattr(place_expr, "loc", getattr(expr, "loc", Span())))
-								place_ty = arg0
-								new_ty = arg1
-								if place_ty is not None and new_ty is not None and place_ty != new_ty:
-									diagnostics.append(
-										_tc_diag(
-											message="replace requires the new value to have the same type as the place",
-											severity="error",
-											span=getattr(new_val_expr, "loc", getattr(expr, "loc", Span())),
-										)
-									)
-								if len(diagnostics) > diag_start:
-									return record_expr(expr, place_ty if place_ty is not None else self._unknown)
-								param_types = (
-									arg0 if arg0 is not None else self._unknown,
-									arg1 if arg1 is not None else self._unknown,
-								)
-								record_call_info(
-									expr,
-									param_types=list(param_types),
-									return_type=place_ty if place_ty is not None else self._unknown,
-									can_throw=False,
-									target=CallTarget.intrinsic(intrinsic_kind),
-								)
-								return record_expr(expr, place_ty if place_ty is not None else self._unknown)
-						sig_for_throw = signatures_by_id.get(decl.fn_id) if decl.fn_id and signatures_by_id else None
-						if decl.fn_id is None:
-							diagnostics.append(
-								_tc_diag(
-									message=(
-										f"internal: resolved callable '{expr.fn.name}' missing FunctionId "
-										"(checker bug)"
-									),
-									severity="error",
-									span=getattr(expr, "loc", Span()),
-								)
-							)
-							return record_expr(expr, self._unknown)
-						target_fn_id = decl.fn_id
-						if sig_for_throw is None:
-							call_can_throw = True
-						elif sig_for_throw.declared_can_throw is None:
-							diagnostics.append(
-								_tc_diag(
-									message="internal: signature missing declared_can_throw (checker bug)",
-									severity="error",
-									span=Span(),
-								)
-							)
-							call_can_throw = True
-						else:
-							call_can_throw = bool(sig_for_throw.declared_can_throw)
-						if _force_boundary_can_throw(sig_for_throw, target_fn_id):
-							call_can_throw = True
-						record_call_info(
-							expr,
-							param_types=list(inst_sig.param_types),
-							return_type=inst_sig.result_type,
-							can_throw=call_can_throw,
-							target=CallTarget.direct(target_fn_id),
-						)
-						record_instantiation(
-							callsite_id=getattr(expr, "callsite_id", None),
-							target_fn_id=target_fn_id,
-							impl_args=(),
-							fn_args=tuple(inst_subst.args) if inst_subst is not None else (),
-						)
-						return record_expr(expr, inst_sig.result_type)
-					except ResolutionError as err:
-						# If this call looks like a variant constructor invocation (unqualified
-						# constructor name) but we have no expected variant type, prefer a
-						# targeted diagnostic over a generic "no overload" message.
-						#
-						# We only do this when there are *no* visible free-function candidates
-						# with the same name. If user code declares a real function named
-						# `Some`, we should report overload errors for that function instead.
-						if expected_type is None and expr.fn.name in ctor_to_variant_bases:
-							include_private = current_module if expr.fn.module_id is None else None
-							candidates = callable_registry.get_free_candidates(
-								name=expr.fn.name,
-								visible_modules=_visible_modules_for_free_call(expr.fn.module_id),
-								include_private_in=include_private,
-							)
-							if not candidates:
-								diagnostics.append(
-											_tc_diag(
-												message=(
-													"E-CTOR-EXPECTED-TYPE: constructor call requires an expected variant type; "
-													"add a type annotation or call a function that expects this variant. "
-													"Hint: qualify the constructor (e.g., `Optional::None()` or `Optional<T>::None()` or `Optional::None<type T>()`)."
-												),
-												severity="error",
-												span=getattr(expr, "loc", Span()),
-											)
-								)
-								return record_expr(expr, self._unknown)
-						diag_span = getattr(err, "span", None) or getattr(expr, "loc", Span())
-						diagnostics.append(
-							_tc_diag(
-								message=str(err),
-								code=getattr(err, "code", None),
-								severity="error",
-								span=diag_span,
-								notes=list(getattr(err, "notes", []) or []),
-							)
-						)
-						return record_expr(expr, self._unknown)
-
-				# Constructor calls without an expected variant type are rejected in MVP.
-				if isinstance(expr.fn, H.HVar) and expected_type is None:
-					if expr.fn.name in ctor_to_variant_bases:
-						diagnostics.append(
-							_tc_diag(
-								message=(
-									"E-CTOR-EXPECTED-TYPE: constructor call requires an expected variant type; "
-									"add a type annotation or call a function that expects this variant. "
-									"Hint: qualify the constructor (e.g., `Optional::None()` or `Optional<T>::None()` or `Optional::None<type T>()`)."
-								),
-								severity="error",
-								span=getattr(expr, "loc", Span()),
-							)
-						)
-				return record_expr(expr, self._unknown)
-
+				preseed = preseed_type_params or {}
+				call_ctx = make_call_ctx(type_table=self.type_table, diagnostics=diagnostics, current_module_name=current_module_name, current_module=current_module, default_package=default_package, module_packages=module_packages, type_param_map=type_param_map, preseed_type_params=preseed, type_param_names=type_param_names, current_fn_id=fn_id, int_ty=self._int, uint_ty=self._uint, uint64_ty=self._uint64, byte_ty=self.type_table.ensure_byte(), bool_ty=self._bool, float_ty=self._float, string_ty=self._string, void_ty=self._void, error_ty=self._error, dv_ty=self._dv, unknown_ty=self._unknown, signatures_by_id=signatures_by_id, callable_registry=callable_registry, trait_index=trait_index, trait_impl_index=trait_impl_index, impl_index=impl_index, visible_modules=visible_modules, visible_trait_world=visible_trait_world, global_trait_world=global_trait_world, trait_scope_by_module=trait_scope_by_module, require_env_local=require_env_local, fn_require_assumed=fn_require_assumed, binding_mutable=binding_mutable, traits_in_scope=_traits_in_scope, trait_key_for_id=trait_key_for_id, tc_diag=_tc_diag, type_expr=type_expr, optional_variant_type=self._optional_variant_type, unwrap_ref_type=_unwrap_ref_type, struct_base_and_args=_struct_base_and_args, receiver_place=_receiver_place, receiver_can_mut_borrow=_receiver_can_mut_borrow, receiver_compat=_receiver_compat, receiver_preference=_receiver_preference, args_match_params=_args_match_params, coerce_args_for_params=_coerce_args_for_params, infer_receiver_arg_type=_infer_receiver_arg_type, instantiate_sig_with_subst=_instantiate_sig_with_subst, apply_autoborrow_args=_apply_autoborrow_args, label_typeid=_label_typeid, trait_label=_trait_label, require_for_fn=_require_for_fn, extract_conjunctive_facts=_extract_conjunctive_facts, subject_name=_subject_name, normalize_type_key=_normalize_type_key, collect_trait_subjects=_collect_trait_subjects, require_failure=_require_failure, format_failure_message=_format_failure_message, failure_code=_failure_code, pick_best_failure=_pick_best_failure, param_scope_map=_param_scope_map, candidate_key_for_decl=_candidate_key_for_decl, visibility_note=_visibility_note, intrinsic_method_fn_id=_intrinsic_method_fn_id, instantiate_sig=_instantiate_sig, self_mode_from_sig=_self_mode_from_sig, match_impl_type_args=_match_impl_type_args, fixed_width_allowed=_fixed_width_allowed, reject_zst_array=_reject_zst_array, pretty_type_name=self._pretty_type_name, format_ctor_signature_list=self._format_ctor_signature_list, enforce_struct_requires=_enforce_struct_requires, ensure_field_visible=_ensure_field_visible, visible_modules_for_free_call=_visible_modules_for_free_call, module_ids_by_name=module_ids_by_name, visibility_provenance=visibility_provenance, infer=_infer, format_infer_failure=_format_infer_failure, lambda_can_throw=_lambda_can_throw, record_call_resolution=record_call_resolution, record_instantiation=record_instantiation)
+				return resolve_call_expr(call_ctx, expr, expected_type, record_expr=record_expr, record_call_info=record_call_info, record_invoke_call_info=record_invoke_call_info)
 			if isinstance(expr, getattr(H, "HInvoke", ())):
-				callee_ty = type_expr(expr.callee)
 				arg_types = [type_expr(a) for a in expr.args]
 				kw_pairs = list(getattr(expr, "kwargs", []) or [])
 				if getattr(expr, "type_args", None):
@@ -7310,6 +4673,13 @@ class TypeChecker:
 						)
 					)
 					return record_expr(expr, self._unknown)
+				callee_expected: TypeId | None = None
+				if isinstance(expr.callee, H.HLambda):
+					fn_params = [t if t is not None else self._unknown for t in arg_types]
+					fn_ret = expected_type if expected_type is not None else self._unknown
+					callee_expected = self.type_table.ensure_function(fn_params, fn_ret, can_throw=True)
+					expr.callee.allow_capture_invoke = True
+				callee_ty = type_expr(expr.callee, expected_type=callee_expected)
 				if callee_ty is None:
 					return record_expr(expr, self._unknown)
 				callee_def = self.type_table.get(callee_ty)
@@ -7337,11 +4707,14 @@ class TypeChecker:
 									span=getattr(expr, "loc", Span()),
 								)
 							)
+					invoke_can_throw = callee_def.can_throw()
+					if isinstance(expr.callee, H.HLambda) and getattr(expr.callee, "can_throw_effective", None) is not None:
+						invoke_can_throw = bool(expr.callee.can_throw_effective)
 					record_invoke_call_info(
 						expr,
 						param_types=fn_params,
 						return_type=fn_ret,
-						can_throw=callee_def.can_throw(),
+						can_throw=invoke_can_throw,
 					)
 					return record_expr(expr, fn_ret)
 				if callee_def.kind in (TypeKind.CALLABLE, TypeKind.CALLABLE_DYN):
@@ -7393,1529 +4766,53 @@ class TypeChecker:
 				return record_expr(expr, result_ty or self._unknown)
 
 			if isinstance(expr, H.HMethodCall):
-				# Built-in DiagnosticValue helpers are reserved method names and take precedence.
-				if expr.method_name in ("as_int", "as_bool", "as_string"):
-					recv_ty = type_expr(expr.receiver, used_as_value=False)
-					recv_def = self.type_table.get(recv_ty)
-					if recv_def.kind is not TypeKind.DIAGNOSTICVALUE:
-						diagnostics.append(
-							_tc_diag(
-								message=f"{expr.method_name} is only valid on DiagnosticValue",
-								severity="error",
-								span=getattr(expr, "loc", Span()),
-							)
-						)
-						# Record a non-throwing intrinsic call so nothrow analysis can proceed.
-						record_method_call_info(
-							expr,
-							param_types=[recv_ty],
-							return_type=self._unknown,
-							can_throw=False,
-							target=_intrinsic_method_fn_id(expr.method_name),
-						)
-						return record_expr(expr, self._unknown)
-					if expr.method_name == "as_int":
-						opt_int = self._optional_variant_type(self._int)
-						record_method_call_info(
-							expr,
-							param_types=[recv_ty],
-							return_type=opt_int,
-							can_throw=False,
-							target=_intrinsic_method_fn_id(expr.method_name),
-						)
-						return record_expr(expr, opt_int)
-					if expr.method_name == "as_bool":
-						opt_bool = self._optional_variant_type(self._bool)
-						record_method_call_info(
-							expr,
-							param_types=[recv_ty],
-							return_type=opt_bool,
-							can_throw=False,
-							target=_intrinsic_method_fn_id(expr.method_name),
-						)
-						return record_expr(expr, opt_bool)
-					if expr.method_name == "as_string":
-						opt_string = self._optional_variant_type(self._string)
-						record_method_call_info(
-							expr,
-							param_types=[recv_ty],
-							return_type=opt_string,
-							can_throw=False,
-							target=_intrinsic_method_fn_id(expr.method_name),
-						)
-						return record_expr(expr, opt_string)
-					record_method_call_info(
-						expr,
-						param_types=[recv_ty],
-						return_type=self._unknown,
-						can_throw=False,
-						target=_intrinsic_method_fn_id(expr.method_name),
-					)
-					return record_expr(expr, self._unknown)
-
-				if getattr(expr, "kwargs", None):
-					first = (getattr(expr, "kwargs", []) or [None])[0]
-					diagnostics.append(
-						_tc_diag(
-							message="keyword arguments are not supported for method calls in MVP",
-							severity="error",
-							span=getattr(first, "loc", getattr(expr, "loc", Span())),
-						)
-					)
-					return record_expr(expr, self._unknown)
-
-				recv_ty = type_expr(expr.receiver, used_as_value=False)
-				arg_types = [type_expr(a) for a in expr.args]
-
-				if expr.method_name == "dup" and not expr.args:
-					recv_nominal = _unwrap_ref_type(recv_ty)
-					recv_def = self.type_table.get(recv_nominal)
-					if recv_def.kind is TypeKind.ARRAY and recv_def.param_types:
-						elem_ty = recv_def.param_types[0]
-						if not self.type_table.is_copy(elem_ty):
-							diagnostics.append(
-								_tc_diag(
-									message="Array<T>.dup() requires element type to be Copy in MVP",
-									severity="error",
-									span=getattr(expr, "loc", Span()),
-								)
-							)
+				preseed = preseed_type_params or {}
+				call_ctx = make_call_ctx(type_table=self.type_table, diagnostics=diagnostics, current_module_name=current_module_name, current_module=current_module, default_package=default_package, module_packages=module_packages, type_param_map=type_param_map, preseed_type_params=preseed, type_param_names=type_param_names, current_fn_id=fn_id, int_ty=self._int, uint_ty=self._uint, uint64_ty=self._uint64, byte_ty=self.type_table.ensure_byte(), bool_ty=self._bool, float_ty=self._float, string_ty=self._string, void_ty=self._void, error_ty=self._error, dv_ty=self._dv, unknown_ty=self._unknown, signatures_by_id=signatures_by_id, callable_registry=callable_registry, trait_index=trait_index, trait_impl_index=trait_impl_index, impl_index=impl_index, visible_modules=visible_modules, visible_trait_world=visible_trait_world, global_trait_world=global_trait_world, trait_scope_by_module=trait_scope_by_module, require_env_local=require_env_local, fn_require_assumed=fn_require_assumed, binding_mutable=binding_mutable, traits_in_scope=_traits_in_scope, trait_key_for_id=trait_key_for_id, tc_diag=_tc_diag, type_expr=type_expr, optional_variant_type=self._optional_variant_type, unwrap_ref_type=_unwrap_ref_type, struct_base_and_args=_struct_base_and_args, receiver_place=_receiver_place, receiver_can_mut_borrow=_receiver_can_mut_borrow, receiver_compat=_receiver_compat, receiver_preference=_receiver_preference, args_match_params=_args_match_params, coerce_args_for_params=_coerce_args_for_params, infer_receiver_arg_type=_infer_receiver_arg_type, instantiate_sig_with_subst=_instantiate_sig_with_subst, apply_autoborrow_args=_apply_autoborrow_args, label_typeid=_label_typeid, trait_label=_trait_label, require_for_fn=_require_for_fn, extract_conjunctive_facts=_extract_conjunctive_facts, subject_name=_subject_name, normalize_type_key=_normalize_type_key, collect_trait_subjects=_collect_trait_subjects, require_failure=_require_failure, format_failure_message=_format_failure_message, failure_code=_failure_code, pick_best_failure=_pick_best_failure, param_scope_map=_param_scope_map, candidate_key_for_decl=_candidate_key_for_decl, visibility_note=_visibility_note, intrinsic_method_fn_id=_intrinsic_method_fn_id, instantiate_sig=_instantiate_sig, self_mode_from_sig=_self_mode_from_sig, match_impl_type_args=_match_impl_type_args, fixed_width_allowed=_fixed_width_allowed, reject_zst_array=_reject_zst_array, pretty_type_name=self._pretty_type_name, format_ctor_signature_list=self._format_ctor_signature_list, enforce_struct_requires=_enforce_struct_requires, ensure_field_visible=_ensure_field_visible, visible_modules_for_free_call=_visible_modules_for_free_call, module_ids_by_name=module_ids_by_name, visibility_provenance=visibility_provenance, infer=_infer, format_infer_failure=_format_infer_failure, lambda_can_throw=_lambda_can_throw, record_call_resolution=record_call_resolution, record_instantiation=record_instantiation)
+				method_ctx = make_method_ctx(call_ctx, diagnostics=diagnostics, traits_in_scope=_traits_in_scope, trait_key=None)
+				method_res = resolve_method_call(method_ctx, expr, expected_type=expected_type)
+				if method_res.call_info is not None and method_res.resolution is not None and getattr(method_res.resolution, "decl", None) is not None:
+					decl = method_res.resolution.decl
+					fn_id_local = getattr(decl, "fn_id", None)
+					if fn_id_local is not None and method_res.call_info.target.kind is CallTargetKind.DIRECT:
+						sig_for_throw = signatures_by_id.get(fn_id_local) if signatures_by_id is not None else None
+						boundary = _apply_method_boundary(expr, target_fn_id=fn_id_local, sig_for_throw=sig_for_throw, call_can_throw=method_res.call_info.sig.can_throw)
+						if boundary is None:
 							return record_expr(expr, self._unknown)
-						record_method_call_info(
-							expr,
-							param_types=[recv_ty],
-							return_type=recv_nominal,
-							can_throw=False,
-							target=_intrinsic_method_fn_id(expr.method_name),
-						)
-						return record_expr(expr, recv_nominal)
-				if expr.method_name in (
-					"push",
-					"pop",
-					"insert",
-					"remove",
-					"swap_remove",
-					"clear",
-					"reserve",
-					"shrink_to_fit",
-					"get",
-					"set",
-				):
-					recv_nominal = _unwrap_ref_type(recv_ty)
-					recv_def = self.type_table.get(recv_nominal)
-					if recv_def.kind is TypeKind.ARRAY and recv_def.param_types:
-						elem_ty = recv_def.param_types[0]
-						recv_place = _receiver_place(expr.receiver)
-						needs_mut = expr.method_name in (
-							"push",
-							"insert",
-							"remove",
-							"swap_remove",
-							"clear",
-							"reserve",
-							"shrink_to_fit",
-							"set",
-							"pop",
-						)
-						if needs_mut and not _receiver_can_mut_borrow(expr.receiver, recv_place):
-							diagnostics.append(
-								_tc_diag(
-									message=f"Array.{expr.method_name}() requires a mutable Array receiver",
-									severity="error",
-									span=getattr(expr, "loc", Span()),
-								)
-							)
-							return record_expr(expr, self._unknown)
-						if expr.method_name == "get" and recv_place is None:
-							diagnostics.append(
-								_tc_diag(
-									message="Array.get() requires an lvalue Array receiver",
-									severity="error",
-									span=getattr(expr, "loc", Span()),
-								)
-							)
-							return record_expr(expr, self._unknown)
-						expected_args = {
-							"push": 1,
-							"pop": 0,
-							"insert": 2,
-							"remove": 1,
-							"swap_remove": 1,
-							"clear": 0,
-							"reserve": 1,
-							"shrink_to_fit": 0,
-							"get": 1,
-							"set": 2,
-						}
-						want = expected_args.get(expr.method_name)
-						if want is not None and len(expr.args) != want:
-							diagnostics.append(
-								_tc_diag(
-									message=f"Array.{expr.method_name}() expects {want} argument(s)",
-									severity="error",
-									span=getattr(expr, "loc", Span()),
-								)
-							)
-							return record_expr(expr, self._unknown)
-						if expr.method_name in ("push", "set"):
-							arg_ty = arg_types[0] if arg_types else None
-							if arg_ty is not None and arg_ty != elem_ty:
-								diagnostics.append(
-									_tc_diag(
-										message="Array element type mismatch",
-										severity="error",
-										span=getattr(expr.args[0], "loc", getattr(expr, "loc", Span())),
-									)
-								)
-								return record_expr(expr, self._unknown)
-						if expr.method_name == "insert":
-							if len(arg_types) == 2:
-								idx_ty, val_ty = arg_types
-								if idx_ty is not None:
-									td_idx = self.type_table.get(idx_ty)
-									if td_idx.kind is not TypeKind.TYPEVAR and idx_ty != self._int:
-										diagnostics.append(
-											_tc_diag(
-												message="array index must be an Int",
-												severity="error",
-												span=getattr(expr.args[0], "loc", getattr(expr, "loc", Span())),
-											)
-										)
-										return record_expr(expr, self._unknown)
-								if val_ty is not None and val_ty != elem_ty:
-									diagnostics.append(
-										_tc_diag(
-											message="Array element type mismatch",
-											severity="error",
-											span=getattr(expr.args[1], "loc", getattr(expr, "loc", Span())),
-										)
-									)
-									return record_expr(expr, self._unknown)
-						if expr.method_name in ("remove", "swap_remove", "get"):
-							if arg_types:
-								idx_ty = arg_types[0]
-								if idx_ty is not None:
-									td_idx = self.type_table.get(idx_ty)
-									if td_idx.kind is not TypeKind.TYPEVAR and idx_ty != self._int:
-										diagnostics.append(
-											_tc_diag(
-												message="array index must be an Int",
-												severity="error",
-												span=getattr(expr.args[0], "loc", getattr(expr, "loc", Span())),
-											)
-										)
-										return record_expr(expr, self._unknown)
-						if expr.method_name == "reserve" and arg_types:
-							add_ty = arg_types[0]
-							if add_ty is not None and add_ty != self._int:
-								diagnostics.append(
-									_tc_diag(
-										message="reserve expects an Int size",
-										severity="error",
-										span=getattr(expr.args[0], "loc", getattr(expr, "loc", Span())),
-									)
-								)
-								return record_expr(expr, self._unknown)
-						if expr.method_name == "get":
-							ref_ty = self.type_table.ensure_ref(elem_ty)
-							ret_ty = self._optional_variant_type(ref_ty)
-						elif expr.method_name == "pop":
-							ret_ty = self._optional_variant_type(elem_ty)
-						elif expr.method_name in ("remove", "swap_remove"):
-							ret_ty = elem_ty
-						else:
-							ret_ty = self._void
-						record_method_call_info(
-							expr,
-							param_types=[recv_ty] + arg_types,
-							return_type=ret_ty,
-							can_throw=False,
-							target=_intrinsic_method_fn_id(expr.method_name),
-						)
-						return record_expr(expr, ret_ty)
-
-				# FnResult intrinsic methods.
-				if expr.method_name in ("is_err", "unwrap", "unwrap_err") and not expr.args:
-					recv_def = self.type_table.get(recv_ty)
-					if recv_def.kind is TypeKind.FNRESULT and recv_def.param_types:
-						ok_ty = recv_def.param_types[0] if len(recv_def.param_types) > 0 else self._unknown
-						err_ty = recv_def.param_types[1] if len(recv_def.param_types) > 1 else self._error
-						if expr.method_name == "is_err":
-							ret_ty = self._bool
-						elif expr.method_name == "unwrap":
-							ret_ty = ok_ty
-						else:
-							ret_ty = err_ty
-						record_method_call_info(
-							expr,
-							param_types=[recv_ty],
-							return_type=ret_ty,
-							can_throw=False,
-							target=_intrinsic_method_fn_id(expr.method_name),
-						)
-						return record_expr(expr, ret_ty)
-
-				if callable_registry:
-					try:
-						call_type_args = getattr(expr, "type_args", None) or []
-						type_arg_ids: List[TypeId] | None = None
-						call_type_args_span = None
-						if call_type_args:
-							first_loc = getattr(call_type_args[0], "loc", None)
-							if first_loc is not None:
-								call_type_args_span = Span.from_loc(first_loc)
-							type_arg_ids = [
-								resolve_opaque_type(t, self.type_table, module_id=current_module_name)
-								for t in call_type_args
-							]
-						receiver_nominal = _unwrap_ref_type(recv_ty)
-						receiver_base, receiver_args = _struct_base_and_args(receiver_nominal)
-						recv_def = self.type_table.get(receiver_nominal)
-						recv_type_param_id = recv_def.type_param_id if recv_def.kind is TypeKind.TYPEVAR else None
-						recv_type_key = None
-						if recv_type_param_id is not None:
-							recv_type_key = _normalize_type_key(type_key_from_typeid(self.type_table, receiver_nominal))
-						receiver_place = _receiver_place(expr.receiver)
-						receiver_is_lvalue = receiver_place is not None
-						receiver_can_mut_borrow = _receiver_can_mut_borrow(expr.receiver, receiver_place)
-						hidden_candidates: list[tuple[CallableDecl, ImplMethodCandidate]] = []
-						if impl_index is not None:
-							candidates: list[CallableDecl] = []
-							visible_set = set(visible_modules or (current_module,))
-							for cand in impl_index.get_candidates(receiver_base, expr.method_name):
-								decl = callable_registry.get_by_fn_id(cand.fn_id)
-								if decl is None:
-									continue
-								if cand.is_pub:
-									if cand.def_module_id in visible_set or cand.def_module_id == current_module:
-										candidates.append(decl)
-									else:
-										hidden_candidates.append((decl, cand))
-								elif cand.def_module_id == current_module:
-									candidates.append(decl)
-								else:
-									hidden_candidates.append((decl, cand))
-						else:
-							candidates = callable_registry.get_method_candidates(
-								receiver_nominal_type_id=receiver_base,
-								name=expr.method_name,
-								visible_modules=visible_modules or (current_module,),
-								include_private_in=current_module,
-							)
-						viable: List[tuple[MethodResolution, Tuple[TypeId, ...], Tuple[TypeId, ...], Tuple[TypeId, ...], int]] = []
-						require_info: dict[object, tuple[parser_ast.TraitExpr, dict[object, object], str, dict[TypeParamId, tuple[str, int]]]] = {}
-						require_failures: list[ProofFailure] = []
-						trait_require_failures: list[ProofFailure] = []
-						type_arg_counts: set[int] = set()
-						saw_registry_only_with_type_args = False
-						saw_typed_nongeneric_with_type_args = False
-						saw_infer_incomplete = False
-						infer_failures: list[InferResult] = []
-						for decl in candidates:
-							sig = None
-							if decl.fn_id is not None and signatures_by_id is not None:
-								sig = signatures_by_id.get(decl.fn_id)
-							if sig is None:
-								if type_arg_ids:
-									saw_registry_only_with_type_args = True
-									continue
-								params = decl.signature.param_types
-								if len(params) - 1 != len(arg_types):
-									continue
-								ok, autoborrow = _receiver_compat(recv_ty, params[0], decl.self_mode)
-								if not ok:
-									continue
-								pref = _receiver_preference(
-									decl.self_mode,
-									receiver_is_lvalue=receiver_is_lvalue,
-									receiver_can_mut_borrow=receiver_can_mut_borrow,
-									autoborrow=autoborrow,
-								)
-								if pref is None:
-									continue
-								if _args_match_params(list(params[1:]), arg_types):
-									viable.append(
-										(
-											MethodResolution(
-												decl=decl,
-												receiver_autoborrow=autoborrow,
-												result_type=decl.signature.result_type,
-											),
-											(),
-											(),
-											tuple(params),
-											pref,
-										)
-									)
-								continue
-							if sig.param_type_ids is None and sig.param_types is not None:
-								local_type_params = {p.name: p.id for p in sig.type_params}
-								param_type_ids = [
-									resolve_opaque_type(p, self.type_table, module_id=sig.module, type_params=local_type_params)
-									for p in sig.param_types
-								]
-								sig = replace(sig, param_type_ids=param_type_ids)
-							if sig.return_type_id is None and sig.return_type is not None:
-								local_type_params = {p.name: p.id for p in sig.type_params}
-								ret_id = resolve_opaque_type(sig.return_type, self.type_table, module_id=sig.module, type_params=local_type_params)
-								sig = replace(sig, return_type_id=ret_id)
-							if sig.param_type_ids is None or sig.return_type_id is None:
-								continue
-							impl_subst: Subst | None = None
-							if sig.impl_target_type_args:
-								impl_type_params = list(getattr(sig, "impl_type_params", []) or [])
-								if not impl_type_params:
-									if receiver_args != sig.impl_target_type_args:
-										continue
-								else:
-									impl_subst = _match_impl_type_args(
-										template_args=sig.impl_target_type_args,
-										recv_args=receiver_args,
-										impl_type_params=impl_type_params,
-									)
-									if impl_subst is None:
-										continue
-									inst_param_ids = [apply_subst(t, impl_subst, self.type_table) for t in sig.param_type_ids]
-									inst_return_id = apply_subst(sig.return_type_id, impl_subst, self.type_table)
-									sig = replace(sig, param_type_ids=inst_param_ids, return_type_id=inst_return_id)
-
-							infer_recv_ty = _infer_receiver_arg_type(
-								decl.self_mode,
-								recv_ty,
-								receiver_is_lvalue=receiver_is_lvalue,
-								receiver_can_mut_borrow=receiver_can_mut_borrow,
-							)
-							inst_arg_types = [infer_recv_ty, *arg_types]
-							if sig.param_type_ids:
-								inst_arg_types = [
-									infer_recv_ty,
-									*_coerce_args_for_params(
-										list(sig.param_type_ids[1:]),
-										arg_types,
-									),
-								]
-							inst_res = _instantiate_sig_with_subst(
-								sig=sig,
-								arg_types=inst_arg_types,
-								expected_type=expected_type,
-								explicit_type_args=type_arg_ids,
-								allow_infer=True,
-								diag_span=call_type_args_span or getattr(expr, "loc", Span()),
-								call_kind="method",
-								call_name=expr.method_name,
-								receiver_type=recv_ty,
-							)
-							if inst_res.error and inst_res.error.kind is InferErrorKind.NO_TYPEPARAMS and type_arg_ids:
-								saw_typed_nongeneric_with_type_args = True
-								continue
-							if inst_res.error and inst_res.error.kind is InferErrorKind.TYPEARG_COUNT and type_arg_ids:
-								if inst_res.error.expected_count is not None:
-									type_arg_counts.add(inst_res.error.expected_count)
-								continue
-							if inst_res.error and inst_res.error.kind in {InferErrorKind.CANNOT_INFER, InferErrorKind.CONFLICT}:
-								saw_infer_incomplete = True
-								infer_failures.append(inst_res)
-								continue
-							if inst_res.error:
-								continue
-
-							if inst_res.inst_params is None or inst_res.inst_return is None:
-								continue
-							inst_params = inst_res.inst_params
-							inst_return = inst_res.inst_return
-							inst_subst = inst_res.subst
-							method_req: parser_ast.TraitExpr | None = None
-							method_subst: dict[object, object] = {}
-							method_def_mod = current_module_name
-							# Enforce method-level requirements after instantiation.
-							if decl.fn_id is not None:
-								world = global_trait_world or visible_trait_world
-								req = _require_for_fn(decl.fn_id)
-								if req is not None:
-									subjects: set[object] = set()
-									_collect_trait_subjects(req, subjects)
-									subst: dict[object, object] = {}
-									if inst_subst is not None and sig.type_params:
-										for idx, tp in enumerate(sig.type_params):
-											if tp.id in subjects or tp.name in subjects:
-												if idx < len(inst_subst.args):
-													key = _normalize_type_key(
-														type_key_from_typeid(self.type_table, inst_subst.args[idx])
-													)
-													subst[tp.id] = key
-													subst[tp.name] = key
-									env = TraitEnv(
-										default_module=decl.fn_id.module or current_module_name,
-										default_package=default_package,
-										module_packages=module_packages or {},
-										assumed_true=set(fn_require_assumed),
-										type_table=self.type_table,
-									)
-									res = prove_expr(world, env, subst, req)
-									if res.status is not ProofStatus.PROVED:
-										failure = _require_failure(
-											req_expr=req,
-											subst=subst,
-											origin=ObligationOrigin(
-												kind=ObligationOriginKind.CALLEE_REQUIRE,
-												label=f"method '{expr.method_name}'",
-												span=Span.from_loc(getattr(req, "loc", None)),
-											),
-											span=getattr(expr, "loc", Span()),
-											env=env,
-											world=world,
-											result=res,
-										)
-										if failure is not None:
-											require_failures.append(failure)
-										continue
-									method_req = req
-									method_subst = subst
-									method_def_mod = decl.fn_id.module or current_module_name
-							if len(inst_params) - 1 != len(arg_types):
-								continue
-							ok, autoborrow = _receiver_compat(recv_ty, inst_params[0], decl.self_mode)
-							if not ok:
-								continue
-							pref = _receiver_preference(
-								decl.self_mode,
-								receiver_is_lvalue=receiver_is_lvalue,
-								receiver_can_mut_borrow=receiver_can_mut_borrow,
-								autoborrow=autoborrow,
-							)
-							if pref is None:
-								continue
-							if _args_match_params(list(inst_params[1:]), arg_types):
-								impl_args = tuple(impl_subst.args) if impl_subst is not None else ()
-								fn_args = tuple(inst_subst.args) if inst_subst is not None else ()
-								viable.append(
-									(
-										MethodResolution(
-											decl=decl,
-											receiver_autoborrow=autoborrow,
-											result_type=inst_return,
-										),
-										impl_args,
-										fn_args,
-										tuple(inst_params),
-										pref,
-									)
-								)
-								if method_req is not None:
-									cand_key = _candidate_key_for_decl(decl)
-									scope_map = _param_scope_map(sig)
-									require_info[cand_key] = (
-										method_req,
-										method_subst,
-										method_def_mod,
-										scope_map,
-									)
-
-						if not viable:
-							if not candidates and hidden_candidates:
-								mod_names: list[str] = []
-								notes: list[str] = []
-								for decl, cand in hidden_candidates:
-									mod = (
-										decl.fn_id.module
-										if decl.fn_id is not None and decl.fn_id.module
-										else str(cand.def_module_id)
-									)
-									mod_names.append(mod)
-									span = cand.method_loc or cand.impl_loc
-									chain_note = _visibility_note(cand.def_module_id)
-									if span and span.line is not None:
-										loc = f"{span.file}:{span.line}:{span.column}" if span.file else f"line {span.line}"
-										note = f"candidate in module '{mod}' at {loc}"
-									else:
-										note = f"candidate in module '{mod}'"
-									if chain_note:
-										note = f"{note}; {chain_note}"
-									notes.append(note)
-								mod_list = ", ".join(sorted(set(mod_names)))
-								diagnostics.append(
-									_tc_diag(
-										message=(
-											f"method '{expr.method_name}' exists but is not visible here; "
-											f"candidates from modules: {mod_list}"
-										),
-										severity="error",
-										span=getattr(expr, "loc", Span()),
-										notes=notes,
-									)
-								)
-								return record_expr(expr, self._unknown)
-						if not viable and trait_index and trait_impl_index and trait_scope_by_module:
-							visible_set = set(visible_modules or (current_module,))
-							missing_visible = set()
-							if trait_impl_index.missing_modules:
-								missing_visible = trait_impl_index.missing_modules & visible_set
-							if missing_visible:
-								mod_names = [
-									trait_impl_index.module_names_by_id.get(mid, str(mid))
-									for mid in sorted(missing_visible)
-								]
-								raise ResolutionError(
-									"missing impl metadata for visible modules: " + ", ".join(mod_names),
-									span=getattr(expr, "loc", Span()),
-								)
-							trait_candidates: list[
-								tuple[
-									MethodResolution,
-									TraitImplCandidate,
-									Tuple[TypeId, ...],
-									Tuple[TypeId, ...],
-									Tuple[TypeId, ...],
-									int,
-								]
-							] = []
-							trait_require_info: dict[object, tuple[parser_ast.TraitExpr, dict[object, object], str, dict[TypeParamId, tuple[str, int]]]] = {}
-							trait_hidden: list[tuple[CallableDecl, TraitImplCandidate, TraitKey]] = []
-							trait_type_arg_counts: set[int] = set()
-							trait_saw_typed_nongeneric = False
-							trait_saw_infer_incomplete = False
-							trait_infer_failures: list[InferResult] = []
-							traits_in_scope = _traits_in_scope()
-							for trait_key in traits_in_scope:
-								if trait_index.is_missing(trait_key):
-									raise ResolutionError(
-										f"missing trait metadata for '{_trait_label(trait_key)}'",
-										span=getattr(expr, "loc", Span()),
-									)
-								if not trait_index.has_method(trait_key, expr.method_name):
-									continue
-								if recv_type_param_id is not None:
-									if (
-										(recv_type_param_id, trait_key) not in fn_require_assumed
-										and (recv_type_key, trait_key) not in fn_require_assumed
-									):
-										continue
-									trait_def = trait_index.traits_by_id.get(trait_key)
-									method_sig = None
-									if trait_def is not None:
-										for method in getattr(trait_def, "methods", []) or []:
-											if getattr(method, "name", None) == expr.method_name:
-												method_sig = method
-												break
-									if method_sig is not None:
-										method_type_params = list(getattr(method_sig, "type_params", []) or [])
-										method_type_param_ids: list[TypeParam] = []
-										type_param_map = {"Self": recv_type_param_id}
-										if method_type_params:
-											owner = FunctionId(
-												module=trait_key.module or current_module_name,
-												name=f"{trait_key.name}::{method_sig.name}",
-												ordinal=0,
-											)
-											for idx, name in enumerate(method_type_params):
-												param_id = TypeParamId(owner=owner, index=idx)
-												method_type_param_ids.append(TypeParam(id=param_id, name=name, span=None))
-												type_param_map[name] = param_id
-										param_type_ids: list[TypeId] = []
-										param_names: list[str] = []
-										for param in list(getattr(method_sig, "params", []) or []):
-											param_names.append(param.name)
-											if param.type_expr is None:
-												if param.name != "self":
-													param_type_ids = []
-													break
-												param_type_ids.append(receiver_nominal)
-												continue
-											param_type_ids.append(
-												resolve_opaque_type(
-													param.type_expr,
-													self.type_table,
-													module_id=trait_key.module or current_module_name,
-													type_params=type_param_map,
-												)
-											)
-										if param_type_ids:
-											ret_id = resolve_opaque_type(
-												method_sig.return_type,
-												self.type_table,
-												module_id=trait_key.module or current_module_name,
-												type_params=type_param_map,
-											)
-											self_mode = SelfMode.SELF_BY_VALUE
-											if param_type_ids:
-												param0 = self.type_table.get(param_type_ids[0])
-												if param0.kind is TypeKind.REF:
-													self_mode = (
-														SelfMode.SELF_BY_REF_MUT
-														if param0.ref_mut
-														else SelfMode.SELF_BY_REF
-													)
-											trait_sig = FnSignature(
-												name=method_sig.name,
-												method_name=method_sig.name,
-												param_type_ids=param_type_ids,
-												return_type_id=ret_id,
-												param_names=param_names if param_names else None,
-												type_params=method_type_param_ids,
-												is_method=True,
-												self_mode={SelfMode.SELF_BY_VALUE: "value", SelfMode.SELF_BY_REF: "ref", SelfMode.SELF_BY_REF_MUT: "ref_mut"}[
-													self_mode
-												],
-												module=trait_key.module or current_module_name,
-											)
-											infer_recv_ty = _infer_receiver_arg_type(
-												self_mode,
-												recv_ty,
-												receiver_is_lvalue=receiver_is_lvalue,
-												receiver_can_mut_borrow=receiver_can_mut_borrow,
-											)
-											inst_arg_types = [infer_recv_ty, *arg_types]
-											if trait_sig.param_type_ids:
-												inst_arg_types = [
-													infer_recv_ty,
-													*_coerce_args_for_params(
-														list(trait_sig.param_type_ids[1:]),
-														arg_types,
-													),
-												]
-											inst_res = _instantiate_sig_with_subst(
-												sig=trait_sig,
-												arg_types=inst_arg_types,
-												expected_type=expected_type,
-												explicit_type_args=type_arg_ids,
-												allow_infer=True,
-												diag_span=call_type_args_span or getattr(expr, "loc", Span()),
-												call_kind="method",
-												call_name=method_sig.name,
-												receiver_type=recv_ty,
-											)
-											if inst_res.error and inst_res.error.kind is InferErrorKind.NO_TYPEPARAMS and type_arg_ids:
-												trait_saw_typed_nongeneric = True
-											elif inst_res.error and inst_res.error.kind is InferErrorKind.TYPEARG_COUNT and type_arg_ids:
-												if inst_res.error.expected_count is not None:
-													trait_type_arg_counts.add(inst_res.error.expected_count)
-											elif inst_res.error and inst_res.error.kind in {InferErrorKind.CANNOT_INFER, InferErrorKind.CONFLICT}:
-												trait_saw_infer_incomplete = True
-												trait_infer_failures.append(inst_res)
-											elif not inst_res.error and inst_res.inst_params and inst_res.inst_return is not None:
-												trait_decl = CallableDecl(
-													callable_id=-1,
-													name=method_sig.name,
-													kind=CallableKind.METHOD_TRAIT,
-													module_id=0,
-													visibility=Visibility.public(),
-													signature=CallableSignature(
-														param_types=tuple(param_type_ids),
-														result_type=ret_id,
-													),
-													fn_id=FunctionId(
-														module=trait_key.module or current_module_name,
-														name=method_sig.name,
-														ordinal=0,
-													),
-													impl_target_type_id=None,
-													self_mode=self_mode,
-												)
-												ok, autoborrow = _receiver_compat(recv_ty, inst_res.inst_params[0], self_mode)
-												if ok and _args_match_params(list(inst_res.inst_params[1:]), arg_types):
-													pref = _receiver_preference(
-														self_mode,
-														receiver_is_lvalue=receiver_is_lvalue,
-														receiver_can_mut_borrow=receiver_can_mut_borrow,
-														autoborrow=autoborrow,
-													)
-													if pref is None:
-														continue
-													trait_candidates.append(
-														(
-															MethodResolution(
-																decl=trait_decl,
-																receiver_autoborrow=autoborrow,
-																result_type=inst_res.inst_return,
-															),
-															TraitImplCandidate(
-																fn_id=trait_decl.fn_id,
-																name=method_sig.name,
-																trait=trait_key,
-																def_module_id=0,
-																is_pub=True,
-																impl_id=-1,
-																impl_loc=None,
-																method_loc=Span.from_loc(getattr(method_sig, "loc", None)),
-																require_expr=None,
-															),
-															(),
-															tuple(inst_res.subst.args) if inst_res.subst is not None else (),
-															tuple(inst_res.inst_params),
-															pref,
-														)
-													)
-								for cand in trait_impl_index.get_candidates(trait_key, receiver_base, expr.method_name):
-									decl = callable_registry.get_by_fn_id(cand.fn_id) if callable_registry else None
-									if decl is None:
-										continue
-									if cand.def_module_id not in visible_set:
-										trait_hidden.append((decl, cand, trait_key))
-										continue
-									if not cand.is_pub and cand.def_module_id != current_module:
-										trait_hidden.append((decl, cand, trait_key))
-										continue
-									sig = signatures_by_id.get(decl.fn_id) if signatures_by_id is not None else None
-									if sig is None:
-										continue
-									if sig.param_type_ids is None and sig.param_types is not None:
-										local_type_params = {p.name: p.id for p in sig.type_params}
-										param_type_ids = [
-											resolve_opaque_type(
-												p,
-												self.type_table,
-												module_id=sig.module,
-												type_params=local_type_params,
-											)
-											for p in sig.param_types
-										]
-										sig = replace(sig, param_type_ids=param_type_ids)
-									if sig.return_type_id is None and sig.return_type is not None:
-										local_type_params = {p.name: p.id for p in sig.type_params}
-										ret_id = resolve_opaque_type(
-											sig.return_type,
-											self.type_table,
-											module_id=sig.module,
-											type_params=local_type_params,
-										)
-										sig = replace(sig, return_type_id=ret_id)
-									if sig.param_type_ids is None or sig.return_type_id is None:
-										continue
-									impl_subst: Subst | None = None
-									impl_req_expr: parser_ast.TraitExpr | None = None
-									impl_subst_map: dict[object, object] = {}
-									if sig.impl_target_type_args:
-										impl_type_params = list(getattr(sig, "impl_type_params", []) or [])
-										if not impl_type_params:
-											if receiver_args != sig.impl_target_type_args:
-												continue
-											impl_subst = None
-										else:
-											impl_subst = _match_impl_type_args(
-												template_args=sig.impl_target_type_args,
-												recv_args=receiver_args,
-												impl_type_params=impl_type_params,
-											)
-											if impl_subst is None:
-												continue
-										if impl_subst is not None:
-											inst_param_ids = [
-												apply_subst(t, impl_subst, self.type_table) for t in sig.param_type_ids
-											]
-											inst_return_id = apply_subst(sig.return_type_id, impl_subst, self.type_table)
-											sig = replace(sig, param_type_ids=inst_param_ids, return_type_id=inst_return_id)
-										# Enforce impl-level requirements after impl substitution.
-										if cand.require_expr is not None:
-											def_mod = (
-												decl.fn_id.module
-												if decl.fn_id is not None and decl.fn_id.module
-												else current_module_name
-											)
-											world = global_trait_world or visible_trait_world
-											if world is None:
-												continue
-											subjects: set[object] = set()
-											_collect_trait_subjects(cand.require_expr, subjects)
-											subst: dict[object, object] = {}
-											if impl_subst is not None and impl_type_params:
-												for tp in impl_type_params:
-													idx = int(tp.id.index)
-													if idx < len(impl_subst.args):
-														key = _normalize_type_key(
-															type_key_from_typeid(self.type_table, impl_subst.args[idx])
-														)
-														subst[tp.id] = key
-														subst[tp.name] = key
-											for subj in subjects:
-												if subj in subst:
-													continue
-												if isinstance(subj, str):
-													try:
-														ty_expr = parser_ast.TypeExpr(
-															name=subj,
-															args=[],
-															module_alias=None,
-															module_id=None,
-															loc=getattr(cand.require_expr, "loc", None),
-														)
-														ty_id = resolve_opaque_type(
-															ty_expr, self.type_table, module_id=def_mod
-														)
-														subst[subj] = _normalize_type_key(
-															type_key_from_typeid(self.type_table, ty_id)
-														)
-													except Exception:
-														continue
-											env = TraitEnv(
-												default_module=def_mod,
-												default_package=default_package,
-												module_packages=module_packages or {},
-												assumed_true=set(fn_require_assumed),
-												type_table=self.type_table,
-											)
-											res = prove_expr(world, env, subst, cand.require_expr)
-											if res.status is not ProofStatus.PROVED:
-												failure = _require_failure(
-													req_expr=cand.require_expr,
-													subst=subst,
-													origin=ObligationOrigin(
-														kind=ObligationOriginKind.IMPL_REQUIRE,
-														label=f"impl for trait '{trait_key.name}'",
-														span=cand.impl_loc,
-													),
-													span=getattr(expr, "loc", Span()),
-													env=env,
-													world=world,
-													result=res,
-												)
-												if failure is not None:
-													trait_require_failures.append(failure)
-												continue
-											impl_req_expr = cand.require_expr
-											impl_subst_map = subst
-
-									infer_recv_ty = _infer_receiver_arg_type(
-										decl.self_mode,
-										recv_ty,
-										receiver_is_lvalue=receiver_is_lvalue,
-										receiver_can_mut_borrow=receiver_can_mut_borrow,
-									)
-									inst_arg_types = [infer_recv_ty, *arg_types]
-									if sig.param_type_ids:
-										inst_arg_types = [
-											infer_recv_ty,
-											*_coerce_args_for_params(
-												list(sig.param_type_ids[1:]),
-												arg_types,
-											),
-										]
-									inst_res = _instantiate_sig_with_subst(
-										sig=sig,
-										arg_types=inst_arg_types,
-										expected_type=expected_type,
-										explicit_type_args=type_arg_ids,
-										allow_infer=True,
-										diag_span=call_type_args_span or getattr(expr, "loc", Span()),
-										call_kind="method",
-										call_name=expr.method_name,
-										receiver_type=recv_ty,
-									)
-									if inst_res.error and inst_res.error.kind is InferErrorKind.NO_TYPEPARAMS and type_arg_ids:
-										trait_saw_typed_nongeneric = True
-										continue
-									if inst_res.error and inst_res.error.kind is InferErrorKind.TYPEARG_COUNT and type_arg_ids:
-										if inst_res.error.expected_count is not None:
-											trait_type_arg_counts.add(inst_res.error.expected_count)
-										continue
-									if inst_res.error and inst_res.error.kind in {InferErrorKind.CANNOT_INFER, InferErrorKind.CONFLICT}:
-										trait_saw_infer_incomplete = True
-										trait_infer_failures.append(inst_res)
-										continue
-									if inst_res.error:
-										continue
-
-									if inst_res.inst_params is None or inst_res.inst_return is None:
-										continue
-									inst_params = inst_res.inst_params
-									inst_return = inst_res.inst_return
-									inst_subst = inst_res.subst
-									# Enforce method-level requirements after instantiation.
-									method_req_expr: parser_ast.TraitExpr | None = None
-									method_subst_map: dict[object, object] = {}
-									if decl.fn_id is not None:
-										world = global_trait_world or visible_trait_world
-										req = _require_for_fn(decl.fn_id)
-										if req is not None:
-											subjects: set[object] = set()
-											_collect_trait_subjects(req, subjects)
-											subst: dict[object, object] = {}
-											if inst_subst is not None and sig.type_params:
-												for idx, tp in enumerate(sig.type_params):
-													if tp.id in subjects or tp.name in subjects:
-														if idx < len(inst_subst.args):
-															key = _normalize_type_key(
-																type_key_from_typeid(self.type_table, inst_subst.args[idx])
-															)
-															subst[tp.id] = key
-															subst[tp.name] = key
-											env = TraitEnv(
-												default_module=decl.fn_id.module or current_module_name,
-												default_package=default_package,
-												module_packages=module_packages or {},
-												assumed_true=set(fn_require_assumed),
-												type_table=self.type_table,
-											)
-											res = prove_expr(world, env, subst, req)
-											if res.status is not ProofStatus.PROVED:
-												failure = _require_failure(
-													req_expr=req,
-													subst=subst,
-													origin=ObligationOrigin(
-														kind=ObligationOriginKind.CALLEE_REQUIRE,
-														label=f"method '{expr.method_name}'",
-														span=Span.from_loc(getattr(req, "loc", None)),
-													),
-													span=getattr(expr, "loc", Span()),
-													env=env,
-													world=world,
-													result=res,
-												)
-												if failure is not None:
-													trait_require_failures.append(failure)
-												continue
-											method_req_expr = req
-											method_subst_map = subst
-									if len(inst_params) - 1 != len(arg_types):
-										continue
-									ok, autoborrow = _receiver_compat(recv_ty, inst_params[0], decl.self_mode)
-									if not ok:
-										continue
-									if _args_match_params(list(inst_params[1:]), arg_types):
-										pref = _receiver_preference(
-											decl.self_mode,
-											receiver_is_lvalue=receiver_is_lvalue,
-											receiver_can_mut_borrow=receiver_can_mut_borrow,
-											autoborrow=autoborrow,
-										)
-										if pref is None:
-											continue
-										impl_args = tuple(impl_subst.args) if impl_subst is not None else ()
-										fn_args = tuple(inst_subst.args) if inst_subst is not None else ()
-										trait_candidates.append(
-											(
-												MethodResolution(
-													decl=decl,
-													receiver_autoborrow=autoborrow,
-													result_type=inst_return,
-												),
-												cand,
-												impl_args,
-												fn_args,
-												tuple(inst_params),
-												pref,
-											)
-										)
-										cand_req = _combine_require(impl_req_expr, method_req_expr)
-										if cand_req is not None:
-											merged_subst = dict(impl_subst_map)
-											merged_subst.update(method_subst_map)
-											cand_key = _candidate_key_for_decl(decl)
-											scope_map = _param_scope_map(sig)
-											trait_require_info[cand_key] = (
-												cand_req,
-												merged_subst,
-												decl.fn_id.module or current_module_name,
-												scope_map,
-											)
-
-							if trait_candidates:
-								best_pref = min(pref for _res, _cand, _impl_args, _fn_args, _inst_params, pref in trait_candidates)
-								best = [item for item in trait_candidates if item[5] == best_pref]
-								best = _dedupe_by_key(
-									best,
-									lambda item: _candidate_key_for_decl(item[0].decl),
-								)
-								if len(best) > 1:
-									best = _pick_most_specific_items(
-										best,
-										lambda item: _candidate_key_for_decl(item[0].decl),
-										trait_require_info,
-									)
-								if len(best) > 1:
-									labels: list[str] = []
-									notes: list[str] = []
-									seen_labels: set[str] = set()
-
-									def _trait_ambig_key(
-										item: tuple[
-											MethodResolution,
-											TraitImplCandidate,
-											Tuple[TypeId, ...],
-											Tuple[TypeId, ...],
-											Tuple[TypeId, ...],
-											int,
-										],
-									) -> tuple[str, str, int]:
-										res, cand, _impl_args, _fn_args, _inst_params, _pref = item
-										trait_label = f"{cand.trait.module}.{cand.trait.name}" if cand.trait.module else cand.trait.name
-										mod_label = (
-											res.decl.fn_id.module
-											if res.decl.fn_id and res.decl.fn_id.module
-											else str(res.decl.module_id)
-										)
-										return (trait_label, mod_label, int(cand.impl_id))
-
-									for res, cand, _impl_args, _fn_args, _inst_params, _pref in sorted(
-										best, key=_trait_ambig_key
-									):
-										trait_label = f"{cand.trait.module}.{cand.trait.name}" if cand.trait.module else cand.trait.name
-										mod_label = (
-											res.decl.fn_id.module
-											if res.decl.fn_id and res.decl.fn_id.module
-											else str(res.decl.module_id)
-										)
-										label = f"{trait_label}@{mod_label}"
-										if label not in seen_labels:
-											labels.append(label)
-											seen_labels.add(label)
-										chain_note = _visibility_note(cand.def_module_id)
-										if chain_note:
-											notes.append(f"{label} {chain_note}")
-									label_str = ", ".join(labels)
-									recv_label = _label_typeid(recv_ty)
-									raise ResolutionError(
-										f"ambiguous method '{expr.method_name}' for receiver {recv_label} and args {arg_types}; candidates from traits: {label_str}",
-										span=getattr(expr, "loc", Span()),
-										notes=notes,
-										code="E-METHOD-AMBIGUOUS",
-									)
-								resolution, _cand, impl_args, fn_args, inst_params, _pref = best[0]
-								call_resolutions[expr.node_id] = resolution
-								result_type = resolution.result_type or resolution.decl.signature.result_type
-								target_fn_id = resolution.decl.fn_id
-								if target_fn_id is None:
-									raise ResolutionError(
-										f"missing function id for method '{expr.method_name}' (compiler bug)",
-										span=getattr(expr, "loc", Span()),
-									)
-								sig_for_throw = signatures_by_id.get(target_fn_id) if signatures_by_id is not None else None
-								if sig_for_throw is None:
-									call_can_throw = True
-								elif sig_for_throw.declared_can_throw is None:
-									diagnostics.append(
-										_tc_diag(
-											message="internal: signature missing declared_can_throw (checker bug)",
-											severity="error",
-											span=Span(),
-										)
-									)
-									call_can_throw = True
-								else:
-									call_can_throw = bool(sig_for_throw.declared_can_throw)
-								applied = _apply_method_boundary(
-									expr,
-									target_fn_id=target_fn_id,
-									sig_for_throw=sig_for_throw,
-									call_can_throw=call_can_throw,
-								)
-								if applied is None:
-									return record_expr(expr, self._unknown)
-								target_fn_id, call_can_throw = applied
-								updated_arg_types, had_autoborrow_error = _apply_autoborrow_args(
-									expr.args,
-									arg_types,
-									list(inst_params[1:]),
-									span=getattr(expr, "loc", Span()),
-								)
-								arg_types = updated_arg_types
-								if had_autoborrow_error:
-									record_method_call_info(
-										expr,
-										param_types=list(inst_params),
-										return_type=result_type or self._unknown,
-										can_throw=call_can_throw,
-										target=target_fn_id,
-									)
-									return record_expr(expr, self._unknown)
-								record_method_call_info(
-									expr,
-									param_types=list(inst_params),
-									return_type=result_type or self._unknown,
-									can_throw=call_can_throw,
-									target=target_fn_id,
-								)
-								record_instantiation(
-									callsite_id=getattr(expr, "callsite_id", None),
-									target_fn_id=resolution.decl.fn_id,
-									impl_args=impl_args,
-									fn_args=fn_args,
-								)
-								return record_expr(expr, result_type)
-							if trait_hidden:
-								mod_names: list[str] = []
-								notes: list[str] = []
-								for decl, cand, trait_key in trait_hidden:
-									mod = (
-										decl.fn_id.module
-										if decl.fn_id is not None and decl.fn_id.module
-										else str(cand.def_module_id)
-									)
-									trait_name = f"{trait_key.module}.{trait_key.name}" if trait_key.module else trait_key.name
-									mod_names.append(f"{trait_name}@{mod}")
-									span = cand.method_loc or cand.impl_loc
-									chain_note = _visibility_note(cand.def_module_id)
-									if span and span.line is not None:
-										loc = f"{span.file}:{span.line}:{span.column}" if span.file else f"line {span.line}"
-										note = f"candidate in trait '{trait_name}' at {loc}"
-									else:
-										note = f"candidate in trait '{trait_name}'"
-									if chain_note:
-										note = f"{note}; {chain_note}"
-									notes.append(note)
-								mod_list = ", ".join(sorted(set(mod_names)))
-								diagnostics.append(
-									_tc_diag(
-										message=(
-											f"method '{expr.method_name}' exists but is not visible here; "
-											f"candidates from traits: {mod_list}"
-										),
-										severity="error",
-										span=getattr(expr, "loc", Span()),
-										notes=notes,
-									)
-								)
-								return record_expr(expr, self._unknown)
-							if type_arg_ids and trait_type_arg_counts:
-								exp = ", ".join(str(n) for n in sorted(trait_type_arg_counts))
-								raise ResolutionError(
-									f"type argument count mismatch for method '{expr.method_name}': expected one of ({exp}), got {len(type_arg_ids)}",
-									span=call_type_args_span,
-								)
-							if type_arg_ids and trait_saw_typed_nongeneric:
-								raise ResolutionError(
-									f"type arguments require a generic method signature for '{expr.method_name}'",
-									span=call_type_args_span,
-								)
-							if trait_saw_infer_incomplete:
-								failure = trait_infer_failures[0] if trait_infer_failures else None
-								ctx = failure.context if failure and failure.context is not None else InferContext(
-									call_kind="method",
-									call_name=expr.method_name,
-									span=call_type_args_span or getattr(expr, "loc", Span()),
-									type_param_ids=[],
-									type_param_names={},
-									param_types=[],
-									param_names=None,
-									return_type=None,
-									arg_types=[],
-								)
-								res = failure if failure is not None else InferResult(
-									ok=False,
-									subst=None,
-									inst_params=None,
-									inst_return=None,
-									error=InferError(kind=InferErrorKind.CANNOT_INFER),
-									context=ctx,
-								)
-								msg, notes = _format_infer_failure(ctx, res)
-								raise ResolutionError(msg, span=call_type_args_span, notes=notes)
-						if not viable:
-							if type_arg_ids and type_arg_counts:
-								exp = ", ".join(str(n) for n in sorted(type_arg_counts))
-								raise ResolutionError(
-									f"type argument count mismatch for method '{expr.method_name}': expected one of ({exp}), got {len(type_arg_ids)}",
-									span=call_type_args_span,
-								)
-							if type_arg_ids and saw_typed_nongeneric_with_type_args:
-								raise ResolutionError(
-									f"type arguments require a generic method signature for '{expr.method_name}'",
-									span=call_type_args_span,
-								)
-							if type_arg_ids and saw_registry_only_with_type_args:
-								raise ResolutionError(
-									f"type arguments require a typed signature for method '{expr.method_name}'",
-									span=call_type_args_span,
-								)
-							if saw_infer_incomplete:
-								failure = infer_failures[0] if infer_failures else None
-								ctx = failure.context if failure and failure.context is not None else InferContext(
-									call_kind="method",
-									call_name=expr.method_name,
-									span=call_type_args_span or getattr(expr, "loc", Span()),
-									type_param_ids=[],
-									type_param_names={},
-									param_types=[],
-									param_names=None,
-									return_type=None,
-									arg_types=[],
-								)
-								res = failure if failure is not None else InferResult(
-									ok=False,
-									subst=None,
-									inst_params=None,
-									inst_return=None,
-									error=InferError(kind=InferErrorKind.CANNOT_INFER),
-									context=ctx,
-								)
-								msg, notes = _format_infer_failure(ctx, res)
-								raise ResolutionError(msg, span=call_type_args_span, notes=notes)
-							if trait_require_failures:
-								failure = _pick_best_failure(trait_require_failures)
-								raise ResolutionError(
-									_format_failure_message(failure) if failure is not None else "trait requirements not met",
-									code=_failure_code(failure) if failure is not None else None,
-									span=(failure.obligation.span if failure is not None else None)
-									or getattr(expr, "loc", Span()),
-									notes=list(getattr(failure.obligation, "notes", []) or []) if failure is not None else None,
-								)
-							if require_failures:
-								failure = _pick_best_failure(require_failures)
-								raise ResolutionError(
-									_format_failure_message(failure) if failure is not None else "trait requirements not met",
-									code=_failure_code(failure) if failure is not None else None,
-									span=(failure.obligation.span if failure is not None else None)
-									or getattr(expr, "loc", Span()),
-									notes=list(getattr(failure.obligation, "notes", []) or []) if failure is not None else None,
-								)
-							raise ResolutionError(
-								f"no matching method '{expr.method_name}' for receiver {recv_ty} and args {arg_types}",
-								span=getattr(expr, "loc", Span()),
-							)
-						best = viable
-						if viable:
-							best_pref = min(pref for _res, _impl_args, _fn_args, _inst_params, pref in viable)
-							best = [item for item in viable if item[4] == best_pref]
-							best = _dedupe_by_key(
-								best,
-								lambda item: _candidate_key_for_decl(item[0].decl),
-							)
-							if len(best) > 1:
-								best = _pick_most_specific_items(
-									best,
-									lambda item: _candidate_key_for_decl(item[0].decl),
-									require_info,
-								)
-							if len(best) > 1:
-								mod_names: list[str] = []
-								notes: list[str] = []
-								seen_mods: set[str] = set()
-
-								def _module_ambig_key(
-									item: tuple[
-										MethodResolution,
-										Tuple[TypeId, ...],
-										Tuple[TypeId, ...],
-										Tuple[TypeId, ...],
-										int,
-									],
-								) -> tuple[str, str, int]:
-									res, _impl_args, _fn_args, _inst_params, _pref = item
-									mod_label = (
-										res.decl.fn_id.module
-										if res.decl.fn_id is not None and res.decl.fn_id.module
-										else str(res.decl.module_id)
-									)
-									fn_name = res.decl.fn_id.name if res.decl.fn_id is not None else ""
-									fn_ord = res.decl.fn_id.ordinal if res.decl.fn_id is not None else 0
-									return (mod_label, fn_name, int(fn_ord))
-
-								for res, _impl_args, _fn_args, _inst_params, _pref in sorted(best, key=_module_ambig_key):
-									mod_label = (
-										res.decl.fn_id.module
-										if res.decl.fn_id is not None and res.decl.fn_id.module
-										else str(res.decl.module_id)
-									)
-									if mod_label not in seen_mods:
-										mod_names.append(mod_label)
-										seen_mods.add(mod_label)
-									chain_note = _visibility_note(res.decl.module_id)
-									if chain_note:
-										notes.append(f"{mod_label} {chain_note}")
-								if trait_index and trait_scope_by_module:
-									traits_in_scope = _traits_in_scope()
-									if any(trait_index.has_method(tr, expr.method_name) for tr in traits_in_scope):
-										notes.append("inherent methods took precedence; use UFCS to call a trait method")
-								mod_list = ", ".join(mod_names)
-								recv_label = _label_typeid(recv_ty)
-								raise ResolutionError(
-									f"ambiguous method '{expr.method_name}' for receiver {recv_label} and args {arg_types}; candidates from modules: {mod_list}",
-									span=getattr(expr, "loc", Span()),
-									notes=notes,
-									code="E-METHOD-AMBIGUOUS",
-								)
-						resolution, impl_args, fn_args, inst_params, _pref = best[0]
-						call_resolutions[expr.node_id] = resolution
-						result_type = resolution.result_type or resolution.decl.signature.result_type
-						target_fn_id = resolution.decl.fn_id
-						if target_fn_id is None:
-							raise ResolutionError(
-								f"missing function id for method '{expr.method_name}' (compiler bug)",
-								span=getattr(expr, "loc", Span()),
-							)
-						sig_for_throw = signatures_by_id.get(target_fn_id) if signatures_by_id is not None else None
-						if sig_for_throw is None:
-							call_can_throw = True
-						elif sig_for_throw.declared_can_throw is None:
-							diagnostics.append(
-								_tc_diag(
-									message="internal: signature missing declared_can_throw (checker bug)",
-									severity="error",
-									span=Span(),
-								)
-							)
-							call_can_throw = True
-						else:
-							call_can_throw = bool(sig_for_throw.declared_can_throw)
-						applied = _apply_method_boundary(
-							expr,
-							target_fn_id=target_fn_id,
-							sig_for_throw=sig_for_throw,
-							call_can_throw=call_can_throw,
-						)
-						if applied is None:
-							return record_expr(expr, self._unknown)
-						target_fn_id, call_can_throw = applied
-						updated_arg_types, had_autoborrow_error = _apply_autoborrow_args(
-							expr.args,
-							arg_types,
-							list(inst_params[1:]),
-							span=getattr(expr, "loc", Span()),
-						)
-						arg_types = updated_arg_types
-						if had_autoborrow_error:
-							record_method_call_info(
-								expr,
-								param_types=list(inst_params),
-								return_type=result_type or self._unknown,
-								can_throw=call_can_throw,
-								target=target_fn_id,
-							)
-							return record_expr(expr, self._unknown)
-						record_method_call_info(
-							expr,
-							param_types=list(inst_params),
-							return_type=result_type or self._unknown,
-							can_throw=call_can_throw,
-							target=target_fn_id,
-						)
-						record_instantiation(
-							callsite_id=getattr(expr, "callsite_id", None),
-							target_fn_id=resolution.decl.fn_id,
-							impl_args=impl_args,
-							fn_args=fn_args,
-						)
-						return record_expr(expr, result_type)
-					except ResolutionError as err:
-						diag_span = getattr(err, "span", None) or getattr(expr, "loc", Span())
-						diagnostics.append(
-							_tc_diag(
-								message=str(err),
-								code=getattr(err, "code", None),
-								severity="error",
-								span=diag_span,
-								notes=list(getattr(err, "notes", []) or []),
-							)
-						)
-						return record_expr(expr, self._unknown)
-
-				return record_expr(expr, self._unknown)
-
-			# Field access and indexing.
-			#
-			# Canonical place expressions (`HPlaceExpr`) denote addressable storage
-			# locations. In expression position they behave like lvalues: their type is
-			# the type of the referenced storage location.
-			if hasattr(H, "HPlaceExpr") and isinstance(expr, getattr(H, "HPlaceExpr")):
-				current_ty = type_expr(expr.base, used_as_value=False)
-				for proj in expr.projections:
-					if isinstance(proj, H.HPlaceDeref):
-						td = self.type_table.get(current_ty)
-						if td.kind is not TypeKind.REF or not td.param_types:
-							diagnostics.append(
-								_tc_diag(
-									message="deref requires a reference value",
-									severity="error",
-									span=getattr(expr, "loc", Span()),
-								)
-							)
-							return record_expr(expr, self._unknown)
-						current_ty = td.param_types[0]
-						continue
-					if isinstance(proj, H.HPlaceField):
-						td = self.type_table.get(current_ty)
-						if td.kind is TypeKind.REF and td.param_types:
-							current_ty = td.param_types[0]
-							td = self.type_table.get(current_ty)
-						if td.kind is not TypeKind.STRUCT:
-							diagnostics.append(
-								_tc_diag(
-									message="field access requires a struct value",
-									severity="error",
-									span=getattr(expr, "loc", Span()),
-								)
-							)
-							return record_expr(expr, self._unknown)
-						if not _ensure_field_visible(current_ty, proj.name, getattr(expr, "loc", Span())):
-							return record_expr(expr, self._unknown)
-						info = self.type_table.struct_field(current_ty, proj.name)
-						if info is None:
-							diagnostics.append(
-								_tc_diag(
-									message=f"unknown field '{proj.name}' on struct '{td.name}'",
-									severity="error",
-									span=getattr(expr, "loc", Span()),
-								)
-							)
-							return record_expr(expr, self._unknown)
-						_, field_ty = info
-						current_ty = field_ty
-						continue
-					if isinstance(proj, H.HPlaceIndex):
-						idx_ty = type_expr(proj.index)
-						if idx_ty is not None and idx_ty != self._int:
-							diagnostics.append(
-								_tc_diag(
-									message="array index must be an Int",
-									severity="error",
-									span=getattr(proj.index, "loc", getattr(expr, "loc", Span())),
-								)
-							)
-							return record_expr(expr, self._unknown)
-						td = self.type_table.get(current_ty)
-						if td.kind is TypeKind.REF and td.param_types:
-							current_ty = td.param_types[0]
-							td = self.type_table.get(current_ty)
-						if td.kind is not TypeKind.ARRAY or not td.param_types:
-							diagnostics.append(
-								_tc_diag(
-									message="indexing requires an Array value",
-									severity="error",
-									span=getattr(expr, "loc", Span()),
-								)
-							)
-							return record_expr(expr, self._unknown)
-						current_ty = td.param_types[0]
-						continue
-					diagnostics.append(
-						_tc_diag(
-							message="unsupported place projection",
-							severity="error",
-							span=getattr(expr, "loc", Span()),
-						)
-					)
-					return record_expr(expr, self._unknown)
-				_require_copy_value(current_ty, span=getattr(expr, "loc", Span()), used_as_value=used_as_value)
-				return record_expr(expr, current_ty)
-
+						wrap_id, call_can_throw = boundary
+						if wrap_id != fn_id_local or call_can_throw != method_res.call_info.sig.can_throw:
+							method_res = MethodCallResult(method_res.return_type, CallInfo(target=CallTarget.direct(wrap_id), sig=CallSig(param_types=method_res.call_info.sig.param_types, user_ret_type=method_res.call_info.sig.user_ret_type, can_throw=bool(call_can_throw), includes_callee=method_res.call_info.sig.includes_callee)), method_res.resolution)
+				if method_res.resolution is not None:
+					call_resolutions[expr.node_id] = method_res.resolution
+				csid = getattr(expr, "callsite_id", None)
+				if method_res.call_info is not None:
+					if isinstance(csid, int):
+						call_info_by_callsite_id[csid] = method_res.call_info
+					elif callable_registry is not None:
+						diagnostics.append(_tc_diag(message="internal: missing callsite_id on method call node", severity="error", span=getattr(expr, "loc", Span())))
+				return record_expr(expr, method_res.return_type)
 			if isinstance(expr, H.HField):
 				sub_ty = type_expr(expr.subject, used_as_value=False)
-				if expr.name in ("len", "cap", "capacity"):
-					# Array/String length/capacity sugar returns Int.
-					inner_ty = sub_ty
+				inner_ty = sub_ty
+				inner_def = self.type_table.get(inner_ty)
+				if inner_def.kind is TypeKind.REF and inner_def.param_types:
+					inner_ty = inner_def.param_types[0]
 					inner_def = self.type_table.get(inner_ty)
-					if inner_def.kind is TypeKind.REF and inner_def.param_types:
-						inner_ty = inner_def.param_types[0]
-						inner_def = self.type_table.get(inner_ty)
+				if inner_def.kind is TypeKind.STRUCT:
+					info = _resolve_struct_field_type(inner_ty, expr.name)
+					if info is not None:
+						idx, field_ty = info
+						_ensure_field_visible(inner_ty, expr.name, getattr(expr, "loc", Span()))
+						return record_expr(expr, field_ty)
+				if expr.name in ("len", "cap", "capacity", "gen"):
+					# Array/String length/capacity/gen sugar returns Int.
 					if inner_def.kind is TypeKind.ARRAY:
 						return record_expr(expr, self._int)
 					if expr.name == "len" and inner_ty == self._string:
 						return record_expr(expr, self._int)
-					if expr.name in ("cap", "capacity"):
-						diagnostics.append(
-							_tc_diag(
-								message="cap is only supported on Array values",
-								severity="error",
-								span=getattr(expr, "loc", Span()),
-							)
-						)
+					if expr.name in ("cap", "capacity", "gen"):
+						diagnostics.append(_tc_diag(message=f"{expr.name} is only supported on Array values", severity="error", span=getattr(expr, "loc", Span())))
 					else:
-						diagnostics.append(
-							_tc_diag(
-								message="len(x): unsupported argument type",
-								severity="error",
-								span=getattr(expr, "loc", Span()),
-							)
-						)
+						diagnostics.append(_tc_diag(message="len(x): unsupported argument type", severity="error", span=getattr(expr, "loc", Span())))
 					return record_expr(expr, self._unknown)
 				if expr.name == "attrs":
 					diagnostics.append(
@@ -8934,7 +4831,7 @@ class TypeChecker:
 				if sub_def.kind is TypeKind.STRUCT:
 					if not _ensure_field_visible(sub_ty, expr.name, getattr(expr, "loc", Span())):
 						return record_expr(expr, self._unknown)
-					info = self.type_table.struct_field(sub_ty, expr.name)
+					info = _resolve_struct_field_type(sub_ty, expr.name)
 					if info is None:
 						diagnostics.append(
 							_tc_diag(
@@ -8948,6 +4845,56 @@ class TypeChecker:
 					_require_copy_value(field_ty, span=getattr(expr, "loc", Span()), used_as_value=used_as_value)
 					return record_expr(expr, field_ty)
 				return record_expr(expr, self._unknown)
+
+			if hasattr(H, "HPlaceExpr") and isinstance(expr, getattr(H, "HPlaceExpr")):
+				cur = type_expr(expr.base, used_as_value=False)
+				for proj in expr.projections:
+					if isinstance(proj, H.HPlaceDeref):
+						if cur is None:
+							return record_expr(expr, self._unknown)
+						ptr_def = self.type_table.get(cur)
+						if ptr_def.kind is not TypeKind.REF or not ptr_def.param_types:
+							diagnostics.append(_tc_diag(message="cannot deref a non-reference value", severity="error", span=getattr(expr, "loc", Span())))
+							return record_expr(expr, self._unknown)
+						cur = ptr_def.param_types[0]
+					elif isinstance(proj, H.HPlaceField):
+						if cur is None:
+							return record_expr(expr, self._unknown)
+						td = self.type_table.get(cur)
+						if td.kind is TypeKind.REF and td.param_types:
+							cur = td.param_types[0]
+							td = self.type_table.get(cur)
+						if td.kind is not TypeKind.STRUCT:
+							diagnostics.append(_tc_diag(message="field access requires a struct value", severity="error", span=getattr(expr, "loc", Span())))
+							return record_expr(expr, self._unknown)
+						if not _ensure_field_visible(cur, proj.name, getattr(expr, "loc", Span())):
+							return record_expr(expr, self._unknown)
+						info = _resolve_struct_field_type(cur, proj.name)
+						if info is None:
+							diagnostics.append(_tc_diag(message=f"unknown field '{proj.name}' on struct '{td.name}'", severity="error", span=getattr(expr, "loc", Span())))
+							return record_expr(expr, self._unknown)
+						_, cur = info
+					elif isinstance(proj, H.HPlaceIndex):
+						if cur is None:
+							return record_expr(expr, self._unknown)
+						idx_ty = type_expr(proj.index)
+						if idx_ty is not None:
+							td_idx = self.type_table.get(idx_ty)
+							if td_idx.kind is not TypeKind.TYPEVAR and idx_ty != self._int:
+								diagnostics.append(_tc_diag(message="array index must be an Int", severity="error", span=getattr(proj.index, "loc", Span())))
+								return record_expr(expr, self._unknown)
+						td = self.type_table.get(cur)
+						if td.kind is TypeKind.REF and td.param_types:
+							cur = td.param_types[0]
+							td = self.type_table.get(cur)
+						if td.kind is not TypeKind.ARRAY or not td.param_types:
+							diagnostics.append(_tc_diag(message="indexing requires an Array value", severity="error", span=getattr(expr, "loc", Span())))
+							return record_expr(expr, self._unknown)
+						cur = td.param_types[0]
+				if cur is None:
+					return record_expr(expr, self._unknown)
+				_require_copy_value(cur, span=getattr(expr, "loc", Span()), used_as_value=used_as_value)
+				return record_expr(expr, cur)
 
 			if isinstance(expr, H.HIndex):
 				# Special-case Error.attrs["key"] → DiagnosticValue.
@@ -9115,6 +5062,8 @@ class TypeChecker:
 					H.BinaryOp.GE,
 				):
 					if left_ty is not None and right_ty is not None and left_ty != right_ty:
+						if left_ty == self._unknown or right_ty == self._unknown:
+							return record_expr(expr, self._bool)
 						if self.type_table.get(left_ty).kind is TypeKind.TYPEVAR:
 							return record_expr(expr, self._bool)
 						if self.type_table.get(right_ty).kind is TypeKind.TYPEVAR:
@@ -9286,6 +5235,7 @@ class TypeChecker:
 			nonlocal catch_depth
 			# Borrow conflicts are diagnosed within a single statement.
 			borrows_in_stmt.clear()
+			borrow_expr_ids_in_stmt.clear()
 			if isinstance(stmt, H.HLet):
 				if stmt.binding_id is None:
 					stmt.binding_id = self._alloc_local_id()
@@ -9851,6 +5801,8 @@ class TypeChecker:
 					walk(val)
 
 				def _should_descend(obj: object) -> bool:
+					if isinstance(obj, H.HLambda):
+						return False
 					if isinstance(obj, H.HNode):
 						return True
 					if is_dataclass(obj) and obj.__class__.__module__.startswith("lang2.driftc.stage1"):
@@ -9901,6 +5853,10 @@ class TypeChecker:
 					ref_origin_param[bid] = bid
 
 			def _return_origin(expr: H.HExpr) -> Optional[int]:
+				if isinstance(expr, H.HCall):
+					if isinstance(expr.fn, H.HVar) and expr.fn.module_id == "std.mem" and expr.fn.name in ("ptr_at_ref", "ptr_at_mut"):
+						if expr.args:
+							return _return_origin(expr.args[0])
 				# Returning an existing reference value (param or local ref).
 				if isinstance(expr, H.HVar) and getattr(expr, "binding_id", None) is not None:
 					return ref_origin_param.get(expr.binding_id)
@@ -9921,6 +5877,8 @@ class TypeChecker:
 					sub_place = place_from_expr(expr.subject, base_lookup=_base_lookup)
 					if sub_place is None:
 						return None
+					if sub_place.base.local_id in ref_origin_param:
+						return ref_origin_param.get(sub_place.base.local_id)
 					if not any(isinstance(p, DerefProj) for p in sub_place.projections):
 						return None
 					return ref_origin_param.get(sub_place.base.local_id)

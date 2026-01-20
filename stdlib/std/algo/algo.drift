@@ -1,11 +1,104 @@
 module std.algo
 
 import std.iter as iter;
+import std.core.cmp as cmp;
+use trait iter.RandomAccessReadable;
+use trait iter.RandomAccessPermutable;
+use trait BinarySearchable;
 
 export {
-	BinarySearchable
+	BinarySearchable,
+	binary_search,
+	sort_in_place
 };
 
 pub trait BinarySearchable<T> require Self is iter.RandomAccessReadable<T> {
 	fn compare_key(self: &Self, i: Int, key: &T) -> Int;
+}
+
+pub fn sort_in_place<R, T>(r: &mut R) -> Void
+	require (R is iter.RandomAccessPermutable<T> and R is iter.RandomAccessReadable<T>) {
+	val len = r.len();
+	if len <= 1 {
+		return;
+	}
+	var start = len / 2 - 1;
+	while true {
+		var root = start;
+		while true {
+			val left = root * 2 + 1;
+			if left >= len {
+				break;
+			}
+			var swap_idx = root;
+			if r.compare_at(swap_idx, left) < 0 {
+				swap_idx = left;
+			}
+			val right = left + 1;
+			if right < len {
+				if r.compare_at(swap_idx, right) < 0 {
+					swap_idx = right;
+				}
+			}
+			if swap_idx == root {
+				break;
+			}
+			r.swap(root, swap_idx);
+			root = swap_idx;
+		}
+		if start == 0 {
+			break;
+		}
+		start = start - 1;
+	}
+	var end = len;
+	while end > 1 {
+		end = end - 1;
+		r.swap(0, end);
+		var root2 = 0;
+		while true {
+			val left2 = root2 * 2 + 1;
+			if left2 >= end {
+				break;
+			}
+			var swap2 = root2;
+			if r.compare_at(swap2, left2) < 0 {
+				swap2 = left2;
+			}
+			val right2 = left2 + 1;
+			if right2 < end {
+				if r.compare_at(swap2, right2) < 0 {
+					swap2 = right2;
+				}
+			}
+			if swap2 == root2 {
+				break;
+			}
+			r.swap(root2, swap2);
+			root2 = swap2;
+		}
+	}
+}
+
+pub fn binary_search<R, T>(r: &R, key: &T) -> Optional<Int>
+	require (R is BinarySearchable<T> and T is cmp.Comparable) {
+	val len = r.len();
+	if len <= 0 {
+		return Optional::None();
+	}
+	var lo = 0;
+	var hi = len - 1;
+	while lo <= hi {
+		val mid = lo + (hi - lo) / 2;
+		val c = r.compare_key(mid, key);
+		if c == 0 {
+			return Optional::Some(mid);
+		}
+		if c < 0 {
+			lo = mid + 1;
+		} else {
+			hi = mid - 1;
+		}
+	}
+	return Optional::None();
 }

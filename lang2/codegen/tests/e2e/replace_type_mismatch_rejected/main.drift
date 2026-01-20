@@ -1,8 +1,8 @@
-module main
+module std.mem.test
 
 import std.mem as mem;
 fn main() nothrow -> Int{
 	var a = 1;
-	val old = mem.replace(a, "x");
+	val old = mem.replace(&mut a, "x");
 	return old;
 }

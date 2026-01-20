@@ -39,8 +39,10 @@ Ident        ::= NAME | "move" | "copy"
 
 Declarations and items:
 ```
-Item         ::= PubItem | FnDef | ConstDef | StructDef | ExceptionDef | VariantDef
-              | TraitDef | ImplementDef | UseTraitStmt | ImportStmt | ExportStmt
+Item         ::= TestBuildOnly? PubItem | TestBuildOnly? FnDef | TestBuildOnly? ConstDef
+              | TestBuildOnly? StructDef | TestBuildOnly? ExceptionDef | TestBuildOnly? VariantDef
+              | TestBuildOnly? TraitDef | TestBuildOnly? ImplementDef
+              | UseTraitStmt | ImportStmt | ExportStmt
 PubItem      ::= "pub" (FnDef | ConstDef | StructDef | ExceptionDef | VariantDef | TraitDef | ImplementDef)
 
 ConstDef     ::= "const" NAME ":" Ty "=" Expr TERMINATOR
@@ -75,7 +77,9 @@ TraitMethodSig ::= "fn" Ident "(" Params? ")" ReturnSig
 
 ImplementDef ::= "implement" TypeParams? Ty ("for" Ty)? RequireClause? ImplementBody
 ImplementBody ::= "{" (ImplementItem | TERMINATOR)* "}"
-ImplementItem ::= "pub" FnDef | FnDef
+ImplementItem ::= TestBuildOnly? "pub" FnDef | TestBuildOnly? FnDef
+
+TestBuildOnly ::= "@test_build_only"
 
 RequireClause ::= "require" TraitExpr ("," TraitExpr)*
 

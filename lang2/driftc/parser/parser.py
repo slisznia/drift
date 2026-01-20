@@ -755,8 +755,12 @@ def _build_program(tree: Tree) -> Program:
 		if not isinstance(child, Tree):
 			continue
 		kind = _name(child)
+		is_test_only = False
+		is_intrinsic = False
 		if kind == "item":
-			child = next((c for c in child.children if isinstance(c, Tree)), None) or child
+			is_test_only = _has_test_build_only_marker(child)
+			is_intrinsic = _has_intrinsic_marker(child)
+			child = _strip_item_markers(child)
 			kind = _name(child)
 		if kind == "module_decl":
 			if seen_non_module_item:
@@ -783,32 +787,40 @@ def _build_program(tree: Tree) -> Program:
 		else:
 			is_pub = False
 		if kind == "func_def":
-			fn = _build_function(child)
+			fn = _build_function(child, allow_missing_body=is_intrinsic)
 			fn.is_pub = is_pub
+			fn.test_build_only = is_test_only
+			fn.is_intrinsic = is_intrinsic
 			functions.append(fn)
 		elif kind == "const_def":
 			const_def = _build_const_def(child)
 			const_def.is_pub = is_pub
+			const_def.test_build_only = is_test_only
 			consts.append(const_def)
 		elif kind == "implement_def":
 			impl = _build_implement_def(child)
 			impl.is_pub = is_pub
+			impl.test_build_only = is_test_only
 			implements.append(impl)
 		elif kind == "struct_def":
 			struct_def = _build_struct_def(child)
 			struct_def.is_pub = is_pub
+			struct_def.test_build_only = is_test_only
 			structs.append(struct_def)
 		elif kind == "exception_def":
 			exc = _build_exception_def(child)
 			exc.is_pub = is_pub
+			exc.test_build_only = is_test_only
 			exceptions.append(exc)
 		elif kind == "variant_def":
 			var_def = _build_variant_def(child)
 			var_def.is_pub = is_pub
+			var_def.test_build_only = is_test_only
 			variants.append(var_def)
 		elif kind == "trait_def":
 			tr_def = _build_trait_def(child)
 			tr_def.is_pub = is_pub
+			tr_def.test_build_only = is_test_only
 			traits.append(tr_def)
 		else:
 			stmt = _build_stmt(child)
@@ -1108,7 +1120,7 @@ def _build_trait_def(tree: Tree) -> TraitDef:
 	)
 
 
-def _build_function(tree: Tree) -> FunctionDef:
+def _build_function(tree: Tree, *, allow_missing_body: bool = False) -> FunctionDef:
 	loc = _loc(tree)
 	children = list(tree.children)
 	idx = 0
@@ -1141,7 +1153,12 @@ def _build_function(tree: Tree) -> FunctionDef:
 	if idx < len(children) and isinstance(children[idx], Tree) and _name(children[idx]) == "require_clause":
 		require = _build_require_clause(children[idx])
 		idx += 1
-	body = _build_block(children[idx])
+	if idx >= len(children) or not isinstance(children[idx], Tree) or _name(children[idx]) != "block":
+		if not allow_missing_body:
+			raise ModuleDeclError("function declaration missing body", loc=_loc(tree))
+		body = Block(statements=[])
+	else:
+		body = _build_block(children[idx])
 	return FunctionDef(
 		name=name_token.value,
 		orig_name=orig_name,
@@ -1190,6 +1207,9 @@ def _build_implement_def(tree: Tree) -> ImplementDef:
 		# - legacy/alternate shapes that may appear during grammar evolution.
 		if not isinstance(item, Tree):
 			continue
+		item_test_only = _has_test_build_only_marker(item)
+		if item_test_only:
+			item = _strip_test_build_only_marker(item)
 		item_kind = _name(item)
 		if item_kind not in {"implement_func", "implement_func_pub", "implement_item", "func_def"}:
 			continue
@@ -1205,6 +1225,7 @@ def _build_implement_def(tree: Tree) -> ImplementDef:
 			continue
 		fn = _build_function(fn_node)
 		fn.is_pub = is_pub
+		fn.test_build_only = item_test_only
 		fn.is_method = True
 		fn.impl_target = target
 		methods.append(fn)
@@ -1827,7 +1848,7 @@ def _build_use_trait_stmt(tree: Tree) -> UseTraitStmt:
 		if child is not None:
 			ref_node = child
 	parts = [tok.value for tok in ref_node.children if isinstance(tok, Token) and tok.type == "NAME"]
-	if len(parts) < 2:
+	if len(parts) < 1:
 		raise ValueError("trait reference missing module path or trait name")
 	module_path = parts[:-1]
 	trait_name = parts[-1]
@@ -2701,3 +2722,25 @@ def _name(node: Tree | Token) -> str:
     if isinstance(node, Token):
         return node.type
     return str(node)
+
+
+def _has_test_build_only_marker(node: Tree) -> bool:
+    return any(isinstance(child, Tree) and _name(child) == "test_build_only_marker" for child in node.children)
+
+
+def _strip_test_build_only_marker(node: Tree) -> Tree:
+    for child in node.children:
+        if isinstance(child, Tree) and _name(child) != "test_build_only_marker":
+            return child
+    return node
+
+
+def _has_intrinsic_marker(node: Tree) -> bool:
+    return any(isinstance(child, Tree) and _name(child) == "intrinsic_marker" for child in node.children)
+
+
+def _strip_item_markers(node: Tree) -> Tree:
+    for child in node.children:
+        if isinstance(child, Tree) and _name(child) not in {"test_build_only_marker", "intrinsic_marker"}:
+            return child
+    return node

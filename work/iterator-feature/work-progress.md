@@ -3,213 +3,111 @@
 ## Goal
 Define iterator traits and MVP constraints for collections/algorithms, aligned with Drift's compile-time traits.
 
-## Plan
-- Pin iterator category names and define their contracts.
-- Decide algorithm placement (iterator-based vs slice/view-based).
-- Define `Comparable`/`Equatable` naming and trait dependency rules.
-- Draft std collection MVP surface (maps/sets/queues) and required iterator categories.
-- Implement typechecker/lowering support for `for` desugaring using iterator traits.
-- Add tests for iterator trait resolution and `for` lowering.
+## Outstanding
 
-## Decisions (Pinned)
-- Iterator categories (for now):
-  - SinglePassIterator<T>
-  - MultiPassIterator<T>
-  - BidirectionalIterator<T>
-  - RandomAccessReadable<T>
-- Hierarchy split (pinned):
-  - Traversal: SinglePassIterator -> MultiPassIterator -> BidirectionalIterator
-  - Index-based: RandomAccessReadable/RandomAccessPermutable (not derived from traversal traits)
-- Random-access mutation for sorting is modeled as a separate capability:
-  - RandomAccessReadable<T>: `len() -> Int` + `compare_at(i: Int, j: Int) -> Int` for comparisons without copying
-  - RandomAccessPermutable<T>: `swap(i, j)` and stable indexing semantics (extends RandomAccessReadable)
-  - Contract notes:
-    - Stable indexing: `len()` is stable for the algorithm duration; valid indices satisfy `0 <= i < len`; negative indices raise `IndexError`.
-    - Bounds check rule: if `i < 0` then `IndexError`; else require `i < len`.
-    - Permutation semantics: `swap(i, j)` exchanges only slots `i` and `j` and preserves `len()` and other indices.
-    - Performance: `compare_at`/`swap` should be O(1) or amortized O(1) for generic sort to be viable.
-    - Read capability (pinned for MVP): use `compare_at(i, j) -> Int` with contract: `<0` means `i<j`, `0` means equal, `>0` means `i>j` (no copying); revisit `get_ref` once references exist.
-    - Order coherence: `compare_at` must reflect `T is Comparable` ordering (no custom orderings via `compare_at` in MVP).
-    - Order law (pinned): `compare_at` has sign symmetry + transitivity + totality:
-      - `cmp(i,j) == 0` iff `cmp(j,i) == 0`
-      - `cmp(i,j) < 0` iff `cmp(j,i) > 0`
-      - transitive and total (no unordered cases in MVP)
-- Defer any "contiguous storage" category until a slice/ABI view exists.
-- Traits are compile-time only (static dispatch).
-- Iterator method signatures (pinned):
-  - SinglePassIterator<T>: `next(self: &mut Self) -> Optional<T>`
-  - MultiPassIterator<T>: `require Self is Copy` (copies must be independent; advancing one copy must not affect the other)
-  - BidirectionalIterator<T>: `prev(self: &mut Self) -> Optional<T>`
-  - RandomAccessPermutable<T>: `swap(self: &mut Self, i: Int, j: Int) -> Void`
-- Iterator trait resolution must be static at call sites; no dynamic/erased iterator types.
-- MVP collections must return concrete iterator types in public signatures (no opaque return types unless/ until a language feature is defined).
-- `for` desugaring is pinned to `SinglePassIterator<T>` with `next(&mut self) -> Optional<T>` (generic item type).
-- Borrowed vs owned iteration may require distinct iterator types or iterator type parameters; do not assume a single iterator type can serve both.
-- `Iterable.iter` forms to support:
-  - `iter(self: T)` (move/Copy items)
-  - `iter(self: &T)` (borrowed items)
-  - `iter(self: &mut T)` (mutable borrowed items)
-  - `for x in arr` uses `std.iter.Iterable.iter(arr)` (moves/copies items)
-  - `for x in &arr` uses `std.iter.Iterable.iter(&arr)` (borrowed items)
-  - `for x in &mut arr` uses `std.iter.Iterable.iter(&mut arr)` (mutable borrowed items)
-- Iterators produced from `&mut` sources are never MultiPass (must not be Copy).
-- `iter(self: T)` consumes `self` unless `T` is Copy; using a non-Copy container after `for x in container` is an error.
-- `Comparable` implies `Equatable` for the same type: `require Self is Equatable`.
-- Heterogeneous equality/comparison is out of scope unless explicitly specified later.
-- `equal(a, b)` consumes both iterators; it advances in lockstep and returns true only if both end together.
-- Algorithms will be defined in terms of iterator capabilities only (e.g., RandomAccess), not Slice/View.
-- Slice/View will be introduced later as a concrete type that implements iterator traits.
-- Slice/View API is out of scope until a contiguous/ABI view is required.
-- Iterator/Slice work is a **module-level API** in stdlib; compiler support is limited to `for` desugaring.
-- Stdlib modules: containers in `std.containers`, algorithms in `std.algo`.
-- Iterator traits live in a low-level module (`std.iter`) to avoid container/algorithm import cycles.
-- `for` desugaring uses the fully-qualified `std.iter.SinglePassIterator` (no local shadowing).
-- `for` desugaring uses `std.iter.Iterable.iter(...)` with fully-qualified lookup (no local shadowing).
-- `Iterable` shape (pinned):
-  - `trait Iterable<Src, Item, Iter> { fn iter(src: Src) -> Iter require Iter is std.iter.SinglePassIterator<Item> }`
-- `for` evaluates its source expression exactly once, calls `Iterable.iter` exactly once, then loops on `next`.
-- Iterable coherence: for any concrete `Src`, at most one applicable `Iterable<Src, Item, Iter>` impl may exist (no ambiguity).
-- `Iterable.iter(x)` uses UFCS-style trait dispatch; this is a required language feature.
-- Iterator invalidation rule: any structural mutation of a collection invalidates all iterators derived from it; any method on an invalidated iterator/range raises `std.err:IteratorInvalidated(container_id: String, op_id: IteratorOpId)`.
-- Bounds errors for `compare_at`/`swap` use `std.err:IndexError(container_id: String, index: Int)` with `container_id` set to the base nominal key.
-- Error payload determinism: `container_id` is the base nominal key without type arguments (e.g., `std.containers:Array`).
-- `Equatable` and `Comparable` live in `std.core.cmp` (low-level comparison module).
-- MVP container set in `std.containers`: Array, HashMap, TreeMap, HashSet, TreeSet, List, Queue, Deque.
-- Array API (MVP):
-  - Indexing: `arr[i]` throws `IndexError` on OOB and is only allowed for Copy elements.
-  - `get(i) -> Optional<&T>` returns `None` on OOB (no throw).
-  - Borrowed element access is supported: `&arr[i]` / `&mut arr[i]` (uses borrow checker; no Copy required).
-  - Mutators: `push`, `pop`, `insert`, `remove`, `swap_remove`, `set`, `clear`, `reserve`, `shrink_to_fit`.
-  - `push`/`pop` operate on the tail; `remove` shifts left; `insert` shifts right; `swap_remove` is O(1) and unordered.
-  - Removal/shift operations use move-out semantics (no Copy required); `arr[i]` stays Copy-only.
-  - `len`/`cap` return `Int` and are non-negative.
-  - Variants with droppable payload must define a `tombstone_ctor` (e.g. Optional.None) for move-out neutralization.
-- Container iterator capabilities (pinned, per iter form):
-  - Array:
-    - iter(self: T): SinglePass
-    - iter(self: &T): SinglePass, MultiPass, Bidirectional
-    - iter(self: &mut T): deferred (not implemented; borrow-safety enforcement pending)
-  - Owned Array iteration requires Copy:
-    - `ArrayMoveIter<T>` is only available when `T is Copy` (prevents move-out holes on `arr[i]`).
-  - List:
-    - iter(self: T): SinglePass, MultiPass, Bidirectional
-    - iter(self: &T): SinglePass, MultiPass, Bidirectional
-    - iter(self: &mut T): SinglePass
-  - Deque (no RandomAccess* in MVP):
-    - iter(self: T): SinglePass, MultiPass, Bidirectional
-    - iter(self: &T): SinglePass, MultiPass, Bidirectional
-    - iter(self: &mut T): SinglePass
-  - Queue:
-    - iter(self: T): SinglePass
-    - iter(self: &T): SinglePass
-    - iter(self: &mut T): SinglePass
-  - TreeMap/TreeSet (in-order):
-    - iter(self: T): SinglePass, MultiPass, Bidirectional
-    - iter(self: &T): SinglePass, MultiPass, Bidirectional
-    - iter(self: &mut T): SinglePass
-  - HashMap/HashSet:
-    - iter(self: T): SinglePass
-    - iter(self: &T): SinglePass
-    - iter(self: &mut T): SinglePass
-- `std.iter.RandomAccessReadable` remains minimal (len + compare_at). Algorithm-specific capability traits live in `std.algo` (e.g., `BinarySearchable`).
+### Phase 3: Uninitialized storage primitives (RawBuffer/MaybeUninit) and container rebuild
+- (done) Added `std.mem.RawBuffer<T>` (ptr+cap) with intrinsic-backed ops: alloc_uninit/dealloc/ptr_at/write/read; `capacity()` implemented in std.mem.
+- (done) Added RawBuffer intrinsics to type checker, MIR, and LLVM codegen; lowered to drift_alloc_array/free_array plus pointer arithmetic.
+- (done) Rebuilt Deque ring buffer on RawBuffer (head/len/gen, wrap mapping, gen bump only on actual structural change).
+- (done) Deque wraparound/sort/binary_search e2e tests pass under RawBuffer.
+- (todo) Add std.mem.MaybeUninit<T> (trusted/internal only; not exposed to user code yet).
+- (todo) Rebuild Array<T> on RawBuffer<T> with len/gen invariants and Copy-only value indexing; ref_at/ref_mut_at use ptr_at with bounds checks.
+- (todo) Add regression tests: reserve no-op does not invalidate, growth invalidates; move-out correctness; range invalidation on growth; sort/binary_search over wrapped range (Array).
 
-## Log
-- 2026-01-09: Created `docs/design/drift-stdlib-spec.md` and pinned iterable/for-lowering rules, iterator contracts, error events, and container capability matrix.
-- 2026-01-09: Moved comparison traits to `std.core.cmp`, added `BinarySearchable` for `compare_key`, tightened bounds/invalidation and error payload rules, and clarified container capability semantics.
-- 2026-01-09: Added stdlib trait modules (`std.iter`, `std.core.cmp`, `std.algo`) and updated `for` lowering to use UFCS (`Iterable.iter` / `SinglePassIterator.next`) with intrinsic handling.
-- 2026-01-10: Removed `.iter()`/`.next()` method intrinsics (UFCS is the only lowering path) and added for-lowering regression tests (HIR shape, single-eval) plus diagnostics tests for non-iterables.
-- 2026-01-10: Removed UFCS `Iterable.iter` / `SinglePassIterator.next` intrinsic fallback; added stdlib `ArrayMoveIter` + iterator impls and injected stdlib sources into workspace parsing so trait resolution drives `for`.
-- 2026-01-10: Pinned `for` diagnostics to spec categories (not iterable / iter result not iterator) and made stdlib loading explicit via `stdlib_root`/`--stdlib-root`.
-- 2026-01-10: Added canary tests for no-stdlib `for`, invalid iterator result, and local trait shadowing.
-- 2026-01-10: Scoped `for`-specific diagnostics to for-lowered calls only (direct UFCS errors remain generic).
-- 2026-01-10: Added Array/variant/scalar base matching for trait impl resolution and merged std.runtime registry spec into `docs/design/drift-stdlib-spec.md`.
-- 2026-01-11: Updated workspace parsing to ignore stdlib sources for the multi-file module-declaration rule; e2e runner now allows reserved namespaces by default when stdlib is loaded.
-- 2026-01-11: Added MultiPass copy-independence e2e test (CounterIter) to enforce the Copy+independence contract.
-- 2026-01-11: Allowed impl headers to target reference types, added Array borrowed iterators (`&Array` / `&mut Array`), and updated borrow/index checks to accept `&Array` indexing and `&mut` reborrows from `&mut` bases.
-- 2026-01-11: Added UFCS canary test to ensure `std.iter.Iterable::iter(...)` emits generic resolution errors outside `for` lowering.
-- 2026-01-11: Guarded variant ctor instantiation to avoid forcing concrete Optional<T> when type arguments contain typevars.
-- 2026-01-11: Implemented ArrayBorrowIter MultiPass/Bidirectional (Copy + prev) and aligned iterator capability matrix in spec/work-progress.
-- 2026-01-11: Added ArrayBorrowIter MultiPass copy-independence e2e test, prev boundary e2e test, and AddrOfArrayElem MIR regression for &arr[i].
-- 2026-01-11: Deferred `Array` &mut iteration (no Iterable impl yet) pending borrow-safety enforcement; removed overlap test accordingly.
-- 2026-01-11: Added driver test enforcing `MultiPassIterator` requires `Copy` for iterator types.
-- 2026-01-11: Added struct field visibility (private-by-default, `pub` fields) with diagnostics and stdlib export canaries; updated schema encoding to carry field visibility.
-- 2026-01-11: Unified array/string length, capacity, and index types on `Int` (isize) across stdlib traits, checker, MIR, LLVM codegen, runtime headers, and docs; updated tests accordingly.
-- 2026-01-12: Added Array API decisions (get/set/push/pop/insert/remove/swap_remove/clear/reserve/shrink_to_fit) and indexed access rules (arr[i] throws; get is Optional<&T>).
-- 2026-01-12: Implemented Array method intrinsics in the checker/lowering and added codegen e2e coverage for push/pop/insert/remove/swap_remove/clear/reserve/shrink_to_fit.
-- 2026-01-12: Added Array element take semantics for pop/remove/insert/swap_remove/grow/shrink (move-out, no Copy required) and added e2e coverage for Array<String> pop plus typechecker coverage for pop on non-Copy arrays.
-- 2026-01-12: Implemented recursive tombstone emission for ArrayElemTake (String/Array/Struct/Variant with tombstone ctor) and strengthened IR tests to tie tombstones to the take element pointer.
-- 2026-01-12: Updated package test Optional schemas to include `tombstone_ctor` for variant decoding.
-- 2026-01-12: Added `@tombstone` variant arm marker in the parser/AST, enforced payload-free tombstone arms, and wired `tombstone_ctor` into variant schema declarations.
-- 2026-01-12: Pinned array element borrowing (`&arr[i]` / `&mut arr[i]`) as MVP surface and added type-checker coverage for non-Copy element borrows.
-- 2026-01-12: Added e2e borrow-checker canary for shared `&arr[i]` followed by `&mut arr[i]` (rejects with borrowcheck diagnostic).
-- 2026-01-12: Added e2e canary allowing shared `&arr[0]` then `&mut arr[1]` (const disjoint indices), and asserted the mutated value.
-- 2026-01-13: Added driver regression tests for `for` lowering (shadowing, function-returned iterables), algorithm capability requirements, `Comparable`/`Equatable` gating, and `==` resolution without std.algo.
-- 2026-01-13: Added e2e harnesses for `RandomAccessPermutable` sort correctness, equal consumption over iterators, and borrow-check rejection for mutating a borrowed array.
-- 2026-01-13: Enabled borrow checking in test harness (`compile_stubbed_funcs`) for all modules, inlined nested HIR blocks for move tracking, and added driver test for owned `for` consuming non-Copy arrays (use-after-move).
-- 2026-01-13: Centralized implicit moves in the borrow checker for consuming positions (by-value bindings/call args/returns) using projected-place types.
-- 2026-01-13: Added borrow-check canaries for non-Copy subplace moves (field/index) and for non-consuming operator operands in consuming positions (binary/unary/ternary).
-- 2026-01-13: Added `E_USE_AFTER_MOVE` diagnostics for borrow checking and a CLI-path canary ensuring owned `for` consumes non-Copy arrays.
-- 2026-01-13: Completed planned regression tests for iterator/algorithm gating and `for` resolution:
-  - owned `for` consumes non-Copy (driver)
-  - borrowed `for` leaves source usable (driver)
-  - equal consumption (e2e)
-  - mutation invalidation (e2e)
-  - Comparable/Permutable/BinarySearchable gating (driver)
-  - local shadowing + function-returned iterable (driver)
-- 2026-01-13: Added `std.core.Diagnostic` trait, switched exception attrs to require Diagnostic, and introduced `std.err` with `IndexError(container_id, index)` + `IteratorInvalidated(container_id, op_id)`.
-- 2026-01-13: Added Array iterator invalidation checks (len/cap snapshot) and e2e payload tests for `IteratorInvalidated` + `IndexError` attrs.
-- 2026-01-13: Added e2e test `index_error_payload_oob` to validate bounds-check OOB emits `IndexError` attrs (`container_id`, `index`) via real indexing.
-- 2026-01-13: Made array index OOB catchable in MIR:
-  - Added `ArrayIndexLoadUnchecked` and lowered `arr[i]` to an explicit bounds check + `throw std.err:IndexError` (via MIR error construction and try-stack propagation), then unchecked load on the ok path.
-  - Added codegen support for `ArrayIndexLoadUnchecked` (no runtime bounds check).
-- 2026-01-13: Added typecheck guard for array literals:
-  - Non-empty array literals now require element type `Copy` (diagnostic `E-ARRAY-LITERAL-NON-COPY`).
-  - Added e2e compile-fail case `array_literal_non_copy_rejected`.
-- 2026-01-13: Centralized Array container_id constant:
-  - Added `lang2.driftc.core.container_ids.ARRAY_CONTAINER_ID` and used it for bounds checks + IndexError construction.
-  - Stdlib continues to expose `std.containers.array.ARRAY_CONTAINER_ID` for invalidation helpers.
-- 2026-01-13: Added e2e `iterator_op_id_mapping` to lock IteratorOpId → DiagnosticValue numeric mapping.
-- 2026-01-13: Pinned ABI-stable IteratorOpId tag mapping in `std.err` (`to_diag` is append-only, no reordering).
-- 2026-01-13: Fixed `iterator_op_id_mapping` e2e to use `to_diag()` + `DiagnosticValue::Int(-1)` fallback so `main` stays `nothrow`.
-- 2026-01-13: Resolved exception + DiagnosticValue integration issues: allowed fully-qualified exception ctors (`std.err:IndexError`) in grammar/parser, added `std.core.Diagnostic` scope defaults, fixed DVInit normalization for match expr value blocks, enabled Uint/Float DVInit, and allowed `DiagnosticValue` returns in LLVM codegen/zero-init.
-- 2026-01-13: Fixed `iterator_invalidated_payload` nothrow failures by removing `return` inside match arms and using value-based match expressions in the catch path.
-- 2026-01-13: Fixed exception payload plumbing for DiagnosticValue attrs:
-  - Root cause: `drift_error_new_with_payload` took DiagnosticValue by value, which was ABI-incorrect for a 24-byte struct (payload tag became garbage).
-  - Fix: changed `drift_error_new_with_payload` to take `DriftDiagnosticValue*`, updated LLVM declaration + callsites to pass a stack slot.
-- 2026-01-13: Fixed bounds-check error emission to use real exception metadata:
-  - Root cause: `drift_bounds_check_fail` used event_code=0 and printed/aborted.
-  - Fix: set deterministic event code for `std.err:IndexError`, attach attrs, and route through `drift_error_raise` (no stdout/stderr side effects).
-- 2026-01-13: Fixed runtime compilation for new bounds-check signature:
-  - Root cause: `array_runtime.c` forward-declared `drift_bounds_check_fail` with the old signature and pulled in a duplicate `DriftString` definition.
-  - Fix: updated the forward declaration to the new signature and avoided `DriftString` redefinition by using a forward declaration in `array_runtime.h`.
-- 2026-01-13: Fixed invalid LLVM IR for array header access through references:
-  - Root cause: `ArrayLen/ArrayCap` emitted `extractvalue` on `{...}*` for `&Array<T>`.
-  - Fix: load array header first when value type is a pointer.
-- 2026-01-13: Fixed LLVM IR verification failures from SSA phi nodes with a single incoming:
-  - Root cause: SSA pass could emit φ nodes with one predecessor.
-  - Fix: prune single-incoming φ nodes into AssignSSA after SSA renaming.
+### Phase 2: Algorithms
+- (done) Implemented `binary_search` using `BinarySearchable.compare_key` + tests (capability gating + return semantics).
+- (done) Implemented `sort_in_place` (heapsort) with test matrix (sorted/reverse/dups/random) + swap-does-not-invalidate check.
+
+### Closed in this batch
+- Added `Deque` container + Deque ranges (`DequeRange`, `DequeRangeMut`) with `DEQUE_CONTAINER_ID`.
+- Added non-Array OOB payload test (`deque_index_error_payload_oob`).
+- Added non-Array range invalidation tests for `compare_at`/`swap` (`deque_range_compare_at_invalidated`, `deque_range_swap_invalidated`).
+
+### Payload tests
+- New tests should assert ID fields only (`container_id` / `op_id`), not display strings.
+- Iterator error payload string assertions are deferred until ID-based access is the only supported path.
+
+## Recent updates
+- Extracted `HMethodCall` handling into `_type_method_call` helper inside `type_checker.py` to reduce nesting and stabilize indentation.
+- std.algo `sort_in_place` now calls `RandomAccessReadable::len/compare_at` with `r` (no `&*r`).
+- UFCS receiver compatibility allows `&mut T` to satisfy `&T` (shared) receivers.
+- Trait impl visibility filtering restored for non-pub impls across modules.
+- Driver tests for `sort_in_place` now allow can-throw `main` (no `nothrow` constraint).
+- Method-call resolution now resolves trait methods in instantiation contexts via direct impl candidates (avoids missing CallInfo in std.algo).
+- Trait guard ambiguous branches now defer diagnostics for generic guards (OR/NOT), restoring guard scoping tests.
+- Added `ArrayBorrowMutIter` with `Iterable<&mut Array<T>, &mut T>` and `SinglePassIterator<&mut T>`.
+- Borrow checker now tracks Optional<&T>/Optional<&mut T> bindings and borrows through explicit `&/&mut` call args.
+- Added/updated borrowcheck tests for `&mut` iteration: `for x in &mut xs` and `next()` re-entrancy checks.
+- Added borrowcheck coverage for same-index writes after `&xs[i]` and for `&mut` iterator borrow lifetime via helper call.
+- Borrow checker now initializes match-arm binders, fixing `for` loop binder use-after-uninit.
+- Trait method resolution requires explicit require for type params; restored impl visibility filtering for non-pub impls.
+- Added driver coverage for trait method dot-calls on type params (use-trait required).
+- Added borrow-check test ensuring `for x in &arr {}` does not consume `arr`.
+- Added e2e range invalidation test for `swap` (ArrayRangeMut).
+- Deque `pop_back` now bumps `gen` only on actual removal; added no-op pop range invalidation e2e.
+- Array indexing spec clarified as place expression: `arr[i]` Copy-only in value context; `&arr[i]` / `&mut arr[i]` permitted.
+- Deque internals switched to ring buffer layout with head/len/gen and Array<Optional<T>> storage.
+- Added Deque ring buffer e2e tests: wraparound, no-op pop_front invalidation, realloc invalidation, and sort/binary_search under wrap.
+- Fixed method-resolution scaffolding: initialize `traits_in_scope` before use in all branches.
+- Qualified member ctor inference now emits `E-QMEM-CANNOT-INFER` when no expected type and no args/type args.
+- HTypeApp qualified-member references return function types without requiring `args/kwargs`.
+- Borrow checker now resolves binding ids for `&x` operands before place checks (fixes `borrow_types`).
+- Consolidated qualified-member variant ctor resolution for `HCall` through a shared resolver (reduces duplicate logic).
+- Qualified-member UFCS calls now skip variant ctor resolution when the base is a trait (prevents `E-QMEM-NONVARIANT` for `cmp.Comparable::cmp`).
+- Removed legacy qualified-member ctor resolution inside method-call handling (eliminates `ctor_sig` UnboundLocal and duplicate paths).
+- HTypeApp value references remain allowed in typed HIR while call-resolution consolidation continues (typed invariant check no longer errors on HTypeApp nodes).
+- Fixed HTypeApp callable references: qualified member refs now resolve to function types; function-value type args are rejected.
+- Fixed prequalified variant ctor references (e.g., `Optional<Int>::None`) by normalizing to variant base and instantiating with base type args.
+- Trait method resolution for type-param receivers now injects trait type args from `require` into method signatures and skips impl-visibility filtering; public trait impls are now visible across modules (module visibility gate removed).
+- Method resolution now prefers `&mut` receivers over shared `&` when both match; UFCS `Iterable::iter(&mut xs)` now resolves to `ArrayBorrowMutIter`.
+- Trait guard scoping tests updated to expect missing-require diagnostics (OR/NOT guards do not add scope).
+- Trait dot-call tests no longer require `nothrow` for `len` (can throw via invalidation).
+- Method resolution now bypasses trait impl visibility checks during instantiations so std.algo generic bodies resolve trait methods against caller impls.
+- Added ArrayRangeMut test helper `__test_invalidate` (reserve-based) and updated array_range_swap_invalidated e2e to avoid private field access.
+- Added @test_build_only annotation (parser+compiler flag) and wired e2e runner to include test-only stdlib helpers.
+- Fixed @test_build_only filtering to keep empty `implement` blocks (marker traits like `Copy`), restoring Copy query behavior in typed pipelines.
+- Routed struct constructor argument mapping through call_resolver (shared ctor normalization), reducing duplicate ctor resolution paths in type_checker.
+- Fixed immediate lambda call typing: lambdas now always bind params, return a function type when not coerced, and HCall with HLambda records CallInfo (fixes hidden lambda MIR collection).
+- For `for` lowering without stdlib, `std.iter` UFCS calls now emit `E-NOT-ITERABLE`/`E-ITER-RESULT-NOT-ITERATOR` instead of qualified-member errors.
+- Trait UFCS candidate filtering now enforces `impl require` clauses and reports requirement failures (unblocks `Copy`-gated owned iteration).
+- Trait UFCS concrete receiver instantiation now records impl type args for calls, so instantiation rewrites call targets and avoids TypeVar leakage in codegen.
+- Typecheck borrow/move diagnostics updated: &mut of move expr, deref &mut requires mut ref, &mut while borrowed message, move-from-ref rejection, and `copy` now always enforces Copy.
+- Tests: `.venv/bin/python -m pytest lang2/tests/type_checker -q`
+- Call resolver now derives ctor type args from qualified base type args, and ctor inference errors include “underconstrained” in message; match nonexhaustive error now includes `E-MATCH-NONEXHAUSTIVE`; pattern unknown-field message updated to “in constructor pattern”.
+- Module-qualified free calls now resolve via a global module-name map from signatures/registry, fixing `std.err.throw_iterator_invalidated` resolution in stdlib.
+- HField len/cap/gen sugar now yields struct fields when present (allows `Deque.gen` access and removes bogus `len(x)` errors).
+- Deque `pop_back`/`pop_front` now move from `var` bindings (fixes stdlib borrowcheck “move requires var”).
+- ArrayMoveIter now binds `v` as `var` before returning (prevents borrowcheck move-from-val in Copy-only iterator).
+- Stage2 HField lowering now prefers struct fields for len/cap/gen before array sugar (fixes Deque range gen access in IR).
+- std.algo `binary_search` no longer redundantly requires `RandomAccessReadable` (covered by `BinarySearchable`).
+- TypeChecker now builds require env from linked trait worlds when missing and `_require_for_fn` falls back to FunctionId field matches to recover `require` clauses in generic bodies.
+- Added type-checker unit test to ensure require-env fallback uses linked world when require_env=None (prevents trait-dot resolution regressions in generic bodies).
+- Added type-checker unit test to ensure trait-dot calls on type-param receivers use require type args for method signature instantiation.
+- Expanded type-param receiver method resolution to honor trait requires (e.g., BinarySearchable -> RandomAccessReadable) by propagating trait type args from require env.
+- TypeChecker now passes `type_param_map` into `resolve_opaque_type` for explicit type args (fixes RawBuffer<T> instantiations resolving to forward nominal `T`).
+- TypeChecker now passes `type_param_map` into `resolve_opaque_type` for struct ctor type args, free-call type args, and qualified member base args.
+- Added RawBuffer capacity intrinsic and fixed RawBuffer alloc LLVM lowering to avoid invalid IR assignment.
+- Added call_resolver.resolve_qualified_member_call and routed qualified ctor resolution through it; base type detection now falls back to lang.core variant/struct bases so Optional::Some resolves in stdlib.
+- Unqualified variant ctor calls now resolve against expected variant type and emit constructor CallInfo (fixes Optional::Some/None unqualified inference in package tests).
+- Restored instantiation recording in call_resolver (free and method calls) so missing template bodies report `E_MISSING_TEMPLATE_BODY` before codegen.
+- Signature resolution now re-resolves param/return TypeIds with type param maps when generic signatures are present (prevents ArrayMoveIter<T> return types from collapsing to concrete base ids).
+- Instantiation substitution now maps impl/type params directly to impl_args/fn_args in addition to impl_target_type_args (fixes generic method return types in instantiations).
+- Struct ctor resolution now prefers expected-type struct instances (matching base) to drive field types, fixing ArrayMoveIter ctor inference in return position.
+- Qualified member ctor resolution now rejects struct bases with `E-QMEM-NONVARIANT` (e.g., `Point::Some`).
+- RawBuffer element-type inference for std.mem intrinsics now uses `struct_base_and_args` (handles `RawBuffer<T>` instances correctly).
+- Borrow checker now treats `HPlaceExpr` rooted in `&mut` as mutable borrowable (fixes RawBuffer `replace` inside `&mut self`).
+- std.mem `swap`/`replace` now take `&mut` arguments; resolver/borrow checker/MIR lowering updated and stage1 place-canonicalization no longer rewrites them to `HPlaceExpr`.
+- std.mem `capacity()` is now a normal stdlib function (no intrinsic fast-path); RAW_CAPACITY lowering/validation removed, trusted-module restriction still applies.
+- Split `ptr_at_ref`/`ptr_at_mut` into distinct intrinsics (`RAW_PTR_AT_REF`/`RAW_PTR_AT_MUT`) to preserve mutability through MIR/codegen.
+- e2e runner now passes `--stdlib-root` when using driftc --json, fixing stdlib-based diagnostic cases.
+- Unqualified variant ctor calls now emit `E-CTOR-EXPECTED-TYPE` when no expected variant type and ctor name matches a variant arm in scope.
+- std.mem intrinsics are now restricted to toolchain-trusted modules (std./lang./drift.*) to prevent unsafe user access.
 
 ## Open Questions
 - Exact algorithm signatures in Drift syntax (defer until implementation).
 
-## Next
-- TODO (blocked): Add a regression test that iterator errors carry canonical `container_id`/`op_id` payloads (requires runtime error emission + test harness).
-
-## Issues Encountered (Recent) + Fixes
-- DiagnosticValue payload ABI mismatch: `drift_error_new_with_payload` was passed by value (24-byte struct), corrupting attrs. Fixed by switching to pointer parameter and updating LLVM declarations/calls to pass a stack slot.
-- Bounds-check error emission was non-exceptional: `drift_bounds_check_fail` used `event_code=0` and printed/aborted. Fixed by using the deterministic `std.err:IndexError` event code, attaching attrs, and routing through `drift_error_raise`.
-- Array header access through references emitted invalid IR (`extractvalue` on `{...}*`). Fixed by loading the header before `extractvalue` when the value type is a pointer.
-- SSA pass emitted single-incoming φ nodes. Fixed by pruning single-incoming φ nodes into AssignSSA during SSA renaming.
-
-## Algorithms (Proposed)
-- for_each(it, f) -> SinglePassIterator<T>
-- find(it, pred) -> Optional<T> -> SinglePassIterator<T>
-- any(it, pred) -> Bool -> SinglePassIterator<T>
-- all(it, pred) -> Bool -> SinglePassIterator<T>
-- count(it) -> Int -> SinglePassIterator<T>
-- fold(it, init, f) -> U -> SinglePassIterator<T>
-- min(it) / max(it) -> SinglePassIterator<T> + require T is Comparable
-- equal(a, b) -> Bool -> SinglePassIterator<T> + require T is Equatable (consumes both iterators)
-- sort_in_place(r) -> RandomAccessPermutable<T> + require T is Comparable (call on a permutable range, not a streaming iterator)
-- binary_search(r, key) -> BinarySearchable<T> + require T is Comparable (key passed by `&T`)
-  - Result index is relative to `r` (range-local), in `[0, len)`.
+## Planned Work (Pinned)
+- Introduce std.mem RawBuffer<T> (trusted-only) with uninitialized capacity primitives: alloc_uninit, dealloc, ptr_at_ref/ptr_at_mut, read, write (and optional drop_in_place later). Keep RawBuffer as raw allocation only, no bounds checks inside runtime.
+- Rebuild Deque on RawBuffer with ring-buffer layout (buf, head, len, gen) and phys(i) mapping; push/pop front/back use read/write on RawBuffer; growth uses alloc_uninit + move loop + dealloc; gen increments only on real structural changes and growth.
+- Add Deque tests for wraparound order, growth under wrap, range invalidation (no-op pop does not invalidate; growth does), and sort/binary_search correctness on wrapped ranges.
+- After Deque is stable, refactor Array to use RawBuffer with len/gen and uninitialized capacity slots; keep arr[i] Copy-only, &arr[i]/&mut arr[i] as place borrows.

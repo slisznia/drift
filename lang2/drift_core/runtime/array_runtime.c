@@ -13,6 +13,7 @@
 typedef struct DriftArrayHeader {
 	drift_isize len;
 	drift_isize cap;
+	drift_isize gen;
 	void *data;
 } DriftArrayHeader;
 

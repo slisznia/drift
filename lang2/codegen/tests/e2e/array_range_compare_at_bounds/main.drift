@@ -1,0 +1,44 @@
+module main
+
+import std.err;
+import std.iter as iter;
+
+fn check_bounds<R>(r: &R, i: Int, j: Int, expect: Int) nothrow -> Int require R is iter.RandomAccessReadable<Int> {
+	val out: Int = try iter.RandomAccessReadable::compare_at(r, i, j) catch std.err:IndexError(e) {
+		val dv_c = e.attrs["container_id"];
+		val dv_i = e.attrs["index"];
+		val c = dv_c.as_string();
+		val idx = dv_i.as_int();
+		val c_code: Int = match c {
+			Some(s) => {
+				(s != "std.containers:Array") ? 10 : 0
+			},
+			None => {
+				11
+			},
+		};
+		val i_code: Int = match idx {
+			Some(v) => {
+				(v != expect) ? 12 : 0
+			},
+			None => {
+				13
+			},
+		};
+		(c_code != 0) ? c_code : ((i_code != 0) ? i_code : 0)
+	} catch {
+		90
+	};
+	return out;
+}
+
+fn main() nothrow -> Int {
+	var arr = [1, 2];
+	var r = arr.range();
+	val neg = check_bounds(&r, -1, 0, -1);
+	if neg != 0 {
+		return neg;
+	}
+	val hi = check_bounds(&r, 2, 0, 2);
+	return hi;
+}

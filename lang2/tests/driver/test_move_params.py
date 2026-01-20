@@ -84,3 +84,21 @@ fn id(x: File) -> File {
 """,
 	)
 	assert any("move requires an owned mutable binding declared with var" in msg for msg in diags)
+
+
+def test_move_self_allowed(tmp_path: Path) -> None:
+	diags = _typecheck_workspace(
+		tmp_path,
+		"""
+module main
+
+struct Token { id: Int }
+
+implement Token {
+	fn into(self: Token) -> Token {
+		return move self;
+	}
+}
+""",
+	)
+	assert diags == []

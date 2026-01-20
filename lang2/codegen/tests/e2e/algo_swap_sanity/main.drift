@@ -1,0 +1,20 @@
+module main
+
+import std.iter as iter;
+
+struct Range { data: Array<Int> }
+
+implement iter.RandomAccessPermutable<Int> for Range {
+	pub fn swap(self: &mut Range, i: Int, j: Int) nothrow -> Void {
+		val tmp = self.data[i];
+		self.data[i] = self.data[j];
+		self.data[j] = tmp;
+	}
+}
+
+fn main() nothrow -> Int {
+	var r = Range(data = [1, 2, 3]);
+	iter.RandomAccessPermutable::swap(&mut r, 0, 2);
+	iter.RandomAccessPermutable::swap(&mut r, 0, 2);
+	return r.data[0] * 100 + r.data[1] * 10 + r.data[2];
+}

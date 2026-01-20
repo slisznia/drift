@@ -1,11 +1,11 @@
-module main
+module std.mem.test
 
 import std.mem as mem;
 
 fn main() nothrow -> Int {
 	var a: Int = 1;
 	var b: Int = 2;
-	mem.swap(a, b);
-	var c: Int = mem.replace(a, b);
+	mem.swap(&mut a, &mut b);
+	var c: Int = mem.replace(&mut a, b);
 	return a + b + c;
 }

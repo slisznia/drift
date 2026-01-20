@@ -160,27 +160,6 @@ class PlaceCanonicalizeRewriter:
 			for kw in getattr(expr, "kwargs", []) or []:
 				_, kv = self._rewrite_expr(kw.value)
 				new_kwargs.append(H.HKwArg(name=kw.name, value=kv, loc=kw.loc))
-			# Builtins that operate on *places* should receive canonical `HPlaceExpr`
-			# operands so downstream passes never have to reconstruct lvalues from
-			# arbitrary expression trees.
-			if (
-				isinstance(fn, H.HVar)
-				and fn.name in ("swap", "replace")
-				and getattr(fn, "module_id", None) == "std.mem"
-			):
-				# swap(a, b): both operands are place contexts.
-				if fn.name == "swap" and len(new_args) >= 2:
-					pa = place_expr_from_lvalue_expr(new_args[0])
-					pb = place_expr_from_lvalue_expr(new_args[1])
-					if pa is not None:
-						new_args[0] = pa
-					if pb is not None:
-						new_args[1] = pb
-				# replace(place, new): first operand is a place context.
-				if fn.name == "replace" and len(new_args) >= 1:
-					pa = place_expr_from_lvalue_expr(new_args[0])
-					if pa is not None:
-						new_args[0] = pa
 			return [], H.HCall(
 				fn=fn,
 				args=new_args,

@@ -167,6 +167,24 @@ fn main() nothrow -> Int {
 	assert diagnostics == []
 
 
+def test_for_over_borrowed_function_return_does_not_consume(tmp_path: Path) -> None:
+	diagnostics = _compile(
+		tmp_path,
+		"""
+module m_main
+
+fn make() nothrow -> Array<Int> { return [1, 2, 3]; }
+
+fn main() nothrow -> Int {
+	for x in &make() { x; }
+	return 0;
+}
+""",
+		run_borrow_check=True,
+	)
+	assert diagnostics == []
+
+
 def test_for_over_owned_array_compiles(tmp_path: Path) -> None:
 	diagnostics = _compile(
 		tmp_path,
@@ -217,6 +235,105 @@ fn main() nothrow -> Int {
 	assert any(d.code == "E_USE_AFTER_MOVE" for d in diagnostics)
 
 
+def test_for_over_borrowed_array_does_not_consume(tmp_path: Path) -> None:
+	diagnostics = _compile(
+		tmp_path,
+		"""
+module m_main
+
+fn main() nothrow -> Int {
+	var arr = [1, 2, 3];
+	for x in &arr { x; }
+	arr.push(2);
+	return 0;
+}
+""",
+		run_borrow_check=True,
+	)
+	assert diagnostics == []
+
+
+def test_method_receiver_borrowcheck_ref_and_mut(tmp_path: Path) -> None:
+	diagnostics = _compile(
+		tmp_path,
+		"""
+module m_main
+
+struct Box { value: Int }
+
+implement Box {
+	pub fn get(self: &Box) nothrow -> Int { return self.value; }
+	pub fn set(self: &mut Box, v: Int) nothrow -> Void { self.value = v; }
+}
+
+fn main() nothrow -> Int {
+	var b = Box(value = 1);
+	val a = b.get();
+	b.set(2);
+	return a + b.value;
+}
+""",
+		run_borrow_check=True,
+	)
+	assert diagnostics == []
+
+
+def test_array_borrow_then_write_same_index_rejected(tmp_path: Path) -> None:
+	diagnostics = _compile(
+		tmp_path,
+		"""
+module m_main
+
+fn main() nothrow -> Int {
+	var arr = [1, 2, 3];
+	val r = &arr[0];
+	arr[0] = 4;
+	return *r;
+}
+""",
+		run_borrow_check=True,
+	)
+	assert any("cannot write" in d.message and "borrow" in d.message for d in diagnostics)
+
+
+def test_array_borrow_then_write_disjoint_index_ok(tmp_path: Path) -> None:
+	diagnostics = _compile(
+		tmp_path,
+		"""
+module m_main
+
+fn main() nothrow -> Int {
+	var arr = [1, 2, 3];
+	val r = &arr[0];
+	arr[1] = 4;
+	return *r;
+}
+""",
+		run_borrow_check=True,
+	)
+	assert diagnostics == []
+
+
+def test_by_value_call_consumes_non_copy(tmp_path: Path) -> None:
+	diagnostics = _compile(
+		tmp_path,
+		"""
+module m_main
+
+fn consume(xs: Array<Int>) nothrow -> Int { return 0; }
+
+fn main() nothrow -> Int {
+	var arr = [1, 2, 3];
+	consume(arr);
+	arr.push(2);
+	return 0;
+}
+""",
+		run_borrow_check=True,
+	)
+	assert any(d.code == "E_USE_AFTER_MOVE" for d in diagnostics)
+
+
 def test_for_owned_array_requires_copy_element(tmp_path: Path) -> None:
 	diagnostics = _compile(
 		tmp_path,
@@ -236,7 +353,7 @@ fn main() nothrow -> Int {
 	assert any("requirement not satisfied" in d.message and "Copy" in d.message for d in diagnostics)
 
 
-def test_for_mut_array_is_not_iterable(tmp_path: Path) -> None:
+def test_for_mut_array_is_iterable(tmp_path: Path) -> None:
 	diagnostics = _compile(
 		tmp_path,
 		"""
@@ -245,8 +362,80 @@ module m_main
 fn main() nothrow -> Int {
 	var xs = [1, 2, 3];
 	for x in &mut xs { x; }
+	xs.push(4);
 	return 0;
 }
 """,
+		run_borrow_check=True,
 	)
-	assert any(d.code == "E-NOT-ITERABLE" for d in diagnostics)
+	assert diagnostics == []
+
+
+def test_mut_iter_next_while_borrowed_is_error(tmp_path: Path) -> None:
+	diagnostics = _compile(
+		tmp_path,
+		"""
+module m_main
+
+import std.iter as iter;
+import std.containers as containers;
+
+fn main() -> Int {
+	var xs = [1, 2];
+	var it: containers.ArrayBorrowMutIter<Int> = iter.Iterable::iter(&mut xs);
+	val a: Optional<&mut Int> = iter.SinglePassIterator::next(&mut it);
+	val b = iter.SinglePassIterator::next(&mut it);
+	return 0;
+}
+""",
+		run_borrow_check=True,
+	)
+	assert any("cannot take mutable borrow" in d.message for d in diagnostics)
+
+
+def test_mut_iter_next_after_drop_is_ok(tmp_path: Path) -> None:
+	diagnostics = _compile(
+		tmp_path,
+		"""
+module m_main
+
+import std.iter as iter;
+import std.containers as containers;
+
+fn take_one(it: &mut containers.ArrayBorrowMutIter<Int>) -> Int {
+	val a: Optional<&mut Int> = iter.SinglePassIterator::next(it);
+	match a {
+		Some(x) => { *x = 3; },
+		None => { },
+	}
+	return 0;
+}
+
+fn main() -> Int {
+	var xs = [1, 2];
+	var it: containers.ArrayBorrowMutIter<Int> = iter.Iterable::iter(&mut xs);
+	take_one(&mut it);
+	val b = iter.SinglePassIterator::next(&mut it);
+	return 0;
+}
+""",
+		run_borrow_check=True,
+	)
+	assert diagnostics == []
+
+def test_borrowed_array_elem_same_index_write_rejected(tmp_path: Path) -> None:
+	diagnostics = _compile(
+		tmp_path,
+		"""
+module m_main
+
+fn main() -> Int {
+	var xs = [1, 2];
+	val r = &xs[0];
+	xs[0] = 4;
+	return 0;
+}
+""",
+		run_borrow_check=True,
+	)
+	assert any("cannot write to 'xs'" in d.message for d in diagnostics)

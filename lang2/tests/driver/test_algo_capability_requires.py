@@ -311,22 +311,6 @@ module m_main
 struct NonCopy { data: Array<Int> }
 struct Range { n: Int }
 
-trait Equatable {
-	fn eq(self: &Self, other: &Self) -> Bool;
-}
-
-trait Comparable require Self is Equatable {
-	fn cmp(self: &Self, other: &Self) -> Int;
-}
-
-implement Equatable for NonCopy {
-	pub fn eq(self: &NonCopy, other: &NonCopy) -> Bool { return false; }
-}
-
-implement Comparable for NonCopy {
-	pub fn cmp(self: &NonCopy, other: &NonCopy) -> Int { return 0; }
-}
-
 trait RandomAccessReadable<T> {
 	fn len(self: &Self) -> Int;
 	fn compare_at(self: &Self, i: Int, j: Int) -> Int;
@@ -345,7 +329,7 @@ implement Permutable<NonCopy> for Range {
 	pub fn swap(self: &mut Range, i: Int, j: Int) -> Void { return; }
 }
 
-struct Need<R, T> require (R is Permutable<T> and R is RandomAccessReadable<T> and T is Comparable) {
+struct Need<R, T> require (R is Permutable<T> and R is RandomAccessReadable<T>) {
 	r: R
 }
 

@@ -299,9 +299,7 @@ class TypeTable:
 		expect a later declaration to upgrade it to STRUCT/VARIANT.
 		"""
 		for kind in (TypeKind.STRUCT, TypeKind.VARIANT, TypeKind.FORWARD_NOMINAL, TypeKind.SCALAR):
-			key = NominalKey(
-				package_id=self._package_for_module(module_id), module_id=module_id, name=name, kind=kind
-			)
+			key = NominalKey(package_id=self._package_for_module(module_id), module_id=module_id, name=name, kind=kind)
 			prev = self._nominal.get(key)
 			if prev is not None:
 				return prev
@@ -315,9 +313,8 @@ class TypeTable:
 
 	def get_nominal(self, *, kind: TypeKind, module_id: str | None, name: str) -> TypeId | None:
 		"""Return a nominal TypeId by identity, or None if not present."""
-		return self._nominal.get(
-			NominalKey(package_id=self._package_for_module(module_id), module_id=module_id, name=name, kind=kind)
-		)
+		key = NominalKey(package_id=self._package_for_module(module_id), module_id=module_id, name=name, kind=kind)
+		return self._nominal.get(key)
 
 	def require_nominal(self, *, kind: TypeKind, module_id: str | None, name: str) -> TypeId:
 		"""Return a nominal TypeId by identity, raising if missing."""
@@ -947,11 +944,15 @@ class TypeTable:
 				schema = self.variant_schemas.get(base_id)
 				if schema is not None and not schema.type_params:
 					return self.ensure_unknown()
+				if any(self.has_typevar(arg) for arg in arg_ids):
+					return self.ensure_variant_template(base_id, arg_ids)
 				return self.ensure_instantiated(base_id, arg_ids)
 			if base_id in self.struct_bases:
 				schema = self.struct_bases.get(base_id)
 				if schema is not None and not schema.type_params:
 					return self.ensure_unknown()
+				if any(self.has_typevar(arg) for arg in arg_ids):
+					return self.ensure_struct_template(base_id, arg_ids)
 				return self.ensure_struct_instantiated(base_id, arg_ids)
 			return self.ensure_unknown()
 		return base_id
@@ -1010,6 +1011,17 @@ class TypeTable:
 		"""Return (field_index, field_type_id, is_pub) for a struct field, or None."""
 		base_id = struct_id
 		inst = self.struct_instances.get(struct_id)
+		if inst is None:
+			for (tmpl_base_id, tmpl_args), tmpl_inst_id in self._struct_template_cache.items():
+				if tmpl_inst_id == struct_id:
+					schema = self.struct_bases.get(tmpl_base_id)
+					if schema is None:
+						break
+					field_names = [f.name for f in schema.fields]
+					field_types = [self._eval_generic_type_expr(f.type_expr, list(tmpl_args), module_id=schema.module_id) for f in schema.fields]
+					self._define_struct_instance(tmpl_base_id, struct_id, type_args=list(tmpl_args), field_names=field_names, field_types=field_types)
+					inst = self.struct_instances.get(struct_id)
+					break
 		if inst is not None:
 			idx = inst.fields_by_name.get(field_name)
 			if idx is None:

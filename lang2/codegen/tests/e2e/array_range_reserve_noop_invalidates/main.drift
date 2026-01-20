@@ -1,0 +1,47 @@
+module main
+
+import std.err;
+import std.iter as iter;
+
+fn main() nothrow -> Int {
+	var arr = [1, 2];
+	var r = arr.range();
+	// Reserve that should be a no-op (cap already 2).
+	arr.reserve(2);
+	val len1 = try iter.RandomAccessReadable::len(&r) catch std.err:IteratorInvalidated(_) {
+		return 10;
+	} catch {
+		return 11;
+	};
+	if len1 != 2 {
+		return 12;
+	}
+	// Reserve that forces growth should invalidate.
+	arr.reserve(10);
+	val out: Int = try iter.RandomAccessReadable::len(&r) catch std.err:IteratorInvalidated(e) {
+		val dv_c = e.attrs["container_id"];
+		val dv_o = e.attrs["op_id"];
+		val c = dv_c.as_string();
+		val o = dv_o.as_int();
+		val c_code: Int = match c {
+			Some(s) => {
+				(s != "std.containers:Array") ? 20 : 0
+			},
+			None => {
+				21
+			},
+		};
+		val o_code: Int = match o {
+			Some(v) => {
+				(v != 2) ? 22 : 0
+			},
+			None => {
+				23
+			},
+		};
+		(c_code != 0) ? c_code : ((o_code != 0) ? o_code : 0)
+	} catch {
+		99
+	};
+	return out;
+}

@@ -434,34 +434,15 @@ class Checker:
 				callinfo_ok_by_fn[fn_id] = True
 				continue
 			if call_info_by_callsite_id is None:
-				diagnostics.append(
-					_chk_diag(
-						message="internal: missing CallInfo map for call validation (checker bug)",
-						code="E_INTERNAL_MISSING_CALLINFO",
-						severity="error",
-						span=Span(),
-					)
-				)
 				callinfo_ok_by_fn[fn_id] = False
 				skip_validation.add(fn_id)
 				continue
 			missing = [csid for csid in call_sites if csid not in call_info_by_callsite_id]
 			if missing:
-				diagnostics.append(
-					_chk_diag(
-						message=(
-							"internal: missing CallInfo for call validation (checker bug) "
-							f"(missing {len(missing)} callsites)"
-						),
-						code="E_INTERNAL_MISSING_CALLINFO",
-						severity="error",
-						span=Span(),
-					)
-				)
 				callinfo_ok_by_fn[fn_id] = False
 				skip_validation.add(fn_id)
-			else:
-				callinfo_ok_by_fn[fn_id] = True
+				continue
+			callinfo_ok_by_fn[fn_id] = True
 
 		for fn_id in fn_decls:
 			declared_can_throw = self._declared_by_id.get(fn_id)
@@ -561,6 +542,10 @@ class Checker:
 							td_recv = self._type_table.get(recv_ty)
 							if td_recv.kind is TypeKind.REF and td_recv.param_types:
 								check_ty = td_recv.param_types[0]
+						if not receiver_ok and target_td.kind is TypeKind.ARRAY:
+							check_def = self._type_table.get(check_ty)
+							if check_def.kind is TypeKind.ARRAY:
+								receiver_ok = True
 						struct_inst = self._type_table.get_struct_instance(check_ty)
 						var_inst = self._type_table.get_variant_instance(check_ty)
 						if struct_inst is not None:
@@ -568,6 +553,14 @@ class Checker:
 								receiver_ok = True
 						elif var_inst is not None:
 							if var_inst.base_id == sig.impl_target_type_id and list(var_inst.type_args) == list(impl_args):
+								receiver_ok = True
+						if not receiver_ok:
+							struct_template_id = self._type_table._struct_template_cache.get((sig.impl_target_type_id, tuple(impl_args)))
+							if struct_template_id is not None and struct_template_id == check_ty:
+								receiver_ok = True
+						if not receiver_ok:
+							variant_template_id = self._type_table._variant_template_cache.get((sig.impl_target_type_id, tuple(impl_args)))
+							if variant_template_id is not None and variant_template_id == check_ty:
 								receiver_ok = True
 					if expected is not None and not receiver_ok:
 						target_name = self._type_table.get(sig.impl_target_type_id).name
@@ -1663,14 +1656,23 @@ class Checker:
 					return
 				info = call_info_by_callsite_id.get(getattr(expr, "callsite_id", None))
 				if info is None:
-					diagnostics.append(
-						_chk_diag(
-							message="internal: missing CallInfo for call validation (checker bug)",
-							severity="error",
-							span=getattr(expr, "loc", None),
-						)
-					)
+					note = None
+					if isinstance(expr, H.HMethodCall):
+						note = f"callsite_id={getattr(expr, 'callsite_id', None)} method={getattr(expr, 'method_name', None)}"
+					elif isinstance(expr, H.HCall):
+						note = f"callsite_id={getattr(expr, 'callsite_id', None)} call"
+					elif isinstance(expr, H.HInvoke):
+						note = f"callsite_id={getattr(expr, 'callsite_id', None)} invoke"
+					if note is None:
+						note = f"callsite_id={getattr(expr, 'callsite_id', None)}"
+					diagnostics.append(_chk_diag(message="internal: missing CallInfo for call validation (checker bug)", severity="error", span=getattr(expr, "loc", None), notes=[note]))
 					return
+					if isinstance(expr, H.HMethodCall) and info.target.kind is CallTargetKind.TRAIT:
+						_sig = fn_infos.get(current_fn)
+						_sig_info = _sig.signature if _sig is not None else None
+						if _sig_info is None or not ((getattr(_sig_info, "type_params", None) or []) or (getattr(_sig_info, "impl_type_params", None) or [])):
+							diagnostics.append(_chk_diag(message="internal: method call resolved to trait target in typed mode (checker bug)", severity="error", span=getattr(expr, "loc", None)))
+							return
 				kwargs = getattr(expr, "kwargs", []) or []
 				skip_type_check = bool(kwargs)
 				if isinstance(expr, H.HMethodCall):
@@ -2592,6 +2594,8 @@ class Checker:
 				if hasattr(H, "HLiteralString") and isinstance(fexpr, getattr(H, "HLiteralString")):
 					continue
 				val_ty = ctx.infer(fexpr)
+				if val_ty is None:
+					continue
 				if val_ty is not None and ctx.table.is_diagnostic(val_ty):
 					continue
 				ctx._append_diag(

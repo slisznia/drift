@@ -1,0 +1,15 @@
+module main
+
+import std.algo as algo;
+import std.containers as containers;
+
+fn main() nothrow -> Int {
+	var arr = [1, 2, 3];
+	var r = arr.range_mut();
+	try {
+		algo.sort_in_place<type containers.ArrayRangeMut<Int>, Int>(&mut r);
+	} catch _ {
+		return 10;
+	}
+	return arr[0] * 100 + arr[1] * 10 + arr[2];
+}

@@ -2,14 +2,27 @@ module std.containers
 
 import std.iter as iter;
 import std.core as core;
+import std.core.cmp as cmp;
 import std.err as err;
+import std.algo as algo;
+import std.mem as mem;
+
+use trait cmp.Comparable;
 
 export {
 	ArrayMoveIter,
-	ArrayBorrowIter
+	ArrayBorrowIter,
+	ArrayBorrowMutIter,
+	ArrayRange,
+	ArrayRangeMut,
+	Deque,
+	deque_new,
+	DequeRange,
+	DequeRangeMut
 };
 
 pub const ARRAY_CONTAINER_ID: String = "std.containers:Array";
+pub const DEQUE_CONTAINER_ID: String = "std.containers:Deque";
 
 pub struct ArrayMoveIter<T> {
 	arr: Array<T>,
@@ -19,8 +32,30 @@ pub struct ArrayMoveIter<T> {
 pub struct ArrayBorrowIter<T> {
 	arr: &Array<T>,
 	idx: Int,
-	len_snapshot: Int,
-	cap_snapshot: Int
+	gen_snapshot: Int
+}
+
+pub struct ArrayBorrowMutIter<T> {
+	arr: &mut Array<T>,
+	idx: Int,
+	gen_snapshot: Int
+}
+
+pub struct ArrayRange<T> {
+	arr: &Array<T>,
+	gen_snapshot: Int
+}
+
+pub struct ArrayRangeMut<T> {
+	arr: &mut Array<T>,
+	gen_snapshot: Int
+}
+
+implement ArrayRangeMut<Int> {
+	@test_build_only
+	pub fn __test_invalidate(self: &mut ArrayRangeMut<Int>) -> Void {
+		self.arr.reserve(self.arr.cap + 1);
+	}
 }
 
 implement<T> iter.Iterable<Array<T>, T, ArrayMoveIter<T>> for Array<T> require T is core.Copy {
@@ -33,8 +68,8 @@ implement<T> iter.SinglePassIterator<T> for ArrayMoveIter<T> require T is core.C
 	pub fn next(self: &mut ArrayMoveIter<T>) -> Optional<T> {
 		val i = self.idx;
 		if i < self.arr.len {
-			val v = self.arr[i];
 			self.idx = i + 1;
+			var v = self.arr[i];
 			return Optional::Some(v);
 		}
 		return Optional::None();
@@ -43,13 +78,20 @@ implement<T> iter.SinglePassIterator<T> for ArrayMoveIter<T> require T is core.C
 
 implement<T> iter.Iterable<&Array<T>, &T, ArrayBorrowIter<T>> for &Array<T> {
 	pub fn iter(self: &Array<T>) nothrow -> ArrayBorrowIter<T> {
-		return ArrayBorrowIter(arr = self, idx = 0, len_snapshot = self.len, cap_snapshot = self.cap);
+		return ArrayBorrowIter(arr = self, idx = 0, gen_snapshot = self.gen);
+	}
+}
+
+implement<T> iter.Iterable<&mut Array<T>, &mut T, ArrayBorrowMutIter<T>> for &mut Array<T> {
+	pub fn iter(self: &mut Array<T>) nothrow -> ArrayBorrowMutIter<T> {
+		val gen = self.gen;
+		return ArrayBorrowMutIter(arr = self, idx = 0, gen_snapshot = gen);
 	}
 }
 
 implement<T> iter.SinglePassIterator<&T> for ArrayBorrowIter<T> {
 	pub fn next(self: &mut ArrayBorrowIter<T>) -> Optional<&T> {
-		if self.arr.len != self.len_snapshot or self.arr.cap != self.cap_snapshot {
+		if self.arr.gen != self.gen_snapshot {
 			err.throw_iterator_invalidated(ARRAY_CONTAINER_ID, err.IteratorOpId::Next());
 		}
 		val len = self.arr.len;
@@ -66,6 +108,25 @@ implement<T> iter.SinglePassIterator<&T> for ArrayBorrowIter<T> {
 	}
 }
 
+implement<T> iter.SinglePassIterator<&mut T> for ArrayBorrowMutIter<T> {
+	pub fn next(self: &mut ArrayBorrowMutIter<T>) -> Optional<&mut T> {
+		if self.arr.gen != self.gen_snapshot {
+			err.throw_iterator_invalidated(ARRAY_CONTAINER_ID, err.IteratorOpId::Next());
+		}
+		val len = self.arr.len;
+		if self.idx > len {
+			self.idx = len;
+		}
+		val i = self.idx;
+		if i < len {
+			var v = &mut self.arr[i];
+			self.idx = i + 1;
+			return Optional::Some(v);
+		}
+		return Optional::None();
+	}
+}
+
 implement<T> iter.MultiPassIterator<&T> for ArrayBorrowIter<T> {
 }
 
@@ -74,7 +135,7 @@ implement<T> core.Copy for ArrayBorrowIter<T> {
 
 implement<T> iter.BidirectionalIterator<&T> for ArrayBorrowIter<T> {
 	pub fn prev(self: &mut ArrayBorrowIter<T>) -> Optional<&T> {
-		if self.arr.len != self.len_snapshot or self.arr.cap != self.cap_snapshot {
+		if self.arr.gen != self.gen_snapshot {
 			err.throw_iterator_invalidated(ARRAY_CONTAINER_ID, err.IteratorOpId::Prev());
 		}
 		val len = self.arr.len;
@@ -88,5 +149,331 @@ implement<T> iter.BidirectionalIterator<&T> for ArrayBorrowIter<T> {
 		val new_i = i - 1;
 		self.idx = new_i;
 		return Optional::Some(&self.arr[new_i]);
+	}
+}
+
+implement iter.RandomAccessReadable<Int> for ArrayRange<Int> {
+	pub fn len(self: &ArrayRange<Int>) -> Int {
+		if self.arr.gen != self.gen_snapshot {
+			err.throw_iterator_invalidated(ARRAY_CONTAINER_ID, err.IteratorOpId::Len());
+		}
+		return self.arr.len;
+	}
+
+	pub fn compare_at(self: &ArrayRange<Int>, i: Int, j: Int) -> Int {
+		if self.arr.gen != self.gen_snapshot {
+			err.throw_iterator_invalidated(ARRAY_CONTAINER_ID, err.IteratorOpId::CompareAt());
+		}
+		val len = self.arr.len;
+		if i < 0 or i >= len {
+			throw std.err:IndexError(container_id = ARRAY_CONTAINER_ID, index = i);
+		}
+		if j < 0 or j >= len {
+			throw std.err:IndexError(container_id = ARRAY_CONTAINER_ID, index = j);
+		}
+		return cmp.Comparable::cmp(&self.arr[i], &self.arr[j]);
+	}
+}
+
+implement algo.BinarySearchable<Int> for ArrayRange<Int> {
+	pub fn compare_key(self: &ArrayRange<Int>, i: Int, key: &Int) -> Int {
+		if self.arr.gen != self.gen_snapshot {
+			err.throw_iterator_invalidated(ARRAY_CONTAINER_ID, err.IteratorOpId::CompareKey());
+		}
+		val len = self.arr.len;
+		if i < 0 or i >= len {
+			throw std.err:IndexError(container_id = ARRAY_CONTAINER_ID, index = i);
+		}
+		return cmp.Comparable::cmp(&self.arr[i], key);
+	}
+}
+
+implement iter.RandomAccessReadable<Int> for ArrayRangeMut<Int> {
+	pub fn len(self: &ArrayRangeMut<Int>) -> Int {
+		if self.arr.gen != self.gen_snapshot {
+			err.throw_iterator_invalidated(ARRAY_CONTAINER_ID, err.IteratorOpId::Len());
+		}
+		return self.arr.len;
+	}
+
+	pub fn compare_at(self: &ArrayRangeMut<Int>, i: Int, j: Int) -> Int {
+		if self.arr.gen != self.gen_snapshot {
+			err.throw_iterator_invalidated(ARRAY_CONTAINER_ID, err.IteratorOpId::CompareAt());
+		}
+		val len = self.arr.len;
+		if i < 0 or i >= len {
+			throw std.err:IndexError(container_id = ARRAY_CONTAINER_ID, index = i);
+		}
+		if j < 0 or j >= len {
+			throw std.err:IndexError(container_id = ARRAY_CONTAINER_ID, index = j);
+		}
+		return cmp.Comparable::cmp(&self.arr[i], &self.arr[j]);
+	}
+}
+
+implement iter.RandomAccessPermutable<Int> for ArrayRangeMut<Int> {
+	pub fn swap(self: &mut ArrayRangeMut<Int>, i: Int, j: Int) -> Void {
+		if self.arr.gen != self.gen_snapshot {
+			err.throw_iterator_invalidated(ARRAY_CONTAINER_ID, err.IteratorOpId::Swap());
+		}
+		val len = self.arr.len;
+		if i < 0 or i >= len {
+			throw std.err:IndexError(container_id = ARRAY_CONTAINER_ID, index = i);
+		}
+		if j < 0 or j >= len {
+			throw std.err:IndexError(container_id = ARRAY_CONTAINER_ID, index = j);
+		}
+		self.arr.swap(i, j);
+	}
+}
+
+pub struct Deque<T> {
+	buf: mem.RawBuffer<T>,
+	head: Int,
+	len: Int,
+	gen: Int
+}
+
+pub struct DequeRange<T> {
+	dq: &Deque<T>,
+	gen_snapshot: Int
+}
+
+pub struct DequeRangeMut<T> {
+	dq: &mut Deque<T>,
+	gen_snapshot: Int
+}
+
+implement DequeRangeMut<Int> {
+	@test_build_only
+	pub fn __test_invalidate(self: &mut DequeRangeMut<Int>) -> Void {
+		self.dq.push_back(0);
+	}
+}
+
+pub fn deque_new<T>() -> Deque<T> {
+	var b = mem.alloc_uninit<type T>(0);
+	return Deque<type T>(buf = move b, head = 0, len = 0, gen = 0);
+}
+
+implement<T> Deque<T> {
+	pub fn len(self: &Deque<T>) -> Int {
+		return self.len;
+	}
+
+	fn cap(self: &Deque<T>) -> Int {
+		return mem.capacity(&self.buf);
+	}
+
+	fn phys(self: &Deque<T>, i: Int) -> Int {
+		val cap = self.cap();
+		return (self.head + i) % cap;
+	}
+
+	fn ensure_capacity(self: &mut Deque<T>, needed: Int) -> Void {
+		val cap0 = self.cap();
+		if cap0 >= needed {
+			return;
+		}
+		if cap0 == 0 and self.len != 0 {
+			throw std.err:IndexError(container_id = DEQUE_CONTAINER_ID, index = 0);
+		}
+		var new_cap = (cap0 == 0) ? 1 : cap0 * 2;
+		while new_cap < needed {
+			new_cap = new_cap * 2;
+		}
+		var new_buf = mem.alloc_uninit<type T>(new_cap);
+		var i = 0;
+		while i < self.len {
+			val phys = (self.head + i) % cap0;
+			var v = mem.read<type T>(&mut self.buf, phys);
+			mem.write<type T>(&mut new_buf, i, v);
+			i = i + 1;
+		}
+		var old = mem.replace(&mut self.buf, new_buf);
+		self.head = 0;
+		self.gen = self.gen + 1;
+		mem.dealloc<type T>(old);
+	}
+
+	pub fn push_back(self: &mut Deque<T>, var value: T) -> Void {
+		val needed = self.len + 1;
+		self.ensure_capacity(needed);
+		val cap = self.cap();
+		val phys = (self.head + self.len) % cap;
+		mem.write<type T>(&mut self.buf, phys, value);
+		self.len = self.len + 1;
+		self.gen = self.gen + 1;
+	}
+
+	pub fn push_front(self: &mut Deque<T>, var value: T) -> Void {
+		val needed = self.len + 1;
+		self.ensure_capacity(needed);
+		val cap = self.cap();
+		self.head = (self.head - 1 + cap) % cap;
+		mem.write<type T>(&mut self.buf, self.head, value);
+		self.len = self.len + 1;
+		self.gen = self.gen + 1;
+	}
+
+	pub fn pop_back(self: &mut Deque<T>) -> Optional<T> {
+		if self.len == 0 {
+			return Optional::None();
+		}
+		val idx = self.len - 1;
+		val cap = self.cap();
+		val phys = (self.head + idx) % cap;
+		var v = mem.read<type T>(&mut self.buf, phys);
+		self.len = self.len - 1;
+		if self.len == 0 {
+			self.head = 0;
+		}
+		self.gen = self.gen + 1;
+		return Optional::Some(v);
+	}
+
+	pub fn pop_front(self: &mut Deque<T>) -> Optional<T> {
+		if self.len == 0 {
+			return Optional::None();
+		}
+		var v = mem.read<type T>(&mut self.buf, self.head);
+		val cap = self.cap();
+		self.head = (self.head + 1) % cap;
+		self.len = self.len - 1;
+		if self.len == 0 {
+			self.head = 0;
+		}
+		self.gen = self.gen + 1;
+		return Optional::Some(v);
+	}
+
+	pub fn range(self: &Deque<T>) -> DequeRange<T> {
+		return DequeRange<type T>(dq = self, gen_snapshot = self.gen);
+	}
+
+	pub fn range_mut(self: &mut Deque<T>) -> DequeRangeMut<T> {
+		val gen = self.gen;
+		return DequeRangeMut<type T>(dq = self, gen_snapshot = gen);
+	}
+
+	pub fn at(self: &Deque<T>, i: Int) -> &T {
+		val len = self.len;
+		if i < 0 or i >= len {
+			throw std.err:IndexError(container_id = DEQUE_CONTAINER_ID, index = i);
+		}
+		val cap = self.cap();
+		val phys = (self.head + i) % cap;
+		return mem.ptr_at_ref<type T>(&self.buf, phys);
+	}
+
+	pub fn at_mut(self: &mut Deque<T>, i: Int) -> &mut T {
+		val len = self.len;
+		if i < 0 or i >= len {
+			throw std.err:IndexError(container_id = DEQUE_CONTAINER_ID, index = i);
+		}
+		val cap = self.cap();
+		val phys = (self.head + i) % cap;
+		return mem.ptr_at_mut<type T>(&mut self.buf, phys);
+	}
+
+	pub fn swap(self: &mut Deque<T>, i: Int, j: Int) -> Void {
+		val len = self.len;
+		if i < 0 or i >= len {
+			throw std.err:IndexError(container_id = DEQUE_CONTAINER_ID, index = i);
+		}
+		if j < 0 or j >= len {
+			throw std.err:IndexError(container_id = DEQUE_CONTAINER_ID, index = j);
+		}
+		if i == j {
+			return;
+		}
+		val cap = self.cap();
+		val pi = (self.head + i) % cap;
+		val pj = (self.head + j) % cap;
+		var a = mem.read<type T>(&mut self.buf, pi);
+		var b = mem.read<type T>(&mut self.buf, pj);
+		mem.write<type T>(&mut self.buf, pi, b);
+		mem.write<type T>(&mut self.buf, pj, a);
+	}
+}
+
+implement iter.RandomAccessReadable<Int> for DequeRange<Int> {
+	pub fn len(self: &DequeRange<Int>) -> Int {
+		if self.dq.gen != self.gen_snapshot {
+			err.throw_iterator_invalidated(DEQUE_CONTAINER_ID, err.IteratorOpId::Len());
+		}
+		return self.dq.len;
+	}
+
+	pub fn compare_at(self: &DequeRange<Int>, i: Int, j: Int) -> Int {
+		if self.dq.gen != self.gen_snapshot {
+			err.throw_iterator_invalidated(DEQUE_CONTAINER_ID, err.IteratorOpId::CompareAt());
+		}
+		val len = self.dq.len;
+		if i < 0 or i >= len {
+			throw std.err:IndexError(container_id = DEQUE_CONTAINER_ID, index = i);
+		}
+		if j < 0 or j >= len {
+			throw std.err:IndexError(container_id = DEQUE_CONTAINER_ID, index = j);
+		}
+		val cap = self.dq.cap();
+		val pi = (self.dq.head + i) % cap;
+		val pj = (self.dq.head + j) % cap;
+		val a = mem.ptr_at_ref<type Int>(&self.dq.buf, pi);
+		val b = mem.ptr_at_ref<type Int>(&self.dq.buf, pj);
+		return cmp.Comparable::cmp(a, b);
+	}
+}
+
+implement algo.BinarySearchable<Int> for DequeRange<Int> {
+	pub fn compare_key(self: &DequeRange<Int>, i: Int, key: &Int) -> Int {
+		if self.dq.gen != self.gen_snapshot {
+			err.throw_iterator_invalidated(DEQUE_CONTAINER_ID, err.IteratorOpId::CompareKey());
+		}
+		val len = self.dq.len;
+		if i < 0 or i >= len {
+			throw std.err:IndexError(container_id = DEQUE_CONTAINER_ID, index = i);
+		}
+		val cap = self.dq.cap();
+		val pi = (self.dq.head + i) % cap;
+		val a = mem.ptr_at_ref<type Int>(&self.dq.buf, pi);
+		return cmp.Comparable::cmp(a, key);
+	}
+}
+
+implement iter.RandomAccessReadable<Int> for DequeRangeMut<Int> {
+	pub fn len(self: &DequeRangeMut<Int>) -> Int {
+		if self.dq.gen != self.gen_snapshot {
+			err.throw_iterator_invalidated(DEQUE_CONTAINER_ID, err.IteratorOpId::Len());
+		}
+		return self.dq.len;
+	}
+
+	pub fn compare_at(self: &DequeRangeMut<Int>, i: Int, j: Int) -> Int {
+		if self.dq.gen != self.gen_snapshot {
+			err.throw_iterator_invalidated(DEQUE_CONTAINER_ID, err.IteratorOpId::CompareAt());
+		}
+		val len = self.dq.len;
+		if i < 0 or i >= len {
+			throw std.err:IndexError(container_id = DEQUE_CONTAINER_ID, index = i);
+		}
+		if j < 0 or j >= len {
+			throw std.err:IndexError(container_id = DEQUE_CONTAINER_ID, index = j);
+		}
+		val cap = self.dq.cap();
+		val pi = (self.dq.head + i) % cap;
+		val pj = (self.dq.head + j) % cap;
+		val a = mem.ptr_at_ref<type Int>(&self.dq.buf, pi);
+		val b = mem.ptr_at_ref<type Int>(&self.dq.buf, pj);
+		return cmp.Comparable::cmp(a, b);
+	}
+}
+
+implement iter.RandomAccessPermutable<Int> for DequeRangeMut<Int> {
+	pub fn swap(self: &mut DequeRangeMut<Int>, i: Int, j: Int) -> Void {
+		if self.dq.gen != self.gen_snapshot {
+			err.throw_iterator_invalidated(DEQUE_CONTAINER_ID, err.IteratorOpId::Swap());
+		}
+		self.dq.swap(i, j);
 	}
 }

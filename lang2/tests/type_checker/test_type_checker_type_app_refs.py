@@ -41,11 +41,11 @@ def _build_registry(sigs: dict[FunctionId, FnSignature]) -> tuple[CallableRegist
 	return registry, module_ids
 
 
-def _find_type_app(block: H.HBlock) -> H.HTypeApp:
+def _find_callable_ref(block: H.HBlock) -> H.HExpr:
 	for stmt in block.statements:
-		if isinstance(stmt, H.HLet) and isinstance(stmt.value, H.HTypeApp):
+		if isinstance(stmt, H.HLet) and isinstance(stmt.value, (H.HTypeApp, H.HFnPtrConst, H.HQualifiedMember)):
 			return stmt.value
-	raise AssertionError("no type-app expression found")
+	raise AssertionError("no callable reference expression found")
 
 
 def _find_qualified_member(block: H.HBlock) -> H.HQualifiedMember:
@@ -104,7 +104,7 @@ fn main() -> Int {
 		current_module=current_mod,
 	)
 	assert result.diagnostics == []
-	type_app = _find_type_app(main_block)
+	type_app = _find_callable_ref(main_block)
 	call_expr = _find_return_call(main_block)
 	type_app_ty = result.typed_fn.expr_types.get(type_app.node_id)
 	call_ty = result.typed_fn.expr_types.get(call_expr.node_id)
@@ -147,7 +147,7 @@ fn main() -> Int {
 		callable_registry=None,
 	)
 	assert result.diagnostics == []
-	type_app = _find_type_app(main_block)
+	type_app = _find_callable_ref(main_block)
 	type_app_ty = result.typed_fn.expr_types.get(type_app.node_id)
 	assert type_app_ty is not None
 	td_fn = type_table.get(type_app_ty)

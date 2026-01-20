@@ -1706,6 +1706,12 @@ Rules:
   - A private field/method may be used only within the defining module.
   - Access outside the defining module is a compile-time error.
 
+### 7.0.2. Test-build-only declarations
+
+Declarations annotated with `@test_build_only` are included only in test builds.
+In normal builds they are ignored (not visible, not exported). The compiler
+enables them only when invoked with `--test-build-only`.
+
 ### 7.1. Import syntax (modules only)
 
 Drift has a single import form:
