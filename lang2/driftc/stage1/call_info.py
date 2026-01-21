@@ -38,11 +38,16 @@ class IntrinsicKind(Enum):
 	STRING_CONCAT = "string_concat"
 	RAW_ALLOC = "raw_alloc"
 	RAW_DEALLOC = "raw_dealloc"
-	RAW_CAPACITY = "raw_capacity"
 	RAW_PTR_AT_REF = "raw_ptr_at_ref"
 	RAW_PTR_AT_MUT = "raw_ptr_at_mut"
 	RAW_WRITE = "raw_write"
 	RAW_READ = "raw_read"
+	PTR_FROM_REF = "ptr_from_ref"
+	PTR_FROM_REF_MUT = "ptr_from_ref_mut"
+	PTR_OFFSET = "ptr_offset"
+	PTR_READ = "ptr_read"
+	PTR_WRITE = "ptr_write"
+	PTR_IS_NULL = "ptr_is_null"
 
 
 

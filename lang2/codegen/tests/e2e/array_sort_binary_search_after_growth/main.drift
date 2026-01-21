@@ -1,0 +1,29 @@
+module main
+
+import std.algo as algo;
+import std.containers as containers;
+
+fn main() nothrow -> Int {
+	var arr = [3, 1];
+	arr.reserve(4);
+	arr.push(2);
+	arr.push(5);
+	var r = arr.range_mut();
+	try {
+		algo.sort_in_place<type containers.ArrayRangeMut<Int>, Int>(&mut r);
+	} catch _ {
+		return 10;
+	}
+	var r2 = arr.range();
+	val found = try algo.binary_search<type containers.ArrayRange<Int>, Int>(&r2, &2) catch _ {
+		return 11;
+	};
+	val ok = match found {
+		Some(i) => { (i == 1) ? 0 : 20 },
+		None => { 21 },
+	};
+	if ok != 0 {
+		return ok;
+	}
+	return arr[0] * 1000 + arr[1] * 100 + arr[2] * 10 + arr[3];
+}

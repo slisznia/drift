@@ -398,41 +398,16 @@ If a method does not need ownership, prefer borrowed receivers (`&T` / `&mut T`)
 
 ---
 
-### 3.9. Implicit `self` member lookup (method bodies)
+### 3.9. Unqualified names inside method bodies (no implicit receiver)
 
-Inside a method body (a function declared within an `implement` block that has a `self` receiver), unqualified names may resolve to members of `self` to keep method bodies concise.
-
-#### 3.9.1. Name resolution order
-
-When an identifier `name` appears unqualified inside a method body, it is resolved in this order:
+Inside a method body, unqualified names resolve exactly the same way they do in free functions:
 
 1. **Local scope**: locals, parameters (including `self`), and any bindings introduced by control flow.
 2. **Module scope**: functions, structs, traits, exceptions, and other items visible in the current module scope.
-3. **`self` members**: fields and methods of the receiver type.
 
-This rule is a convenience only. It does not change the language’s ownership or borrow semantics.
+There is **no implicit receiver lookup**. Unqualified identifiers never resolve to fields or methods of `self`. To access members, you must write them explicitly (`self.field`, `self.method(...)`, or `self->field` for borrowed receivers).
 
-#### 3.9.2. How implicit members desugar
-
-If `name` resolves to a member of `self`, the compiler desugars it based on context:
-
-- **Value (read) context**: `name` behaves as if you wrote:
-  - `self.name` when `self` is an owned value receiver (`self: T`), or
-  - `self->name` when `self` is a borrowed receiver (`self: &T` / `self: &mut T`).
-
-- **Place (lvalue) context**: `name` behaves as the *addressable place* corresponding to the same member access, and is valid in:
-  - assignment targets (`name = ...`, `name += ...`),
-  - borrow subjects (`&name`, `&mut name`),
-  - move subjects (`move name`, MVP: locals/params only; member moves not supported yet),
-  subject to the normal rules for addressability and writability.
-
-- **Call context**: `name(args...)` resolves as a method call on `self` (equivalent to `self.name(args...)`), after applying the normal receiver selection rules in §3.8.
-
-#### 3.9.3. Shadowing and disambiguation
-
-If a local/parameter/module item shares the same name as a member of `self`, the non-member name wins.
-
-To access the member in that case, write it explicitly using `self.name(...)`, `self.name`, or `self->name` as appropriate.
+Unqualified calls never resolve to methods. `name(args...)` is always a free-function call (or an error if no such function exists). Method calls require an explicit receiver (`self.name(args...)`) or explicit UFCS (`Type::name(self, ...)`, `Trait::name(self, ...)`). Function-style method calls are not inferred.
 
 ---
 
@@ -1307,7 +1282,7 @@ fn translate(p: &mut Point, dx: Int, dy: Int) -> Void {
 point.move_by(1, 2); // method call (auto-borrows &mut point)
 translate(point, 3, 4); // free function call (auto-borrows &mut point)
 
-Within a module, a given name may not be used both for a free function and for a method; method names may be reused across different types as long as each (type, method name) pair is unique.
+Within a module, a given name may be used for both a free function and a method. Unqualified calls always resolve to free functions (locals win over free functions); methods are only reachable via an explicit receiver or explicit UFCS. Method names may be reused across different types as long as each (type, method name) pair is unique.
 ```
 
 This rule set makes the receiver’s ownership mode explicit and prevents implicit, C++-style magic receivers.
@@ -2241,6 +2216,8 @@ val explicit: Array<Int> = [1, 2, 3]; // annotation still allowed when desired
 - **MVP restriction:** non-empty array literals require `T` to be `Copy`. Empty literals (`[]`) are allowed only with an explicit `Array<T>` type annotation.
 - Empty literals are reserved for a future constructor; for now, call the stdlib helper once it lands.
 
+**Builtin Array (stepping stone).** `Array<T>` is a builtin container in v1 primarily to support literal syntax and a fixed ABI layout, but its semantics are aligned with the stdlib RawBuffer recipe: uninitialized capacity, initialized prefix `[0..len)`, move-out on pop/remove, and `gen` invalidation only on structural change. Indexing is specified as trait-based (operator lowering) so user containers can implement `[]` without being builtin. The long-term direction is: keep literal syntax as a compiler primitive that lowers to a typed literal payload, and move `Array<T>` into stdlib once the unsafe/Ptr story is fully stabilized; until then, the builtin must stay behaviorally equivalent to the RawBuffer-backed implementation to avoid drift.
+
 `Array<T>` integrates with the broader language design — it moves with `move x`, can be captured with `^`, and will participate in trait implementations like `Display` once the stdlib grows. The literal syntax keeps sample programs succinct while we flesh out higher-level APIs.
 
 **Indexing and lengths.** In v1, container lengths/capacities and indices use `Int`:
@@ -2888,11 +2865,26 @@ In both cases, the file handle is safely released exactly once.
 - Move-only by default: moving a value consumes it; the source binding becomes invalid and is not dropped there. Drop runs exactly once on the final owner.
 - Copy types opt in: only `Copy` types may be implicitly duplicated; they must provide an O(1), non-allocating duplication path. `Copy` does not imply “no drop” (e.g., `String` retains/releases on copy). The internal `BitCopy` predicate enables memcpy fast paths but is not user-visible.
 
+### 15.6. Unsafe code and raw pointers (MVP)
+
+Drift supports a minimal unsafe surface for C-API wrappers:
+
+- `unsafe fn` declares an unsafe function; it may perform unsafe operations.
+- `unsafe { ... }` blocks permit calling unsafe functions inside safe ones.
+- Unsafe syntax is accepted only when the compiler is invoked with `--allow-unsafe`; otherwise it is a compile-time error.
+
+Raw pointers are represented by a distinct type `Ptr<T>`:
+
+- `Ptr<T>` requires `T` to be sized; fat pointers are not part of MVP.
+- `Ptr<T>` is `Copy` and does not participate in borrow checking.
+- There are no implicit conversions between `Ptr<T>` and `&T` / `&mut T`.
+- Pointer read/write/offset operations are only permitted in unsafe contexts and are provided by `std.mem`.
+
 ## 16. Memory model
 
 This chapter defines Drift's rules for value storage, initialization, destruction, and dynamic allocation. The goal is predictable semantics for user code while relegating low-level memory manipulation to the standard library and `lang.abi`.
 
-Drift deliberately hides raw pointers, pointer arithmetic, and untyped memory. Those operations exist only inside sealed, `@unsafe` library internals. User-visible code works with typed values, references, and safe containers like `Array<T>`.
+Drift keeps raw pointer manipulation out of safe code. Raw pointer operations exist only in unsafe contexts, and user-visible safe code works with typed values, references, and safe containers like `Array<T>`.
 
 ### 16.1. Value storage
 
@@ -2937,6 +2929,12 @@ struct Layout { size: Int, align: Int }
 @unsafe fn alloc(layout: Layout) -> RawBuffer;
 @unsafe fn realloc(buf: RawBuffer, old: Layout, new: Layout) -> RawBuffer;
 @unsafe fn dealloc(buf: RawBuffer, layout: Layout) -> Void;
+
+Note (v1 implementation): container allocation currently lowers to the runtime
+helpers `drift_alloc_array` / `drift_free_array` (plus pointer arithmetic) rather
+than `lang.abi` calls. The `lang.abi` surface is the long-term abstraction and
+should be used as the canonical spec entry point; the current runtime hooks are
+an implementation detail of v1 codegen.
 ```
 
 - `alloc` -> uninitialized storage for a layout.
@@ -2973,29 +2971,31 @@ Growable containers track both `len` (initialized elements) and `cap` (reserved 
 struct Array<T> {
     len: Int     // initialized elements
     cap: Int     // reserved slots
-    buf: RawBuffer
+    gen: Int     // invalidation counter (increments on structural change)
+    ptr: Ptr<Byte>
 }
 ```
 
-Invariant: indices `0 .. len` are initialized; `len .. cap` are uninitialized slots ready for construction. Growth occurs before inserting when `len == cap`.
+Invariant: indices `0 .. len` are initialized; `len .. cap` are uninitialized slots ready for construction. The `ptr` is the RawBuffer handle for storage sized to `cap` elements (ABI-flattened as a raw pointer), and `gen` increments only when structural state actually changes (len/cap change or allocation moves). Growth occurs before inserting when `len == cap`.
 
 #### 16.5.3. Growth algorithm
 
 ```
 fn grow<T>(&mut self: Array<T>) @unsafe {
     old_cap = self.cap
+    old_ptr = self.ptr
     new_cap = max(1, old_cap * 2)
 
     old_layout = layout_for<T>(old_cap)
     new_layout = layout_for<T>(new_cap)
 
-    new_buf = if old_cap == 0 {
+    new_ptr = if old_cap == 0 {
         alloc(new_layout)
     } else {
-        realloc(self.buf, old_layout, new_layout)
+        realloc(self.ptr, old_layout, new_layout)
     }
 
-    self.buf = new_buf
+    self.ptr = new_ptr
     self.cap = new_cap
 }
 ```
@@ -3008,8 +3008,8 @@ Initialized elements move slot-by-slot:
 
 ```
 for i in 0 .. self.len {
-    src = slot_at<T>(old_buf, i)
-    dst = slot_at<T>(new_buf, i)
+    src = slot_at<T>(old_ptr, i)
+    dst = slot_at<T>(new_ptr, i)
     move_slot_to_slot(src, dst)
 }
 ```
@@ -3045,13 +3045,14 @@ These rules scale to arrays, strings, maps, trait objects, and future higher-lev
 
 ## 17. Pointer-free surface and ABI boundaries
 
-Drift deliberately keeps raw pointer syntax out of the language surface. Low-level memory manipulation and FFI plumbing are funneled through sealed standard-library modules so typical programs interact with typed handles rather than `*mut T` tokens.
+Drift deliberately keeps raw pointer *syntax* out of the safe language surface. Low-level memory manipulation and FFI plumbing are funneled through `Ptr<T>` and `std.mem` in unsafe contexts so typical programs interact with typed handles rather than `*mut T` tokens.
 
 ### 17.1. Policy: no raw pointer tokens
 
 - No `*mut T` / `*const T` syntax exists in Drift.
-- User-visible pointer arithmetic and casts are forbidden.
-- Untyped byte operations live behind `@unsafe` internals such as `lang.abi` and `lang.internals`.
+- Raw pointers are represented by `Ptr<T>` and are only usable inside `unsafe` contexts.
+- User-visible pointer arithmetic and casts are forbidden outside unsafe code.
+- Untyped byte operations live behind `std.mem` and `lang.abi` internals.
 
 ### 17.2. Slots and uninitialized handles
 

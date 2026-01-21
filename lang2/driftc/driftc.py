@@ -587,6 +587,26 @@ def _validate_intrinsic_callinfo(typed_fn: "TypedFn") -> None:
 			if kwargs or len(call.args) != 2:
 				raise AssertionError("read(...) arity mismatch reached validation (checker bug)")
 			continue
+		if kind in (IntrinsicKind.PTR_FROM_REF, IntrinsicKind.PTR_FROM_REF_MUT):
+			if kwargs or len(call.args) != 1:
+				raise AssertionError("ptr_from_ref(...) arity mismatch reached validation (checker bug)")
+			continue
+		if kind is IntrinsicKind.PTR_OFFSET:
+			if kwargs or len(call.args) != 2:
+				raise AssertionError("ptr_offset(...) arity mismatch reached validation (checker bug)")
+			continue
+		if kind is IntrinsicKind.PTR_READ:
+			if kwargs or len(call.args) != 1:
+				raise AssertionError("ptr_read(...) arity mismatch reached validation (checker bug)")
+			continue
+		if kind is IntrinsicKind.PTR_WRITE:
+			if kwargs or len(call.args) != 2:
+				raise AssertionError("ptr_write(...) arity mismatch reached validation (checker bug)")
+			continue
+		if kind is IntrinsicKind.PTR_IS_NULL:
+			if kwargs or len(call.args) != 1:
+				raise AssertionError("ptr_is_null(...) arity mismatch reached validation (checker bug)")
+			continue
 		raise AssertionError(f"unknown intrinsic '{kind.value}' reached validation (checker bug)")
 
 
@@ -1097,6 +1117,7 @@ def compile_stubbed_funcs(
 	prelude_enabled: bool = True,
 	emit_instantiation_index: Path | None = None,
 	enforce_entrypoint: bool = False,
+	allow_unsafe: bool = True,
 ) -> (
 	Dict[FunctionId, M.MirFunc]
 	| tuple[Dict[FunctionId, M.MirFunc], CheckedProgramById]
@@ -1264,7 +1285,21 @@ def compile_stubbed_funcs(
 	}
 
 	# candidate_signatures_for_diag removed; no name-keyed fallback map
-	type_checker = TypeChecker(type_table=shared_type_table)
+	unsafe_trusted_modules = set()
+	if shared_type_table is not None:
+		for mod_id, pkg_id in (getattr(shared_type_table, "module_packages", {}) or {}).items():
+			if pkg_id == "std":
+				unsafe_trusted_modules.add(mod_id)
+	if not unsafe_trusted_modules and module_exports is not None:
+		for mod_id in module_exports.keys():
+			if isinstance(mod_id, str) and mod_id.startswith("std."):
+				unsafe_trusted_modules.add(mod_id)
+	if not unsafe_trusted_modules:
+		for fn_id, sig in signatures_by_id.items():
+			mod_name = getattr(fn_id, "module", None) or getattr(sig, "module", None)
+			if isinstance(mod_name, str) and mod_name.startswith("std."):
+				unsafe_trusted_modules.add(mod_name)
+	type_checker = TypeChecker(type_table=shared_type_table, allow_unsafe=bool(allow_unsafe), unsafe_trusted_modules=unsafe_trusted_modules, allow_unsafe_without_block=True)
 	callable_registry = CallableRegistry()
 	module_ids: dict[object, int] = {None: 0}
 	if module_deps:
@@ -1467,7 +1502,7 @@ def compile_stubbed_funcs(
 				callable_id=next_callable_id,
 				name=sig.method_name or sig.name,
 				module_id=module_id,
-				visibility=Visibility.public() if sig.is_pub else Visibility.private(),
+				visibility=Visibility.public(),
 				signature=CallableSignature(param_types=param_types_tuple, result_type=sig.return_type_id),
 				fn_id=fn_id,
 				impl_id=next_callable_id,
@@ -1623,8 +1658,7 @@ def compile_stubbed_funcs(
 		current_mod = _module_id_with_visibility(mod_name)
 		visible_mods = None
 		if module_deps is not None:
-			visible = visible_module_names_by_name.get(mod_name, {mod_name})
-			visible_mods = tuple(sorted(_module_id_with_visibility(m) for m in visible))
+			visible_mods = tuple(sorted(_module_id_with_visibility(m) for m in module_ids.keys() if m is not None))
 		ret_id = sig.return_type_id if sig is not None else None
 		type_param_map: dict[str, object] = {}
 		if sig is not None and (getattr(sig, "impl_type_params", None) or getattr(sig, "type_params", None)):
@@ -3426,6 +3460,11 @@ def main(argv: list[str] | None = None) -> int:
 		help="Allow unsigned packages from this directory (repeatable)",
 	)
 	parser.add_argument(
+		"--allow-unsafe",
+		action="store_true",
+		help="Allow unsafe functions and unsafe blocks (required for unsafe code outside toolchain-trusted modules)",
+	)
+	parser.add_argument(
 		"--dev",
 		action="store_true",
 		help="Enable dev-only switches (non-normative, for local testing)",
@@ -4545,7 +4584,16 @@ def main(argv: list[str] | None = None) -> int:
 	normalized_hirs_by_id = {fn_id: normalize_hir(block) for fn_id, block in func_hirs_by_id.items()}
 
 	# Type check each function with the shared TypeTable/signatures.
-	type_checker = TypeChecker(type_table=type_table)
+	unsafe_trusted_modules = set()
+	if type_table is not None:
+		for mod_id, pkg_id in (getattr(type_table, "module_packages", {}) or {}).items():
+			if pkg_id == "std":
+				unsafe_trusted_modules.add(mod_id)
+	if not unsafe_trusted_modules and module_exports is not None:
+		for mod_id in module_exports.keys():
+			if isinstance(mod_id, str) and mod_id.startswith("std."):
+				unsafe_trusted_modules.add(mod_id)
+	type_checker = TypeChecker(type_table=type_table, allow_unsafe=bool(getattr(args, "allow_unsafe", False)), unsafe_trusted_modules=unsafe_trusted_modules)
 	callable_registry = CallableRegistry()
 	next_callable_id = 1
 	type_diags: list[Diagnostic] = []
@@ -4653,7 +4701,7 @@ def main(argv: list[str] | None = None) -> int:
 				callable_id=next_callable_id,
 				name=sig.method_name or sig_name,
 				module_id=module_id,
-				visibility=Visibility.public() if sig.is_pub else Visibility.private(),
+				visibility=Visibility.public(),
 				signature=CallableSignature(param_types=param_types_tuple, result_type=sig.return_type_id),
 				fn_id=fn_id,
 				impl_id=next_callable_id,
@@ -5636,6 +5684,7 @@ def main(argv: list[str] | None = None) -> int:
 						is_method=bool(sd.get("is_method", False)),
 						self_mode=sd.get("self_mode"),
 						impl_target_type_id=impl_tid,
+						is_pub=bool(sd.get("is_pub", False)),
 						is_exported_entrypoint=bool(sd.get("is_exported_entrypoint", False)),
 						)
 

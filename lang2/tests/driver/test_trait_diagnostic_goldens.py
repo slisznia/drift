@@ -173,7 +173,12 @@ fn f(x: Box<Int>) -> Int{ return 0; }
 		{
 			"code": "E_REQUIREMENT_NOT_SATISFIED",
 			"message": "requirement not satisfied: Int is main.Show (required by struct 'Box')",
-			"notes": [],
+			"notes": [
+				"requirement_trait=main.Show",
+				"requirement_subject=Int",
+				"requirement_reason=no_impl",
+				"requirement_origin=struct 'Box'",
+			],
 			"phase": "typecheck",
 		}
 	]

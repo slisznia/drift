@@ -1,0 +1,14 @@
+module m
+
+exception Boom()
+
+fn main() nothrow -> Int{
+	try {
+		if true {
+			throw Boom();
+		}
+	} catch Boom(_) {
+		return 0;
+	}
+	return 1;
+}

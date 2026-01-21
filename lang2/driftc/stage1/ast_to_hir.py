@@ -197,33 +197,12 @@ class AstToHIR:
 		"""
 		Lower an identifier reference.
 
-		Resolution policy (spec §3.9, implicit `self` lookup):
-		  1) local bindings (let/var, loop bindings, etc.),
-		  2) otherwise, inside a method body: treat unknown names as members of `self`
-		     when they match a declared field name.
-
-		We lower implicit field reads to a canonical `HPlaceExpr` so later phases
-		can treat them uniformly in both value and place contexts (loads/stores,
-		borrows, moves). Mutability rules are enforced by the typed checker.
+		Resolution policy: local bindings only. Unqualified identifiers never
+		resolve to `self` members; callers must use explicit receivers.
 		"""
 		bid = self._lookup_binding(expr.ident)
 		if bid is not None:
 			return H.HVar(name=expr.ident, binding_id=bid)
-		ctx = self._implicit_self_ctx()
-		if ctx is not None:
-			fields: set[str] = ctx["fields"]  # type: ignore[assignment]
-			if expr.ident in fields:
-				self_mode = str(ctx["self_mode"])
-				self_name = str(ctx.get("self_name", "self"))
-				projs: list[H.HPlaceProj] = []
-				if self_mode in ("ref", "ref_mut"):
-					projs.append(H.HPlaceDeref())
-				projs.append(H.HPlaceField(name=expr.ident))
-				return H.HPlaceExpr(
-					base=H.HVar(name=self_name, binding_id=self._lookup_binding(self_name)),
-					projections=projs,
-					loc=self._as_span(getattr(expr, "loc", None)),
-				)
 		# Fallback: unresolved name remains an HVar. The typed checker is the
 		# authority for rejecting unknown variables with a source span.
 		return H.HVar(name=expr.ident, binding_id=None)
@@ -382,32 +361,6 @@ class AstToHIR:
 				kwargs=h_kwargs,
 				type_args=type_args,
 			)
-
-		# Implicit `self` method call: inside a method body, an unqualified call
-		# `foo(...)` may resolve to `self.foo(...)` when:
-		#  - there is no local binding named `foo`, and
-		#  - there is no visible free function named `foo`, and
-		#  - the receiver type declares a method named `foo`.
-		#
-		# This keeps method bodies concise without requiring `self.` everywhere.
-		if isinstance(expr.func, ast.Name):
-			ctx = self._implicit_self_ctx()
-			if ctx is not None:
-				name = expr.func.ident
-				self_name = str(ctx.get("self_name", "self"))
-				if self._lookup_binding(name) is None:
-					module_funcs: set[str] = ctx["module_funcs"]  # type: ignore[assignment]
-					methods: set[str] = ctx["methods"]  # type: ignore[assignment]
-					if name not in module_funcs and name in methods:
-						recv = H.HVar(name=self_name, binding_id=self._lookup_binding(self_name))
-						args = [self.lower_expr(a) for a in expr.args]
-						return H.HMethodCall(
-							receiver=recv,
-							method_name=name,
-							args=args,
-							kwargs=h_kwargs,
-							type_args=type_args,
-						)
 
 		# Plain function call or call through a computed value.
 		fn_expr = self.lower_expr(expr.func)
@@ -926,6 +879,9 @@ class AstToHIR:
 
 	def _visit_stmt_BlockStmt(self, stmt: ast.BlockStmt) -> H.HStmt:
 		return self.lower_block(stmt.block)
+
+	def _visit_stmt_UnsafeBlockStmt(self, stmt: ast.UnsafeBlockStmt) -> H.HStmt:
+		return H.HUnsafeBlock(block=self.lower_block(stmt.body))
 
 	def _visit_stmt_TryStmt(self, stmt: ast.TryStmt) -> H.HStmt:
 		"""

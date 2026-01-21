@@ -502,6 +502,13 @@ class ContinueStmt(Stmt):
 
 
 @dataclass
+class UnsafeBlockStmt(Stmt):
+	"""Unsafe block statement: unsafe { ... }."""
+	body: List[Stmt]
+	loc: Optional[object] = None
+
+
+@dataclass
 class ThrowStmt(Stmt):
 	"""Throw statement placeholder."""
 	value: Expr
@@ -521,5 +528,5 @@ __all__ = [
 	"Param", "KwArg", "Call", "TypeApp", "Lambda", "Block",
 	"Binary", "Unary", "Move", "Index", "ArrayLiteral", "ExceptionCtor", "CatchExprArm", "TryCatchExpr", "Ternary",
 	"LetStmt", "AssignStmt", "AugAssignStmt", "IfStmt", "ReturnStmt", "RaiseStmt", "ExprStmt", "ImportStmt",
-	"TryStmt", "WhileStmt", "ForStmt", "BreakStmt", "ContinueStmt", "ThrowStmt", "RethrowStmt",
+	"TryStmt", "WhileStmt", "ForStmt", "BreakStmt", "ContinueStmt", "UnsafeBlockStmt", "ThrowStmt", "RethrowStmt",
 ]

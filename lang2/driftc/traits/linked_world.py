@@ -790,6 +790,7 @@ def _trait_method_sig_key(
 	return (
 		method.name,
 		bool(getattr(method, "declared_nothrow", False)),
+		bool(getattr(method, "is_unsafe", False)),
 		len(getattr(method, "type_params", []) or []),
 		_param_type_keys(
 			getattr(method, "params", None),

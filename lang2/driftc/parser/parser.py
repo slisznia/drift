@@ -74,6 +74,7 @@ from .ast import (
     WhileStmt,
     BreakStmt,
     ContinueStmt,
+    UnsafeBlockStmt,
     Unary,
     FString,
     FStringHole,
@@ -1051,6 +1052,10 @@ def _build_trait_method_sig(tree: Tree) -> TraitMethodSig:
 	loc = _loc(tree)
 	children = list(tree.children)
 	idx = 0
+	is_unsafe = False
+	if idx < len(children) and isinstance(children[idx], Token) and children[idx].type == "UNSAFE":
+		is_unsafe = True
+		idx += 1
 	if idx < len(children) and isinstance(children[idx], Token) and children[idx].type == "FN_KW":
 		idx += 1
 	name_token = _unwrap_ident(children[idx])
@@ -1082,6 +1087,7 @@ def _build_trait_method_sig(tree: Tree) -> TraitMethodSig:
 		type_params=type_params,
 		type_param_locs=type_param_locs,
 		declared_nothrow=declared_nothrow,
+		is_unsafe=is_unsafe,
 	)
 
 
@@ -1124,6 +1130,10 @@ def _build_function(tree: Tree, *, allow_missing_body: bool = False) -> Function
 	loc = _loc(tree)
 	children = list(tree.children)
 	idx = 0
+	is_unsafe = False
+	if idx < len(children) and isinstance(children[idx], Token) and children[idx].type == "UNSAFE":
+		is_unsafe = True
+		idx += 1
 	if idx < len(children) and isinstance(children[idx], Token) and children[idx].type == "FN_KW":
 		idx += 1
 	name_token = _unwrap_ident(children[idx])
@@ -1167,6 +1177,7 @@ def _build_function(tree: Tree, *, allow_missing_body: bool = False) -> Function
 		params=params,
 		return_type=return_type,
 		declared_nothrow=declared_nothrow,
+		is_unsafe=is_unsafe,
 		body=body,
 		loc=loc,
 		require=require,
@@ -1224,6 +1235,8 @@ def _build_implement_def(tree: Tree) -> ImplementDef:
 		if fn_node is None:
 			continue
 		fn = _build_function(fn_node)
+		if item_kind == "func_def":
+			is_pub = bool(getattr(fn, "is_pub", False))
 		fn.is_pub = is_pub
 		fn.test_build_only = item_test_only
 		fn.is_method = True
@@ -1503,6 +1516,11 @@ def _build_stmt(tree: Tree):
 		return _build_for_stmt(tree)
 	if kind == "try_stmt":
 		return _build_try_stmt(tree)
+	if kind == "unsafe_block":
+		block_node = next((c for c in tree.children if isinstance(c, Tree) and _name(c) == "block"), None)
+		if block_node is None:
+			return None
+		return UnsafeBlockStmt(loc=_loc(tree), block=_build_block(block_node))
 	if kind == "block":
 		return BlockStmt(loc=_loc(tree), block=_build_block(tree))
 	if kind == "let_stmt":

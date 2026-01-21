@@ -645,6 +645,48 @@ class RawBufferRead(MInstr):
 
 
 @dataclass
+class PtrFromRef(MInstr):
+	"""dest = raw pointer from &T or &mut T."""
+	dest: ValueId
+	src: ValueId
+	ptr_ty: TypeId
+
+
+@dataclass
+class PtrOffset(MInstr):
+	"""dest = ptr + offset (element offset)."""
+	dest: ValueId
+	ptr: ValueId
+	ptr_ty: TypeId
+	elem_ty: TypeId
+	offset: ValueId
+
+
+@dataclass
+class PtrRead(MInstr):
+	"""dest = *ptr (raw read, no drop)."""
+	dest: ValueId
+	ptr: ValueId
+	elem_ty: TypeId
+
+
+@dataclass
+class PtrWrite(MInstr):
+	"""*ptr = value (raw write)."""
+	ptr: ValueId
+	value: ValueId
+	elem_ty: TypeId
+
+
+@dataclass
+class PtrIsNull(MInstr):
+	"""dest = (ptr == null)."""
+	dest: ValueId
+	ptr: ValueId
+	ptr_ty: TypeId
+
+
+@dataclass
 class StringLen(MInstr):
 	"""dest = len(string) as Int."""
 	dest: ValueId
@@ -1014,6 +1056,11 @@ __all__ = [
 	"RawBufferPtrAt",
 	"RawBufferWrite",
 	"RawBufferRead",
+	"PtrFromRef",
+	"PtrOffset",
+	"PtrRead",
+	"PtrWrite",
+	"PtrIsNull",
 	"Call",
 	"CallIndirect",
 	"ConstructDV",

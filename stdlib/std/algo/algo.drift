@@ -17,7 +17,7 @@ pub trait BinarySearchable<T> require Self is iter.RandomAccessReadable<T> {
 }
 
 pub fn sort_in_place<R, T>(r: &mut R) -> Void
-	require (R is iter.RandomAccessPermutable<T> and R is iter.RandomAccessReadable<T>) {
+	require R is iter.RandomAccessPermutable<T> {
 	val len = r.len();
 	if len <= 1 {
 		return;

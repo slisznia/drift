@@ -194,6 +194,9 @@ def discover_captures(lambda_expr: H.HLambda) -> CaptureDiscoveryResult:
 		if isinstance(s, H.HBlock):
 			for st in s.statements:
 				_walk_stmt(st)
+		elif hasattr(H, "HUnsafeBlock") and isinstance(s, getattr(H, "HUnsafeBlock")):
+			for st in s.block.statements:
+				_walk_stmt(st)
 		elif isinstance(s, H.HExprStmt):
 			_walk_expr(s.expr)
 		elif isinstance(s, H.HLet):

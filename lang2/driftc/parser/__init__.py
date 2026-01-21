@@ -602,6 +602,10 @@ def _convert_import(stmt: parser_ast.ImportStmt) -> s0.Stmt:
 	return s0.ImportStmt(path=path, loc=Span.from_loc(stmt.loc))
 
 
+def _convert_unsafe_block(stmt: parser_ast.UnsafeBlockStmt) -> s0.Stmt:
+	return s0.UnsafeBlockStmt(body=_convert_block(stmt.block), loc=Span.from_loc(stmt.loc))
+
+
 _STMT_DISPATCH: dict[type[parser_ast.Stmt], Callable[[parser_ast.Stmt], s0.Stmt]] = {
 	parser_ast.ReturnStmt: _convert_return,
 	parser_ast.ExprStmt: _convert_expr_stmt,
@@ -618,6 +622,7 @@ _STMT_DISPATCH: dict[type[parser_ast.Stmt], Callable[[parser_ast.Stmt], s0.Stmt]
 	parser_ast.RethrowStmt: _convert_rethrow,
 	parser_ast.TryStmt: _convert_try,
 	parser_ast.ImportStmt: _convert_import,
+	parser_ast.UnsafeBlockStmt: _convert_unsafe_block,
 }
 
 
@@ -661,6 +666,7 @@ class _FrontendDecl:
 		return_type: parser_ast.TypeExpr,
 		loc: Optional[parser_ast.Located],
 		declared_nothrow: bool = False,
+		is_unsafe: bool = False,
 		is_pub: bool = False,
 		is_method: bool = False,
 		self_mode: Optional[str] = None,
@@ -678,6 +684,7 @@ class _FrontendDecl:
 		self.params = params
 		self.return_type = return_type
 		self.declared_nothrow = declared_nothrow
+		self.is_unsafe = is_unsafe
 		self.throws = ()
 		self.loc = loc
 		self.is_pub = is_pub
@@ -719,6 +726,7 @@ def _decl_from_parser_fn(
 		fn.return_type,
 		getattr(fn, "loc", None),
 		bool(getattr(fn, "declared_nothrow", False)),
+		bool(getattr(fn, "is_unsafe", False)),
 		fn.is_pub,
 		fn.is_method,
 		fn.self_mode,
@@ -1480,6 +1488,11 @@ def parse_drift_workspace_to_hir(
 		module_pub_variant_names: set[str] = {v.name for v in getattr(merged_prog, "variants", []) or [] if getattr(v, "is_pub", False)}
 		module_pub_exception_names: set[str] = {e.name for e in getattr(merged_prog, "exceptions", []) or [] if getattr(e, "is_pub", False)}
 		module_pub_trait_names: set[str] = {t.name for t in getattr(merged_prog, "traits", []) or [] if getattr(t, "is_pub", False)}
+		builtin_struct_names: dict[str, set[str]] = {"std.mem": {"Ptr"}}
+		builtin_public_structs = builtin_struct_names.get(module_id)
+		if builtin_public_structs:
+			module_struct_names |= set(builtin_public_structs)
+			module_pub_struct_names |= set(builtin_public_structs)
 
 		raw_export_entries: list[tuple[str, Span]] = []
 		star_export_entries: list[tuple[str, Span]] = []
@@ -1992,6 +2005,64 @@ def parse_drift_workspace_to_hir(
 			module_packages_for_scope.setdefault(mod, package_id)
 	module_packages_for_scope.setdefault("lang.core", "lang.core")
 
+	def _check_alias_binding_conflicts(path: Path, file_aliases: dict[str, str], prog: parser_ast.Program) -> None:
+		if not file_aliases:
+			return
+
+		def _diag_conflict(name: str, loc: Located | None) -> None:
+			if name not in file_aliases:
+				return
+			diagnostics.append(
+				_p_diag(
+					message=f"value binding '{name}' conflicts with module alias '{name}'",
+					severity="error",
+					span=_span_in_file(path, loc),
+				)
+			)
+
+		def _check_block(block: parser_ast.Block) -> None:
+			for st in getattr(block, "statements", []) or []:
+				if isinstance(st, parser_ast.LetStmt):
+					_diag_conflict(st.name, st.loc)
+				elif isinstance(st, parser_ast.ForStmt):
+					_diag_conflict(st.var, st.loc)
+					_check_block(st.body)
+				elif isinstance(st, parser_ast.TryStmt):
+					_check_block(st.body)
+					for c in getattr(st, "catches", []) or []:
+						if getattr(c, "binder", None):
+							_diag_conflict(c.binder, getattr(c, "loc", None))
+						_check_block(c.block)
+				elif isinstance(st, parser_ast.WhileStmt):
+					_check_block(st.body)
+				elif isinstance(st, parser_ast.BlockStmt):
+					_check_block(st.block)
+				elif isinstance(st, parser_ast.UnsafeBlockStmt):
+					_check_block(st.block)
+				elif isinstance(st, parser_ast.ExprStmt):
+					_check_expr_for_binders(st.value)
+				elif isinstance(st, parser_ast.ReturnStmt):
+					_check_expr_for_binders(getattr(st, "value", None))
+
+		def _check_expr_for_binders(expr: parser_ast.Expr | None) -> None:
+			if expr is None:
+				return
+			if isinstance(expr, parser_ast.MatchExpr):
+				for arm in expr.arms:
+					for binder in getattr(arm, "binders", []) or []:
+						_diag_conflict(binder, arm.loc)
+					_check_block(arm.block)
+
+		for fn in getattr(prog, "functions", []) or []:
+			for param in getattr(fn, "params", []) or []:
+				_diag_conflict(param.name, getattr(fn, "loc", None))
+			_check_block(fn.body)
+		for impl in getattr(prog, "implements", []) or []:
+			for mfn in getattr(impl, "methods", []) or []:
+				for param in getattr(mfn, "params", []) or []:
+					_diag_conflict(param.name, getattr(mfn, "loc", None))
+				_check_block(mfn.body)
+
 	def _exported_traits_for_module(mod: str) -> set[str]:
 		if mod in exports_traits_by_module:
 			return set(exports_traits_by_module.get(mod) or set())
@@ -2025,6 +2096,7 @@ def parse_drift_workspace_to_hir(
 	for mid, files in by_module.items():
 		module_aliases = module_aliases_by_module.get(mid, {})
 		for path, prog in files:
+			_check_alias_binding_conflicts(path, module_aliases, prog)
 			for tr in getattr(prog, "used_traits", []) or []:
 				ref_path = list(getattr(tr, "module_path", []) or [])
 				if not ref_path:
@@ -2216,6 +2288,9 @@ def parse_drift_workspace_to_hir(
 
 	def _resolve_types_in_block(path: Path, file_aliases: dict[str, str], blk: parser_ast.Block) -> None:
 		for st in getattr(blk, "statements", []) or []:
+			if isinstance(st, parser_ast.UnsafeBlockStmt):
+				_resolve_types_in_block(path, file_aliases, st.block)
+				continue
 			# Resolve any type-level references embedded in expressions (e.g.,
 			# `TypeRef::Ctor(...)` where `TypeRef` may include a module alias).
 			def _resolve_types_in_expr(expr: parser_ast.Expr) -> None:
@@ -3002,6 +3077,9 @@ def parse_drift_workspace_to_hir(
 						arm_bound.add(arm.binder)
 					walk_block(arm.block, bound=arm_bound)
 				return
+			if hasattr(H, "HUnsafeBlock") and isinstance(stmt, getattr(H, "HUnsafeBlock")):
+				walk_block(stmt.block, bound=bound)
+				return
 			for k, child in list(getattr(stmt, "__dict__", {}).items()):
 				if isinstance(child, H.HExpr):
 					setattr(stmt, k, walk_expr(child, bound=bound))
@@ -3514,15 +3592,6 @@ def _lower_parsed_program_to_hir(
 						loc=getattr(p.type_expr, "loc", getattr(p, "loc", None)),
 						diagnostics=diagnostics,
 					)
-			if fn.name in module_function_names:
-				diagnostics.append(
-					_p_diag(
-						message=f"method '{fn.name}' conflicts with existing free function of the same name",
-						severity="error",
-						span=Span.from_loc(getattr(fn, "loc", None)),
-					)
-				)
-				continue
 			ordinal = name_ord.get(symbol_name, 0)
 			name_ord[symbol_name] = ordinal + 1
 			fn_id = FunctionId(module=module_id, name=symbol_name, ordinal=ordinal)
@@ -3548,7 +3617,8 @@ def _lower_parsed_program_to_hir(
 					fn.return_type,
 					getattr(fn, "loc", None),
 					bool(getattr(fn, "declared_nothrow", False)),
-					fn.is_pub,
+					is_unsafe=bool(getattr(fn, "is_unsafe", False)),
+					is_pub=bool(getattr(fn, "is_pub", False)),
 					is_method=True,
 					self_mode=self_mode,
 					impl_target=impl.target,
@@ -3601,6 +3671,21 @@ def _lower_parsed_program_to_hir(
 
 	type_table, sigs = resolve_program_signatures(decls, table=type_table)
 	signatures.update(sigs)
+	for impl in impl_metas:
+		for method in getattr(impl, "methods", []) or []:
+			if not getattr(method, "is_pub", False):
+				continue
+			sig = signatures.get(getattr(method, "fn_id", None))
+			if sig is None:
+				continue
+			if not getattr(sig, "is_pub", False):
+				diagnostics.append(
+					_p_diag(
+						message=f"compiler bug: lost pub on method signature for '{sig.name}'",
+						severity="error",
+						span=getattr(method, "loc", None),
+					)
+				)
 	# Resolve function require subjects (T -> TypeParamId) now that signatures exist.
 	from lang2.driftc.traits.world import resolve_fn_require_subjects
 

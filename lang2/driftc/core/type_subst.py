@@ -67,6 +67,8 @@ def apply_subst(type_id: TypeId, subst: Subst, table: TypeTable) -> TypeId:
 		return table.new_array(new_params[0])
 	if td.kind is TypeKind.REF:
 		return table.ensure_ref_mut(new_params[0]) if td.ref_mut else table.ensure_ref(new_params[0])
+	if td.kind is TypeKind.RAW_PTR:
+		return table.new_ptr(new_params[0], module_id=td.module_id)
 	if td.kind is TypeKind.FNRESULT:
 		return table.ensure_fnresult(new_params[0], new_params[1] if len(new_params) > 1 else table.ensure_error())
 	if td.kind is TypeKind.FUNCTION:

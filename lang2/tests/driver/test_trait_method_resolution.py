@@ -930,6 +930,63 @@ fn main() nothrow -> Int{
 	assert any("exists but is not visible" in m for m in msgs)
 
 
+def test_visibility_filter_applies_to_inherent_and_trait_candidates(tmp_path: Path) -> None:
+	files = {
+		Path("m_box.drift"): """
+module m_box
+
+pub struct Box { pub value: Int }
+
+export { Box };
+
+implement Box {
+\tfn bump(self: Box) -> Int { return self.value + 1; }
+}
+""",
+		Path("m_trait.drift"): """
+module m_trait
+
+import m_box;
+
+pub trait Show {
+\tfn show(self: m_box.Box) -> Int
+}
+
+export { Show };
+""",
+		Path("m_impl.drift"): """
+module m_impl
+
+import m_box;
+import m_trait;
+
+implement m_trait.Show for m_box.Box {
+\tfn show(self: m_box.Box) -> Int { return 1; }
+}
+""",
+		Path("m_main.drift"): """
+module m_main
+
+import m_box;
+import m_trait;
+import m_impl;
+use trait m_trait.Show;
+
+fn main() nothrow -> Int{
+\tval b: m_box.Box = m_box.Box(1);
+\tval _ = b.bump();
+\treturn b.show();
+}
+""",
+	}
+	_, result, _sigs, _deps, _ids, _types = _resolve_main_block(
+		tmp_path, files, main_module="m_main"
+	)
+	assert result.diagnostics
+	msgs = [d.message for d in result.diagnostics]
+	assert len([m for m in msgs if "exists but is not visible" in m]) == 2
+
+
 def test_ufcs_respects_requirements(tmp_path: Path) -> None:
 	files = {
 		Path("m_box.drift"): """

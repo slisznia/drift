@@ -231,3 +231,17 @@
 - Signature normalization now resolves param/return TypeIds with impl/type param maps for generic signatures (prevents generic return types from collapsing to concrete bases).
 - Instantiation substitution now maps impl/type params directly to impl_args/fn_args (ensures instantiated return types are concrete).
 - Struct ctor resolution now prefers expected-type struct instances when base matches, fixing ArrayMoveIter ctor inference in return positions and restoring typed CallInfo in stdlib.
+## 2026-01-21 – Array builtin stepping-stone pinned in spec
+- Documented that builtin Array must mirror RawBuffer-backed semantics (initialized prefix + uninitialized capacity) while remaining a compiler-provided type.
+- Pinned the long-term direction: indexing resolves via traits, and array literals should lower to a compiler payload that converts into stdlib containers later.
+## 2026-01-21 – RawBuffer/Ptr foundation, Array/Deque semantics, and typed-call invariants
+- Added `std.mem.RawBuffer<T>` + `MaybeUninit<T>` (trusted only) with intrinsic-backed alloc/read/write/ptr_at and typed GEP lowering; split ptr-at ref/mut intrinsics and added rawbuffer read/write e2e coverage (including Bool conversion).
+- Introduced raw pointer kind `Ptr<T>` as a builtin (stdlib surface only), with Copy impl and LLVM lowering; added `ptr_read/ptr_write/ptr_offset/ptr_is_null` intrinsics.
+- Rebuilt Deque on RawBuffer ring-buffer semantics (head/len/gen), fixed gen bump only on actual changes, and added wraparound/growth/invalidation/sort+search e2e tests.
+- Reworked Array runtime semantics to “initialized prefix + uninitialized tail” with move-out on pop/remove; ABI flattened as `{len, cap, gen, ptr}` and spec updated; argv wrapper forwards gen and uses canonical header type.
+- Added Array range/iterator invalidation tests and growth/no-op reserve canaries; move-out non-Copy e2e added (Array<String>/Array<Array<Int>>).
+- Hardened call resolution: single CallInfo authority, trait UFCS/method handling cleanup, and MIR-bound validator rejects TRAIT CallTargets across all call forms.
+- Standardized visibility filtering via a single `_candidate_visible` helper; restored impl-visibility and trait scope diagnostics with stable notes.
+- Centralized unsafe gating into `checker/unsafe_gate.py` and removed std.* prefix trust; unsafe/rawbuffer access now uses trusted-module list + explicit flags/unsafe blocks.
+- std.mem `swap/replace` signatures corrected to `&mut` forms; capacity reverted to a normal stdlib function (no intrinsic fast path).
+- Clarified index-as-place in spec (`&arr[i]`/`&mut arr[i]`), kept `arr[i]` Copy-only; added borrow/move/for-iteration regression tests.

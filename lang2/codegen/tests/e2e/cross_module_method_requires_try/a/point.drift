@@ -6,6 +6,6 @@ pub struct Point { pub x: Int }
 
 implement Point {
 	pub fn bump(self: &mut Point, dx: Int) nothrow -> Void {
-		x += dx;
+		self->x += dx;
 	}
 }

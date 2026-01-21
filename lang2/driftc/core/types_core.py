@@ -34,6 +34,7 @@ class TypeKind(Enum):
 	FUNCTION = auto()
 	ARRAY = auto()
 	REF = auto()
+	RAW_PTR = auto()
 	VARIANT = auto()
 	UNKNOWN = auto()
 
@@ -926,6 +927,14 @@ class TypeTable:
 		if name == "Array" and expr.args:
 			elem = self._eval_generic_type_expr(expr.args[0], type_args, module_id=module_id)
 			return self.new_array(elem)
+		if name == "Ptr":
+			origin_mod = expr.module_id or module_id
+			if origin_mod != "std.mem":
+				return self.ensure_unknown()
+			if not expr.args:
+				return self.ensure_unknown()
+			inner = self._eval_generic_type_expr(expr.args[0], type_args, module_id=module_id)
+			return self.new_ptr(inner, module_id=origin_mod)
 		# Named nominal types: either a simple name, or a generic instantiation.
 		#
 		# The `module_id` on `GenericTypeExpr` is a resolved canonical origin module
@@ -1257,6 +1266,12 @@ class TypeTable:
 			if ty_def.kind is TypeKind.REF and ty_def.param_types and ty_def.param_types[0] == inner and ty_def.ref_mut == is_mut:
 				return ty_id
 		return self._add(TypeKind.REF, name, [inner], ref_mut=is_mut)
+	def new_ptr(self, inner: TypeId, *, module_id: str | None = "std.mem") -> TypeId:
+		"""Register a raw pointer type Ptr<inner>."""
+		for ty_id, ty_def in self._defs.items():
+			if ty_def.kind is TypeKind.RAW_PTR and ty_def.param_types and ty_def.param_types[0] == inner:
+				return ty_id
+		return self._add(TypeKind.RAW_PTR, "Ptr", [inner], module_id=module_id, register_named=False)
 
 	def new_unknown(self, name: str = "Unknown") -> TypeId:
 		"""Register an unknown type (debug/fallback)."""
@@ -1313,7 +1328,7 @@ class TypeTable:
 				return False
 			seen.add(tid)
 			td = self.get(tid)
-			if td.kind in {TypeKind.SCALAR, TypeKind.REF, TypeKind.FUNCTION, TypeKind.VOID}:
+			if td.kind in {TypeKind.SCALAR, TypeKind.REF, TypeKind.RAW_PTR, TypeKind.FUNCTION, TypeKind.VOID}:
 				if td.kind is TypeKind.SCALAR and td.name == "String":
 					cache[tid] = False
 					return False
@@ -1429,7 +1444,7 @@ class TypeTable:
 				cache[tid] = False
 				return False
 			td = self.get(tid)
-			if td.kind in {TypeKind.SCALAR, TypeKind.REF, TypeKind.FUNCTION, TypeKind.VOID}:
+			if td.kind in {TypeKind.SCALAR, TypeKind.REF, TypeKind.RAW_PTR, TypeKind.FUNCTION, TypeKind.VOID}:
 				if td.kind is TypeKind.SCALAR and td.name == "String":
 					cache[tid] = False
 					return False
@@ -1549,6 +1564,9 @@ class TypeTable:
 				if td.kind is TypeKind.REF and td.param_types:
 					inner = _key(td.param_types[0])
 					return f"{'RefMut' if td.ref_mut else 'Ref'}<{inner}>"
+				if td.kind is TypeKind.RAW_PTR and td.param_types:
+					inner = _key(td.param_types[0])
+					return f"Ptr<{inner}>"
 				if td.kind is TypeKind.ARRAY and td.param_types:
 					inner = _key(td.param_types[0])
 					return f"Array<{inner}>"

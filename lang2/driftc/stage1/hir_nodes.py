@@ -661,6 +661,12 @@ class HBlock(HStmt):
 
 
 @dataclass
+class HUnsafeBlock(HStmt):
+	"""Unsafe block statement."""
+	block: HBlock
+
+
+@dataclass
 class HExprStmt(HStmt):
 	"""Expression used as a statement (value discarded)."""
 	expr: HExpr
@@ -766,7 +772,7 @@ __all__ = [
 	"HKwArg",
 	"HExceptionInit",
 	"HUnary", "HBinary", "HArrayLiteral",
-	"HBlock", "HExprStmt", "HLet", "HAssign", "HAugAssign", "HIf", "HLoop",
+	"HBlock", "HUnsafeBlock", "HExprStmt", "HLet", "HAssign", "HAugAssign", "HIf", "HLoop",
 	"HBreak", "HContinue", "HReturn",
 	"HThrow", "HRethrow",
 	"HTry", "HCatchArm",

@@ -25,6 +25,7 @@ from lang2.driftc.stage1.node_ids import assign_node_ids
 from lang2.driftc.stage1.capture_discovery import discover_captures
 from lang2.driftc.stage1.place_expr import place_expr_from_lvalue_expr
 from lang2.driftc.checker import FnSignature, TypeParam
+from lang2.driftc.checker.typed_validator import validate_typed_hir
 from lang2.driftc.core.diagnostics import Diagnostic
 
 
@@ -219,7 +220,7 @@ class TypeChecker:
 	helpers).
 	"""
 
-	def __init__(self, type_table: Optional[TypeTable] = None):
+	def __init__(self, type_table: Optional[TypeTable] = None, *, allow_unsafe: bool = False, allow_unsafe_without_block: bool = False, unsafe_trusted_modules: set[str] | None = None):
 		self.type_table = type_table or TypeTable()
 		self._uint = self.type_table.ensure_uint()
 		self._uint64 = self.type_table.ensure_uint64()
@@ -236,6 +237,11 @@ class TypeChecker:
 		# Binding ids (params and locals) share a single id-space.
 		self._next_binding_id: int = 1
 		self._defaulted_phase_count: int = 0
+		self._allow_unsafe = bool(allow_unsafe)
+		self._allow_unsafe_without_block = bool(allow_unsafe_without_block)
+		self._unsafe_trusted_modules = set(unsafe_trusted_modules or [])
+	def _is_toolchain_trusted_module(self, module_name: str | None) -> bool:
+		return bool(module_name) and module_name in self._unsafe_trusted_modules
 
 	def _stamp_diag_phase(self, diag: Diagnostic) -> None:
 		if diag.phase is None:
@@ -1230,7 +1236,7 @@ class TypeChecker:
 
 		def _trait_label(trait_key: TraitKey) -> str:
 			base = f"{trait_key.module}.{trait_key.name}" if trait_key.module else trait_key.name
-			if trait_key.package_id:
+			if trait_key.package_id and not base.startswith(f"{trait_key.package_id}."):
 				return f"{trait_key.package_id}::{base}"
 			return base
 
@@ -1291,7 +1297,7 @@ class TypeChecker:
 					continue
 				seen.add(cur)
 				td = self.type_table.get(cur)
-				if td.kind in (TypeKind.TYPEVAR, TypeKind.SCALAR, TypeKind.REF, TypeKind.ARRAY, TypeKind.ERROR, TypeKind.VARIANT, TypeKind.FNRESULT):
+				if td.kind in (TypeKind.TYPEVAR, TypeKind.SCALAR, TypeKind.REF, TypeKind.RAW_PTR, TypeKind.ARRAY, TypeKind.ERROR, TypeKind.VARIANT, TypeKind.FNRESULT):
 					return False
 				if td.kind is TypeKind.STRUCT:
 					if not td.param_types:
@@ -1441,6 +1447,11 @@ class TypeChecker:
 					if p.name not in type_param_map:
 						type_param_map[p.name] = p.id
 				type_param_names = {p.id: p.name for p in (list(getattr(sig, "impl_type_params", []) or []) + list(getattr(sig, "type_params", []) or []))}
+		unsafe_allowed_module = self._allow_unsafe or self._is_toolchain_trusted_module(current_module_name)
+		unsafe_context = bool(getattr(sig, "is_unsafe", False)) if sig is not None else False
+		allow_unsafe_without_block_local = self._allow_unsafe_without_block or self._is_toolchain_trusted_module(current_module_name)
+		if unsafe_context and not unsafe_allowed_module:
+			diagnostics.append(_tc_diag(message="unsafe fn requires --allow-unsafe", severity="error", span=Span.from_loc(getattr(sig, "loc", None))))
 
 		def _traits_in_scope() -> list[TraitKey]:
 			extra: list[TraitKey] = []
@@ -2173,6 +2184,16 @@ class TypeChecker:
 				return "E_REQUIREMENT_UNKNOWN"
 			return "E_REQUIREMENT_NOT_SATISFIED"
 
+		def _requirement_notes(failure: ProofFailure) -> list[str]:
+			notes = list(getattr(failure.obligation, "notes", []) or [])
+			notes.append(f"requirement_trait={_trait_label(failure.obligation.trait)}")
+			notes.append(f"requirement_subject={_type_key_label(failure.obligation.subject)}")
+			notes.append(f"requirement_reason={failure.reason.name.lower()}")
+			label = failure.obligation.origin.label
+			if label:
+				notes.append(f"requirement_origin={label}")
+			return notes
+
 		def _pick_best_failure(failures: list[ProofFailure]) -> ProofFailure | None:
 			if not failures:
 				return None
@@ -2717,7 +2738,7 @@ class TypeChecker:
 						code=_failure_code(failure),
 						severity="error",
 						span=span,
-						notes=list(getattr(failure.obligation, "notes", []) or []),
+						notes=_requirement_notes(failure),
 					)
 				)
 
@@ -3063,7 +3084,7 @@ class TypeChecker:
 							_format_failure_message(failure),
 							code=_failure_code(failure),
 							span=call_type_args_span,
-							notes=list(getattr(failure.obligation, "notes", []) or []),
+							notes=_requirement_notes(failure),
 						)
 					raise ResolutionError(f"trait requirements not met for function '{name}'")
 				raise ResolutionError(f"no matching overload for function '{name}' with args {arg_types}")
@@ -3129,6 +3150,13 @@ class TypeChecker:
 			can_throw: bool,
 			target: CallTarget,
 		) -> None:
+			if target.kind is CallTargetKind.DIRECT and target.symbol is not None and signatures_by_id is not None and getattr(expr, "loc", None) is not None:
+				sig = signatures_by_id.get(target.symbol)
+				if sig is not None and bool(getattr(sig, "declared_unsafe", False)):
+					if not unsafe_allowed_module and not allow_unsafe_without_block_local:
+						diagnostics.append(_tc_diag(message="unsafe call requires --allow-unsafe", severity="error", span=getattr(expr, "loc", Span())))
+					elif not unsafe_context and not allow_unsafe_without_block_local:
+						diagnostics.append(_tc_diag(message="unsafe call requires unsafe block", severity="error", span=getattr(expr, "loc", Span())))
 			if target.kind is CallTargetKind.DIRECT and target.symbol is not None and signatures_by_id is not None:
 				sig = signatures_by_id.get(target.symbol)
 				if sig is not None and (getattr(sig, "is_exported_entrypoint", False) or getattr(sig, "is_extern", False)):
@@ -4052,7 +4080,7 @@ class TypeChecker:
 					return record_expr(expr, self._unknown)
 				if hasattr(H, "HQualifiedMember") and isinstance(expr.fn, getattr(H, "HQualifiedMember")):
 					preseed = preseed_type_params or {}
-					call_ctx = make_call_ctx(type_table=self.type_table, diagnostics=diagnostics, current_module_name=current_module_name, current_module=current_module, default_package=default_package, module_packages=module_packages, type_param_map=type_param_map, preseed_type_params=preseed, type_param_names=type_param_names, current_fn_id=fn_id, int_ty=self._int, uint_ty=self._uint, uint64_ty=self._uint64, byte_ty=self.type_table.ensure_byte(), bool_ty=self._bool, float_ty=self._float, string_ty=self._string, void_ty=self._void, error_ty=self._error, dv_ty=self._dv, unknown_ty=self._unknown, signatures_by_id=signatures_by_id, callable_registry=callable_registry, trait_index=trait_index, trait_impl_index=trait_impl_index, impl_index=impl_index, visible_modules=visible_modules, visible_trait_world=visible_trait_world, global_trait_world=global_trait_world, trait_scope_by_module=trait_scope_by_module, require_env_local=require_env_local, fn_require_assumed=fn_require_assumed, binding_mutable=binding_mutable, traits_in_scope=_traits_in_scope, trait_key_for_id=trait_key_for_id, tc_diag=_tc_diag, type_expr=type_expr, optional_variant_type=self._optional_variant_type, unwrap_ref_type=_unwrap_ref_type, struct_base_and_args=_struct_base_and_args, receiver_place=_receiver_place, receiver_can_mut_borrow=_receiver_can_mut_borrow, receiver_compat=_receiver_compat, receiver_preference=_receiver_preference, args_match_params=_args_match_params, coerce_args_for_params=_coerce_args_for_params, infer_receiver_arg_type=_infer_receiver_arg_type, instantiate_sig_with_subst=_instantiate_sig_with_subst, apply_autoborrow_args=_apply_autoborrow_args, label_typeid=_label_typeid, trait_label=_trait_label, require_for_fn=_require_for_fn, extract_conjunctive_facts=_extract_conjunctive_facts, subject_name=_subject_name, normalize_type_key=_normalize_type_key, collect_trait_subjects=_collect_trait_subjects, require_failure=_require_failure, format_failure_message=_format_failure_message, failure_code=_failure_code, pick_best_failure=_pick_best_failure, param_scope_map=_param_scope_map, candidate_key_for_decl=_candidate_key_for_decl, visibility_note=_visibility_note, intrinsic_method_fn_id=_intrinsic_method_fn_id, instantiate_sig=_instantiate_sig, self_mode_from_sig=_self_mode_from_sig, match_impl_type_args=_match_impl_type_args, fixed_width_allowed=_fixed_width_allowed, reject_zst_array=_reject_zst_array, pretty_type_name=self._pretty_type_name, format_ctor_signature_list=self._format_ctor_signature_list, enforce_struct_requires=_enforce_struct_requires, ensure_field_visible=_ensure_field_visible, visible_modules_for_free_call=_visible_modules_for_free_call, module_ids_by_name=module_ids_by_name, visibility_provenance=visibility_provenance, infer=_infer, format_infer_failure=_format_infer_failure, lambda_can_throw=_lambda_can_throw, record_call_resolution=record_call_resolution, record_instantiation=record_instantiation)
+					call_ctx = make_call_ctx(type_table=self.type_table, diagnostics=diagnostics, current_module_name=current_module_name, current_module=current_module, default_package=default_package, module_packages=module_packages, type_param_map=type_param_map, preseed_type_params=preseed, type_param_names=type_param_names, current_fn_id=fn_id, int_ty=self._int, uint_ty=self._uint, uint64_ty=self._uint64, byte_ty=self.type_table.ensure_byte(), bool_ty=self._bool, float_ty=self._float, string_ty=self._string, void_ty=self._void, error_ty=self._error, dv_ty=self._dv, unknown_ty=self._unknown, signatures_by_id=signatures_by_id, callable_registry=callable_registry, trait_index=trait_index, trait_impl_index=trait_impl_index, impl_index=impl_index, visible_modules=visible_modules, visible_trait_world=visible_trait_world, global_trait_world=global_trait_world, trait_scope_by_module=trait_scope_by_module, require_env_local=require_env_local, fn_require_assumed=fn_require_assumed, binding_mutable=binding_mutable, traits_in_scope=_traits_in_scope, trait_key_for_id=trait_key_for_id, tc_diag=_tc_diag, type_expr=type_expr, optional_variant_type=self._optional_variant_type, unwrap_ref_type=_unwrap_ref_type, struct_base_and_args=_struct_base_and_args, receiver_place=_receiver_place, receiver_can_mut_borrow=_receiver_can_mut_borrow, receiver_compat=_receiver_compat, receiver_preference=_receiver_preference, args_match_params=_args_match_params, coerce_args_for_params=_coerce_args_for_params, infer_receiver_arg_type=_infer_receiver_arg_type, instantiate_sig_with_subst=_instantiate_sig_with_subst, apply_autoborrow_args=_apply_autoborrow_args, label_typeid=_label_typeid, trait_label=_trait_label, require_for_fn=_require_for_fn, extract_conjunctive_facts=_extract_conjunctive_facts, subject_name=_subject_name, normalize_type_key=_normalize_type_key, collect_trait_subjects=_collect_trait_subjects, require_failure=_require_failure, format_failure_message=_format_failure_message, failure_code=_failure_code, requirement_notes=_requirement_notes, pick_best_failure=_pick_best_failure, param_scope_map=_param_scope_map, candidate_key_for_decl=_candidate_key_for_decl, visibility_note=_visibility_note, intrinsic_method_fn_id=_intrinsic_method_fn_id, instantiate_sig=_instantiate_sig, self_mode_from_sig=_self_mode_from_sig, match_impl_type_args=_match_impl_type_args, fixed_width_allowed=_fixed_width_allowed, reject_zst_array=_reject_zst_array, pretty_type_name=self._pretty_type_name, format_ctor_signature_list=self._format_ctor_signature_list, enforce_struct_requires=_enforce_struct_requires, ensure_field_visible=_ensure_field_visible, visible_modules_for_free_call=_visible_modules_for_free_call, module_ids_by_name=module_ids_by_name, visibility_provenance=visibility_provenance, infer=_infer, format_infer_failure=_format_infer_failure, lambda_can_throw=_lambda_can_throw, record_call_resolution=record_call_resolution, record_instantiation=record_instantiation, allow_unsafe=unsafe_allowed_module, unsafe_context=unsafe_context, allow_unsafe_without_block=allow_unsafe_without_block_local, allow_rawbuffer=self._is_toolchain_trusted_module(current_module_name))
 					ctor_res = resolve_qualified_member_call(
 						make_resolver_ctx(call_ctx),
 						expr.fn,
@@ -4650,7 +4678,7 @@ class TypeChecker:
 			# Calls.
 			if isinstance(expr, H.HCall):
 				preseed = preseed_type_params or {}
-				call_ctx = make_call_ctx(type_table=self.type_table, diagnostics=diagnostics, current_module_name=current_module_name, current_module=current_module, default_package=default_package, module_packages=module_packages, type_param_map=type_param_map, preseed_type_params=preseed, type_param_names=type_param_names, current_fn_id=fn_id, int_ty=self._int, uint_ty=self._uint, uint64_ty=self._uint64, byte_ty=self.type_table.ensure_byte(), bool_ty=self._bool, float_ty=self._float, string_ty=self._string, void_ty=self._void, error_ty=self._error, dv_ty=self._dv, unknown_ty=self._unknown, signatures_by_id=signatures_by_id, callable_registry=callable_registry, trait_index=trait_index, trait_impl_index=trait_impl_index, impl_index=impl_index, visible_modules=visible_modules, visible_trait_world=visible_trait_world, global_trait_world=global_trait_world, trait_scope_by_module=trait_scope_by_module, require_env_local=require_env_local, fn_require_assumed=fn_require_assumed, binding_mutable=binding_mutable, traits_in_scope=_traits_in_scope, trait_key_for_id=trait_key_for_id, tc_diag=_tc_diag, type_expr=type_expr, optional_variant_type=self._optional_variant_type, unwrap_ref_type=_unwrap_ref_type, struct_base_and_args=_struct_base_and_args, receiver_place=_receiver_place, receiver_can_mut_borrow=_receiver_can_mut_borrow, receiver_compat=_receiver_compat, receiver_preference=_receiver_preference, args_match_params=_args_match_params, coerce_args_for_params=_coerce_args_for_params, infer_receiver_arg_type=_infer_receiver_arg_type, instantiate_sig_with_subst=_instantiate_sig_with_subst, apply_autoborrow_args=_apply_autoborrow_args, label_typeid=_label_typeid, trait_label=_trait_label, require_for_fn=_require_for_fn, extract_conjunctive_facts=_extract_conjunctive_facts, subject_name=_subject_name, normalize_type_key=_normalize_type_key, collect_trait_subjects=_collect_trait_subjects, require_failure=_require_failure, format_failure_message=_format_failure_message, failure_code=_failure_code, pick_best_failure=_pick_best_failure, param_scope_map=_param_scope_map, candidate_key_for_decl=_candidate_key_for_decl, visibility_note=_visibility_note, intrinsic_method_fn_id=_intrinsic_method_fn_id, instantiate_sig=_instantiate_sig, self_mode_from_sig=_self_mode_from_sig, match_impl_type_args=_match_impl_type_args, fixed_width_allowed=_fixed_width_allowed, reject_zst_array=_reject_zst_array, pretty_type_name=self._pretty_type_name, format_ctor_signature_list=self._format_ctor_signature_list, enforce_struct_requires=_enforce_struct_requires, ensure_field_visible=_ensure_field_visible, visible_modules_for_free_call=_visible_modules_for_free_call, module_ids_by_name=module_ids_by_name, visibility_provenance=visibility_provenance, infer=_infer, format_infer_failure=_format_infer_failure, lambda_can_throw=_lambda_can_throw, record_call_resolution=record_call_resolution, record_instantiation=record_instantiation)
+				call_ctx = make_call_ctx(type_table=self.type_table, diagnostics=diagnostics, current_module_name=current_module_name, current_module=current_module, default_package=default_package, module_packages=module_packages, type_param_map=type_param_map, preseed_type_params=preseed, type_param_names=type_param_names, current_fn_id=fn_id, int_ty=self._int, uint_ty=self._uint, uint64_ty=self._uint64, byte_ty=self.type_table.ensure_byte(), bool_ty=self._bool, float_ty=self._float, string_ty=self._string, void_ty=self._void, error_ty=self._error, dv_ty=self._dv, unknown_ty=self._unknown, signatures_by_id=signatures_by_id, callable_registry=callable_registry, trait_index=trait_index, trait_impl_index=trait_impl_index, impl_index=impl_index, visible_modules=visible_modules, visible_trait_world=visible_trait_world, global_trait_world=global_trait_world, trait_scope_by_module=trait_scope_by_module, require_env_local=require_env_local, fn_require_assumed=fn_require_assumed, binding_mutable=binding_mutable, traits_in_scope=_traits_in_scope, trait_key_for_id=trait_key_for_id, tc_diag=_tc_diag, type_expr=type_expr, optional_variant_type=self._optional_variant_type, unwrap_ref_type=_unwrap_ref_type, struct_base_and_args=_struct_base_and_args, receiver_place=_receiver_place, receiver_can_mut_borrow=_receiver_can_mut_borrow, receiver_compat=_receiver_compat, receiver_preference=_receiver_preference, args_match_params=_args_match_params, coerce_args_for_params=_coerce_args_for_params, infer_receiver_arg_type=_infer_receiver_arg_type, instantiate_sig_with_subst=_instantiate_sig_with_subst, apply_autoborrow_args=_apply_autoborrow_args, label_typeid=_label_typeid, trait_label=_trait_label, require_for_fn=_require_for_fn, extract_conjunctive_facts=_extract_conjunctive_facts, subject_name=_subject_name, normalize_type_key=_normalize_type_key, collect_trait_subjects=_collect_trait_subjects, require_failure=_require_failure, format_failure_message=_format_failure_message, failure_code=_failure_code, requirement_notes=_requirement_notes, pick_best_failure=_pick_best_failure, param_scope_map=_param_scope_map, candidate_key_for_decl=_candidate_key_for_decl, visibility_note=_visibility_note, intrinsic_method_fn_id=_intrinsic_method_fn_id, instantiate_sig=_instantiate_sig, self_mode_from_sig=_self_mode_from_sig, match_impl_type_args=_match_impl_type_args, fixed_width_allowed=_fixed_width_allowed, reject_zst_array=_reject_zst_array, pretty_type_name=self._pretty_type_name, format_ctor_signature_list=self._format_ctor_signature_list, enforce_struct_requires=_enforce_struct_requires, ensure_field_visible=_ensure_field_visible, visible_modules_for_free_call=_visible_modules_for_free_call, module_ids_by_name=module_ids_by_name, visibility_provenance=visibility_provenance, infer=_infer, format_infer_failure=_format_infer_failure, lambda_can_throw=_lambda_can_throw, record_call_resolution=record_call_resolution, record_instantiation=record_instantiation, allow_unsafe=unsafe_allowed_module, unsafe_context=unsafe_context, allow_unsafe_without_block=allow_unsafe_without_block_local, allow_rawbuffer=self._is_toolchain_trusted_module(current_module_name))
 				return resolve_call_expr(call_ctx, expr, expected_type, record_expr=record_expr, record_call_info=record_call_info, record_invoke_call_info=record_invoke_call_info)
 			if isinstance(expr, getattr(H, "HInvoke", ())):
 				arg_types = [type_expr(a) for a in expr.args]
@@ -4767,7 +4795,7 @@ class TypeChecker:
 
 			if isinstance(expr, H.HMethodCall):
 				preseed = preseed_type_params or {}
-				call_ctx = make_call_ctx(type_table=self.type_table, diagnostics=diagnostics, current_module_name=current_module_name, current_module=current_module, default_package=default_package, module_packages=module_packages, type_param_map=type_param_map, preseed_type_params=preseed, type_param_names=type_param_names, current_fn_id=fn_id, int_ty=self._int, uint_ty=self._uint, uint64_ty=self._uint64, byte_ty=self.type_table.ensure_byte(), bool_ty=self._bool, float_ty=self._float, string_ty=self._string, void_ty=self._void, error_ty=self._error, dv_ty=self._dv, unknown_ty=self._unknown, signatures_by_id=signatures_by_id, callable_registry=callable_registry, trait_index=trait_index, trait_impl_index=trait_impl_index, impl_index=impl_index, visible_modules=visible_modules, visible_trait_world=visible_trait_world, global_trait_world=global_trait_world, trait_scope_by_module=trait_scope_by_module, require_env_local=require_env_local, fn_require_assumed=fn_require_assumed, binding_mutable=binding_mutable, traits_in_scope=_traits_in_scope, trait_key_for_id=trait_key_for_id, tc_diag=_tc_diag, type_expr=type_expr, optional_variant_type=self._optional_variant_type, unwrap_ref_type=_unwrap_ref_type, struct_base_and_args=_struct_base_and_args, receiver_place=_receiver_place, receiver_can_mut_borrow=_receiver_can_mut_borrow, receiver_compat=_receiver_compat, receiver_preference=_receiver_preference, args_match_params=_args_match_params, coerce_args_for_params=_coerce_args_for_params, infer_receiver_arg_type=_infer_receiver_arg_type, instantiate_sig_with_subst=_instantiate_sig_with_subst, apply_autoborrow_args=_apply_autoborrow_args, label_typeid=_label_typeid, trait_label=_trait_label, require_for_fn=_require_for_fn, extract_conjunctive_facts=_extract_conjunctive_facts, subject_name=_subject_name, normalize_type_key=_normalize_type_key, collect_trait_subjects=_collect_trait_subjects, require_failure=_require_failure, format_failure_message=_format_failure_message, failure_code=_failure_code, pick_best_failure=_pick_best_failure, param_scope_map=_param_scope_map, candidate_key_for_decl=_candidate_key_for_decl, visibility_note=_visibility_note, intrinsic_method_fn_id=_intrinsic_method_fn_id, instantiate_sig=_instantiate_sig, self_mode_from_sig=_self_mode_from_sig, match_impl_type_args=_match_impl_type_args, fixed_width_allowed=_fixed_width_allowed, reject_zst_array=_reject_zst_array, pretty_type_name=self._pretty_type_name, format_ctor_signature_list=self._format_ctor_signature_list, enforce_struct_requires=_enforce_struct_requires, ensure_field_visible=_ensure_field_visible, visible_modules_for_free_call=_visible_modules_for_free_call, module_ids_by_name=module_ids_by_name, visibility_provenance=visibility_provenance, infer=_infer, format_infer_failure=_format_infer_failure, lambda_can_throw=_lambda_can_throw, record_call_resolution=record_call_resolution, record_instantiation=record_instantiation)
+				call_ctx = make_call_ctx(type_table=self.type_table, diagnostics=diagnostics, current_module_name=current_module_name, current_module=current_module, default_package=default_package, module_packages=module_packages, type_param_map=type_param_map, preseed_type_params=preseed, type_param_names=type_param_names, current_fn_id=fn_id, int_ty=self._int, uint_ty=self._uint, uint64_ty=self._uint64, byte_ty=self.type_table.ensure_byte(), bool_ty=self._bool, float_ty=self._float, string_ty=self._string, void_ty=self._void, error_ty=self._error, dv_ty=self._dv, unknown_ty=self._unknown, signatures_by_id=signatures_by_id, callable_registry=callable_registry, trait_index=trait_index, trait_impl_index=trait_impl_index, impl_index=impl_index, visible_modules=visible_modules, visible_trait_world=visible_trait_world, global_trait_world=global_trait_world, trait_scope_by_module=trait_scope_by_module, require_env_local=require_env_local, fn_require_assumed=fn_require_assumed, binding_mutable=binding_mutable, traits_in_scope=_traits_in_scope, trait_key_for_id=trait_key_for_id, tc_diag=_tc_diag, type_expr=type_expr, optional_variant_type=self._optional_variant_type, unwrap_ref_type=_unwrap_ref_type, struct_base_and_args=_struct_base_and_args, receiver_place=_receiver_place, receiver_can_mut_borrow=_receiver_can_mut_borrow, receiver_compat=_receiver_compat, receiver_preference=_receiver_preference, args_match_params=_args_match_params, coerce_args_for_params=_coerce_args_for_params, infer_receiver_arg_type=_infer_receiver_arg_type, instantiate_sig_with_subst=_instantiate_sig_with_subst, apply_autoborrow_args=_apply_autoborrow_args, label_typeid=_label_typeid, trait_label=_trait_label, require_for_fn=_require_for_fn, extract_conjunctive_facts=_extract_conjunctive_facts, subject_name=_subject_name, normalize_type_key=_normalize_type_key, collect_trait_subjects=_collect_trait_subjects, require_failure=_require_failure, format_failure_message=_format_failure_message, failure_code=_failure_code, requirement_notes=_requirement_notes, pick_best_failure=_pick_best_failure, param_scope_map=_param_scope_map, candidate_key_for_decl=_candidate_key_for_decl, visibility_note=_visibility_note, intrinsic_method_fn_id=_intrinsic_method_fn_id, instantiate_sig=_instantiate_sig, self_mode_from_sig=_self_mode_from_sig, match_impl_type_args=_match_impl_type_args, fixed_width_allowed=_fixed_width_allowed, reject_zst_array=_reject_zst_array, pretty_type_name=self._pretty_type_name, format_ctor_signature_list=self._format_ctor_signature_list, enforce_struct_requires=_enforce_struct_requires, ensure_field_visible=_ensure_field_visible, visible_modules_for_free_call=_visible_modules_for_free_call, module_ids_by_name=module_ids_by_name, visibility_provenance=visibility_provenance, infer=_infer, format_infer_failure=_format_infer_failure, lambda_can_throw=_lambda_can_throw, record_call_resolution=record_call_resolution, record_instantiation=record_instantiation, allow_unsafe=unsafe_allowed_module, unsafe_context=unsafe_context, allow_unsafe_without_block=allow_unsafe_without_block_local, allow_rawbuffer=self._is_toolchain_trusted_module(current_module_name))
 				method_ctx = make_method_ctx(call_ctx, diagnostics=diagnostics, traits_in_scope=_traits_in_scope, trait_key=None)
 				method_res = resolve_method_call(method_ctx, expr, expected_type=expected_type)
 				if method_res.call_info is not None and method_res.resolution is not None and getattr(method_res.resolution, "decl", None) is not None:
@@ -5233,6 +5261,7 @@ class TypeChecker:
 
 		def type_stmt(stmt: H.HStmt) -> None:
 			nonlocal catch_depth
+			nonlocal unsafe_context
 			# Borrow conflicts are diagnosed within a single statement.
 			borrows_in_stmt.clear()
 			borrow_expr_ids_in_stmt.clear()
@@ -5317,6 +5346,20 @@ class TypeChecker:
 					for s in stmt.statements:
 						type_stmt(s)
 				finally:
+					scope_env.pop()
+					scope_bindings.pop()
+			elif hasattr(H, "HUnsafeBlock") and isinstance(stmt, getattr(H, "HUnsafeBlock")):
+				if not unsafe_allowed_module:
+					diagnostics.append(_tc_diag(message="unsafe block requires --allow-unsafe", severity="error", span=getattr(stmt, "loc", Span())))
+				scope_env.append(dict())
+				scope_bindings.append(dict())
+				prev_unsafe = unsafe_context
+				unsafe_context = True
+				try:
+					for s in stmt.block.statements:
+						type_stmt(s)
+				finally:
+					unsafe_context = prev_unsafe
 					scope_env.pop()
 					scope_bindings.pop()
 			elif isinstance(stmt, H.HAssign):
@@ -5842,6 +5885,21 @@ class TypeChecker:
 							span=Span(),
 						)
 					)
+		if callable_registry is not None:
+			if not any(getattr(d, "severity", None) == "error" for d in diagnostics) and not deferred_guard_diags:
+				sig_info = signatures_by_id.get(fn_id) if signatures_by_id is not None else None
+				typed_validation = validate_typed_hir(
+					body,
+					call_info_by_callsite_id=call_info_by_callsite_id,
+					expr_types=expr_types,
+					type_table=self.type_table,
+					tc_diag=_tc_diag,
+					current_module_name=current_module_name,
+					unsafe_trusted_modules=self._unsafe_trusted_modules,
+					mir_bound=bool(getattr(sig_info, "is_mir_bound", False)) if sig_info is not None else False,
+				)
+				if typed_validation.diagnostics:
+					diagnostics.extend(typed_validation.diagnostics)
 
 		# MVP escape policy: reference returns must be derived from a single
 		# reference parameter.

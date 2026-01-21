@@ -45,6 +45,8 @@ def collect_catch_arms_from_block(block: H.HBlock) -> List[List[CatchArmInfo]]:
 				collect_block(stmt.else_block)
 		elif isinstance(stmt, H.HLoop):
 			collect_block(stmt.body)
+		elif hasattr(H, "HUnsafeBlock") and isinstance(stmt, getattr(H, "HUnsafeBlock")):
+			collect_block(stmt.block)
 		# Other statements do not contain nested blocks that can host catch arms.
 
 	collect_block(block)

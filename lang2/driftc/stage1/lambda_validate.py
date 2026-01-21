@@ -200,6 +200,9 @@ def validate_lambdas_non_retaining(
 		if isinstance(s, H.HBlock):
 			for stmt in s.statements:
 				_walk_stmt(stmt)
+		elif hasattr(H, "HUnsafeBlock") and isinstance(s, getattr(H, "HUnsafeBlock")):
+			for stmt in s.block.statements:
+				_walk_stmt(stmt)
 		elif isinstance(s, H.HExprStmt):
 			_walk_expr(s.expr, allow_lambda=False)
 		elif isinstance(s, H.HLet):

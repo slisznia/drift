@@ -75,6 +75,7 @@ class FnSignature:
 	param_type_ids: Optional[list[TypeId]] = None
 	return_type_id: Optional[TypeId] = None
 	declared_can_throw: Optional[bool] = None
+	declared_unsafe: Optional[bool] = None
 	is_extern: bool = False
 	is_intrinsic: bool = False
 	param_names: Optional[list[str]] = None
@@ -94,6 +95,8 @@ class FnSignature:
 	wraps_target_fn_id: Optional[FunctionId] = None
 	# Instantiation marker (generic monomorphization output).
 	is_instantiation: bool = False
+	# MIR-bound marker (typed pipeline lowering boundary).
+	is_mir_bound: bool = False
 
 	# Legacy/raw fields (to be removed once real type checker is wired).
 	return_type: Any = None
@@ -104,6 +107,10 @@ class FnSignature:
 	# This flag is set by the workspace resolver when a function name appears in
 	# `export { ... }` and the symbol resolves to a value-level callable.
 	is_exported_entrypoint: bool = False
+
+	def __post_init__(self) -> None:
+		if not self.is_mir_bound:
+			self.is_mir_bound = bool(self.is_instantiation or (not self.type_params and not self.impl_type_params))
 
 
 @dataclass(frozen=True)
@@ -412,6 +419,8 @@ class Checker:
 				elif getattr(H, "HWhile", None) is not None and isinstance(stmt, H.HWhile):
 					walk_expr(stmt.cond)
 					walk_block(stmt.body)
+				elif hasattr(H, "HUnsafeBlock") and isinstance(stmt, getattr(H, "HUnsafeBlock")):
+					walk_block(stmt.block)
 				elif getattr(H, "HFor", None) is not None and isinstance(stmt, H.HFor):
 					walk_expr(stmt.iterable)
 					walk_block(stmt.body)
@@ -939,9 +948,9 @@ class Checker:
 					continue
 				if isinstance(stmt, H.HIf):
 					walk_expr(stmt.cond, caught, catch_all)
-					walk_block(stmt.then_block)
+					walk_block(stmt.then_block, caught, catch_all)
 					if stmt.else_block:
-						walk_block(stmt.else_block)
+						walk_block(stmt.else_block, caught, catch_all)
 					continue
 				if isinstance(stmt, H.HLoop):
 					walk_block(stmt.body, caught, catch_all)
@@ -1667,12 +1676,14 @@ class Checker:
 						note = f"callsite_id={getattr(expr, 'callsite_id', None)}"
 					diagnostics.append(_chk_diag(message="internal: missing CallInfo for call validation (checker bug)", severity="error", span=getattr(expr, "loc", None), notes=[note]))
 					return
-					if isinstance(expr, H.HMethodCall) and info.target.kind is CallTargetKind.TRAIT:
-						_sig = fn_infos.get(current_fn)
-						_sig_info = _sig.signature if _sig is not None else None
-						if _sig_info is None or not ((getattr(_sig_info, "type_params", None) or []) or (getattr(_sig_info, "impl_type_params", None) or [])):
-							diagnostics.append(_chk_diag(message="internal: method call resolved to trait target in typed mode (checker bug)", severity="error", span=getattr(expr, "loc", None)))
-							return
+				_sig_info = current_fn.signature if current_fn is not None else None
+				_is_mir_bound = bool(_sig_info is not None and _sig_info.is_mir_bound)
+				if _is_mir_bound and info.target.kind is CallTargetKind.TRAIT:
+					msg = "internal: call resolved to trait target in typed mode (checker bug)"
+					if isinstance(expr, H.HMethodCall):
+						msg = "internal: method call resolved to trait target in typed mode (checker bug)"
+					diagnostics.append(_chk_diag(message=msg, severity="error", span=getattr(expr, "loc", None)))
+					return
 				kwargs = getattr(expr, "kwargs", []) or []
 				skip_type_check = bool(kwargs)
 				if isinstance(expr, H.HMethodCall):
@@ -2511,7 +2522,14 @@ class Checker:
 						span=getattr(stmt, "loc", Span()),
 					)
 				)
-			val_ty = ctx.infer(stmt.value)
+			val_ty = None
+			if isinstance(stmt.value, H.HArrayLiteral) and not stmt.value.elements and decl_ty is not None:
+				decl_def = self._type_table.get(decl_ty)
+				if decl_def.kind is TypeKind.ARRAY:
+					ctx.cache[id(stmt.value)] = decl_ty
+					val_ty = decl_ty
+			if val_ty is None:
+				val_ty = ctx.infer(stmt.value)
 			if is_void(val_ty):
 				ctx._append_diag(
 					_chk_diag(

@@ -23,7 +23,13 @@
   - Codegen: lower `DropValue` to the concrete `destroy` impl.
   - Vtables: owned interface values require Destructible so the drop slot is always present.
 
+[Operators]
+- Pin operator overloading MVP: define operator->trait desugar rules (e.g., `a + b` -> `Add::add(...)`), scope/prelude policy, and by-ref/by-value signature contract; add tests. Keep this aligned with the "free function vs receiver" resolution decision.
+
 ## Post MVP
+[Containers]
+- Start migrating Array into stdlib (define `struct Array<T>` and move compiler lowering to that ABI).
+
 [Traits]
 - Dynamic dispatch and trait bounds: pin surface syntax and type rules for trait bounds / trait objects.
 - `Array<String>.dup()` should require `String.dup()` and then lift `Array<T>.dup()` to `T: Dup` (out of MVP scope).

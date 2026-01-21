@@ -316,6 +316,9 @@ def analyze_non_retaining_params(
 			if isinstance(stmt, H.HBlock):
 				for st in stmt.statements:
 					_walk_stmt(st)
+			elif hasattr(H, "HUnsafeBlock") and isinstance(stmt, getattr(H, "HUnsafeBlock")):
+				for st in stmt.block.statements:
+					_walk_stmt(st)
 			elif isinstance(stmt, H.HExprStmt):
 				_walk_expr(stmt.expr)
 			elif isinstance(stmt, H.HLet):

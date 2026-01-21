@@ -11,6 +11,7 @@ collections, algorithms, and error events referenced by language lowering.
 - `std.algo`: algorithms (functions only).
 - `std.core.cmp`: comparison traits and operator lowering paths.
 - `std.err`: standard error/exception events used by stdlib APIs.
+- `std.mem`: unsafe pointer primitives and trusted raw storage helpers.
 
 ## std.iter
 
@@ -274,3 +275,46 @@ Notes:
 - `container_id` is the base nominal key (package + module + name) with no type arguments.
 - `IndexError` is raised per the RandomAccess bounds rule (negative -> error; otherwise `i < len`).
 - IteratorOpId numeric tags are ABI-stable; values are append-only (no reordering).
+
+## std.mem
+
+`std.mem` provides unsafe pointer operations and trusted-only raw storage primitives.
+
+### Unsafe pointer surface (user-unsafe)
+
+```drift
+module std.mem
+
+type Ptr<T>
+
+fn ptr_from_ref<T>(r: &T) -> Ptr<T> unsafe
+fn ptr_from_ref_mut<T>(r: &mut T) -> Ptr<T> unsafe
+fn ptr_offset<T>(p: Ptr<T>, n: Int) -> Ptr<T> unsafe
+fn ptr_read<T>(p: Ptr<T>) -> T unsafe
+fn ptr_write<T>(p: Ptr<T>, v: T) -> Void unsafe
+fn ptr_is_null<T>(p: Ptr<T>) -> Bool unsafe
+```
+
+Rules:
+- `Ptr<T>` requires `T` to be sized.
+- Pointer operations are allowed only in `unsafe` contexts and only when the compiler is invoked with `--allow-unsafe`.
+
+### Trusted-only raw storage (stdlib internals)
+
+Raw storage primitives are restricted to toolchain-trusted modules (`std.*`, `lang.*`, `drift.*`).
+
+```drift
+pub struct RawBuffer<T> { /* opaque */ }
+
+@intrinsic fn alloc_uninit<T>(cap: Int) -> RawBuffer<T>;
+@intrinsic fn dealloc<T>(buf: RawBuffer<T>) -> Void;
+@intrinsic fn ptr_at_ref<T>(buf: &RawBuffer<T>, i: Int) -> &T;
+@intrinsic fn ptr_at_mut<T>(buf: &mut RawBuffer<T>, i: Int) -> &mut T;
+@intrinsic fn read<T>(buf: &mut RawBuffer<T>, i: Int) -> T;
+@intrinsic fn write<T>(buf: &mut RawBuffer<T>, i: Int, v: T) -> Void;
+fn capacity<T>(buf: &RawBuffer<T>) -> Int;
+```
+
+Rules:
+- `RawBuffer` operations are not available to user code; only trusted stdlib modules may call them.
+- `capacity` is a normal stdlib function (not an intrinsic fast-path).

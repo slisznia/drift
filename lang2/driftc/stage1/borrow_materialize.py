@@ -99,6 +99,8 @@ class BorrowMaterializeRewriter:
 		# them to the outer scope). This pass must recurse into them.
 		if isinstance(stmt, H.HBlock):
 			return [self.rewrite_block(stmt)]
+		if hasattr(H, "HUnsafeBlock") and isinstance(stmt, getattr(H, "HUnsafeBlock")):
+			return [H.HUnsafeBlock(block=self.rewrite_block(stmt.block))]
 		if isinstance(stmt, H.HTry):
 			body = self.rewrite_block(stmt.body)
 			catches = [

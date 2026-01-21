@@ -5,7 +5,8 @@ from dataclasses import dataclass
 from typing import Mapping
 
 from lang2.driftc.stage1 import hir_nodes as H
-from lang2.driftc.stage1.call_info import CallInfo
+from lang2.driftc.stage1.call_info import CallInfo, CallTargetKind, IntrinsicKind
+from lang2.driftc.checker.unsafe_gate import check_unsafe_call
 from lang2.driftc.core.types_core import TypeKind
 
 
@@ -14,9 +15,18 @@ class TypedValidationResult:
 	diagnostics: list
 
 
-def validate_typed_hir(root: H.HNode, *, call_info_by_callsite_id: Mapping[int, CallInfo] | None, expr_types: Mapping[int, int] | None, type_table, tc_diag) -> TypedValidationResult:
+def validate_typed_hir(root: H.HNode, *, call_info_by_callsite_id: Mapping[int, CallInfo] | None, expr_types: Mapping[int, int] | None, type_table, tc_diag, current_module_name: str | None = None, unsafe_trusted_modules: set[str] | None = None, mir_bound: bool = False) -> TypedValidationResult:
 	diagnostics: list = []
 	allowed_qmem_nodes: set[int] = set()
+	trusted_modules: set[str] = set(m for m in (unsafe_trusted_modules or set()) if isinstance(m, str))
+	rawbuffer_intrinsics = {
+		IntrinsicKind.RAW_ALLOC,
+		IntrinsicKind.RAW_DEALLOC,
+		IntrinsicKind.RAW_PTR_AT_REF,
+		IntrinsicKind.RAW_PTR_AT_MUT,
+		IntrinsicKind.RAW_WRITE,
+		IntrinsicKind.RAW_READ,
+	}
 
 	def _iter_expr_children(e: H.HExpr) -> list[H.HExpr]:
 		children: list[H.HExpr] = []
@@ -41,6 +51,9 @@ def validate_typed_hir(root: H.HNode, *, call_info_by_callsite_id: Mapping[int, 
 		if isinstance(node, H.HBlock):
 			for stmt in node.statements:
 				_scan_calls(stmt)
+			return
+		if hasattr(H, "HUnsafeBlock") and isinstance(node, getattr(H, "HUnsafeBlock")):
+			_scan_calls(node.block)
 			return
 		for field_name in getattr(node, "__dataclass_fields__", {}) or {}:
 			val = getattr(node, field_name, None)
@@ -78,12 +91,24 @@ def validate_typed_hir(root: H.HNode, *, call_info_by_callsite_id: Mapping[int, 
 					diagnostics.append(tc_diag(message="internal: missing CallInfo map for typed validation (checker bug)", severity="error", span=getattr(node, "loc", None)))
 				elif not isinstance(csid, int) or csid not in call_info_by_callsite_id:
 					diagnostics.append(tc_diag(message="internal: missing CallInfo for typed call (checker bug)", severity="error", span=getattr(node, "loc", None)))
+				else:
+					call_info = call_info_by_callsite_id.get(csid)
+					if call_info is not None and call_info.target.kind is CallTargetKind.INTRINSIC and call_info.target.intrinsic in rawbuffer_intrinsics:
+						check_unsafe_call(allow_unsafe=False, allow_unsafe_without_block=False, unsafe_context=False, trusted_module=bool(isinstance(current_module_name, str) and current_module_name in trusted_modules), rawbuffer_only=True, diagnostics=diagnostics, tc_diag=tc_diag, span=getattr(node, "loc", None))
+					if call_info is not None and mir_bound and call_info.target.kind is CallTargetKind.TRAIT:
+						msg = "internal: call resolved to trait target in typed mode (checker bug)"
+						if isinstance(node, H.HMethodCall):
+							msg = "internal: method call resolved to trait target in typed mode (checker bug)"
+						diagnostics.append(tc_diag(message=msg, severity="error", span=getattr(node, "loc", None)))
 			for child in _iter_expr_children(node):
 				_walk_node(child)
 			return
 		if isinstance(node, H.HBlock):
 			for stmt in node.statements:
 				_walk_node(stmt)
+			return
+		if hasattr(H, "HUnsafeBlock") and isinstance(node, getattr(H, "HUnsafeBlock")):
+			_walk_node(node.block)
 			return
 		for field_name in getattr(node, "__dataclass_fields__", {}) or {}:
 			val = getattr(node, field_name, None)

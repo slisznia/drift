@@ -71,6 +71,8 @@ class DVInitRewriter:
 			return H.HTry(body=self.rewrite_block(stmt.body), catches=new_arms)
 		if isinstance(stmt, H.HBlock):
 			return self.rewrite_block(stmt)
+		if hasattr(H, "HUnsafeBlock") and isinstance(stmt, getattr(H, "HUnsafeBlock")):
+			return H.HUnsafeBlock(block=self.rewrite_block(stmt.block))
 		return stmt
 
 	def _rewrite_expr(self, expr: H.HExpr) -> H.HExpr:
@@ -301,6 +303,8 @@ def _assign_missing_binding_ids(block: H.HBlock) -> None:
 					_scan_block(arm.block)
 			elif isinstance(stmt, H.HBlock):
 				_scan_block(stmt)
+			elif hasattr(H, "HUnsafeBlock") and isinstance(stmt, getattr(H, "HUnsafeBlock")):
+				_scan_block(stmt.block)
 
 	_scan_block(block)
 	next_id = max_id + 1
@@ -432,6 +436,10 @@ def _assign_missing_binding_ids(block: H.HBlock) -> None:
 					continue
 				if isinstance(stmt, H.HBlock):
 					_assign_block(stmt)
+					continue
+				if hasattr(H, "HUnsafeBlock") and isinstance(stmt, getattr(H, "HUnsafeBlock")):
+					_assign_block(stmt.block)
+					continue
 		finally:
 			scope_stack.pop()
 

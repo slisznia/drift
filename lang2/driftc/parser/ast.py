@@ -131,6 +131,12 @@ class BlockStmt(Stmt):
 
 
 @dataclass
+class UnsafeBlockStmt(Stmt):
+	loc: Located
+	block: Block
+
+
+@dataclass
 class LetStmt(Stmt):
     loc: Located
     name: str
@@ -211,6 +217,7 @@ class FunctionDef:
 	body: Block
 	loc: Located
 	declared_nothrow: bool = False
+	is_unsafe: bool = False
 	is_pub: bool = False
 	test_build_only: bool = False
 	is_intrinsic: bool = False
@@ -552,6 +559,7 @@ class TraitMethodSig:
 	type_params: List[str] = field(default_factory=list)
 	type_param_locs: List[Located] = field(default_factory=list)
 	declared_nothrow: bool = False
+	is_unsafe: bool = False
 
 
 @dataclass

@@ -30,12 +30,9 @@ module std.mem
 
 export { swap, replace };
 
-pub fn swap<T>(a: T, b: T) nothrow -> Void {
-}
+@intrinsic pub fn swap<T>(a: &mut T, b: &mut T) -> Void;
 
-pub fn replace<T>(var place: T, value: T) nothrow -> T {
-	return move place;
-}
+@intrinsic pub fn replace<T>(ptr: &mut T, v: T) -> T;
 """.lstrip(),
 	)
 	return sorted(mod_root.rglob("*.drift"))

@@ -56,6 +56,16 @@ def resolve_opaque_type(raw: object, table: TypeTable, *, module_id: str | None 
 				type_params=type_params,
 			)
 			return table.ensure_ref_mut(inner) if name == "&mut" else table.ensure_ref(inner)
+		if name == "Ptr":
+			if origin_mod != "std.mem":
+				return table.ensure_unknown()
+			inner = resolve_opaque_type(
+				args[0] if args else None,
+				table,
+				module_id=origin_mod,
+				type_params=type_params,
+			)
+			return table.new_ptr(inner, module_id=origin_mod)
 		if name == "Void":
 			return table.ensure_void()
 		# Generic nominal instantiation (MVP: variants only). Example: Optional<Int>.
@@ -201,6 +211,16 @@ def resolve_opaque_type(raw: object, table: TypeTable, *, module_id: str | None 
 			return table.ensure_uint()
 		if raw == "Byte":
 			return table.ensure_byte()
+		if raw.startswith("Ptr<") and raw.endswith(">") and module_id == "std.mem":
+			inner = raw[len("Ptr<"):-1]
+			inner_ty = resolve_opaque_type(
+				inner,
+				table,
+				module_id=module_id,
+				type_params=type_params,
+				allow_generic_base=allow_generic_base,
+			)
+			return table.new_ptr(inner_ty, module_id=module_id)
 		if raw.startswith("FnResult<") and raw.endswith(">"):
 			inner = raw[len("FnResult<"):-1]
 			parts = _split_top_level_comma(inner)

@@ -1102,7 +1102,14 @@ class HIRToMIR:
 		self._propagate_error(err_val)
 
 	def _visit_expr_HArrayLiteral(self, expr: H.HArrayLiteral) -> M.ValueId:
-		elem_ty = self._infer_array_literal_elem_type(expr)
+		elem_ty = None
+		expected = self._current_expected_type()
+		if expected is not None:
+			exp_def = self._type_table.get(expected)
+			if exp_def.kind is TypeKind.ARRAY and exp_def.param_types:
+				elem_ty = exp_def.param_types[0]
+		if elem_ty is None:
+			elem_ty = self._infer_array_literal_elem_type(expr)
 		dest = self.b.new_temp()
 		length = len(expr.elements)
 		len_val = self.b.new_temp()
@@ -1168,6 +1175,8 @@ class HIRToMIR:
 			raise AssertionError("dealloc(...) used in expression context (checker bug)")
 		if intrinsic is IntrinsicKind.RAW_WRITE:
 			raise AssertionError("write(...) used in expression context (checker bug)")
+		if intrinsic is IntrinsicKind.PTR_WRITE:
+			raise AssertionError("ptr_write(...) used in expression context (checker bug)")
 		if intrinsic is IntrinsicKind.REPLACE:
 			if getattr(expr, "kwargs", None):
 				raise AssertionError("replace(...) does not accept keyword arguments (checker bug)")
@@ -1235,6 +1244,61 @@ class HIRToMIR:
 			dest = self.b.new_temp()
 			self.b.emit(M.RawBufferRead(dest=dest, buffer=buf_val, raw_ty=raw_param, elem_ty=elem_ty, index=idx_val))
 			self._local_types[dest] = elem_ty
+			return dest
+		if intrinsic in (IntrinsicKind.PTR_FROM_REF, IntrinsicKind.PTR_FROM_REF_MUT):
+			if getattr(expr, "kwargs", None):
+				raise AssertionError("ptr_from_ref(...) does not accept keyword arguments (checker bug)")
+			if len(expr.args) != 1:
+				raise AssertionError("ptr_from_ref(...) arity mismatch reached MIR lowering (checker bug)")
+			if info is None:
+				raise AssertionError("ptr_from_ref(...) missing CallInfo (checker bug)")
+			src_val = self.lower_expr(expr.args[0])
+			dest = self.b.new_temp()
+			self.b.emit(M.PtrFromRef(dest=dest, src=src_val, ptr_ty=info.sig.user_ret_type))
+			self._local_types[dest] = info.sig.user_ret_type
+			return dest
+		if intrinsic is IntrinsicKind.PTR_OFFSET:
+			if getattr(expr, "kwargs", None):
+				raise AssertionError("ptr_offset(...) does not accept keyword arguments (checker bug)")
+			if len(expr.args) != 2:
+				raise AssertionError("ptr_offset(...) arity mismatch reached MIR lowering (checker bug)")
+			if info is None or not info.sig.param_types:
+				raise AssertionError("ptr_offset(...) missing CallInfo (checker bug)")
+			ptr_val = self.lower_expr(expr.args[0])
+			offset_val = self.lower_expr(expr.args[1])
+			elem_ty = self._raw_ptr_elem_type(info.sig.param_types[0])
+			if elem_ty is self._unknown_type:
+				raise AssertionError("ptr_offset(...) missing Ptr<T> element type (checker bug)")
+			dest = self.b.new_temp()
+			self.b.emit(M.PtrOffset(dest=dest, ptr=ptr_val, ptr_ty=info.sig.param_types[0], elem_ty=elem_ty, offset=offset_val))
+			self._local_types[dest] = info.sig.user_ret_type
+			return dest
+		if intrinsic is IntrinsicKind.PTR_READ:
+			if getattr(expr, "kwargs", None):
+				raise AssertionError("ptr_read(...) does not accept keyword arguments (checker bug)")
+			if len(expr.args) != 1:
+				raise AssertionError("ptr_read(...) arity mismatch reached MIR lowering (checker bug)")
+			if info is None or not info.sig.param_types:
+				raise AssertionError("ptr_read(...) missing CallInfo (checker bug)")
+			ptr_val = self.lower_expr(expr.args[0])
+			elem_ty = self._raw_ptr_elem_type(info.sig.param_types[0])
+			if elem_ty is self._unknown_type:
+				raise AssertionError("ptr_read(...) missing Ptr<T> element type (checker bug)")
+			dest = self.b.new_temp()
+			self.b.emit(M.PtrRead(dest=dest, ptr=ptr_val, elem_ty=elem_ty))
+			self._local_types[dest] = elem_ty
+			return dest
+		if intrinsic is IntrinsicKind.PTR_IS_NULL:
+			if getattr(expr, "kwargs", None):
+				raise AssertionError("ptr_is_null(...) does not accept keyword arguments (checker bug)")
+			if len(expr.args) != 1:
+				raise AssertionError("ptr_is_null(...) arity mismatch reached MIR lowering (checker bug)")
+			if info is None or not info.sig.param_types:
+				raise AssertionError("ptr_is_null(...) missing CallInfo (checker bug)")
+			ptr_val = self.lower_expr(expr.args[0])
+			dest = self.b.new_temp()
+			self.b.emit(M.PtrIsNull(dest=dest, ptr=ptr_val, ptr_ty=info.sig.param_types[0]))
+			self._local_types[dest] = self._bool_type
 			return dest
 		if intrinsic is IntrinsicKind.BYTE_LENGTH:
 			name = intrinsic.value
@@ -1617,6 +1681,8 @@ class HIRToMIR:
 				return block_can_throw(stmt.else_block) if stmt.else_block is not None else False
 			if isinstance(stmt, H.HLoop):
 				return block_can_throw(stmt.body)
+			if hasattr(H, "HUnsafeBlock") and isinstance(stmt, getattr(H, "HUnsafeBlock")):
+				return block_can_throw(stmt.block)
 			if isinstance(stmt, H.HTry):
 				if block_can_throw(stmt.body):
 					return True
@@ -2976,6 +3042,18 @@ class HIRToMIR:
 					val_val = self.lower_expr(stmt.expr.args[2])
 					self.b.emit(M.RawBufferWrite(buffer=buf_val, raw_ty=raw_param, elem_ty=elem_ty, index=idx_val, value=val_val))
 					return
+				if intrinsic is IntrinsicKind.PTR_WRITE:
+					if len(stmt.expr.args) != 2:
+						raise AssertionError("ptr_write(ptr, v): arity mismatch reached MIR lowering (checker bug)")
+					info = self._call_info_for(stmt.expr)
+					ptr_param = info.sig.param_types[0] if info.sig.param_types else self._unknown_type
+					elem_ty = self._raw_ptr_elem_type(ptr_param)
+					if elem_ty is self._unknown_type:
+						raise AssertionError("ptr_write(...) missing Ptr<T> element type (checker bug)")
+					ptr_val = self.lower_expr(stmt.expr.args[0])
+					val_val = self.lower_expr(stmt.expr.args[1])
+					self.b.emit(M.PtrWrite(ptr=ptr_val, value=val_val, elem_ty=elem_ty))
+					return
 				self.lower_expr(stmt.expr)
 				return
 		if (
@@ -3065,6 +3143,9 @@ class HIRToMIR:
 		desugarings (e.g., `for` introduces hidden temporaries scoped to the loop).
 		"""
 		self.lower_block(stmt)
+
+	def _visit_stmt_HUnsafeBlock(self, stmt: H.HUnsafeBlock) -> None:
+		self.lower_block(stmt.block)
 
 	def _visit_stmt_HLet(self, stmt: H.HLet) -> None:
 		if getattr(stmt, "binding_id", None) is not None:
@@ -3660,6 +3741,12 @@ class HIRToMIR:
 		if base_td.kind is TypeKind.STRUCT and base_td.module_id == "std.mem" and base_td.name == "RawBuffer":
 			if inst.type_args:
 				return inst.type_args[0]
+		return self._unknown_type
+
+	def _raw_ptr_elem_type(self, ptr_ty: TypeId) -> TypeId:
+		td = self._type_table.get(ptr_ty)
+		if td.kind is TypeKind.RAW_PTR and td.param_types:
+			return td.param_types[0]
 		return self._unknown_type
 
 	def _call_info_for_expr_optional(self, expr: H.HExpr) -> CallInfo | None:

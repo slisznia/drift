@@ -10,9 +10,14 @@ Define iterator traits and MVP constraints for collections/algorithms, aligned w
 - (done) Added RawBuffer intrinsics to type checker, MIR, and LLVM codegen; lowered to drift_alloc_array/free_array plus pointer arithmetic.
 - (done) Rebuilt Deque ring buffer on RawBuffer (head/len/gen, wrap mapping, gen bump only on actual structural change).
 - (done) Deque wraparound/sort/binary_search e2e tests pass under RawBuffer.
-- (todo) Add std.mem.MaybeUninit<T> (trusted/internal only; not exposed to user code yet).
-- (todo) Rebuild Array<T> on RawBuffer<T> with len/gen invariants and Copy-only value indexing; ref_at/ref_mut_at use ptr_at with bounds checks.
-- (todo) Add regression tests: reserve no-op does not invalidate, growth invalidates; move-out correctness; range invalidation on growth; sort/binary_search over wrapped range (Array).
+- (done) RawBuffer read/write/ptr_at use typed GEP with distinct temporaries (no SSA redefinition); added rawbuffer_read_write e2e to lock element indexing + Bool conversions.
+- (done) Stage2 array literal lowering now uses expected Array<T> type for empty literals; added array_pop_move_out_non_copy and array_sort_binary_search_after_growth e2e tests.
+- (done) Added std.mem.MaybeUninit<T> (trusted/internal only; not exposed to user code yet).
+- (done) Rebuilt Array<T> on RawBuffer semantics in compiler lowering: header remains {len, cap, gen, ptr}; array ops move only initialized prefix; vacated slots become uninit via ArrayElemTake; bounds checks stay centralized. Added array_pop_move_out_non_copy + array_sort_binary_search_after_growth e2e canaries and enabled empty literal typing via declared Array<T>.
+- (done) Array header stays flattened as `len, cap, gen, ptr` (RawBuffer embedded) in LLVM; argv wrapper now forwards `gen` and uses `i8*` ptr; keep `ArrayCap` MIR op mapped to header cap field.
+- (done) Spec updated: Array layout includes `len, cap, gen, ptr` with RawBuffer semantics; growth algorithm uses ptr; ABI flattened note added.
+- (done) Added Array regression tests: reserve no-op vs growth invalidation (`array_range_reserve_noop_invalidates`), range invalidation (`array_range_len_invalidated`/`array_range_compare_at_invalidated`), and sort/binary_search over Array ranges (`algo_sort_*`, `algo_binary_search_*`).
+- (done) Added move-out correctness e2e for Array<String> pop (array_pop_move_out_string).
 
 ### Phase 2: Algorithms
 - (done) Implemented `binary_search` using `BinarySearchable.compare_key` + tests (capability gating + return semantics).
@@ -48,6 +53,10 @@ Define iterator traits and MVP constraints for collections/algorithms, aligned w
 - Array indexing spec clarified as place expression: `arr[i]` Copy-only in value context; `&arr[i]` / `&mut arr[i]` permitted.
 - Deque internals switched to ring buffer layout with head/len/gen and Array<Optional<T>> storage.
 - Added Deque ring buffer e2e tests: wraparound, no-op pop_front invalidation, realloc invalidation, and sort/binary_search under wrap.
+- LLVM array header now uses `i8*` data ptr; element access/drop bitcasts to `T*`.
+- argv wrapper uses `i8*` ptr and forwards `gen` from runtime header.
+- argv entry wrapper now uses canonical Array LLVM type (i8* ptr) to avoid `%DriftString*` mismatch in `main(argv)` tests.
+- Spec note added: v1 container allocation lowers to `drift_alloc_array/free_array`; `lang.abi` remains the long-term surface.
 - Fixed method-resolution scaffolding: initialize `traits_in_scope` before use in all branches.
 - Qualified member ctor inference now emits `E-QMEM-CANNOT-INFER` when no expected type and no args/type args.
 - HTypeApp qualified-member references return function types without requiring `args/kwargs`.
@@ -99,9 +108,16 @@ Define iterator traits and MVP constraints for collections/algorithms, aligned w
 - std.mem `swap`/`replace` now take `&mut` arguments; resolver/borrow checker/MIR lowering updated and stage1 place-canonicalization no longer rewrites them to `HPlaceExpr`.
 - std.mem `capacity()` is now a normal stdlib function (no intrinsic fast-path); RAW_CAPACITY lowering/validation removed, trusted-module restriction still applies.
 - Split `ptr_at_ref`/`ptr_at_mut` into distinct intrinsics (`RAW_PTR_AT_REF`/`RAW_PTR_AT_MUT`) to preserve mutability through MIR/codegen.
+- Added raw pointer kind `Ptr<T>` in the type system and std.mem Copy impl; resolver maps `std.mem.Ptr<T>` to the pointer type and codegen lowers it as a raw pointer.
 - e2e runner now passes `--stdlib-root` when using driftc --json, fixing stdlib-based diagnostic cases.
 - Unqualified variant ctor calls now emit `E-CTOR-EXPECTED-TYPE` when no expected variant type and ctor name matches a variant arm in scope.
 - std.mem intrinsics are now restricted to toolchain-trusted modules (std./lang./drift.*) to prevent unsafe user access.
+- Checker call validation now flags `CallTargetKind.TRAIT` on method calls in typed mode; added a regression unit test to lock this invariant.
+- Unsafe gating now relies only on toolchain-trusted module list (no std.* prefix trust).
+- Centralized toolchain trust check in type checker via `_is_toolchain_trusted_module` and reused for unsafe/rawbuffer gating.
+- Typed HIR validator now rejects TRAIT CallTargets in MIR-bound functions for all call forms.
+- `_candidate_visible` now takes explicit `current_module_id: int | None` to avoid visibility drift.
+- Centralized unsafe gating in checker/unsafe_gate.py; resolver and typed validator call the shared gate.
 
 ## Open Questions
 - Exact algorithm signatures in Drift syntax (defer until implementation).

@@ -78,3 +78,49 @@ def test_explicit_nothrow_rejects_uncaught_throw_with_span():
 	msgs = [d.message for d in checked.diagnostics]
 	assert any("declared nothrow but may throw" in m for m in msgs)
 	assert any(getattr(d, "span", None) is not None for d in checked.diagnostics)
+
+
+def test_try_catch_with_if_handles_throw_without_inference():
+	func_hirs = {
+		"f": H.HBlock(
+			statements=[
+				H.HTry(
+					body=H.HBlock(
+						statements=[
+							H.HIf(
+								cond=H.HLiteralBool(True),
+								then_block=H.HBlock(
+									statements=[
+										H.HThrow(value=H.HExceptionInit(event_fqn="m:Boom", pos_args=[], kw_args=[])),
+									]
+								),
+								else_block=None,
+							),
+						]
+					),
+					catches=[
+						H.HCatchArm(
+							event_fqn="m:Boom",
+							binder=None,
+							block=H.HBlock(statements=[]),
+						)
+					],
+				)
+			]
+		)
+	}
+	table = TypeTable()
+	int_ty = table.ensure_int()
+	table.exception_schemas = {"m:Boom": ("m:Boom", [])}
+	signatures = {"f": FnSignature(name="f", param_type_ids=[], return_type_id=int_ty, declared_can_throw=False)}
+	fn_id = FunctionId(module="main", name="f", ordinal=0)
+	checker = Checker(
+		signatures_by_id={fn_id: signatures["f"]},
+		hir_blocks_by_id={fn_id: func_hirs["f"]},
+		call_info_by_callsite_id={},
+		exception_catalog={"m:Boom": 1},
+		type_table=table,
+	)
+	checked = checker.check_by_id([fn_id])
+	assert checked.fn_infos_by_id[fn_id].declared_can_throw is False
+	assert not checked.diagnostics

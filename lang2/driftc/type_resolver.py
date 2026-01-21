@@ -127,6 +127,7 @@ def resolve_program_signatures(
 
 		throws = _throws_from_decl(decl)
 		declared_nothrow = bool(getattr(decl, "declared_nothrow", False))
+		declared_unsafe = bool(getattr(decl, "is_unsafe", False))
 		# Surface ABI rule: nothrow is the only way to force a non-throwing ABI.
 		declared_can_throw = not declared_nothrow
 		# Note: throws_events are for validation only; they do not change ABI.
@@ -178,6 +179,7 @@ def resolve_program_signatures(
 			return_type_id=return_type_id,
 			error_type_id=error_type_id,
 			declared_can_throw=declared_can_throw,
+			declared_unsafe=declared_unsafe,
 			is_extern=is_extern,
 			is_intrinsic=is_intrinsic,
 			# Legacy/raw fields for compatibility

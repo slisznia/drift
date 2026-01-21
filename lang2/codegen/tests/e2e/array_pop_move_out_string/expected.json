@@ -1,0 +1,7 @@
+{
+  "description": "e2e: array pop move-out string",
+  "expect": 0,
+  "module_paths": [
+    "."
+  ]
+}

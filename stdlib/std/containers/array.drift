@@ -252,8 +252,10 @@ implement DequeRangeMut<Int> {
 }
 
 pub fn deque_new<T>() -> Deque<T> {
-	var b = mem.alloc_uninit<type T>(0);
-	return Deque<type T>(buf = move b, head = 0, len = 0, gen = 0);
+	unsafe {
+		var b = mem.alloc_uninit<type T>(0);
+		return Deque<type T>(buf = move b, head = 0, len = 0, gen = 0);
+	}
 }
 
 implement<T> Deque<T> {
@@ -282,18 +284,20 @@ implement<T> Deque<T> {
 		while new_cap < needed {
 			new_cap = new_cap * 2;
 		}
-		var new_buf = mem.alloc_uninit<type T>(new_cap);
-		var i = 0;
-		while i < self.len {
-			val phys = (self.head + i) % cap0;
-			var v = mem.read<type T>(&mut self.buf, phys);
-			mem.write<type T>(&mut new_buf, i, v);
-			i = i + 1;
+		unsafe {
+			var new_buf = mem.alloc_uninit<type T>(new_cap);
+			var i = 0;
+			while i < self.len {
+				val phys = (self.head + i) % cap0;
+				var v = mem.read<type T>(&mut self.buf, phys);
+				mem.write<type T>(&mut new_buf, i, v);
+				i = i + 1;
+			}
+			var old = mem.replace(&mut self.buf, new_buf);
+			self.head = 0;
+			self.gen = self.gen + 1;
+			mem.dealloc<type T>(old);
 		}
-		var old = mem.replace(&mut self.buf, new_buf);
-		self.head = 0;
-		self.gen = self.gen + 1;
-		mem.dealloc<type T>(old);
 	}
 
 	pub fn push_back(self: &mut Deque<T>, var value: T) -> Void {
@@ -301,7 +305,7 @@ implement<T> Deque<T> {
 		self.ensure_capacity(needed);
 		val cap = self.cap();
 		val phys = (self.head + self.len) % cap;
-		mem.write<type T>(&mut self.buf, phys, value);
+		unsafe { mem.write<type T>(&mut self.buf, phys, value); }
 		self.len = self.len + 1;
 		self.gen = self.gen + 1;
 	}
@@ -311,7 +315,7 @@ implement<T> Deque<T> {
 		self.ensure_capacity(needed);
 		val cap = self.cap();
 		self.head = (self.head - 1 + cap) % cap;
-		mem.write<type T>(&mut self.buf, self.head, value);
+		unsafe { mem.write<type T>(&mut self.buf, self.head, value); }
 		self.len = self.len + 1;
 		self.gen = self.gen + 1;
 	}
@@ -320,31 +324,35 @@ implement<T> Deque<T> {
 		if self.len == 0 {
 			return Optional::None();
 		}
-		val idx = self.len - 1;
-		val cap = self.cap();
-		val phys = (self.head + idx) % cap;
-		var v = mem.read<type T>(&mut self.buf, phys);
-		self.len = self.len - 1;
-		if self.len == 0 {
-			self.head = 0;
+		unsafe {
+			val idx = self.len - 1;
+			val cap = self.cap();
+			val phys = (self.head + idx) % cap;
+			var v = mem.read<type T>(&mut self.buf, phys);
+			self.len = self.len - 1;
+			if self.len == 0 {
+				self.head = 0;
+			}
+			self.gen = self.gen + 1;
+			return Optional::Some(v);
 		}
-		self.gen = self.gen + 1;
-		return Optional::Some(v);
 	}
 
 	pub fn pop_front(self: &mut Deque<T>) -> Optional<T> {
 		if self.len == 0 {
 			return Optional::None();
 		}
-		var v = mem.read<type T>(&mut self.buf, self.head);
-		val cap = self.cap();
-		self.head = (self.head + 1) % cap;
-		self.len = self.len - 1;
-		if self.len == 0 {
-			self.head = 0;
+		unsafe {
+			var v = mem.read<type T>(&mut self.buf, self.head);
+			val cap = self.cap();
+			self.head = (self.head + 1) % cap;
+			self.len = self.len - 1;
+			if self.len == 0 {
+				self.head = 0;
+			}
+			self.gen = self.gen + 1;
+			return Optional::Some(v);
 		}
-		self.gen = self.gen + 1;
-		return Optional::Some(v);
 	}
 
 	pub fn range(self: &Deque<T>) -> DequeRange<T> {
@@ -363,7 +371,7 @@ implement<T> Deque<T> {
 		}
 		val cap = self.cap();
 		val phys = (self.head + i) % cap;
-		return mem.ptr_at_ref<type T>(&self.buf, phys);
+		unsafe { return mem.ptr_at_ref<type T>(&self.buf, phys); }
 	}
 
 	pub fn at_mut(self: &mut Deque<T>, i: Int) -> &mut T {
@@ -373,7 +381,7 @@ implement<T> Deque<T> {
 		}
 		val cap = self.cap();
 		val phys = (self.head + i) % cap;
-		return mem.ptr_at_mut<type T>(&mut self.buf, phys);
+		unsafe { return mem.ptr_at_mut<type T>(&mut self.buf, phys); }
 	}
 
 	pub fn swap(self: &mut Deque<T>, i: Int, j: Int) -> Void {
@@ -390,10 +398,12 @@ implement<T> Deque<T> {
 		val cap = self.cap();
 		val pi = (self.head + i) % cap;
 		val pj = (self.head + j) % cap;
-		var a = mem.read<type T>(&mut self.buf, pi);
-		var b = mem.read<type T>(&mut self.buf, pj);
-		mem.write<type T>(&mut self.buf, pi, b);
-		mem.write<type T>(&mut self.buf, pj, a);
+		unsafe {
+			var a = mem.read<type T>(&mut self.buf, pi);
+			var b = mem.read<type T>(&mut self.buf, pj);
+			mem.write<type T>(&mut self.buf, pi, b);
+			mem.write<type T>(&mut self.buf, pj, a);
+		}
 	}
 }
 
@@ -419,9 +429,11 @@ implement iter.RandomAccessReadable<Int> for DequeRange<Int> {
 		val cap = self.dq.cap();
 		val pi = (self.dq.head + i) % cap;
 		val pj = (self.dq.head + j) % cap;
-		val a = mem.ptr_at_ref<type Int>(&self.dq.buf, pi);
-		val b = mem.ptr_at_ref<type Int>(&self.dq.buf, pj);
-		return cmp.Comparable::cmp(a, b);
+		unsafe {
+			val a = mem.ptr_at_ref<type Int>(&self.dq.buf, pi);
+			val b = mem.ptr_at_ref<type Int>(&self.dq.buf, pj);
+			return cmp.Comparable::cmp(a, b);
+		}
 	}
 }
 
@@ -436,8 +448,10 @@ implement algo.BinarySearchable<Int> for DequeRange<Int> {
 		}
 		val cap = self.dq.cap();
 		val pi = (self.dq.head + i) % cap;
-		val a = mem.ptr_at_ref<type Int>(&self.dq.buf, pi);
-		return cmp.Comparable::cmp(a, key);
+		unsafe {
+			val a = mem.ptr_at_ref<type Int>(&self.dq.buf, pi);
+			return cmp.Comparable::cmp(a, key);
+		}
 	}
 }
 
@@ -463,9 +477,11 @@ implement iter.RandomAccessReadable<Int> for DequeRangeMut<Int> {
 		val cap = self.dq.cap();
 		val pi = (self.dq.head + i) % cap;
 		val pj = (self.dq.head + j) % cap;
-		val a = mem.ptr_at_ref<type Int>(&self.dq.buf, pi);
-		val b = mem.ptr_at_ref<type Int>(&self.dq.buf, pj);
-		return cmp.Comparable::cmp(a, b);
+		unsafe {
+			val a = mem.ptr_at_ref<type Int>(&self.dq.buf, pi);
+			val b = mem.ptr_at_ref<type Int>(&self.dq.buf, pj);
+			return cmp.Comparable::cmp(a, b);
+		}
 	}
 }
 

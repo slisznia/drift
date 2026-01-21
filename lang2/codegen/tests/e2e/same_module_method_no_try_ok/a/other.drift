@@ -6,6 +6,6 @@ pub struct Other { x: Int }
 
 implement Other {
 	pub fn bump(self: &mut Other, dx: Int) nothrow -> Void {
-		x += dx;
+		self->x += dx;
 	}
 }
