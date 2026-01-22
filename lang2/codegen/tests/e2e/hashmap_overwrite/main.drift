@@ -1,0 +1,33 @@
+module main
+
+import std.containers as containers;
+
+fn run() -> Int {
+	var m = containers.hash_map_new<type Int, Int>();
+	val old1 = m.insert(1, 10);
+	match old1 {
+		None => { },
+		Some(_v) => { return 1; }
+	}
+	val old2 = m.insert(1, 20);
+	match old2 {
+		None => { return 2; },
+		Some(v) => {
+			if v != 10 { return 3; }
+		}
+	}
+	if m.len() != 1 { return 4; }
+	val k1 = 1;
+	val got = m.get(&k1);
+	match got {
+		None => { return 5; },
+		Some(v) => {
+			if *v != 20 { return 6; }
+		}
+	}
+	return 0;
+}
+
+fn main() nothrow -> Int {
+	return try run() catch { 99 };
+}

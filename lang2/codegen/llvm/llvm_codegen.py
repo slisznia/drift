@@ -1276,11 +1276,19 @@ class _FuncBuilder:
 			right = self._map_value(instr.right)
 			left_ty = self.value_types.get(left)
 			right_ty = self.value_types.get(right)
-			if left_ty is not None and left_ty != DRIFT_U64_TYPE:
+			if left_ty is None:
+				raise NotImplementedError(
+					"LLVM codegen v1: wrapping_add_u64 requires typed operands (left type missing)"
+				)
+			if left_ty != DRIFT_U64_TYPE:
 				raise NotImplementedError(
 					f"LLVM codegen v1: wrapping_add_u64 requires Uint64 operands (have {left_ty})"
 				)
-			if right_ty is not None and right_ty != DRIFT_U64_TYPE:
+			if right_ty is None:
+				raise NotImplementedError(
+					"LLVM codegen v1: wrapping_add_u64 requires typed operands (right type missing)"
+				)
+			if right_ty != DRIFT_U64_TYPE:
 				raise NotImplementedError(
 					f"LLVM codegen v1: wrapping_add_u64 requires Uint64 operands (have {right_ty})"
 				)
@@ -1292,11 +1300,19 @@ class _FuncBuilder:
 			right = self._map_value(instr.right)
 			left_ty = self.value_types.get(left)
 			right_ty = self.value_types.get(right)
-			if left_ty is not None and left_ty != DRIFT_U64_TYPE:
+			if left_ty is None:
+				raise NotImplementedError(
+					"LLVM codegen v1: wrapping_mul_u64 requires typed operands (left type missing)"
+				)
+			if left_ty != DRIFT_U64_TYPE:
 				raise NotImplementedError(
 					f"LLVM codegen v1: wrapping_mul_u64 requires Uint64 operands (have {left_ty})"
 				)
-			if right_ty is not None and right_ty != DRIFT_U64_TYPE:
+			if right_ty is None:
+				raise NotImplementedError(
+					"LLVM codegen v1: wrapping_mul_u64 requires typed operands (right type missing)"
+				)
+			if right_ty != DRIFT_U64_TYPE:
 				raise NotImplementedError(
 					f"LLVM codegen v1: wrapping_mul_u64 requires Uint64 operands (have {right_ty})"
 				)

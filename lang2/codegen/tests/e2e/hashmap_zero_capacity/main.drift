@@ -1,0 +1,21 @@
+module main
+
+import std.containers as containers;
+
+fn run() -> Int {
+	var m = containers.hash_map_with_capacity<type Int, Int>(0);
+	m.insert(1, 1);
+	val k: Int = 1;
+	val v: Int = match m.get(&k) {
+		None => { -1 },
+		Some(p) => { *p }
+	};
+	if v != 1 {
+		return 1;
+	}
+	return 0;
+}
+
+fn main() nothrow -> Int {
+	return try run() catch { 99 };
+}

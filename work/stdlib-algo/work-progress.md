@@ -63,6 +63,15 @@ Containers
   - Status (2026-01-22): driver coverage for owned-for Copy requirement is locked by test_for_owned_array_requires_copy_element.
   - Status (2026-01-22): rvalue receiver autoborrow now emits the addressable-place diagnostic again (test_autoborrow_receiver_requires_place).
   - Status (2026-01-22): addressable-place diag is limited to method-call syntax so for-iter UFCS still reports Copy requirement.
+  - Status (2026-01-22): LLVM codegen now requires typed operands for wrapping_{add,mul}_u64 (hard error if missing).
+  - Status (2026-01-22): borrow-checker comment updated to reflect field/index borrows are supported; rvalue materialization remains future work.
+  - Status (2026-01-22): added HashMap e2e coverage for empty iterator, get_mut, zero-capacity insert, repeated remove, and String values.
+  - Status (2026-01-22): trait impl metadata now captures trait args (including exports); trait solver matches impls by args; added driver test for UFCS trait impl type args.
+  - Status (2026-01-22): UFCS trait calls now enforce trait args for concrete receivers; added negative diagnostic test for mismatched trait args.
+  - Status (2026-01-22): UFCS trait call impl check now uses global trait world first to avoid missing downstream impls; hashmap_collision e2e passes.
+  - Status (2026-01-22): Intrinsic dispatch now uses FnSignature.intrinsic_kind (no name matching in call resolver); signatures encode/decode intrinsic_kind for packages; wrapping_u64_ops e2e passes.
+  - Status (2026-01-22): MIR validator now asserts wrapping_u64 operands are Uint64 (before LLVM); wrapping_u64_ops e2e passes.
+  - Status (2026-01-22): added HashMap e2e cases (overwrite, remove-missing, clear, iter-all count) and HashSet iter invalidation; all new cases pass.
   - Next: add collision/resize/iterator invalidation tests; consider HashCode alias if needed.
 
 Algorithms
@@ -72,3 +81,97 @@ Algorithms
 - equal (done earlier)
 - min/max (gating tests done; implementation already exists)
 - swap/replace intrinsics (done in std.mem)
+
+TreeMap decisions (pinned):
+
+- TreeMap<K, V> require K is cmp.Comparable.
+- Core API:
+  - tree_map_new<K,V>() -> TreeMap<K,V>
+  - len(&self) -> Int, is_empty(&self) -> Bool
+  - clear(&mut self)
+  - contains_key(&self, key: &K) -> Bool
+  - get(&self, key: &K) -> Optional<&V>
+  - get_mut(&mut self, key: &K) -> Optional<&mut V>
+  - insert(&mut self, key: K, value: V) -> Optional<V>
+  - remove(&mut self, key: &K) -> Optional<V>
+  - iter(&self) -> TreeMapIter<K,V>
+- Iteration: in-order; iterator stores gen_snapshot; any mutation bumps gen; next() throws std.err.IteratorInvalidated if gen mismatched.
+- Entry API:
+  - entry(&mut self, key: K) -> Entry<K,V>
+  - Entry is enum-like: Occupied(OccupiedEntry<K,V>), Vacant(VacantEntry<K,V>)
+  - Occupied: key(&self)->&K, get(&self)->&V, get_mut(&mut self)->&mut V, replace(self, value: V)->V, remove(self)->V
+  - Vacant: key(&self)->&K, insert(self, value: V)->&mut V
+- Design constraint: Entry holds &mut TreeMap internally to prevent concurrent mutation.
+
+TreeMap representation feedback (pinned):
+
+- Use index-based arena for nodes; store by index (no pointers).
+- Node fields: key, value, left/right/parent (parent recommended for RB delete fixup + iterator), color: Bool (RB) or height: Int (AVL).
+- TreeMap fields: root, len, gen, nodes (RawBuffer<MaybeUninit<Node<K,V>>> or Array<NodeSlot>), free_head (free list), cap (if needed).
+- alloc_node: pop free list or grow buffer; write Node into slot; return index.
+- free_node: drop key/value as needed; push idx onto free list.
+- clear/drop: walk all live nodes and drop exactly once; then root=None, len=0; rebuild free list (e.g., mark all indices free).
+- Hotspot: clear/drop correctness; add tests to ensure drop exactly once.
+
+TreeMap algorithms (pinned):
+
+- Search: standard BST using cmp.Comparable::compare(&k, &node.key).
+- Insert (RB): insert as red leaf; fix-up via parent/uncle cases; ensure root black; len++, gen++.
+- Remove (RB): standard RB delete with transplant + fix-up; move out removed value before free_node; len--, gen++.
+
+TreeMap iteration (pinned):
+
+- Use explicit stack (Array<Int>) for in-order traversal; simpler MVP.
+- Iterator fields: stack, gen_snapshot (and optional cur or just stack).
+- Init: push left spine from root.
+- next(): check gen, pop idx, push left spine of right child, yield (&key, &value).
+- Parent-pointer threaded walk optional later; skip for MVP.
+
+TreeSet (pinned):
+
+- TreeSet<K> require K is cmp.Comparable.
+- Thin wrapper over TreeMap<K, ()>.
+- insert(k) -> Bool (true if new), remove(&k) -> Bool, contains(&k) -> Bool.
+- iter() -> Iter<K> yielding &K.
+
+TreeMap/TreeSet tests (MVP, pinned):
+
+Correctness
+- insert/get/overwrite/remove
+- contains/get_mut
+- remove missing key returns None
+
+Order
+- insert shuffled keys, iter yields sorted
+- remove some keys, iter still sorted
+
+Rotation / balancing invariants
+- RB: root black; no red node with red child; equal black height on all root->leaf paths (debug_validate helper for tests)
+- AVL (if used later): height invariants and balance factor in {-1,0,1}
+
+Remove cases
+- leaf, one child, two children
+- removing root repeatedly until empty
+
+Entry API
+- Vacant.insert returns &mut V to inserted
+- Occupied.replace returns old
+- Occupied.remove returns value and deletes key
+- Optional: compare-count key to assert no double lookup if available
+
+Iterator invalidation
+- create iter; mutate map; next() throws IteratorInvalidated
+
+Arena safety
+- clear drops once
+- remove drops once
+- reuse freed indices (insert/remove/insert sequences)
+
+TreeMap implementation staging (pinned):
+
+1) Arena + free list + traversal helpers (push_left_spine, find_node, min/max).
+2) Search + iter (even before balancing) to validate ordering + arena correctness.
+3) Insert with balancing (RB).
+4) Remove with balancing.
+5) Entry API (using internal find-or-insert-position routine).
+6) TreeSet wrapper.

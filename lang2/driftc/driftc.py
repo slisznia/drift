@@ -810,6 +810,7 @@ def _encode_impl_headers_for_module(
 			continue
 		trait_key = getattr(impl, "trait_key", None)
 		trait_obj = None
+		trait_args_obj: list[dict[str, object] | None] = []
 		if trait_key is not None:
 			trait_mod = getattr(trait_key, "module", None) or module_id
 			trait_name = getattr(trait_key, "name", None)
@@ -819,6 +820,16 @@ def _encode_impl_headers_for_module(
 					"module": trait_mod,
 					"name": trait_name,
 				}
+		trait_expr = getattr(impl, "trait_expr", None)
+		if trait_expr is not None:
+			for arg in list(getattr(trait_expr, "args", []) or []):
+				encoded = encode_type_expr(
+					arg,
+					default_module=module_id,
+					type_param_names=set(type_params),
+				)
+				if encoded is not None:
+					trait_args_obj.append(encoded)
 		methods: list[dict[str, object]] = []
 		for method in list(getattr(impl, "methods", []) or []):
 			fn_id = getattr(method, "fn_id", None)
@@ -844,6 +855,7 @@ def _encode_impl_headers_for_module(
 				{
 					"def_module": def_module,
 					"trait": trait_obj,
+					"trait_args": trait_args_obj,
 					"type_params": type_params,
 					"target": target_obj,
 					"require": require_obj,
@@ -855,6 +867,7 @@ def _encode_impl_headers_for_module(
 				"impl_id": int(getattr(impl, "impl_id", -1)),
 				"def_module": def_module,
 				"trait": trait_obj,
+				"trait_args": trait_args_obj if trait_args_obj else None,
 				"type_params": type_params,
 				"target": target_obj,
 				"require": require_obj,
@@ -1025,6 +1038,30 @@ def _collect_external_trait_and_impl_metadata(
 						trait_key = TraitKey(package_id=tpkg, module=tmod, name=tname)
 						if id_registry is not None:
 							id_registry.intern_trait(trait_key)
+				trait_args_exprs: list[parser_ast.TypeExpr] = []
+				trait_args: list[TypeId] = []
+				trait_args_obj = entry.get("trait_args")
+				if isinstance(trait_args_obj, list):
+					for arg_obj in trait_args_obj:
+						arg_expr = decode_type_expr(arg_obj)
+						if arg_expr is None:
+							continue
+						trait_args_exprs.append(arg_expr)
+						trait_args.append(
+							resolve_opaque_type(
+								arg_expr,
+								type_table,
+								module_id=def_module,
+								type_params=impl_type_param_map,
+							)
+						)
+				trait_expr = None
+				if trait_key is not None:
+					trait_expr = parser_ast.TypeExpr(
+						name=trait_key.name,
+						args=trait_args_exprs,
+						module_id=trait_key.module,
+					)
 				methods: list[ImplMethodMeta] = []
 				for method in entry.get("methods", []) if isinstance(entry.get("methods"), list) else []:
 					if not isinstance(method, dict):
@@ -1102,6 +1139,8 @@ def _collect_external_trait_and_impl_metadata(
 						def_module=def_module,
 						target_type_id=target_type_id,
 						trait_key=trait_key,
+						trait_expr=trait_expr,
+						trait_args=trait_args,
 						require_expr=require_expr,
 						target_expr=target_expr,
 						impl_type_params=type_params,
@@ -1426,18 +1465,22 @@ def compile_stubbed_funcs(
 					)
 					continue
 				existing_ids = world.impls_by_trait_target.get((impl.trait_key, head_key), [])
+				impl_trait_args = tuple(
+					type_key_from_typeid(shared_type_table, tid)
+					for tid in (getattr(impl, "trait_args", []) or [])
+				)
 				dup = False
 				if existing_ids:
 					for impl_id in existing_ids:
 						existing = world.impls[impl_id]
-						if existing.target == target_key and existing.require == getattr(impl, "require_expr", None):
+						if existing.target == target_key and existing.trait_args == impl_trait_args and existing.require == getattr(impl, "require_expr", None):
 							dup = True
 							break
 				if dup:
 					continue
 				impl_def = ImplDef(
 					trait=impl.trait_key,
-					trait_args=tuple(),
+					trait_args=impl_trait_args,
 					target=target_key,
 					target_head=head_key,
 					methods=[],
@@ -3110,6 +3153,7 @@ def compile_stubbed_funcs(
 
 	_validate_mir_call_invariants(mir_funcs_by_id)
 	_validate_mir_array_alloc_invariants(mir_funcs_by_id)
+	_validate_mir_wrapping_u64_invariants(mir_funcs_by_id, shared_type_table)
 	if shared_type_table is not None:
 		_validate_mir_array_copy_invariants(mir_funcs_by_id, shared_type_table)
 	if shared_type_table is not None:
@@ -3455,6 +3499,131 @@ def _validate_mir_array_alloc_invariants(funcs: Mapping[FunctionId, M.MirFunc]) 
 				raise AssertionError(
 					f"MIR invariant violation: ArrayAlloc in {function_symbol(fn_id)} must use length=0 in v1"
 				)
+
+
+def _validate_mir_wrapping_u64_invariants(
+	funcs: Mapping[FunctionId, M.MirFunc],
+	type_table: TypeTable,
+) -> None:
+	"""Ensure wrapping u64 ops only consume Uint64-typed values."""
+	uint64_ty = type_table.ensure_uint64()
+	int_ty = type_table.ensure_int()
+	uint_ty = type_table.ensure_uint()
+	bool_ty = type_table.ensure_bool()
+	byte_ty = type_table.ensure_byte()
+	string_ty = type_table.ensure_string()
+	float_ty = type_table.ensure_float()
+
+	for fn_id, func in funcs.items():
+		local_types = dict(getattr(func, "local_types", {}) or {})
+		value_types: dict[M.ValueId, TypeId] = {}
+
+		def set_value(val: M.ValueId | None, ty: TypeId | None) -> None:
+			if val is None or ty is None:
+				return
+			if value_types.get(val) != ty:
+				value_types[val] = ty
+
+		def ty_for(val: M.ValueId | None) -> TypeId | None:
+			if val is None:
+				return None
+			return value_types.get(val)
+
+		for _ in range(3):
+			changed = False
+			for block in func.blocks.values():
+				for instr in block.instructions:
+					dest = getattr(instr, "dest", None)
+					if isinstance(instr, M.ConstUint64):
+						if value_types.get(dest) != uint64_ty:
+							value_types[dest] = uint64_ty
+							changed = True
+					elif isinstance(instr, M.ConstUint):
+						if value_types.get(dest) != uint_ty:
+							value_types[dest] = uint_ty
+							changed = True
+					elif isinstance(instr, M.ConstInt):
+						if value_types.get(dest) != int_ty:
+							value_types[dest] = int_ty
+							changed = True
+					elif isinstance(instr, M.ConstBool):
+						if value_types.get(dest) != bool_ty:
+							value_types[dest] = bool_ty
+							changed = True
+					elif isinstance(instr, M.ConstString):
+						if value_types.get(dest) != string_ty:
+							value_types[dest] = string_ty
+							changed = True
+					elif isinstance(instr, M.ConstFloat):
+						if value_types.get(dest) != float_ty:
+							value_types[dest] = float_ty
+							changed = True
+					elif isinstance(instr, M.CastScalar):
+						if value_types.get(dest) != instr.dst_ty:
+							value_types[dest] = instr.dst_ty
+							changed = True
+					elif isinstance(instr, M.IntFromUint):
+						if value_types.get(dest) != int_ty:
+							value_types[dest] = int_ty
+							changed = True
+					elif isinstance(instr, M.UintFromInt):
+						if value_types.get(dest) != uint_ty:
+							value_types[dest] = uint_ty
+							changed = True
+					elif isinstance(instr, M.LoadLocal):
+						local_ty = local_types.get(instr.local)
+						if local_ty is not None and value_types.get(dest) != local_ty:
+							value_types[dest] = local_ty
+							changed = True
+					elif isinstance(instr, M.StoreLocal):
+						src_ty = ty_for(instr.value)
+						if src_ty is not None and local_types.get(instr.local) != src_ty:
+							local_types[instr.local] = src_ty
+							changed = True
+					elif isinstance(instr, M.AssignSSA):
+						src_ty = ty_for(instr.src)
+						if src_ty is not None and value_types.get(dest) != src_ty:
+							value_types[dest] = src_ty
+							changed = True
+					elif isinstance(instr, M.UnaryOpInstr):
+						operand_ty = ty_for(instr.operand)
+						if operand_ty is not None and value_types.get(dest) != operand_ty:
+							value_types[dest] = operand_ty
+							changed = True
+					elif isinstance(instr, M.BinaryOpInstr):
+						left_ty = ty_for(instr.left)
+						right_ty = ty_for(instr.right)
+						if left_ty is not None and left_ty == right_ty and value_types.get(dest) != left_ty:
+							value_types[dest] = left_ty
+							changed = True
+					elif isinstance(instr, M.StringLen):
+						if value_types.get(dest) != int_ty:
+							value_types[dest] = int_ty
+							changed = True
+					elif isinstance(instr, M.StringByteAt):
+						if value_types.get(dest) != byte_ty:
+							value_types[dest] = byte_ty
+							changed = True
+					elif isinstance(instr, M.WrappingAddU64):
+						if value_types.get(dest) != uint64_ty:
+							value_types[dest] = uint64_ty
+							changed = True
+					elif isinstance(instr, M.WrappingMulU64):
+						if value_types.get(dest) != uint64_ty:
+							value_types[dest] = uint64_ty
+							changed = True
+			if not changed:
+				break
+
+		for block in func.blocks.values():
+			for instr in block.instructions:
+				if isinstance(instr, (M.WrappingAddU64, M.WrappingMulU64)):
+					left_ty = ty_for(instr.left)
+					right_ty = ty_for(instr.right)
+					if left_ty != uint64_ty or right_ty != uint64_ty:
+						raise AssertionError(
+							f"MIR invariant violation: WrappingU64 operands must be Uint64 in {function_symbol(fn_id)}"
+						)
 
 
 __all__ = ["compile_stubbed_funcs", "compile_to_llvm_ir_for_tests"]
@@ -4278,6 +4447,14 @@ def main(argv: list[str] | None = None) -> int:
 						return_type = decode_type_expr(return_raw)
 						if return_type is not None:
 							ret_tid = resolve_opaque_type(return_type, type_table, module_id=module_name, type_params=type_param_map)
+					intrinsic_kind = None
+					intrinsic_kind_raw = sd.get("intrinsic_kind")
+					if isinstance(intrinsic_kind_raw, str):
+						try:
+							intrinsic_kind = IntrinsicKind(intrinsic_kind_raw)
+						except ValueError:
+							intrinsic_kind = None
+					is_intrinsic = bool(sd.get("is_intrinsic", False)) or intrinsic_kind is not None
 
 					sig = FnSignature(
 						name=name,
@@ -4288,6 +4465,8 @@ def main(argv: list[str] | None = None) -> int:
 						param_type_ids=param_type_ids,
 						return_type_id=ret_tid,
 						declared_can_throw=sd.get("declared_can_throw"),
+						is_intrinsic=is_intrinsic,
+						intrinsic_kind=intrinsic_kind,
 						is_method=bool(sd.get("is_method", False)),
 						self_mode=sd.get("self_mode"),
 						impl_target_type_id=impl_tid,
@@ -4496,11 +4675,15 @@ def main(argv: list[str] | None = None) -> int:
 				target_key = type_key_from_typeid(type_table, impl.target_type_id)
 				head_key = target_key.head()
 				existing_ids = world.impls_by_trait_target.get((trait_key, head_key), [])
+				impl_trait_args = tuple(
+					type_key_from_typeid(type_table, tid)
+					for tid in (getattr(impl, "trait_args", []) or [])
+				)
 				dup = False
 				if existing_ids:
 					for impl_id in existing_ids:
 						existing = world.impls[impl_id]
-						if existing.target == target_key and existing.require == getattr(impl, "require_expr", None):
+						if existing.target == target_key and existing.trait_args == impl_trait_args and existing.require == getattr(impl, "require_expr", None):
 							dup = True
 							break
 				if dup:
@@ -4509,7 +4692,7 @@ def main(argv: list[str] | None = None) -> int:
 				world.impls.append(
 					ImplDef(
 						trait=trait_key,
-						trait_args=tuple(),
+						trait_args=impl_trait_args,
 						target=target_key,
 						target_head=head_key,
 						methods=[],

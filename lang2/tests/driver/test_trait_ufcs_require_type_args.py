@@ -56,3 +56,64 @@ fn main() nothrow -> Int {
 """,
 	)
 	assert diagnostics == []
+
+
+def test_trait_impl_with_type_args_resolves(tmp_path: Path) -> None:
+	diagnostics = _compile(
+		tmp_path,
+		"""
+module m_main
+
+trait Marker { }
+
+trait Uses<T> require T is Marker {
+	fn f(self: &Self) -> Int;
+}
+
+struct Foo { }
+struct Bar { }
+
+implement Marker for Bar { }
+
+implement Uses<Bar> for Foo {
+	fn f(self: &Foo) -> Int { return 7; }
+}
+
+fn main() -> Int {
+	var foo = Foo();
+	return Uses<Bar>::f(&foo);
+}
+""",
+	)
+	assert diagnostics == []
+
+
+def test_trait_impl_with_mismatched_type_args_fails(tmp_path: Path) -> None:
+	diagnostics = _compile(
+		tmp_path,
+		"""
+module m_main
+
+trait Marker { }
+
+trait Uses<T> require T is Marker {
+	fn f(self: &Self) -> Int;
+}
+
+struct Foo { }
+struct Bar { }
+struct Baz { }
+
+implement Marker for Bar { }
+
+implement Uses<Bar> for Foo {
+	fn f(self: &Foo) -> Int { return 7; }
+}
+
+fn main() -> Int {
+	var foo = Foo();
+	return Uses<Baz>::f(&foo);
+}
+""",
+	)
+	assert diagnostics != []

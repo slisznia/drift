@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any, Sequence
 
 from lang2.driftc.core.function_id import FunctionId
+from lang2.driftc.stage1.call_info import IntrinsicKind
 
 @dataclass
 class FakeDecl:
@@ -15,6 +16,7 @@ class FakeDecl:
 	loc: Any = None
 	is_extern: bool = False
 	is_intrinsic: bool = False
+	intrinsic_kind: IntrinsicKind | None = None
 	is_method: bool = False
 	self_mode: str | None = None
 	impl_target: Any = None

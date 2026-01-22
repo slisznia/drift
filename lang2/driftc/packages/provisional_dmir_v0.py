@@ -538,6 +538,12 @@ def encode_signatures(signatures: Mapping[str, FnSignature], *, module_id: str) 
 			"impl_target_type_id": getattr(sig, "impl_target_type_id", None),
 			"self_mode": getattr(sig, "self_mode", None),
 			"is_pub": bool(getattr(sig, "is_pub", False)),
+			"is_intrinsic": bool(getattr(sig, "is_intrinsic", False)),
+			"intrinsic_kind": (
+				getattr(sig, "intrinsic_kind", None).value
+				if getattr(sig, "intrinsic_kind", None) is not None
+				else None
+			),
 			"is_wrapper": bool(getattr(sig, "is_wrapper", False)),
 			"wraps_target_symbol": (
 				function_symbol(sig.wraps_target_fn_id)

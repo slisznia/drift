@@ -3627,6 +3627,17 @@ def _lower_parsed_program_to_hir(
 			ordinal=impl_index,
 		)
 		impl_param_ids = {name: TypeParamId(impl_owner, idx) for idx, name in enumerate(impl_type_params)}
+		impl_trait_args: list[TypeId] = []
+		if getattr(impl, "trait", None) is not None:
+			for arg in (getattr(impl.trait, "args", []) or []):
+				impl_trait_args.append(
+					resolve_opaque_type(
+						arg,
+						type_table,
+						module_id=module_id,
+						type_params=impl_param_ids,
+					)
+				)
 		impl_target_type_id = resolve_opaque_type(
 			impl.target,
 			type_table,
@@ -3641,6 +3652,8 @@ def _lower_parsed_program_to_hir(
 			def_module=module_id,
 			target_type_id=impl_target_type_id,
 			trait_key=impl_trait_key,
+			trait_expr=impl.trait,
+			trait_args=impl_trait_args,
 			require_expr=require_expr,
 			target_expr=impl.target,
 			impl_type_params=list(impl_type_params),

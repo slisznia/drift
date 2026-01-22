@@ -37,7 +37,7 @@ from lang2.driftc.checker.catch_arms import CatchArmInfo, validate_catch_arms
 from lang2.driftc.core.type_resolve_common import resolve_opaque_type
 from lang2.driftc.core.types_core import TypeTable, TypeId, TypeKind, TypeParamId
 from lang2.driftc.stage1.hir_utils import collect_catch_arms_from_block
-from lang2.driftc.stage1.call_info import CallInfo, CallTargetKind
+from lang2.driftc.stage1.call_info import CallInfo, CallTargetKind, IntrinsicKind
 from lang2.driftc.stage1.normalize import normalize_hir
 
 if TYPE_CHECKING:
@@ -78,6 +78,7 @@ class FnSignature:
 	declared_unsafe: Optional[bool] = None
 	is_extern: bool = False
 	is_intrinsic: bool = False
+	intrinsic_kind: IntrinsicKind | None = None
 	param_names: Optional[list[str]] = None
 	param_mutable: Optional[list[bool]] = None
 	param_nonretaining: Optional[list[Optional[bool]]] = None

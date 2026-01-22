@@ -18,7 +18,7 @@ from lang2.driftc.stage1.call_info import CallInfo, CallSig, CallTarget, Intrins
 from lang2.driftc.method_registry import CallableDecl, CallableSignature, CallableKind, Visibility, SelfMode
 from lang2.driftc.checker.unsafe_gate import check_unsafe_call
 from lang2.driftc.traits.linked_world import BOOL_TRUE
-from lang2.driftc.traits.solver import Env as TraitEnv, ObligationOrigin, ObligationOriginKind, ProofFailure, ProofFailureReason, ProofStatus, prove_expr
+from lang2.driftc.traits.solver import Env as TraitEnv, Obligation, ObligationOrigin, ObligationOriginKind, ProofFailure, ProofFailureReason, ProofStatus, prove_expr, prove_obligation
 from lang2.driftc.traits.world import TraitKey
 from lang2.driftc.trait_index import TraitImplCandidate
 from lang2.driftc.traits.world import trait_key_from_expr, type_key_from_typeid
@@ -1869,6 +1869,40 @@ def resolve_qualified_member_ufcs(ctx: MethodResolverContext, expr: object, qm: 
 	if method_sig is not None and (not trait_type_params or type_arg_ids):
 		recv_ty = recv_arg_type if recv_arg_type is not None else ctx.type_expr(expr.args[0], used_as_value=False)
 		recv_nominal = ctx.unwrap_ref_type(recv_ty)
+		if trait_type_params and type_arg_ids and ctx.type_table.get(recv_nominal).kind is not TypeKind.TYPEVAR:
+			world = ctx.global_trait_world or ctx.visible_trait_world
+			if world is not None:
+				subject_key = ctx.normalize_type_key(
+					type_key_from_typeid(ctx.type_table, recv_nominal),
+				)
+				trait_args = tuple(
+					ctx.normalize_type_key(type_key_from_typeid(ctx.type_table, tid))
+					for tid in type_arg_ids
+				)
+				env = TraitEnv(
+					assumed_true=set(),
+					assumed_false=set(),
+					default_module=trait_key.module or ctx.current_module_name,
+					default_package=ctx.default_package,
+					module_packages=ctx.module_packages,
+					type_table=ctx.type_table,
+				)
+				obl = Obligation(
+					subject=subject_key,
+					trait=trait_key,
+					trait_args=trait_args,
+					origin=ObligationOrigin(kind=ObligationOriginKind.METHOD_CALL, label="trait call", span=getattr(expr, "loc", None)),
+					span=getattr(expr, "loc", None),
+				)
+				if prove_obligation(world, env, obl) is not None:
+					diagnostics.append(
+						_tc_diag(
+							message=f"no implementation for trait '{ctx.trait_label(trait_key)}' on receiver {ctx.label_typeid(recv_ty)}",
+							severity="error",
+							span=getattr(expr, "loc", Span()),
+						)
+					)
+					return MethodCallResult(ctx.unknown_ty, None)
 		if ctx.type_table.get(recv_nominal).kind is TypeKind.TYPEVAR:
 			local_type_param_map: dict[str, TypeId] = {"Self": recv_nominal}
 			if trait_type_params:
@@ -2113,11 +2147,7 @@ def resolve_call_expr(
 	def _intrinsic_kind_for_decl(decl: CallableDecl, sig: object | None) -> IntrinsicKind | None:
 		if sig is None or not getattr(sig, "is_intrinsic", False):
 			return None
-		if decl.name == "wrapping_add_u64":
-			return IntrinsicKind.WRAPPING_ADD_U64
-		if decl.name == "wrapping_mul_u64":
-			return IntrinsicKind.WRAPPING_MUL_U64
-		return None
+		return getattr(sig, "intrinsic_kind", None)
 
 	if isinstance(expr.fn, H.HVar) and _is_std_mem_module(expr.fn.module_id) and expr.fn.name in ("alloc_uninit", "dealloc", "ptr_at_ref", "ptr_at_mut", "write", "read", "ptr_from_ref", "ptr_from_ref_mut", "ptr_offset", "ptr_read", "ptr_write", "ptr_is_null", "replace", "swap", "maybe_uninit", "maybe_write", "maybe_assume_init_ref", "maybe_assume_init_mut", "maybe_assume_init_read"):
 		rawbuffer_allowed = bool(ctx.allow_rawbuffer)

@@ -4538,9 +4538,10 @@ class TypeChecker:
 				#
 				# Current support:
 				# - locals/params: `&x`, `&mut x`
+				# - projections: `&x.field`, `&arr[i]`
 				# - reborrow through a reference: `&*p`, `&mut *p`
 				#
-				# Future work: field/index borrows and temporary materialization of rvalues.
+				# Future work: temporary materialization of rvalues (e.g., `&(make())`).
 				def _base_lookup(hv: object) -> Optional[PlaceBase]:
 					bid = getattr(hv, "binding_id", None)
 					if bid is None:

@@ -36,6 +36,8 @@ class ImplMeta:
 	def_module: str
 	target_type_id: TypeId
 	trait_key: TraitKey | None = None
+	trait_expr: object | None = None
+	trait_args: List[TypeId] = field(default_factory=list)
 	require_expr: object | None = None
 	target_expr: object | None = None
 	impl_type_params: List[str] = field(default_factory=list)

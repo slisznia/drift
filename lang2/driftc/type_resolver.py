@@ -18,6 +18,7 @@ from __future__ import annotations
 from typing import Iterable, Tuple, Optional
 
 from lang2.driftc.checker import FnSignature, TypeParam
+from lang2.driftc.stage1.call_info import IntrinsicKind
 from lang2.driftc.core.function_id import FunctionId
 from lang2.driftc.core.type_resolve_common import resolve_opaque_type
 from lang2.driftc.core.types_core import TypeId, TypeKind, TypeParamId, TypeTable
@@ -58,6 +59,12 @@ def resolve_program_signatures(
 
 	signatures: dict[FunctionId, FnSignature] = {}
 
+	def _intrinsic_kind_for_name(name: str) -> IntrinsicKind | None:
+		try:
+			return IntrinsicKind(name)
+		except ValueError:
+			return None
+
 	name_ord: dict[tuple[str, str], int] = {}
 	for decl in func_decls:
 		name = getattr(decl, "name")
@@ -71,6 +78,11 @@ def resolve_program_signatures(
 		decl_loc = getattr(decl, "loc", None)
 		is_extern = bool(getattr(decl, "is_extern", False))
 		is_intrinsic = bool(getattr(decl, "is_intrinsic", False))
+		intrinsic_kind = None
+		if is_intrinsic:
+			intrinsic_kind = getattr(decl, "intrinsic_kind", None)
+			if intrinsic_kind is None and isinstance(name, str):
+				intrinsic_kind = _intrinsic_kind_for_name(name)
 
 		raw_type_params = list(getattr(decl, "type_params", []) or [])
 		raw_type_param_locs = list(getattr(decl, "type_param_locs", []) or [])
@@ -182,6 +194,7 @@ def resolve_program_signatures(
 			declared_unsafe=declared_unsafe,
 			is_extern=is_extern,
 			is_intrinsic=is_intrinsic,
+			intrinsic_kind=intrinsic_kind,
 			# Legacy/raw fields for compatibility
 			param_types=raw_params,
 			return_type=raw_ret,
