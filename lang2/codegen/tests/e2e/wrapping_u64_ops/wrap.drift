@@ -1,0 +1,16 @@
+module std.tests.wrap
+
+import std.core.num as num;
+
+export { run };
+
+pub fn run() nothrow -> Int {
+	val max = cast<Uint64>(-1);
+	val zero = num.wrapping_add_u64(max, cast<Uint64>(1));
+	val twice = num.wrapping_mul_u64(max, cast<Uint64>(2));
+	val sum = num.wrapping_add_u64(max, max);
+	if zero == cast<Uint64>(0) and twice == sum {
+		return 0;
+	}
+	return 1;
+}

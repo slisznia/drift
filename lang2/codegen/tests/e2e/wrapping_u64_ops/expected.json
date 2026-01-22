@@ -1,0 +1,9 @@
+{
+  "description": "e2e: wrapping u64 ops",
+  "exit_code": 0,
+  "module_paths": [
+    "."
+  ],
+  "stderr": "",
+  "stdout": ""
+}

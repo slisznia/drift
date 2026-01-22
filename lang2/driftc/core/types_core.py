@@ -267,6 +267,10 @@ class TypeTable:
 		# Key format follows the callable naming scheme: "<module_id>::<name>".
 		# Values store the TypeId (so const refs can be typed) and the python value.
 		self.consts: dict[str, tuple[TypeId, object]] = {}
+		# Type aliases keyed by (module_id, name).
+		#
+		# Values are (type_params, target_type_expr, loc).
+		self.type_aliases: dict[tuple[str | None, str], tuple[list[str], object, object | None]] = {}
 
 	def define_const(self, *, module_id: str, name: str, type_id: TypeId, value: object) -> None:
 		"""
@@ -281,6 +285,14 @@ class TypeTable:
 	def lookup_const(self, sym: str) -> tuple[TypeId, object] | None:
 		"""Return (TypeId, value) for a fully-qualified const symbol."""
 		return self.consts.get(sym)
+
+	def define_type_alias(self, *, module_id: str | None, name: str, type_params: list[str], target: object, loc: object | None = None) -> None:
+		"""Define a module-scoped type alias."""
+		self.type_aliases[(module_id, name)] = (list(type_params), target, loc)
+
+	def lookup_type_alias(self, *, module_id: str | None, name: str) -> tuple[list[str], object, object | None] | None:
+		"""Return (type_params, target_type_expr, loc) for a module-scoped alias."""
+		return self.type_aliases.get((module_id, name))
 
 	def _package_for_module(self, module_id: str | None) -> str | None:
 		if module_id is None:

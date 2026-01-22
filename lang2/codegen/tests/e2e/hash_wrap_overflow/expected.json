@@ -1,0 +1,9 @@
+{
+  "description": "e2e: hash wrap overflow",
+  "exit_code": 0,
+  "module_paths": [
+    "."
+  ],
+  "stderr": "",
+  "stdout": ""
+}

@@ -551,9 +551,17 @@ def _validate_intrinsic_callinfo(typed_fn: "TypedFn") -> None:
 			if kwargs or len(call.args) != 1:
 				raise AssertionError(f"{kind.value}(...) arity mismatch reached validation (checker bug)")
 			continue
+		if kind in (IntrinsicKind.WRAPPING_ADD_U64, IntrinsicKind.WRAPPING_MUL_U64):
+			if kwargs or len(call.args) != 2:
+				raise AssertionError(f"{kind.value}(...) arity mismatch reached validation (checker bug)")
+			continue
 		if kind in (IntrinsicKind.STRING_EQ, IntrinsicKind.STRING_CONCAT):
 			if kwargs or len(call.args) != 2:
 				raise AssertionError(f"{kind.value}(...) arity mismatch reached validation (checker bug)")
+			continue
+		if kind is IntrinsicKind.STRING_BYTE_AT:
+			if kwargs or len(call.args) != 2:
+				raise AssertionError("string_byte_at(...) arity mismatch reached validation (checker bug)")
 			continue
 		if kind is IntrinsicKind.SWAP:
 			if kwargs or len(call.args) != 2:
@@ -606,6 +614,18 @@ def _validate_intrinsic_callinfo(typed_fn: "TypedFn") -> None:
 		if kind is IntrinsicKind.PTR_IS_NULL:
 			if kwargs or len(call.args) != 1:
 				raise AssertionError("ptr_is_null(...) arity mismatch reached validation (checker bug)")
+			continue
+		if kind is IntrinsicKind.MAYBE_UNINIT:
+			if kwargs or len(call.args) != 0:
+				raise AssertionError("maybe_uninit(...) arity mismatch reached validation (checker bug)")
+			continue
+		if kind is IntrinsicKind.MAYBE_WRITE:
+			if kwargs or len(call.args) != 2:
+				raise AssertionError("maybe_write(...) arity mismatch reached validation (checker bug)")
+			continue
+		if kind in (IntrinsicKind.MAYBE_ASSUME_INIT_REF, IntrinsicKind.MAYBE_ASSUME_INIT_MUT, IntrinsicKind.MAYBE_ASSUME_INIT_READ):
+			if kwargs or len(call.args) != 1:
+				raise AssertionError(f"{kind.value}(...) arity mismatch reached validation (checker bug)")
 			continue
 		raise AssertionError(f"unknown intrinsic '{kind.value}' reached validation (checker bug)")
 
@@ -1417,6 +1437,7 @@ def compile_stubbed_funcs(
 					continue
 				impl_def = ImplDef(
 					trait=impl.trait_key,
+					trait_args=tuple(),
 					target=target_key,
 					target_head=head_key,
 					methods=[],
@@ -2451,6 +2472,52 @@ def compile_stubbed_funcs(
 				return "recover"
 		return "strict"
 
+	def _collect_hcast_node_ids(body: H.HNode) -> set[int]:
+		ids: set[int] = set()
+		seen: set[int] = set()
+		hir_modules = {H.__name__, "lang2.driftc.stage1.closures"}
+
+		def _should_descend(obj: object) -> bool:
+			if isinstance(obj, H.HNode):
+				return True
+			if is_dataclass(obj) and obj.__class__.__module__ in hir_modules:
+				return True
+			return False
+
+		def walk(obj: object) -> None:
+			obj_id = id(obj)
+			if obj_id in seen:
+				return
+			seen.add(obj_id)
+			if isinstance(obj, H.HCast):
+				node_id = getattr(obj, "node_id", 0)
+				if node_id:
+					ids.add(node_id)
+			if not _should_descend(obj):
+				return
+			if is_dataclass(obj):
+				for f in fields(obj):
+					walk_value(getattr(obj, f.name))
+			else:
+				for val in vars(obj).values():
+					walk_value(val)
+
+		def walk_value(val: object) -> None:
+			if val is None:
+				return
+			if isinstance(val, (list, tuple)):
+				for item in val:
+					walk_value(item)
+				return
+			if isinstance(val, dict):
+				for key in sorted(val.keys(), key=repr):
+					walk_value(val[key])
+				return
+			walk(val)
+
+		walk(body)
+		return ids
+
 	for fn_id, hir_norm in normalized_hirs_by_id.items():
 		builder = make_builder(fn_id)
 		sig = signatures_by_id.get(fn_id)
@@ -2461,6 +2528,9 @@ def compile_stubbed_funcs(
 		if sig is not None and sig.param_type_ids is not None and param_names:
 			param_types = {pname: pty for pname, pty in zip(param_names, sig.param_type_ids)}
 		builder.func.params = list(param_names)
+		if sig is not None and getattr(sig, "is_intrinsic", False):
+			mir_funcs_by_id[fn_id] = builder.func
+			continue
 		if sig is not None and sig.param_type_ids is not None:
 			if (getattr(sig, "type_params", None) or getattr(sig, "impl_type_params", None)):
 				mir_funcs_by_id[fn_id] = builder.func
@@ -2474,6 +2544,19 @@ def compile_stubbed_funcs(
 			if sig.error_type_id is not None and shared_type_table.has_typevar(sig.error_type_id):
 				mir_funcs_by_id[fn_id] = builder.func
 				continue
+			typed_mode = _typed_mode_for(
+				typed_fns_by_id.get(fn_id),
+				shared_type_table,
+				typecheck_ok_by_fn.get(fn_id, False),
+			)
+			if typed_mode == "strict":
+				expr_types = getattr(typed_fns_by_id.get(fn_id), "expr_types", None)
+				if not isinstance(expr_types, dict):
+					typed_mode = "recover"
+				else:
+					hcast_ids = _collect_hcast_node_ids(hir_norm)
+					if any(node_id not in expr_types for node_id in hcast_ids):
+						typed_mode = "recover"
 			lower = HIRToMIR(
 				builder,
 				type_table=shared_type_table,
@@ -2486,11 +2569,7 @@ def compile_stubbed_funcs(
 				call_resolutions=getattr(typed_fns_by_id.get(fn_id), "call_resolutions", {}),
 				can_throw_by_id=declared_by_id,
 				return_type=sig.return_type_id if sig is not None else None,
-				typed_mode=_typed_mode_for(
-					typed_fns_by_id.get(fn_id),
-					shared_type_table,
-					typecheck_ok_by_fn.get(fn_id, False),
-				),
+				typed_mode=typed_mode,
 			)
 			lower.lower_function_body(hir_norm)
 			builder.func.local_types = dict(lower._local_types)
@@ -4430,6 +4509,7 @@ def main(argv: list[str] | None = None) -> int:
 				world.impls.append(
 					ImplDef(
 						trait=trait_key,
+						trait_args=tuple(),
 						target=target_key,
 						target_head=head_key,
 						methods=[],

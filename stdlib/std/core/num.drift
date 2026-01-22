@@ -1,0 +1,9 @@
+module std.core.num
+
+export {
+	wrapping_add_u64,
+	wrapping_mul_u64
+};
+
+@intrinsic pub fn wrapping_add_u64(a: Uint64, b: Uint64) nothrow -> Uint64;
+@intrinsic pub fn wrapping_mul_u64(a: Uint64, b: Uint64) nothrow -> Uint64;

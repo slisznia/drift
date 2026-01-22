@@ -33,7 +33,10 @@ class IntrinsicKind(Enum):
 	"""Intrinsic operations emitted by the type checker."""
 	SWAP = "swap"
 	REPLACE = "replace"
+	WRAPPING_ADD_U64 = "wrapping_add_u64"
+	WRAPPING_MUL_U64 = "wrapping_mul_u64"
 	BYTE_LENGTH = "byte_length"
+	STRING_BYTE_AT = "string_byte_at"
 	STRING_EQ = "string_eq"
 	STRING_CONCAT = "string_concat"
 	RAW_ALLOC = "raw_alloc"
@@ -48,6 +51,11 @@ class IntrinsicKind(Enum):
 	PTR_READ = "ptr_read"
 	PTR_WRITE = "ptr_write"
 	PTR_IS_NULL = "ptr_is_null"
+	MAYBE_UNINIT = "maybe_uninit"
+	MAYBE_WRITE = "maybe_write"
+	MAYBE_ASSUME_INIT_REF = "maybe_assume_init_ref"
+	MAYBE_ASSUME_INIT_MUT = "maybe_assume_init_mut"
+	MAYBE_ASSUME_INIT_READ = "maybe_assume_init_read"
 
 
 

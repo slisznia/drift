@@ -2700,6 +2700,7 @@ class Checker:
 			ArrayAlloc,
 			ArraySetLen,
 			StringLen,
+			StringByteAt,
 		)
 		value_types: Dict[tuple[FunctionId, str], TypeId] = {}
 		reported_return_mismatch: set[tuple[FunctionId, str]] = set()
@@ -2867,6 +2868,11 @@ class Checker:
 						elif isinstance(instr, StringLen) and dest is not None:
 							if value_types.get((fn_id, dest)) != self._int_type:
 								value_types[(fn_id, dest)] = self._int_type
+								changed = True
+						elif isinstance(instr, StringByteAt) and dest is not None:
+							byte_ty = self._type_table.ensure_byte()
+							if value_types.get((fn_id, dest)) != byte_ty:
+								value_types[(fn_id, dest)] = byte_ty
 								changed = True
 						elif isinstance(instr, ArrayLen) and dest is not None:
 							if value_types.get((fn_id, dest)) != self._int_type:

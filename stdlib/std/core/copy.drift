@@ -1,8 +1,14 @@
 module std.core
 
+import std.core.hash as hash;
+
+use trait hash.Hasher;
+
 export {
 	Copy,
-	Diagnostic
+	Diagnostic,
+	STRING_CONTAINER_ID,
+	string_byte_at
 };
 
 pub trait Copy {
@@ -18,10 +24,16 @@ implement Copy for Int {
 implement Copy for Uint {
 }
 
+implement Copy for Uint64 {
+}
+
 implement Copy for Bool {
 }
 
 implement Copy for Float {
+}
+
+implement Copy for Byte {
 }
 
 implement Copy for String {
@@ -68,3 +80,7 @@ implement Diagnostic for DiagnosticValue {
 		return move self;
 	}
 }
+
+pub const STRING_CONTAINER_ID: String = "std.core:String";
+
+@intrinsic pub fn string_byte_at(s: &String, i: Int) -> Byte;

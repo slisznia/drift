@@ -52,3 +52,27 @@ implement Comparable for Uint {
 		return 0;
 	}
 }
+
+implement Equatable for Uint64 {
+	pub fn eq(self: &Uint64, other: &Uint64) -> Bool {
+		return *self == *other;
+	}
+}
+
+implement Equatable for Bool {
+	pub fn eq(self: &Bool, other: &Bool) -> Bool {
+		return *self == *other;
+	}
+}
+
+implement Equatable for Byte {
+	pub fn eq(self: &Byte, other: &Byte) -> Bool {
+		return *self == *other;
+	}
+}
+
+implement Equatable for String {
+	pub fn eq(self: &String, other: &String) -> Bool {
+		return string_eq(*self, *other);
+	}
+}

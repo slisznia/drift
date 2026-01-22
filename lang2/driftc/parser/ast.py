@@ -466,6 +466,7 @@ class FString(Expr):
 class Program:
 	functions: List[FunctionDef] = field(default_factory=list)
 	consts: List["ConstDef"] = field(default_factory=list)
+	type_aliases: List["TypeAliasDef"] = field(default_factory=list)
 	implements: List["ImplementDef"] = field(default_factory=list)
 	traits: List["TraitDef"] = field(default_factory=list)
 	# Module directives are tracked separately from general statements so later
@@ -503,6 +504,24 @@ class ConstDef:
 	name: str
 	type_expr: TypeExpr
 	value: "Expr"
+	is_pub: bool = False
+	test_build_only: bool = False
+
+
+@dataclass
+class TypeAliasDef:
+	"""
+	Top-level type alias definition.
+
+	Syntax:
+	  type NAME<T...> = TypeExpr;
+	"""
+
+	loc: Located
+	name: str
+	type_params: List[str] = field(default_factory=list)
+	type_param_locs: List["Located"] = field(default_factory=list)
+	target: TypeExpr | None = None
 	is_pub: bool = False
 	test_build_only: bool = False
 

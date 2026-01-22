@@ -355,14 +355,13 @@ def test_cast_function_reference_throw_mode_note() -> None:
 
 def test_cast_rejects_non_function_target() -> None:
 	table = TypeTable()
-	int_ty = table.ensure_int()
 	fn_id_main = FunctionId(module="main", name="main", ordinal=0)
 	block = H.HBlock(
 		statements=[
 			H.HLet(
 				name="x",
 				value=H.HCast(
-					target_type_expr=TypeExpr(name="Int"),
+					target_type_expr=TypeExpr(name="String"),
 					value=H.HLiteralInt(1),
 				),
 			),
@@ -372,4 +371,4 @@ def test_cast_rejects_non_function_target() -> None:
 		fn_id_main,
 		block,
 	)
-	assert any("cast<T>(...) is only supported for function types" in d.message for d in res.diagnostics)
+	assert any("cast<T>(...) is only supported for function or numeric scalar types" in d.message for d in res.diagnostics)

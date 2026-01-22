@@ -156,6 +156,13 @@ Deque implementation note (MVP):
 - Element writes (including swap/set) do not invalidate iterators/ranges.
 - `gen` increments only when an operation actually changes array structure (length or capacity changes, or backing storage is reallocated/moved). No-op reserves/shrinks do not increment `gen`; element-only updates (`set`, `swap`) do not invalidate.
 
+## std.core.hash
+
+Hash mixing uses explicit wrapping `Uint64` math (via wrapping add/mul intrinsics).
+Overflow must never trap, even in debug builds, so hash behavior stays stable.
+
+`String` is Copy by cheap handle/retain in MVP (O(1)). APIs like `String.bytes()` rely on this.
+
 ## std.core.cmp
 
 ### Comparison traits

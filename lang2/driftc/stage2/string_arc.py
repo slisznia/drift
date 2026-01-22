@@ -214,6 +214,8 @@ def insert_string_arc(
 			yield instr.right
 		elif isinstance(instr, M.StringLen):
 			yield instr.value
+		elif isinstance(instr, M.StringByteAt):
+			yield instr.value
 		elif isinstance(instr, M.StringRetain):
 			yield instr.value
 		elif isinstance(instr, M.StringRelease):

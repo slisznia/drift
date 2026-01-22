@@ -42,7 +42,7 @@ from typing import Dict, List, Mapping, Optional
 
 from lang2.driftc.checker import FnInfo
 from lang2.driftc.core.function_id import FunctionId, function_symbol, function_ref_symbol
-from lang2.driftc.core.container_ids import ARRAY_CONTAINER_ID, RAW_BUFFER_CONTAINER_ID
+from lang2.driftc.core.container_ids import ARRAY_CONTAINER_ID, RAW_BUFFER_CONTAINER_ID, STRING_CONTAINER_ID
 
 ARRAY_LEN_IDX = 0
 ARRAY_CAP_IDX = 1
@@ -81,6 +81,8 @@ from lang2.driftc.stage2 import (
 	PtrIsNull,
 	AssignSSA,
 	BinaryOpInstr,
+	WrappingAddU64,
+	WrappingMulU64,
 	Call,
 	CallIndirect,
 	ConstructStruct,
@@ -95,6 +97,7 @@ from lang2.driftc.stage2 import (
 	ConstUint64,
 	IntFromUint,
 	UintFromInt,
+	CastScalar,
 	ConstString,
 	FnPtrConst,
 	ZeroValue,
@@ -131,6 +134,7 @@ from lang2.driftc.stage2 import (
 	StringEq,
 	StringCmp,
 	StringLen,
+	StringByteAt,
 	StringFromBool,
 	StringFromInt,
 	StringFromUint,
@@ -283,6 +287,8 @@ def lower_module_to_llvm(
 			continue
 		if bool(getattr(sig, "is_method", False)):
 			continue
+		if bool(getattr(sig, "is_intrinsic", False)):
+			continue
 		# Only functions that exist in the current module (i.e. present in funcs)
 		# can have wrappers emitted here. Imported functions are declared elsewhere.
 		if fn_id not in funcs:
@@ -299,6 +305,9 @@ def lower_module_to_llvm(
 	for fn_id, mir_func in funcs.items():
 		ssa = ssa_funcs[fn_id]
 		fn_info = fn_infos[fn_id]
+		if fn_info.signature is not None and getattr(fn_info.signature, "is_intrinsic", False):
+			# Intrinsics lower to dedicated MIR/LLVM ops; skip empty stubs.
+			continue
 		builder = _FuncBuilder(
 			func=mir_func,
 			ssa=ssa,
@@ -1195,6 +1204,31 @@ class _FuncBuilder:
 				)
 			self.lines.append(f"  {dest} = add {self._llty(DRIFT_USIZE_TYPE)} {val}, 0")
 			self.value_types[dest] = DRIFT_USIZE_TYPE
+		elif isinstance(instr, CastScalar):
+			dest = self._map_value(instr.dest)
+			val = self._map_value(instr.value)
+			src_info = self._scalar_cast_info(instr.src_ty)
+			dst_info = self._scalar_cast_info(instr.dst_ty)
+			if src_info is None or dst_info is None:
+				raise NotImplementedError("LLVM codegen v1: CastScalar requires scalar types")
+			src_tag, src_bits, src_signed = src_info
+			dst_tag, dst_bits, _dst_signed = dst_info
+			val_ty = self.value_types.get(val)
+			if val_ty != src_tag:
+				raise NotImplementedError(
+					f"LLVM codegen v1: CastScalar type mismatch (have {val_ty}, expected {src_tag})"
+				)
+			if src_bits == dst_bits:
+				self.lines.append(f"  {dest} = add {self._llty(dst_tag)} {val}, 0")
+				self.value_types[dest] = dst_tag
+				return
+			op = "sext" if src_signed else "zext"
+			if dst_bits < src_bits:
+				op = "trunc"
+			self.lines.append(
+				f"  {dest} = {op} {self._llty(src_tag)} {val} to {self._llty(dst_tag)}"
+			)
+			self.value_types[dest] = dst_tag
 		elif isinstance(instr, ConstBool):
 			dest = self._map_value(instr.dest)
 			val = 1 if instr.value else 0
@@ -1236,6 +1270,38 @@ class _FuncBuilder:
 			self._emit_zero_value(dest, instr.ty)
 		elif isinstance(instr, UnaryOpInstr):
 			self._lower_unary(instr)
+		elif isinstance(instr, WrappingAddU64):
+			dest = self._map_value(instr.dest)
+			left = self._map_value(instr.left)
+			right = self._map_value(instr.right)
+			left_ty = self.value_types.get(left)
+			right_ty = self.value_types.get(right)
+			if left_ty is not None and left_ty != DRIFT_U64_TYPE:
+				raise NotImplementedError(
+					f"LLVM codegen v1: wrapping_add_u64 requires Uint64 operands (have {left_ty})"
+				)
+			if right_ty is not None and right_ty != DRIFT_U64_TYPE:
+				raise NotImplementedError(
+					f"LLVM codegen v1: wrapping_add_u64 requires Uint64 operands (have {right_ty})"
+				)
+			self.value_types[dest] = DRIFT_U64_TYPE
+			self.lines.append(f"  {dest} = add {self._llty(DRIFT_U64_TYPE)} {left}, {right}")
+		elif isinstance(instr, WrappingMulU64):
+			dest = self._map_value(instr.dest)
+			left = self._map_value(instr.left)
+			right = self._map_value(instr.right)
+			left_ty = self.value_types.get(left)
+			right_ty = self.value_types.get(right)
+			if left_ty is not None and left_ty != DRIFT_U64_TYPE:
+				raise NotImplementedError(
+					f"LLVM codegen v1: wrapping_mul_u64 requires Uint64 operands (have {left_ty})"
+				)
+			if right_ty is not None and right_ty != DRIFT_U64_TYPE:
+				raise NotImplementedError(
+					f"LLVM codegen v1: wrapping_mul_u64 requires Uint64 operands (have {right_ty})"
+				)
+			self.value_types[dest] = DRIFT_U64_TYPE
+			self.lines.append(f"  {dest} = mul {self._llty(DRIFT_U64_TYPE)} {left}, {right}")
 		elif isinstance(instr, ConstString):
 			self._lower_const_string(instr)
 		elif isinstance(instr, ArrayAlloc):
@@ -1298,6 +1364,29 @@ class _FuncBuilder:
 			# StringLen is reused for strings and arrays at HIR level; here we assume string.
 			self.lines.append(f"  {dest} = extractvalue {DRIFT_STRING_TYPE} {val}, 0")
 			self.value_types[dest] = DRIFT_INT_TYPE
+		elif isinstance(instr, StringByteAt):
+			dest = self._map_value(instr.dest)
+			val = self._map_value(instr.value)
+			index = self._map_value(instr.index)
+			idx_ty = self.value_types.get(index)
+			if idx_ty != DRIFT_INT_TYPE:
+				raise NotImplementedError(
+					f"LLVM codegen v1: string byte index must be Int, got {idx_ty}"
+				)
+			len_tmp = self._fresh("len")
+			data_tmp = self._fresh("data")
+			self.lines.append(f"  {len_tmp} = extractvalue {DRIFT_STRING_TYPE} {val}, 0")
+			self.lines.append(f"  {data_tmp} = extractvalue {DRIFT_STRING_TYPE} {val}, 1")
+			self.module.needs_array_helpers = True
+			container_id = self._emit_string_literal_value(STRING_CONTAINER_ID)
+			self.lines.append(
+				f"  call void @drift_bounds_check({DRIFT_STRING_TYPE} {container_id}, {self._llty(DRIFT_INT_TYPE)} {index}, {self._llty(DRIFT_INT_TYPE)} {len_tmp})"
+			)
+			ptr_tmp = self._fresh("ptr")
+			idx_llty = self._llty(DRIFT_INT_TYPE)
+			self.lines.append(f"  {ptr_tmp} = getelementptr i8, i8* {data_tmp}, {idx_llty} {index}")
+			self.lines.append(f"  {dest} = load i8, i8* {ptr_tmp}")
+			self.value_types[dest] = "i8"
 		elif isinstance(instr, StringConcat):
 			dest = self._map_value(instr.dest)
 			left = self._map_value(instr.left)
@@ -2423,7 +2512,7 @@ class _FuncBuilder:
 				self.lines.append(f"  ret {DRIFT_STRING_TYPE} {val}")
 			elif ty == DRIFT_DV_TYPE:
 				self.lines.append(f"  ret {DRIFT_DV_TYPE} {val}")
-			elif ty in (DRIFT_INT_TYPE, DRIFT_UINT_TYPE, "i1", "i8"):
+			elif ty in (DRIFT_INT_TYPE, DRIFT_UINT_TYPE, DRIFT_U64_TYPE, "i1", "i8"):
 				self.lines.append(f"  ret {self._llty(ty)} {val}")
 			elif ty in ("double", "float"):
 				self.lines.append(f"  ret {ty} {val}")
@@ -2495,6 +2584,16 @@ class _FuncBuilder:
 		if self.type_table is None:
 			raise NotImplementedError("LLVM codegen v1: TypeTable required for variant lowering")
 		td = self.type_table.get(ty_id)
+		if td.kind is TypeKind.STRUCT and td.name == "MaybeUninit" and td.module_id == "std.mem":
+			inst = self.type_table.get_struct_instance(ty_id)
+			if inst is not None and inst.type_args:
+				out = self._size_align_typeid(inst.type_args[0])
+				self._size_align_cache[ty_id] = out
+				return out
+			if td.param_types:
+				out = self._size_align_typeid(td.param_types[0])
+				self._size_align_cache[ty_id] = out
+				return out
 		word_bytes = self.module.word_bits // 8
 		if td.kind is TypeKind.SCALAR:
 			if td.name in ("Int", "Uint"):
@@ -2698,6 +2797,12 @@ class _FuncBuilder:
 			if td.kind is TypeKind.ARRAY and td.param_types:
 				elem_llty = self._emit_storage_type_for_typeid(td.param_types[0])
 				return self._llvm_array_header_type()
+			if td.kind is TypeKind.STRUCT and td.name == "MaybeUninit" and td.module_id == "std.mem":
+				inst = self.type_table.get_struct_instance(ty_id)
+				if inst is not None and inst.type_args:
+					return self._llvm_type_for_typeid(inst.type_args[0], allow_void_ok=allow_void_ok)
+				if td.param_types:
+					return self._llvm_type_for_typeid(td.param_types[0], allow_void_ok=allow_void_ok)
 			if td.kind is TypeKind.SCALAR and td.name == "Int":
 				return DRIFT_INT_TYPE
 			if td.kind is TypeKind.SCALAR and td.name == "Uint":
@@ -2773,6 +2878,12 @@ class _FuncBuilder:
 		if self.type_table is None:
 			return llty
 		td = self.type_table.get(ty_id)
+		if td.kind is TypeKind.STRUCT and td.name == "MaybeUninit" and td.module_id == "std.mem":
+			inst = self.type_table.get_struct_instance(ty_id)
+			if inst is not None and inst.type_args:
+				return self._llvm_storage_type_for_typeid(inst.type_args[0])
+			if td.param_types:
+				return self._llvm_storage_type_for_typeid(td.param_types[0])
 		if td.kind is TypeKind.SCALAR and td.name == "Bool":
 			return "i8"
 		return llty
@@ -2908,6 +3019,24 @@ class _FuncBuilder:
 
 	def _emit_storage_type_for_typeid(self, ty_id: TypeId) -> str:
 		return self._llty(self._llvm_storage_type_for_typeid(ty_id))
+
+	def _scalar_cast_info(self, ty_id: TypeId) -> tuple[str, int, bool] | None:
+		if self.type_table is None:
+			return None
+		td = self.type_table.get(ty_id)
+		if td.kind is not TypeKind.SCALAR:
+			return None
+		if td.name == "Int":
+			return (DRIFT_INT_TYPE, self.module.word_bits, True)
+		if td.name == "Uint":
+			return (DRIFT_USIZE_TYPE, self.module.word_bits, False)
+		if td.name == "Uint64":
+			return (DRIFT_U64_TYPE, 64, False)
+		if td.name == "Byte":
+			return ("i8", 8, False)
+		if td.name == "Bool":
+			return ("i1", 1, False)
+		return None
 
 	def _llvm_scalar_type(self) -> str:
 		# All lowered values are isize or i1; phis currently assume Int.
@@ -3349,6 +3478,9 @@ class _FuncBuilder:
 			unsigned = True
 		elif left_ty == DRIFT_U64_TYPE and right_ty == DRIFT_U64_TYPE:
 			int_ty = DRIFT_U64_TYPE
+			unsigned = True
+		elif left_ty == "i8" and right_ty == "i8":
+			int_ty = "i8"
 			unsigned = True
 		if int_ty is None:
 			raise NotImplementedError(

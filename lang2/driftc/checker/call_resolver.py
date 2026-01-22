@@ -1537,6 +1537,7 @@ def resolve_method_call(ctx: MethodResolverContext, expr: object, *, expected_ty
 					param_type_ids = [apply_subst(p, subst_for_receiver, ctx.type_table) for p in param_type_ids]
 				param_types_for_receiver.append((cand, sig, param_type_ids, impl_subst))
 			receiver_candidates: list[tuple[CallableDecl, CallableSignature, list[TypeId], bool, bool, int, Subst | None]] = []
+			had_autoborrow_place_error = False
 			saw_typed_nongeneric_with_type_args = False
 			type_arg_counts: set[int] = set()
 			for cand, sig, param_type_ids, impl_subst in param_types_for_receiver:
@@ -1555,16 +1556,27 @@ def resolve_method_call(ctx: MethodResolverContext, expr: object, *, expected_ty
 				compat_ok, needs_autoborrow = _receiver_compat(recv_ty, param_type_ids[0], self_mode)
 				if not compat_ok:
 					continue
+				if needs_autoborrow is not None and not receiver_is_lvalue:
+					if isinstance(expr, H.HMethodCall):
+						had_autoborrow_place_error = True
+					continue
 				if self_mode is None:
 					continue
 				wants_mut_ref = self_mode.name == "SELF_BY_REF_MUT"
-				if wants_mut_ref and not receiver_can_mut_borrow:
-					continue
 				pref = _receiver_preference(self_mode, receiver_is_lvalue=receiver_is_lvalue, receiver_can_mut_borrow=receiver_can_mut_borrow, autoborrow=needs_autoborrow)
 				if pref is None:
 					continue
 				receiver_candidates.append((cand, sig, param_type_ids, needs_autoborrow, wants_mut_ref, pref, impl_subst))
 			if not receiver_candidates:
+				if had_autoborrow_place_error:
+					diagnostics.append(
+						_tc_diag(
+							message="borrow requires an addressable place; bind to a local first",
+							severity="error",
+							span=getattr(expr, "loc", Span()),
+						)
+					)
+					return MethodCallResult(ctx.unknown_ty, None)
 				if receiver_nominal_for_lookup is not None and ctx.callable_registry is not None:
 					hidden = ctx.callable_registry.get_method_candidates_unscoped(receiver_nominal_type_id=receiver_nominal_for_lookup, name=expr.method_name)
 					visible_modules = visible_modules_for_methods or ()
@@ -1772,7 +1784,10 @@ def resolve_method_call(ctx: MethodResolverContext, expr: object, *, expected_ty
 				ret_id = apply_subst(ret_id, impl_subst, ctx.type_table)
 			if subst_for_receiver is not None:
 				ret_id = apply_subst(ret_id, subst_for_receiver, ctx.type_table)
-			updated_arg_types, had_autoborrow_error = ctx.apply_autoborrow_args([expr.receiver] + list(expr.args), [recv_ty] + arg_types, param_type_ids, span=getattr(expr, "loc", Span()))
+			all_args = [expr.receiver] + list(expr.args)
+			updated_arg_types, had_autoborrow_error = ctx.apply_autoborrow_args(all_args, [recv_ty] + arg_types, param_type_ids, span=getattr(expr, "loc", Span()))
+			expr.receiver = all_args[0]
+			expr.args = list(all_args[1:])
 			if had_autoborrow_error:
 				return MethodCallResult(ctx.unknown_ty, None, None)
 			param_type_ids = list(updated_arg_types)
@@ -1811,8 +1826,6 @@ def resolve_qualified_member_ufcs(ctx: MethodResolverContext, expr: object, qm: 
 	base_te = getattr(qm, "base_type_expr", None)
 	if base_te is None:
 		return None
-	if getattr(base_te, "args", None):
-		return None
 	trait_index = ctx.trait_index
 	if trait_index is None:
 		return None
@@ -1824,6 +1837,16 @@ def resolve_qualified_member_ufcs(ctx: MethodResolverContext, expr: object, qm: 
 				break
 	base_mod = getattr(base_te, "module_id", None) or getattr(base_te, "module_alias", None)
 	base_name = getattr(base_te, "name", None)
+	base_args = list(getattr(base_te, "args", []) or [])
+	if base_args and type_arg_ids is None:
+		if call_type_args_span is None:
+			first_loc = getattr(base_args[0], "loc", None)
+			if first_loc is not None:
+				call_type_args_span = Span.from_loc(first_loc)
+		type_arg_ids = [
+			resolve_opaque_type(a, ctx.type_table, module_id=base_mod or ctx.current_module_name, type_params=ctx.type_param_map)
+			for a in base_args
+		]
 	if trait_key not in trait_index.traits_by_id:
 		if call_origin == "for_iter" and base_mod == "std.iter" and base_name == "Iterable" and qm.member == "iter":
 			diagnostics.append(_tc_diag(message="type is not iterable", code="E-NOT-ITERABLE", severity="error", span=getattr(expr, "loc", Span())))
@@ -2064,6 +2087,22 @@ def resolve_call_expr(
 		if td.kind is TypeKind.REF and td.ref_mut and td.param_types:
 			return td.param_types[0]
 		return None
+	def _maybe_uninit_inner(tid: TypeId | None) -> TypeId | None:
+		if tid is None:
+			return None
+		td = ctx.type_table.get(tid)
+		if td.kind is not TypeKind.REF or not td.param_types:
+			return None
+		inner = td.param_types[0]
+		inner_td = ctx.type_table.get(inner)
+		if inner_td.kind is not TypeKind.STRUCT or inner_td.name != "MaybeUninit" or inner_td.module_id != "std.mem":
+			return None
+		inst = ctx.type_table.get_struct_instance(inner)
+		if inst is not None and inst.type_args:
+			return inst.type_args[0]
+		if inner_td.param_types:
+			return inner_td.param_types[0]
+		return None
 	def _borrowed_place(arg: H.HExpr) -> H.HPlaceExpr | None:
 		if isinstance(arg, H.HBorrow) and arg.is_mut:
 			return place_expr_from_lvalue_expr(arg.subject)
@@ -2071,13 +2110,22 @@ def resolve_call_expr(
 			return arg
 		return None
 
-	if isinstance(expr.fn, H.HVar) and _is_std_mem_module(expr.fn.module_id) and expr.fn.name in ("alloc_uninit", "dealloc", "ptr_at_ref", "ptr_at_mut", "write", "read", "ptr_from_ref", "ptr_from_ref_mut", "ptr_offset", "ptr_read", "ptr_write", "ptr_is_null", "replace", "swap"):
+	def _intrinsic_kind_for_decl(decl: CallableDecl, sig: object | None) -> IntrinsicKind | None:
+		if sig is None or not getattr(sig, "is_intrinsic", False):
+			return None
+		if decl.name == "wrapping_add_u64":
+			return IntrinsicKind.WRAPPING_ADD_U64
+		if decl.name == "wrapping_mul_u64":
+			return IntrinsicKind.WRAPPING_MUL_U64
+		return None
+
+	if isinstance(expr.fn, H.HVar) and _is_std_mem_module(expr.fn.module_id) and expr.fn.name in ("alloc_uninit", "dealloc", "ptr_at_ref", "ptr_at_mut", "write", "read", "ptr_from_ref", "ptr_from_ref_mut", "ptr_offset", "ptr_read", "ptr_write", "ptr_is_null", "replace", "swap", "maybe_uninit", "maybe_write", "maybe_assume_init_ref", "maybe_assume_init_mut", "maybe_assume_init_read"):
 		rawbuffer_allowed = bool(ctx.allow_rawbuffer)
 		if getattr(expr, "kwargs", None):
 			first_kw = (getattr(expr, "kwargs", []) or [None])[0]
 			diagnostics.append(_tc_diag(message=f"{expr.fn.name} does not support keyword arguments", severity="error", span=getattr(first_kw, "loc", getattr(expr, "loc", Span()))))
 			return record_expr(expr, ctx.unknown_ty)
-		if expr.fn.name in ("alloc_uninit", "dealloc", "ptr_at_ref", "ptr_at_mut", "write", "read", "ptr_from_ref", "ptr_from_ref_mut", "ptr_offset", "ptr_read", "ptr_write", "ptr_is_null"):
+		if expr.fn.name in ("alloc_uninit", "dealloc", "ptr_at_ref", "ptr_at_mut", "write", "read", "ptr_from_ref", "ptr_from_ref_mut", "ptr_offset", "ptr_read", "ptr_write", "ptr_is_null", "maybe_uninit", "maybe_write", "maybe_assume_init_ref", "maybe_assume_init_mut", "maybe_assume_init_read"):
 			rawbuffer_only = expr.fn.name in ("alloc_uninit", "dealloc", "ptr_at_ref", "ptr_at_mut", "write", "read")
 			if not check_unsafe_call(allow_unsafe=ctx.allow_unsafe, allow_unsafe_without_block=ctx.allow_unsafe_without_block, unsafe_context=ctx.unsafe_context, trusted_module=rawbuffer_allowed, rawbuffer_only=rawbuffer_only, diagnostics=diagnostics, tc_diag=_tc_diag, span=getattr(expr, "loc", Span())):
 				return record_expr(expr, ctx.unknown_ty)
@@ -2097,6 +2145,69 @@ def resolve_call_expr(
 			param_types = [ctx.int_ty]
 			ret_ty = rawbuf_inst
 			intrinsic_kind = IntrinsicKind.RAW_ALLOC
+		elif expr.fn.name in ("maybe_uninit", "maybe_write", "maybe_assume_init_ref", "maybe_assume_init_mut", "maybe_assume_init_read"):
+			if len(type_arg_ids) > 1:
+				diagnostics.append(_tc_diag(message=f"{expr.fn.name} accepts at most one type argument", severity="error", span=getattr(expr, "loc", Span())))
+				return record_expr(expr, ctx.unknown_ty)
+			t_elem = type_arg_ids[0] if type_arg_ids else None
+			if expr.fn.name == "maybe_uninit":
+				if len(expr.args) != 0:
+					diagnostics.append(_tc_diag(message="maybe_uninit expects no arguments", severity="error", span=getattr(expr, "loc", Span())))
+					return record_expr(expr, ctx.unknown_ty)
+				if t_elem is None:
+					diagnostics.append(_tc_diag(message="maybe_uninit<T> requires a type argument", severity="error", span=getattr(expr, "loc", Span())))
+					return record_expr(expr, ctx.unknown_ty)
+				maybe_tid = ctx.type_table.ensure_named("MaybeUninit", module_id="std.mem")
+				maybe_inst = ctx.type_table.ensure_struct_template(maybe_tid, [t_elem]) if ctx.type_table.has_typevar(t_elem) else ctx.type_table.ensure_struct_instantiated(maybe_tid, [t_elem])
+				param_types = []
+				ret_ty = maybe_inst
+				intrinsic_kind = IntrinsicKind.MAYBE_UNINIT
+			elif expr.fn.name == "maybe_write":
+				if len(expr.args) != 2:
+					diagnostics.append(_tc_diag(message="maybe_write expects two arguments", severity="error", span=getattr(expr, "loc", Span())))
+					return record_expr(expr, ctx.unknown_ty)
+				if t_elem is None:
+					t_elem = _maybe_uninit_inner(arg_types_local[0])
+				if t_elem is None:
+					diagnostics.append(_tc_diag(message="maybe_write expects &mut MaybeUninit<T> as the first argument", severity="error", span=getattr(expr, "loc", Span())))
+					return record_expr(expr, ctx.unknown_ty)
+				maybe_tid = ctx.type_table.ensure_named("MaybeUninit", module_id="std.mem")
+				maybe_inst = ctx.type_table.ensure_struct_template(maybe_tid, [t_elem]) if ctx.type_table.has_typevar(t_elem) else ctx.type_table.ensure_struct_instantiated(maybe_tid, [t_elem])
+				param_types = [ctx.type_table.ensure_ref_mut(maybe_inst), t_elem]
+				if arg_types_local[0] is not None and arg_types_local[0] != param_types[0]:
+					diagnostics.append(_tc_diag(message="maybe_write expects &mut MaybeUninit<T> as the first argument", severity="error", span=getattr(expr, "loc", Span())))
+					return record_expr(expr, ctx.unknown_ty)
+				if arg_types_local[1] is not None and arg_types_local[1] != t_elem:
+					diagnostics.append(_tc_diag(message="maybe_write value type does not match MaybeUninit<T>", severity="error", span=getattr(expr, "loc", Span())))
+					return record_expr(expr, ctx.unknown_ty)
+				ret_ty = ctx.type_table.ensure_ref_mut(t_elem)
+				intrinsic_kind = IntrinsicKind.MAYBE_WRITE
+			elif expr.fn.name in ("maybe_assume_init_ref", "maybe_assume_init_mut", "maybe_assume_init_read"):
+				if len(expr.args) != 1:
+					diagnostics.append(_tc_diag(message=f"{expr.fn.name} expects one argument", severity="error", span=getattr(expr, "loc", Span())))
+					return record_expr(expr, ctx.unknown_ty)
+				if t_elem is None:
+					t_elem = _maybe_uninit_inner(arg_types_local[0])
+				if t_elem is None:
+					diagnostics.append(_tc_diag(message=f"{expr.fn.name} expects a MaybeUninit<T> reference argument", severity="error", span=getattr(expr, "loc", Span())))
+					return record_expr(expr, ctx.unknown_ty)
+				maybe_tid = ctx.type_table.ensure_named("MaybeUninit", module_id="std.mem")
+				maybe_inst = ctx.type_table.ensure_struct_template(maybe_tid, [t_elem]) if ctx.type_table.has_typevar(t_elem) else ctx.type_table.ensure_struct_instantiated(maybe_tid, [t_elem])
+				if expr.fn.name == "maybe_assume_init_ref":
+					param_types = [ctx.type_table.ensure_ref(maybe_inst)]
+					ret_ty = ctx.type_table.ensure_ref(t_elem)
+					intrinsic_kind = IntrinsicKind.MAYBE_ASSUME_INIT_REF
+				elif expr.fn.name == "maybe_assume_init_mut":
+					param_types = [ctx.type_table.ensure_ref_mut(maybe_inst)]
+					ret_ty = ctx.type_table.ensure_ref_mut(t_elem)
+					intrinsic_kind = IntrinsicKind.MAYBE_ASSUME_INIT_MUT
+				else:
+					param_types = [ctx.type_table.ensure_ref_mut(maybe_inst)]
+					ret_ty = t_elem
+					intrinsic_kind = IntrinsicKind.MAYBE_ASSUME_INIT_READ
+				if arg_types_local[0] is not None and arg_types_local[0] != param_types[0]:
+					diagnostics.append(_tc_diag(message=f"{expr.fn.name} expects a MaybeUninit<T> reference argument", severity="error", span=getattr(expr, "loc", Span())))
+					return record_expr(expr, ctx.unknown_ty)
 		elif expr.fn.name in ("dealloc", "ptr_at_ref", "ptr_at_mut", "write", "read", "ptr_from_ref", "ptr_from_ref_mut", "ptr_offset", "ptr_read", "ptr_write", "ptr_is_null", "replace", "swap"):
 			if len(arg_types_local) < 1:
 				diagnostics.append(_tc_diag(message=f"{expr.fn.name} expects at least 1 argument", severity="error", span=getattr(expr, "loc", Span())))
@@ -2273,7 +2384,7 @@ def resolve_call_expr(
 		record_call_info(expr, param_types=param_types, return_type=ret_ty, can_throw=False, target=CallTarget.intrinsic(intrinsic_kind))
 		return record_expr(expr, ret_ty)
 
-	if isinstance(expr.fn, H.HVar) and expr.fn.name in ("byte_length", "string_eq", "string_concat"):
+	if isinstance(expr.fn, H.HVar) and expr.fn.name in ("byte_length", "string_byte_at", "string_eq", "string_concat"):
 		if getattr(expr, "kwargs", None):
 			first_kw = (getattr(expr, "kwargs", []) or [None])[0]
 			diagnostics.append(_tc_diag(message=f"{expr.fn.name} does not support keyword arguments", severity="error", span=getattr(first_kw, "loc", getattr(expr, "loc", Span()))))
@@ -2304,6 +2415,30 @@ def resolve_call_expr(
 					return record_expr(expr, ctx.unknown_ty)
 			record_call_info(expr, param_types=param_types, return_type=ctx.int_ty, can_throw=False, target=CallTarget.intrinsic(IntrinsicKind.BYTE_LENGTH))
 			return record_expr(expr, ctx.int_ty)
+		if expr.fn.name == "string_byte_at":
+			if len(arg_types_local) != 2:
+				diagnostics.append(_tc_diag(message=f"{expr.fn.name} expects 2 arguments", severity="error", span=getattr(expr, "loc", Span())))
+				return record_expr(expr, ctx.unknown_ty)
+			arg0_ty = arg_types_local[0]
+			arg1_ty = arg_types_local[1]
+			if arg0_ty == ctx.string_ty:
+				place_expr = place_expr_from_lvalue_expr(expr.args[0])
+				if place_expr is None:
+					diagnostics.append(_tc_diag(message="borrow requires an addressable place; bind to a local first", severity="error", span=getattr(expr, "loc", Span())))
+					return record_expr(expr, ctx.unknown_ty)
+				expr.args[0] = H.HBorrow(subject=place_expr, is_mut=False)
+				arg0_ty = ctx.type_table.ensure_ref(ctx.string_ty)
+			if arg0_ty is None or arg1_ty is None:
+				return record_expr(expr, ctx.unknown_ty)
+			td0 = ctx.type_table.get(arg0_ty)
+			if td0.kind is not TypeKind.REF or not td0.param_types or td0.param_types[0] != ctx.string_ty:
+				diagnostics.append(_tc_diag(message=f"no matching overload for function '{expr.fn.name}' with args {arg_types_local}", severity="error", span=getattr(expr, "loc", Span())))
+				return record_expr(expr, ctx.unknown_ty)
+			if arg1_ty != ctx.int_ty:
+				diagnostics.append(_tc_diag(message=f"no matching overload for function '{expr.fn.name}' with args {arg_types_local}", severity="error", span=getattr(expr, "loc", Span())))
+				return record_expr(expr, ctx.unknown_ty)
+			record_call_info(expr, param_types=[arg0_ty, arg1_ty], return_type=ctx.byte_ty, can_throw=False, target=CallTarget.intrinsic(IntrinsicKind.STRING_BYTE_AT))
+			return record_expr(expr, ctx.byte_ty)
 		if expr.fn.name in ("string_eq", "string_concat"):
 			if len(arg_types_local) != 2:
 				diagnostics.append(_tc_diag(message=f"{expr.fn.name} expects 2 arguments", severity="error", span=getattr(expr, "loc", Span())))
@@ -2343,6 +2478,8 @@ def resolve_call_expr(
 	if hasattr(H, "HQualifiedMember") and isinstance(expr.fn, getattr(H, "HQualifiedMember")):
 		qm = expr.fn
 		kw_pairs = getattr(expr, "kwargs", []) or []
+		arg_exprs = list(expr.args)
+		kw_value_types = [type_expr(kw.value, used_as_value=False) for kw in kw_pairs]
 		call_type_args = getattr(expr, "type_args", None) or []
 		call_type_args_span = None
 		type_arg_ids: list[TypeId] | None = None
@@ -2351,8 +2488,10 @@ def resolve_call_expr(
 			if first_loc is not None:
 				call_type_args_span = Span.from_loc(first_loc)
 			type_arg_ids = [resolve_opaque_type(t, ctx.type_table, module_id=current_module_name, type_params=type_param_map) for t in call_type_args]
-		arg_types = [type_expr(a, used_as_value=False) for a in expr.args]
-		ctor_res = resolve_qualified_member_call(_make_resolver_ctx(ctx, diagnostics=diagnostics, current_module_name=current_module_name, default_package=default_package, module_packages=module_packages, type_param_map=type_param_map, tc_diag=_tc_diag, fixed_width_allowed=_fixed_width_allowed, reject_zst_array=_reject_zst_array, pretty_type_name=_pretty_type_name, format_ctor_signature_list=_format_ctor_signature_list, instantiate_sig=_instantiate_sig, enforce_struct_requires=_enforce_struct_requires, ensure_field_visible=_ensure_field_visible, visible_modules_for_free_call=_visible_modules_for_free_call, module_ids_by_name=module_ids_by_name, visibility_provenance=visibility_provenance, infer=_infer, format_infer_failure=_format_infer_failure, lambda_can_throw=_lambda_can_throw), qm, arg_exprs=list(expr.args), arg_types=arg_types, kw_pairs=kw_pairs, expected_type=expected_type, type_arg_ids=type_arg_ids, allow_infer=True, call_type_args_span=call_type_args_span)
+		arg_types = [type_expr(a, used_as_value=False) for a in arg_exprs]
+		if kw_pairs and not arg_exprs:
+			arg_types = list(kw_value_types)
+		ctor_res = resolve_qualified_member_call(_make_resolver_ctx(ctx, diagnostics=diagnostics, current_module_name=current_module_name, default_package=default_package, module_packages=module_packages, type_param_map=type_param_map, tc_diag=_tc_diag, fixed_width_allowed=_fixed_width_allowed, reject_zst_array=_reject_zst_array, pretty_type_name=_pretty_type_name, format_ctor_signature_list=_format_ctor_signature_list, instantiate_sig=_instantiate_sig, enforce_struct_requires=_enforce_struct_requires, ensure_field_visible=_ensure_field_visible, visible_modules_for_free_call=_visible_modules_for_free_call, module_ids_by_name=module_ids_by_name, visibility_provenance=visibility_provenance, infer=_infer, format_infer_failure=_format_infer_failure, lambda_can_throw=_lambda_can_throw), qm, arg_exprs=list(arg_exprs), arg_types=arg_types, kw_pairs=kw_pairs, expected_type=expected_type, type_arg_ids=type_arg_ids, allow_infer=True, call_type_args_span=call_type_args_span)
 		if ctor_res is not None:
 			inst_params = list(ctor_res.inst_params)
 			inst_return = ctor_res.inst_return
@@ -2369,6 +2508,7 @@ def resolve_call_expr(
 		return record_expr(expr, ctx.unknown_ty)
 	if isinstance(expr.fn, H.HVar):
 		kw_pairs = getattr(expr, "kwargs", []) or []
+		kw_value_types = [type_expr(kw.value, used_as_value=False) for kw in kw_pairs]
 		call_type_args = list(getattr(expr, "type_args", None) or [])
 		call_type_args_span = None
 		if call_type_args:
@@ -2417,7 +2557,11 @@ def resolve_call_expr(
 			struct_id = struct_base
 			if call_type_arg_ids:
 				struct_id = ctx.type_table.ensure_struct_template(struct_base, call_type_arg_ids) if any(ctx.type_table.has_typevar(t) for t in call_type_arg_ids) else ctx.type_table.ensure_struct_instantiated(struct_base, call_type_arg_ids)
-			ctor_res = resolve_struct_ctor(_make_resolver_ctx(ctx, diagnostics=diagnostics, current_module_name=current_module_name, default_package=default_package, module_packages=module_packages, type_param_map=type_param_map, tc_diag=_tc_diag, fixed_width_allowed=_fixed_width_allowed, reject_zst_array=_reject_zst_array, pretty_type_name=_pretty_type_name, format_ctor_signature_list=_format_ctor_signature_list, instantiate_sig=_instantiate_sig, enforce_struct_requires=_enforce_struct_requires, ensure_field_visible=_ensure_field_visible, visible_modules_for_free_call=_visible_modules_for_free_call, module_ids_by_name=module_ids_by_name, visibility_provenance=visibility_provenance, infer=_infer, format_infer_failure=_format_infer_failure, lambda_can_throw=_lambda_can_throw), struct_id=struct_id, struct_name=expr.fn.name, arg_exprs=list(expr.args), arg_types=[type_expr(a, used_as_value=False) for a in expr.args], kw_pairs=kw_pairs, expected_type=expected_type, type_arg_ids=call_type_arg_ids, allow_infer=True, call_type_args_span=call_type_args_span, span=getattr(expr, "loc", Span()))
+			arg_exprs = list(expr.args)
+			arg_types = [type_expr(a, used_as_value=False) for a in arg_exprs]
+			if kw_pairs and not arg_exprs:
+				arg_types = list(kw_value_types)
+			ctor_res = resolve_struct_ctor(_make_resolver_ctx(ctx, diagnostics=diagnostics, current_module_name=current_module_name, default_package=default_package, module_packages=module_packages, type_param_map=type_param_map, tc_diag=_tc_diag, fixed_width_allowed=_fixed_width_allowed, reject_zst_array=_reject_zst_array, pretty_type_name=_pretty_type_name, format_ctor_signature_list=_format_ctor_signature_list, instantiate_sig=_instantiate_sig, enforce_struct_requires=_enforce_struct_requires, ensure_field_visible=_ensure_field_visible, visible_modules_for_free_call=_visible_modules_for_free_call, module_ids_by_name=module_ids_by_name, visibility_provenance=visibility_provenance, infer=_infer, format_infer_failure=_format_infer_failure, lambda_can_throw=_lambda_can_throw), struct_id=struct_id, struct_name=expr.fn.name, arg_exprs=list(arg_exprs), arg_types=arg_types, kw_pairs=kw_pairs, expected_type=expected_type, type_arg_ids=call_type_arg_ids, allow_infer=True, call_type_args_span=call_type_args_span, span=getattr(expr, "loc", Span()))
 			if ctor_res is not None:
 				expr.args = list(ctor_res.ctor_args)
 				expr.kwargs = []
@@ -2642,6 +2786,10 @@ def resolve_call_expr(
 			fn_sig = signatures_by_id.get(decl.fn_id)
 			if fn_sig is not None and fn_sig.declared_can_throw is not None:
 				call_can_throw = bool(fn_sig.declared_can_throw)
+		intrinsic_kind = _intrinsic_kind_for_decl(decl, fn_sig if signatures_by_id is not None else None)
+		if intrinsic_kind is not None:
+			record_call_info(expr, param_types=list(sig_inst.param_types), return_type=sig_inst.result_type, can_throw=call_can_throw, target=CallTarget.intrinsic(intrinsic_kind))
+			return record_expr(expr, sig_inst.result_type)
 		record_call_info(expr, param_types=list(sig_inst.param_types), return_type=sig_inst.result_type, can_throw=call_can_throw, target=CallTarget.direct(decl.fn_id))
 		if ctx.record_instantiation is not None and inst_subst is not None and decl.fn_id is not None:
 			inst_args = tuple(inst_subst.args or [])

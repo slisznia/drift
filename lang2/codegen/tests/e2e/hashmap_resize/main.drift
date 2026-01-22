@@ -1,0 +1,75 @@
+module main
+
+import std.containers as containers;
+
+fn run() -> Int {
+	var m = containers.hash_map_with_capacity<type Int, Int>(1);
+	var i = 0;
+	while i < 200 {
+		m.insert(i, i + 5);
+		i = i + 1;
+	}
+	if m.len() != 200 {
+		return 1;
+	}
+	val k0: Int = 0;
+	val k50: Int = 50;
+	val k199: Int = 199;
+	val r0: Int = match m.get(&k0) { None => { -1 }, Some(v) => { *v } };
+	val r50: Int = match m.get(&k50) { None => { -1 }, Some(v) => { *v } };
+	val r199: Int = match m.get(&k199) { None => { -1 }, Some(v) => { *v } };
+	if r0 == -1 {
+		return 2;
+	}
+	if r50 == -1 {
+		return 3;
+	}
+	if r199 == -1 {
+		return 4;
+	}
+	if r0 != 5 {
+		return 5;
+	}
+	if r50 != 55 {
+		return 6;
+	}
+	if r199 != 204 {
+		return 7;
+	}
+	var j = 200;
+	while j < 240 {
+		m.insert(j, j + 5);
+		j = j + 1;
+	}
+	if m.len() != 240 {
+		return 8;
+	}
+	val k210: Int = 210;
+	val k239: Int = 239;
+	val r210: Int = match m.get(&k210) { None => { -1 }, Some(v) => { *v } };
+	val r239: Int = match m.get(&k239) { None => { -1 }, Some(v) => { *v } };
+	if r210 == -1 {
+		return 9;
+	}
+	if r239 == -1 {
+		return 10;
+	}
+	if r210 != 215 {
+		return 11;
+	}
+	if r239 != 244 {
+		return 12;
+	}
+	val r50b: Int = match m.get(&k50) { None => { -1 }, Some(v) => { *v } };
+	if r50b == -1 {
+		return 13;
+	}
+	if r50b != 55 {
+		return 14;
+	}
+	return 0;
+}
+
+fn main() nothrow -> Int {
+	return try run() catch { 99 };
+}

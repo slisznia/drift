@@ -1,0 +1,131 @@
+module std.core.hash
+
+import std.core.num as num;
+
+export {
+	Hasher,
+	BuildHasher,
+	Hash,
+	DefaultHasher,
+	DefaultBuildHasher,
+	default_build_hasher,
+	hash_value
+};
+
+pub trait Hasher {
+	fn write_u8(self: &mut Self, v: Byte) nothrow -> Void;
+	fn write_u64(self: &mut Self, v: Uint64) nothrow -> Void;
+	fn write_i64(self: &mut Self, v: Int) nothrow -> Void;
+	fn write_bool(self: &mut Self, v: Bool) nothrow -> Void;
+	fn finish(self: &Self) nothrow -> Uint64;
+}
+
+// MVP: BuildHasher is a seed provider for DefaultHasher. It does not allow
+// swapping hash algorithms yet; that will require associated types later.
+pub trait BuildHasher {
+	fn build(self: &Self) nothrow -> DefaultHasher;
+}
+
+pub trait Hash<H> require H is Hasher {
+	fn hash(self: &Self, var h: &mut H) nothrow -> Void;
+}
+
+pub struct DefaultHasher {
+	state: Uint64
+}
+
+pub struct DefaultBuildHasher {
+	seed: Uint64
+}
+
+pub const DEFAULT_HASH_SEED: Uint64 = 0;
+
+pub fn default_build_hasher() nothrow -> DefaultBuildHasher {
+	return DefaultBuildHasher(seed = DEFAULT_HASH_SEED);
+}
+
+pub const HASH_PRIME: Uint64 = 1099511628211;
+
+fn _mix(state: Uint64, v: Uint64) nothrow -> Uint64 {
+	val mixed = num.wrapping_mul_u64(state, HASH_PRIME);
+	return num.wrapping_add_u64(mixed, v);
+}
+
+implement Hasher for DefaultHasher {
+	pub fn write_u8(self: &mut DefaultHasher, v: Byte) nothrow -> Void {
+		self.state = _mix(self.state, cast<Uint64>(v));
+	}
+
+	pub fn write_u64(self: &mut DefaultHasher, v: Uint64) nothrow -> Void {
+		self.state = _mix(self.state, v);
+	}
+
+	pub fn write_i64(self: &mut DefaultHasher, v: Int) nothrow -> Void {
+		self.state = _mix(self.state, cast<Uint64>(v));
+	}
+
+	pub fn write_bool(self: &mut DefaultHasher, v: Bool) nothrow -> Void {
+		val n = v ? cast<Uint64>(1) : cast<Uint64>(0);
+		self.state = _mix(self.state, n);
+	}
+
+	pub fn finish(self: &DefaultHasher) nothrow -> Uint64 {
+		return self.state;
+	}
+}
+
+implement BuildHasher for DefaultBuildHasher {
+	pub fn build(self: &DefaultBuildHasher) nothrow -> DefaultHasher {
+		return DefaultHasher(state = self.seed);
+	}
+}
+
+pub fn hash_value<T>(v: &T) nothrow -> Uint64 require T is Hash<DefaultHasher> {
+	var b = default_build_hasher();
+	var h = BuildHasher::build(&b);
+	Hash<DefaultHasher>::hash(v, &mut h);
+	return Hasher::finish(&h);
+}
+
+implement Hash<DefaultHasher> for Int {
+	pub fn hash(self: &Int, var h: &mut DefaultHasher) nothrow -> Void {
+		Hasher::write_i64(h, *self);
+	}
+}
+
+implement Hash<DefaultHasher> for Uint {
+	pub fn hash(self: &Uint, var h: &mut DefaultHasher) nothrow -> Void {
+		Hasher::write_u64(h, cast<Uint64>(*self));
+	}
+}
+
+implement Hash<DefaultHasher> for Uint64 {
+	pub fn hash(self: &Uint64, var h: &mut DefaultHasher) nothrow -> Void {
+		Hasher::write_u64(h, *self);
+	}
+}
+
+implement Hash<DefaultHasher> for Bool {
+	pub fn hash(self: &Bool, var h: &mut DefaultHasher) nothrow -> Void {
+		Hasher::write_bool(h, *self);
+	}
+}
+
+implement Hash<DefaultHasher> for Byte {
+	pub fn hash(self: &Byte, var h: &mut DefaultHasher) nothrow -> Void {
+		Hasher::write_u64(h, cast<Uint64>(*self));
+	}
+}
+
+implement Hash<DefaultHasher> for String {
+	pub fn hash(self: &String, var h: &mut DefaultHasher) nothrow -> Void {
+		val len = byte_length(self);
+		var i = 0;
+		while i < len {
+			val b = string_byte_at(self, i);
+			Hasher::write_u8(h, b);
+			i = i + 1;
+		}
+		Hasher::write_u64(h, cast<Uint64>(len));
+	}
+}

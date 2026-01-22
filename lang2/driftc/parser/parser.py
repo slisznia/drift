@@ -18,6 +18,7 @@ from .ast import (
     BlockStmt,
     Call,
     ConstDef,
+    TypeAliasDef,
     Copy,
     CatchClause,
     ExceptionArg,
@@ -740,6 +741,7 @@ class QualifiedMemberParseError(ValueError):
 def _build_program(tree: Tree) -> Program:
 	functions: List[FunctionDef] = []
 	consts: List["ConstDef"] = []
+	type_aliases: List["TypeAliasDef"] = []
 	implements: List[ImplementDef] = []
 	traits: List[TraitDef] = []
 	imports: List[ImportStmt] = []
@@ -798,6 +800,11 @@ def _build_program(tree: Tree) -> Program:
 			const_def.is_pub = is_pub
 			const_def.test_build_only = is_test_only
 			consts.append(const_def)
+		elif kind == "type_alias_def":
+			alias_def = _build_type_alias_def(child)
+			alias_def.is_pub = is_pub
+			alias_def.test_build_only = is_test_only
+			type_aliases.append(alias_def)
 		elif kind == "implement_def":
 			impl = _build_implement_def(child)
 			impl.is_pub = is_pub
@@ -838,6 +845,7 @@ def _build_program(tree: Tree) -> Program:
 	return Program(
 		functions=functions,
 		consts=consts,
+		type_aliases=type_aliases,
 		implements=implements,
 		traits=traits,
 		imports=imports,
@@ -871,6 +879,33 @@ def _build_const_def(tree: Tree) -> "ConstDef":
 		name=name_tok.value,
 		type_expr=_build_type_expr(type_node),
 		value=_build_expr(expr_node),
+	)
+
+
+def _build_type_alias_def(tree: Tree) -> "TypeAliasDef":
+	"""
+	Build a top-level type alias definition.
+
+	Grammar:
+	  type_alias_def: TYPE NAME type_params? EQUAL type_expr TERMINATOR
+	"""
+	loc = _loc(tree)
+	name_tok = next(child for child in tree.children if isinstance(child, Token) and child.type == "NAME")
+	type_params_node = next((c for c in tree.children if isinstance(c, Tree) and _name(c) == "type_params"), None)
+	type_params: list[str] = []
+	type_param_locs: list[Located] = []
+	if type_params_node is not None:
+		for tok in type_params_node.children:
+			if isinstance(tok, Token) and tok.type == "NAME":
+				type_params.append(tok.value)
+				type_param_locs.append(Located(tok.line, tok.column))
+	type_node = next(child for child in tree.children if isinstance(child, Tree) and _name(child) == "type_expr")
+	return TypeAliasDef(
+		loc=loc,
+		name=name_tok.value,
+		type_params=type_params,
+		type_param_locs=type_param_locs,
+		target=_build_type_expr(type_node),
 	)
 
 

@@ -1,0 +1,45 @@
+module main
+
+import std.containers as containers;
+
+fn run() -> Int {
+	var s = containers.hash_set_new<type Int>();
+	val k1: Int = 1;
+	val k2: Int = 2;
+	if not s.insert(1) {
+		return 1;
+	}
+	if s.insert(1) {
+		return 2;
+	}
+	if not s.contains(&k1) {
+		return 3;
+	}
+	if not s.insert(2) {
+		return 4;
+	}
+	if s.len() != 2 {
+		return 5;
+	}
+	if not s.remove(&k1) {
+		return 6;
+	}
+	if s.contains(&k1) {
+		return 7;
+	}
+	if s.remove(&k1) {
+		return 8;
+	}
+	s.clear();
+	if s.len() != 0 {
+		return 9;
+	}
+	if s.contains(&k2) {
+		return 10;
+	}
+	return 0;
+}
+
+fn main() nothrow -> Int {
+	return try run() catch { 99 };
+}

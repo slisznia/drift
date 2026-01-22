@@ -85,6 +85,15 @@ class UintFromInt(MInstr):
 
 
 @dataclass
+class CastScalar(MInstr):
+	"""dest = cast scalar value to another scalar type."""
+	dest: ValueId
+	value: ValueId
+	src_ty: TypeId
+	dst_ty: TypeId
+
+
+@dataclass
 class ConstBool(MInstr):
 	"""dest = constant bool"""
 	dest: ValueId
@@ -694,6 +703,14 @@ class StringLen(MInstr):
 
 
 @dataclass
+class StringByteAt(MInstr):
+	"""dest = string_byte_at(value, index) as Byte."""
+	dest: ValueId
+	value: ValueId
+	index: ValueId
+
+
+@dataclass
 class StringEq(MInstr):
 	"""dest = (left == right) for strings; result is Bool."""
 	dest: ValueId
@@ -900,6 +917,22 @@ class BinaryOpInstr(MInstr):
 
 
 @dataclass
+class WrappingAddU64(MInstr):
+	"""dest = wrapping_add_u64(left, right)."""
+	dest: ValueId
+	left: ValueId
+	right: ValueId
+
+
+@dataclass
+class WrappingMulU64(MInstr):
+	"""dest = wrapping_mul_u64(left, right)."""
+	dest: ValueId
+	left: ValueId
+	right: ValueId
+
+
+@dataclass
 class AssignSSA(MInstr):
 	"""
 	SSA move/copy used during SSA construction.
@@ -1001,6 +1034,7 @@ __all__ = [
 	"ConstUint64",
 	"IntFromUint",
 	"UintFromInt",
+	"CastScalar",
 	"ConstBool",
 	"ConstString",
 	"ConstFloat",
@@ -1016,6 +1050,7 @@ __all__ = [
 	"StringFromUint",
 	"StringFromFloat",
 	"StringLen",
+	"StringByteAt",
 	"StringEq",
 	"StringCmp",
 	"StringConcat",
@@ -1078,6 +1113,8 @@ __all__ = [
 	"ErrorEvent",
 	"UnaryOpInstr",
 	"BinaryOpInstr",
+	"WrappingAddU64",
+	"WrappingMulU64",
 	"Phi",
 	"Goto",
 	"IfTerminator",

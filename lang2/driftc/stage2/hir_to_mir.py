@@ -224,6 +224,7 @@ class HIRToMIR:
 		self._int_type = self._type_table.ensure_int()
 		self._float_type = self._type_table.ensure_float()
 		self._bool_type = self._type_table.ensure_bool()
+		self._byte_type = self._type_table.ensure_byte()
 		self._string_type = self._type_table.ensure_string()
 		self._string_empty_const = self.b.new_temp()
 		# Inject a private empty string literal for String.EMPTY; this is a
@@ -681,6 +682,8 @@ class HIRToMIR:
 		return dest
 
 	def _visit_expr_HCast(self, expr: H.HCast) -> M.ValueId:
+		allowed_scalar_names = ("Int", "Uint", "Uint64", "Byte", "Bool")
+
 		def _format_type_expr(te: object | None) -> str:
 			if te is None:
 				return "<unknown>"
@@ -709,12 +712,61 @@ class HIRToMIR:
 				base = f"{base}<{', '.join(_format_type_expr(a) for a in args)}>"
 			return base
 
-		target = _format_type_expr(getattr(expr, "target_type_expr", None))
-		raise AssertionError(
-			"internal compiler error: HCast must be eliminated during typecheck "
-			f"(node_id={expr.node_id}, target={target}); "
-			"rewrite to HFnPtrConst or emit a diagnostic"
-		)
+		def _is_scalar_cast_type(ty: TypeId) -> bool:
+			td = self._type_table.get(ty)
+			return td.kind is TypeKind.SCALAR and td.name in allowed_scalar_names
+
+		def _resolve_scalar_target() -> TypeId | None:
+			te = getattr(expr, "target_type_expr", None)
+			if te is None:
+				return None
+			name = getattr(te, "name", None)
+			args = list(getattr(te, "args", []) or [])
+			if not isinstance(name, str) or name not in allowed_scalar_names or args:
+				return None
+			module_id = getattr(te, "module_id", None) or self._current_module_name()
+			try:
+				tid = resolve_opaque_type(te, self._type_table, module_id=module_id)
+			except Exception:
+				return None
+			td = self._type_table.get(tid)
+			if td.kind is TypeKind.SCALAR and td.name in allowed_scalar_names:
+				return tid
+			return None
+
+		target_ty = self._expr_types.get(expr.node_id) if self._typed_mode != "none" else None
+		if target_ty is None:
+			if self._typed_mode == "strict":
+				target = _format_type_expr(getattr(expr, "target_type_expr", None))
+				raise AssertionError(
+					"internal compiler error: HCast must be eliminated during typecheck "
+					f"(node_id={expr.node_id}, target={target}); "
+					"rewrite to HFnPtrConst or emit a diagnostic"
+				)
+			target_ty = _resolve_scalar_target()
+			if target_ty is None:
+				target = _format_type_expr(getattr(expr, "target_type_expr", None))
+				return self._recover_unknown_value(
+					f"stage2: unable to resolve scalar cast target (node_id={expr.node_id}, target={target})"
+				)
+		src_ty = self._expr_types.get(expr.value.node_id) if self._typed_mode != "none" else None
+		if src_ty is None and self._typed_mode != "strict":
+			src_ty = self._infer_expr_type(expr.value)
+		if src_ty is None:
+			return self._recover_unknown_value(
+				f"stage2: HCast missing source type (node_id={expr.node_id}); typecheck required"
+			)
+		val = self.lower_expr(expr.value)
+		if src_ty == target_ty:
+			return val
+		if not _is_scalar_cast_type(src_ty) or not _is_scalar_cast_type(target_ty):
+			return self._recover_unknown_value(
+				f"stage2: unsupported scalar cast (node_id={expr.node_id}, src={src_ty}, dst={target_ty})"
+			)
+		dest = self.b.new_temp()
+		self.b.emit(M.CastScalar(dest=dest, value=val, src_ty=src_ty, dst_ty=target_ty))
+		self._local_types[dest] = target_ty
+		return dest
 
 	def _visit_expr_HFString(self, expr: H.HFString) -> M.ValueId:
 		"""
@@ -805,6 +857,9 @@ class HIRToMIR:
 				return dest
 			if ty_id == self._uint_type:
 				self.b.emit(M.ConstUint(dest=dest, value=int(val)))
+				return dest
+			if ty_id == self._uint64_type:
+				self.b.emit(M.ConstUint64(dest=dest, value=int(val)))
 				return dest
 			if ty_id == self._bool_type:
 				self.b.emit(M.ConstBool(dest=dest, value=bool(val)))
@@ -1195,6 +1250,67 @@ class HIRToMIR:
 			self.b.emit(M.StoreRef(ptr=ptr, value=new_val, inner_ty=inner_ty))
 			self._local_types[old_val] = inner_ty
 			return old_val
+		if intrinsic is IntrinsicKind.MAYBE_UNINIT:
+			raise NotImplementedError("maybe_uninit intrinsic lowering is not implemented in MVP")
+		if intrinsic is IntrinsicKind.MAYBE_WRITE:
+			if getattr(expr, "kwargs", None):
+				raise AssertionError("maybe_write(...) does not accept keyword arguments (checker bug)")
+			if len(expr.args) != 2:
+				raise AssertionError("maybe_write(...) arity mismatch reached MIR lowering (checker bug)")
+			if info is None:
+				raise AssertionError("maybe_write(...) missing CallInfo (checker bug)")
+			ret_ty = info.sig.user_ret_type
+			inner_ty = self._unwrap_ref_type(ret_ty)
+			if inner_ty is None:
+				raise AssertionError("maybe_write(...) missing &mut T return type (checker bug)")
+			slot = self.lower_expr(expr.args[0])
+			val = self.lower_expr(expr.args[1])
+			self.b.emit(M.StoreRef(ptr=slot, value=val, inner_ty=inner_ty))
+			self._local_types[slot] = ret_ty
+			return slot
+		if intrinsic in (IntrinsicKind.MAYBE_ASSUME_INIT_REF, IntrinsicKind.MAYBE_ASSUME_INIT_MUT):
+			if getattr(expr, "kwargs", None):
+				raise AssertionError(f"{intrinsic.value}(...) does not accept keyword arguments (checker bug)")
+			if len(expr.args) != 1:
+				raise AssertionError(f"{intrinsic.value}(...) arity mismatch reached MIR lowering (checker bug)")
+			if info is None:
+				raise AssertionError(f"{intrinsic.value}(...) missing CallInfo (checker bug)")
+			ret_ty = info.sig.user_ret_type
+			slot = self.lower_expr(expr.args[0])
+			self._local_types[slot] = ret_ty
+			return slot
+		if intrinsic is IntrinsicKind.MAYBE_ASSUME_INIT_READ:
+			if getattr(expr, "kwargs", None):
+				raise AssertionError("maybe_assume_init_read(...) does not accept keyword arguments (checker bug)")
+			if len(expr.args) != 1:
+				raise AssertionError("maybe_assume_init_read(...) arity mismatch reached MIR lowering (checker bug)")
+			if info is None:
+				raise AssertionError("maybe_assume_init_read(...) missing CallInfo (checker bug)")
+			ret_ty = info.sig.user_ret_type
+			slot = self.lower_expr(expr.args[0])
+			dest = self.b.new_temp()
+			self.b.emit(M.LoadRef(dest=dest, ptr=slot, inner_ty=ret_ty))
+			self._local_types[dest] = ret_ty
+			return dest
+		if intrinsic in (IntrinsicKind.WRAPPING_ADD_U64, IntrinsicKind.WRAPPING_MUL_U64):
+			name = intrinsic.value
+			if getattr(expr, "kwargs", None):
+				raise AssertionError(f"{name}(...) does not accept keyword arguments (checker bug)")
+			if len(expr.args) != 2:
+				raise AssertionError(f"{name}(...) arity mismatch reached MIR lowering (checker bug)")
+			if info is None or len(info.sig.param_types) != 2:
+				raise AssertionError(f"{name}(...) missing CallInfo types (checker bug)")
+			if info.sig.param_types[0] != self._uint64_type or info.sig.param_types[1] != self._uint64_type:
+				raise AssertionError(f"{name} requires Uint64 operands (checker bug)")
+			left = self.lower_expr(expr.args[0])
+			right = self.lower_expr(expr.args[1])
+			dest = self.b.new_temp()
+			if intrinsic is IntrinsicKind.WRAPPING_ADD_U64:
+				self.b.emit(M.WrappingAddU64(dest=dest, left=left, right=right))
+			else:
+				self.b.emit(M.WrappingMulU64(dest=dest, left=left, right=right))
+			self._local_types[dest] = self._uint64_type
+			return dest
 		if intrinsic is IntrinsicKind.RAW_ALLOC:
 			if getattr(expr, "kwargs", None):
 				raise AssertionError("alloc_uninit(...) does not accept keyword arguments (checker bug)")
@@ -1316,6 +1432,30 @@ class HIRToMIR:
 			dest = self.b.new_temp()
 			self._lower_len(arg_ty, arg_val, dest)
 			self._local_types[dest] = self._int_type
+			return dest
+		if intrinsic is IntrinsicKind.STRING_BYTE_AT:
+			name = intrinsic.value
+			if getattr(expr, "kwargs", None):
+				raise AssertionError(f"{name}(...) does not accept keyword arguments (checker bug)")
+			if len(expr.args) != 2:
+				raise AssertionError(f"{name}(...) arity mismatch reached MIR lowering (checker bug)")
+			if info is None or len(info.sig.param_types) < 2:
+				raise AssertionError(f"{name}(...) missing CallInfo types (checker bug)")
+			if info.sig.param_types[0] != self._type_table.ensure_ref(self._string_type) or info.sig.param_types[1] != self._int_type:
+				raise AssertionError(f"{name} requires &String and Int operands (checker bug)")
+			str_val = self.lower_expr(expr.args[0])
+			str_arg_ty = info.sig.param_types[0]
+			td = self._type_table.get(str_arg_ty)
+			if td.kind is TypeKind.REF and td.param_types:
+				inner_ty = td.param_types[0]
+				load = self.b.new_temp()
+				self.b.emit(M.LoadRef(dest=load, ptr=str_val, inner_ty=inner_ty))
+				self._local_types[load] = inner_ty
+				str_val = load
+			idx_val = self.lower_expr(expr.args[1])
+			dest = self.b.new_temp()
+			self.b.emit(M.StringByteAt(dest=dest, value=str_val, index=idx_val))
+			self._local_types[dest] = self._byte_type
 			return dest
 		if intrinsic is IntrinsicKind.STRING_EQ:
 			if getattr(expr, "kwargs", None):
@@ -4216,6 +4356,12 @@ class HIRToMIR:
 			local_ty = self._local_types.get(local_name)
 			if local_ty is not None:
 				return local_ty
+			if getattr(expr, "binding_id", None) is None:
+				const_mod = getattr(expr, "module_id", None) or self._current_module_name()
+				const_val = self._type_table.lookup_const(f"{const_mod}::{expr.name}")
+				if const_val is not None:
+					const_ty, _ = const_val
+					return const_ty
 		if self._expr_types and self._typed_mode != "none":
 			known = self._expr_types.get(expr.node_id)
 			if known is not None:

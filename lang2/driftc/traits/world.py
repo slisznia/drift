@@ -65,6 +65,7 @@ class TraitDef:
 @dataclass
 class ImplDef:
 	trait: TraitKey
+	trait_args: Tuple[TypeKey, ...]
 	target: TypeKey
 	target_head: TypeHeadKey
 	methods: List[parser_ast.FunctionDef]
@@ -89,7 +90,7 @@ def _qual_from_type_expr(typ: parser_ast.TypeExpr) -> Optional[str]:
 	return getattr(typ, "module_id", None) or getattr(typ, "module_alias", None)
 
 
-BUILTIN_TYPE_NAMES = {"Int", "Bool", "String", "Uint", "Float", "Void", "Error", "DiagnosticValue"}
+BUILTIN_TYPE_NAMES = {"Int", "Bool", "String", "Uint", "Uint64", "Byte", "Float", "Void", "Error", "DiagnosticValue"}
 BUILTIN_TRAIT_NAMES: set[str] = set()
 
 
@@ -436,6 +437,15 @@ def build_trait_world(
 			default_package=package_id,
 			module_packages=module_packages,
 		)
+		trait_args = tuple(
+			type_key_from_expr(
+				a,
+				default_module=module_id,
+				default_package=package_id,
+				module_packages=module_packages,
+			)
+			for a in (getattr(impl.trait, "args", []) or [])
+		)
 		if trait_key not in local_trait_keys and trait_key.module == module_id:
 			world.diagnostics.append(diag(f"unknown trait '{_trait_key_str(trait_key)}' in implement block", getattr(impl, "loc", None)))
 		target_key = type_key_from_expr(
@@ -487,6 +497,7 @@ def build_trait_world(
 		world.impls.append(
 			ImplDef(
 				trait=trait_key,
+				trait_args=trait_args,
 				target=target_key,
 				target_head=head_key,
 				methods=list(getattr(impl, "methods", []) or []),

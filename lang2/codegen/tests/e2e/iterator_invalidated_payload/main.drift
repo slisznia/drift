@@ -3,7 +3,7 @@ module main
 import std.err;
 import std.iter as iter;
 
-fn next_once<I>(it: &mut I) -> Int require I is iter.SinglePassIterator<Int> {
+fn next_once<I>(it: &mut I) -> Int require I is iter.SinglePassIterator<&Int> {
 	val _v = iter.SinglePassIterator::next(it);
 	return 2;
 }

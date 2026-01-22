@@ -9,3 +9,6 @@ These must match the stdlib constants (e.g., std.containers.array.ARRAY_CONTAINE
 ARRAY_CONTAINER_ID = "std.containers:Array"
 DEQUE_CONTAINER_ID = "std.containers:Deque"
 RAW_BUFFER_CONTAINER_ID = "std.mem:RawBuffer"
+STRING_CONTAINER_ID = "std.core:String"
+HASH_MAP_CONTAINER_ID = "std.containers:HashMap"
+HASH_SET_CONTAINER_ID = "std.containers:HashSet"

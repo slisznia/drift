@@ -1,0 +1,7 @@
+module main
+
+import std.tests.wrap as wrap;
+
+fn main() nothrow -> Int {
+	return try wrap.run() catch { 1 };
+}

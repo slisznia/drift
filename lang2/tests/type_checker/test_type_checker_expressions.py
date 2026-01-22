@@ -64,6 +64,18 @@ def test_unary_ops():
 	assert tc.type_table.ensure_bool() in res.typed_fn.expr_types.values()
 
 
+def test_cast_uint64_records_expr_type():
+	tc = _tc()
+	cast_expr = H.HCast(
+		target_type_expr=parser_ast.TypeExpr(name="Uint64"),
+		value=H.HLiteralInt(1),
+	)
+	block = H.HBlock(statements=[H.HExprStmt(expr=cast_expr)])
+	res = tc.check_function(FunctionId(module="std.core", name="cast_u64", ordinal=0), block)
+	assert res.diagnostics == []
+	assert res.typed_fn.expr_types.get(cast_expr.node_id) == tc.type_table.ensure_uint64()
+
+
 def test_array_literal_and_index():
 	tc = _tc()
 	block = H.HBlock(

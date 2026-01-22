@@ -1,0 +1,23 @@
+module std.tests.hash_wrap
+
+import std.core.hash as hash;
+import std.core.num as num;
+
+use trait hash.Hasher;
+
+export { run };
+
+pub fn run() -> Int {
+	val max = cast<Uint64>(-1);
+	var b = hash.default_build_hasher();
+	var h = hash.BuildHasher::build(&b);
+	hash.Hasher::write_u64(&mut h, max);
+	hash.Hasher::write_u64(&mut h, cast<Uint64>(1));
+	val prime = cast<Uint64>(1099511628211);
+	val expected = num.wrapping_add_u64(num.wrapping_mul_u64(max, prime), cast<Uint64>(1));
+	val got = hash.Hasher::finish(&h);
+	if got == expected {
+		return 0;
+	}
+	return 1;
+}

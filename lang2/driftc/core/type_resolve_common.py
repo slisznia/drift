@@ -22,7 +22,7 @@ def _raw_can_throw(raw: object) -> bool:
 	return bool(val)
 
 
-def resolve_opaque_type(raw: object, table: TypeTable, *, module_id: str | None = None, type_params: dict[str, TypeParamId | TypeId] | None = None, allow_generic_base: bool = False) -> TypeId:
+def resolve_opaque_type(raw: object, table: TypeTable, *, module_id: str | None = None, type_params: dict[str, TypeParamId | TypeId] | None = None, allow_generic_base: bool = False, alias_stack: list[tuple[str | None, str]] | None = None) -> TypeId:
 	"""
 	Map a raw type shape (TypeExpr-like, string, tuple, or TypeId) to a TypeId.
 
@@ -43,17 +43,47 @@ def resolve_opaque_type(raw: object, table: TypeTable, *, module_id: str | None 
 		name = getattr(raw, "name")
 		args = getattr(raw, "args")
 		origin_mod = getattr(raw, "module_id", None) or module_id
+		if alias_stack is None:
+			alias_stack = []
 		if type_params and name in type_params and not args:
 			param_val = type_params[name]
 			if isinstance(param_val, TypeId):
 				return param_val
 			return table.ensure_typevar(param_val, name=name)
+		alias_def = table.lookup_type_alias(module_id=origin_mod, name=str(name))
+		if alias_def is not None:
+			alias_params, alias_target, _loc = alias_def
+			if len(args) != len(alias_params):
+				return table.ensure_unknown()
+			alias_key = (origin_mod, str(name))
+			if alias_key in alias_stack:
+				return table.ensure_unknown()
+			local_params = dict(type_params or {})
+			for idx, param_name in enumerate(alias_params):
+				arg = args[idx] if idx < len(args) else None
+				local_params[param_name] = resolve_opaque_type(
+					arg,
+					table,
+					module_id=origin_mod,
+					type_params=type_params,
+					allow_generic_base=allow_generic_base,
+					alias_stack=alias_stack + [alias_key],
+				)
+			return resolve_opaque_type(
+				alias_target,
+				table,
+				module_id=origin_mod,
+				type_params=local_params,
+				allow_generic_base=allow_generic_base,
+				alias_stack=alias_stack + [alias_key],
+			)
 		if name in {"&", "&mut"}:
 			inner = resolve_opaque_type(
 				args[0] if args else None,
 				table,
 				module_id=origin_mod,
 				type_params=type_params,
+				alias_stack=alias_stack,
 			)
 			return table.ensure_ref_mut(inner) if name == "&mut" else table.ensure_ref(inner)
 		if name == "Ptr":
@@ -64,6 +94,7 @@ def resolve_opaque_type(raw: object, table: TypeTable, *, module_id: str | None 
 				table,
 				module_id=origin_mod,
 				type_params=type_params,
+				alias_stack=alias_stack,
 			)
 			return table.new_ptr(inner, module_id=origin_mod)
 		if name == "Void":
@@ -82,7 +113,7 @@ def resolve_opaque_type(raw: object, table: TypeTable, *, module_id: str | None 
 					base = table.get_variant_base(module_id="lang.core", name=str(name))
 			if base is not None:
 				arg_ids = [
-					resolve_opaque_type(a, table, module_id=origin_mod, type_params=type_params)
+					resolve_opaque_type(a, table, module_id=origin_mod, type_params=type_params, alias_stack=alias_stack)
 					for a in list(args)
 				]
 				if base in table.variant_schemas:
@@ -102,31 +133,34 @@ def resolve_opaque_type(raw: object, table: TypeTable, *, module_id: str | None 
 			if name not in {"Array", "Optional", "FnResult", "fn"}:
 				return table.ensure_unknown()
 		if name == "FnResult":
-			ok = resolve_opaque_type(args[0] if args else None, table, module_id=origin_mod, type_params=type_params)
+			ok = resolve_opaque_type(args[0] if args else None, table, module_id=origin_mod, type_params=type_params, alias_stack=alias_stack)
 			err = resolve_opaque_type(
 				args[1] if len(args) > 1 else table.ensure_error(),
 				table,
 				module_id=origin_mod,
 				type_params=type_params,
+				alias_stack=alias_stack,
 			)
 			return table.ensure_fnresult(ok, err)
 		if name == "fn":
 			if not args:
 				return table.ensure_unknown()
 			param_ids = [
-				resolve_opaque_type(a, table, module_id=origin_mod, type_params=type_params)
+				resolve_opaque_type(a, table, module_id=origin_mod, type_params=type_params, alias_stack=alias_stack)
 				for a in list(args[:-1])
 			]
-			ret_id = resolve_opaque_type(args[-1], table, module_id=origin_mod, type_params=type_params)
+			ret_id = resolve_opaque_type(args[-1], table, module_id=origin_mod, type_params=type_params, alias_stack=alias_stack)
 			can_throw = _raw_can_throw(raw)
 			return table.ensure_function(param_ids, ret_id, can_throw=can_throw)
 		if name == "Array":
-			elem = resolve_opaque_type(args[0] if args else None, table, module_id=origin_mod, type_params=type_params)
+			elem = resolve_opaque_type(args[0] if args else None, table, module_id=origin_mod, type_params=type_params, alias_stack=alias_stack)
 			return table.new_array(elem)
 		if name == "DiagnosticValue":
 			return table.ensure_diagnostic_value()
 		if name == "Uint":
 			return table.ensure_uint()
+		if name == "Uint64":
+			return table.ensure_uint64()
 		if name == "Int":
 			return table.ensure_int()
 		if name == "Byte":
@@ -193,6 +227,24 @@ def resolve_opaque_type(raw: object, table: TypeTable, *, module_id: str | None 
 
 		if type_params and raw in type_params:
 			return table.ensure_typevar(type_params[raw], name=raw)
+		alias_def = table.lookup_type_alias(module_id=module_id, name=str(raw))
+		if alias_def is not None:
+			alias_params, alias_target, _loc = alias_def
+			if alias_params:
+				return table.ensure_unknown()
+			alias_key = (module_id, str(raw))
+			if alias_stack is None:
+				alias_stack = []
+			if alias_key in alias_stack:
+				return table.ensure_unknown()
+			return resolve_opaque_type(
+				alias_target,
+				table,
+				module_id=module_id,
+				type_params=type_params,
+				allow_generic_base=allow_generic_base,
+				alias_stack=alias_stack + [alias_key],
+			)
 		if raw == "Void":
 			return table.ensure_void()
 		if raw == "Int":
@@ -209,6 +261,8 @@ def resolve_opaque_type(raw: object, table: TypeTable, *, module_id: str | None 
 			return table.ensure_diagnostic_value()
 		if raw == "Uint":
 			return table.ensure_uint()
+		if raw == "Uint64":
+			return table.ensure_uint64()
 		if raw == "Byte":
 			return table.ensure_byte()
 		if raw.startswith("Ptr<") and raw.endswith(">") and module_id == "std.mem":
@@ -219,6 +273,7 @@ def resolve_opaque_type(raw: object, table: TypeTable, *, module_id: str | None 
 				module_id=module_id,
 				type_params=type_params,
 				allow_generic_base=allow_generic_base,
+				alias_stack=alias_stack,
 			)
 			return table.new_ptr(inner_ty, module_id=module_id)
 		if raw.startswith("FnResult<") and raw.endswith(">"):
@@ -233,6 +288,7 @@ def resolve_opaque_type(raw: object, table: TypeTable, *, module_id: str | None 
 				module_id=module_id,
 				type_params=type_params,
 				allow_generic_base=allow_generic_base,
+				alias_stack=alias_stack,
 			)
 			err_ty = resolve_opaque_type(
 				err_raw,
@@ -240,17 +296,18 @@ def resolve_opaque_type(raw: object, table: TypeTable, *, module_id: str | None 
 				module_id=module_id,
 				type_params=type_params,
 				allow_generic_base=allow_generic_base,
+				alias_stack=alias_stack,
 			)
 			return table.ensure_fnresult(ok_ty, err_ty)
 		if raw == "FnResult":
 			return table.ensure_unknown()
 		if raw.startswith("Array<") and raw.endswith(">"):
 			inner = raw[len("Array<"):-1]
-			elem_ty = resolve_opaque_type(inner, table, module_id=module_id, type_params=type_params)
+			elem_ty = resolve_opaque_type(inner, table, module_id=module_id, type_params=type_params, alias_stack=alias_stack)
 			return table.new_array(elem_ty)
 		if raw.startswith("Optional<") and raw.endswith(">"):
 			inner = raw[len("Optional<"):-1]
-			inner_ty = resolve_opaque_type(inner, table, module_id=module_id, type_params=type_params)
+			inner_ty = resolve_opaque_type(inner, table, module_id=module_id, type_params=type_params, alias_stack=alias_stack)
 			base_id = table.ensure_optional_base()
 			try:
 				if table.has_typevar(inner_ty):
@@ -293,6 +350,7 @@ def resolve_opaque_type(raw: object, table: TypeTable, *, module_id: str | None 
 				module_id=module_id,
 				type_params=type_params,
 				allow_generic_base=allow_generic_base,
+				alias_stack=alias_stack,
 			)
 			err = resolve_opaque_type(
 				raw[2],
@@ -300,6 +358,7 @@ def resolve_opaque_type(raw: object, table: TypeTable, *, module_id: str | None 
 				module_id=module_id,
 				type_params=type_params,
 				allow_generic_base=allow_generic_base,
+				alias_stack=alias_stack,
 			)
 			return table.ensure_fnresult(ok, err)
 		if len(raw) == 2:
@@ -309,6 +368,7 @@ def resolve_opaque_type(raw: object, table: TypeTable, *, module_id: str | None 
 				module_id=module_id,
 				type_params=type_params,
 				allow_generic_base=allow_generic_base,
+				alias_stack=alias_stack,
 			)
 			err = resolve_opaque_type(
 				raw[1],
@@ -316,6 +376,7 @@ def resolve_opaque_type(raw: object, table: TypeTable, *, module_id: str | None 
 				module_id=module_id,
 				type_params=type_params,
 				allow_generic_base=allow_generic_base,
+				alias_stack=alias_stack,
 			)
 			return table.ensure_fnresult(ok, err)
 		return table.ensure_unknown()

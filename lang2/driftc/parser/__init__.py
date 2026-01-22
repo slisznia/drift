@@ -916,6 +916,9 @@ def _filter_test_build_only(prog: parser_ast.Program, *, test_build_only: bool) 
 	for c in getattr(prog, "consts", []) or []:
 		if getattr(c, "test_build_only", False):
 			test_only_names.add(c.name)
+	for a in getattr(prog, "type_aliases", []) or []:
+		if getattr(a, "test_build_only", False):
+			test_only_names.add(a.name)
 	for s in getattr(prog, "structs", []) or []:
 		if getattr(s, "test_build_only", False):
 			test_only_names.add(s.name)
@@ -931,6 +934,7 @@ def _filter_test_build_only(prog: parser_ast.Program, *, test_build_only: bool) 
 
 	prog.functions = [fn for fn in getattr(prog, "functions", []) or [] if not getattr(fn, "test_build_only", False)]
 	prog.consts = [c for c in getattr(prog, "consts", []) or [] if not getattr(c, "test_build_only", False)]
+	prog.type_aliases = [a for a in getattr(prog, "type_aliases", []) or [] if not getattr(a, "test_build_only", False)]
 	prog.structs = [s for s in getattr(prog, "structs", []) or [] if not getattr(s, "test_build_only", False)]
 	prog.variants = [v for v in getattr(prog, "variants", []) or [] if not getattr(v, "test_build_only", False)]
 	prog.exceptions = [e for e in getattr(prog, "exceptions", []) or [] if not getattr(e, "test_build_only", False)]
@@ -994,6 +998,7 @@ def _collect_type_defs(prog: parser_ast.Program) -> dict[str, list[str]]:
 		"structs": [s.name for s in getattr(prog, "structs", []) or []],
 		"variants": [v.name for v in getattr(prog, "variants", []) or []],
 		"exceptions": [e.name for e in getattr(prog, "exceptions", []) or []],
+		"aliases": [a.name for a in getattr(prog, "type_aliases", []) or []],
 	}
 
 
@@ -1481,12 +1486,14 @@ def parse_drift_workspace_to_hir(
 		module_struct_names: set[str] = {s.name for s in getattr(merged_prog, "structs", []) or []}
 		module_variant_names: set[str] = {v.name for v in getattr(merged_prog, "variants", []) or []}
 		module_exception_names: set[str] = {e.name for e in getattr(merged_prog, "exceptions", []) or []}
+		module_alias_names: set[str] = {a.name for a in getattr(merged_prog, "type_aliases", []) or []}
 		module_trait_names: set[str] = {t.name for t in getattr(merged_prog, "traits", []) or []}
 		module_pub_fn_names: set[str] = {fn.name for fn in getattr(merged_prog, "functions", []) or [] if getattr(fn, "is_pub", False)}
 		module_pub_const_names: set[str] = {c.name for c in getattr(merged_prog, "consts", []) or [] if getattr(c, "is_pub", False)}
 		module_pub_struct_names: set[str] = {s.name for s in getattr(merged_prog, "structs", []) or [] if getattr(s, "is_pub", False)}
 		module_pub_variant_names: set[str] = {v.name for v in getattr(merged_prog, "variants", []) or [] if getattr(v, "is_pub", False)}
 		module_pub_exception_names: set[str] = {e.name for e in getattr(merged_prog, "exceptions", []) or [] if getattr(e, "is_pub", False)}
+		module_pub_alias_names: set[str] = {a.name for a in getattr(merged_prog, "type_aliases", []) or [] if getattr(a, "is_pub", False)}
 		module_pub_trait_names: set[str] = {t.name for t in getattr(merged_prog, "traits", []) or [] if getattr(t, "is_pub", False)}
 		builtin_struct_names: dict[str, set[str]] = {"std.mem": {"Ptr"}}
 		builtin_public_structs = builtin_struct_names.get(module_id)
@@ -1520,7 +1527,7 @@ def parse_drift_workspace_to_hir(
 		# (e.g., `a::foo`). Re-exports preserve the origin module in the map so
 		# consumers always bind to the defining symbol.
 		exported_values: dict[str, tuple[str, str]] = {}
-		exported_types: dict[str, set[str]] = {"structs": set(), "variants": set(), "exceptions": set()}
+		exported_types: dict[str, set[str]] = {"structs": set(), "variants": set(), "exceptions": set(), "aliases": set()}
 		exported_consts: set[str] = set()
 		exported_traits: set[str] = set()
 		star_reexports: dict[str, Span] = {}
@@ -1559,8 +1566,9 @@ def parse_drift_workspace_to_hir(
 			in_struct = n in module_struct_names
 			in_variant = n in module_variant_names
 			in_exc = n in module_exception_names
+			in_alias = n in module_alias_names
 			in_trait = n in module_trait_names
-			type_hits = int(in_struct) + int(in_variant) + int(in_exc)
+			type_hits = int(in_struct) + int(in_variant) + int(in_exc) + int(in_alias)
 			in_types = type_hits > 0
 			if (in_values and in_consts) or (in_values and in_types) or (in_consts and in_types):
 				diagnostics.append(
@@ -1655,6 +1663,17 @@ def parse_drift_workspace_to_hir(
 					)
 					continue
 				exported_types["exceptions"].add(n)
+			if in_alias:
+				if n not in module_pub_alias_names:
+					diagnostics.append(
+						_p_diag(
+							message=f"cannot export '{n}' from module '{module_id}': symbol is not public (mark it 'pub')",
+							severity="error",
+							span=ex_span,
+						)
+					)
+					continue
+				exported_types["aliases"].add(n)
 			if in_trait:
 				if n not in module_pub_trait_names:
 					diagnostics.append(
@@ -1725,10 +1744,11 @@ def parse_drift_workspace_to_hir(
 			"structs": {n: (mid, n) for n in exported_types.get("structs") or set()},
 			"variants": {n: (mid, n) for n in exported_types.get("variants") or set()},
 			"exceptions": {n: (mid, n) for n in exported_types.get("exceptions") or set()},
+			"aliases": {n: (mid, n) for n in exported_types.get("aliases") or set()},
 		}
 		exported_trait_origins_by_module[mid] = {n: (mid, n) for n in exported_traits}
 		reexported_value_targets_by_module[mid] = {}
-		reexported_type_targets_by_module[mid] = {"structs": {}, "variants": {}, "exceptions": {}}
+		reexported_type_targets_by_module[mid] = {"structs": {}, "variants": {}, "exceptions": {}, "aliases": {}}
 		reexported_const_targets_by_module[mid] = {}
 		reexported_trait_targets_by_module[mid] = {}
 
@@ -1746,7 +1766,7 @@ def parse_drift_workspace_to_hir(
 			return (
 				exports_values_by_module.get(mod) or {},
 				exported_const_origins_by_module.get(mod) or {},
-				exported_type_origins_by_module.get(mod) or {"structs": {}, "variants": {}, "exceptions": {}},
+			exported_type_origins_by_module.get(mod) or {"structs": {}, "variants": {}, "exceptions": {}, "aliases": {}},
 				exported_trait_origins_by_module.get(mod) or {},
 			)
 		if external_module_exports is not None and mod in external_module_exports:
@@ -1754,10 +1774,10 @@ def parse_drift_workspace_to_hir(
 			values_obj = {n: (mod, n) for n in sorted(ext.get("values") or set())}
 			consts_obj = {n: (mod, n) for n in sorted(ext.get("consts") or set())}
 			traits_obj = {n: (mod, n) for n in sorted(ext.get("traits") or set())}
-			types_obj: dict[str, dict[str, tuple[str, str]]] = {"structs": {}, "variants": {}, "exceptions": {}}
+			types_obj: dict[str, dict[str, tuple[str, str]]] = {"structs": {}, "variants": {}, "exceptions": {}, "aliases": {}}
 			ext_types = ext.get("types")
 			if isinstance(ext_types, dict):
-				for kind in ("structs", "variants", "exceptions"):
+				for kind in ("structs", "variants", "exceptions", "aliases"):
 					for name in sorted(ext_types.get(kind) or set()):
 						types_obj[kind][name] = (mod, name)
 			ext_reexp = ext.get("reexports")
@@ -1781,7 +1801,7 @@ def parse_drift_workspace_to_hir(
 							if isinstance(tm, str) and isinstance(tn, str):
 								consts_obj[name] = (tm, tn)
 				if isinstance(ext_reexp_types, dict):
-					for kind in ("structs", "variants", "exceptions"):
+					for kind in ("structs", "variants", "exceptions", "aliases"):
 						km = ext_reexp_types.get(kind)
 						if isinstance(km, dict):
 							for name, v in km.items():
@@ -1798,7 +1818,7 @@ def parse_drift_workspace_to_hir(
 							if isinstance(tm, str) and isinstance(tn, str):
 								traits_obj[name] = (tm, tn)
 			return values_obj, consts_obj, types_obj, traits_obj
-		return {}, {}, {"structs": {}, "variants": {}, "exceptions": {}}, {}
+		return {}, {}, {"structs": {}, "variants": {}, "exceptions": {}, "aliases": {}}, {}
 
 	# We iterate until no progress so multi-hop star re-exports resolve deterministically.
 	for _ in range(len(merged_programs) + 1):
@@ -1919,10 +1939,10 @@ def parse_drift_workspace_to_hir(
 	module_exports: dict[str, dict[str, object]] = {}
 	for mid in merged_programs.keys():
 		vals = exports_values_by_module.get(mid, {})
-		types = exports_types_by_module.get(mid, {"structs": set(), "variants": set(), "exceptions": set()})
+		types = exports_types_by_module.get(mid, {"structs": set(), "variants": set(), "exceptions": set(), "aliases": set()})
 		consts = exports_consts_by_module.get(mid, set())
 		traits = exports_traits_by_module.get(mid, set())
-		reexp_types = reexported_type_targets_by_module.get(mid, {"structs": {}, "variants": {}, "exceptions": {}})
+		reexp_types = reexported_type_targets_by_module.get(mid, {"structs": {}, "variants": {}, "exceptions": {}, "aliases": {}})
 		reexp_consts = reexported_const_targets_by_module.get(mid, {})
 		reexp_traits = reexported_trait_targets_by_module.get(mid, {})
 		reexp_values = reexported_value_targets_by_module.get(mid, {})
@@ -1932,6 +1952,7 @@ def parse_drift_workspace_to_hir(
 				"structs": sorted(list(types.get("structs", set()))),
 				"variants": sorted(list(types.get("variants", set()))),
 				"exceptions": sorted(list(types.get("exceptions", set()))),
+				"aliases": sorted(list(types.get("aliases", set()))),
 			},
 			"consts": sorted(list(consts)),
 			"traits": sorted(list(traits)),
@@ -1941,6 +1962,7 @@ def parse_drift_workspace_to_hir(
 					"structs": {n: {"module": m, "name": s} for n, (m, s) in sorted(reexp_types.get("structs", {}).items())},
 					"variants": {n: {"module": m, "name": s} for n, (m, s) in sorted(reexp_types.get("variants", {}).items())},
 					"exceptions": {n: {"module": m, "name": s} for n, (m, s) in sorted(reexp_types.get("exceptions", {}).items())},
+					"aliases": {n: {"module": m, "name": s} for n, (m, s) in sorted(reexp_types.get("aliases", {}).items())},
 				},
 				"consts": {n: {"module": m, "name": s} for n, (m, s) in sorted(reexp_consts.items())},
 				"traits": {n: {"module": m, "name": s} for n, (m, s) in sorted(reexp_traits.items())},
@@ -2185,8 +2207,12 @@ def parse_drift_workspace_to_hir(
 			ext = external_module_exports.get(mod) or {}
 			ext_types = ext.get("types")
 			if isinstance(ext_types, dict):
-				return set(ext_types.get("structs") or set()) | set(ext_types.get("variants") or set()) | set(
-					ext_types.get("exceptions") or set()
+				return (
+					set(ext_types.get("structs") or set())
+					| set(ext_types.get("variants") or set())
+					| set(ext_types.get("exceptions") or set())
+					| set(ext_types.get("aliases") or set())
+					| set(ext_types.get("aliases") or set())
 				)
 			return set()
 		return set()
@@ -2222,7 +2248,7 @@ def parse_drift_workspace_to_hir(
 					def_mod, def_name = (mod, te.name)
 					reexp = reexported_type_targets_by_module.get(mod)
 					if reexp is not None:
-						for kind in ("structs", "variants", "exceptions"):
+						for kind in ("structs", "variants", "exceptions", "aliases"):
 							if te.name in (exports_types_by_module.get(mod) or {}).get(kind, set()):
 								def_mod, def_name = reexp.get(kind, {}).get(te.name, (mod, te.name))
 								break
@@ -2233,7 +2259,7 @@ def parse_drift_workspace_to_hir(
 						if isinstance(ext_reexp, dict) and isinstance(ext_types, dict):
 							ext_reexp_types = ext_reexp.get("types")
 							if isinstance(ext_reexp_types, dict):
-								for kind in ("structs", "variants", "exceptions"):
+								for kind in ("structs", "variants", "exceptions", "aliases"):
 									kind_set = set(ext_types.get(kind) or set())
 									if te.name in kind_set:
 										tgt = ext_reexp_types.get(kind, {}).get(te.name) if isinstance(ext_reexp_types.get(kind), dict) else None
@@ -2439,6 +2465,8 @@ def parse_drift_workspace_to_hir(
 				_resolve_trait_expr_in_file(path, file_aliases, getattr(s, "require", None).expr if getattr(s, "require", None) is not None else None)
 				for f in getattr(s, "fields", []) or []:
 					_resolve_type_expr_in_file(path, file_aliases, f.type_expr)
+			for a in getattr(prog, "type_aliases", []) or []:
+				_resolve_type_expr_in_file(path, file_aliases, getattr(a, "target", None))
 			for e in getattr(prog, "exceptions", []) or []:
 				for a in getattr(e, "args", []) or []:
 					_resolve_type_expr_in_file(path, file_aliases, a.type_expr)
@@ -2751,6 +2779,7 @@ def parse_drift_workspace_to_hir(
 						set(ext_types.get("structs") or set())
 						| set(ext_types.get("variants") or set())
 						| set(ext_types.get("exceptions") or set())
+						| set(ext_types.get("aliases") or set())
 					)
 				return set()
 			return set()
@@ -3154,6 +3183,7 @@ def parse_drift_workspace_to_hir(
 			"structs": [s.name for s in getattr(prog, "structs", []) or []],
 			"variants": [v.name for v in getattr(prog, "variants", []) or []],
 			"exceptions": [e.name for e in getattr(prog, "exceptions", []) or []],
+			"aliases": [a.name for a in getattr(prog, "type_aliases", []) or []],
 		}
 
 	trait_worlds = getattr(shared_type_table, "trait_worlds", None)
@@ -3240,6 +3270,7 @@ def _lower_parsed_program_to_hir(
 	exception_schemas: dict[str, tuple[str, list[str]]] = {}
 	struct_defs = list(getattr(prog, "structs", []) or [])
 	variant_defs = list(getattr(prog, "variants", []) or [])
+	type_alias_defs = list(getattr(prog, "type_aliases", []) or [])
 	struct_param_maps: dict[TypeKey, dict[str, TypeParamId]] = {}
 	exception_catalog: dict[str, int] = _build_exception_catalog(prog.exceptions, module_name, diagnostics)
 	for exc in prog.exceptions:
@@ -3266,6 +3297,77 @@ def _lower_parsed_program_to_hir(
 		trait_worlds = {}
 	trait_worlds[module_id] = world
 	type_table.trait_worlds = trait_worlds
+
+	# Register module-local type aliases (MVP: module-scoped only).
+	alias_names: set[str] = set()
+	nominal_names: set[str] = {s.name for s in struct_defs} | {v.name for v in variant_defs} | {e.name for e in getattr(prog, "exceptions", []) or []}
+	for a in type_alias_defs:
+		if _reject_reserved_nominal_type(getattr(a, "name", ""), loc=getattr(a, "loc", None), diagnostics=diagnostics):
+			continue
+		if a.name in alias_names:
+			diagnostics.append(
+				_p_diag(
+					phase="parser",
+					message=f"duplicate type alias '{a.name}' in module '{module_id}'",
+					severity="error",
+					span=Span.from_loc(getattr(a, "loc", None)),
+				)
+			)
+			continue
+		if a.name in nominal_names:
+			diagnostics.append(
+				_p_diag(
+					phase="parser",
+					message=f"type alias '{a.name}' conflicts with existing type in module '{module_id}'",
+					severity="error",
+					span=Span.from_loc(getattr(a, "loc", None)),
+				)
+			)
+			continue
+		alias_names.add(a.name)
+		type_table.define_type_alias(module_id=module_id, name=a.name, type_params=list(getattr(a, "type_params", []) or []), target=getattr(a, "target", None), loc=getattr(a, "loc", None))
+
+	# Detect alias cycles within the module (best-effort).
+	if type_alias_defs:
+		alias_targets: dict[str, parser_ast.TypeExpr | None] = {a.name: getattr(a, "target", None) for a in type_alias_defs}
+		def _collect_alias_refs(te: parser_ast.TypeExpr | None, refs: set[str]) -> None:
+			if te is None:
+				return
+			name = getattr(te, "name", None)
+			mod = getattr(te, "module_id", None)
+			if name in alias_targets and (mod is None or mod == module_id):
+				refs.add(str(name))
+			for arg in getattr(te, "args", []) or []:
+				_collect_alias_refs(arg, refs)
+		alias_graph: dict[str, set[str]] = {}
+		for name, te in alias_targets.items():
+			refs: set[str] = set()
+			_collect_alias_refs(te, refs)
+			alias_graph[name] = refs
+		visiting: set[str] = set()
+		visited: set[str] = set()
+		def _visit(name: str, stack: list[str]) -> None:
+			if name in visited:
+				return
+			if name in visiting:
+				cycle = " -> ".join(stack + [name])
+				diag_loc = next((a.loc for a in type_alias_defs if a.name == name), None)
+				diagnostics.append(
+					_p_diag(
+						phase="parser",
+						message=f"type alias cycle detected: {cycle}",
+						severity="error",
+						span=Span.from_loc(diag_loc),
+					)
+				)
+				return
+			visiting.add(name)
+			for dep in alias_graph.get(name, set()):
+				_visit(dep, stack + [name])
+			visiting.remove(name)
+			visited.add(name)
+		for name in alias_graph:
+			_visit(name, [])
 
 	# Register module-local compile-time constants.
 	#
@@ -3309,6 +3411,8 @@ def _lower_parsed_program_to_hir(
 		if decl_ty == type_table.ensure_int() and isinstance(val, int):
 			ok = True
 		elif decl_ty == type_table.ensure_uint() and isinstance(val, int) and val >= 0:
+			ok = True
+		elif decl_ty == type_table.ensure_uint64() and isinstance(val, int) and val >= 0:
 			ok = True
 		elif decl_ty == type_table.ensure_bool() and isinstance(val, bool):
 			ok = True

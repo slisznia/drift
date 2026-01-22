@@ -8,7 +8,8 @@ export {
 	MultiPassIterator,
 	BidirectionalIterator,
 	RandomAccessReadable,
-	RandomAccessPermutable
+	RandomAccessPermutable,
+	StringBytesIter
 };
 
 pub trait Iterable<Src, Item, Iter> require Iter is SinglePassIterator<Item> {
@@ -33,4 +34,35 @@ pub trait RandomAccessReadable<T> {
 
 pub trait RandomAccessPermutable<T> require Self is RandomAccessReadable<T> {
 	fn swap(self: &mut Self, i: Int, j: Int) -> Void;
+}
+
+pub struct StringBytesIter {
+	s: String,
+	idx: Int,
+	len: Int
+}
+
+implement String {
+	pub fn bytes(self: &String) nothrow -> StringBytesIter {
+		val len = byte_length(self);
+		// MVP: struct fields cannot be references, so we store a String handle copy.
+		return StringBytesIter(s = *self, idx = 0, len = len);
+	}
+}
+
+implement Iterable<&String, Byte, StringBytesIter> for &String {
+	pub fn iter(self: &String) nothrow -> StringBytesIter {
+		return self.bytes();
+	}
+}
+
+implement SinglePassIterator<Byte> for StringBytesIter {
+	pub fn next(self: &mut StringBytesIter) -> Optional<Byte> {
+		if self.idx >= self.len {
+			return Optional::None();
+		}
+		val b = core.string_byte_at(&self.s, self.idx);
+		self.idx = self.idx + 1;
+		return Optional::Some(b);
+	}
 }

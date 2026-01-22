@@ -2,7 +2,7 @@
   "description": "e2e: fnptr cast non function rejected",
   "diagnostics": [
     {
-      "message_contains": "only supported for function types",
+      "message_contains": "cannot cast expression of type",
       "phase": "typecheck"
     }
   ],

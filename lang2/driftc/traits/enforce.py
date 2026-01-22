@@ -111,6 +111,14 @@ def _collect_trait_subjects(expr: parser_ast.TraitExpr, out: Set[object]) -> Non
 		_collect_trait_subjects(expr.expr, out)
 
 
+def _extract_conjunctive_facts(expr: parser_ast.TraitExpr) -> List[parser_ast.TraitIs]:
+	if isinstance(expr, parser_ast.TraitIs):
+		return [expr]
+	if isinstance(expr, parser_ast.TraitAnd):
+		return _extract_conjunctive_facts(expr.left) + _extract_conjunctive_facts(expr.right)
+	return []
+
+
 def _trait_label(key: TraitKey) -> str:
 	base = f"{key.module}.{key.name}" if key.module else key.name
 	if key.package_id and not base.startswith(f"{key.package_id}."):
@@ -192,6 +200,36 @@ def enforce_fn_requires(
 	_walk_block(getattr(typed_fn, "body"), exprs)
 	expr_types = getattr(typed_fn, "expr_types", {})
 	call_resolutions = getattr(typed_fn, "call_resolutions", {}) or {}
+	instantiations_by_callsite_id = getattr(typed_fn, "instantiations_by_callsite_id", {}) or {}
+	caller_sig = signatures.get(getattr(typed_fn, "fn_id", None))
+	caller_type_params: Dict[str, TypeParamId] = {}
+	if caller_sig is not None:
+		for tp in getattr(caller_sig, "type_params", []) or []:
+			if isinstance(getattr(tp, "name", None), str):
+				caller_type_params[tp.name] = tp.id
+	caller_req = require_env.requires_by_fn.get(getattr(typed_fn, "fn_id", None))
+	assumed_true: Set[Tuple[object, TraitKey]] = set()
+	if caller_req is not None:
+		name_by_id = {tp_id: name for name, tp_id in caller_type_params.items()}
+		for atom in _extract_conjunctive_facts(caller_req):
+			subj = _subject_key(atom.subject)
+			trait_key = trait_key_from_expr(
+				atom.trait,
+				default_module=module_name,
+				default_package=require_env.default_package,
+				module_packages=require_env.module_packages,
+			)
+			assumed_true.add((subj, trait_key))
+			if isinstance(subj, TypeParamId):
+				tp_name = name_by_id.get(subj)
+				ty_id = type_table.ensure_typevar(subj, name=tp_name)
+				key = normalize_type_key(
+					type_key_from_typeid(type_table, ty_id),
+					module_name=module_name,
+					default_package=require_env.default_package,
+					module_packages=require_env.module_packages,
+				)
+				assumed_true.add((key, trait_key))
 	seen: Set[Tuple[FunctionId, Tuple[TypeKey, ...], Tuple[TypeKey, ...]]] = set()
 	symbol_to_id = {function_symbol(fid): fid for fid in signatures.keys()}
 	world = linked_world.visible_world(visible_modules) if visible_modules is not None else linked_world.global_world
@@ -281,9 +319,11 @@ def enforce_fn_requires(
 		if req is None:
 			continue
 		env = Env(
+			assumed_true=set(assumed_true),
 			default_module=callee_mod,
 			default_package=require_env.default_package,
 			module_packages=require_env.module_packages,
+			type_table=type_table,
 		)
 		sig = signatures.get(fn_id)
 		subst: Dict[object, TypeKey] = {}
@@ -314,10 +354,24 @@ def enforce_fn_requires(
 			}
 			type_args = getattr(expr, "type_args", None) or []
 			bindings: Dict[TypeParamId, object] | None = None
-			if type_args and len(type_args) == len(type_params):
+			callsite_id = getattr(expr, "callsite_id", None)
+			inst = instantiations_by_callsite_id.get(callsite_id) if callsite_id is not None else None
+			if inst is not None and len(inst.type_args) == len(type_params):
+				bindings = {tp.id: inst.type_args[idx] for idx, tp in enumerate(type_params)}
+			elif type_args and len(type_args) == len(type_params):
 				bindings = {}
 				for idx, tp in enumerate(type_params):
-					ty_id = resolve_opaque_type(type_args[idx], type_table, module_id=module_name)
+					te = type_args[idx]
+					name = getattr(te, "name", None)
+					args = getattr(te, "args", None)
+					if isinstance(name, str) and name in caller_type_params and not args:
+						ty_id = type_table.ensure_typevar(caller_type_params[name], name=name)
+					else:
+						try:
+							ty_id = resolve_opaque_type(te, type_table, module_id=module_name)
+						except Exception:
+							bindings = None
+							break
 					bindings[tp.id] = ty_id
 			else:
 				bindings = _infer_type_args_from_call(sig, arg_type_ids)

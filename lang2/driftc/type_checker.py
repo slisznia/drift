@@ -135,6 +135,7 @@ from lang2.driftc.traits.solver import (
 	prove_expr,
 	prove_obligation,
 )
+from lang2.driftc.traits.world import type_key_from_expr
 
 # Identifier aliases for clarity.
 ParamId = int
@@ -533,7 +534,7 @@ class TypeChecker:
 		def _fixed_width_allowed(module_name: str | None) -> bool:
 			if module_name is None:
 				return False
-			return module_name.startswith("lang.abi.")
+			return module_name.startswith("lang.abi.") or module_name.startswith("std.")
 
 		def _reject_fixed_width_type_expr(raw: object, module_name: str | None, span: Span | None) -> bool:
 			# Return True if a fixed-width type was rejected.
@@ -790,20 +791,14 @@ class TypeChecker:
 						return True
 			if isinstance(expr, H.HBorrow):
 				return bool(expr.is_mut)
-			if isinstance(expr, H.HField):
-				sub_ty = type_expr(expr.subject, used_as_value=False)
-				if sub_ty is None:
-					return False
-				sub_def = self.type_table.get(sub_ty)
-				return sub_def.kind is TypeKind.REF and bool(sub_def.ref_mut)
-			if isinstance(expr, H.HIndex):
-				sub_ty = type_expr(expr.subject, used_as_value=False)
-				if sub_ty is None:
-					return False
-				sub_def = self.type_table.get(sub_ty)
-				return sub_def.kind is TypeKind.REF and bool(sub_def.ref_mut)
 			if place is None:
 				return False
+			if place.base.local_id is not None:
+				base_ty = binding_types.get(place.base.local_id)
+				if base_ty is not None:
+					base_def = self.type_table.get(base_ty)
+					if base_def.kind is TypeKind.REF and bool(base_def.ref_mut):
+						return True
 			has_deref = any(isinstance(p, DerefProj) for p in place.projections)
 			if not has_deref:
 				if place.base.local_id is None:
@@ -852,12 +847,14 @@ class TypeChecker:
 			if self_mode is None:
 				return None
 			if not receiver_is_lvalue:
-				return 0 if self_mode is SelfMode.SELF_BY_VALUE else None
+				if self_mode is SelfMode.SELF_BY_VALUE:
+					return 0
+				return -1
 			if self_mode is SelfMode.SELF_BY_REF:
 				return 1
 			if self_mode is SelfMode.SELF_BY_REF_MUT:
 				if autoborrow is SelfMode.SELF_BY_REF_MUT and not receiver_can_mut_borrow:
-					return None
+					return -1
 				return 2
 			if self_mode is SelfMode.SELF_BY_VALUE:
 				return 0
@@ -957,6 +954,11 @@ class TypeChecker:
 				if not has_deref:
 					if place.base.local_id is None:
 						return False
+					base_ty = binding_types.get(place.base.local_id)
+					if base_ty is not None:
+						base_def = self.type_table.get(base_ty)
+						if base_def.kind is TypeKind.REF and bool(base_def.ref_mut):
+							return True
 					return bool(binding_mutable.get(place.base.local_id, False))
 				if not hasattr(H, "HPlaceExpr") or not isinstance(place_expr, getattr(H, "HPlaceExpr")):
 					return False
@@ -992,6 +994,40 @@ class TypeChecker:
 			had_error = False
 			for idx, (param_ty, arg_ty, arg_expr) in enumerate(zip(param_types, arg_types, args)):
 				if arg_ty is None:
+					ref_info = _ref_param_info(param_ty)
+					if ref_info is None:
+						continue
+					ref_mut, inner = ref_info
+					place_expr = place_expr_from_lvalue_expr(arg_expr)
+					if place_expr is None:
+						diagnostics.append(
+							_tc_diag(
+								message="borrow requires an addressable place; bind to a local first",
+								severity="error",
+								phase="typecheck",
+								span=getattr(arg_expr, "loc", span),
+							)
+						)
+						had_error = True
+						continue
+					_assign_place_expr_ids(place_expr)
+					if ref_mut:
+						place = place_from_expr(place_expr, base_lookup=_receiver_base_lookup)
+						if place is None or not _can_autoborrow_mut(place_expr, place):
+							diagnostics.append(
+								_tc_diag(
+									message="cannot auto-borrow as &mut; argument is not mutable",
+									severity="error",
+									phase="typecheck",
+									span=getattr(arg_expr, "loc", span),
+								)
+							)
+							had_error = True
+							continue
+					borrow_expr = H.HBorrow(subject=place_expr, is_mut=ref_mut)
+					_assign_node_id(borrow_expr)
+					args[idx] = borrow_expr
+					updated_types[idx] = type_expr(borrow_expr)
 					continue
 				ref_info = _ref_param_info(param_ty)
 				if ref_info is None:
@@ -1942,11 +1978,18 @@ class TypeChecker:
 				subj = expr.subject
 				if isinstance(subj, TypeParamId):
 					out.add(subj)
-					return
 				subj_name = _subject_name(subj)
 				if subj_name is not None:
 					out.add(subj_name)
-					return
+				def _collect_trait_args(arg: parser_ast.TypeExpr) -> None:
+					if not getattr(arg, "args", None):
+						out.add(arg.name)
+						return
+					for child in (getattr(arg, "args", []) or []):
+						_collect_trait_args(child)
+				for arg in (getattr(expr.trait, "args", []) or []):
+					_collect_trait_args(arg)
+				return
 				out.add(subj)
 			elif isinstance(expr, (parser_ast.TraitAnd, parser_ast.TraitOr)):
 				_collect_trait_subjects(expr.left, out)
@@ -1967,12 +2010,36 @@ class TypeChecker:
 				return None
 			atoms: list[parser_ast.TraitIs] = []
 			_collect_trait_is(req_expr, atoms)
+			def _resolve_trait_arg(arg: parser_ast.TypeExpr) -> TypeKey:
+				if not getattr(arg, "args", None):
+					subj = subst.get(arg.name)
+					if isinstance(subj, TypeKey):
+						return subj
+					if arg.name == "Self":
+						subj = subst.get("Self")
+						if isinstance(subj, TypeKey):
+							return subj
+				key = type_key_from_expr(
+					arg,
+					default_module=env.default_module,
+					default_package=env.default_package,
+					module_packages=env.module_packages,
+				)
+				if not getattr(arg, "args", None):
+					return key
+				args = tuple(_resolve_trait_arg(a) for a in (getattr(arg, "args", []) or []))
+				if args == key.args:
+					return key
+				return TypeKey(package_id=key.package_id, module=key.module, name=key.name, args=args)
 			for atom in atoms:
 				trait_key = trait_key_from_expr(
 					atom.trait,
 					default_module=env.default_module,
 					default_package=env.default_package,
 					module_packages=env.module_packages,
+				)
+				trait_args = tuple(
+					_resolve_trait_arg(a) for a in (getattr(atom.trait, "args", []) or [])
 				)
 				lookup_key = _subject_lookup_key(atom.subject)
 				subject_key = subst.get(lookup_key)
@@ -1983,6 +2050,7 @@ class TypeChecker:
 				obl = Obligation(
 					subject=subject_key,
 					trait=trait_key,
+					trait_args=trait_args,
 					origin=origin,
 					span=span,
 				)
@@ -2053,6 +2121,7 @@ class TypeChecker:
 					obl = Obligation(
 						subject=base_failure.obligation.subject,
 						trait=base_failure.obligation.trait,
+						trait_args=base_failure.obligation.trait_args,
 						origin=origin,
 						span=span,
 						notes=notes,
@@ -2092,6 +2161,7 @@ class TypeChecker:
 					obl = Obligation(
 						subject=base_failure.obligation.subject,
 						trait=base_failure.obligation.trait,
+						trait_args=base_failure.obligation.trait_args,
 						origin=origin,
 						span=span,
 						notes=notes,
@@ -2140,6 +2210,30 @@ class TypeChecker:
 					default_package=env.default_package,
 					module_packages=env.module_packages,
 				)
+				def _resolve_trait_arg(arg: parser_ast.TypeExpr) -> TypeKey:
+					if not getattr(arg, "args", None):
+						subj = subst.get(arg.name)
+						if isinstance(subj, TypeKey):
+							return subj
+						if arg.name == "Self":
+							subj = subst.get("Self")
+							if isinstance(subj, TypeKey):
+								return subj
+					key = type_key_from_expr(
+						arg,
+						default_module=env.default_module,
+						default_package=env.default_package,
+						module_packages=env.module_packages,
+					)
+					if not getattr(arg, "args", None):
+						return key
+					args = tuple(_resolve_trait_arg(a) for a in (getattr(arg, "args", []) or []))
+					if args == key.args:
+						return key
+					return TypeKey(package_id=key.package_id, module=key.module, name=key.name, args=args)
+				trait_args = tuple(
+					_resolve_trait_arg(a) for a in (getattr(atom.trait, "args", []) or [])
+				)
 				lookup_key = _subject_lookup_key(atom.subject)
 				subject_key = subst.get(lookup_key)
 				if subject_key is None and isinstance(lookup_key, TypeParamId):
@@ -2149,6 +2243,7 @@ class TypeChecker:
 				obl = Obligation(
 					subject=subject_key,
 					trait=trait_key,
+					trait_args=trait_args,
 					origin=origin,
 					span=span,
 					notes=list(res.reasons),
@@ -3112,9 +3207,13 @@ class TypeChecker:
 					prev = param_binding_ids.get(obj.name)
 					if prev is None or obj.binding_id < prev:
 						param_binding_ids[obj.name] = obj.binding_id
-				if isinstance(obj, H.HNode):
-					for v in obj.__dict__.values():
-						_scan_param_binds(v)
+				if isinstance(obj, H.HNode) or (is_dataclass(obj) and obj.__class__.__module__.startswith("lang2.driftc.stage1")):
+					if is_dataclass(obj):
+						for f in fields(obj):
+							_scan_param_binds(getattr(obj, f.name))
+					else:
+						for v in obj.__dict__.values():
+							_scan_param_binds(v)
 				elif isinstance(obj, list):
 					for v in obj:
 						_scan_param_binds(v)
@@ -3433,47 +3532,53 @@ class TypeChecker:
 					)
 					return record_expr(expr, self._unknown)
 				target_def = self.type_table.get(target_ty)
-				if target_def.kind is not TypeKind.FUNCTION:
-					pretty = self._pretty_type_name(target_ty, current_module=current_module_name)
-					diagnostics.append(
-						_tc_diag(
-							message=(
-								"cast<T>(...) is only supported for function types in this build "
-								f"(requested T = {pretty})"
-							),
-							severity="error",
-							span=getattr(expr, "loc", Span()),
+				if target_def.kind is TypeKind.FUNCTION:
+					expected_fn = _expected_function_shape(target_ty)
+					if expected_fn is None:
+						return record_expr(expr, self._unknown)
+					if isinstance(expr.value, H.HVar) and expr.value.binding_id is None:
+						name = expr.value.name
+						is_bound = any(name in scope for scope in scope_env)
+						is_const = False
+						if not is_bound:
+							const_mod = expr.value.module_id or current_module_name
+							if const_mod is not None:
+								is_const = self.type_table.lookup_const(f"{const_mod}::{name}") is not None
+						if not is_bound and not is_const:
+							resolution = _resolve_function_reference_value(
+								name=name,
+								module_name=expr.value.module_id,
+								expected_type=target_ty,
+								span=getattr(expr, "loc", Span()),
+								diag_mode="cast",
+								allow_thunk=False,
+							)
+							if resolution is not None:
+								if resolution.fn_ref is None:
+									return record_expr(expr, self._unknown)
+								fnptr_consts_by_node_id[expr.node_id] = (resolution.fn_ref, resolution.call_sig)
+								return record_expr(expr, target_ty)
+					inner_ty = type_expr(expr.value, expected_type=None)
+					if inner_ty != target_ty:
+						inner_pretty = self._pretty_type_name(inner_ty, current_module=current_module_name) if inner_ty is not None else "Unknown"
+						target_pretty = self._pretty_type_name(target_ty, current_module=current_module_name)
+						diagnostics.append(
+							_tc_diag(
+								message=f"cannot cast expression of type {inner_pretty} to {target_pretty}",
+								severity="error",
+								span=getattr(expr, "loc", Span()),
+							)
 						)
-					)
-					return record_expr(expr, self._unknown)
-				expected_fn = _expected_function_shape(target_ty)
-				if expected_fn is None:
-					return record_expr(expr, self._unknown)
-				if isinstance(expr.value, H.HVar) and expr.value.binding_id is None:
-					name = expr.value.name
-					is_bound = any(name in scope for scope in scope_env)
-					is_const = False
-					if not is_bound:
-						const_mod = expr.value.module_id or current_module_name
-						if const_mod is not None:
-							is_const = self.type_table.lookup_const(f"{const_mod}::{name}") is not None
-					if not is_bound and not is_const:
-						resolution = _resolve_function_reference_value(
-							name=name,
-							module_name=expr.value.module_id,
-							expected_type=target_ty,
-							span=getattr(expr, "loc", Span()),
-							diag_mode="cast",
-							allow_thunk=False,
-						)
-						if resolution is not None:
-							if resolution.fn_ref is None:
-								return record_expr(expr, self._unknown)
-							fnptr_consts_by_node_id[expr.node_id] = (resolution.fn_ref, resolution.call_sig)
-							return record_expr(expr, target_ty)
-				inner_ty = type_expr(expr.value, expected_type=None)
-				if inner_ty != target_ty:
-					inner_pretty = self._pretty_type_name(inner_ty, current_module=current_module_name) if inner_ty is not None else "Unknown"
+						return record_expr(expr, self._unknown)
+					return record_expr(expr, target_ty)
+				if target_def.kind is TypeKind.SCALAR and target_def.name in ("Int", "Uint", "Uint64", "Byte", "Bool"):
+					inner_ty = type_expr(expr.value, expected_type=None)
+					if inner_ty is None:
+						return record_expr(expr, self._unknown)
+					inner_def = self.type_table.get(inner_ty)
+					if inner_def.kind is TypeKind.SCALAR and inner_def.name in ("Int", "Uint", "Uint64", "Byte", "Bool"):
+						return record_expr(expr, target_ty)
+					inner_pretty = self._pretty_type_name(inner_ty, current_module=current_module_name)
 					target_pretty = self._pretty_type_name(target_ty, current_module=current_module_name)
 					diagnostics.append(
 						_tc_diag(
@@ -3483,7 +3588,18 @@ class TypeChecker:
 						)
 					)
 					return record_expr(expr, self._unknown)
-				return record_expr(expr, target_ty)
+				pretty = self._pretty_type_name(target_ty, current_module=current_module_name)
+				diagnostics.append(
+					_tc_diag(
+						message=(
+							"cast<T>(...) is only supported for function or numeric scalar types in this build "
+							f"(requested T = {pretty})"
+						),
+						severity="error",
+						span=getattr(expr, "loc", Span()),
+					)
+				)
+				return record_expr(expr, self._unknown)
 
 			# Names and bindings.
 			if isinstance(expr, H.HVar):
@@ -4997,7 +5113,7 @@ class TypeChecker:
 				if expr.op in (H.UnaryOp.NOT,):
 					return record_expr(expr, self._bool)
 				if expr.op is H.UnaryOp.BIT_NOT:
-					return record_expr(expr, sub_ty if sub_ty in (self._uint,) else self._unknown)
+					return record_expr(expr, sub_ty if sub_ty in (self._uint, self._uint64) else self._unknown)
 				if expr.op is H.UnaryOp.DEREF:
 					if sub_ty is None:
 						return record_expr(expr, self._unknown)
@@ -5051,6 +5167,8 @@ class TypeChecker:
 						return record_expr(expr, self._int)
 					if left_ty == self._uint and right_ty == self._uint:
 						return record_expr(expr, self._uint)
+					if left_ty == self._uint64 and right_ty == self._uint64:
+						return record_expr(expr, self._uint64)
 					if left_ty == self._float and right_ty == self._float:
 						return record_expr(expr, self._float)
 					if expr.op is H.BinaryOp.MOD and left_ty == self._uint and right_ty == self._uint:
@@ -5061,6 +5179,8 @@ class TypeChecker:
 						return record_expr(expr, self._int)
 					if left_ty == self._uint and right_ty == self._uint:
 						return record_expr(expr, self._uint)
+					if left_ty == self._uint64 and right_ty == self._uint64:
+						return record_expr(expr, self._uint64)
 					if left_ty == self._float and right_ty == self._float:
 						return record_expr(expr, self._float)
 					return record_expr(expr, self._unknown)
@@ -5073,9 +5193,11 @@ class TypeChecker:
 				):
 					if left_ty == self._uint and right_ty == self._uint:
 						return record_expr(expr, self._uint)
+					if left_ty == self._uint64 and right_ty == self._uint64:
+						return record_expr(expr, self._uint64)
 					diagnostics.append(
 						_tc_diag(
-							message="bitwise operators require Uint operands",
+							message="bitwise operators require Uint or Uint64 operands",
 							severity="error",
 							span=getattr(expr, "loc", Span()),
 						)

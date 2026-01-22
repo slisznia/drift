@@ -3,11 +3,14 @@ module std.containers
 import std.iter as iter;
 import std.core as core;
 import std.core.cmp as cmp;
+import std.core.hash as hash;
 import std.err as err;
 import std.algo as algo;
 import std.mem as mem;
 
 use trait cmp.Comparable;
+use trait core.Copy;
+use trait iter.SinglePassIterator;
 
 export {
 	ArrayMoveIter,
@@ -18,7 +21,22 @@ export {
 	Deque,
 	deque_new,
 	DequeRange,
-	DequeRangeMut
+	DequeRangeMut,
+	HASH_MAP_CONTAINER_ID,
+	HashMapItemRef,
+	HashMapIter,
+	HashMapCore,
+	HashMap,
+	hash_map_new,
+	hash_map_with_capacity,
+	hash_map_with_builder,
+	HASH_SET_CONTAINER_ID,
+	HashSetIter,
+	HashSetCore,
+	HashSet,
+	hash_set_new,
+	hash_set_with_capacity,
+	hash_set_with_builder
 };
 
 pub const ARRAY_CONTAINER_ID: String = "std.containers:Array";
@@ -491,5 +509,445 @@ implement iter.RandomAccessPermutable<Int> for DequeRangeMut<Int> {
 			err.throw_iterator_invalidated(DEQUE_CONTAINER_ID, err.IteratorOpId::Swap());
 		}
 		self.dq.swap(i, j);
+	}
+}
+
+pub const HASH_MAP_CONTAINER_ID: String = "std.containers:HashMap";
+pub const HASH_SET_CONTAINER_ID: String = "std.containers:HashSet";
+
+const HASH_MAP_STATE_EMPTY: Int = 0;
+const HASH_MAP_STATE_FULL: Int = 1;
+const HASH_MAP_STATE_TOMB: Int = 2;
+
+pub struct HashMapItemRef<K, V> {
+	key: &K,
+	value: &V
+}
+
+pub struct HashMapIter<K, V, B> {
+	map: &HashMapCore<K, V, B>,
+	idx: Int,
+	gen_snapshot: Int
+}
+
+struct HashMapFindResult {
+	index: Int,
+	found: Bool
+}
+
+pub struct HashMapCore<K, V, B> {
+	keys: mem.RawBuffer<mem.MaybeUninit<K>>,
+	values: mem.RawBuffer<mem.MaybeUninit<V>>,
+	states: mem.RawBuffer<Int>,
+	len: Int,
+	gen: Int,
+	builder: B
+}
+
+pub type HashMap<K, V> = HashMapCore<K, V, hash.DefaultBuildHasher>;
+
+pub fn hash_map_new<K, V>() -> HashMap<K, V> {
+	return hash_map_with_builder<type K, V, hash.DefaultBuildHasher>(hash.default_build_hasher());
+}
+
+pub fn hash_map_with_capacity<K, V>(cap: Int) -> HashMap<K, V>
+	require K is cmp.Equatable, K is hash.Hash<hash.DefaultHasher> {
+	var map = hash_map_new<type K, V>();
+	map.ensure_capacity(cap);
+	return move map;
+}
+
+pub fn hash_map_with_builder<K, V, B>(var builder: B) -> HashMapCore<K, V, B> require B is hash.BuildHasher {
+	unsafe {
+		var keys = mem.alloc_uninit<type mem.MaybeUninit<K>>(0);
+		var values = mem.alloc_uninit<type mem.MaybeUninit<V>>(0);
+		var states = mem.alloc_uninit<type Int>(0);
+		return HashMapCore<type K, V, B>(keys = move keys, values = move values, states = move states, len = 0, gen = 0, builder = move builder);
+	}
+}
+
+implement<K, V, B> HashMapCore<K, V, B>
+	require K is cmp.Equatable, K is hash.Hash<hash.DefaultHasher>, B is hash.BuildHasher {
+	pub fn len(self: &HashMapCore<K, V, B>) -> Int {
+		return self.len;
+	}
+
+	pub fn is_empty(self: &HashMapCore<K, V, B>) -> Bool {
+		return self.len == 0;
+	}
+
+	fn cap(self: &HashMapCore<K, V, B>) -> Int {
+		return mem.capacity(&self.states);
+	}
+
+	fn state_at(self: &HashMapCore<K, V, B>, i: Int) -> Int {
+		unsafe {
+			val s = mem.ptr_at_ref<type Int>(&self.states, i);
+			return *s;
+		}
+	}
+
+	fn set_state(self: &mut HashMapCore<K, V, B>, i: Int, state: Int) -> Void {
+		unsafe { mem.write<type Int>(&mut self.states, i, state); }
+	}
+
+	fn hash_key(self: &HashMapCore<K, V, B>, key: &K) -> Uint64 {
+		var h = hash.BuildHasher::build(&self.builder);
+		hash.Hash<hash.DefaultHasher>::hash(key, &mut h);
+		return hash.Hasher::finish(&h);
+	}
+
+	fn index_for(self: &HashMapCore<K, V, B>, h: Uint64, cap: Int) -> Int {
+		if cap <= 0 {
+			return 0;
+		}
+		val cap_u = cast<Uint64>(cap);
+		val idx = h % cap_u;
+		return cast<Int>(idx);
+	}
+
+	fn key_ref(self: &HashMapCore<K, V, B>, i: Int) -> &K {
+		unsafe {
+			val slot = mem.ptr_at_ref<type mem.MaybeUninit<K>>(&self.keys, i);
+			return mem.maybe_assume_init_ref<type K>(slot);
+		}
+	}
+
+	fn value_ref(self: &HashMapCore<K, V, B>, i: Int) -> &V {
+		unsafe {
+			val slot = mem.ptr_at_ref<type mem.MaybeUninit<V>>(&self.values, i);
+			return mem.maybe_assume_init_ref<type V>(slot);
+		}
+	}
+
+	fn value_mut(self: &mut HashMapCore<K, V, B>, i: Int) -> &mut V {
+		unsafe {
+			val slot = mem.ptr_at_mut<type mem.MaybeUninit<V>>(&mut self.values, i);
+			return mem.maybe_assume_init_mut<type V>(slot);
+		}
+	}
+
+	fn read_key(self: &mut HashMapCore<K, V, B>, i: Int) -> K {
+		unsafe {
+			val slot = mem.ptr_at_mut<type mem.MaybeUninit<K>>(&mut self.keys, i);
+			return mem.maybe_assume_init_read<type K>(slot);
+		}
+	}
+
+	fn read_value(self: &mut HashMapCore<K, V, B>, i: Int) -> V {
+		unsafe {
+			val slot = mem.ptr_at_mut<type mem.MaybeUninit<V>>(&mut self.values, i);
+			return mem.maybe_assume_init_read<type V>(slot);
+		}
+	}
+
+	fn replace_value(self: &mut HashMapCore<K, V, B>, i: Int, value: V) -> V {
+		val old = self.read_value(i);
+		unsafe {
+			val slot = mem.ptr_at_mut<type mem.MaybeUninit<V>>(&mut self.values, i);
+			mem.maybe_write<type V>(slot, value);
+		}
+		return old;
+	}
+
+	fn write_entry(self: &mut HashMapCore<K, V, B>, i: Int, key: K, value: V) -> Void {
+		unsafe {
+			val kslot = mem.ptr_at_mut<type mem.MaybeUninit<K>>(&mut self.keys, i);
+			mem.maybe_write<type K>(kslot, key);
+			val vslot = mem.ptr_at_mut<type mem.MaybeUninit<V>>(&mut self.values, i);
+			mem.maybe_write<type V>(vslot, value);
+		}
+		self.set_state(i, HASH_MAP_STATE_FULL);
+	}
+
+	fn find_slot(self: &HashMapCore<K, V, B>, key: &K) -> HashMapFindResult {
+		val cap = self.cap();
+		if cap <= 0 {
+			return HashMapFindResult(index = 0, found = false);
+		}
+		val h = self.hash_key(key);
+		var idx = self.index_for(h, cap);
+		var first_tomb = -1;
+		var probes = 0;
+		while probes < cap {
+			val state = self.state_at(idx);
+			if state == HASH_MAP_STATE_EMPTY {
+				if first_tomb >= 0 {
+					return HashMapFindResult(index = first_tomb, found = false);
+				}
+				return HashMapFindResult(index = idx, found = false);
+			}
+			if state == HASH_MAP_STATE_TOMB {
+				if first_tomb < 0 {
+					first_tomb = idx;
+				}
+			} else {
+				val kref = self.key_ref(idx);
+				if cmp.Equatable::eq(kref, key) {
+					return HashMapFindResult(index = idx, found = true);
+				}
+			}
+			idx = (idx + 1) % cap;
+			probes = probes + 1;
+		}
+		if first_tomb >= 0 {
+			return HashMapFindResult(index = first_tomb, found = false);
+		}
+		return HashMapFindResult(index = 0, found = false);
+	}
+
+	fn _insert_into_buffers(self: &HashMapCore<K, V, B>, keys: &mut mem.RawBuffer<mem.MaybeUninit<K>>, values: &mut mem.RawBuffer<mem.MaybeUninit<V>>, states: &mut mem.RawBuffer<Int>, cap: Int, key: K, value: V) -> Void {
+		if cap <= 0 {
+			throw std.err:IndexError(container_id = HASH_MAP_CONTAINER_ID, index = 0);
+		}
+		val h = self.hash_key(&key);
+		var idx = self.index_for(h, cap);
+		var probes = 0;
+		while probes < cap {
+			unsafe {
+				val sref = mem.ptr_at_ref<type Int>(states, idx);
+				val state = *sref;
+				if state != HASH_MAP_STATE_FULL {
+					val kslot = mem.ptr_at_mut<type mem.MaybeUninit<K>>(keys, idx);
+					mem.maybe_write<type K>(kslot, key);
+					val vslot = mem.ptr_at_mut<type mem.MaybeUninit<V>>(values, idx);
+					mem.maybe_write<type V>(vslot, value);
+					mem.write<type Int>(states, idx, HASH_MAP_STATE_FULL);
+					return;
+				}
+			}
+			idx = (idx + 1) % cap;
+			probes = probes + 1;
+		}
+		throw std.err:IndexError(container_id = HASH_MAP_CONTAINER_ID, index = 0);
+	}
+
+	fn ensure_capacity(self: &mut HashMapCore<K, V, B>, needed: Int) -> Void {
+		val cap0 = self.cap();
+		var need = needed;
+		if need < 0 {
+			need = 0;
+		}
+		var new_cap = cap0;
+		if cap0 == 0 {
+			new_cap = 8;
+			while new_cap * 7 < need * 10 {
+				new_cap = new_cap * 2;
+			}
+		} else {
+			if need * 10 < cap0 * 7 {
+				return;
+			}
+			new_cap = cap0 * 2;
+			while new_cap * 7 < need * 10 {
+				new_cap = new_cap * 2;
+			}
+		}
+		unsafe {
+			var new_keys = mem.alloc_uninit<type mem.MaybeUninit<K>>(new_cap);
+			var new_values = mem.alloc_uninit<type mem.MaybeUninit<V>>(new_cap);
+			var new_states = mem.alloc_uninit<type Int>(new_cap);
+			var i = 0;
+			while i < new_cap {
+				mem.write<type Int>(&mut new_states, i, HASH_MAP_STATE_EMPTY);
+				i = i + 1;
+			}
+			if cap0 > 0 {
+				var j = 0;
+				while j < cap0 {
+					val state = self.state_at(j);
+					if state == HASH_MAP_STATE_FULL {
+						var k = self.read_key(j);
+						var v = self.read_value(j);
+						self._insert_into_buffers(&mut new_keys, &mut new_values, &mut new_states, new_cap, k, v);
+					}
+					j = j + 1;
+				}
+				mem.dealloc<type mem.MaybeUninit<K>>(mem.replace(&mut self.keys, new_keys));
+				mem.dealloc<type mem.MaybeUninit<V>>(mem.replace(&mut self.values, new_values));
+				mem.dealloc<type Int>(mem.replace(&mut self.states, new_states));
+			} else {
+				mem.dealloc<type mem.MaybeUninit<K>>(mem.replace(&mut self.keys, new_keys));
+				mem.dealloc<type mem.MaybeUninit<V>>(mem.replace(&mut self.values, new_values));
+				mem.dealloc<type Int>(mem.replace(&mut self.states, new_states));
+			}
+		}
+		self.gen = self.gen + 1;
+	}
+
+	pub fn clear(self: &mut HashMapCore<K, V, B>) -> Void {
+		val cap = self.cap();
+		var i = 0;
+		while i < cap {
+			val state = self.state_at(i);
+			if state == HASH_MAP_STATE_FULL {
+				var _k = self.read_key(i);
+				var _v = self.read_value(i);
+			}
+			self.set_state(i, HASH_MAP_STATE_EMPTY);
+			i = i + 1;
+		}
+		self.len = 0;
+		self.gen = self.gen + 1;
+	}
+
+	pub fn contains_key(self: &HashMapCore<K, V, B>, key: &K) -> Bool {
+		val res = self.find_slot(key);
+		return res.found;
+	}
+
+	pub fn get(self: &HashMapCore<K, V, B>, key: &K) -> Optional<&V> {
+		val res = self.find_slot(key);
+		if not res.found {
+			return Optional::None();
+		}
+		return Optional::Some(self.value_ref(res.index));
+	}
+
+	pub fn get_mut(self: &mut HashMapCore<K, V, B>, key: &K) -> Optional<&mut V> {
+		val res = self.find_slot(key);
+		if not res.found {
+			return Optional::None();
+		}
+		return Optional::Some(self.value_mut(res.index));
+	}
+
+	pub fn insert(self: &mut HashMapCore<K, V, B>, var key: K, var value: V) -> Optional<V> {
+		val needed = self.len + 1;
+		self.ensure_capacity(needed);
+		val res = self.find_slot(&key);
+		if res.found {
+			val old = self.replace_value(res.index, value);
+			return Optional::Some(old);
+		}
+		self.write_entry(res.index, key, value);
+		self.len = self.len + 1;
+		self.gen = self.gen + 1;
+		return Optional::None();
+	}
+
+	pub fn remove(self: &mut HashMapCore<K, V, B>, key: &K) -> Optional<V> {
+		val res = self.find_slot(key);
+		if not res.found {
+			return Optional::None();
+		}
+		var _k = self.read_key(res.index);
+		val v = self.read_value(res.index);
+		self.set_state(res.index, HASH_MAP_STATE_TOMB);
+		self.len = self.len - 1;
+		self.gen = self.gen + 1;
+		return Optional::Some(v);
+	}
+
+	pub fn iter(self: &HashMapCore<K, V, B>) -> HashMapIter<K, V, B> {
+		return HashMapIter<type K, V, B>(map = self, idx = 0, gen_snapshot = self.gen);
+	}
+}
+
+implement<K, V, B> iter.SinglePassIterator<HashMapItemRef<K, V>> for HashMapIter<K, V, B>
+	require K is cmp.Equatable, K is hash.Hash<hash.DefaultHasher>, B is hash.BuildHasher {
+	pub fn next(self: &mut HashMapIter<K, V, B>) -> Optional<HashMapItemRef<K, V>> {
+		if self.map.gen != self.gen_snapshot {
+			err.throw_iterator_invalidated(HASH_MAP_CONTAINER_ID, err.IteratorOpId::Next());
+		}
+		val cap = self.map.cap();
+		while self.idx < cap {
+			val i = self.idx;
+			self.idx = i + 1;
+			val state = self.map.state_at(i);
+			if state == HASH_MAP_STATE_FULL {
+				val k = self.map.key_ref(i);
+				val v = self.map.value_ref(i);
+				return Optional::Some(HashMapItemRef<type K, V>(key = k, value = v));
+			}
+		}
+		return Optional::None();
+	}
+}
+
+pub struct HashSetIter<K, B> {
+	inner: HashMapIter<K, Bool, B>
+}
+
+pub struct HashSetCore<K, B> {
+	map: HashMapCore<K, Bool, B>
+}
+
+pub type HashSet<K> = HashSetCore<K, hash.DefaultBuildHasher>;
+
+pub fn hash_set_new<K>() -> HashSet<K> {
+	return hash_set_with_builder<type K, hash.DefaultBuildHasher>(hash.default_build_hasher());
+}
+
+pub fn hash_set_with_capacity<K>(cap: Int) -> HashSet<K>
+	require K is cmp.Equatable, K is hash.Hash<hash.DefaultHasher> {
+	var map = hash_map_with_capacity<type K, Bool>(cap);
+	return HashSetCore<type K, hash.DefaultBuildHasher>(map = move map);
+}
+
+pub fn hash_set_with_builder<K, B>(builder: B) -> HashSetCore<K, B> require B is hash.BuildHasher {
+	var map = hash_map_with_builder<type K, Bool, B>(builder);
+	return HashSetCore<type K, B>(map = move map);
+}
+
+implement<K, B> HashSetCore<K, B>
+	require K is cmp.Equatable, K is hash.Hash<hash.DefaultHasher>, B is hash.BuildHasher {
+	pub fn len(self: &HashSetCore<K, B>) -> Int {
+		return self.map.len();
+	}
+
+	pub fn is_empty(self: &HashSetCore<K, B>) -> Bool {
+		return self.map.is_empty();
+	}
+
+	pub fn clear(self: &mut HashSetCore<K, B>) -> Void {
+		self.map.clear();
+	}
+
+	pub fn contains(self: &HashSetCore<K, B>, key: &K) -> Bool {
+		return self.map.contains_key(key);
+	}
+
+	pub fn insert(self: &mut HashSetCore<K, B>, key: K) -> Bool {
+		val res = self.map.insert(key, true);
+		return match res {
+			None => { true },
+			Some(_v) => { false }
+		};
+	}
+
+	pub fn remove(self: &mut HashSetCore<K, B>, key: &K) -> Bool {
+		val res = self.map.remove(key);
+		return match res {
+			None => { false },
+			Some(_v) => { true }
+		};
+	}
+
+	pub fn iter(self: &HashSetCore<K, B>) -> HashSetIter<K, B> {
+		val inner = self.map.iter();
+		return HashSetIter<type K, B>(inner = inner);
+	}
+}
+
+implement<K, B> iter.SinglePassIterator<&K> for HashSetIter<K, B>
+	require K is cmp.Equatable, K is hash.Hash<hash.DefaultHasher>, B is hash.BuildHasher {
+	pub fn next(self: &mut HashSetIter<K, B>) -> Optional<&K>
+		require K is cmp.Equatable, K is hash.Hash<hash.DefaultHasher>, B is hash.BuildHasher {
+		val map = self.inner.map;
+		if map.gen != self.inner.gen_snapshot {
+			err.throw_iterator_invalidated(HASH_SET_CONTAINER_ID, err.IteratorOpId::Next());
+		}
+		val cap = map.cap();
+		while self.inner.idx < cap {
+			val i = self.inner.idx;
+			self.inner.idx = i + 1;
+			val state = map.state_at(i);
+			if state == HASH_MAP_STATE_FULL {
+				val k = map.key_ref(i);
+				return Optional::Some(k);
+			}
+		}
+		return Optional::None();
 	}
 }

@@ -122,6 +122,7 @@ ident: NAME | MOVE | COPY
 ?item: test_build_only_marker? intrinsic_marker? pub_item
      | test_build_only_marker? intrinsic_marker? func_def
      | test_build_only_marker? const_def
+     | test_build_only_marker? type_alias_def
      | test_build_only_marker? struct_def
      | test_build_only_marker? exception_def
      | test_build_only_marker? variant_def
@@ -131,7 +132,7 @@ ident: NAME | MOVE | COPY
      | import_stmt TERMINATOR
      | export_stmt TERMINATOR
 
-pub_item: PUB (func_def | const_def | struct_def | exception_def | variant_def | trait_def | implement_def)
+pub_item: PUB (func_def | const_def | type_alias_def | struct_def | exception_def | variant_def | trait_def | implement_def)
 
 # Top-level constant definition.
 #
@@ -140,6 +141,7 @@ pub_item: PUB (func_def | const_def | struct_def | exception_def | variant_def |
 # - the declared type must match the initializer exactly,
 # - consts are values (not types) and may be exported/imported like functions.
 const_def: CONST NAME COLON type_expr EQUAL expr TERMINATOR
+type_alias_def: TYPE NAME type_params? EQUAL type_expr TERMINATOR
 
 func_def: UNSAFE? FN_KW ident type_params? "(" [params] ")" NOTHROW? return_sig require_clause? (block | TERMINATOR)
 return_sig: ARROW type_expr

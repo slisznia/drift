@@ -1,0 +1,110 @@
+module main
+
+import std.containers as containers;
+import std.core.hash as hash;
+import std.core.cmp as cmp;
+
+struct BadKey { value: Int }
+
+implement cmp.Equatable for BadKey {
+	pub fn eq(self: &BadKey, other: &BadKey) -> Bool {
+		return self.value == other.value;
+	}
+}
+
+implement hash.Hash<hash.DefaultHasher> for BadKey {
+	pub fn hash(self: &BadKey, var h: &mut hash.DefaultHasher) nothrow -> Void {
+		hash.Hasher::write_u64(h, 1);
+	}
+}
+
+fn run() -> Int {
+	var m = containers.hash_map_new<type BadKey, Int>();
+	var i = 0;
+	while i < 64 {
+		m.insert(BadKey(value = i), i + 1000);
+		i = i + 1;
+	}
+	var j = 0;
+	while j < 64 {
+		val key = BadKey(value = j);
+		val v: Int = match m.get(&key) {
+			None => {
+				-1
+			},
+			Some(x) => {
+				*x
+			}
+		};
+		if v == -1 {
+			return 1;
+		}
+		if v != j + 1000 {
+			return 2;
+		}
+		j = j + 1;
+	}
+	val k10 = BadKey(value = 10);
+	val removed = m.remove(&k10);
+	val rem_v: Int = match removed {
+		None => {
+			-1
+		},
+		Some(v) => {
+			v
+		}
+	};
+	if rem_v == -1 {
+		return 3;
+	}
+	if rem_v != 1010 {
+		return 4;
+	}
+	m.insert(BadKey(value = 100), 2000);
+	val k100 = BadKey(value = 100);
+	val v100: Int = match m.get(&k100) {
+		None => {
+			-1
+		},
+		Some(v) => {
+			*v
+		}
+	};
+	if v100 == -1 {
+		return 5;
+	}
+	if v100 != 2000 {
+		return 6;
+	}
+	val still_missing: Bool = match m.get(&k10) {
+		None => {
+			true
+		},
+		Some(_) => {
+			false
+		}
+	};
+	if not still_missing {
+		return 7;
+	}
+	val k11 = BadKey(value = 11);
+	val v11: Int = match m.get(&k11) {
+		None => {
+			-1
+		},
+		Some(v) => {
+			*v
+		}
+	};
+	if v11 == -1 {
+		return 8;
+	}
+	if v11 != 1011 {
+		return 9;
+	}
+	return 0;
+}
+
+fn main() nothrow -> Int {
+	return try run() catch { 99 };
+}

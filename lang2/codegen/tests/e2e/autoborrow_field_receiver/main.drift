@@ -1,0 +1,28 @@
+module main
+
+struct Inner { value: Int }
+
+implement Inner {
+	pub fn get(self: &Inner) -> Int { return self.value; }
+	pub fn inc(self: &mut Inner) -> Void { self.value = self.value + 1; }
+}
+
+struct Wrap { inner: Inner }
+
+fn run() -> Int {
+	var w = Wrap(inner = Inner(value = 1));
+	val a = w.inner.get();
+	w.inner.inc();
+	val b = w.inner.get();
+	if a != 1 {
+		return 1;
+	}
+	if b != 2 {
+		return 2;
+	}
+	return 0;
+}
+
+fn main() nothrow -> Int {
+	return try run() catch { 99 };
+}

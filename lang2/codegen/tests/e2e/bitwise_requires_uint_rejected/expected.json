@@ -2,7 +2,7 @@
   "description": "e2e: bitwise requires uint rejected",
   "diagnostics": [
     {
-      "message_contains": "bitwise operators require Uint operands"
+      "message_contains": "bitwise operators require Uint"
     }
   ],
   "exit_code": 1,

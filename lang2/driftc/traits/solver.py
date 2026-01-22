@@ -7,7 +7,7 @@ from typing import Dict, List, Optional, Set, Tuple, Mapping
 
 from lang2.driftc.parser import ast as parser_ast
 from lang2.driftc.core.types_core import TypeTable
-from .world import TraitWorld, TraitKey, TypeKey, ImplDef, trait_key_from_expr
+from .world import TraitWorld, TraitKey, TypeKey, ImplDef, trait_key_from_expr, type_key_from_expr
 
 
 class ProofStatus(Enum):
@@ -43,6 +43,7 @@ class Obligation:
 	subject: TypeKey
 	trait: TraitKey
 	origin: ObligationOrigin
+	trait_args: Tuple[TypeKey, ...] = ()
 	span: Optional[object] = None
 	notes: List[str] = field(default_factory=list)
 
@@ -73,7 +74,7 @@ class Env:
 	type_table: TypeTable | None = None
 
 
-CacheKey = Tuple[object, str, Optional[TypeKey]]
+CacheKey = Tuple[object, str, Optional[TypeKey], Tuple[TypeKey, ...]]
 
 
 def _type_key_str(key: TypeKey) -> str:
@@ -120,7 +121,26 @@ def prove_expr(
 			default_package=env.default_package,
 			module_packages=env.module_packages,
 		)
-		return prove_is(world, env, subst, expr.subject, trait_key, _cache=_cache, _in_progress=_in_progress)
+		trait_args = tuple(
+			_resolve_trait_arg(
+				a,
+				subst,
+				default_module=env.default_module,
+				default_package=env.default_package,
+				module_packages=env.module_packages,
+			)
+			for a in (getattr(expr.trait, "args", []) or [])
+		)
+		return prove_is(
+			world,
+			env,
+			subst,
+			expr.subject,
+			trait_key,
+			trait_args=trait_args,
+			_cache=_cache,
+			_in_progress=_in_progress,
+		)
 	if isinstance(expr, parser_ast.TraitAnd):
 		left = prove_expr(world, env, subst, expr.left, _cache=_cache, _in_progress=_in_progress)
 		if left.status is ProofStatus.REFUTED:
@@ -168,7 +188,26 @@ def deny_expr(
 			default_package=env.default_package,
 			module_packages=env.module_packages,
 		)
-		res = prove_is(world, env, subst, expr.subject, trait_key, _cache=_cache, _in_progress=_in_progress)
+		trait_args = tuple(
+			_resolve_trait_arg(
+				a,
+				subst,
+				default_module=env.default_module,
+				default_package=env.default_package,
+				module_packages=env.module_packages,
+			)
+			for a in (getattr(expr.trait, "args", []) or [])
+		)
+		res = prove_is(
+			world,
+			env,
+			subst,
+			expr.subject,
+			trait_key,
+			trait_args=trait_args,
+			_cache=_cache,
+			_in_progress=_in_progress,
+		)
 		if res.status is ProofStatus.PROVED:
 			return ProofResult(status=ProofStatus.REFUTED, reasons=res.reasons)
 		if res.status is ProofStatus.REFUTED:
@@ -221,6 +260,45 @@ def _type_expr_from_key(key: TypeKey) -> parser_ast.TypeExpr:
 	)
 
 
+def _resolve_trait_arg(
+	arg: parser_ast.TypeExpr,
+	subst: Dict[object, TypeKey],
+	*,
+	default_module: Optional[str],
+	default_package: Optional[str],
+	module_packages: Mapping[str, str],
+) -> TypeKey:
+	if not getattr(arg, "args", None):
+		subj = subst.get(arg.name)
+		if isinstance(subj, TypeKey):
+			return subj
+		if arg.name == "Self":
+			subj = subst.get("Self")
+			if isinstance(subj, TypeKey):
+				return subj
+	key = type_key_from_expr(
+		arg,
+		default_module=default_module,
+		default_package=default_package,
+		module_packages=module_packages,
+	)
+	if not getattr(arg, "args", None):
+		return key
+	args = tuple(
+		_resolve_trait_arg(
+			a,
+			subst,
+			default_module=default_module,
+			default_package=default_package,
+			module_packages=module_packages,
+		)
+		for a in (getattr(arg, "args", []) or [])
+	)
+	if args == key.args:
+		return key
+	return TypeKey(package_id=key.package_id, module=key.module, name=key.name, args=args)
+
+
 def _bind_impl_type_params(
 	template: TypeKey,
 	actual: TypeKey,
@@ -247,6 +325,7 @@ def prove_is(
 	subject: object,
 	trait_key: TraitKey,
 	*,
+	trait_args: Tuple[TypeKey, ...] = (),
 	_cache: Optional[Dict[CacheKey, ProofResult]] = None,
 	_in_progress: Optional[Set[Tuple[str, TraitKey, Optional[TypeKey]]]] = None,
 ) -> ProofResult:
@@ -256,7 +335,7 @@ def prove_is(
 	subject_ty = subst.get(subj_key)
 	if subject_ty is None and isinstance(subject, TypeKey):
 		subject_ty = subject
-	cache_key: CacheKey = (subj_key, _trait_key_str(trait_key), subject_ty)
+	cache_key: CacheKey = (subj_key, _trait_key_str(trait_key), subject_ty, trait_args)
 	if cache_key in cache:
 		return cache[cache_key]
 	if (subj_key, trait_key) in env.assumed_true:
@@ -302,6 +381,19 @@ def prove_is(
 		saw_ambiguous_req = False
 		for impl_id, impl in ordered:
 			bindings: dict[str, TypeKey] = {}
+			if trait_args or impl.trait_args:
+				if len(trait_args) != len(impl.trait_args):
+					continue
+				params = set(getattr(impl, "type_params", []) or [])
+				ok = True
+				for template_arg, actual_arg in zip(impl.trait_args, trait_args):
+					if template_arg == actual_arg:
+						continue
+					if not params or not _bind_impl_type_params(template_arg, actual_arg, params, bindings):
+						ok = False
+						break
+				if not ok:
+					continue
 			if impl.target != subject_ty:
 				params = set(getattr(impl, "type_params", []) or [])
 				if not params or not _bind_impl_type_params(impl.target, subject_ty, params, bindings):
@@ -342,6 +434,10 @@ def prove_is(
 		if req_expr is not None:
 			req_subst = dict(subst)
 			req_subst["Self"] = subject_ty
+			trait_def = world.traits.get(trait_key)
+			trait_params = list(getattr(trait_def, "type_params", []) or []) if trait_def is not None else []
+			for name, arg in zip(trait_params, trait_args):
+				req_subst[name] = arg
 			req_env = Env(
 				assumed_true=set(env.assumed_true),
 				assumed_false=set(env.assumed_false),
@@ -377,7 +473,14 @@ def prove_obligation(
 	env: Env,
 	obligation: Obligation,
 ) -> ProofFailure | None:
-	res = prove_is(world, env, {}, obligation.subject, obligation.trait)
+	res = prove_is(
+		world,
+		env,
+		{},
+		obligation.subject,
+		obligation.trait,
+		trait_args=obligation.trait_args,
+	)
 	if res.status is ProofStatus.PROVED:
 		return None
 	if res.status is ProofStatus.AMBIGUOUS:
