@@ -1,0 +1,35 @@
+module main
+
+import std.containers as containers;
+
+fn run() -> Int {
+	var m = containers.tree_map<type Int, Int>();
+	val keys = [7, 3, 18, 10, 22, 8, 11, 26, 2, 6, 13];
+	var i = 0;
+	while i < keys.len {
+		val k: Int = keys[i];
+		m.insert(k, k);
+		if not m.__test_validate() {
+			return 1;
+		}
+		i = i + 1;
+	}
+	val rem = [18, 11, 3, 10, 22, 8, 26, 2, 6, 7, 13];
+	var j = 0;
+	while j < rem.len {
+		val k2: Int = rem[j];
+		val _v = m.remove(&k2);
+		if not m.__test_validate() {
+			return 2;
+		}
+		j = j + 1;
+	}
+	if not m.is_empty() {
+		return 3;
+	}
+	return 0;
+}
+
+fn main() nothrow -> Int {
+	return try run() catch { 99 };
+}

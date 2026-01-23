@@ -5,7 +5,7 @@ import std.iter as iter;
 use trait iter.SinglePassIterator;
 
 fn run() -> Int {
-	var s = containers.hash_set_new<type Int>();
+	var s = containers.hash_set<type Int>();
 	s.insert(1);
 	s.insert(2);
 	s.insert(3);

@@ -198,6 +198,29 @@
 - Relaxed trait impl visibility blocking so UFCS trait calls resolve against non-local impls.
 - Updated driver tests for `sort_in_place` to allow can-throw entrypoints.
 ## 2026-01-14 – Mutable iteration + Optional<&mut> borrow tracking
+## 2026-01-21 – Hashing surface + HashMap/HashSet MVP
+- Added `std.core.hash` (Hasher/Hash/BuildHasher/DefaultHasher) with fixed `Uint64` hash output and seeded builder shape; `Hash` now generic over `Hasher`.
+- Implemented HashMap/HashSet (BuildHasher stored; linear probing; iterator invalidation via gen).
+- Added `String.bytes()` + `string_byte_at` intrinsic; `Hasher.write_u8` added; String hashing uses byte iteration + length delimiter.
+- Introduced fixed-width `Uint64` constants for hashing; parser/MIR/LLVM support for Uint64 literals and returns.
+- Added e2e cases for HashMap/HashSet (basic ops, collisions, resize, iterator invalidation, string keys/values, zero-capacity, repeated remove).
+
+## 2026-01-22 – Hashing hardening, type aliases, and container infra fixes
+- Implemented type aliases (module-scope) and rewired HashMap/HashSet to use aliases for ergonomic defaults.
+- Added wrapping u64 intrinsics (wrapping_add/mul), MIR/LLVM support, and spec note; hash mixing uses explicit wrapping ops.
+- Switched intrinsic dispatch to signature `intrinsic_kind` (no name/module string matching); validator enforces wrapping u64 operand types.
+- Added field/index receiver auto-borrow for method calls; updated tests and removed stdlib self.map borrow workarounds.
+- Stabilized trait solver with trait type args; UFCS trait calls enforce trait args and resolve against global trait world.
+- Numerous stage1/2/typechecker fixes: ctor kwarg typing, param binding id seeding, canonical TypeParamId comparisons for mem intrinsics, array literal inference with Unknowns, try-expression call allowance.
+- TreeMap groundwork: RB tree implementation with arena buffers, iterators, invalidation rules, and e2e coverage (basic, iter order, remove cases, iter invalidation).
+
+## 2026-01-23 – TreeMap/TreeSet polish, EntryMut, and constructor renames
+- Fixed RB insert fixup (recompute parent/grandparent after rotations) and added `__test_validate` invariants.
+- Added RB invariant/stress tests: `treemap_rb_invariants`, `treemap_rb_stress`.
+- Added TreeSet iter order test; TreeSet/TreeMap iter invalidation tests pass.
+- Added TreeMap EntryMut API without reference returns (`entry_mut(&K)` + `insert/or_insert/remove`) and e2e coverage.
+- Documented EntryMut semantics in stdlib spec; noted no TreeSet Entry API in MVP.
+- Renamed free constructors: `hash_map`, `hash_set`, `tree_map`, `tree_set` (updated call sites/tests).
 - Added `ArrayBorrowMutIter` and `Iterable<&mut Array<T>, &mut T>` in stdlib; exported mut iterator type for use in signatures.
 - Borrow checker now treats Optional<&T>/Optional<&mut T> bindings as ref bindings and tracks borrows through explicit `&/&mut` call arguments.
 - Added driver coverage for `for x in &mut xs`, `next()` re-entrancy errors, and safe `next()` after borrow scope ends.

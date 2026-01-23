@@ -5,7 +5,7 @@ import std.iter as iter;
 use trait iter.SinglePassIterator;
 
 fn run() -> Int {
-	var m = containers.hash_map_new<type Int, Int>();
+	var m = containers.hash_map<type Int, Int>();
 	var i = 0;
 	while i < 10 {
 		m.insert(i, i * 2);

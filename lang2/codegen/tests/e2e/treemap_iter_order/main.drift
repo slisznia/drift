@@ -5,7 +5,7 @@ import std.iter as iter;
 use trait iter.SinglePassIterator;
 
 fn run() -> Int {
-	var m = containers.tree_map_new<type Int, Int>();
+	var m = containers.tree_map<type Int, Int>();
 	m.insert(5, 50);
 	m.insert(3, 30);
 	m.insert(7, 70);
@@ -35,6 +35,35 @@ fn run() -> Int {
 	}
 	if idx != expected.len {
 		return 3;
+	}
+	val k3: Int = 3;
+	val k7: Int = 7;
+	val _r1 = m.remove(&k3);
+	val _r2 = m.remove(&k7);
+	m.insert(1, 10);
+	m.insert(9, 90);
+	val expected2 = [1, 2, 4, 5, 6, 8, 9];
+	var it2 = m.iter();
+	var idx2 = 0;
+	var done2 = false;
+	while not done2 {
+		val nxt2 = it2.next();
+		match nxt2 {
+			None => { done2 = true; },
+			Some(item) => {
+				if idx2 >= expected2.len {
+					return 4;
+				}
+				val want2: Int = expected2[idx2];
+				if *item.key != want2 {
+					return 5;
+				}
+				idx2 = idx2 + 1;
+			}
+		}
+	}
+	if idx2 != expected2.len {
+		return 6;
 	}
 	return 0;
 }

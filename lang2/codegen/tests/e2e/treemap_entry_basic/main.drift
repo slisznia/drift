@@ -1,0 +1,62 @@
+module main
+
+import std.containers as containers;
+
+fn run() -> Int {
+	var m = containers.tree_map<type Int, Int>();
+	val k0: Int = 5;
+	var e0 = m.entry_mut(&k0);
+	if e0.is_occupied() {
+		return 1;
+	}
+	val ins0 = e0.or_insert(5, 10);
+	if not ins0 {
+		return 2;
+	}
+	var e1 = m.entry_mut(&k0);
+	if not e1.is_occupied() {
+		return 3;
+	}
+	val old_opt = e1.insert(5, 20);
+	var old_ok = false;
+	var old_val = -1;
+	val _ = match old_opt {
+		Some(v) => { old_ok = true; old_val = v; 0 },
+		None => { 0 },
+	};
+	if not old_ok {
+		return 4;
+	}
+	if old_val != 10 {
+		return 5;
+	}
+	var e2 = m.entry_mut(&k0);
+	val rem1 = e2.remove();
+	var rem1_ok = false;
+	var rem1_val = -1;
+	val _ = match rem1 {
+		Some(v2) => { rem1_ok = true; rem1_val = v2; 0 },
+		None => { 0 },
+	};
+	if not rem1_ok {
+		return 6;
+	}
+	if rem1_val != 20 {
+		return 7;
+	}
+	var e3 = m.entry_mut(&k0);
+	val rem2 = e3.remove();
+	var rem2_some = false;
+	val _ = match rem2 {
+		Some(_v3) => { rem2_some = true; 0 },
+		None => { 0 },
+	};
+	if rem2_some {
+		return 8;
+	}
+	return 0;
+}
+
+fn main() nothrow -> Int {
+	return try run() catch { 99 };
+}

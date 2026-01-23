@@ -19,7 +19,7 @@ implement hash.Hash<hash.DefaultHasher> for BadKey {
 }
 
 fn run() -> Int {
-	var m = containers.hash_map_new<type BadKey, Int>();
+	var m = containers.hash_map<type BadKey, Int>();
 	var i = 0;
 	while i < 64 {
 		m.insert(BadKey(value = i), i + 1000);

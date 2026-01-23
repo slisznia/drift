@@ -3,7 +3,7 @@ module main
 import std.containers as containers;
 
 fn run() -> Int {
-	var m = containers.hash_map_new<type Int, String>();
+	var m = containers.hash_map<type Int, String>();
 	m.insert(1, "a");
 	val old = m.insert(1, "b");
 	val old_v: String = match old {

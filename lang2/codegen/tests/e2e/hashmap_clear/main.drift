@@ -3,7 +3,7 @@ module main
 import std.containers as containers;
 
 fn run() -> Int {
-	var m = containers.hash_map_new<type Int, Int>();
+	var m = containers.hash_map<type Int, Int>();
 	m.insert(1, 10);
 	m.insert(2, 20);
 	m.insert(3, 30);

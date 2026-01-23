@@ -3,7 +3,7 @@ module main
 import std.containers as containers;
 
 fn run() -> Int {
-	var s = containers.tree_set_new<type Int>();
+	var s = containers.tree_set<type Int>();
 	if s.len() != 0 {
 		return 1;
 	}

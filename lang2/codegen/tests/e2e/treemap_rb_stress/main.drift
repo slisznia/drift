@@ -1,0 +1,44 @@
+module main
+
+import std.containers as containers;
+
+fn lcg_next(x: Int) -> Int {
+	val a: Int = 1103515245;
+	val c: Int = 12345;
+	val m: Int = 2147483648;
+	var v = a * x + c;
+	if v < 0 {
+		v = -v;
+	}
+	return v % m;
+}
+
+fn run() -> Int {
+	var m = containers.tree_map<type Int, Int>();
+	var seed = 1234567;
+	var i = 0;
+	while i < 200 {
+		seed = lcg_next(seed);
+		val k = (seed % 200) - 100;
+		m.insert(k, i);
+		if not m.__test_validate() {
+			return 1;
+		}
+		i = i + 1;
+	}
+	var j = 0;
+	while j < 200 {
+		seed = lcg_next(seed);
+		val k2 = (seed % 200) - 100;
+		val _v = m.remove(&k2);
+		if not m.__test_validate() {
+			return 2;
+		}
+		j = j + 1;
+	}
+	return 0;
+}
+
+fn main() nothrow -> Int {
+	return try run() catch { 99 };
+}

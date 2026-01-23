@@ -3,7 +3,7 @@ module main
 import std.containers as containers;
 
 fn run() -> Int {
-	var s = containers.hash_set_new<type Int>();
+	var s = containers.hash_set<type Int>();
 	val k1: Int = 1;
 	val k2: Int = 2;
 	if not s.insert(1) {

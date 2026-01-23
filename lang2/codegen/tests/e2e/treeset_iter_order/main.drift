@@ -1,0 +1,47 @@
+module main
+
+import std.containers as containers;
+import std.iter as iter;
+
+fn run() -> Int {
+	var s = containers.tree_set<type Int>();
+	val keys = [5, 1, 9, 2, 8, 3, 7, 4, 6];
+	var i = 0;
+	while i < keys.len {
+		s.insert(keys[i]);
+		i = i + 1;
+	}
+	val expected = [1, 2, 3, 4, 5, 6, 7, 8, 9];
+	var it = s.iter();
+	var j = 0;
+	while j < expected.len {
+		val got_opt: Optional<&Int> = iter.SinglePassIterator::next(&mut it);
+		var got_val = 0;
+		var got_ok = false;
+		val _ = match got_opt {
+			Some(v) => { got_val = *v; got_ok = true; 0 },
+			None => { got_ok = false; 0 },
+		};
+		if not got_ok {
+			return 1;
+		}
+		if got_val != expected[j] {
+			return 2;
+		}
+		j = j + 1;
+	}
+	val end: Optional<&Int> = iter.SinglePassIterator::next(&mut it);
+	var end_has = false;
+	val _ = match end {
+		Some(_v) => { end_has = true; 0 },
+		None => { 0 },
+	};
+	if end_has {
+		return 3;
+	}
+	return 0;
+}
+
+fn main() nothrow -> Int {
+	return try run() catch { 99 };
+}

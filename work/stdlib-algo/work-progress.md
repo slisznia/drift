@@ -12,7 +12,7 @@ Containers
   - Hasher is primitive-only (write_u64/write_i64/write_bool + finish).
   - Hash for String iterates codepoints and feeds write_u64 (+ length delimiter).
   - HashMap<K, V, B> where B is BuildHasher (store builder, not hasher).
-  - hash_map_new/with_capacity use DefaultBuildHasher; with_builder for custom.
+  - hash_map/with_capacity use DefaultBuildHasher; with_builder for custom.
   - Implement iter + gen invalidation (IteratorInvalidated on mutation).
   - Tests: basic ops, collisions (bad hasher), resize/rehash, iterator invalidation.
   - Implemented (2026-01-21):
@@ -81,9 +81,17 @@ Containers
   - Status (2026-01-22): borrow checker now defers method receiver loans until after argument evaluation (two-phase-like), fixing TreeMap insert_fixup/remove_at borrowcheck errors and for-iter diagnostics.
   - Status (2026-01-22): stage2 array-literal inference now ignores Unknown element types when any known types agree; _infer_expr_type for int literals only trusts typed scalar int/uint/byte (avoids node-id collisions yielding Bool).
   - Status (2026-01-22): try-expression validator now allows nothrow call attempts (HCall/HMethodCall/HInvoke) to avoid false errors in package/boundary calls.
-  - Status (2026-01-22): try-expression validator now treats any attempt containing a call expression as eligible (allows try on expressions like a() + b()).
-  - Status (2026-01-22): adjusted e2e expectations for borrow_mut_field_param and match_ctor_type_args to be success cases (main returns 0).
-  - Status (2026-01-22): tests run: pytest stage1+stage2+type_checker all pass; treemap_basic e2e not re-run yet.
+- Status (2026-01-22): try-expression validator now treats any attempt containing a call expression as eligible (allows try on expressions like a() + b()).
+- Status (2026-01-22): adjusted e2e expectations for borrow_mut_field_param and match_ctor_type_args to be success cases (main returns 0).
+- Status (2026-01-22): tests run: pytest stage1+stage2+type_checker all pass; treemap_basic e2e not re-run yet.
+- Status (2026-01-23): TreeMap insert_fixup now recomputes parent/grandparent after rotations; added `treemap_rb_invariants` e2e (uses __test_validate) and tightened treemap_basic/iter_order/remove_cases coverage; treemap_rb_invariants passes.
+- Status (2026-01-23): added `treeset_iter_order` e2e (sorted iteration check); treeset_basic/iter_invalidate/iter_order all pass.
+- Status (2026-01-23): added TreeMap EntryMut (no reference returns). API: `entry_mut(&K)` + `is_occupied`, `insert(key, value)`, `or_insert(key, value)`, `remove`; added `treemap_entry_basic` e2e.
+- Status (2026-01-23): added `treemap_entry_invalidate` e2e (EntryMut insert/remove invalidates iterator); EntryMut docs note key re-pass requirement.
+- Status (2026-01-23): stdlib spec documents TreeMap EntryMut MVP semantics (no reference returns; key re-pass requirement).
+- Status (2026-01-23): stdlib spec notes TreeSet has no Entry API in MVP.
+- Status (2026-01-23): added `treemap_rb_stress` e2e (fixed-seed insert/remove stress with __test_validate).
+- Status (2026-01-23): renamed constructor free functions to shorter forms: `hash_map`, `hash_set`, `tree_map`, `tree_set` (updated call sites).
   - Next: add collision/resize/iterator invalidation tests; consider HashCode alias if needed.
 
 Algorithms
@@ -98,7 +106,7 @@ TreeMap decisions (pinned):
 
 - TreeMap<K, V> require K is cmp.Comparable.
 - Core API:
-  - tree_map_new<K,V>() -> TreeMap<K,V>
+  - tree_map<K,V>() -> TreeMap<K,V>
   - len(&self) -> Int, is_empty(&self) -> Bool
   - clear(&mut self)
   - contains_key(&self, key: &K) -> Bool

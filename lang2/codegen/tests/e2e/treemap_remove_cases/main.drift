@@ -3,58 +3,80 @@ module main
 import std.containers as containers;
 
 fn run() -> Int {
-	var m = containers.tree_map_new<type Int, Int>();
-	m.insert(2, 20);
-	m.insert(1, 10);
-	m.insert(3, 30);
-	m.insert(4, 40);
+	var m = containers.tree_map<type Int, Int>();
+	m.insert(10, 100);
 	m.insert(5, 50);
-	if m.len() != 5 {
+	m.insert(15, 150);
+	m.insert(3, 30);
+	m.insert(7, 70);
+	m.insert(6, 60);
+	m.insert(12, 120);
+	m.insert(13, 130);
+	m.insert(18, 180);
+	if m.len() != 9 {
 		return 1;
 	}
-	val k5: Int = 5;
-	val v5: Int = match m.remove(&k5) {
-		None => { -1 },
-		Some(v) => { v }
-	};
-	if v5 != 50 {
-		return 2;
-	}
-	if m.contains_key(&k5) {
-		return 3;
-	}
+	// remove leaf
 	val k3: Int = 3;
 	val v3: Int = match m.remove(&k3) {
 		None => { -1 },
 		Some(v) => { v }
 	};
 	if v3 != 30 {
-		return 4;
+		return 2;
 	}
 	if m.contains_key(&k3) {
-		return 5;
+		return 3;
 	}
-	val k2: Int = 2;
-	val v2: Int = match m.remove(&k2) {
+	// remove node with one child (left-only)
+	val k7: Int = 7;
+	val v7: Int = match m.remove(&k7) {
 		None => { -1 },
 		Some(v) => { v }
 	};
-	if v2 != 20 {
+	if v7 != 70 {
+		return 4;
+	}
+	if m.contains_key(&k7) {
+		return 5;
+	}
+	// remove node with one child (right-only)
+	val k12: Int = 12;
+	val v12: Int = match m.remove(&k12) {
+		None => { -1 },
+		Some(v) => { v }
+	};
+	if v12 != 120 {
 		return 6;
 	}
-	if m.contains_key(&k2) {
+	if m.contains_key(&k12) {
 		return 7;
 	}
-	if m.len() != 2 {
+	// remove node with two children (root)
+	val k10: Int = 10;
+	val v10: Int = match m.remove(&k10) {
+		None => { -1 },
+		Some(v) => { v }
+	};
+	if v10 != 100 {
 		return 8;
 	}
-	val k1: Int = 1;
-	val k4: Int = 4;
-	if not m.contains_key(&k1) {
+	if m.contains_key(&k10) {
 		return 9;
 	}
-	if not m.contains_key(&k4) {
+	// remove remaining nodes until empty
+	val keys = [5, 6, 13, 15, 18];
+	var i = 0;
+	while i < keys.len {
+		val k: Int = keys[i];
+		val _v = m.remove(&k);
+		i = i + 1;
+	}
+	if m.len() != 0 {
 		return 10;
+	}
+	if not m.is_empty() {
+		return 11;
 	}
 	return 0;
 }

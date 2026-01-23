@@ -98,6 +98,17 @@ Pinned MVP container set:
 - `Queue<T>`
 - `Deque<T>`
 
+TreeMap Entry API (MVP):
+- `entry_mut(&K) -> TreeMapEntryMut<K, V>` provides a single-lookup mutation handle.
+- Entry methods do not return references; mutation is performed inside the call.
+- To avoid moving from a projected field under MVP rules, `insert`/`or_insert` take the key again:
+  - `insert(key: K, value: V) -> Optional<V>`
+  - `or_insert(key: K, value: V) -> Bool`
+  - `remove() -> Optional<V>`
+
+TreeSet Entry API (MVP):
+- No Entry API in MVP; use `insert`, `remove`, and `contains`.
+
 Array API (MVP):
 - Indexing:
   - `arr[i]` is a place expression. In value context it yields a copy **only if `T is Copy`** (throws `IndexError` on OOB).

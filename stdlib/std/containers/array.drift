@@ -27,25 +27,26 @@ export {
 	HashMapIter,
 	HashMapCore,
 	HashMap,
-	hash_map_new,
+	hash_map,
 	hash_map_with_capacity,
 	hash_map_with_builder,
 	HASH_SET_CONTAINER_ID,
 	HashSetIter,
 	HashSetCore,
 	HashSet,
-	hash_set_new,
+	hash_set,
 	hash_set_with_capacity,
 	hash_set_with_builder,
 	TREE_MAP_CONTAINER_ID,
 	TreeMapItemRef,
 	TreeMapIter,
+	TreeMapEntryMut,
 	TreeMap,
-	tree_map_new,
+	tree_map,
 	TREE_SET_CONTAINER_ID,
 	TreeSetIter,
 	TreeSet,
-	tree_set_new
+	tree_set
 };
 
 pub const ARRAY_CONTAINER_ID: String = "std.containers:Array";
@@ -558,13 +559,13 @@ pub struct HashMapCore<K, V, B> {
 
 pub type HashMap<K, V> = HashMapCore<K, V, hash.DefaultBuildHasher>;
 
-pub fn hash_map_new<K, V>() -> HashMap<K, V> {
+pub fn hash_map<K, V>() -> HashMap<K, V> {
 	return hash_map_with_builder<type K, V, hash.DefaultBuildHasher>(hash.default_build_hasher());
 }
 
 pub fn hash_map_with_capacity<K, V>(cap: Int) -> HashMap<K, V>
 	require K is cmp.Equatable, K is hash.Hash<hash.DefaultHasher> {
-	var map = hash_map_new<type K, V>();
+	var map = hash_map<type K, V>();
 	map.ensure_capacity(cap);
 	return move map;
 }
@@ -893,7 +894,7 @@ pub struct HashSetCore<K, B> {
 
 pub type HashSet<K> = HashSetCore<K, hash.DefaultBuildHasher>;
 
-pub fn hash_set_new<K>() -> HashSet<K> {
+pub fn hash_set<K>() -> HashSet<K> {
 	return hash_set_with_builder<type K, hash.DefaultBuildHasher>(hash.default_build_hasher());
 }
 
@@ -988,6 +989,15 @@ struct TreeMapFindResult {
 	cmp: Int
 }
 
+// Entry mutation avoids returning references; caller passes key again for insert/or_insert.
+pub struct TreeMapEntryMut<K, V> {
+	map: &mut TreeMap<K, V>,
+	found: Bool,
+	idx: Int,
+	parent: Int,
+	cmp: Int
+}
+
 pub struct TreeMap<K, V> {
 	root: Int,
 	len: Int,
@@ -1002,7 +1012,7 @@ pub struct TreeMap<K, V> {
 	free_head: Int
 }
 
-pub fn tree_map_new<K, V>() -> TreeMap<K, V> {
+pub fn tree_map<K, V>() -> TreeMap<K, V> {
 	unsafe {
 		var keys = mem.alloc_uninit<type K>(0);
 		var values = mem.alloc_uninit<type V>(0);
@@ -1115,6 +1125,106 @@ implement<K, V> TreeMap<K, V> require K is cmp.Comparable {
 			stack.push(cur);
 			cur = self.left_at(cur);
 		}
+	}
+
+	@test_build_only
+	pub fn __test_validate(self: &TreeMap<K, V>) -> Bool {
+		val root = self.root;
+		if root < 0 {
+			return self.len == 0;
+		}
+		if self.is_red(root) {
+			return false;
+		}
+
+		// Red nodes must not have red children.
+		var stack: Array<Int> = [];
+		stack.push(root);
+		while stack.len > 0 {
+			val top = stack.pop();
+			match top {
+				None => { },
+				Some(i) => {
+					if self.is_red(i) {
+						val l = self.left_at(i);
+						val r = self.right_at(i);
+						if self.is_red(l) or self.is_red(r) {
+							return false;
+						}
+					}
+					val l2 = self.left_at(i);
+					val r2 = self.right_at(i);
+					if l2 >= 0 {
+						stack.push(l2);
+					}
+					if r2 >= 0 {
+						stack.push(r2);
+					}
+				}
+			}
+		}
+
+		// Equal black height on all root->null paths.
+		var bh_expected = -1;
+		var nodes: Array<Int> = [];
+		var blacks: Array<Int> = [];
+		nodes.push(root);
+		blacks.push(0);
+		while nodes.len > 0 {
+			val n_opt = nodes.pop();
+			val b_opt = blacks.pop();
+			match n_opt {
+				None => { },
+				Some(n) => {
+					val bcnt = match b_opt {
+						None => { 0 },
+						Some(v) => { v }
+					};
+					if n < 0 {
+						val leaf_bh = bcnt + 1;
+						if bh_expected < 0 {
+							bh_expected = leaf_bh;
+						} else {
+							if leaf_bh != bh_expected {
+								return false;
+							}
+						}
+					} else {
+						val next_b = bcnt + (self.is_red(n) ? 0 : 1);
+						nodes.push(self.left_at(n));
+						blacks.push(next_b);
+						nodes.push(self.right_at(n));
+						blacks.push(next_b);
+					}
+				}
+			}
+		}
+
+		// BST ordering (in-order strictly increasing).
+		var order: Array<Int> = [];
+		self.push_left_spine(&mut order, root);
+		var prev_idx = TREE_MAP_NONE;
+		while order.len > 0 {
+			val top2 = order.pop();
+			match top2 {
+				None => { },
+				Some(i2) => {
+					if prev_idx >= 0 {
+						val prev_k = self.key_ref(prev_idx);
+						val cur_k = self.key_ref(i2);
+						if cmp.Comparable::cmp(prev_k, cur_k) >= 0 {
+							return false;
+						}
+					}
+					prev_idx = i2;
+					val right = self.right_at(i2);
+					if right >= 0 {
+						self.push_left_spine(&mut order, right);
+					}
+				}
+			}
+		}
+		return true;
 	}
 
 	fn ensure_capacity(self: &mut TreeMap<K, V>, needed: Int) -> Void {
@@ -1290,11 +1400,11 @@ implement<K, V> TreeMap<K, V> require K is cmp.Comparable {
 	fn insert_fixup(self: &mut TreeMap<K, V>, z0: Int) -> Void {
 		var z = z0;
 		while self.is_red(self.parent_at(z)) {
-			val p = self.parent_at(z);
+			var p = self.parent_at(z);
 			if p < 0 {
 				break;
 			}
-			val g = self.parent_at(p);
+			var g = self.parent_at(p);
 			if g < 0 {
 				break;
 			}
@@ -1309,6 +1419,8 @@ implement<K, V> TreeMap<K, V> require K is cmp.Comparable {
 					if self.right_at(p) == z {
 						z = p;
 						self.left_rotate(z);
+						p = self.parent_at(z);
+						g = self.parent_at(p);
 					}
 					self.set_red(p, false);
 					self.set_red(g, true);
@@ -1325,6 +1437,8 @@ implement<K, V> TreeMap<K, V> require K is cmp.Comparable {
 					if self.left_at(p) == z {
 						z = p;
 						self.right_rotate(z);
+						p = self.parent_at(z);
+						g = self.parent_at(p);
 					}
 					self.set_red(p, false);
 					self.set_red(g, true);
@@ -1589,6 +1703,17 @@ implement<K, V> TreeMap<K, V> require K is cmp.Comparable {
 		return Optional::Some(v);
 	}
 
+	pub fn entry_mut(self: &mut TreeMap<K, V>, key: &K) -> TreeMapEntryMut<K, V> {
+		val res = self.find_slot(key);
+		return TreeMapEntryMut<type K, V>(
+			map = self,
+			found = res.found,
+			idx = res.idx,
+			parent = res.parent,
+			cmp = res.cmp
+		);
+	}
+
 	pub fn insert(self: &mut TreeMap<K, V>, key: K, value: V) -> Optional<V> {
 		val res = self.find_slot(&key);
 		if res.found {
@@ -1615,6 +1740,38 @@ implement<K, V> TreeMap<K, V> require K is cmp.Comparable {
 		return TreeMapIter<type K, V>(map = self, stack = move stack, gen_snapshot = self.gen);
 	}
 
+}
+
+implement<K, V> TreeMapEntryMut<K, V> require K is cmp.Comparable {
+	pub fn is_occupied(self: &TreeMapEntryMut<K, V>) -> Bool {
+		return self.found;
+	}
+
+	pub fn insert(var self: TreeMapEntryMut<K, V>, key: K, value: V) -> Optional<V> {
+		if self.found {
+			val old = self.map.read_value(self.idx);
+			unsafe { mem.write<type V>(&mut self.map.values, self.idx, value); }
+			return Optional::Some(old);
+		}
+		self.map.insert_at(self.parent, self.cmp, key, value);
+		return Optional::None();
+	}
+
+	pub fn or_insert(var self: TreeMapEntryMut<K, V>, key: K, value: V) -> Bool {
+		if self.found {
+			return false;
+		}
+		self.map.insert_at(self.parent, self.cmp, key, value);
+		return true;
+	}
+
+	pub fn remove(var self: TreeMapEntryMut<K, V>) -> Optional<V> {
+		if not self.found {
+			return Optional::None();
+		}
+		val v = self.map.remove_at(self.idx);
+		return Optional::Some(v);
+	}
 }
 
 implement<K, V> iter.SinglePassIterator<TreeMapItemRef<K, V>> for TreeMapIter<K, V> {
@@ -1646,8 +1803,8 @@ pub struct TreeSet<K> {
 	map: TreeMap<K, Bool>
 }
 
-pub fn tree_set_new<K>() -> TreeSet<K> {
-	var map = tree_map_new<type K, Bool>();
+pub fn tree_set<K>() -> TreeSet<K> {
+	var map = tree_map<type K, Bool>();
 	return TreeSet<type K>(map = move map);
 }
 

@@ -4,16 +4,18 @@ import std.containers as containers;
 import std.err;
 import std.iter as iter;
 
-fn next_once<I>(it: &mut I) -> Int require I is iter.SinglePassIterator<&Int> {
+fn next_once<I>(it: &mut I) -> Int require I is iter.SinglePassIterator<containers.TreeMapItemRef<Int, Int> > {
 	val _v = iter.SinglePassIterator::next(it);
 	return 1;
 }
 
 fn run() -> Int {
-	var s = containers.tree_set<type Int>();
-	s.insert(1);
-	var it = s.iter();
-	s.insert(2);
+	var m = containers.tree_map<type Int, Int>();
+	m.insert(1, 1);
+	var it = m.iter();
+	val k2: Int = 2;
+	var e0 = m.entry_mut(&k2);
+	val _ins = e0.or_insert(2, 2);
 	val out1: Int = try next_once(&mut it) catch std.err:IteratorInvalidated(_) {
 		0
 	} catch {
@@ -22,26 +24,17 @@ fn run() -> Int {
 	if out1 != 0 {
 		return 1;
 	}
-	var it2 = s.iter();
+	var it2 = m.iter();
 	val k1: Int = 1;
-	val _g = s.contains(&k1);
+	var e1 = m.entry_mut(&k1);
+	val _rm = e1.remove();
 	val out2: Int = try next_once(&mut it2) catch std.err:IteratorInvalidated(_) {
-		3
-	} catch {
-		4
-	};
-	if out2 != 1 {
-		return 2;
-	}
-	var it3 = s.iter();
-	s.clear();
-	val out3: Int = try next_once(&mut it3) catch std.err:IteratorInvalidated(_) {
 		0
 	} catch {
-		5
+		3
 	};
-	if out3 != 0 {
-		return 3;
+	if out2 != 0 {
+		return 2;
 	}
 	return 0;
 }

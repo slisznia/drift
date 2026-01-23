@@ -10,7 +10,7 @@ fn next_once<I>(it: &mut I) -> Int require I is iter.SinglePassIterator<containe
 }
 
 fn run() -> Int {
-	var m = containers.tree_map_new<type Int, Int>();
+	var m = containers.tree_map<type Int, Int>();
 	m.insert(1, 1);
 	var it = m.iter();
 	m.insert(2, 2);

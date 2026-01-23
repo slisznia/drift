@@ -3,7 +3,7 @@ module main
 import std.containers as containers;
 
 fn run() -> Int {
-	var m = containers.tree_map_new<type Int, Int>();
+	var m = containers.tree_map<type Int, Int>();
 	var i = 0;
 	while i < 20 {
 		m.insert(i, i * 2);
