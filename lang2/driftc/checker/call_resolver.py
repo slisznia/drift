@@ -437,7 +437,7 @@ def resolve_variant_ctor(
 			param_id = TypeParamId(owner=owner, index=idx)
 			type_params.append(TypeParam(id=param_id, name=tp_name, span=None))
 			typevar_ids.append(ctx.type_table.ensure_typevar(param_id, name=tp_name))
-	type_cache: dict[tuple[TypeId, tuple[TypeId, ...]], TypeId] = {}
+		type_cache: dict[tuple[TypeId, tuple[TypeId, ...]], TypeId] = {}
 
 	def _lower_generic_expr(expr: GenericTypeExpr) -> TypeId:
 		if expr.param_index is not None:
@@ -500,8 +500,8 @@ def resolve_variant_ctor(
 		)
 		if expr.args:
 			if base_id in ctx.type_table.struct_bases:
-				schema = ctx.type_table.struct_bases.get(base_id)
-				if schema is not None and not schema.type_params:
+				base_schema = ctx.type_table.struct_bases.get(base_id)
+				if base_schema is not None and not base_schema.type_params:
 					ctx.diagnostics.append(
 						ctx.tc_diag(
 							message=f"type '{name}' is not generic",
@@ -512,8 +512,8 @@ def resolve_variant_ctor(
 					)
 					return ctx.unknown_ty
 			elif base_id in ctx.type_table.variant_schemas:
-				schema = ctx.type_table.variant_schemas.get(base_id)
-				if schema is not None and not schema.type_params:
+				base_schema = ctx.type_table.variant_schemas.get(base_id)
+				if base_schema is not None and not base_schema.type_params:
 					ctx.diagnostics.append(
 						ctx.tc_diag(
 							message=f"type '{name}' is not generic",
@@ -2143,6 +2143,13 @@ def resolve_call_expr(
 		if isinstance(arg, H.HPlaceExpr):
 			return arg
 		return None
+	def _canonical_tid(tid: TypeId | TypeParamId | None) -> TypeId | None:
+		if tid is None:
+			return None
+		if isinstance(tid, TypeParamId):
+			tp_name = ctx.type_param_names.get(tid) if ctx.type_param_names else None
+			return ctx.type_table.ensure_typevar(tid, name=tp_name)
+		return tid
 
 	def _intrinsic_kind_for_decl(decl: CallableDecl, sig: object | None) -> IntrinsicKind | None:
 		if sig is None or not getattr(sig, "is_intrinsic", False):
@@ -2243,20 +2250,18 @@ def resolve_call_expr(
 				diagnostics.append(_tc_diag(message=f"{expr.fn.name} expects at least 1 argument", severity="error", span=getattr(expr, "loc", Span())))
 				return record_expr(expr, ctx.unknown_ty)
 			if expr.fn.name == "replace":
-				t_elem = type_arg_ids[0] if type_arg_ids else _mut_ref_inner(arg_types_local[0])
+				mut_inner = _mut_ref_inner(arg_types_local[0])
+				t_elem = _canonical_tid(type_arg_ids[0]) if type_arg_ids else _canonical_tid(mut_inner)
 				if t_elem is None:
 					diagnostics.append(_tc_diag(message="replace requires a concrete element type", severity="error", span=getattr(expr, "loc", Span())))
 					return record_expr(expr, ctx.unknown_ty)
 				if len(arg_types_local) != 2:
 					diagnostics.append(_tc_diag(message="replace expects two arguments", severity="error", span=getattr(expr, "loc", Span())))
 					return record_expr(expr, ctx.unknown_ty)
-				if type_arg_ids and _mut_ref_inner(arg_types_local[0]) != t_elem:
-					diagnostics.append(_tc_diag(message="cannot infer type arguments for 'replace': conflicting constraints", severity="error", span=getattr(expr, "loc", Span())))
-					return record_expr(expr, ctx.unknown_ty)
-				if _mut_ref_inner(arg_types_local[0]) is None:
+				if mut_inner is None:
 					diagnostics.append(_tc_diag(message="replace expects &mut T as the first argument", severity="error", span=getattr(expr, "loc", Span())))
 					return record_expr(expr, ctx.unknown_ty)
-				if arg_types_local[1] != t_elem:
+				if arg_types_local[1] is not None and _canonical_tid(arg_types_local[1]) != _canonical_tid(t_elem):
 					diagnostics.append(_tc_diag(message="cannot infer type arguments for 'replace': conflicting constraints", severity="error", span=getattr(expr, "loc", Span())))
 					return record_expr(expr, ctx.unknown_ty)
 				place_expr = _borrowed_place(expr.args[0])
@@ -2276,20 +2281,20 @@ def resolve_call_expr(
 				record_call_info(expr, param_types=param_types, return_type=ret_ty, can_throw=False, target=CallTarget.intrinsic(intrinsic_kind))
 				return record_expr(expr, ret_ty)
 			if expr.fn.name == "swap":
-				t_elem = type_arg_ids[0] if type_arg_ids else _mut_ref_inner(arg_types_local[0])
+				t_elem = _canonical_tid(type_arg_ids[0]) if type_arg_ids else _canonical_tid(_mut_ref_inner(arg_types_local[0]))
 				if t_elem is None:
 					diagnostics.append(_tc_diag(message="swap requires a concrete element type", severity="error", span=getattr(expr, "loc", Span())))
 					return record_expr(expr, ctx.unknown_ty)
 				if len(arg_types_local) != 2:
 					diagnostics.append(_tc_diag(message="swap expects two arguments", severity="error", span=getattr(expr, "loc", Span())))
 					return record_expr(expr, ctx.unknown_ty)
-				if type_arg_ids and _mut_ref_inner(arg_types_local[0]) != t_elem:
+				if type_arg_ids and _canonical_tid(_mut_ref_inner(arg_types_local[0])) != _canonical_tid(t_elem):
 					diagnostics.append(_tc_diag(message="cannot infer type arguments for 'swap': conflicting constraints", severity="error", span=getattr(expr, "loc", Span())))
 					return record_expr(expr, ctx.unknown_ty)
 				if _mut_ref_inner(arg_types_local[0]) is None or _mut_ref_inner(arg_types_local[1]) is None:
 					diagnostics.append(_tc_diag(message="swap expects &mut T arguments", severity="error", span=getattr(expr, "loc", Span())))
 					return record_expr(expr, ctx.unknown_ty)
-				if _mut_ref_inner(arg_types_local[1]) != t_elem:
+				if _canonical_tid(_mut_ref_inner(arg_types_local[1])) != _canonical_tid(t_elem):
 					diagnostics.append(_tc_diag(message="cannot infer type arguments for 'swap': conflicting constraints", severity="error", span=getattr(expr, "loc", Span())))
 					return record_expr(expr, ctx.unknown_ty)
 				left_place = _borrowed_place(expr.args[0])
@@ -2362,7 +2367,7 @@ def resolve_call_expr(
 					if len(arg_types_local) != 2:
 						diagnostics.append(_tc_diag(message="ptr_write expects two arguments", severity="error", span=getattr(expr, "loc", Span())))
 						return record_expr(expr, ctx.unknown_ty)
-					if arg_types_local[1] != t_elem:
+					if arg_types_local[1] is not None and _canonical_tid(arg_types_local[1]) != _canonical_tid(t_elem):
 						diagnostics.append(_tc_diag(message="ptr_write value type does not match Ptr<T>", severity="error", span=getattr(expr, "loc", Span())))
 						return record_expr(expr, ctx.unknown_ty)
 					param_types = [ctx.type_table.new_ptr(t_elem, module_id="std.mem"), t_elem]
@@ -2381,6 +2386,9 @@ def resolve_call_expr(
 					intrinsic_kind = IntrinsicKind.PTR_IS_NULL
 			else:
 				t_elem = _rawbuffer_elem_type(arg_types_local[0])
+				if t_elem is None and type_arg_ids:
+					t_elem = type_arg_ids[0]
+				t_elem = _canonical_tid(t_elem)
 				if t_elem is None:
 					diagnostics.append(_tc_diag(message=f"{expr.fn.name} requires RawBuffer<T> receiver", severity="error", span=getattr(expr, "loc", Span())))
 					return record_expr(expr, ctx.unknown_ty)
@@ -2399,13 +2407,28 @@ def resolve_call_expr(
 					ret_ty = ctx.type_table.ensure_ref_mut(t_elem)
 					intrinsic_kind = IntrinsicKind.RAW_PTR_AT_MUT
 				elif expr.fn.name == "write":
+					if len(arg_types_local) != 3:
+						diagnostics.append(_tc_diag(message="write expects three arguments", severity="error", span=getattr(expr, "loc", Span())))
+						return record_expr(expr, ctx.unknown_ty)
 					param_types = [ctx.type_table.ensure_ref_mut(rawbuf_inst), ctx.int_ty, t_elem]
 					ret_ty = ctx.void_ty
 					intrinsic_kind = IntrinsicKind.RAW_WRITE
+					if arg_types_local[1] is not None and arg_types_local[1] != ctx.int_ty:
+						diagnostics.append(_tc_diag(message="write expects Int as the index", severity="error", span=getattr(expr, "loc", Span())))
+						return record_expr(expr, ctx.unknown_ty)
+					if arg_types_local[2] is not None and _canonical_tid(arg_types_local[2]) != _canonical_tid(t_elem):
+						diagnostics.append(_tc_diag(message="write value type does not match RawBuffer<T>", severity="error", span=getattr(expr, "loc", Span())))
+						return record_expr(expr, ctx.unknown_ty)
 				elif expr.fn.name == "read":
+					if len(arg_types_local) != 2:
+						diagnostics.append(_tc_diag(message="read expects two arguments", severity="error", span=getattr(expr, "loc", Span())))
+						return record_expr(expr, ctx.unknown_ty)
 					param_types = [ctx.type_table.ensure_ref_mut(rawbuf_inst), ctx.int_ty]
 					ret_ty = t_elem
 					intrinsic_kind = IntrinsicKind.RAW_READ
+					if arg_types_local[1] is not None and arg_types_local[1] != ctx.int_ty:
+						diagnostics.append(_tc_diag(message="read expects Int as the index", severity="error", span=getattr(expr, "loc", Span())))
+						return record_expr(expr, ctx.unknown_ty)
 		if ret_ty is None:
 			return record_expr(expr, ctx.unknown_ty)
 		if intrinsic_kind is None:

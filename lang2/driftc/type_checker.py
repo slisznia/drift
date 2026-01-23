@@ -433,6 +433,9 @@ class TypeChecker:
 			if isinstance(stmt, H.HBlock):
 				walk_block(stmt)
 				return
+			if hasattr(H, "HUnsafeBlock") and isinstance(stmt, getattr(H, "HUnsafeBlock")):
+				walk_block(stmt.block)
+				return
 			if isinstance(stmt, H.HTry):
 				walk_block(stmt.body)
 				for arm in stmt.catches:
@@ -531,6 +534,7 @@ class TypeChecker:
 		# even if another module also defines `Point`).
 		current_module_name: str | None = None
 		current_module_name = fn_id.module or "main"
+		sig = signatures_by_id.get(fn_id) if signatures_by_id is not None else None
 		def _fixed_width_allowed(module_name: str | None) -> bool:
 			if module_name is None:
 				return False
@@ -747,6 +751,8 @@ class TypeChecker:
 		# Binding identity kind (param vs local). Binding ids share a single counter,
 		# but we still track the origin kind to keep place reasoning explicit.
 		binding_place_kind: Dict[int, PlaceKind] = {}
+		# Track whether a binding was declared as &mut T (param-only for now).
+		binding_param_ref_mut: Dict[int, bool] = {}
 		if preseed_binding_place_kind:
 			for bid, kind in preseed_binding_place_kind.items():
 				binding_place_kind[bid] = kind
@@ -3201,27 +3207,36 @@ class TypeChecker:
 		param_binding_ids: dict[str, int] = {}
 		if param_types:
 			wanted = set(param_types.keys())
-
-			def _scan_param_binds(obj: object) -> None:
-				if isinstance(obj, H.HVar) and obj.binding_id is not None and obj.name in wanted:
-					prev = param_binding_ids.get(obj.name)
-					if prev is None or obj.binding_id < prev:
-						param_binding_ids[obj.name] = obj.binding_id
-				if isinstance(obj, H.HNode) or (is_dataclass(obj) and obj.__class__.__module__.startswith("lang2.driftc.stage1")):
-					if is_dataclass(obj):
-						for f in fields(obj):
-							_scan_param_binds(getattr(obj, f.name))
-					else:
-						for v in obj.__dict__.values():
+			if preseed_scope_bindings:
+				for name in wanted:
+					bid = preseed_scope_bindings.get(name)
+					if bid is not None:
+						param_binding_ids[name] = bid
+			else:
+				def _scan_param_binds(obj: object) -> None:
+					if isinstance(obj, H.HVar) and obj.binding_id is not None and obj.name in wanted:
+						prev = param_binding_ids.get(obj.name)
+						if prev is None or obj.binding_id < prev:
+							param_binding_ids[obj.name] = obj.binding_id
+					if isinstance(obj, H.HNode) or (is_dataclass(obj) and obj.__class__.__module__.startswith("lang2.driftc.stage1")):
+						if is_dataclass(obj):
+							for f in fields(obj):
+								_scan_param_binds(getattr(obj, f.name))
+						else:
+							for v in obj.__dict__.values():
+								_scan_param_binds(v)
+					elif isinstance(obj, list):
+						for v in obj:
 							_scan_param_binds(v)
-				elif isinstance(obj, list):
-					for v in obj:
-						_scan_param_binds(v)
-				elif isinstance(obj, dict):
-					for v in obj.values():
-						_scan_param_binds(v)
+					elif isinstance(obj, dict):
+						for v in obj.values():
+							_scan_param_binds(v)
 
-			_scan_param_binds(body)
+				_scan_param_binds(body)
+		self_binding_id = param_binding_ids.get("self")
+		self_param_allows_mut_borrow = False
+		if self_binding_id is not None and sig is not None:
+			self_param_allows_mut_borrow = _self_mode_from_sig(sig) is SelfMode.SELF_BY_REF_MUT
 
 		# Seed parameters if provided.
 		for pname, pty in (param_types or {}).items():
@@ -3233,9 +3248,14 @@ class TypeChecker:
 			binding_types[pid] = pty
 			binding_names[pid] = pname
 			binding_mutable[pid] = bool(param_mutable.get(pname, False)) if param_mutable else False
+			if pname == "self" and self_param_allows_mut_borrow:
+				binding_mutable[pid] = True
 			binding_place_kind[pid] = PlaceKind.PARAM
 			if pty is not None and self.type_table.get(pty).kind is TypeKind.REF:
 				ref_origin_param[pid] = pid
+				binding_param_ref_mut[pid] = bool(self.type_table.get(pty).ref_mut)
+			elif pname == "self" and self_param_allows_mut_borrow:
+				binding_param_ref_mut[pid] = True
 
 		def record_expr(expr: H.HExpr, ty: TypeId) -> TypeId:
 			expr_types[expr.node_id] = ty
@@ -4582,19 +4602,32 @@ class TypeChecker:
 					#  - If the place includes a deref projection, the reference being dereferenced
 					#    must itself be mutable (`&mut`), i.e. a mutable reborrow.
 					has_deref = any(isinstance(p, DerefProj) for p in place.projections)
+					base_is_ref_mut = False
+					base_ty = None
+					if place.base.local_id is not None:
+						base_ty = binding_types.get(place.base.local_id)
+						base_def = self.type_table.get(base_ty) if base_ty is not None else None
+						base_is_ref_mut = bool(base_def is not None and base_def.kind is TypeKind.REF and base_def.ref_mut)
 					if (not has_deref) and place.base.local_id is not None and not binding_mutable.get(
 						place.base.local_id, False
 					):
-						base_ty = binding_types.get(place.base.local_id)
-						base_def = self.type_table.get(base_ty) if base_ty is not None else None
-						if base_def is None or base_def.kind is not TypeKind.REF or not base_def.ref_mut:
-							diagnostics.append(
-								_tc_diag(
-									message="cannot take &mut of an immutable binding; declare it with `var`",
-									severity="error",
-									span=getattr(expr, "loc", Span()),
-								)
+						if self_binding_id is not None and place.base.local_id == self_binding_id and self_param_allows_mut_borrow:
+							pass
+						elif binding_param_ref_mut.get(place.base.local_id, False):
+							pass
+						elif base_ty is None:
+							pass
+						elif not base_is_ref_mut:
+							diag = _tc_diag(
+								message="cannot take &mut of an immutable binding; declare it with `var`",
+								severity="error",
+								span=getattr(expr, "loc", Span()),
 							)
+							span = getattr(diag, "span", None)
+							if span is not None and span.file is None and span.line is None and span.column is None:
+								diag.notes.append(f"in '{function_symbol(fn_id)}'")
+								diag.notes.append(f"borrow base '{place.base.name}' (binding_id={place.base.local_id})")
+							diagnostics.append(diag)
 					# Detect a deref projection anywhere in the place and validate the corresponding
 					# reference expression is `&mut`.
 					#

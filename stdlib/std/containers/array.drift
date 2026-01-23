@@ -36,7 +36,16 @@ export {
 	HashSet,
 	hash_set_new,
 	hash_set_with_capacity,
-	hash_set_with_builder
+	hash_set_with_builder,
+	TREE_MAP_CONTAINER_ID,
+	TreeMapItemRef,
+	TreeMapIter,
+	TreeMap,
+	tree_map_new,
+	TREE_SET_CONTAINER_ID,
+	TreeSetIter,
+	TreeSet,
+	tree_set_new
 };
 
 pub const ARRAY_CONTAINER_ID: String = "std.containers:Array";
@@ -311,7 +320,7 @@ implement<T> Deque<T> {
 				mem.write<type T>(&mut new_buf, i, v);
 				i = i + 1;
 			}
-			var old = mem.replace(&mut self.buf, new_buf);
+			var old = mem.replace<type mem.RawBuffer<T> >(&mut self.buf, new_buf);
 			self.head = 0;
 			self.gen = self.gen + 1;
 			mem.dealloc<type T>(old);
@@ -514,14 +523,17 @@ implement iter.RandomAccessPermutable<Int> for DequeRangeMut<Int> {
 
 pub const HASH_MAP_CONTAINER_ID: String = "std.containers:HashMap";
 pub const HASH_SET_CONTAINER_ID: String = "std.containers:HashSet";
+pub const TREE_MAP_CONTAINER_ID: String = "std.containers:TreeMap";
+pub const TREE_SET_CONTAINER_ID: String = "std.containers:TreeSet";
+const TREE_MAP_NONE: Int = -1;
 
 const HASH_MAP_STATE_EMPTY: Int = 0;
 const HASH_MAP_STATE_FULL: Int = 1;
 const HASH_MAP_STATE_TOMB: Int = 2;
 
 pub struct HashMapItemRef<K, V> {
-	key: &K,
-	value: &V
+	pub key: &K,
+	pub value: &V
 }
 
 pub struct HashMapIter<K, V, B> {
@@ -763,13 +775,19 @@ implement<K, V, B> HashMapCore<K, V, B>
 					}
 					j = j + 1;
 				}
-				mem.dealloc<type mem.MaybeUninit<K>>(mem.replace(&mut self.keys, new_keys));
-				mem.dealloc<type mem.MaybeUninit<V>>(mem.replace(&mut self.values, new_values));
-				mem.dealloc<type Int>(mem.replace(&mut self.states, new_states));
+				val old_keys = mem.replace<type mem.RawBuffer<mem.MaybeUninit<K>> >(&mut self.keys, new_keys);
+				val old_values = mem.replace<type mem.RawBuffer<mem.MaybeUninit<V>> >(&mut self.values, new_values);
+				val old_states = mem.replace<type mem.RawBuffer<Int> >(&mut self.states, new_states);
+				mem.dealloc<type mem.MaybeUninit<K>>(old_keys);
+				mem.dealloc<type mem.MaybeUninit<V>>(old_values);
+				mem.dealloc<type Int>(old_states);
 			} else {
-				mem.dealloc<type mem.MaybeUninit<K>>(mem.replace(&mut self.keys, new_keys));
-				mem.dealloc<type mem.MaybeUninit<V>>(mem.replace(&mut self.values, new_values));
-				mem.dealloc<type Int>(mem.replace(&mut self.states, new_states));
+				val old_keys = mem.replace<type mem.RawBuffer<mem.MaybeUninit<K>> >(&mut self.keys, new_keys);
+				val old_values = mem.replace<type mem.RawBuffer<mem.MaybeUninit<V>> >(&mut self.values, new_values);
+				val old_states = mem.replace<type mem.RawBuffer<Int> >(&mut self.states, new_states);
+				mem.dealloc<type mem.MaybeUninit<K>>(old_keys);
+				mem.dealloc<type mem.MaybeUninit<V>>(old_values);
+				mem.dealloc<type Int>(old_states);
 			}
 		}
 		self.gen = self.gen + 1;
@@ -949,5 +967,736 @@ implement<K, B> iter.SinglePassIterator<&K> for HashSetIter<K, B>
 			}
 		}
 		return Optional::None();
+	}
+}
+
+pub struct TreeMapItemRef<K, V> {
+	pub key: &K,
+	pub value: &V
+}
+
+pub struct TreeMapIter<K, V> {
+	map: &TreeMap<K, V>,
+	stack: Array<Int>,
+	gen_snapshot: Int
+}
+
+struct TreeMapFindResult {
+	found: Bool,
+	idx: Int,
+	parent: Int,
+	cmp: Int
+}
+
+pub struct TreeMap<K, V> {
+	root: Int,
+	len: Int,
+	gen: Int,
+	keys: mem.RawBuffer<K>,
+	values: mem.RawBuffer<V>,
+	lefts: mem.RawBuffer<Int>,
+	rights: mem.RawBuffer<Int>,
+	parents: mem.RawBuffer<Int>,
+	reds: mem.RawBuffer<Bool>,
+	free_next: mem.RawBuffer<Int>,
+	free_head: Int
+}
+
+pub fn tree_map_new<K, V>() -> TreeMap<K, V> {
+	unsafe {
+		var keys = mem.alloc_uninit<type K>(0);
+		var values = mem.alloc_uninit<type V>(0);
+		var lefts = mem.alloc_uninit<type Int>(0);
+		var rights = mem.alloc_uninit<type Int>(0);
+		var parents = mem.alloc_uninit<type Int>(0);
+		var reds = mem.alloc_uninit<type Bool>(0);
+		var free_next = mem.alloc_uninit<type Int>(0);
+		return TreeMap<type K, V>(root = TREE_MAP_NONE, len = 0, gen = 0, keys = move keys, values = move values, lefts = move lefts, rights = move rights, parents = move parents, reds = move reds, free_next = move free_next, free_head = TREE_MAP_NONE);
+	}
+}
+
+implement<K, V> TreeMap<K, V> require K is cmp.Comparable {
+	fn cap(self: &TreeMap<K, V>) -> Int {
+		return mem.capacity(&self.lefts);
+	}
+
+	fn key_ref(self: &TreeMap<K, V>, idx: Int) -> &K {
+		unsafe { return mem.ptr_at_ref<type K>(&self.keys, idx); }
+	}
+
+	fn value_ref(self: &TreeMap<K, V>, idx: Int) -> &V {
+		unsafe { return mem.ptr_at_ref<type V>(&self.values, idx); }
+	}
+
+	fn value_mut(self: &mut TreeMap<K, V>, idx: Int) -> &mut V {
+		unsafe { return mem.ptr_at_mut<type V>(&mut self.values, idx); }
+	}
+
+	fn read_key(self: &mut TreeMap<K, V>, idx: Int) -> K {
+		unsafe { return mem.read<type K>(&mut self.keys, idx); }
+	}
+
+	fn read_value(self: &mut TreeMap<K, V>, idx: Int) -> V {
+		unsafe { return mem.read<type V>(&mut self.values, idx); }
+	}
+
+	fn left_at(self: &TreeMap<K, V>, idx: Int) -> Int {
+		unsafe {
+			val slot = mem.ptr_at_ref<type Int>(&self.lefts, idx);
+			return *slot;
+		}
+	}
+
+	fn right_at(self: &TreeMap<K, V>, idx: Int) -> Int {
+		unsafe {
+			val slot = mem.ptr_at_ref<type Int>(&self.rights, idx);
+			return *slot;
+		}
+	}
+
+	fn parent_at(self: &TreeMap<K, V>, idx: Int) -> Int {
+		unsafe {
+			val slot = mem.ptr_at_ref<type Int>(&self.parents, idx);
+			return *slot;
+		}
+	}
+
+	fn red_at(self: &TreeMap<K, V>, idx: Int) -> Bool {
+		unsafe {
+			val slot = mem.ptr_at_ref<type Bool>(&self.reds, idx);
+			return *slot;
+		}
+	}
+
+	fn set_left_at(self: &mut TreeMap<K, V>, idx: Int, value: Int) -> Void {
+		unsafe { mem.write<type Int>(&mut self.lefts, idx, value); }
+	}
+
+	fn set_right_at(self: &mut TreeMap<K, V>, idx: Int, value: Int) -> Void {
+		unsafe { mem.write<type Int>(&mut self.rights, idx, value); }
+	}
+
+	fn set_parent_at(self: &mut TreeMap<K, V>, idx: Int, value: Int) -> Void {
+		unsafe { mem.write<type Int>(&mut self.parents, idx, value); }
+	}
+
+	fn set_red_at(self: &mut TreeMap<K, V>, idx: Int, value: Bool) -> Void {
+		unsafe { mem.write<type Bool>(&mut self.reds, idx, value); }
+	}
+
+	fn free_next_at(self: &TreeMap<K, V>, idx: Int) -> Int {
+		unsafe {
+			val slot = mem.ptr_at_ref<type Int>(&self.free_next, idx);
+			return *slot;
+		}
+	}
+
+	fn set_free_next(self: &mut TreeMap<K, V>, idx: Int, next: Int) -> Void {
+		unsafe { mem.write<type Int>(&mut self.free_next, idx, next); }
+	}
+
+	fn is_red(self: &TreeMap<K, V>, node: Int) -> Bool {
+		if node < 0 {
+			return false;
+		}
+		return self.red_at(node);
+	}
+
+	fn set_red(self: &mut TreeMap<K, V>, node: Int, red: Bool) -> Void {
+		if node < 0 {
+			return;
+		}
+		self.set_red_at(node, red);
+	}
+
+	fn push_left_spine(self: &TreeMap<K, V>, stack: &mut Array<Int>, start: Int) -> Void {
+		var cur = start;
+		while cur >= 0 {
+			stack.push(cur);
+			cur = self.left_at(cur);
+		}
+	}
+
+	fn ensure_capacity(self: &mut TreeMap<K, V>, needed: Int) -> Void {
+		val cap0 = self.cap();
+		if self.free_head >= 0 {
+			return;
+		}
+		if needed <= cap0 {
+			return;
+		}
+		var new_cap = cap0;
+		if new_cap == 0 {
+			new_cap = 8;
+		}
+		while new_cap < needed {
+			new_cap = new_cap * 2;
+		}
+		unsafe {
+			var new_keys = mem.alloc_uninit<type K>(new_cap);
+			var new_values = mem.alloc_uninit<type V>(new_cap);
+			var new_lefts = mem.alloc_uninit<type Int>(new_cap);
+			var new_rights = mem.alloc_uninit<type Int>(new_cap);
+			var new_parents = mem.alloc_uninit<type Int>(new_cap);
+			var new_reds = mem.alloc_uninit<type Bool>(new_cap);
+			var new_free = mem.alloc_uninit<type Int>(new_cap);
+			var stack: Array<Int> = [];
+			if self.root >= 0 {
+				stack.push(self.root);
+			}
+			while stack.len > 0 {
+				val top = stack.pop();
+				match top {
+					None => { },
+					Some(i) => {
+						val k = self.read_key(i);
+						val v = self.read_value(i);
+						mem.write<type K>(&mut new_keys, i, k);
+						mem.write<type V>(&mut new_values, i, v);
+						val l = self.left_at(i);
+						val r = self.right_at(i);
+						val p = self.parent_at(i);
+						val red = self.red_at(i);
+						mem.write<type Int>(&mut new_lefts, i, l);
+						mem.write<type Int>(&mut new_rights, i, r);
+						mem.write<type Int>(&mut new_parents, i, p);
+						mem.write<type Bool>(&mut new_reds, i, red);
+						if l >= 0 {
+							stack.push(l);
+						}
+						if r >= 0 {
+							stack.push(r);
+						}
+					}
+				}
+			}
+			var i = 0;
+			while i < cap0 {
+				val v = self.free_next_at(i);
+				mem.write<type Int>(&mut new_free, i, v);
+				i = i + 1;
+			}
+			var free_head = self.free_head;
+			var j = cap0;
+			while j < new_cap {
+				mem.write<type Int>(&mut new_free, j, free_head);
+				free_head = j;
+				j = j + 1;
+			}
+			val old_keys = mem.replace<type mem.RawBuffer<K> >(&mut self.keys, new_keys);
+			val old_values = mem.replace<type mem.RawBuffer<V> >(&mut self.values, new_values);
+			val old_lefts = mem.replace<type mem.RawBuffer<Int> >(&mut self.lefts, new_lefts);
+			val old_rights = mem.replace<type mem.RawBuffer<Int> >(&mut self.rights, new_rights);
+			val old_parents = mem.replace<type mem.RawBuffer<Int> >(&mut self.parents, new_parents);
+			val old_reds = mem.replace<type mem.RawBuffer<Bool> >(&mut self.reds, new_reds);
+			val old_free = mem.replace<type mem.RawBuffer<Int> >(&mut self.free_next, new_free);
+			mem.dealloc<type K>(old_keys);
+			mem.dealloc<type V>(old_values);
+			mem.dealloc<type Int>(old_lefts);
+			mem.dealloc<type Int>(old_rights);
+			mem.dealloc<type Int>(old_parents);
+			mem.dealloc<type Bool>(old_reds);
+			mem.dealloc<type Int>(old_free);
+			self.free_head = free_head;
+		}
+	}
+
+	fn alloc_node(self: &mut TreeMap<K, V>, key: K, value: V) -> Int {
+		val needed = self.len + 1;
+		self.ensure_capacity(needed);
+		if self.free_head < 0 {
+			throw std.err:IndexError(container_id = TREE_MAP_CONTAINER_ID, index = 0);
+		}
+		val idx = self.free_head;
+		val next = self.free_next_at(idx);
+		self.free_head = next;
+		unsafe {
+			mem.write<type K>(&mut self.keys, idx, key);
+			mem.write<type V>(&mut self.values, idx, value);
+		}
+		self.set_left_at(idx, TREE_MAP_NONE);
+		self.set_right_at(idx, TREE_MAP_NONE);
+		self.set_parent_at(idx, TREE_MAP_NONE);
+		self.set_red_at(idx, true);
+		return idx;
+	}
+
+	fn free_node(self: &mut TreeMap<K, V>, idx: Int) -> V {
+		val _k = self.read_key(idx);
+		val v = self.read_value(idx);
+		unsafe { mem.write<type Int>(&mut self.free_next, idx, self.free_head); }
+		self.free_head = idx;
+		return v;
+	}
+
+	fn set_left(self: &mut TreeMap<K, V>, parent: Int, child: Int) -> Void {
+		self.set_left_at(parent, child);
+		if child >= 0 {
+			self.set_parent_at(child, parent);
+		}
+	}
+
+	fn set_right(self: &mut TreeMap<K, V>, parent: Int, child: Int) -> Void {
+		self.set_right_at(parent, child);
+		if child >= 0 {
+			self.set_parent_at(child, parent);
+		}
+	}
+
+	fn left_rotate(self: &mut TreeMap<K, V>, x: Int) -> Void {
+		val x_right = self.right_at(x);
+		if x_right < 0 {
+			return;
+		}
+		val y = x_right;
+		val y_left = self.left_at(y);
+		self.set_right(x, y_left);
+		val x_parent = self.parent_at(x);
+		self.set_parent_at(y, x_parent);
+		if x_parent < 0 {
+			self.root = y;
+		} else {
+			if self.left_at(x_parent) == x {
+				self.set_left(x_parent, y);
+			} else {
+				self.set_right(x_parent, y);
+			}
+		}
+		self.set_left(y, x);
+	}
+
+	fn right_rotate(self: &mut TreeMap<K, V>, y: Int) -> Void {
+		val y_left = self.left_at(y);
+		if y_left < 0 {
+			return;
+		}
+		val x = y_left;
+		val x_right = self.right_at(x);
+		self.set_left(y, x_right);
+		val y_parent = self.parent_at(y);
+		self.set_parent_at(x, y_parent);
+		if y_parent < 0 {
+			self.root = x;
+		} else {
+			if self.left_at(y_parent) == y {
+				self.set_left(y_parent, x);
+			} else {
+				self.set_right(y_parent, x);
+			}
+		}
+		self.set_right(x, y);
+	}
+
+	fn insert_fixup(self: &mut TreeMap<K, V>, z0: Int) -> Void {
+		var z = z0;
+		while self.is_red(self.parent_at(z)) {
+			val p = self.parent_at(z);
+			if p < 0 {
+				break;
+			}
+			val g = self.parent_at(p);
+			if g < 0 {
+				break;
+			}
+			if self.left_at(g) == p {
+				val y = self.right_at(g);
+				if self.is_red(y) {
+					self.set_red(p, false);
+					self.set_red(y, false);
+					self.set_red(g, true);
+					z = g;
+				} else {
+					if self.right_at(p) == z {
+						z = p;
+						self.left_rotate(z);
+					}
+					self.set_red(p, false);
+					self.set_red(g, true);
+					self.right_rotate(g);
+				}
+			} else {
+				val y = self.left_at(g);
+				if self.is_red(y) {
+					self.set_red(p, false);
+					self.set_red(y, false);
+					self.set_red(g, true);
+					z = g;
+				} else {
+					if self.left_at(p) == z {
+						z = p;
+						self.right_rotate(z);
+					}
+					self.set_red(p, false);
+					self.set_red(g, true);
+					self.left_rotate(g);
+				}
+			}
+		}
+		self.set_red(self.root, false);
+	}
+
+	fn transplant(self: &mut TreeMap<K, V>, u: Int, v: Int) -> Void {
+		val parent = self.parent_at(u);
+		if parent < 0 {
+			self.root = v;
+		} else {
+			if self.left_at(parent) == u {
+				self.set_left(parent, v);
+			} else {
+				self.set_right(parent, v);
+			}
+		}
+		if v >= 0 {
+			self.set_parent_at(v, parent);
+		}
+	}
+
+	fn min_idx(self: &TreeMap<K, V>, cur: Int) -> Int {
+		var i = cur;
+		while true {
+			val l = self.left_at(i);
+			if l < 0 {
+				return i;
+			}
+			i = l;
+		}
+		return i;
+	}
+
+	fn delete_fixup(self: &mut TreeMap<K, V>, x0: Int, parent0: Int) -> Void {
+		var x = x0;
+		var parent = parent0;
+		while x != self.root and not self.is_red(x) {
+			if parent < 0 {
+				break;
+			}
+			if self.left_at(parent) == x {
+				var w = self.right_at(parent);
+				if self.is_red(w) {
+					self.set_red(w, false);
+					self.set_red(parent, true);
+					self.left_rotate(parent);
+					w = self.right_at(parent);
+				}
+				val w_left = (w < 0) ? TREE_MAP_NONE : self.left_at(w);
+				val w_right = (w < 0) ? TREE_MAP_NONE : self.right_at(w);
+				if not self.is_red(w_left) and not self.is_red(w_right) {
+					self.set_red(w, true);
+					x = parent;
+					parent = self.parent_at(parent);
+				} else {
+					if not self.is_red(w_right) {
+						self.set_red(w_left, false);
+						self.set_red(w, true);
+						if w >= 0 {
+							self.right_rotate(w);
+						}
+						w = self.right_at(parent);
+					}
+					val p_red = self.red_at(parent);
+					self.set_red(w, p_red);
+					self.set_red(parent, false);
+					val w_r = (w < 0) ? TREE_MAP_NONE : self.right_at(w);
+					self.set_red(w_r, false);
+					self.left_rotate(parent);
+					x = self.root;
+					parent = TREE_MAP_NONE;
+				}
+			} else {
+				var w2 = self.left_at(parent);
+				if self.is_red(w2) {
+					self.set_red(w2, false);
+					self.set_red(parent, true);
+					self.right_rotate(parent);
+					w2 = self.left_at(parent);
+				}
+				val w2_left = (w2 < 0) ? TREE_MAP_NONE : self.left_at(w2);
+				val w2_right = (w2 < 0) ? TREE_MAP_NONE : self.right_at(w2);
+				if not self.is_red(w2_left) and not self.is_red(w2_right) {
+					self.set_red(w2, true);
+					x = parent;
+					parent = self.parent_at(parent);
+				} else {
+					if not self.is_red(w2_left) {
+						self.set_red(w2_right, false);
+						self.set_red(w2, true);
+						if w2 >= 0 {
+							self.left_rotate(w2);
+						}
+						w2 = self.left_at(parent);
+					}
+					val p2_red = self.red_at(parent);
+					self.set_red(w2, p2_red);
+					self.set_red(parent, false);
+					val w2_l = (w2 < 0) ? TREE_MAP_NONE : self.left_at(w2);
+					self.set_red(w2_l, false);
+					self.right_rotate(parent);
+					x = self.root;
+					parent = TREE_MAP_NONE;
+				}
+			}
+		}
+		self.set_red(x, false);
+	}
+
+	fn find_slot(self: &TreeMap<K, V>, key: &K) -> TreeMapFindResult {
+		var cur = self.root;
+		var parent = TREE_MAP_NONE;
+		var cmp_val = 0;
+		while cur >= 0 {
+			val nkey = self.key_ref(cur);
+			val c = cmp.Comparable::cmp(key, nkey);
+			if c == 0 {
+				return TreeMapFindResult(found = true, idx = cur, parent = parent, cmp = 0);
+			}
+			parent = cur;
+			cmp_val = c;
+			if c < 0 {
+				cur = self.left_at(cur);
+			} else {
+				cur = self.right_at(cur);
+			}
+		}
+		return TreeMapFindResult(found = false, idx = -1, parent = parent, cmp = cmp_val);
+	}
+
+	fn insert_at(self: &mut TreeMap<K, V>, parent: Int, cmp_val: Int, key: K, value: V) -> Int {
+		val idx = self.alloc_node(key, value);
+		if parent < 0 {
+			self.root = idx;
+		} else {
+			if cmp_val < 0 {
+				self.set_left(parent, idx);
+			} else {
+				self.set_right(parent, idx);
+			}
+		}
+		self.insert_fixup(idx);
+		self.len = self.len + 1;
+		self.gen = self.gen + 1;
+		return idx;
+	}
+
+	fn remove_at(self: &mut TreeMap<K, V>, z_idx: Int) -> V {
+		val z_left = self.left_at(z_idx);
+		val z_right = self.right_at(z_idx);
+		val z_red = self.red_at(z_idx);
+		var y_idx = z_idx;
+		var y_red = z_red;
+		var x = TREE_MAP_NONE;
+		var x_parent = TREE_MAP_NONE;
+		if z_left < 0 {
+			x = z_right;
+			x_parent = self.parent_at(z_idx);
+			self.transplant(z_idx, z_right);
+		} else {
+			if z_right < 0 {
+				x = z_left;
+				x_parent = self.parent_at(z_idx);
+				self.transplant(z_idx, z_left);
+			} else {
+				y_idx = self.min_idx(z_right);
+				y_red = self.red_at(y_idx);
+				x = self.right_at(y_idx);
+				x_parent = self.parent_at(y_idx);
+				if self.parent_at(y_idx) == z_idx {
+					x_parent = y_idx;
+					if x >= 0 {
+						self.set_parent_at(x, y_idx);
+					}
+				} else {
+					self.transplant(y_idx, self.right_at(y_idx));
+					self.set_right(y_idx, z_right);
+				}
+				self.transplant(z_idx, y_idx);
+				self.set_left(y_idx, z_left);
+				self.set_red_at(y_idx, z_red);
+			}
+		}
+		if not y_red {
+			self.delete_fixup(x, x_parent);
+		}
+		val removed = self.free_node(z_idx);
+		self.len = self.len - 1;
+		self.gen = self.gen + 1;
+		return removed;
+	}
+
+	pub fn len(self: &TreeMap<K, V>) -> Int {
+		return self.len;
+	}
+
+	pub fn is_empty(self: &TreeMap<K, V>) -> Bool {
+		return self.len == 0;
+	}
+
+	pub fn clear(self: &mut TreeMap<K, V>) -> Void {
+		var stack: Array<Int> = [];
+		if self.root >= 0 {
+			stack.push(self.root);
+		}
+		while stack.len > 0 {
+			val top = stack.pop();
+			match top {
+				None => { },
+				Some(i) => {
+					val l = self.left_at(i);
+					val r = self.right_at(i);
+					if l >= 0 {
+						stack.push(l);
+					}
+					if r >= 0 {
+						stack.push(r);
+					}
+					val _v = self.free_node(i);
+				}
+			}
+		}
+		self.root = TREE_MAP_NONE;
+		self.len = 0;
+		val cap = self.cap();
+		var head = TREE_MAP_NONE;
+		var i = 0;
+		while i < cap {
+			self.set_free_next(i, head);
+			head = i;
+			i = i + 1;
+		}
+		self.free_head = head;
+		self.gen = self.gen + 1;
+	}
+
+	pub fn contains_key(self: &TreeMap<K, V>, key: &K) -> Bool {
+		val res = self.find_slot(key);
+		return res.found;
+	}
+
+	pub fn get(self: &TreeMap<K, V>, key: &K) -> Optional<&V> {
+		val res = self.find_slot(key);
+		if not res.found {
+			return Optional::None();
+		}
+		val v = self.value_ref(res.idx);
+		return Optional::Some(v);
+	}
+
+	pub fn get_mut(self: &mut TreeMap<K, V>, key: &K) -> Optional<&mut V> {
+		val res = self.find_slot(key);
+		if not res.found {
+			return Optional::None();
+		}
+		val v = self.value_mut(res.idx);
+		return Optional::Some(v);
+	}
+
+	pub fn insert(self: &mut TreeMap<K, V>, key: K, value: V) -> Optional<V> {
+		val res = self.find_slot(&key);
+		if res.found {
+			val old = self.read_value(res.idx);
+			unsafe { mem.write<type V>(&mut self.values, res.idx, value); }
+			return Optional::Some(old);
+		}
+		self.insert_at(res.parent, res.cmp, key, value);
+		return Optional::None();
+	}
+
+	pub fn remove(self: &mut TreeMap<K, V>, key: &K) -> Optional<V> {
+		val res = self.find_slot(key);
+		if not res.found {
+			return Optional::None();
+		}
+		val v = self.remove_at(res.idx);
+		return Optional::Some(v);
+	}
+
+	pub fn iter(self: &TreeMap<K, V>) -> TreeMapIter<K, V> {
+		var stack: Array<Int> = [];
+		self.push_left_spine(&mut stack, self.root);
+		return TreeMapIter<type K, V>(map = self, stack = move stack, gen_snapshot = self.gen);
+	}
+
+}
+
+implement<K, V> iter.SinglePassIterator<TreeMapItemRef<K, V>> for TreeMapIter<K, V> {
+	pub fn next(self: &mut TreeMapIter<K, V>) -> Optional<TreeMapItemRef<K, V>> {
+		val map = self.map;
+		if map.gen != self.gen_snapshot {
+			err.throw_iterator_invalidated(TREE_MAP_CONTAINER_ID, err.IteratorOpId::Next());
+		}
+		val top = self.stack.pop();
+		match top {
+			None => { return Optional::None(); },
+			Some(i) => {
+				val right = map.right_at(i);
+				map.push_left_spine(&mut self.stack, right);
+				val k = map.key_ref(i);
+				val v = map.value_ref(i);
+				return Optional::Some(TreeMapItemRef<type K, V>(key = k, value = v));
+			}
+		}
+		return Optional::None();
+	}
+}
+
+pub struct TreeSetIter<K> {
+	inner: TreeMapIter<K, Bool>
+}
+
+pub struct TreeSet<K> {
+	map: TreeMap<K, Bool>
+}
+
+pub fn tree_set_new<K>() -> TreeSet<K> {
+	var map = tree_map_new<type K, Bool>();
+	return TreeSet<type K>(map = move map);
+}
+
+implement<K> TreeSet<K> require K is cmp.Comparable {
+	pub fn len(self: &TreeSet<K>) -> Int {
+		return self.map.len();
+	}
+
+	pub fn is_empty(self: &TreeSet<K>) -> Bool {
+		return self.map.is_empty();
+	}
+
+	pub fn clear(self: &mut TreeSet<K>) -> Void {
+		self.map.clear();
+	}
+
+	pub fn contains(self: &TreeSet<K>, key: &K) -> Bool {
+		return self.map.contains_key(key);
+	}
+
+	pub fn insert(self: &mut TreeSet<K>, key: K) -> Bool {
+		val res = self.map.insert(key, true);
+		match res {
+			None => { return true; },
+			Some(_v) => { return false; }
+		}
+	}
+
+	pub fn remove(self: &mut TreeSet<K>, key: &K) -> Bool {
+		val res = self.map.remove(key);
+		match res {
+			None => { return false; },
+			Some(_v) => { return true; }
+		}
+	}
+
+	pub fn iter(self: &TreeSet<K>) -> TreeSetIter<K> {
+		val inner = self.map.iter();
+		return TreeSetIter<type K>(inner = inner);
+	}
+}
+
+implement<K> iter.SinglePassIterator<&K> for TreeSetIter<K> {
+	pub fn next(self: &mut TreeSetIter<K>) -> Optional<&K> {
+		val nxt = self.inner.next();
+		match nxt {
+			None => { return Optional<&K>::None(); },
+			Some(item) => { return Optional::Some(item.key); }
+		}
+		return Optional<&K>::None();
 	}
 }

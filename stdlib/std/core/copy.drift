@@ -45,6 +45,9 @@ implement Copy for Void {
 implement<T> Copy for &T {
 }
 
+implement<T> Copy for Optional<T> require T is Copy {
+}
+
 implement Diagnostic for Int {
 	pub fn to_diag(self: Int) nothrow -> DiagnosticValue {
 		return DiagnosticValue::Int(self);

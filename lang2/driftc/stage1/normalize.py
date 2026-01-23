@@ -451,6 +451,7 @@ def normalize_hir(block: H.HBlock) -> H.HBlock:
 	Normalize an HIR block into canonical forms expected by stage2.
 	Additional normalization passes can be added here as needed.
 	"""
+	param_binding_ids = getattr(block, "param_binding_ids", None)
 	# Order matters:
 	# 1) Materialize shared borrows of rvalues into temps so borrow checking and
 	#    MIR lowering can treat borrow operands as places.
@@ -465,4 +466,6 @@ def normalize_hir(block: H.HBlock) -> H.HBlock:
 	assign_callsite_ids(block, start=0)
 	if __debug__:
 		validate_callsite_ids(block)
+	if param_binding_ids is not None:
+		block.param_binding_ids = param_binding_ids
 	return block

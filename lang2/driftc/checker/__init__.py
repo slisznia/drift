@@ -795,18 +795,23 @@ class Checker:
 					raise AssertionError(
 						f"BUG: missing CallInfo for call during nothrow analysis (callsite_id={getattr(expr, 'callsite_id', None)})"
 					)
-				if info.sig.can_throw and not catch_all:
+				call_can_throw = bool(info.sig.can_throw)
+				if info.target.kind is CallTargetKind.DIRECT and info.target.symbol is not None:
+					callee_id = info.target.symbol
+					if self._is_boundary_call(callee_id, current_fn, fn_infos):
+						call_can_throw = True
+						if first_note is None:
+							first_note = (
+								"cross-module call to exported/extern requires can-throw calling convention"
+							)
+					else:
+						call_can_throw = self._call_may_throw(callee_id, fn_infos)
+				if call_can_throw and not catch_all:
 					may_throw = True
 					if first_span is None:
 						first_span = Span.from_loc(getattr(expr, "loc", None))
 					if first_note is None:
 						first_note = "call may throw"
-					if info.target.kind is CallTargetKind.DIRECT and info.target.symbol is not None:
-						callee_id = info.target.symbol
-						if self._is_boundary_call(callee_id, current_fn, fn_infos):
-							first_note = (
-								"cross-module call to exported/extern requires can-throw calling convention"
-							)
 				for arg in expr.args:
 					walk_expr(arg, caught_events, catch_all)
 				for kw in getattr(expr, "kwargs", []) or []:
@@ -1478,6 +1483,38 @@ class Checker:
 						indexing_throws=True,
 					)
 					if not attempt_may_throw:
+						def _has_call(node: "H.HExpr") -> bool:
+							if isinstance(node, (H.HCall, H.HMethodCall, H.HInvoke)):
+								return True
+							if isinstance(node, H.HUnary):
+								return _has_call(node.expr)
+							if isinstance(node, H.HBinary):
+								return _has_call(node.left) or _has_call(node.right)
+							if isinstance(node, H.HTernary):
+								return _has_call(node.cond) or _has_call(node.then_expr) or _has_call(node.else_expr)
+							if isinstance(node, H.HField):
+								return _has_call(node.subject)
+							if isinstance(node, H.HIndex):
+								return _has_call(node.subject) or _has_call(node.index)
+							if hasattr(H, "HPlaceExpr") and isinstance(node, getattr(H, "HPlaceExpr")):
+								for proj in node.projections:
+									if isinstance(proj, H.HPlaceIndex) and _has_call(proj.index):
+										return True
+								return False
+							if isinstance(node, H.HArrayLiteral):
+								return any(_has_call(el) for el in node.elements)
+							if isinstance(node, H.HResultOk):
+								return _has_call(node.value)
+							if hasattr(H, "HMatchExpr") and isinstance(node, getattr(H, "HMatchExpr")):
+								if _has_call(node.scrutinee):
+									return True
+								for arm in node.arms:
+									if arm.result is not None and _has_call(arm.result):
+										return True
+								return False
+							return False
+						if _has_call(expr.attempt):
+							return attempt_ty
 						self._append_diag(
 							_chk_diag(
 								message="'try' applied to a nothrow expression (catch is unreachable)",

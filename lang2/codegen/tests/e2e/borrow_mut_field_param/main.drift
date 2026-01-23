@@ -1,0 +1,20 @@
+module main
+
+struct Wrap {
+	x: Int
+}
+
+fn set(w: &mut Wrap) nothrow -> Void {
+	val r = &mut w.x;
+	*r = 5;
+}
+
+fn run() nothrow -> Int {
+	var w = Wrap(x = 1);
+	set(&mut w);
+	return w.x;
+}
+
+fn main() nothrow -> Int {
+	return run() - 5;
+}

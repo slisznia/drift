@@ -1528,6 +1528,7 @@ class BorrowChecker:
 							recv_kind = LoanKind.MUT
 						elif td.ref_mut is False:
 							recv_kind = LoanKind.SHARED
+			deferred_recv: Optional[tuple[Place, LoanKind, Span]] = None
 			if recv_kind is not None or receiver_autoborrow is not None:
 				recv_expr = expr.receiver.subject if isinstance(expr.receiver, H.HBorrow) else expr.receiver
 				recv_place = place_from_expr(recv_expr, base_lookup=self.base_lookup)
@@ -1536,13 +1537,7 @@ class BorrowChecker:
 					if kind_to_use is None and receiver_autoborrow is not None:
 						kind_to_use = LoanKind.MUT if receiver_autoborrow is SelfMode.SELF_BY_REF_MUT else LoanKind.SHARED
 					if kind_to_use is not None:
-						self._borrow_place(
-							state,
-							recv_place,
-							kind_to_use,
-							temporary=True,
-							span=getattr(expr.receiver, "loc", Span()),
-						)
+						deferred_recv = (recv_place, kind_to_use, getattr(expr.receiver, "loc", Span()))
 				else:
 					self._visit_expr(state, expr.receiver, consume=False, escapes=False)
 			elif param_types:
@@ -1617,6 +1612,9 @@ class BorrowChecker:
 						self._consume_expr(state, kw.value, escapes=False)
 						continue
 				self._visit_expr(state, kw.value, consume=False, escapes=False)
+			if deferred_recv is not None:
+				recv_place, kind_to_use, span = deferred_recv
+				self._borrow_place(state, recv_place, kind_to_use, temporary=True, span=span)
 			new_loans = state.loans - pre_loans
 			state.loans -= {ln for ln in new_loans if ln.temporary}
 			return

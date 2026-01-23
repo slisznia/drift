@@ -1,0 +1,20 @@
+module main
+
+struct Box<T> {
+	v: T
+}
+
+fn run(x: Optional<Int>) nothrow -> Int {
+	return match x {
+		None => { 0 },
+		Some(v) => {
+			val b = Box<type Int>(v = v);
+			b.v
+		}
+	};
+}
+
+fn main() nothrow -> Int {
+	val o: Optional<Int> = Optional::Some(7);
+	return run(o) - 7;
+}

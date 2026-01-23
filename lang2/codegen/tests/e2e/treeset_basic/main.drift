@@ -1,0 +1,31 @@
+module main
+
+import std.containers as containers;
+
+fn run() -> Int {
+	var s = containers.tree_set_new<type Int>();
+	if s.len() != 0 {
+		return 1;
+	}
+	if not s.insert(1) {
+		return 2;
+	}
+	if s.insert(1) {
+		return 3;
+	}
+	val k1: Int = 1;
+	if not s.contains(&k1) {
+		return 4;
+	}
+	if not s.remove(&k1) {
+		return 5;
+	}
+	if s.contains(&k1) {
+		return 6;
+	}
+	return 0;
+}
+
+fn main() nothrow -> Int {
+	return try run() catch { 99 };
+}

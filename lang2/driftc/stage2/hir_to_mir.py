@@ -525,6 +525,7 @@ class HIRToMIR:
 
 		# Lower each arm block: bind pattern fields, lower statements, store optional
 		# result, jump to join.
+		join_reachable = False
 		for arm, bb in arm_blocks:
 			self.b.set_block(bb)
 
@@ -597,6 +598,7 @@ class HIRToMIR:
 						"value-producing match arm falls through without storing result (lowering bug)"
 					)
 				self.b.set_terminator(M.Goto(target=join_block.name))
+				join_reachable = True
 
 		# Defensive invariant: every arm block must end in a terminator. This catches
 		# structural lowering bugs where an arm block is accidentally skipped.
@@ -607,6 +609,8 @@ class HIRToMIR:
 		# Join point.
 		self.b.set_block(join_block)
 		if not want_value:
+			if not join_reachable and self.b.block.terminator is None:
+				self.b.set_terminator(M.Unreachable())
 			return None
 		assert result_local is not None
 		dest = self.b.new_temp()
@@ -3862,6 +3866,12 @@ class HIRToMIR:
 		elem_types = [t for t in elem_types if t is not None]
 		if not elem_types:
 			return self._unknown_type
+		known_types = [t for t in elem_types if self._type_table.get(t).kind is not TypeKind.UNKNOWN]
+		if known_types:
+			first = known_types[0]
+			if all(t == first for t in known_types):
+				return first
+			return self._unknown_type
 		first = elem_types[0]
 		if all(t == first for t in elem_types):
 			return first
@@ -4337,6 +4347,17 @@ class HIRToMIR:
 		This is intentionally conservative: it only returns a TypeId when the type
 		can be inferred locally (literals, some builtins, locals with known types).
 		"""
+		if isinstance(expr, H.HLiteralInt):
+			known = None
+			if self._expr_types and self._typed_mode != "none":
+				known = self._expr_types.get(expr.node_id)
+			if known is not None:
+				known_def = self._type_table.get(known)
+				if known_def.kind is TypeKind.UNKNOWN and self._typed_mode == "strict":
+					raise AssertionError("typed_mode strict: Unknown expr type encountered")
+				if known_def.kind is TypeKind.SCALAR and known_def.name in ("Int", "Uint", "Uint64", "Byte"):
+					return known
+			return self._int_type
 		if isinstance(expr, H.HVar):
 			if self._lambda_capture_slots is not None:
 				key = self._capture_key_for_expr(expr)
@@ -4370,8 +4391,6 @@ class HIRToMIR:
 						raise AssertionError("typed_mode strict: Unknown expr type encountered")
 				else:
 					return known
-		if isinstance(expr, H.HLiteralInt):
-			return self._int_type
 		if isinstance(expr, H.HLiteralFloat):
 			return self._float_type
 		if isinstance(expr, H.HLiteralBool):

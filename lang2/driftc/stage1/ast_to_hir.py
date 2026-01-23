@@ -187,7 +187,15 @@ class AstToHIR:
 				# diagnose duplicate parameters once signatures are validated).
 				if pname and self._lookup_binding(pname) is None:
 					self._alloc_binding(pname)
-			return H.HBlock(statements=[self.lower_stmt(s) for s in stmts])
+			block = H.HBlock(statements=[self.lower_stmt(s) for s in stmts])
+			param_binding_ids: dict[str, int] = {}
+			for pname in param_names:
+				if pname:
+					bid = self._lookup_binding(pname)
+					if bid is not None:
+						param_binding_ids[pname] = bid
+			block.param_binding_ids = param_binding_ids
+			return block
 		finally:
 			self._pop_scope()
 
@@ -681,12 +689,14 @@ class AstToHIR:
 					fn=_rename_expr(e.fn, mapping),
 					args=[_rename_expr(a, mapping) for a in e.args],
 					kwargs=[H.HKwArg(name=kw.name, value=_rename_expr(kw.value, mapping), loc=kw.loc) for kw in e.kwargs],
+					type_args=getattr(e, "type_args", None),
 				)
 			if isinstance(e, getattr(H, "HInvoke", ())):
 				return H.HInvoke(
 					callee=_rename_expr(e.callee, mapping),
 					args=[_rename_expr(a, mapping) for a in e.args],
 					kwargs=[H.HKwArg(name=kw.name, value=_rename_expr(kw.value, mapping), loc=kw.loc) for kw in e.kwargs],
+					type_args=getattr(e, "type_args", None),
 				)
 			if isinstance(e, H.HMethodCall):
 				return H.HMethodCall(
@@ -694,6 +704,7 @@ class AstToHIR:
 					method_name=e.method_name,
 					args=[_rename_expr(a, mapping) for a in e.args],
 					kwargs=[H.HKwArg(name=kw.name, value=_rename_expr(kw.value, mapping), loc=kw.loc) for kw in e.kwargs],
+					type_args=getattr(e, "type_args", None),
 				)
 			if isinstance(e, H.HField):
 				return H.HField(subject=_rename_expr(e.subject, mapping), name=e.name)
