@@ -147,12 +147,15 @@ def _validate_package_interfaces(pkg: LoadedPackage) -> None:
 		type_structs = types.get("structs")
 		type_variants = types.get("variants")
 		type_excs = types.get("exceptions")
+		type_interfaces = types.get("interfaces")
 		if not isinstance(type_structs, list) or not all(isinstance(t, str) for t in type_structs):
 			raise _err(f"module '{mid}' interface exports.types.structs must be a list of strings")
 		if not isinstance(type_variants, list) or not all(isinstance(t, str) for t in type_variants):
 			raise _err(f"module '{mid}' interface exports.types.variants must be a list of strings")
 		if not isinstance(type_excs, list) or not all(isinstance(t, str) for t in type_excs):
 			raise _err(f"module '{mid}' interface exports.types.exceptions must be a list of strings")
+		if not isinstance(type_interfaces, list) or not all(isinstance(t, str) for t in type_interfaces):
+			raise _err(f"module '{mid}' interface exports.types.interfaces must be a list of strings")
 		if not isinstance(traits, list) or not all(isinstance(t, str) for t in traits):
 			raise _err(f"module '{mid}' interface exports.traits must be a list of strings")
 		if not isinstance(consts, list) or not all(isinstance(c, str) for c in consts):
@@ -165,10 +168,12 @@ def _validate_package_interfaces(pkg: LoadedPackage) -> None:
 			raise _err(f"module '{mid}' interface exports.types.variants contains duplicates")
 		if len(set(type_excs)) != len(type_excs):
 			raise _err(f"module '{mid}' interface exports.types.exceptions contains duplicates")
+		if len(set(type_interfaces)) != len(type_interfaces):
+			raise _err(f"module '{mid}' interface exports.types.interfaces contains duplicates")
 		if len(set(traits)) != len(traits):
 			raise _err(f"module '{mid}' interface exports.traits contains duplicates")
-		type_union = set(type_structs) | set(type_variants) | set(type_excs)
-		if len(type_union) != (len(type_structs) + len(type_variants) + len(type_excs)):
+		type_union = set(type_structs) | set(type_variants) | set(type_excs) | set(type_interfaces)
+		if len(type_union) != (len(type_structs) + len(type_variants) + len(type_excs) + len(type_interfaces)):
 			raise _err(f"module '{mid}' interface exports.types contains overlapping names across kinds")
 		if len(set(consts)) != len(consts):
 			raise _err(f"module '{mid}' interface exports.consts contains duplicates")
@@ -188,16 +193,18 @@ def _validate_package_interfaces(pkg: LoadedPackage) -> None:
 		payload_structs = payload_types.get("structs")
 		payload_variants = payload_types.get("variants")
 		payload_excs = payload_types.get("exceptions")
-		if not isinstance(payload_structs, list) or not isinstance(payload_variants, list) or not isinstance(payload_excs, list):
-			raise _err(f"module '{mid}' payload exports.types must include structs/variants/exceptions lists")
-		payload_type_union = set(payload_structs) | set(payload_variants) | set(payload_excs)
-		if len(payload_type_union) != (len(payload_structs) + len(payload_variants) + len(payload_excs)):
+		payload_interfaces = payload_types.get("interfaces")
+		if not isinstance(payload_structs, list) or not isinstance(payload_variants, list) or not isinstance(payload_excs, list) or not isinstance(payload_interfaces, list):
+			raise _err(f"module '{mid}' payload exports.types must include structs/variants/exceptions/interfaces lists")
+		payload_type_union = set(payload_structs) | set(payload_variants) | set(payload_excs) | set(payload_interfaces)
+		if len(payload_type_union) != (len(payload_structs) + len(payload_variants) + len(payload_excs) + len(payload_interfaces)):
 			raise _err(f"module '{mid}' payload exports.types contains overlapping names across kinds")
 		if (
 			sorted(payload_values) != sorted(values)
 			or sorted(payload_structs) != sorted(type_structs)
 			or sorted(payload_variants) != sorted(type_variants)
 			or sorted(payload_excs) != sorted(type_excs)
+			or sorted(payload_interfaces) != sorted(type_interfaces)
 			or sorted(payload_traits) != sorted(traits)
 			or sorted(payload_consts) != sorted(consts)
 		):
@@ -237,7 +244,7 @@ def _validate_package_interfaces(pkg: LoadedPackage) -> None:
 			raise _err(f"module '{mid}' reexports.consts must be an object")
 		if not isinstance(traits_reexp, dict):
 			raise _err(f"module '{mid}' reexports.traits must be an object")
-		for kind, exported in (("structs", type_structs), ("variants", type_variants), ("exceptions", type_excs)):
+		for kind, exported in (("structs", type_structs), ("variants", type_variants), ("exceptions", type_excs), ("interfaces", type_interfaces)):
 			kind_map = types_reexp.get(kind, {})
 			if kind_map is None:
 				kind_map = {}
@@ -630,10 +637,10 @@ def collect_external_exports(packages: list[LoadedPackage]) -> dict[str, dict[st
 	Returns:
 	  module_id -> {
 	    "values": set[str],
-	    "types": {"structs": set[str], "variants": set[str], "exceptions": set[str]},
+	    "types": {"structs": set[str], "variants": set[str], "exceptions": set[str], "interfaces": set[str]},
 	    "traits": set[str],
 	    "consts": set[str],
-	    "reexports": {"types": {"structs": dict, "variants": dict, "exceptions": dict}, "consts": dict},
+	    "reexports": {"types": {"structs": dict, "variants": dict, "exceptions": dict, "interfaces": dict}, "consts": dict},
 	  }
 	"""
 	mod_to_pkg: dict[str, Path] = {}
@@ -649,7 +656,7 @@ def collect_external_exports(packages: list[LoadedPackage]) -> dict[str, dict[st
 			if not isinstance(exports, dict):
 				out[mid] = {
 					"values": set(),
-					"types": {"structs": set(), "variants": set(), "exceptions": set()},
+					"types": {"structs": set(), "variants": set(), "exceptions": set(), "interfaces": set()},
 					"traits": set(),
 					"consts": set(),
 				}
@@ -662,6 +669,7 @@ def collect_external_exports(packages: list[LoadedPackage]) -> dict[str, dict[st
 			type_structs: list[str] = []
 			type_variants: list[str] = []
 			type_excs: list[str] = []
+			type_interfaces: list[str] = []
 			if isinstance(types, dict):
 				if isinstance(types.get("structs"), list):
 					type_structs = [str(x) for x in types.get("structs") if isinstance(x, str)]
@@ -669,9 +677,16 @@ def collect_external_exports(packages: list[LoadedPackage]) -> dict[str, dict[st
 					type_variants = [str(x) for x in types.get("variants") if isinstance(x, str)]
 				if isinstance(types.get("exceptions"), list):
 					type_excs = [str(x) for x in types.get("exceptions") if isinstance(x, str)]
+				if isinstance(types.get("interfaces"), list):
+					type_interfaces = [str(x) for x in types.get("interfaces") if isinstance(x, str)]
 			out[mid] = {
 				"values": set(values) if isinstance(values, list) else set(),
-				"types": {"structs": set(type_structs), "variants": set(type_variants), "exceptions": set(type_excs)},
+				"types": {
+					"structs": set(type_structs),
+					"variants": set(type_variants),
+					"exceptions": set(type_excs),
+					"interfaces": set(type_interfaces),
+				},
 				"traits": set(traits) if isinstance(traits, list) else set(),
 				"consts": set(consts) if isinstance(consts, list) else set(),
 				"reexports": reexports if isinstance(reexports, dict) else {},

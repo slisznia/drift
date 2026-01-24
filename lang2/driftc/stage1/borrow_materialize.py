@@ -242,12 +242,14 @@ class BorrowMaterializeRewriter:
 				kpfx, kv = self._rewrite_expr(kw.value)
 				pfx_kwargs.extend(kpfx)
 				new_kwargs.append(H.HKwArg(name=kw.name, value=kv, loc=kw.loc))
-			return pfx_callee + pfx_args + pfx_kwargs, H.HInvoke(
+			inv = H.HInvoke(
 				callee=callee,
 				args=new_args,
 				kwargs=new_kwargs,
 				type_args=getattr(expr, "type_args", None),
 			)
+			inv.callsite_id = getattr(expr, "callsite_id", None)
+			return pfx_callee + pfx_args + pfx_kwargs, inv
 		if isinstance(expr, H.HMethodCall):
 			pfx_recv, recv = self._rewrite_expr(expr.receiver)
 			pfx_args: List[H.HStmt] = []
@@ -262,13 +264,15 @@ class BorrowMaterializeRewriter:
 				kpfx, kv = self._rewrite_expr(kw.value)
 				pfx_kwargs.extend(kpfx)
 				new_kwargs.append(H.HKwArg(name=kw.name, value=kv, loc=kw.loc))
-			return pfx_recv + pfx_args + pfx_kwargs, H.HMethodCall(
+			mc = H.HMethodCall(
 				receiver=recv,
 				method_name=expr.method_name,
 				args=new_args,
 				kwargs=new_kwargs,
 				type_args=getattr(expr, "type_args", None),
 			)
+			mc.callsite_id = getattr(expr, "callsite_id", None)
+			return pfx_recv + pfx_args + pfx_kwargs, mc
 		if isinstance(expr, H.HField):
 			pfx, subj = self._rewrite_expr(expr.subject)
 			return pfx, H.HField(subject=subj, name=expr.name)

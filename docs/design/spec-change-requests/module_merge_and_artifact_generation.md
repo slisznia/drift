@@ -64,4 +64,4 @@ Outputs:
 
 - Per-file compilation is fast and local; no need to load all sources at once.
 - The link phase is the single place to enforce cross-file correctness and visibility.
-- Callable resolution and borrow checking remain module-aware once `TypeId`s and `module_id`s are unified.
+- FnN resolution and borrow checking remain module-aware once `TypeId`s and `module_id`s are unified.

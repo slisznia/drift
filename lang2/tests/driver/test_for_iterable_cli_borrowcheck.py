@@ -30,7 +30,7 @@ import std.containers;
 
 fn main() nothrow -> Int {
 	var xs = [1, 2, 3];
-	for x in xs { x; }
+	for x in move xs { x; }
 	xs.push(4);
 return 0;
 }

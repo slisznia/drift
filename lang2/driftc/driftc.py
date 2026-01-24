@@ -49,6 +49,7 @@ def _target_word_bits(target_word_bits: int | None) -> int:
 	return target_word_bits
 
 from lang2.driftc import stage1 as H
+from lang2.driftc.stage1 import assign_callsite_ids, assign_node_ids
 from lang2.driftc.stage1 import normalize_hir
 from lang2.driftc.stage1 import closures as C
 from lang2.driftc.stage1.capture_discovery import discover_captures
@@ -102,8 +103,8 @@ from lang2.driftc.module_lowered import flatten_modules
 from lang2.driftc.type_resolver import resolve_program_signatures
 from lang2.driftc.core.type_resolve_common import resolve_opaque_type
 from lang2.driftc.type_checker import TypeChecker, ThunkKind
-from lang2.driftc.method_registry import CallableRegistry, CallableSignature, Visibility, SelfMode
-from lang2.driftc.impl_index import GlobalImplIndex, find_impl_method_conflicts
+from lang2.driftc.method_registry import CallableRegistry, CallableSignature, CallableTemplateSignature, Visibility, SelfMode
+from lang2.driftc.impl_index import GlobalImplIndex, ImplMeta, find_impl_method_conflicts
 from lang2.driftc.trait_index import GlobalTraitImplIndex, GlobalTraitIndex, validate_trait_scopes
 from lang2.driftc.fake_decl import FakeDecl
 from lang2.driftc.packages.dmir_pkg_v0 import canonical_json_bytes, sha256_hex, write_dmir_pkg_v0
@@ -228,6 +229,75 @@ def _install_diagnostic_query(type_table: TypeTable, linked_world: LinkedWorld) 
 	type_table.set_diagnostic_query(_query_diag, allow_fallback=False)
 
 
+def _install_destructible_query(type_table: TypeTable, linked_world: LinkedWorld) -> None:
+	destructible_key = _find_trait_key(linked_world.global_world, module="std.core", name="Destructible")
+	if destructible_key is None:
+		std_modules = {"std.core"}
+		if any(mod in std_modules for mod in linked_world.trait_worlds.keys()):
+			def _fallback_destructible(_tid: int) -> bool | None:
+				return None
+			type_table.set_destructible_query(_fallback_destructible, allow_fallback=True)
+		return
+	default_package = getattr(type_table, "package_id", None)
+	module_packages = getattr(type_table, "module_packages", None) or {}
+	env = TraitEnv(
+		default_module=None,
+		default_package=default_package,
+		module_packages=module_packages,
+		type_table=type_table,
+	)
+	world = linked_world.global_world
+
+	def _query_destructible(tid: int) -> bool | None:
+		try:
+			subject = type_key_from_typeid(type_table, tid)
+		except Exception:
+			return None
+		res = prove_is(world, env, {}, subject, destructible_key)
+		if res.status is ProofStatus.PROVED:
+			return True
+		if res.status is ProofStatus.REFUTED:
+			return False
+		return None
+
+	type_table.set_destructible_query(_query_destructible, allow_fallback=False)
+
+
+def _install_destructor_fns(
+	type_table: TypeTable | None,
+	linked_world: LinkedWorld | None,
+	module_exports: Mapping[str, dict[str, object]] | None,
+) -> None:
+	if type_table is None or linked_world is None or module_exports is None:
+		return
+	destructible_key = _find_trait_key(linked_world.global_world, module="std.core", name="Destructible")
+	if destructible_key is None:
+		return
+	destructor_fns: dict[TypeId, FunctionId] = {}
+	for exp in module_exports.values():
+		if not isinstance(exp, dict):
+			continue
+		impls = exp.get("impls")
+		if not isinstance(impls, list):
+			continue
+		for impl in impls:
+			if not isinstance(impl, ImplMeta):
+				continue
+			if impl.trait_key != destructible_key:
+				continue
+			target_type_id = getattr(impl, "target_type_id", None)
+			if not isinstance(target_type_id, int):
+				continue
+			if type_table.has_typevar(target_type_id):
+				continue
+			for method in impl.methods:
+				if method.name != "destroy":
+					continue
+				destructor_fns[target_type_id] = method.fn_id
+	if destructor_fns:
+		type_table.destructor_fns = destructor_fns
+
+
 def _build_linked_world(type_table: TypeTable | None) -> tuple[LinkedWorld | None, RequireEnv | None]:
 	trait_worlds = getattr(type_table, "trait_worlds", None) if type_table is not None else None
 	if not isinstance(trait_worlds, dict):
@@ -236,6 +306,7 @@ def _build_linked_world(type_table: TypeTable | None) -> tuple[LinkedWorld | Non
 	if type_table is not None:
 		_install_copy_query(type_table, linked_world)
 		_install_diagnostic_query(type_table, linked_world)
+		_install_destructible_query(type_table, linked_world)
 	default_package = getattr(type_table, "package_id", None)
 	module_packages = getattr(type_table, "module_packages", None)
 	return linked_world, build_require_env(
@@ -337,10 +408,14 @@ def _prelude_exports() -> dict[str, object]:
 	"""
 	return {
 		"values": ["print", "println", "eprintln"],
-		"types": {"structs": [], "variants": [], "exceptions": []},
+		"types": {"structs": [], "variants": [], "exceptions": [], "interfaces": []},
 		"consts": [],
 		"traits": [],
-		"reexports": {"types": {"structs": {}, "variants": {}, "exceptions": {}}, "consts": {}, "traits": {}},
+		"reexports": {
+			"types": {"structs": {}, "variants": {}, "exceptions": {}, "interfaces": {}},
+			"consts": {},
+			"traits": {},
+		},
 	}
 
 
@@ -563,6 +638,14 @@ def _validate_intrinsic_callinfo(typed_fn: "TypedFn") -> None:
 			if kwargs or len(call.args) != 2:
 				raise AssertionError("string_byte_at(...) arity mismatch reached validation (checker bug)")
 			continue
+		if kind in (IntrinsicKind.CALLBACK0, IntrinsicKind.CALLBACK1, IntrinsicKind.CALLBACK2):
+			if kwargs or len(call.args) != 1:
+				raise AssertionError(f"{kind.value}(...) arity mismatch reached validation (checker bug)")
+			continue
+		if kind is IntrinsicKind.DROP_VALUE:
+			if kwargs or len(call.args) != 1:
+				raise AssertionError("drop_value(...) arity mismatch reached validation (checker bug)")
+			continue
 		if kind is IntrinsicKind.SWAP:
 			if kwargs or len(call.args) != 2:
 				raise AssertionError("swap(...) arity mismatch reached validation (checker bug)")
@@ -578,6 +661,14 @@ def _validate_intrinsic_callinfo(typed_fn: "TypedFn") -> None:
 		if kind is IntrinsicKind.RAW_ALLOC:
 			if kwargs or len(call.args) != 1:
 				raise AssertionError("alloc_uninit(...) arity mismatch reached validation (checker bug)")
+			continue
+		if kind in (IntrinsicKind.RAWBUFFER_PTR, IntrinsicKind.RAWBUFFER_CAP):
+			if kwargs or len(call.args) != 1:
+				raise AssertionError(f"{kind.value}(...) arity mismatch reached validation (checker bug)")
+			continue
+		if kind is IntrinsicKind.RAWBUFFER_FROM_PARTS:
+			if kwargs or len(call.args) != 2:
+				raise AssertionError("rawbuffer_from_parts(...) arity mismatch reached validation (checker bug)")
 			continue
 		if kind is IntrinsicKind.RAW_DEALLOC:
 			if kwargs or len(call.args) != 1:
@@ -628,6 +719,54 @@ def _validate_intrinsic_callinfo(typed_fn: "TypedFn") -> None:
 				raise AssertionError(f"{kind.value}(...) arity mismatch reached validation (checker bug)")
 			continue
 		raise AssertionError(f"unknown intrinsic '{kind.value}' reached validation (checker bug)")
+
+
+def _typevar_callinfo_diags(
+	typed_fn: "TypedFn",
+	type_table: "TypeTable | None",
+) -> list[Diagnostic]:
+	if type_table is None:
+		return []
+	call_info = getattr(typed_fn, "call_info_by_callsite_id", None)
+	if not isinstance(call_info, dict):
+		return []
+	call_nodes = _collect_call_nodes_by_id(typed_fn.body)
+	callsite_to_node: dict[int, int] = {}
+	for node_id, call in call_nodes.items():
+		csid = getattr(call, "callsite_id", None)
+		if isinstance(csid, int):
+			callsite_to_node[csid] = node_id
+
+	def _has_typevar(tid: int | None) -> bool:
+		if tid is None:
+			return False
+		return bool(type_table.has_typevar(tid))
+
+	diags: list[Diagnostic] = []
+	for csid, info in call_info.items():
+		if not isinstance(csid, int):
+			continue
+		if any(_has_typevar(tid) for tid in info.sig.param_types) or _has_typevar(info.sig.user_ret_type):
+			node_id = callsite_to_node.get(csid)
+			call = call_nodes.get(node_id) if node_id is not None else None
+			span = getattr(call, "loc", None) if call is not None else None
+			target_name = "<unknown>"
+			if info.target.kind is CallTargetKind.DIRECT and info.target.symbol is not None:
+				target_name = function_symbol(info.target.symbol)
+			elif info.target.kind is CallTargetKind.TRAIT and info.target.method_name:
+				target_name = info.target.method_name
+			diags.append(
+				Diagnostic(
+					message=(
+						f"internal: generic call signature survived instantiation for call to '{target_name}'"
+					),
+					code="E_INTERNAL_GENERIC_CALLINFO",
+					severity="error",
+					phase="typecheck",
+					span=span,
+				)
+			)
+	return diags
 
 
 def _display_name_for_fn_id(fn_id: FunctionId) -> str:
@@ -1264,6 +1403,10 @@ def compile_stubbed_funcs(
 
 	# If no signatures were supplied, resolve basic signatures from the original HIR.
 	shared_type_table = type_table
+	if shared_type_table is not None and not hasattr(shared_type_table, "_destructible_query"):
+		def _fallback_destructible(_tid: int) -> bool | None:
+			return None
+		shared_type_table.set_destructible_query(_fallback_destructible, allow_fallback=True)
 	if not signatures_by_id:
 		shared_type_table, base_signatures_by_id = resolve_program_signatures(
 			_fake_decls_from_hirs(func_hirs_by_id),
@@ -1280,7 +1423,7 @@ def compile_stubbed_funcs(
 				for p in (list(getattr(sig, "impl_type_params", []) or []) + list(getattr(sig, "type_params", []) or [])):
 					type_param_map[p.name] = p.id
 			ret_id = sig.return_type_id
-			if sig.return_type is not None and (type_param_map or ret_id is None):
+			if sig.return_type is not None and (type_param_map or ret_id is None or shared_type_table.get(ret_id).kind is TypeKind.UNKNOWN):
 				ret_id = resolve_opaque_type(sig.return_type, shared_type_table, module_id=getattr(sig, "module", None), type_params=type_param_map or None)
 			param_ids = sig.param_type_ids
 			if sig.param_types is not None and (type_param_map or param_ids is None):
@@ -1501,6 +1644,7 @@ def compile_stubbed_funcs(
 			for fn_id, req in getattr(world, "requires_by_fn", {}).items():
 				requires_by_fn_id[fn_id] = req
 	linked_world, require_env = _build_linked_world(shared_type_table)
+	_install_destructor_fns(shared_type_table, linked_world, module_exports)
 
 	def _declared_name_from_fn_id(fn_id: FunctionId, module_id: str) -> str:
 		sym = function_symbol(fn_id)
@@ -1544,6 +1688,25 @@ def compile_stubbed_funcs(
 			decl_fingerprint=decl_fp,
 		)
 	next_callable_id = 1
+	def _registry_impl_target_type_id(impl_tid: TypeId | None) -> TypeId | None:
+		if impl_tid is None or shared_type_table is None:
+			return impl_tid
+		td = shared_type_table.get(impl_tid)
+		if td.kind is TypeKind.REF and td.param_types:
+			inner = td.param_types[0]
+			inner_def = shared_type_table.get(inner)
+			if inner_def.kind is TypeKind.ARRAY:
+				return shared_type_table.array_base_id()
+			return inner
+		if td.kind is TypeKind.ARRAY:
+			return shared_type_table.array_base_id()
+		return impl_tid
+	def _template_sig_for(sig: FnSignature) -> CallableTemplateSignature | None:
+		if not (sig.type_params or getattr(sig, "impl_type_params", [])):
+			return None
+		if sig.param_types is None or sig.return_type is None:
+			return None
+		return CallableTemplateSignature(param_types=tuple(sig.param_types), result_type=sig.return_type)
 	for fn_id, sig in signatures_by_id.items():
 		if sig.return_type_id is None:
 			continue
@@ -1568,9 +1731,12 @@ def compile_stubbed_funcs(
 				module_id=module_id,
 				visibility=Visibility.public(),
 				signature=CallableSignature(param_types=param_types_tuple, result_type=sig.return_type_id),
+				template_signature=_template_sig_for(sig),
+				template_type_params=tuple(tp.name for tp in (sig.type_params or [])),
+				template_impl_type_params=tuple(tp.name for tp in (getattr(sig, "impl_type_params", []) or [])),
 				fn_id=fn_id,
 				impl_id=next_callable_id,
-				impl_target_type_id=sig.impl_target_type_id,
+				impl_target_type_id=_registry_impl_target_type_id(sig.impl_target_type_id),
 				self_mode=self_mode,
 				is_generic=bool(sig.type_params or getattr(sig, "impl_type_params", [])),
 			)
@@ -1582,6 +1748,8 @@ def compile_stubbed_funcs(
 				module_id=module_id,
 				visibility=Visibility.public(),
 				signature=CallableSignature(param_types=param_types_tuple, result_type=sig.return_type_id),
+				template_signature=_template_sig_for(sig),
+				template_type_params=tuple(tp.name for tp in (sig.type_params or [])),
 				fn_id=fn_id,
 				is_generic=bool(sig.type_params),
 			)
@@ -1630,6 +1798,34 @@ def compile_stubbed_funcs(
 	type_diags: list[Diagnostic] = []
 	if trait_world_diags:
 		type_diags.extend(trait_world_diags)
+	if shared_type_table is not None:
+		type_checker.validate_interface_schemas(diagnostics=type_diags)
+		if module_exports is not None:
+			interface_impls: list[ImplMeta] = []
+			for exp in module_exports.values():
+				if isinstance(exp, dict):
+					for impl in exp.get("impls", []) or []:
+						if isinstance(impl, ImplMeta):
+							interface_impls.append(impl)
+			if interface_impls:
+				type_checker.validate_interface_impls(
+					interface_impls,
+					signatures_by_id=signatures_by_id,
+					diagnostics=type_diags,
+				)
+		if module_exports is not None:
+			interface_impls: list[ImplMeta] = []
+			for exp in module_exports.values():
+				if isinstance(exp, dict):
+					for impl in exp.get("impls", []) or []:
+						if isinstance(impl, ImplMeta):
+							interface_impls.append(impl)
+			if interface_impls:
+				type_checker.validate_interface_impls(
+					interface_impls,
+					signatures_by_id=signatures_by_id,
+					diagnostics=type_diags,
+				)
 	typecheck_ok_by_fn: dict[FunctionId, bool] = {}
 	deferred_guard_diags_by_template: dict[FunctionKey, dict[tuple[object, str], list[Diagnostic]]] = {}
 	def _has_error(diags: list[Diagnostic]) -> bool:
@@ -1655,7 +1851,7 @@ def compile_stubbed_funcs(
 				return set()
 			targets: set[str] = set()
 			type_reexp = reexp.get("types") if isinstance(reexp.get("types"), dict) else {}
-			for kind in ("structs", "variants", "exceptions"):
+			for kind in ("structs", "variants", "exceptions", "interfaces"):
 				entries = type_reexp.get(kind) if isinstance(type_reexp, dict) else None
 				if not isinstance(entries, dict):
 					continue
@@ -1728,11 +1924,12 @@ def compile_stubbed_funcs(
 		if sig is not None and (getattr(sig, "impl_type_params", None) or getattr(sig, "type_params", None)):
 			for p in (list(getattr(sig, "impl_type_params", []) or []) + list(getattr(sig, "type_params", []) or [])):
 				type_param_map[p.name] = p.id
-		if ret_id is None and sig is not None and sig.return_type is not None:
-			try:
-				ret_id = resolve_opaque_type(sig.return_type, shared_type_table, module_id=getattr(sig, "module", None), type_params=type_param_map or None)
-			except Exception:
-				ret_id = None
+		if sig is not None and sig.return_type is not None:
+			if ret_id is None or (shared_type_table.get(ret_id).kind is TypeKind.UNKNOWN):
+				try:
+					ret_id = resolve_opaque_type(sig.return_type, shared_type_table, module_id=getattr(sig, "module", None), type_params=type_param_map or None)
+				except Exception:
+					ret_id = None
 		_sync_visibility_provenance()
 		result = type_checker.check_function(
 			fn_id,
@@ -1790,6 +1987,23 @@ def compile_stubbed_funcs(
 	from lang2.driftc.method_resolver import MethodResolution
 	from collections import deque
 
+	def _make_wrapper_template_hir(wrap_sig: FnSignature) -> H.HBlock:
+		param_names = list(wrap_sig.param_names or [])
+		if not param_names and wrap_sig.param_type_ids is not None:
+			param_names = [f"p{i}" for i in range(len(wrap_sig.param_type_ids))]
+		receiver = H.HVar(name=param_names[0]) if param_names else H.HVar(name="self")
+		args = [H.HVar(name=name) for name in param_names[1:]]
+		method_name = getattr(wrap_sig, "method_name", None) or wrap_sig.name
+		call_expr = H.HMethodCall(receiver=receiver, method_name=method_name, args=args)
+		is_void = bool(wrap_sig.return_type_id is not None and shared_type_table.is_void(wrap_sig.return_type_id))
+		if is_void:
+			block = H.HBlock(statements=[H.HExprStmt(expr=call_expr), H.HReturn(value=None)])
+		else:
+			block = H.HBlock(statements=[H.HReturn(value=call_expr)])
+		assign_node_ids(block, start=1)
+		assign_callsite_ids(block, start=1)
+		return block
+
 	template_hirs_by_key: dict[FunctionKey, H.HBlock] = {}
 	if isinstance(generic_templates_by_key, dict):
 		template_hirs_by_key.update(generic_templates_by_key)
@@ -1806,6 +2020,17 @@ def compile_stubbed_funcs(
 			if key is None:
 				continue
 			template_hirs_by_key.setdefault(key, block)
+	if method_wrapper_specs and shared_type_table is not None:
+		for spec in method_wrapper_specs:
+			wrap_sig = signatures_by_id.get(spec.wrapper_fn_id)
+			if wrap_sig is None:
+				continue
+			if not (getattr(wrap_sig, "type_params", None) or getattr(wrap_sig, "impl_type_params", None)):
+				continue
+			key = function_keys_by_fn_id.get(spec.wrapper_fn_id)
+			if key is None or key in template_hirs_by_key:
+				continue
+			template_hirs_by_key[key] = _make_wrapper_template_hir(wrap_sig)
 
 	template_sigs_by_key: dict[FunctionKey, FnSignature] = {}
 	for fn_id, sig in signatures_by_id.items():
@@ -1912,10 +2137,57 @@ def compile_stubbed_funcs(
 		inst_queue.append(handle)
 		return handle
 
+	destructor_fns: dict[TypeId, FunctionId] = {}
+	if shared_type_table is not None and module_exports is not None and linked_world is not None:
+		destructible_key = _find_trait_key(linked_world.global_world, module="std.core", name="Destructible")
+		if destructible_key is not None:
+			for exp in module_exports.values():
+				if not isinstance(exp, dict):
+					continue
+				impls = exp.get("impls")
+				if not isinstance(impls, list):
+					continue
+				for impl in impls:
+					if not isinstance(impl, ImplMeta):
+						continue
+					if impl.trait_key != destructible_key:
+						continue
+					target_type_id = getattr(impl, "target_type_id", None)
+					if not isinstance(target_type_id, int):
+						continue
+					method_fn_id: FunctionId | None = None
+					for method in impl.methods:
+						if method.name == "destroy":
+							method_fn_id = method.fn_id
+							break
+					if method_fn_id is None:
+						continue
+					if shared_type_table.has_typevar(target_type_id):
+						base_id: TypeId | None = None
+						inst = shared_type_table.get_struct_instance(target_type_id)
+						if inst is not None:
+							base_id = inst.base_id
+						else:
+							base_id = target_type_id
+						for inst_id, inst in shared_type_table.struct_instances.items():
+							if inst.base_id != base_id:
+								continue
+							if shared_type_table.has_typevar(inst_id):
+								continue
+							key = function_keys_by_fn_id.get(method_fn_id)
+							if key is None:
+								continue
+							handle = _request_instantiation(key, tuple(inst.type_args))
+							destructor_fns[inst_id] = handle.fn_id
+						continue
+					destructor_fns[target_type_id] = method_fn_id
+	if destructor_fns and shared_type_table is not None:
+		shared_type_table.destructor_fns = destructor_fns
+
 	def _queue_instantiations(typed_fn: object) -> None:
 		inst_map = getattr(typed_fn, "instantiations_by_callsite_id", None)
 		if not isinstance(inst_map, dict):
-			return
+			inst_map = {}
 		for csid in sorted(inst_map):
 			inst = inst_map[csid]
 			type_args = tuple(getattr(inst, "type_args", ()) or ())
@@ -1929,215 +2201,222 @@ def compile_stubbed_funcs(
 	for _fn_id, typed_fn in sorted(typed_fns_by_id.items(), key=lambda kv: function_symbol(kv[0])):
 		_queue_instantiations(typed_fn)
 
-	while inst_queue:
-		handle = inst_queue.popleft()
-		if handle.status == "emitted":
-			raise AssertionError(
-				f"duplicate instantiation emission for '{function_key_str(handle.template_key)}' ({instantiation_key_str(handle.key)})"
-			)
-		if handle.status != "pending":
-			raise AssertionError(f"unexpected instantiation status: {handle.status}")
-		template_key = handle.template_key
-		type_args = handle.type_args
-		sig = template_sigs_by_key.get(template_key)
-		template_fn_id = template_fn_id_by_key.get(template_key)
-		if sig is None or template_fn_id is None:
-			type_diags.append(
-				Diagnostic(
-					message=f"generic instantiation missing signature for '{function_key_str(template_key)}'",
-					code="E_MISSING_TEMPLATE_SIG",
-					severity="error",
-					phase="typecheck",
-					span=None,
+	def _drain_instantiations() -> None:
+		while inst_queue:
+			handle = inst_queue.popleft()
+			if handle.status == "emitted":
+				raise AssertionError(
+					f"duplicate instantiation emission for '{function_key_str(handle.template_key)}' ({instantiation_key_str(handle.key)})"
 				)
-			)
-			handle.status = "failed"
-			continue
-		impl_count = len(getattr(sig, "impl_type_params", []) or [])
-		fn_count = len(getattr(sig, "type_params", []) or [])
-		if len(type_args) != impl_count + fn_count:
-			type_diags.append(
-				Diagnostic(
-					message=(
-						"generic instantiation type argument mismatch for "
-						f"'{function_key_str(template_key)}' (expected {impl_count + fn_count}, got {len(type_args)})"
-					),
-					code="E_INSTANTIATION_TYPEARGS",
-					severity="error",
-					phase="typecheck",
-					span=getattr(sig, "loc", None),
+			if handle.status != "pending":
+				raise AssertionError(f"unexpected instantiation status: {handle.status}")
+			template_key = handle.template_key
+			type_args = handle.type_args
+			sig = template_sigs_by_key.get(template_key)
+			template_fn_id = template_fn_id_by_key.get(template_key)
+			if sig is None or template_fn_id is None:
+				type_diags.append(
+					Diagnostic(
+						message=f"generic instantiation missing signature for '{function_key_str(template_key)}'",
+						code="E_MISSING_TEMPLATE_SIG",
+						severity="error",
+						phase="typecheck",
+						span=None,
+					)
 				)
-			)
-			handle.status = "failed"
-			continue
-		if sig.param_type_ids is None or sig.return_type_id is None:
-			type_diags.append(
-				Diagnostic(
-					message=f"generic instantiation missing type ids for '{function_key_str(template_key)}'",
-					code="E_MISSING_TEMPLATE_SIG",
-					severity="error",
-					phase="typecheck",
-					span=getattr(sig, "loc", None),
+				handle.status = "failed"
+				continue
+			impl_count = len(getattr(sig, "impl_type_params", []) or [])
+			fn_count = len(getattr(sig, "type_params", []) or [])
+			if len(type_args) != impl_count + fn_count:
+				type_diags.append(
+					Diagnostic(
+						message=(
+							"generic instantiation type argument mismatch for "
+							f"'{function_key_str(template_key)}' (expected {impl_count + fn_count}, got {len(type_args)})"
+						),
+						code="E_INSTANTIATION_TYPEARGS",
+						severity="error",
+						phase="typecheck",
+						span=getattr(sig, "loc", None),
+					)
 				)
-			)
-			handle.status = "failed"
-			continue
-		impl_args = type_args[:impl_count]
-		fn_args = type_args[impl_count:]
-		inst_fn_id = handle.fn_id
-		inst_param_ids = list(sig.param_type_ids)
-		inst_ret_id = sig.return_type_id
-		inst_impl_target_id = sig.impl_target_type_id
-		impl_subst = None
-		fn_subst = None
-		if impl_args:
-			impl_owner = sig.impl_type_params[0].id.owner
-			impl_subst = Subst(owner=impl_owner, args=list(impl_args))
-			inst_param_ids = [apply_subst(t, impl_subst, shared_type_table) for t in inst_param_ids]
-			inst_ret_id = apply_subst(inst_ret_id, impl_subst, shared_type_table)
-			if inst_impl_target_id is not None:
-				inst_impl_target_id = apply_subst(inst_impl_target_id, impl_subst, shared_type_table)
-		if fn_args:
-			fn_subst = Subst(owner=template_fn_id, args=list(fn_args))
-			inst_param_ids = [apply_subst(t, fn_subst, shared_type_table) for t in inst_param_ids]
-			inst_ret_id = apply_subst(inst_ret_id, fn_subst, shared_type_table)
-			if inst_impl_target_id is not None:
-				inst_impl_target_id = apply_subst(inst_impl_target_id, fn_subst, shared_type_table)
-		inst_impl_target_args = None
-		if sig.impl_target_type_args is not None:
-			inst_impl_target_args = list(sig.impl_target_type_args)
+				handle.status = "failed"
+				continue
+			if sig.param_type_ids is None or sig.return_type_id is None:
+				type_diags.append(
+					Diagnostic(
+						message=f"generic instantiation missing type ids for '{function_key_str(template_key)}'",
+						code="E_MISSING_TEMPLATE_SIG",
+						severity="error",
+						phase="typecheck",
+						span=getattr(sig, "loc", None),
+					)
+				)
+				handle.status = "failed"
+				continue
+			impl_args = type_args[:impl_count]
+			fn_args = type_args[impl_count:]
+			inst_fn_id = handle.fn_id
+			inst_param_ids = list(sig.param_type_ids)
+			inst_ret_id = sig.return_type_id
+			inst_impl_target_id = sig.impl_target_type_id
+			impl_subst = None
+			fn_subst = None
 			if impl_args:
 				impl_owner = sig.impl_type_params[0].id.owner
 				impl_subst = Subst(owner=impl_owner, args=list(impl_args))
-				inst_impl_target_args = [
-					apply_subst(t, impl_subst, shared_type_table) for t in inst_impl_target_args
-				]
-		param_map: dict[TypeParamId, TypeId] = {}
-		if getattr(sig, "impl_type_params", None):
-			for idx, tp in enumerate(sig.impl_type_params or []):
-				if idx < len(impl_args):
-					param_map[tp.id] = impl_args[idx]
-		if getattr(sig, "type_params", None):
-			for idx, tp in enumerate(sig.type_params or []):
-				if idx < len(fn_args):
-					param_map[tp.id] = fn_args[idx]
-		if sig.impl_target_type_args is not None and inst_impl_target_args is not None:
-			for template_arg, concrete_arg in zip(sig.impl_target_type_args, inst_impl_target_args):
-				template_def = shared_type_table.get(template_arg)
-				if template_def.kind is TypeKind.TYPEVAR and template_def.type_param_id is not None:
-					param_map[template_def.type_param_id] = concrete_arg
-		if inst_impl_target_id is not None:
-			inst = shared_type_table.struct_instances.get(inst_impl_target_id)
-			if inst is not None:
-				schema = shared_type_table.struct_bases.get(inst.base_id)
-				if schema is not None and schema.type_params:
-					for tp, concrete_arg in zip(schema.type_params, inst.type_args):
-						param_map[tp.id] = concrete_arg
-		if param_map:
-			inst_param_ids = [_subst_with_owner_map(t, param_map) for t in inst_param_ids]
-			inst_ret_id = _subst_with_owner_map(inst_ret_id, param_map)
+				inst_param_ids = [apply_subst(t, impl_subst, shared_type_table) for t in inst_param_ids]
+				inst_ret_id = apply_subst(inst_ret_id, impl_subst, shared_type_table)
+				if inst_impl_target_id is not None:
+					inst_impl_target_id = apply_subst(inst_impl_target_id, impl_subst, shared_type_table)
+			if fn_args:
+				fn_subst = Subst(owner=template_fn_id, args=list(fn_args))
+				inst_param_ids = [apply_subst(t, fn_subst, shared_type_table) for t in inst_param_ids]
+				inst_ret_id = apply_subst(inst_ret_id, fn_subst, shared_type_table)
+				if inst_impl_target_id is not None:
+					inst_impl_target_id = apply_subst(inst_impl_target_id, fn_subst, shared_type_table)
+			inst_impl_target_args = None
+			if sig.impl_target_type_args is not None:
+				inst_impl_target_args = list(sig.impl_target_type_args)
+				if impl_args:
+					impl_owner = sig.impl_type_params[0].id.owner
+					impl_subst = Subst(owner=impl_owner, args=list(impl_args))
+					inst_impl_target_args = [
+						apply_subst(t, impl_subst, shared_type_table) for t in inst_impl_target_args
+					]
+			param_map: dict[TypeParamId, TypeId] = {}
+			if getattr(sig, "impl_type_params", None):
+				for idx, tp in enumerate(sig.impl_type_params or []):
+					if idx < len(impl_args):
+						param_map[tp.id] = impl_args[idx]
+			if getattr(sig, "type_params", None):
+				for idx, tp in enumerate(sig.type_params or []):
+					if idx < len(fn_args):
+						param_map[tp.id] = fn_args[idx]
+			if sig.impl_target_type_args is not None and inst_impl_target_args is not None:
+				for template_arg, concrete_arg in zip(sig.impl_target_type_args, inst_impl_target_args):
+					template_def = shared_type_table.get(template_arg)
+					if template_def.kind is TypeKind.TYPEVAR and template_def.type_param_id is not None:
+						param_map[template_def.type_param_id] = concrete_arg
 			if inst_impl_target_id is not None:
-				inst_impl_target_id = _subst_with_owner_map(inst_impl_target_id, param_map)
-		inst_sig = replace(
-			sig,
-			name=function_symbol(inst_fn_id),
-			param_type_ids=inst_param_ids,
-			return_type_id=inst_ret_id,
-			impl_target_type_id=inst_impl_target_id,
-			impl_target_type_args=inst_impl_target_args,
-			type_params=[],
-			impl_type_params=[],
-			param_types=None,
-			return_type=None,
-			is_exported_entrypoint=False,
-			is_instantiation=True,
-		)
-		_register_derived_signature_precheck(inst_fn_id, inst_sig)
-		if require_env is not None and template_fn_id is not None:
-			req_expr = require_env.requires_by_fn.get(template_fn_id)
-			if req_expr is not None:
-				require_env.requires_by_fn[inst_fn_id] = req_expr
-		template_hir = template_hirs_by_key.get(template_key)
-		if template_hir is None:
-			type_diags.append(
-				Diagnostic(
-					message=f"generic instantiation requires a template body for '{function_key_str(template_key)}'",
-					code="E_MISSING_TEMPLATE_BODY",
-					severity="error",
-					phase="typecheck",
-					span=getattr(sig, "loc", None),
-				)
+				inst = shared_type_table.struct_instances.get(inst_impl_target_id)
+				if inst is not None:
+					schema = shared_type_table.struct_bases.get(inst.base_id)
+					if schema is not None and schema.type_params:
+						for tp, concrete_arg in zip(schema.type_params, inst.type_args):
+							param_map[tp.id] = concrete_arg
+			if param_map:
+				inst_param_ids = [_subst_with_owner_map(t, param_map) for t in inst_param_ids]
+				inst_ret_id = _subst_with_owner_map(inst_ret_id, param_map)
+				if inst_impl_target_id is not None:
+					inst_impl_target_id = _subst_with_owner_map(inst_impl_target_id, param_map)
+			inst_sig = replace(
+				sig,
+				name=function_symbol(inst_fn_id),
+				param_type_ids=inst_param_ids,
+				return_type_id=inst_ret_id,
+				impl_target_type_id=inst_impl_target_id,
+				impl_target_type_args=inst_impl_target_args,
+				type_params=[],
+				impl_type_params=[],
+				param_types=None,
+				return_type=None,
+				is_exported_entrypoint=False,
+				is_instantiation=True,
 			)
-			handle.status = "failed"
-			continue
-		inst_hir = normalize_hir(template_hir)
-		normalized_hirs_by_id[inst_fn_id] = inst_hir
-		mod_name = getattr(inst_fn_id, "module", None) or "main"
-		current_mod = _module_id_with_visibility(mod_name)
-		visible_mods = None
-		if module_deps is not None:
-			visible = visible_module_names_by_name.get(mod_name, {mod_name})
-			visible_mods = tuple(sorted(_module_id_with_visibility(m) for m in visible))
-		_sync_visibility_provenance()
-		current_file = None
-		if origin_by_fn_id is not None and template_fn_id in origin_by_fn_id:
-			current_file = str(origin_by_fn_id.get(template_fn_id))
-		elif sig is not None:
-			current_file = Span.from_loc(getattr(sig, "loc", None)).file
-		param_mutable = None
-		if sig is not None and sig.param_names is not None and sig.param_mutable is not None:
-			if len(sig.param_names) == len(sig.param_mutable):
-				param_mutable = {pname: bool(flag) for pname, flag in zip(sig.param_names, sig.param_mutable)}
-		inst_result = type_checker.check_function(
-			inst_fn_id,
-			inst_hir,
-			param_types={pname: pty for pname, pty in zip(sig.param_names or [], inst_param_ids)},
-			param_mutable=param_mutable,
-			return_type=inst_ret_id,
-			preseed_type_params={**{tp.name: impl_args[idx] for idx, tp in enumerate(sig.impl_type_params or [])}, **{tp.name: fn_args[idx] for idx, tp in enumerate(sig.type_params or [])}},
-			preseed_scope_bindings=getattr(inst_hir, "param_binding_ids", None),
-			signatures_by_id=signatures_by_id,
-			function_keys_by_fn_id=function_keys_by_fn_id,
-			callable_registry=callable_registry,
-			impl_index=impl_index,
-			trait_index=trait_index,
-			trait_impl_index=trait_impl_index,
-			trait_scope_by_module=trait_scope_by_module,
-			linked_world=linked_world,
-			require_env=require_env,
-			visible_modules=visible_mods,
-			current_module=current_mod,
-			visibility_provenance=visibility_provenance_by_id,
-		)
-		if impl_subst is not None or fn_subst is not None:
-			new_call_info: dict[int, CallInfo] = {}
-			for csid, info in inst_result.typed_fn.call_info_by_callsite_id.items():
-				new_call_info[csid] = _subst_call_info(info, impl_subst, fn_subst)
-			inst_result.typed_fn.call_info_by_callsite_id = new_call_info
-		type_diags.extend(inst_result.diagnostics)
-		deferred = deferred_guard_diags_by_template.get(template_key)
-		guard_outcomes = getattr(inst_result, "guard_outcomes", None)
-		if deferred and isinstance(guard_outcomes, dict):
-			existing = {_diag_key(d) for d in inst_result.diagnostics}
-			for guard_key, status in guard_outcomes.items():
-				branch = None
-				if status is ProofStatus.PROVED:
-					branch = "then"
-				elif status is ProofStatus.REFUTED:
-					branch = "else"
-				if branch is None:
+			_register_derived_signature_precheck(inst_fn_id, inst_sig)
+			if require_env is not None and template_fn_id is not None:
+				req_expr = require_env.requires_by_fn.get(template_fn_id)
+				if req_expr is not None:
+					require_env.requires_by_fn[inst_fn_id] = req_expr
+			template_hir = template_hirs_by_key.get(template_key)
+			if template_hir is None:
+				wrap_sig = signatures_by_id.get(inst_fn_id)
+				if wrap_sig is not None and getattr(wrap_sig, "is_wrapper", False):
+					template_hir = _make_wrapper_template_hir(wrap_sig)
+					template_hirs_by_key[template_key] = template_hir
+				if template_hir is None:
+					type_diags.append(
+						Diagnostic(
+							message=f"generic instantiation requires a template body for '{function_key_str(template_key)}'",
+							code="E_MISSING_TEMPLATE_BODY",
+							severity="error",
+							phase="typecheck",
+							span=getattr(sig, "loc", None),
+						)
+					)
+					handle.status = "failed"
 					continue
-				for diag in deferred.get((guard_key, branch), []):
-					key = _diag_key(diag)
-					if key in existing:
+			inst_hir = normalize_hir(template_hir)
+			normalized_hirs_by_id[inst_fn_id] = inst_hir
+			mod_name = getattr(inst_fn_id, "module", None) or "main"
+			current_mod = _module_id_with_visibility(mod_name)
+			visible_mods = None
+			if module_deps is not None:
+				visible = visible_module_names_by_name.get(mod_name, {mod_name})
+				visible_mods = tuple(sorted(_module_id_with_visibility(m) for m in visible))
+			_sync_visibility_provenance()
+			current_file = None
+			if origin_by_fn_id is not None and template_fn_id in origin_by_fn_id:
+				current_file = str(origin_by_fn_id.get(template_fn_id))
+			elif sig is not None:
+				current_file = Span.from_loc(getattr(sig, "loc", None)).file
+			param_mutable = None
+			if sig is not None and sig.param_names is not None and sig.param_mutable is not None:
+				if len(sig.param_names) == len(sig.param_mutable):
+					param_mutable = {pname: bool(flag) for pname, flag in zip(sig.param_names, sig.param_mutable)}
+			inst_result = type_checker.check_function(
+				inst_fn_id,
+				inst_hir,
+				param_types={pname: pty for pname, pty in zip(sig.param_names or [], inst_param_ids)},
+				param_mutable=param_mutable,
+				return_type=inst_ret_id,
+				preseed_type_params={**{tp.name: impl_args[idx] for idx, tp in enumerate(sig.impl_type_params or [])}, **{tp.name: fn_args[idx] for idx, tp in enumerate(sig.type_params or [])}},
+				preseed_scope_bindings=getattr(inst_hir, "param_binding_ids", None),
+				signatures_by_id=signatures_by_id,
+				function_keys_by_fn_id=function_keys_by_fn_id,
+				callable_registry=callable_registry,
+				impl_index=impl_index,
+				trait_index=trait_index,
+				trait_impl_index=trait_impl_index,
+				trait_scope_by_module=trait_scope_by_module,
+				linked_world=linked_world,
+				require_env=require_env,
+				visible_modules=visible_mods,
+				current_module=current_mod,
+				visibility_provenance=visibility_provenance_by_id,
+			)
+			if impl_subst is not None or fn_subst is not None:
+				new_call_info: dict[int, CallInfo] = {}
+				for csid, info in inst_result.typed_fn.call_info_by_callsite_id.items():
+					new_call_info[csid] = _subst_call_info(info, impl_subst, fn_subst)
+				inst_result.typed_fn.call_info_by_callsite_id = new_call_info
+			type_diags.extend(inst_result.diagnostics)
+			deferred = deferred_guard_diags_by_template.get(template_key)
+			guard_outcomes = getattr(inst_result, "guard_outcomes", None)
+			if deferred and isinstance(guard_outcomes, dict):
+				existing = {_diag_key(d) for d in inst_result.diagnostics}
+				for guard_key, status in guard_outcomes.items():
+					branch = None
+					if status is ProofStatus.PROVED:
+						branch = "then"
+					elif status is ProofStatus.REFUTED:
+						branch = "else"
+					if branch is None:
 						continue
-					inst_result.diagnostics.append(diag)
-					type_diags.append(diag)
-					existing.add(key)
-		typed_fns_by_id[inst_fn_id] = inst_result.typed_fn
-		_queue_instantiations(inst_result.typed_fn)
-		handle.status = "emitted"
-
+					for diag in deferred.get((guard_key, branch), []):
+						key = _diag_key(diag)
+						if key in existing:
+							continue
+						inst_result.diagnostics.append(diag)
+						type_diags.append(diag)
+						existing.add(key)
+			typed_fns_by_id[inst_fn_id] = inst_result.typed_fn
+			_queue_instantiations(inst_result.typed_fn)
+			handle.status = "emitted"
+	
+	_drain_instantiations()
 	def _rewrite_call_targets(typed_fn: object, block: H.HBlock) -> None:
 		call_info_map = getattr(typed_fn, "call_info_by_callsite_id", None)
 		if not isinstance(call_info_map, dict):
@@ -2154,7 +2433,11 @@ def compile_stubbed_funcs(
 			if not isinstance(template_key, FunctionKey) or not type_args:
 				continue
 			handle = inst_cache.get(_inst_key(template_key, type_args))
-			if handle is None or handle.status != "emitted":
+			if handle is None:
+				handle = _request_instantiation(template_key, type_args)
+			if handle.status != "emitted":
+				_drain_instantiations()
+			if handle.status != "emitted":
 				continue
 			csid = key if isinstance(key, int) else None
 			info = call_info_map.get(csid) if csid is not None else None
@@ -2162,15 +2445,16 @@ def compile_stubbed_funcs(
 				continue
 			inst_sig = signatures_by_id.get(handle.fn_id)
 			if inst_sig is None or inst_sig.param_type_ids is None or inst_sig.return_type_id is None:
-				continue
-			new_info = CallInfo(
-				target=CallTarget.direct(handle.fn_id),
-				sig=CallSig(
-					param_types=tuple(inst_sig.param_type_ids),
-					user_ret_type=inst_sig.return_type_id,
-					can_throw=_inst_can_throw(inst_sig),
-				),
-			)
+				new_info = CallInfo(target=CallTarget.direct(handle.fn_id), sig=info.sig)
+			else:
+				new_info = CallInfo(
+					target=CallTarget.direct(handle.fn_id),
+					sig=CallSig(
+						param_types=tuple(inst_sig.param_type_ids),
+						user_ret_type=inst_sig.return_type_id,
+						can_throw=_inst_can_throw(inst_sig),
+					),
+				)
 			_set_call_info(csid, new_info)
 
 	for fn_id, typed_fn in typed_fns_by_id.items():
@@ -2264,6 +2548,8 @@ def compile_stubbed_funcs(
 		name = function_symbol(fn_id)
 		sig = signatures_by_id.get(fn_id)
 		if sig is not None:
+			if sig.type_params or getattr(sig, "impl_type_params", []):
+				continue
 			for tid in sig.param_type_ids or []:
 				if _has_typevar(tid):
 					type_diags.append(
@@ -2325,6 +2611,28 @@ def compile_stubbed_funcs(
 		validate_entrypoint_main(signatures_by_id, shared_type_table, checked.diagnostics)
 	if type_diags:
 		checked.diagnostics.extend(type_diags)
+	typevar_diags: list[Diagnostic] = []
+	for fn_id, typed_fn in typed_fns_by_id.items():
+		sig = signatures_by_id.get(fn_id)
+		if sig is None:
+			continue
+		if getattr(sig, "type_params", None) or getattr(sig, "impl_type_params", None):
+			continue
+		if sig.param_type_ids and any(shared_type_table.has_typevar(t) for t in sig.param_type_ids):
+			continue
+		if sig.return_type_id is not None and shared_type_table.has_typevar(sig.return_type_id):
+			continue
+		if sig.error_type_id is not None and shared_type_table.has_typevar(sig.error_type_id):
+			continue
+		typevar_diags.extend(_typevar_callinfo_diags(typed_fn, shared_type_table))
+	if typevar_diags:
+		checked.diagnostics.extend(typevar_diags)
+		if any(d.severity == "error" for d in checked.diagnostics):
+			if return_checked:
+				if return_ssa:
+					return {}, checked, None
+				return {}, checked
+			return {}
 	if module_exports and shared_type_table is not None:
 		def _collect_nominal_types(type_id: TypeId, *, seen: set[TypeId], out: set[TypeId]) -> None:
 			if type_id in seen:
@@ -2333,7 +2641,7 @@ def compile_stubbed_funcs(
 			td = shared_type_table.get(type_id)
 			if td is None:
 				return
-			if td.kind in (TypeKind.STRUCT, TypeKind.VARIANT):
+			if td.kind in (TypeKind.STRUCT, TypeKind.VARIANT, TypeKind.INTERFACE):
 				out.add(type_id)
 			for child in td.param_types:
 				_collect_nominal_types(child, seen=seen, out=out)
@@ -2345,6 +2653,7 @@ def compile_stubbed_funcs(
 				continue
 			exported_structs = set(types_obj.get("structs") or [])
 			exported_variants = set(types_obj.get("variants") or [])
+			exported_interfaces = set(types_obj.get("interfaces") or [])
 			for sym in vals:
 				if not isinstance(sym, str):
 					continue
@@ -2375,6 +2684,19 @@ def compile_stubbed_funcs(
 								)
 							)
 						if td.kind is TypeKind.VARIANT and td.name not in exported_variants:
+							checked.diagnostics.append(
+								Diagnostic(
+									message=(
+										f"exported value '{sym}' uses private type '{td.name}' "
+										f"in module '{mid}'"
+									),
+									code="E-PRIVATE-TYPE",
+									severity="error",
+									phase="typecheck",
+									span=None,
+								)
+							)
+						if td.kind is TypeKind.INTERFACE and td.name not in exported_interfaces:
 							checked.diagnostics.append(
 								Diagnostic(
 									message=(
@@ -2889,6 +3211,12 @@ def compile_stubbed_funcs(
 				orig_bid = rev_capture_id_map.get(bid, bid)
 				cap_name = origin_typed.binding_names.get(orig_bid, f"__cap_{orig_bid}")
 				cap_ty = origin_typed.binding_types.get(orig_bid, shared_type_table.ensure_unknown())
+				if spec.env_field_types is not None:
+					slot = remapped_capture_map.get(cap.key)
+					if slot is not None and slot < len(spec.env_field_types):
+						candidate = spec.env_field_types[slot]
+						if shared_type_table.has_typevar(cap_ty) or shared_type_table.get(cap_ty).kind is TypeKind.UNKNOWN:
+							cap_ty = candidate
 				preseed_binding_types[bid] = cap_ty
 				preseed_binding_names[bid] = cap_name
 				preseed_binding_mutable[bid] = origin_typed.binding_mutable.get(orig_bid, False)
@@ -2939,6 +3267,8 @@ def compile_stubbed_funcs(
 			type_diags.extend(hidden_typed.diagnostics)
 			continue
 		hidden_typed_fn = hidden_typed.typed_fn
+		_rewrite_call_targets(hidden_typed_fn, lambda_body)
+		type_diags.extend(_typevar_callinfo_diags(hidden_typed_fn, shared_type_table))
 		hidden_ret_type = _hidden_lambda_ret_type(lambda_body, hidden_typed_fn, shared_type_table)
 		hidden_sig = FnSignature(
 			name=function_symbol(spec.fn_id),
@@ -2997,6 +3327,7 @@ def compile_stubbed_funcs(
 				return {}, checked
 			return {}
 
+	type_diag_len = len(type_diags)
 	for spec in type_checker.thunk_specs():
 		if spec.thunk_fn_id in mir_funcs_by_id:
 			continue
@@ -3028,6 +3359,16 @@ def compile_stubbed_funcs(
 			builder.set_terminator(M.Return(value=call_dest))
 		mir_funcs_by_id[spec.thunk_fn_id] = builder.func
 
+	if len(type_diags) != type_diag_len:
+		checked.diagnostics.extend(type_diags[type_diag_len:])
+		if any(d.severity == "error" for d in checked.diagnostics):
+			if return_checked:
+				if return_ssa:
+					return {}, checked, None
+				return {}, checked
+			return {}
+
+	type_diag_len = len(type_diags)
 	for spec in type_checker.lambda_fn_specs():
 		if spec.fn_id in mir_funcs_by_id:
 			continue
@@ -3083,6 +3424,10 @@ def compile_stubbed_funcs(
 			type_diags.extend(lambda_result.diagnostics)
 			continue
 		lambda_typed_fn = lambda_result.typed_fn
+		_rewrite_call_targets(lambda_typed_fn, lambda_body)
+		type_diags.extend(_typevar_callinfo_diags(lambda_typed_fn, shared_type_table))
+		call_info_map = getattr(lambda_typed_fn, "call_info_by_callsite_id", None)
+		lambda_call_info: dict[int, CallInfo] | None = dict(call_info_map) if isinstance(call_info_map, dict) else None
 		lambda_ret_type = _hidden_lambda_ret_type(lambda_body, lambda_typed_fn, shared_type_table)
 		sig = FnSignature(
 			name=function_symbol(spec.fn_id),
@@ -3103,7 +3448,7 @@ def compile_stubbed_funcs(
 			expr_types=getattr(lambda_typed_fn, "expr_types", None),
 			signatures_by_id=signatures_by_id,
 			current_fn_id=spec.fn_id,
-			call_info_by_callsite_id=lambda_typed_fn.call_info_by_callsite_id,
+			call_info_by_callsite_id=lambda_call_info or lambda_typed_fn.call_info_by_callsite_id,
 			can_throw_by_id={**declared_by_id, spec.fn_id: bool(spec.can_throw)},
 			return_type=lambda_ret_type,
 			typed_mode=_typed_mode_for(lambda_typed_fn, shared_type_table, not _has_error(lambda_result.diagnostics)),
@@ -3122,6 +3467,14 @@ def compile_stubbed_funcs(
 				ret_val = ok_dest
 			builder.set_terminator(M.Return(value=ret_val))
 		mir_funcs_by_id[spec.fn_id] = builder.func
+	if len(type_diags) != type_diag_len:
+		checked.diagnostics.extend(type_diags[type_diag_len:])
+		if any(d.severity == "error" for d in checked.diagnostics):
+			if return_checked:
+				if return_ssa:
+					return {}, checked, None
+				return {}, checked
+			return {}
 
 	for spec in method_wrapper_specs:
 		if spec.wrapper_fn_id in mir_funcs_by_id:
@@ -4861,7 +5214,28 @@ def main(argv: list[str] | None = None) -> int:
 	type_checker = TypeChecker(type_table=type_table, allow_unsafe=bool(getattr(args, "allow_unsafe", False)), unsafe_trusted_modules=unsafe_trusted_modules)
 	callable_registry = CallableRegistry()
 	next_callable_id = 1
+	def _registry_impl_target_type_id(impl_tid: TypeId | None) -> TypeId | None:
+		if impl_tid is None or type_table is None:
+			return impl_tid
+		td = type_table.get(impl_tid)
+		if td.kind is TypeKind.REF and td.param_types:
+			inner = td.param_types[0]
+			inner_def = type_table.get(inner)
+			if inner_def.kind is TypeKind.ARRAY:
+				return type_table.array_base_id()
+			return inner
+		if td.kind is TypeKind.ARRAY:
+			return type_table.array_base_id()
+		return impl_tid
+	def _template_sig_for(sig: FnSignature) -> CallableTemplateSignature | None:
+		if not (sig.type_params or getattr(sig, "impl_type_params", [])):
+			return None
+		if sig.param_types is None or sig.return_type is None:
+			return None
+		return CallableTemplateSignature(param_types=tuple(sig.param_types), result_type=sig.return_type)
 	type_diags: list[Diagnostic] = []
+	if type_table is not None:
+		type_checker.validate_interface_schemas(diagnostics=type_diags)
 	module_ids: dict[object, int] = {None: 0}
 	signatures_by_id_all: Mapping[FunctionId, FnSignature] = ChainMap(
 		external_signatures_by_id,
@@ -4912,7 +5286,7 @@ def main(argv: list[str] | None = None) -> int:
 				signature=CallableSignature(param_types=param_types_tuple, result_type=sig.return_type_id),
 				fn_id=fn_id,
 				impl_id=next_callable_id,
-				impl_target_type_id=sig.impl_target_type_id,
+				impl_target_type_id=_registry_impl_target_type_id(sig.impl_target_type_id),
 				self_mode=self_mode,
 				is_generic=bool(sig.type_params or getattr(sig, "impl_type_params", [])),
 			)
@@ -4968,9 +5342,12 @@ def main(argv: list[str] | None = None) -> int:
 				module_id=module_id,
 				visibility=Visibility.public(),
 				signature=CallableSignature(param_types=param_types_tuple, result_type=sig.return_type_id),
+				template_signature=_template_sig_for(sig),
+				template_type_params=tuple(tp.name for tp in (sig.type_params or [])),
+				template_impl_type_params=tuple(tp.name for tp in (getattr(sig, "impl_type_params", []) or [])),
 				fn_id=fn_id,
 				impl_id=next_callable_id,
-				impl_target_type_id=sig.impl_target_type_id,
+				impl_target_type_id=_registry_impl_target_type_id(sig.impl_target_type_id),
 				self_mode=self_mode,
 				is_generic=bool(sig.type_params or getattr(sig, "impl_type_params", [])),
 			)
@@ -4982,6 +5359,8 @@ def main(argv: list[str] | None = None) -> int:
 				module_id=module_id,
 				visibility=Visibility.public(),
 				signature=CallableSignature(param_types=param_types_tuple, result_type=sig.return_type_id),
+				template_signature=_template_sig_for(sig),
+				template_type_params=tuple(tp.name for tp in (sig.type_params or [])),
 				fn_id=fn_id,
 				is_generic=bool(sig.type_params),
 			)
@@ -5000,7 +5379,7 @@ def main(argv: list[str] | None = None) -> int:
 			return set()
 		targets: set[str] = set()
 		type_reexp = reexp.get("types") if isinstance(reexp.get("types"), dict) else {}
-		for kind in ("structs", "variants", "exceptions"):
+		for kind in ("structs", "variants", "exceptions", "interfaces"):
 			entries = type_reexp.get(kind) if isinstance(type_reexp, dict) else None
 			if not isinstance(entries, dict):
 				continue
@@ -5580,6 +5959,7 @@ def main(argv: list[str] | None = None) -> int:
 				"structs": list(exported_types_obj.get("structs", [])) if isinstance(exported_types_obj.get("structs"), list) else [],
 				"variants": list(exported_types_obj.get("variants", [])) if isinstance(exported_types_obj.get("variants"), list) else [],
 				"exceptions": list(exported_types_obj.get("exceptions", [])) if isinstance(exported_types_obj.get("exceptions"), list) else [],
+				"interfaces": list(exported_types_obj.get("interfaces", [])) if isinstance(exported_types_obj.get("interfaces"), list) else [],
 			}
 			exported_traits: list[str] = (
 				list(exported_traits_obj) if isinstance(exported_traits_obj, (list, set, tuple)) else []
@@ -5769,7 +6149,7 @@ def main(argv: list[str] | None = None) -> int:
 					"exports",
 					{
 						"values": [],
-						"types": {"structs": [], "variants": [], "exceptions": []},
+						"types": {"structs": [], "variants": [], "exceptions": [], "interfaces": []},
 						"consts": [],
 						"traits": [],
 					},

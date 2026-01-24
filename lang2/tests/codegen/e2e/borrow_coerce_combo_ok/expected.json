@@ -1,0 +1,6 @@
+{
+  "description": "e2e: borrow coercion Borrow/BorrowMut selection",
+  "exit_code": 0,
+  "stderr": "",
+  "stdout": ""
+}

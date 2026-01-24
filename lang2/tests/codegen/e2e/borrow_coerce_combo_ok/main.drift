@@ -1,0 +1,64 @@
+module main
+
+import std.core as core;
+
+struct Both {
+	a: Int,
+	b: Int
+}
+
+implement core.Borrow<Int> for Both {
+	pub fn borrow(self: &Both) nothrow -> &Int {
+		return &self.a;
+	}
+}
+
+implement core.BorrowMut<Int> for Both {
+	pub fn borrow_mut(self: &mut Both) nothrow -> &mut Int {
+		return &mut self.b;
+	}
+}
+
+struct OnlyBorrow {
+	v: Int
+}
+
+implement core.Borrow<Int> for OnlyBorrow {
+	pub fn borrow(self: &OnlyBorrow) nothrow -> &Int {
+		return &self.v;
+	}
+}
+
+struct OnlyBorrowMut {
+	v: Int
+}
+
+implement core.BorrowMut<Int> for OnlyBorrowMut {
+	pub fn borrow_mut(self: &mut OnlyBorrowMut) nothrow -> &mut Int {
+		return &mut self.v;
+	}
+}
+
+fn inc(p: &mut Int) nothrow -> Void {
+	*p = *p + 1;
+}
+
+fn read(p: &Int) nothrow -> Int {
+	return *p;
+}
+
+fn main() nothrow -> Int {
+	var both = Both(a = 1, b = 2);
+	inc(both);
+	val res = read(both);
+	if both.b != 3 { return 1; }
+	if res != 1 { return 2; }
+
+	val ob = OnlyBorrow(v = 7);
+	if read(ob) != 7 { return 3; }
+
+	var obm = OnlyBorrowMut(v = 9);
+	inc(obm);
+	if obm.v != 10 { return 4; }
+	return 0;
+}

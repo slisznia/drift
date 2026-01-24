@@ -26,6 +26,7 @@ class TypeKind(Enum):
 	SCALAR = auto()
 	FORWARD_NOMINAL = auto()
 	STRUCT = auto()
+	INTERFACE = auto()
 	TYPEVAR = auto()
 	ERROR = auto()
 	DIAGNOSTICVALUE = auto()
@@ -136,6 +137,44 @@ class StructInstance:
 
 
 @dataclass(frozen=True)
+class InterfaceSchema:
+	"""Definition-time schema for an interface (generic or non-generic)."""
+
+	module_id: str
+	name: str
+	type_params: list[str]
+	methods: list["InterfaceMethodSchema"]
+
+
+@dataclass(frozen=True)
+class InterfaceInstance:
+	"""Concrete (monomorphized) view of an interface type."""
+
+	base_id: TypeId
+	type_args: list[TypeId]
+
+
+@dataclass(frozen=True)
+class InterfaceParamSchema:
+	"""Single parameter in an interface method schema."""
+
+	name: str
+	type_expr: GenericTypeExpr
+
+
+@dataclass(frozen=True)
+class InterfaceMethodSchema:
+	"""Definition-time signature for an interface method."""
+
+	name: str
+	params: list[InterfaceParamSchema]
+	return_type: GenericTypeExpr
+	type_params: list[str]
+	declared_nothrow: bool = False
+	is_unsafe: bool = False
+
+
+@dataclass(frozen=True)
 class VariantFieldSchema:
 	"""A single declared field in a variant constructor."""
 
@@ -236,6 +275,12 @@ class TypeTable:
 		self.struct_type_param_ids: dict[TypeId, list[TypeParamId]] = {}
 		# Concrete instantiations keyed by the instantiated TypeId.
 		self.struct_instances: dict[TypeId, StructInstance] = {}
+		# Interface base schemas keyed by the base TypeId (declared name).
+		self.interface_bases: dict[TypeId, InterfaceSchema] = {}
+		# Interface type parameter ids keyed by the base TypeId (declared name).
+		self.interface_type_param_ids: dict[TypeId, list[TypeParamId]] = {}
+		# Concrete instantiations keyed by the instantiated TypeId.
+		self.interface_instances: dict[TypeId, InterfaceInstance] = {}
 		# Variant schemas keyed by the *base* TypeId (declared name).
 		self.variant_schemas: dict[TypeId, VariantSchema] = {}
 		# Concrete instantiations keyed by the instantiated TypeId.
@@ -248,6 +293,10 @@ class TypeTable:
 		self._struct_instantiation_cache: dict[tuple[TypeId, tuple[TypeId, ...]], TypeId] = {}
 		# Struct template cache: (base_id, args...) -> template TypeId.
 		self._struct_template_cache: dict[tuple[TypeId, tuple[TypeId, ...]], TypeId] = {}
+		# Interface instantiation cache: (base_id, args...) -> instantiated TypeId.
+		self._interface_instantiation_cache: dict[tuple[TypeId, tuple[TypeId, ...]], TypeId] = {}
+		# Interface template cache: (base_id, args...) -> template TypeId.
+		self._interface_template_cache: dict[tuple[TypeId, tuple[TypeId, ...]], TypeId] = {}
 		# Type parameter cache: TypeParamId -> TypeId.
 		self._typevar_cache: dict[TypeParamId, TypeId] = {}
 		# Array cache: elem TypeId -> Array<elem> TypeId.
@@ -256,6 +305,8 @@ class TypeTable:
 		self._array_base_id: TypeId | None = None
 		# Cache for drop-needs checks.
 		self._needs_drop_cache: dict[TypeId, bool] = {}
+		# Default Destructible query fallback so early instantiations don't error.
+		self.set_destructible_query(lambda _tid: None, allow_fallback=True)
 		# Compile-time constants keyed by their fully-qualified symbol name.
 		#
 		# MVP: constants are literal values embedded into IR at each use site; there
@@ -311,7 +362,7 @@ class TypeTable:
 		If the name has not been declared yet, we create a forward nominal and
 		expect a later declaration to upgrade it to STRUCT/VARIANT.
 		"""
-		for kind in (TypeKind.STRUCT, TypeKind.VARIANT, TypeKind.FORWARD_NOMINAL, TypeKind.SCALAR):
+		for kind in (TypeKind.STRUCT, TypeKind.VARIANT, TypeKind.INTERFACE, TypeKind.FORWARD_NOMINAL, TypeKind.SCALAR):
 			key = NominalKey(package_id=self._package_for_module(module_id), module_id=module_id, name=name, kind=kind)
 			prev = self._nominal.get(key)
 			if prev is not None:
@@ -429,6 +480,56 @@ class TypeTable:
 		if ty_id not in self.struct_type_param_ids:
 			owner = FunctionId(module="lang.__internal", name=f"__struct_{module_id}::{name}", ordinal=0)
 			self.struct_type_param_ids[ty_id] = [
+				TypeParamId(owner=owner, index=idx) for idx, _name in enumerate(type_params)
+			]
+		return ty_id
+
+	def declare_interface(self, module_id: str, name: str, type_params: list[str] | None = None) -> TypeId:
+		"""Declare an interface nominal type."""
+		type_params = list(type_params or [])
+		key = NominalKey(package_id=self._package_for_module(module_id), module_id=module_id, name=name, kind=TypeKind.INTERFACE)
+		forward_key = NominalKey(
+			package_id=self._package_for_module(module_id),
+			module_id=module_id,
+			name=name,
+			kind=TypeKind.FORWARD_NOMINAL,
+		)
+		if forward_key in self._nominal:
+			ty_id = self._nominal.pop(forward_key)
+			td = self.get(ty_id)
+			if td.kind is not TypeKind.FORWARD_NOMINAL:
+				raise ValueError(f"type name '{name}' already defined as {td.kind}")
+			self._defs[ty_id] = TypeDef(
+				kind=TypeKind.INTERFACE,
+				name=name,
+				param_types=[],
+				module_id=module_id,
+			)
+			self._nominal[key] = ty_id
+			self.interface_bases[ty_id] = InterfaceSchema(module_id=module_id, name=name, type_params=type_params, methods=[])
+			if ty_id not in self.interface_type_param_ids:
+				owner = FunctionId(module="lang.__internal", name=f"__interface_{module_id}::{name}", ordinal=0)
+				self.interface_type_param_ids[ty_id] = [
+					TypeParamId(owner=owner, index=idx) for idx, _name in enumerate(type_params)
+				]
+			return ty_id
+		if key in self._nominal:
+			ty_id = self._nominal[key]
+			td = self.get(ty_id)
+			if td.kind is TypeKind.INTERFACE:
+				base = self.interface_bases.get(ty_id)
+				if base is not None and list(base.type_params) != list(type_params):
+					raise ValueError(
+						f"interface '{module_id}::{name}' type params mismatch: "
+						f"{base.type_params} vs {type_params}"
+					)
+				return ty_id
+			raise ValueError(f"type name '{name}' already defined as {td.kind}")
+		ty_id = self._add(TypeKind.INTERFACE, name, [], register_named=True, module_id=module_id)
+		self.interface_bases[ty_id] = InterfaceSchema(module_id=module_id, name=name, type_params=type_params, methods=[])
+		if ty_id not in self.interface_type_param_ids:
+			owner = FunctionId(module="lang.__internal", name=f"__interface_{module_id}::{name}", ordinal=0)
+			self.interface_type_param_ids[ty_id] = [
 				TypeParamId(owner=owner, index=idx) for idx, _name in enumerate(type_params)
 			]
 		return ty_id
@@ -585,6 +686,57 @@ class TypeTable:
 		"""Return the concrete struct instance for a struct TypeId, if available."""
 		return self.struct_instances.get(ty)
 
+	def get_interface_schema(self, ty: TypeId) -> InterfaceSchema | None:
+		"""Return the interface schema for a base or instantiated interface TypeId."""
+		td = self.get(ty)
+		if td.kind is not TypeKind.INTERFACE:
+			return None
+		if ty in self.interface_bases:
+			return self.interface_bases[ty]
+		inst = self.interface_instances.get(ty)
+		if inst is not None:
+			return self.interface_bases.get(inst.base_id)
+		return None
+
+	def define_interface_schema_methods(self, interface_id: TypeId, methods: list[InterfaceMethodSchema]) -> None:
+		"""Define interface method schemas for a declared interface base."""
+		schema = self.interface_bases.get(interface_id)
+		if schema is None:
+			raise ValueError("define_interface_schema_methods requires a declared interface base TypeId")
+		existing = list(schema.methods)
+		if existing:
+			if list(existing) != list(methods):
+				raise ValueError(
+					f"interface '{schema.module_id}::{schema.name}' method schema mismatch"
+				)
+			return
+		seen: set[str] = set()
+		for m in methods:
+			if m.name in seen:
+				raise ValueError(f"interface '{schema.module_id}::{schema.name}' has duplicate method '{m.name}'")
+			seen.add(m.name)
+		self.interface_bases[interface_id] = InterfaceSchema(
+			module_id=schema.module_id,
+			name=schema.name,
+			type_params=list(schema.type_params),
+			methods=list(methods),
+		)
+
+	def get_interface_type_param_ids(self, base_id: TypeId) -> list[TypeParamId] | None:
+		"""Return interface type parameter ids for a base TypeId, if known."""
+		return self.interface_type_param_ids.get(base_id)
+
+	def get_interface_base(self, *, module_id: str, name: str) -> TypeId | None:
+		"""Return the base TypeId for a declared interface in `module_id`, if present."""
+		tid = self.get_nominal(kind=TypeKind.INTERFACE, module_id=module_id, name=name)
+		if tid is None:
+			return None
+		return tid if tid in self.interface_bases else None
+
+	def get_interface_instance(self, ty: TypeId) -> InterfaceInstance | None:
+		"""Return the concrete interface instance for an interface TypeId, if available."""
+		return self.interface_instances.get(ty)
+
 	def ensure_struct_instantiated(self, base_id: TypeId, type_args: list[TypeId]) -> TypeId:
 		"""
 		Return a stable TypeId for a concrete instantiation of a generic struct.
@@ -654,6 +806,62 @@ class TypeTable:
 		self._define_struct_instance(base_id, inst_id, type_args=list(type_args), field_names=field_names, field_types=field_types)
 		return inst_id
 
+	def ensure_interface_instantiated(self, base_id: TypeId, type_args: list[TypeId]) -> TypeId:
+		"""
+		Return a stable TypeId for a concrete instantiation of a generic interface.
+		"""
+		schema = self.interface_bases.get(base_id)
+		if schema is None:
+			raise ValueError("ensure_interface_instantiated requires a declared interface base TypeId")
+		if len(type_args) != len(schema.type_params):
+			raise ValueError(
+				f"type argument count mismatch for '{schema.name}': expected {len(schema.type_params)}, got {len(type_args)}"
+			)
+		if any(self.has_typevar(arg) for arg in type_args):
+			raise ValueError(f"type arguments for '{schema.name}' must be concrete")
+		if not schema.type_params:
+			if base_id not in self.interface_instances:
+				self.interface_instances[base_id] = InterfaceInstance(base_id=base_id, type_args=[])
+			return base_id
+		key = (base_id, tuple(type_args))
+		if key in self._interface_instantiation_cache:
+			return self._interface_instantiation_cache[key]
+		inst_id = self._add(
+			TypeKind.INTERFACE,
+			schema.name,
+			[],
+			register_named=False,
+			module_id=schema.module_id,
+		)
+		self._interface_instantiation_cache[key] = inst_id
+		self.interface_instances[inst_id] = InterfaceInstance(base_id=base_id, type_args=list(type_args))
+		return inst_id
+
+	def ensure_interface_template(self, base_id: TypeId, type_args: list[TypeId]) -> TypeId:
+		"""
+		Return a template interface TypeId that may include TypeVar arguments.
+		"""
+		schema = self.interface_bases.get(base_id)
+		if schema is None:
+			raise ValueError("ensure_interface_template requires a declared interface base TypeId")
+		if len(type_args) != len(schema.type_params):
+			raise ValueError(
+				f"type argument count mismatch for '{schema.name}': expected {len(schema.type_params)}, got {len(type_args)}"
+			)
+		key = (base_id, tuple(type_args))
+		if key in self._interface_template_cache:
+			return self._interface_template_cache[key]
+		inst_id = self._add(
+			TypeKind.INTERFACE,
+			schema.name,
+			[],
+			register_named=False,
+			module_id=schema.module_id,
+		)
+		self._interface_template_cache[key] = inst_id
+		self.interface_instances[inst_id] = InterfaceInstance(base_id=base_id, type_args=list(type_args))
+		return inst_id
+
 	def ensure_variant_instantiated(self, base_id: TypeId, type_args: list[TypeId]) -> TypeId:
 		"""
 		Return a stable TypeId for a concrete instantiation of a generic nominal.
@@ -678,7 +886,10 @@ class TypeTable:
 			return base_id
 		key = (base_id, tuple(type_args))
 		if key in self._instantiation_cache:
-			return self._instantiation_cache[key]
+			inst_id = self._instantiation_cache[key]
+			if inst_id not in self.variant_instances:
+				self._define_variant_instance(base_id, inst_id, list(type_args))
+			return inst_id
 		# Concrete instantiations are not nominal (not registered in `_nominal`),
 		# but they still carry the originating module id for deterministic package
 		# encoding/linking and for clearer diagnostics.
@@ -735,6 +946,10 @@ class TypeTable:
 				return any(self.has_typevar(arg) for arg in inst.type_args)
 		if td.kind is TypeKind.VARIANT:
 			inst = self.variant_instances.get(ty)
+			if inst is not None:
+				return any(self.has_typevar(arg) for arg in inst.type_args)
+		if td.kind is TypeKind.INTERFACE:
+			inst = self.interface_instances.get(ty)
 			if inst is not None:
 				return any(self.has_typevar(arg) for arg in inst.type_args)
 		for child in td.param_types:
@@ -844,6 +1059,12 @@ class TypeTable:
 		if cached is not None:
 			return cached
 		td = self.get(tid)
+		if td.kind in {TypeKind.REF, TypeKind.RAW_PTR, TypeKind.FUNCTION}:
+			self._needs_drop_cache[tid] = False
+			return False
+		if self.is_destructible(tid):
+			self._needs_drop_cache[tid] = True
+			return True
 		if td.kind is TypeKind.SCALAR:
 			needs = td.name == "String"
 			self._needs_drop_cache[tid] = needs
@@ -953,10 +1174,11 @@ class TypeTable:
 		# for imported/qualified names. If absent, the name is unqualified and is
 		# resolved in the declaring module scope (`module_id` argument).
 		origin_mod = expr.module_id or module_id
-		# MVP supports structs and variants as nominal names.
+		# MVP supports structs, variants, and interfaces as nominal names.
 		base_id = (
 			self.get_nominal(kind=TypeKind.STRUCT, module_id=origin_mod, name=name)
 			or self.get_nominal(kind=TypeKind.VARIANT, module_id=origin_mod, name=name)
+			or self.get_nominal(kind=TypeKind.INTERFACE, module_id=origin_mod, name=name)
 			or self.ensure_named(name, module_id=origin_mod)
 		)
 		if expr.args:
@@ -975,6 +1197,13 @@ class TypeTable:
 				if any(self.has_typevar(arg) for arg in arg_ids):
 					return self.ensure_struct_template(base_id, arg_ids)
 				return self.ensure_struct_instantiated(base_id, arg_ids)
+			if base_id in self.interface_bases:
+				schema = self.interface_bases.get(base_id)
+				if schema is not None and not schema.type_params:
+					return self.ensure_unknown()
+				if any(self.has_typevar(arg) for arg in arg_ids):
+					return self.ensure_interface_template(base_id, arg_ids)
+				return self.ensure_interface_instantiated(base_id, arg_ids)
 			return self.ensure_unknown()
 		return base_id
 
@@ -1318,6 +1547,13 @@ class TypeTable:
 		if hasattr(self, "_diagnostic_cache"):
 			self._diagnostic_cache.clear()  # type: ignore[attr-defined]
 
+	def set_destructible_query(self, query, *, allow_fallback: bool = False) -> None:
+		"""Install a Destructible query hook for trait-based checks."""
+		self._destructible_query = query  # type: ignore[attr-defined]
+		self._destructible_query_allow_fallback = bool(allow_fallback)  # type: ignore[attr-defined]
+		if hasattr(self, "_destructible_cache"):
+			self._destructible_cache.clear()  # type: ignore[attr-defined]
+
 	def is_copy(self, ty: TypeId) -> bool:
 		"""Return True if `ty` is Copy under MVP structural rules."""
 		if not hasattr(self, "_copy_cache"):
@@ -1432,6 +1668,33 @@ class TypeTable:
 		cache[ty] = False
 		return False
 
+	def is_destructible(self, ty: TypeId) -> bool:
+		"""Return True if `ty` implements Destructible."""
+		if not hasattr(self, "_destructible_cache"):
+			self._destructible_cache = {}  # type: ignore[attr-defined]
+		cache: Dict[TypeId, bool] = getattr(self, "_destructible_cache")  # type: ignore[attr-defined]
+		if not hasattr(self, "_destructible_query"):
+			trait_worlds = getattr(self, "trait_worlds", None)
+			if isinstance(trait_worlds, dict) and any(mod in {"std.core"} for mod in trait_worlds.keys()):
+				raise ValueError("Destructible query hook is missing while stdlib trait metadata is present")
+		if ty in cache:
+			return cache[ty]
+		if hasattr(self, "_destructible_query"):
+			query = getattr(self, "_destructible_query")  # type: ignore[attr-defined]
+			res = query(ty)
+			if res is True:
+				cache[ty] = True
+				return True
+			if res is False:
+				cache[ty] = False
+				return False
+			allow_fallback = bool(getattr(self, "_destructible_query_allow_fallback", False))  # type: ignore[attr-defined]
+			if not allow_fallback:
+				cache[ty] = False
+				return False
+		cache[ty] = False
+		return False
+
 	def is_bitcopy(self, ty: TypeId) -> bool:
 		"""
 		Return True if `ty` is safe to bitwise-copy (memcpy).
@@ -1512,7 +1775,7 @@ class TypeTable:
 			field_names=list(field_names) if field_names is not None else None,
 		)
 		if register_named is None:
-			register_named = kind in (TypeKind.SCALAR, TypeKind.FORWARD_NOMINAL, TypeKind.STRUCT)
+			register_named = kind in (TypeKind.SCALAR, TypeKind.FORWARD_NOMINAL, TypeKind.STRUCT, TypeKind.INTERFACE)
 		if register_named:
 			key = NominalKey(package_id=self._package_for_module(module_id), module_id=module_id, name=name, kind=kind)
 			self._nominal.setdefault(key, ty_id)
@@ -1603,6 +1866,16 @@ class TypeTable:
 					if args:
 						return f"{base}<{','.join(args)}>"
 					return base
+				if td.kind is TypeKind.INTERFACE:
+					module_id = td.module_id
+					inst = self.interface_instances.get(tid)
+					args = []
+					if inst is not None:
+						args = [_key(t) for t in inst.type_args]
+					base = _qualify(td.name, module_id)
+					if args:
+						return f"{base}<{','.join(args)}>"
+					return base
 				if td.kind is TypeKind.VARIANT:
 					module_id = td.module_id
 					inst = self.variant_instances.get(tid)
@@ -1634,6 +1907,10 @@ __all__ = [
 	"StructFieldSchema",
 	"StructSchema",
 	"StructInstance",
+	"InterfaceSchema",
+	"InterfaceInstance",
+	"InterfaceParamSchema",
+	"InterfaceMethodSchema",
 	"TypeTable",
 	"VariantFieldSchema",
 	"VariantArmSchema",

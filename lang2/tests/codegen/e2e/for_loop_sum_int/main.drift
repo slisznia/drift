@@ -1,0 +1,8 @@
+fn main() nothrow -> Int{
+	val xs = [1, 2, 3];
+	var sum: Int = 0;
+	for x in xs {
+		sum = sum + *x;
+	}
+	return sum;
+}

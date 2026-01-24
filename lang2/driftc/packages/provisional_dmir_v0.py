@@ -431,6 +431,17 @@ def encode_type_table(table: TypeTable, *, package_id: str) -> dict[str, Any]:
 				"type_args": list(inst.type_args),
 			}
 		)
+	interface_instances: list[dict[str, Any]] = []
+	for inst_id, inst in sorted(table.interface_instances.items()):
+		if inst_id == inst.base_id:
+			continue
+		interface_instances.append(
+			{
+				"inst_id": int(inst_id),
+				"base_id": int(inst.base_id),
+				"type_args": list(inst.type_args),
+			}
+		)
 	struct_schema_entries: list[dict[str, Any]] = []
 	for key, (_n, _fields) in sorted(
 		table.struct_schemas.items(),
@@ -463,6 +474,43 @@ def encode_type_table(table: TypeTable, *, package_id: str) -> dict[str, Any]:
 				"type_params": list(schema.type_params),
 			}
 		)
+	interface_schema_entries: list[dict[str, Any]] = []
+	for base_id, schema in sorted(
+		table.interface_bases.items(),
+		key=lambda kv: ((table.get(kv[0]).module_id or ""), kv[1].name),
+	):
+		base_def = table.get(base_id)
+		if base_def.kind is not TypeKind.INTERFACE:
+			continue
+		if base_def.module_id is None:
+			raise ValueError(f"interface '{schema.name}' missing module_id")
+		interface_schema_entries.append(
+			{
+				"base_id": base_id,
+				"type_id": {
+					"package_id": table.module_packages.get(base_def.module_id, package_id) or package_id,
+					"module": base_def.module_id,
+					"name": schema.name,
+				},
+				"module_id": base_def.module_id,
+				"name": schema.name,
+				"type_params": list(schema.type_params),
+				"methods": [
+					{
+						"name": m.name,
+						"type_params": list(m.type_params),
+						"params": [
+							{"name": p.name, "type_expr": _encode_generic_type_expr(p.type_expr)}
+							for p in m.params
+						],
+						"return_type": _encode_generic_type_expr(m.return_type),
+						"declared_nothrow": bool(m.declared_nothrow),
+						"is_unsafe": bool(m.is_unsafe),
+					}
+					for m in schema.methods
+				],
+			}
+		)
 
 	provided_nominals: list[dict[str, Any]] = []
 	seen_provided: set[tuple[str, str, str]] = set()
@@ -472,7 +520,7 @@ def encode_type_table(table: TypeTable, *, package_id: str) -> dict[str, Any]:
 	):
 		if key.package_id != package_id:
 			continue
-		if key.kind not in (TypeKind.STRUCT, TypeKind.VARIANT, TypeKind.SCALAR):
+		if key.kind not in (TypeKind.STRUCT, TypeKind.VARIANT, TypeKind.SCALAR, TypeKind.INTERFACE):
 			continue
 		if key.module_id is None:
 			continue
@@ -486,7 +534,9 @@ def encode_type_table(table: TypeTable, *, package_id: str) -> dict[str, Any]:
 		"package_id": package_id,
 		"defs": defs,
 		"struct_schemas": struct_schema_entries,
+		"interface_schemas": interface_schema_entries,
 		"struct_instances": struct_instances,
+		"interface_instances": interface_instances,
 		"exception_schemas": {k: v for k, v in sorted(table.exception_schemas.items())},
 		"variant_schemas": variant_schemas,
 		"provided_nominals": provided_nominals,
@@ -959,6 +1009,7 @@ def encode_module_payload_v0(
 		"structs": list(exported_types.get("structs", [])),
 		"variants": list(exported_types.get("variants", [])),
 		"exceptions": list(exported_types.get("exceptions", [])),
+		"interfaces": list(exported_types.get("interfaces", [])),
 	}
 	reexports_obj = reexports if isinstance(reexports, dict) else {}
 	trait_meta_obj = list(trait_metadata or [])

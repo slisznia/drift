@@ -1,0 +1,20 @@
+module main
+
+struct Wrap {
+	v: Int
+}
+
+fn inc(p: &mut Int) nothrow -> Void {
+	*p = *p + 1;
+}
+
+fn read(p: &Int) nothrow -> Int {
+	return *p;
+}
+
+fn main() nothrow -> Int {
+	var w = Wrap(v = 1);
+	inc(w);
+	val w2 = Wrap(v = 2);
+	return read(w2);
+}

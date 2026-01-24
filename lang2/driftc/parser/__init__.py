@@ -39,6 +39,8 @@ from lang2.driftc.core.event_codes import event_code, PAYLOAD_MASK
 from lang2.driftc.core.function_id import FunctionId, function_symbol
 from lang2.driftc.core.types_core import (
 	TypeTable,
+	InterfaceMethodSchema,
+	InterfaceParamSchema,
 	StructFieldSchema,
 	VariantArmSchema,
 	VariantFieldSchema,
@@ -302,6 +304,75 @@ def _generic_type_expr_from_parser(
 		[_generic_type_expr_from_parser(a, type_params=type_params) for a in getattr(typ, "args", [])],
 		module_id=getattr(typ, "module_id", None),
 	)
+
+
+def _build_interface_method_schemas(
+	interface_def: parser_ast.InterfaceDef,
+	*,
+	module_id: str,
+	type_table: TypeTable,
+	diagnostics: list[Diagnostic],
+) -> list[InterfaceMethodSchema]:
+	interface_id = type_table.require_nominal(kind=TypeKind.INTERFACE, module_id=module_id, name=interface_def.name)
+	interface_type_params = list(getattr(interface_def, "type_params", []) or [])
+	seen_methods: set[str] = set()
+	methods: list[InterfaceMethodSchema] = []
+	for m in getattr(interface_def, "methods", []) or []:
+		if m.name in seen_methods:
+			diagnostics.append(
+				_p_diag(
+					message=f"duplicate method '{m.name}' in interface '{interface_def.name}'",
+					severity="error",
+					span=Span.from_loc(getattr(m, "loc", None)),
+				)
+			)
+			continue
+		seen_methods.add(m.name)
+		method_type_params = list(getattr(m, "type_params", []) or [])
+		method_param_set: set[str] = set()
+		conflict = False
+		for tp in method_type_params:
+			if tp in method_param_set:
+				conflict = True
+				diagnostics.append(
+					_p_diag(
+						message=f"duplicate type parameter '{tp}' in interface method '{m.name}'",
+						severity="error",
+						span=Span.from_loc(getattr(m, "loc", None)),
+					)
+				)
+			method_param_set.add(tp)
+		for tp in method_type_params:
+			if tp in interface_type_params:
+				conflict = True
+				diagnostics.append(
+					_p_diag(
+						message=f"interface method '{m.name}' shadows interface type parameter '{tp}'",
+						severity="error",
+						span=Span.from_loc(getattr(m, "loc", None)),
+					)
+				)
+		if conflict:
+			continue
+		combined_type_params = list(interface_type_params) + list(method_type_params)
+		method_param_schemas: list[InterfaceParamSchema] = []
+		for p in getattr(m, "params", []) or []:
+			method_param_schemas.append(
+				InterfaceParamSchema(
+					name=p.name,
+					type_expr=_generic_type_expr_from_parser(p.type_expr, type_params=combined_type_params),
+				)
+			)
+		method_schema = InterfaceMethodSchema(
+			name=m.name,
+			params=method_param_schemas,
+			return_type=_generic_type_expr_from_parser(m.return_type, type_params=combined_type_params),
+			type_params=list(method_type_params),
+			declared_nothrow=bool(getattr(m, "declared_nothrow", False)),
+			is_unsafe=bool(getattr(m, "is_unsafe", False)),
+		)
+		methods.append(method_schema)
+	return methods
 
 
 def _convert_expr(expr: parser_ast.Expr) -> s0.Expr:
@@ -931,6 +1002,9 @@ def _filter_test_build_only(prog: parser_ast.Program, *, test_build_only: bool) 
 	for t in getattr(prog, "traits", []) or []:
 		if getattr(t, "test_build_only", False):
 			test_only_names.add(t.name)
+	for i in getattr(prog, "interfaces", []) or []:
+		if getattr(i, "test_build_only", False):
+			test_only_names.add(i.name)
 
 	prog.functions = [fn for fn in getattr(prog, "functions", []) or [] if not getattr(fn, "test_build_only", False)]
 	prog.consts = [c for c in getattr(prog, "consts", []) or [] if not getattr(c, "test_build_only", False)]
@@ -939,6 +1013,7 @@ def _filter_test_build_only(prog: parser_ast.Program, *, test_build_only: bool) 
 	prog.variants = [v for v in getattr(prog, "variants", []) or [] if not getattr(v, "test_build_only", False)]
 	prog.exceptions = [e for e in getattr(prog, "exceptions", []) or [] if not getattr(e, "test_build_only", False)]
 	prog.traits = [t for t in getattr(prog, "traits", []) or [] if not getattr(t, "test_build_only", False)]
+	prog.interfaces = [i for i in getattr(prog, "interfaces", []) or [] if not getattr(i, "test_build_only", False)]
 
 	impls: list[parser_ast.ImplementDef] = []
 	for impl in getattr(prog, "implements", []) or []:
@@ -998,6 +1073,7 @@ def _collect_type_defs(prog: parser_ast.Program) -> dict[str, list[str]]:
 		"structs": [s.name for s in getattr(prog, "structs", []) or []],
 		"variants": [v.name for v in getattr(prog, "variants", []) or []],
 		"exceptions": [e.name for e in getattr(prog, "exceptions", []) or []],
+		"interfaces": [i.name for i in getattr(prog, "interfaces", []) or []],
 		"aliases": [a.name for a in getattr(prog, "type_aliases", []) or []],
 	}
 
@@ -1223,7 +1299,7 @@ def parse_drift_workspace_to_hir(
 		- Module-qualified access (`import m` then `m.foo()`) is supported for calling
 		  exported free functions and for struct constructor calls (`m.Point(...)`).
 		- Cross-module import validation supports both value and type namespaces
-		  (types: structs, variants, exceptions).
+		  (types: structs, variants, exceptions, interfaces).
 
 	Returns:
 	  (modules, type_table, exception_catalog, module_exports, module_deps, diagnostics)
@@ -1431,7 +1507,7 @@ def parse_drift_workspace_to_hir(
 	source_modules = set(merged_programs.keys())
 	if isinstance(external_module_packages, dict):
 		override_modules = sorted(mod for mod in external_module_packages.keys() if mod in source_modules)
-		if override_modules:
+		if override_modules and not test_build_only:
 			diagnostics.append(
 				_p_diag(
 					message=(
@@ -1468,13 +1544,13 @@ def parse_drift_workspace_to_hir(
 		- `export` cannot elevate visibility; only `pub` items may be exported.
 		- both values and types may be exported, but in separate namespaces:
 		  - values: free functions
-		  - types: structs, variants, exceptions
+		  - types: structs, variants, exceptions, interfaces
 
 		Because `export { ... }` syntax is unqualified, exporting a name that exists
 		in both namespaces is ambiguous. Until we add explicit qualifiers, that is
 		a compile-time error.
 
-		Because `exports.types` is kind-separated (structs/variants/exceptions), an
+		Because `exports.types` is kind-separated (structs/variants/exceptions/interfaces), an
 		exported name that resolves to multiple type kinds is also a compile-time
 		error.
 
@@ -1486,6 +1562,7 @@ def parse_drift_workspace_to_hir(
 		module_struct_names: set[str] = {s.name for s in getattr(merged_prog, "structs", []) or []}
 		module_variant_names: set[str] = {v.name for v in getattr(merged_prog, "variants", []) or []}
 		module_exception_names: set[str] = {e.name for e in getattr(merged_prog, "exceptions", []) or []}
+		module_interface_names: set[str] = {i.name for i in getattr(merged_prog, "interfaces", []) or []}
 		module_alias_names: set[str] = {a.name for a in getattr(merged_prog, "type_aliases", []) or []}
 		module_trait_names: set[str] = {t.name for t in getattr(merged_prog, "traits", []) or []}
 		module_pub_fn_names: set[str] = {fn.name for fn in getattr(merged_prog, "functions", []) or [] if getattr(fn, "is_pub", False)}
@@ -1493,6 +1570,7 @@ def parse_drift_workspace_to_hir(
 		module_pub_struct_names: set[str] = {s.name for s in getattr(merged_prog, "structs", []) or [] if getattr(s, "is_pub", False)}
 		module_pub_variant_names: set[str] = {v.name for v in getattr(merged_prog, "variants", []) or [] if getattr(v, "is_pub", False)}
 		module_pub_exception_names: set[str] = {e.name for e in getattr(merged_prog, "exceptions", []) or [] if getattr(e, "is_pub", False)}
+		module_pub_interface_names: set[str] = {i.name for i in getattr(merged_prog, "interfaces", []) or [] if getattr(i, "is_pub", False)}
 		module_pub_alias_names: set[str] = {a.name for a in getattr(merged_prog, "type_aliases", []) or [] if getattr(a, "is_pub", False)}
 		module_pub_trait_names: set[str] = {t.name for t in getattr(merged_prog, "traits", []) or [] if getattr(t, "is_pub", False)}
 		builtin_struct_names: dict[str, set[str]] = {"std.mem": {"Ptr"}}
@@ -1527,7 +1605,7 @@ def parse_drift_workspace_to_hir(
 		# (e.g., `a::foo`). Re-exports preserve the origin module in the map so
 		# consumers always bind to the defining symbol.
 		exported_values: dict[str, tuple[str, str]] = {}
-		exported_types: dict[str, set[str]] = {"structs": set(), "variants": set(), "exceptions": set(), "aliases": set()}
+		exported_types: dict[str, set[str]] = {"structs": set(), "variants": set(), "exceptions": set(), "interfaces": set(), "aliases": set()}
 		exported_consts: set[str] = set()
 		exported_traits: set[str] = set()
 		star_reexports: dict[str, Span] = {}
@@ -1567,8 +1645,9 @@ def parse_drift_workspace_to_hir(
 			in_variant = n in module_variant_names
 			in_exc = n in module_exception_names
 			in_alias = n in module_alias_names
+			in_interface = n in module_interface_names
 			in_trait = n in module_trait_names
-			type_hits = int(in_struct) + int(in_variant) + int(in_exc) + int(in_alias)
+			type_hits = int(in_struct) + int(in_variant) + int(in_exc) + int(in_interface) + int(in_alias)
 			in_types = type_hits > 0
 			if (in_values and in_consts) or (in_values and in_types) or (in_consts and in_types):
 				diagnostics.append(
@@ -1663,6 +1742,17 @@ def parse_drift_workspace_to_hir(
 					)
 					continue
 				exported_types["exceptions"].add(n)
+			if in_interface:
+				if n not in module_pub_interface_names:
+					diagnostics.append(
+						_p_diag(
+							message=f"cannot export '{n}' from module '{module_id}': symbol is not public (mark it 'pub')",
+							severity="error",
+							span=ex_span,
+						)
+					)
+					continue
+				exported_types["interfaces"].add(n)
 			if in_alias:
 				if n not in module_pub_alias_names:
 					diagnostics.append(
@@ -1703,7 +1793,7 @@ def parse_drift_workspace_to_hir(
 	# MVP supports exporting/importing both value-level and type-level symbols,
 	# but keeps them in separate namespaces:
 	# - values: currently just free functions
-	# - types: structs, variants, exceptions
+	# - types: structs, variants, exceptions, interfaces
 	#
 	# Export lists are unqualified identifiers, so to avoid ambiguity we reject
 	# any module that defines the same name in both namespaces (until the language
@@ -1744,11 +1834,12 @@ def parse_drift_workspace_to_hir(
 			"structs": {n: (mid, n) for n in exported_types.get("structs") or set()},
 			"variants": {n: (mid, n) for n in exported_types.get("variants") or set()},
 			"exceptions": {n: (mid, n) for n in exported_types.get("exceptions") or set()},
+			"interfaces": {n: (mid, n) for n in exported_types.get("interfaces") or set()},
 			"aliases": {n: (mid, n) for n in exported_types.get("aliases") or set()},
 		}
 		exported_trait_origins_by_module[mid] = {n: (mid, n) for n in exported_traits}
 		reexported_value_targets_by_module[mid] = {}
-		reexported_type_targets_by_module[mid] = {"structs": {}, "variants": {}, "exceptions": {}, "aliases": {}}
+		reexported_type_targets_by_module[mid] = {"structs": {}, "variants": {}, "exceptions": {}, "interfaces": {}, "aliases": {}}
 		reexported_const_targets_by_module[mid] = {}
 		reexported_trait_targets_by_module[mid] = {}
 
@@ -1766,7 +1857,7 @@ def parse_drift_workspace_to_hir(
 			return (
 				exports_values_by_module.get(mod) or {},
 				exported_const_origins_by_module.get(mod) or {},
-			exported_type_origins_by_module.get(mod) or {"structs": {}, "variants": {}, "exceptions": {}, "aliases": {}},
+				exported_type_origins_by_module.get(mod) or {"structs": {}, "variants": {}, "exceptions": {}, "interfaces": {}, "aliases": {}},
 				exported_trait_origins_by_module.get(mod) or {},
 			)
 		if external_module_exports is not None and mod in external_module_exports:
@@ -1774,10 +1865,10 @@ def parse_drift_workspace_to_hir(
 			values_obj = {n: (mod, n) for n in sorted(ext.get("values") or set())}
 			consts_obj = {n: (mod, n) for n in sorted(ext.get("consts") or set())}
 			traits_obj = {n: (mod, n) for n in sorted(ext.get("traits") or set())}
-			types_obj: dict[str, dict[str, tuple[str, str]]] = {"structs": {}, "variants": {}, "exceptions": {}, "aliases": {}}
+			types_obj: dict[str, dict[str, tuple[str, str]]] = {"structs": {}, "variants": {}, "exceptions": {}, "interfaces": {}, "aliases": {}}
 			ext_types = ext.get("types")
 			if isinstance(ext_types, dict):
-				for kind in ("structs", "variants", "exceptions", "aliases"):
+				for kind in ("structs", "variants", "exceptions", "interfaces", "aliases"):
 					for name in sorted(ext_types.get(kind) or set()):
 						types_obj[kind][name] = (mod, name)
 			ext_reexp = ext.get("reexports")
@@ -1801,7 +1892,7 @@ def parse_drift_workspace_to_hir(
 							if isinstance(tm, str) and isinstance(tn, str):
 								consts_obj[name] = (tm, tn)
 				if isinstance(ext_reexp_types, dict):
-					for kind in ("structs", "variants", "exceptions", "aliases"):
+					for kind in ("structs", "variants", "exceptions", "interfaces", "aliases"):
 						km = ext_reexp_types.get(kind)
 						if isinstance(km, dict):
 							for name, v in km.items():
@@ -1818,7 +1909,7 @@ def parse_drift_workspace_to_hir(
 							if isinstance(tm, str) and isinstance(tn, str):
 								traits_obj[name] = (tm, tn)
 			return values_obj, consts_obj, types_obj, traits_obj
-		return {}, {}, {"structs": {}, "variants": {}, "exceptions": {}, "aliases": {}}, {}
+		return {}, {}, {"structs": {}, "variants": {}, "exceptions": {}, "interfaces": {}, "aliases": {}}, {}
 
 	# We iterate until no progress so multi-hop star re-exports resolve deterministically.
 	for _ in range(len(merged_programs) + 1):
@@ -1939,10 +2030,10 @@ def parse_drift_workspace_to_hir(
 	module_exports: dict[str, dict[str, object]] = {}
 	for mid in merged_programs.keys():
 		vals = exports_values_by_module.get(mid, {})
-		types = exports_types_by_module.get(mid, {"structs": set(), "variants": set(), "exceptions": set(), "aliases": set()})
+		types = exports_types_by_module.get(mid, {"structs": set(), "variants": set(), "exceptions": set(), "interfaces": set(), "aliases": set()})
 		consts = exports_consts_by_module.get(mid, set())
 		traits = exports_traits_by_module.get(mid, set())
-		reexp_types = reexported_type_targets_by_module.get(mid, {"structs": {}, "variants": {}, "exceptions": {}, "aliases": {}})
+		reexp_types = reexported_type_targets_by_module.get(mid, {"structs": {}, "variants": {}, "exceptions": {}, "interfaces": {}, "aliases": {}})
 		reexp_consts = reexported_const_targets_by_module.get(mid, {})
 		reexp_traits = reexported_trait_targets_by_module.get(mid, {})
 		reexp_values = reexported_value_targets_by_module.get(mid, {})
@@ -1952,6 +2043,7 @@ def parse_drift_workspace_to_hir(
 				"structs": sorted(list(types.get("structs", set()))),
 				"variants": sorted(list(types.get("variants", set()))),
 				"exceptions": sorted(list(types.get("exceptions", set()))),
+				"interfaces": sorted(list(types.get("interfaces", set()))),
 				"aliases": sorted(list(types.get("aliases", set()))),
 			},
 			"consts": sorted(list(consts)),
@@ -1962,6 +2054,7 @@ def parse_drift_workspace_to_hir(
 					"structs": {n: {"module": m, "name": s} for n, (m, s) in sorted(reexp_types.get("structs", {}).items())},
 					"variants": {n: {"module": m, "name": s} for n, (m, s) in sorted(reexp_types.get("variants", {}).items())},
 					"exceptions": {n: {"module": m, "name": s} for n, (m, s) in sorted(reexp_types.get("exceptions", {}).items())},
+					"interfaces": {n: {"module": m, "name": s} for n, (m, s) in sorted(reexp_types.get("interfaces", {}).items())},
 					"aliases": {n: {"module": m, "name": s} for n, (m, s) in sorted(reexp_types.get("aliases", {}).items())},
 				},
 				"consts": {n: {"module": m, "name": s} for n, (m, s) in sorted(reexp_consts.items())},
@@ -2211,7 +2304,7 @@ def parse_drift_workspace_to_hir(
 					set(ext_types.get("structs") or set())
 					| set(ext_types.get("variants") or set())
 					| set(ext_types.get("exceptions") or set())
-					| set(ext_types.get("aliases") or set())
+					| set(ext_types.get("interfaces") or set())
 					| set(ext_types.get("aliases") or set())
 				)
 			return set()
@@ -2248,7 +2341,7 @@ def parse_drift_workspace_to_hir(
 					def_mod, def_name = (mod, te.name)
 					reexp = reexported_type_targets_by_module.get(mod)
 					if reexp is not None:
-						for kind in ("structs", "variants", "exceptions", "aliases"):
+						for kind in ("structs", "variants", "exceptions", "interfaces", "aliases"):
 							if te.name in (exports_types_by_module.get(mod) or {}).get(kind, set()):
 								def_mod, def_name = reexp.get(kind, {}).get(te.name, (mod, te.name))
 								break
@@ -2259,7 +2352,7 @@ def parse_drift_workspace_to_hir(
 						if isinstance(ext_reexp, dict) and isinstance(ext_types, dict):
 							ext_reexp_types = ext_reexp.get("types")
 							if isinstance(ext_reexp_types, dict):
-								for kind in ("structs", "variants", "exceptions", "aliases"):
+								for kind in ("structs", "variants", "exceptions", "interfaces", "aliases"):
 									kind_set = set(ext_types.get(kind) or set())
 									if te.name in kind_set:
 										tgt = ext_reexp_types.get(kind, {}).get(te.name) if isinstance(ext_reexp_types.get(kind), dict) else None
@@ -2550,7 +2643,7 @@ def parse_drift_workspace_to_hir(
 		shared_type_table.package_id = package_id
 	if isinstance(external_module_packages, dict):
 		for mod, pkg in external_module_packages.items():
-			if mod in merged_programs:
+			if mod in merged_programs and not test_build_only:
 				continue
 			if not isinstance(mod, str) or not isinstance(pkg, str):
 				continue
@@ -2592,6 +2685,25 @@ def parse_drift_workspace_to_hir(
 				shared_type_table.define_struct_schema_fields(struct_id, field_templates)
 			except ValueError as err:
 				diagnostics.append(_p_diag(message=str(err), severity="error", span=Span.from_loc(getattr(_s, "loc", None))))
+		for _i in getattr(_prog, "interfaces", []) or []:
+			if _reject_reserved_nominal_type(getattr(_i, "name", ""), loc=getattr(_i, "loc", None), diagnostics=diagnostics):
+				continue
+			try:
+				shared_type_table.declare_interface(
+					_mid,
+					_i.name,
+					list(getattr(_i, "type_params", []) or []),
+				)
+				methods = _build_interface_method_schemas(
+					_i,
+					module_id=_mid,
+					type_table=shared_type_table,
+					diagnostics=diagnostics,
+				)
+				interface_id = shared_type_table.require_nominal(kind=TypeKind.INTERFACE, module_id=_mid, name=_i.name)
+				shared_type_table.define_interface_schema_methods(interface_id, methods)
+			except ValueError as err:
+				diagnostics.append(_p_diag(message=str(err), severity="error", span=Span.from_loc(getattr(_i, "loc", None))))
 		for _v in getattr(_prog, "variants", []) or []:
 			if _reject_reserved_nominal_type(getattr(_v, "name", ""), loc=getattr(_v, "loc", None), diagnostics=diagnostics):
 				continue
@@ -2779,6 +2891,7 @@ def parse_drift_workspace_to_hir(
 						set(ext_types.get("structs") or set())
 						| set(ext_types.get("variants") or set())
 						| set(ext_types.get("exceptions") or set())
+						| set(ext_types.get("interfaces") or set())
 						| set(ext_types.get("aliases") or set())
 					)
 				return set()
@@ -3270,6 +3383,7 @@ def _lower_parsed_program_to_hir(
 	exception_schemas: dict[str, tuple[str, list[str]]] = {}
 	struct_defs = list(getattr(prog, "structs", []) or [])
 	variant_defs = list(getattr(prog, "variants", []) or [])
+	interface_defs = list(getattr(prog, "interfaces", []) or [])
 	type_alias_defs = list(getattr(prog, "type_aliases", []) or [])
 	struct_param_maps: dict[TypeKey, dict[str, TypeParamId]] = {}
 	exception_catalog: dict[str, int] = _build_exception_catalog(prog.exceptions, module_name, diagnostics)
@@ -3300,7 +3414,7 @@ def _lower_parsed_program_to_hir(
 
 	# Register module-local type aliases (MVP: module-scoped only).
 	alias_names: set[str] = set()
-	nominal_names: set[str] = {s.name for s in struct_defs} | {v.name for v in variant_defs} | {e.name for e in getattr(prog, "exceptions", []) or []}
+	nominal_names: set[str] = {s.name for s in struct_defs} | {v.name for v in variant_defs} | {i.name for i in interface_defs} | {e.name for e in getattr(prog, "exceptions", []) or []}
 	for a in type_alias_defs:
 		if _reject_reserved_nominal_type(getattr(a, "name", ""), loc=getattr(a, "loc", None), diagnostics=diagnostics):
 			continue
@@ -3461,6 +3575,26 @@ def _lower_parsed_program_to_hir(
 				}
 		except ValueError as err:
 			diagnostics.append(_p_diag(message=str(err), severity="error", span=Span.from_loc(getattr(s, "loc", None))))
+	# Declare interfaces next so type resolution can bind nominal references.
+	for i in interface_defs:
+		if _reject_reserved_nominal_type(getattr(i, "name", ""), loc=getattr(i, "loc", None), diagnostics=diagnostics):
+			continue
+		try:
+			type_table.declare_interface(
+				module_id,
+				i.name,
+				list(getattr(i, "type_params", []) or []),
+			)
+			methods = _build_interface_method_schemas(
+				i,
+				module_id=module_id,
+				type_table=type_table,
+				diagnostics=diagnostics,
+			)
+			interface_id = type_table.require_nominal(kind=TypeKind.INTERFACE, module_id=module_id, name=i.name)
+			type_table.define_interface_schema_methods(interface_id, methods)
+		except ValueError as err:
+			diagnostics.append(_p_diag(message=str(err), severity="error", span=Span.from_loc(getattr(i, "loc", None))))
 	# Declare all variant names/schemas next so type resolution can instantiate
 	# variants (e.g., Optional<Int>) while resolving later annotations/fields.
 	for v in variant_defs:
@@ -3611,16 +3745,16 @@ def _lower_parsed_program_to_hir(
 		impl_type_param_locs = list(getattr(impl, "type_param_locs", []) or [])
 		impl_target_str = _type_expr_key_str(impl.target)
 		impl_trait_str = _type_expr_key_str(impl.trait) if getattr(impl, "trait", None) is not None else None
-		impl_trait_key = (
-			trait_key_from_expr(
-				impl.trait,
-				default_module=module_id,
-				default_package=package_id,
-				module_packages=getattr(type_table, "module_packages", None),
-			)
-			if getattr(impl, "trait", None) is not None
-			else None
-		)
+		impl_trait_key = None
+		if getattr(impl, "trait", None) is not None:
+			trait_mod = getattr(impl.trait, "module_id", None) or module_id
+			if type_table.get_interface_base(module_id=trait_mod, name=impl.trait.name) is None:
+				impl_trait_key = trait_key_from_expr(
+					impl.trait,
+					default_module=module_id,
+					default_package=package_id,
+					module_packages=getattr(type_table, "module_packages", None),
+				)
 		impl_owner = FunctionId(
 			module="lang.__internal",
 			name=f"__impl_{module_id}::{impl_trait_str or 'inherent'}::{impl_target_str}",

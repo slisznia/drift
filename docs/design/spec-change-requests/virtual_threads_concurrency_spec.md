@@ -115,7 +115,7 @@ struct ThreadHandle<T>
 }
 
 fn spawn<F, R>(f: F) -> ThreadHandle<R>
-    where F is Callable<(), R>, F is Send, R is Send
+    where F is Fn0<R>, F is Send, R is Send
 ```
 
 Usage:
@@ -164,7 +164,7 @@ struct Scope {
 }
 
 fn scope<F>(body: F) -> Void
-    where F is Callable<(Scope), Void>, F is Send
+    where F is Fn1<Scope, Void>, F is Send
 ```
 
 Usage:
@@ -368,14 +368,14 @@ Internal shape (not public):
 module runtime.io
 
 fn block_on_io<F, R>(op: F) -> R
-    where F is Callable<(), R>
+    where F is Fn0<R>
 ```
 
 Logic (Drift pseudocode over intrinsics):
 
 ```drift
 fn block_on_io<F, R>(op: F) -> R
-    where F is Callable<(), R>
+    where F is Fn0<R>
 {
     // Fast path: not on a virtual thread.
     if !runtime.is_virtual_thread() {
@@ -706,7 +706,7 @@ VThread *vt_create(Executor *exec, void (*entry)(void *), void *arg) {
 }
 
 void executor_submit_vt(Executor *exec, VThread *vt) {
-    pthread_mutex_lock(&exec->runq_lock);
+    pthread_lock(&exec->runq_lock);
     if (exec->runq_tail) {
         exec->runq_tail->next = vt;
     } else {

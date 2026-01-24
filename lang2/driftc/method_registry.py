@@ -66,6 +66,14 @@ class CallableSignature:
 
 
 @dataclass(frozen=True)
+class CallableTemplateSignature:
+	"""Template signature preserving raw type expressions for generic callables."""
+
+	param_types: Tuple[object, ...]
+	result_type: object
+
+
+@dataclass(frozen=True)
 class CallableDecl:
 	"""Registry entry for a free function or method."""
 
@@ -75,12 +83,15 @@ class CallableDecl:
 	module_id: ModuleId
 	visibility: Visibility
 	signature: CallableSignature
+	template_signature: Optional[CallableTemplateSignature] = None
 
 	fn_id: Optional[FunctionId] = None
 	impl_id: Optional[ImplId] = None
 	impl_target_type_id: Optional[TypeId] = None  # nominal type T in impl T { ... }
 	self_mode: Optional[SelfMode] = None
 	trait_id: Optional[TraitId] = None
+	template_type_params: Tuple[str, ...] = ()
+	template_impl_type_params: Tuple[str, ...] = ()
 	is_generic: bool = False
 
 
@@ -122,6 +133,9 @@ class CallableRegistry:
 		module_id: ModuleId,
 		visibility: Visibility,
 		signature: CallableSignature,
+		template_signature: CallableTemplateSignature | None = None,
+		template_type_params: Tuple[str, ...] | None = None,
+		template_impl_type_params: Tuple[str, ...] | None = None,
 		fn_id: Optional[FunctionId] = None,
 		is_generic: bool = False,
 	) -> None:
@@ -134,7 +148,10 @@ class CallableRegistry:
 			module_id=module_id,
 			visibility=visibility,
 			signature=signature,
+			template_signature=template_signature,
 			fn_id=fn_id,
+			template_type_params=tuple(template_type_params or ()),
+			template_impl_type_params=tuple(template_impl_type_params or ()),
 			is_generic=is_generic,
 		)
 		self._by_id[callable_id] = decl
@@ -150,6 +167,9 @@ class CallableRegistry:
 		module_id: ModuleId,
 		visibility: Visibility,
 		signature: CallableSignature,
+		template_signature: CallableTemplateSignature | None = None,
+		template_type_params: Tuple[str, ...] | None = None,
+		template_impl_type_params: Tuple[str, ...] | None = None,
 		fn_id: Optional[FunctionId] = None,
 		impl_id: ImplId,
 		impl_target_type_id: TypeId,
@@ -165,10 +185,13 @@ class CallableRegistry:
 			module_id=module_id,
 			visibility=visibility,
 			signature=signature,
+			template_signature=template_signature,
 			fn_id=fn_id,
 			impl_id=impl_id,
 			impl_target_type_id=impl_target_type_id,
 			self_mode=self_mode,
+			template_type_params=tuple(template_type_params or ()),
+			template_impl_type_params=tuple(template_impl_type_params or ()),
 			is_generic=is_generic,
 		)
 		self._by_id[callable_id] = decl
@@ -185,6 +208,9 @@ class CallableRegistry:
 		module_id: ModuleId,
 		visibility: Visibility,
 		signature: CallableSignature,
+		template_signature: CallableTemplateSignature | None = None,
+		template_type_params: Tuple[str, ...] | None = None,
+		template_impl_type_params: Tuple[str, ...] | None = None,
 		fn_id: Optional[FunctionId] = None,
 		impl_id: ImplId,
 		impl_target_type_id: TypeId,
@@ -201,11 +227,14 @@ class CallableRegistry:
 			module_id=module_id,
 			visibility=visibility,
 			signature=signature,
+			template_signature=template_signature,
 			fn_id=fn_id,
 			impl_id=impl_id,
 			impl_target_type_id=impl_target_type_id,
 			trait_id=trait_id,
 			self_mode=self_mode,
+			template_type_params=tuple(template_type_params or ()),
+			template_impl_type_params=tuple(template_impl_type_params or ()),
 			is_generic=is_generic,
 		)
 		self._by_id[callable_id] = decl
@@ -289,6 +318,7 @@ __all__ = [
 	"CallableRegistry",
 	"CallableDecl",
 	"CallableSignature",
+	"CallableTemplateSignature",
 	"CallableKind",
 	"SelfMode",
 	"Visibility",

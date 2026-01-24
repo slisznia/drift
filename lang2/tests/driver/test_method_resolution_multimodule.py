@@ -15,6 +15,7 @@ from lang2.driftc.module_lowered import flatten_modules
 from lang2.driftc.stage1.call_info import CallTargetKind
 from lang2.driftc.test_helpers import build_linked_world
 from lang2.driftc.type_checker import TypeChecker
+from lang2.tests.support.module_packages import mk_module
 
 
 def _write_file(path: Path, content: str) -> None:
@@ -677,10 +678,15 @@ fn main() nothrow -> Int{
 	for rel, content in files.items():
 		_write_file(mod_root / rel, content)
 	paths = sorted(mod_root.rglob("*.drift"))
+	module_packages = {}
+	mk_module(module_packages, "mod_b", "app")
+	mk_module(module_packages, "mod_a", "acme")
 	modules, type_table, _exc_catalog, module_exports, module_deps, diagnostics = parse_drift_workspace_to_hir(
 		paths,
 		module_paths=[mod_root],
+		external_module_packages=module_packages,
 		stdlib_root=stdlib_root(),
+		test_build_only=True,
 	)
 	assert diagnostics == []
 	func_hirs, signatures, fn_ids_by_name = flatten_modules(modules)

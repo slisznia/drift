@@ -1725,7 +1725,10 @@ class Checker:
 				kwargs = getattr(expr, "kwargs", []) or []
 				skip_type_check = bool(kwargs)
 				if isinstance(expr, H.HMethodCall):
-					arg_exprs = [expr.receiver] + list(expr.args)
+					if info.target.kind is CallTargetKind.INDIRECT:
+						arg_exprs = list(expr.args)
+					else:
+						arg_exprs = [expr.receiver] + list(expr.args)
 				elif isinstance(expr, H.HInvoke):
 					if info.sig.includes_callee:
 						arg_exprs = [expr.callee] + list(expr.args)
@@ -2711,6 +2714,7 @@ class Checker:
 			LoadRef,
 			StoreRef,
 			ConstructStruct,
+			ConstructIface,
 			StructGetField,
 			ConstructVariant,
 			VariantTag,
@@ -2943,6 +2947,11 @@ class Checker:
 							# Struct construction yields the nominal struct TypeId carried by MIR.
 							if value_types.get((fn_id, dest)) != instr.struct_ty:
 								value_types[(fn_id, dest)] = instr.struct_ty
+								changed = True
+						elif isinstance(instr, ConstructIface) and dest is not None:
+							# Interface construction yields the interface TypeId carried by MIR.
+							if value_types.get((fn_id, dest)) != instr.iface_ty:
+								value_types[(fn_id, dest)] = instr.iface_ty
 								changed = True
 						elif isinstance(instr, StructGetField) and dest is not None:
 							# Struct field access yields the field TypeId carried by MIR.

@@ -27,6 +27,9 @@
 - Pin operator overloading MVP: define operator->trait desugar rules (e.g., `a + b` -> `Add::add(...)`), scope/prelude policy, and by-ref/by-value signature contract; add tests. Keep this aligned with the "free function vs receiver" resolution decision.
 
 ## Post MVP
+[Concurrency]
+- Add ReentrantMutex (distinct from Mutex); define semantics and API surface.
+
 [Containers]
 - Start migrating Array into stdlib (define `struct Array<T>` and move compiler lowering to that ABI).
 

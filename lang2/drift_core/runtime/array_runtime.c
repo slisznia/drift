@@ -73,6 +73,10 @@ void drift_free_array(void *data) {
 	free(data);
 }
 
+void drift_cb_env_free(void *data) {
+	drift_free_array(data);
+}
+
 void drift_bounds_check(struct DriftString container_id, drift_isize idx, drift_isize len) {
 	if (idx < 0 || idx >= len) {
 		drift_bounds_check_fail(container_id, idx, len);

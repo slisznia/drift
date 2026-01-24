@@ -6,7 +6,20 @@ use trait hash.Hasher;
 
 export {
 	Copy,
+	Destructible,
 	Diagnostic,
+	Fn0,
+	Fn1,
+	Fn2,
+	Borrow,
+	BorrowMut,
+	Callback0,
+	Callback1,
+	Callback2,
+	drop_value,
+	callback0,
+	callback1,
+	callback2,
 	STRING_CONTAINER_ID,
 	string_byte_at
 };
@@ -14,9 +27,50 @@ export {
 pub trait Copy {
 }
 
+pub trait Destructible {
+	fn destroy(self: Self) nothrow -> Void;
+}
+
 pub trait Diagnostic {
 	fn to_diag(self: Self) nothrow -> DiagnosticValue;
 }
+
+pub trait Borrow<T> {
+	fn borrow(self: &Self) nothrow -> &T;
+}
+
+pub trait BorrowMut<T> {
+	fn borrow_mut(self: &mut Self) nothrow -> &mut T;
+}
+
+pub trait Fn0<R> {
+	fn call(self: &Self) -> R;
+}
+
+pub trait Fn1<A, R> {
+	fn call(self: &Self, a: A) -> R;
+}
+
+pub trait Fn2<A, B, R> {
+	fn call(self: &Self, a: A, b: B) -> R;
+}
+
+pub interface Callback0<R> {
+	fn call(self: &Self) nothrow -> R;
+}
+
+pub interface Callback1<A, R> {
+	fn call(self: &Self, a: A) nothrow -> R;
+}
+
+pub interface Callback2<A, B, R> {
+	fn call(self: &Self, a: A, b: B) nothrow -> R;
+}
+
+@intrinsic pub fn callback0<F, R>(f: F) -> Callback0<R> require F is Fn0<R>;
+@intrinsic pub fn callback1<F, A, R>(f: F) -> Callback1<A, R> require F is Fn1<A, R>;
+@intrinsic pub fn callback2<F, A, B, R>(f: F) -> Callback2<A, B, R> require F is Fn2<A, B, R>;
+@intrinsic pub fn drop_value<T>(value: T) nothrow -> Void;
 
 implement Copy for Int {
 }

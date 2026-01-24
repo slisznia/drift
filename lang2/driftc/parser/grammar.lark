@@ -99,6 +99,7 @@ FATARROW: "=>"
 UNSAFE.2: /unsafe\b/
 EXCEPTION.2: /exception\b/
 TRAIT.2: /trait\b/
+INTERFACE.2: /interface\b/
 REQUIRE.2: /require\b/
 TRY.2: /try\b/
 CATCH.2: /catch\b/
@@ -127,12 +128,13 @@ ident: NAME | MOVE | COPY
      | test_build_only_marker? exception_def
      | test_build_only_marker? variant_def
      | test_build_only_marker? trait_def
+     | test_build_only_marker? interface_def
      | test_build_only_marker? implement_def
      | use_trait_stmt TERMINATOR
      | import_stmt TERMINATOR
      | export_stmt TERMINATOR
 
-pub_item: PUB (func_def | const_def | type_alias_def | struct_def | exception_def | variant_def | trait_def | implement_def)
+pub_item: PUB (func_def | const_def | type_alias_def | struct_def | exception_def | variant_def | trait_def | interface_def | implement_def)
 
 # Top-level constant definition.
 #
@@ -159,6 +161,11 @@ trait_def: TRAIT NAME type_params? require_clause? trait_body
 trait_body: "{" (trait_item | TERMINATOR)* "}"
 trait_item: trait_method_sig TERMINATOR*
 trait_method_sig: UNSAFE? FN_KW ident type_params? "(" [params] ")" NOTHROW? return_sig
+
+interface_def: INTERFACE NAME type_params? interface_body
+interface_body: "{" (interface_item | TERMINATOR)* "}"
+interface_item: interface_method_sig TERMINATOR*
+interface_method_sig: UNSAFE? FN_KW ident type_params? "(" [params] ")" NOTHROW? return_sig
 
 type_expr: ref_type
          | fn_type

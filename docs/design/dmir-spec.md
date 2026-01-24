@@ -118,7 +118,7 @@ Backends are free to lower this value-based semantic model to error edges intern
 ## Closures (planned representation)
 - Non-capturing closures lower to thin function pointers (code pointer only; no env box).
 - Capturing closures lower to a fat object `{ env_ptr, call_ptr }`. The env is a heap box holding captured values according to their capture modes (move by default; explicit `copy` for `Copy` values; borrow captures once borrow/lifetime checking is present).
-- Drop runs exactly once on the env; the closure object is move-only by default. Callable interfaces (e.g., `Fn`/`FnMut`/`FnOnce` equivalents) can be implemented by pointing their vtables at the closure’s call thunk and env drop.
+- Drop runs exactly once on the env; the closure object is move-only by default. Callback interfaces (e.g., `CallbackN` equivalents) can be implemented by pointing their vtables at the closure’s call thunk and env drop.
 
 ## Error ABI (Result calling convention)
 - Error representation: `Error` lowers to an opaque heap-allocated object referenced as `Error*` at MIR/LLVM time. Constructors allocate the `Error`; ownership is transferred to the `Result` value. The ultimate handler frees it via a runtime `error_free(err)`.

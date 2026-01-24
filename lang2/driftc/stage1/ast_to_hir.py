@@ -986,20 +986,26 @@ class AstToHIR:
 		  - iter_var is currently an identifier (pattern support can be added later).
 		  - iterable expression is evaluated exactly once.
 		"""
-		# 1) Evaluate iterable once and bind (no implicit borrow; the Iterable hook
-		# defines ownership/borrowing semantics).
+		# 1) Evaluate iterable once and bind if needed. Default is borrow-iteration; move is explicit.
 		iterable_expr = self.lower_expr(stmt.iterable)
-		iterable_is_move = False
-		if hasattr(H, "HMove") and isinstance(iterable_expr, getattr(H, "HVar")):
-			iterable_expr = H.HMove(
-				subject=iterable_expr,
-				loc=getattr(stmt, "loc", None) or Span(),
-				is_implicit=True,
-			)
-			iterable_is_move = True
-		iterable_name = self._fresh_temp("__for_iterable")
-		iterable_bid = self._alloc_binding(iterable_name)
-		iterable_let = H.HLet(name=iterable_name, value=iterable_expr, binding_id=iterable_bid)
+		iterable_is_move = bool(hasattr(H, "HMove") and isinstance(iterable_expr, getattr(H, "HMove")))
+		iterable_is_borrow = isinstance(iterable_expr, H.HBorrow)
+		iterable_borrow_mut = iterable_expr.is_mut if iterable_is_borrow else False
+		base_expr = iterable_expr
+		if iterable_is_move and hasattr(H, "HMove"):
+			base_expr = iterable_expr.subject
+		elif iterable_is_borrow:
+			base_expr = iterable_expr.subject
+		iterable_name: str | None = None
+		iterable_bid: int | None = None
+		iterable_let: H.HLet | None = None
+		if isinstance(base_expr, H.HVar):
+			iterable_name = base_expr.name
+			iterable_bid = base_expr.binding_id
+		else:
+			iterable_name = self._fresh_temp("__for_iterable")
+			iterable_bid = self._alloc_binding(iterable_name)
+			iterable_let = H.HLet(name=iterable_name, value=base_expr, binding_id=iterable_bid)
 
 		# 2) Build iterator: __for_iter = std.iter.Iterable.iter(__for_iterable)
 		iter_name = self._fresh_temp("__for_iter")
@@ -1012,6 +1018,10 @@ class AstToHIR:
 				loc=getattr(stmt, "loc", None) or Span(),
 				is_implicit=True,
 			)
+		elif iterable_is_borrow:
+			iter_arg = H.HBorrow(subject=iter_arg, is_mut=iterable_borrow_mut)
+		else:
+			iter_arg = H.HBorrow(subject=iter_arg, is_mut=False)
 		iter_call = H.HCall(
 			fn=H.HQualifiedMember(base_type_expr=iter_trait, member="iter"),
 			args=[iter_arg],
@@ -1040,7 +1050,11 @@ class AstToHIR:
 		loop_stmt = H.HLoop(body=loop_body)
 
 		# 7) Wrap iterable/iter bindings in a block to scope them.
-		return H.HBlock(statements=[iterable_let, iter_let, loop_stmt])
+		stmts: list[H.HStmt] = []
+		if iterable_let is not None:
+			stmts.append(iterable_let)
+		stmts.extend([iter_let, loop_stmt])
+		return H.HBlock(statements=stmts)
 
 	def _visit_stmt_BreakStmt(self, stmt: ast.BreakStmt) -> H.HStmt:
 		return H.HBreak()

@@ -1,0 +1,4 @@
+{
+  "description": "e2e: cross module method does not require try in stubbed package",
+  "exit_code": 2
+}

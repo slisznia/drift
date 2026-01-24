@@ -428,6 +428,7 @@ def build_trait_world(
 				)
 
 	# Collect impls (trait impls only).
+	interface_names = {i.name for i in getattr(prog, "interfaces", []) or []}
 	for impl in getattr(prog, "implements", []) or []:
 		if getattr(impl, "trait", None) is None:
 			continue
@@ -437,6 +438,8 @@ def build_trait_world(
 			default_package=package_id,
 			module_packages=module_packages,
 		)
+		if trait_key.module == module_id and trait_key.name in interface_names:
+			continue
 		trait_args = tuple(
 			type_key_from_expr(
 				a,

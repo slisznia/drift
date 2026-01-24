@@ -129,6 +129,18 @@ class FnPtrConst(MInstr):
 
 
 @dataclass
+class ConstructIface(MInstr):
+	"""dest = interface value from a function pointer (callback)."""
+	dest: ValueId
+	iface_ty: TypeId
+	fn_ref: "FunctionRefId"
+	call_sig: "CallSig"
+	data: ValueId | None = None
+	data_ty: TypeId | None = None
+	env_ty: TypeId | None = None
+
+
+@dataclass
 class ZeroValue(MInstr):
 	"""
 	dest = 0-value of a type (zero / null / zero-initialized aggregate).
@@ -770,6 +782,19 @@ class CallIndirect(MInstr):
 
 
 @dataclass
+class CallIface(MInstr):
+	"""
+	dest = iface.call(args...) via interface vtable (dest may be None for void returns).
+	"""
+	dest: Optional[ValueId]
+	iface: ValueId
+	args: List[ValueId]
+	param_types: List[TypeId]
+	user_ret_type: TypeId
+	can_throw: bool
+
+
+@dataclass
 class ConstructDV(MInstr):
 	"""dest = DiagnosticValue constructor with typed args."""
 	dest: ValueId
@@ -1039,6 +1064,7 @@ __all__ = [
 	"ConstString",
 	"ConstFloat",
 	"FnPtrConst",
+	"ConstructIface",
 	"ZeroValue",
 	"StringRetain",
 	"StringRelease",
@@ -1098,6 +1124,7 @@ __all__ = [
 	"PtrIsNull",
 	"Call",
 	"CallIndirect",
+	"CallIface",
 	"ConstructDV",
 	"ConstructError",
 	"ErrorAddAttrDV",

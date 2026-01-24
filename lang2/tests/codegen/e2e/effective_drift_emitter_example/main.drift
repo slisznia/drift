@@ -1,0 +1,101 @@
+module main
+
+import std.core as core;
+import std.concurrency as conc;
+
+struct Event {
+	v: Int
+}
+
+struct StateMachine {
+	state: Int
+}
+
+implement StateMachine {
+	pub fn on_signal_x(self: &mut StateMachine, e: &Event) nothrow -> Void {
+		self.state = self.state + e.v;
+	}
+
+	pub fn on_signal_y(self: &mut StateMachine, e: &Event) nothrow -> Void {
+		self.state = self.state - e.v;
+	}
+
+	pub fn on_signal_z(self: &mut StateMachine, e: &Event) nothrow -> Void {
+		self.state = e.v;
+	}
+}
+
+struct EventBus {
+	on_x: core.Callback1<&Event, Void>
+	on_y: core.Callback1<&Event, Void>
+	on_z: core.Callback1<&Event, Void>
+}
+
+fn noop(e: &Event) nothrow -> Void {
+	val _ = e;
+}
+
+fn event_bus() nothrow -> EventBus {
+	return EventBus(
+		on_x = core.callback1(noop),
+		on_y = core.callback1(noop),
+		on_z = core.callback1(noop)
+	);
+}
+
+implement EventBus {
+	pub fn on_x(self: &mut EventBus, var cb: core.Callback1<&Event, Void>) nothrow -> Void {
+		self.on_x = move cb;
+	}
+
+	pub fn on_y(self: &mut EventBus, var cb: core.Callback1<&Event, Void>) nothrow -> Void {
+		self.on_y = move cb;
+	}
+
+	pub fn on_z(self: &mut EventBus, var cb: core.Callback1<&Event, Void>) nothrow -> Void {
+		self.on_z = move cb;
+	}
+
+	pub fn emit(self: &EventBus, ex: &Event, ey: &Event, ez: &Event) nothrow -> Void {
+		self.on_x.call(ex);
+		self.on_y.call(ey);
+		self.on_z.call(ez);
+	}
+}
+
+fn register_handlers(bus: &mut EventBus) nothrow -> conc.Arc<conc.Mutex<StateMachine>> {
+	var sm: conc.Arc<conc.Mutex<StateMachine>> = conc.arc(conc.mutex(StateMachine(state = 1)));
+	var sm_x: conc.Arc<conc.Mutex<StateMachine>> = sm.clone();
+	var cb_x: core.Callback1<&Event, Void> = core.callback1(|e: &Event| captures(move sm_x) => {
+		var guard = conc.lock(sm_x);
+		guard.get_mut().on_signal_x(e);
+		return;
+	});
+	bus.on_x(move cb_x);
+	var sm_y: conc.Arc<conc.Mutex<StateMachine>> = sm.clone();
+	var cb_y: core.Callback1<&Event, Void> = core.callback1(|e: &Event| captures(move sm_y) => {
+		var guard = conc.lock(sm_y);
+		guard.get_mut().on_signal_y(e);
+		return;
+	});
+	bus.on_y(move cb_y);
+	var sm_z: conc.Arc<conc.Mutex<StateMachine>> = sm.clone();
+	var cb_z: core.Callback1<&Event, Void> = core.callback1(|e: &Event| captures(move sm_z) => {
+		var guard = conc.lock(sm_z);
+		guard.get_mut().on_signal_z(e);
+		return;
+	});
+	bus.on_z(move cb_z);
+	return move sm;
+}
+
+fn main() nothrow -> Int {
+	var bus = event_bus();
+	var sm = register_handlers(&mut bus);
+	var ex = Event(v = 5);
+	var ey = Event(v = 2);
+	var ez = Event(v = 7);
+	bus.emit(&ex, &ey, &ez);
+	var guard = conc.lock(sm);
+	return guard.get_mut().state;
+}

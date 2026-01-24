@@ -1,0 +1,86 @@
+module main
+
+import std.containers as containers;
+
+fn run() -> Int {
+	var m = containers.hash_map<type Int, Int>();
+	if m.len() != 0 {
+		return 1;
+	}
+	m.insert(1, 10);
+	m.insert(2, 20);
+	val k1: Int = 1;
+	if not m.contains_key(&k1) {
+		return 2;
+	}
+	val v1: Int = match m.get_mut(&k1) {
+		None => {
+			-1
+		},
+		Some(v) => {
+			*v
+		}
+	};
+	if v1 == -1 {
+		return 3;
+	}
+	if v1 != 10 {
+		return 4;
+	}
+	val old = m.insert(1, 99);
+	val old_v: Int = match old {
+		None => {
+			-1
+		},
+		Some(v) => {
+			v
+		}
+	};
+	if old_v == -1 {
+		return 5;
+	}
+	if old_v != 10 {
+		return 6;
+	}
+	if m.len() != 2 {
+		return 7;
+	}
+	val rem_v: Int = match m.remove(&k1) {
+		None => {
+			-1
+		},
+		Some(v) => {
+			v
+		}
+	};
+	if rem_v == -1 {
+		return 8;
+	}
+	if rem_v != 99 {
+		return 9;
+	}
+	if m.contains_key(&k1) {
+		return 10;
+	}
+	val missing = m.remove(&k1);
+	val miss_ok: Bool = match missing {
+		None => {
+			true
+		},
+		Some(_) => {
+			false
+		}
+	};
+	if not miss_ok {
+		return 11;
+	}
+	m.clear();
+	if m.len() != 0 {
+		return 12;
+	}
+	return 0;
+}
+
+fn main() nothrow -> Int {
+	return try run() catch { 99 };
+}

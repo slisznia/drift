@@ -50,16 +50,28 @@ def analyze_non_retaining_params(
 			method_sig_by_key[key] = sig
 
 	def _raw_type_is_callable(raw: object | None) -> bool:
+		def _is_fn_name(name: str) -> bool:
+			if name.startswith("FnMut"):
+				return name[5:].isdigit()
+			if name.startswith("FnOnce"):
+				return name[6:].isdigit()
+			if name.startswith("Fn"):
+				return name[2:].isdigit()
+			return False
+
+		def _is_callback_name(name: str) -> bool:
+			return name.startswith("Callback") and name[8:].isdigit()
+
 		if raw is None:
 			return False
 		if isinstance(raw, str):
-			return raw in {"Callable", "CallableDyn", "fn"}
+			return raw == "fn" or _is_fn_name(raw) or _is_callback_name(raw)
 		if hasattr(raw, "name"):
 			name = getattr(raw, "name")
 			args = getattr(raw, "args", None)
 			if name in {"&", "&mut"} and args:
 				return _raw_type_is_callable(args[0])
-			return name in {"Callable", "CallableDyn", "fn"}
+			return name == "fn" or _is_fn_name(name) or _is_callback_name(name)
 		return False
 
 	def _param_is_callable(sig: FnSignature, idx: int) -> bool:
@@ -70,7 +82,7 @@ def analyze_non_retaining_params(
 			return False
 		if sig.param_type_ids and idx < len(sig.param_type_ids):
 			td = type_table.get(sig.param_type_ids[idx])
-			return td.kind is TypeKind.FUNCTION or td.name in {"Callable", "CallableDyn"}
+			return td.kind is TypeKind.FUNCTION or _raw_type_is_callable(td.name)
 		return False
 
 	def _param_count(sig: FnSignature) -> int:

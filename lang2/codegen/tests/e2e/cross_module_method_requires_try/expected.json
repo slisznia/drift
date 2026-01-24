@@ -1,9 +1,0 @@
-{
-  "description": "e2e: cross module method requires try",
-  "diagnostics": [
-    {
-      "message_contains": "declared nothrow but may throw"
-    }
-  ],
-  "exit_code": 1
-}

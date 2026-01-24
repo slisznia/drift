@@ -56,6 +56,8 @@ from .ast import (
     StructField,
     TraitDef,
     TraitMethodSig,
+    InterfaceDef,
+    InterfaceMethodSig,
     RequireClause,
     TraitExpr,
     TraitSubject,
@@ -744,6 +746,7 @@ def _build_program(tree: Tree) -> Program:
 	type_aliases: List["TypeAliasDef"] = []
 	implements: List[ImplementDef] = []
 	traits: List[TraitDef] = []
+	interfaces: List[InterfaceDef] = []
 	imports: List[ImportStmt] = []
 	exports: List[ExportStmt] = []
 	used_traits: List[TraitRef] = []
@@ -830,6 +833,11 @@ def _build_program(tree: Tree) -> Program:
 			tr_def.is_pub = is_pub
 			tr_def.test_build_only = is_test_only
 			traits.append(tr_def)
+		elif kind == "interface_def":
+			if_def = _build_interface_def(child)
+			if_def.is_pub = is_pub
+			if_def.test_build_only = is_test_only
+			interfaces.append(if_def)
 		else:
 			stmt = _build_stmt(child)
 			if stmt is None:
@@ -848,6 +856,7 @@ def _build_program(tree: Tree) -> Program:
 		type_aliases=type_aliases,
 		implements=implements,
 		traits=traits,
+		interfaces=interfaces,
 		imports=imports,
 		exports=exports,
 		used_traits=used_traits,
@@ -1155,6 +1164,81 @@ def _build_trait_def(tree: Tree) -> TraitDef:
 		name=name_token.value,
 		methods=methods,
 		require=require,
+		loc=loc,
+		type_params=type_params,
+		type_param_locs=type_param_locs,
+	)
+
+
+def _build_interface_method_sig(tree: Tree) -> InterfaceMethodSig:
+	loc = _loc(tree)
+	children = list(tree.children)
+	idx = 0
+	is_unsafe = False
+	if idx < len(children) and isinstance(children[idx], Token) and children[idx].type == "UNSAFE":
+		is_unsafe = True
+		idx += 1
+	if idx < len(children) and isinstance(children[idx], Token) and children[idx].type == "FN_KW":
+		idx += 1
+	name_token = _unwrap_ident(children[idx])
+	idx += 1
+	type_params: list[str] = []
+	type_param_locs: list[Located] = []
+	if idx < len(children) and isinstance(children[idx], Tree) and _name(children[idx]) == "type_params":
+		for tok in children[idx].children:
+			if isinstance(tok, Token) and tok.type == "NAME":
+				type_params.append(tok.value)
+				type_param_locs.append(_loc_from_token(tok))
+		idx += 1
+	params: List[Param] = []
+	if idx < len(children) and _name(children[idx]) == "params":
+		params = [_build_param(p) for p in children[idx].children if isinstance(p, Tree)]
+		idx += 1
+	declared_nothrow = False
+	if idx < len(children) and isinstance(children[idx], Token) and children[idx].type == "NOTHROW":
+		declared_nothrow = True
+		idx += 1
+	return_sig = children[idx]
+	type_child = next(child for child in return_sig.children if isinstance(child, Tree))
+	return_type = _build_type_expr(type_child)
+	return InterfaceMethodSig(
+		name=name_token.value,
+		params=params,
+		return_type=return_type,
+		loc=loc,
+		type_params=type_params,
+		type_param_locs=type_param_locs,
+		declared_nothrow=declared_nothrow,
+		is_unsafe=is_unsafe,
+	)
+
+
+def _build_interface_def(tree: Tree) -> InterfaceDef:
+	loc = _loc(tree)
+	name_token = next(child for child in tree.children if isinstance(child, Token) and child.type == "NAME")
+	type_params: list[str] = []
+	type_param_locs: list[Located] = []
+	type_params_node = next((c for c in tree.children if isinstance(c, Tree) and _name(c) == "type_params"), None)
+	if type_params_node is not None:
+		for tok in type_params_node.children:
+			if isinstance(tok, Token) and tok.type == "NAME":
+				type_params.append(tok.value)
+				type_param_locs.append(_loc_from_token(tok))
+	body_node = next((c for c in tree.children if isinstance(c, Tree) and _name(c) == "interface_body"), None)
+	methods: list[InterfaceMethodSig] = []
+	if body_node is not None:
+		for item in body_node.children:
+			if not isinstance(item, Tree):
+				continue
+			if _name(item) == "interface_item":
+				sig_node = next((c for c in item.children if isinstance(c, Tree) and _name(c) == "interface_method_sig"), None)
+				if sig_node is not None:
+					methods.append(_build_interface_method_sig(sig_node))
+			elif _name(item) == "interface_method_sig":
+				methods.append(_build_interface_method_sig(item))
+	return InterfaceDef(
+		name=name_token.value,
+		methods=methods,
 		loc=loc,
 		type_params=type_params,
 		type_param_locs=type_param_locs,

@@ -225,7 +225,7 @@ module m_main
 
 fn main() nothrow -> Int {
 	var a = [1, 2, 3];
-	for x in a { x; }
+	for x in move a { x; }
 	a.push(4);
 	return 0;
 }
@@ -334,7 +334,7 @@ fn main() nothrow -> Int {
 	assert any(d.code == "E_USE_AFTER_MOVE" for d in diagnostics)
 
 
-def test_for_owned_array_requires_copy_element(tmp_path: Path) -> None:
+def test_for_owned_array_borrows_non_copy(tmp_path: Path) -> None:
 	diagnostics = _compile(
 		tmp_path,
 		"""
@@ -350,7 +350,7 @@ fn main() nothrow -> Int {
 }
 """,
 	)
-	assert any("requirement not satisfied" in d.message and "Copy" in d.message for d in diagnostics)
+	assert diagnostics == []
 
 
 def test_for_mut_array_is_iterable(tmp_path: Path) -> None:

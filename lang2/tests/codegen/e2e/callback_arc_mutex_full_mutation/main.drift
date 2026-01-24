@@ -1,0 +1,44 @@
+module main
+
+import std.core as core;
+import std.concurrency as conc;
+
+struct StateMachine {
+	state: Int
+}
+
+implement StateMachine {
+	pub fn on_signal_x(self: &mut StateMachine, v: Int) nothrow -> Void {
+		self.state = self.state + v;
+	}
+}
+
+struct Event {
+	v: Int
+	state: conc.Arc<conc.Mutex<StateMachine>>
+}
+
+struct EventBus {
+	on_x: core.Callback1<&mut Event, Void>
+}
+
+implement EventBus {
+	pub fn emit(self: &EventBus, e: &mut Event) nothrow -> Void {
+		self.on_x.call(&mut *e);
+	}
+}
+
+fn on_x(e: &mut Event) nothrow -> Void {
+	var g = conc.lock(e.state);
+	g.get_mut().on_signal_x(e.v);
+	e.v = g.get_mut().state;
+}
+
+fn main() nothrow -> Int {
+	var m = conc.mutex(StateMachine(state = 0));
+	var sm = conc.arc(m);
+	var bus = EventBus(on_x = core.callback1(on_x));
+	var e = Event(v = 5, state = sm.clone());
+	bus.emit(&mut e);
+	return e.v;
+}

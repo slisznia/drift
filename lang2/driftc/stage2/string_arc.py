@@ -51,6 +51,13 @@ def insert_string_arc(
 		if cached is not None:
 			return cached
 		td = type_table.get(tid)
+		if hasattr(type_table, "is_destructible"):
+			try:
+				if bool(type_table.is_destructible(tid)):
+					_type_needs_drop_cache[tid] = True
+					return True
+			except Exception:
+				pass
 		if td.kind is TypeKind.SCALAR:
 			needs = td.name == "String"
 			_type_needs_drop_cache[tid] = needs
@@ -87,6 +94,22 @@ def insert_string_arc(
 		if (tid := local_types.get(name)) is not None
 		and type_table.get(tid).kind is TypeKind.ARRAY
 		and _type_needs_drop(type_table.get(tid).param_types[0])
+	}
+
+	def _is_destructible_tid(tid: TypeId | None) -> bool:
+		if tid is None:
+			return False
+		if hasattr(type_table, "is_destructible"):
+			try:
+				return bool(type_table.is_destructible(tid))
+			except Exception:
+				return False
+		return False
+
+	destructible_locals: Set[str] = {
+		name
+		for name in (list(func.params) + list(func.locals))
+		if _is_destructible_tid(local_types.get(name))
 	}
 
 	def _is_string_value(val: str) -> bool:
@@ -142,6 +165,12 @@ def insert_string_arc(
 	def _drop_all_arrays(out: list[M.MInstr]) -> None:
 		for local in sorted(array_locals):
 			_drop_array_local(local, out)
+
+	def _drop_destructible_local(local: str, out: list[M.MInstr]) -> None:
+		return
+
+	def _drop_all_destructibles(out: list[M.MInstr]) -> None:
+		return
 
 	def _iter_used_values(instr: M.MInstr) -> Iterable[str]:
 		if isinstance(instr, M.StoreLocal):
@@ -202,6 +231,9 @@ def insert_string_arc(
 			yield from instr.args
 		elif isinstance(instr, M.CallIndirect):
 			yield instr.callee
+			yield from instr.args
+		elif isinstance(instr, M.CallIface):
+			yield instr.iface
 			yield from instr.args
 		elif isinstance(instr, M.StringConcat):
 			yield instr.left
@@ -671,6 +703,32 @@ def insert_string_arc(
 					)
 				)
 				continue
+			if isinstance(instr, M.CallIface):
+				args: list[str] = []
+				for ty_id, arg in zip(instr.param_types, instr.args):
+					if _param_is_ref(ty_id):
+						args.append(arg)
+						continue
+					if _param_is_string(ty_id):
+						if arg in move_only_values:
+							args.append(arg)
+							_note_use(arg, consume=True)
+						else:
+							args.append(_ensure_owned(arg, owned_values, new_instrs))
+							_note_use(arg, consume=True)
+					else:
+						args.append(arg)
+				new_instrs.append(
+					M.CallIface(
+						dest=instr.dest,
+						iface=instr.iface,
+						args=args,
+						param_types=instr.param_types,
+						user_ret_type=instr.user_ret_type,
+						can_throw=instr.can_throw,
+					)
+				)
+				continue
 
 			new_instrs.append(instr)
 			for val in _iter_used_values(instr):
@@ -687,6 +745,7 @@ def insert_string_arc(
 					_note_use(val, consume=True)
 			_drop_all_arrays(new_instrs)
 			_release_all_locals(new_instrs)
+			_drop_all_destructibles(new_instrs)
 			block.terminator = M.Return(value=val)
 		elif block.terminator is not None:
 			for val in _iter_term_used(block.terminator):

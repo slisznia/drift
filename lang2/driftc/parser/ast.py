@@ -469,6 +469,7 @@ class Program:
 	type_aliases: List["TypeAliasDef"] = field(default_factory=list)
 	implements: List["ImplementDef"] = field(default_factory=list)
 	traits: List["TraitDef"] = field(default_factory=list)
+	interfaces: List["InterfaceDef"] = field(default_factory=list)
 	# Module directives are tracked separately from general statements so later
 	# compilation stages can ignore them without having to add stage0/HIR nodes
 	# for import/export syntax.
@@ -589,6 +590,29 @@ class TraitDef:
 	is_pub: bool = False
 	test_build_only: bool = False
 	require: Optional["RequireClause"] = None
+	type_params: List[str] = field(default_factory=list)
+	type_param_locs: List[Located] = field(default_factory=list)
+
+
+@dataclass
+class InterfaceMethodSig:
+	name: str
+	params: Sequence[Param]
+	return_type: TypeExpr
+	loc: Located
+	type_params: List[str] = field(default_factory=list)
+	type_param_locs: List[Located] = field(default_factory=list)
+	declared_nothrow: bool = False
+	is_unsafe: bool = False
+
+
+@dataclass
+class InterfaceDef:
+	name: str
+	methods: List[InterfaceMethodSig]
+	loc: Located
+	is_pub: bool = False
+	test_build_only: bool = False
 	type_params: List[str] = field(default_factory=list)
 	type_param_locs: List[Located] = field(default_factory=list)
 

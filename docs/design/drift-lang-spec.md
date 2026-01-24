@@ -159,6 +159,23 @@ All modules compile down to a canonical Drift Module IR (DMIR) that can be crypt
 
 Function parameters are `val` by default (owned, immutable). Use `var` for mutable parameters: `fn id(var x: File) -> File { return move x; }`.
 
+### 3.2. Borrow traits and argument coercion (proposed)
+
+Drift supports **argument-only** coercions via borrow traits. This is intended to improve ergonomics for wrapper types (e.g., `Arc<Mutex<T>>`) without enabling method-receiver auto-deref.
+
+```drift
+trait Borrow<T> { fn borrow(self: &Self) nothrow -> &T; }
+trait BorrowMut<T> { fn borrow_mut(self: &mut Self) nothrow -> &mut T; }
+```
+
+Coercion rules (argument-only):
+
+- If a parameter expects `&T` and the argument has type `X` (or `&X`), and `X: Borrow<T>`, the compiler may insert `borrow(&arg)`.
+- If a parameter expects `&mut T` and the argument has type `X` (or `&mut X`), and `X: BorrowMut<T>`, the compiler may insert `borrow_mut(&mut arg)` (or `borrow_mut(arg)` if `arg` is already `&mut X`).
+- When a generic function expects `&T`/`&mut T` and the argument is coerced via `Borrow`/`BorrowMut`, the compiler may use the trait argument (the `T` in `Borrow<T>`/`BorrowMut<T>`) to infer the function’s type arguments.
+- No coercion for by-value parameters (`T`).
+- No method-receiver auto-deref.
+
 **Statement terminators:** Simple statements end with `;`. Compound statements that carry a block (`if`/`while`/`for`/`try`/`match`) are self-terminating. Newlines are whitespace only. In a normal block, an expression statement must be a **postfix expression** (call, member access, index, literal, or name) and end with `;` to avoid ambiguity with statement-form `try`. In a value-producing block (e.g., lambda bodies, match arms, try/catch expression arms), the final expression must **not** end with `;`.
 
 ### 3.1. Primitive palette (updated)
@@ -349,7 +366,7 @@ Tuples can be **destructured** in bindings:
 val (x, y) = bounds(); // moves the returned tuple; x and y bind its elements
 ```
 
-Functions may return tuples or accept them as parameters, and tuple types appear in generics (e.g., `Callable<(Int, String), Bool>`). There is no implicit tuple splat/spread; tuple members are accessed via destructuring or pattern matching once supported.
+Functions may return tuples or accept them as parameters, and tuple types appear in generics (e.g., `Fn2<Int, String, Bool>`). There is no implicit tuple splat/spread; tuple members are accessed via destructuring or pattern matching once supported.
 
 ---
 
@@ -3543,13 +3560,13 @@ Drift treats callables as **traits first**, with an optional dynamic wrapper whe
 
 Drift distinguishes two callable worlds:
 
-- **Non-capturing callables**: function pointers (`Fn(Args...) -> R`) and interface references (dynamic dispatch). These do not capture environment and may be stored/returned freely.
+- **Non-capturing callables**: function pointers (`Fn(P1, ... , Pn) -> R`) and callback interfaces (dynamic dispatch). These do not capture environment and may be stored/returned freely.
 - **Capturing closures**: lambda literals produce compiler-synthesized closure values (code + environment). Closures may capture by `copy`/`move` (escaping) or by borrow (non-escaping).
 
 Parameter choice follows this split:
 
-- Use `Fn(Args...) -> R` when only non-capturing callables are allowed.
-- Use a generic type with `require F is Callable<Args, R>` to accept capturing or non-capturing callables.
+- Use `Fn(P1, ... , Pn) -> R` when only non-capturing callables are allowed.
+- Use a generic type with `require F is FnN<...>` to accept capturing or non-capturing callables.
 
 ### 22.1. Surface syntax
 
@@ -3650,68 +3667,73 @@ with only `copy`/`move` captures may escape.
   closure-owned loans. `move` captures invalidate the source binding at closure
   creation time.
 
-### 22.4. Callable traits (static dispatch)
+### 22.4. FnN traits (static dispatch)
 
-Callable traits are compiler-provided and not user-implementable. The compiler
+FnN traits are compiler-provided and not user-implementable. The compiler
 synthesizes closure types for lambdas and provides appropriate callable impls.
-Every `Fn(Args...) -> R` is implicitly `Callable<Args, R>` (and may also
-implement `CallableMut`/`CallableOnce`). The reverse coercion is not automatic;
+Every `Fn(P1, ... , Pn) -> R` is implicitly `FnN<P1, ... , Pn, R>` (and may also
+implement `FnMutN`/`FnOnceN`). The reverse coercion is not automatic;
 capturing closures do not coerce to `Fn(...)` unless proven non-capturing.
 
-Closures automatically implement one or more callable traits based on how they use their environment:
+Closures automatically implement one or more FnN traits based on how they use their environment:
 
 ```drift
-trait Callable<Args, R> {
-    fn call(self: &Self, args: Args) -> R
+trait Fn0<R> {
+    fn call(self: &Self) -> R
 }
 
-trait CallableMut<Args, R> {
-    fn call(self: &mut Self, args: Args) -> R
+trait Fn1<A, R> {
+    fn call(self: &Self, a: A) -> R
 }
 
-trait CallableOnce<Args, R> {
-    fn call(self: Self, args: Args) -> R
+trait Fn2<A, B, R> {
+    fn call(self: &Self, a: A, b: B) -> R
 }
 ```
 
-- Pure/non-mutating closures implement `Callable` and `CallableOnce`.
-- Mutating closures implement `CallableMut` and `CallableOnce`.
-- Closures that move out of their captures implement **only** `CallableOnce`.
+`FnMutN` and `FnOnceN` follow the same arity pattern but use `&mut Self` and
+`Self` receivers, respectively.
+
+- Pure/non-mutating closures implement `FnN` and `FnOnceN`.
+- Mutating closures implement `FnMutN` and `FnOnceN`.
+- Closures that move out of their captures implement **only** `FnOnceN`.
 - Non-capturing `Fn(...)` functions may implement all three traits.
 
 Generics use these traits for zero-cost, monomorphized dispatch:
 
 ```drift
 fn apply_twice<F>(f: F, x: Int) -> Int
-    require F is Callable<(Int), Int> {
+    require F is Fn1<Int, Int> {
     return f.call(x) + f.call(x);
 }
 
 fn accumulate<F>(f: &mut F, xs: Array<Int>) -> Void
-    require F is CallableMut<(Int), Void> {
+    require F is FnMut1<Int, Void> {
     var i = 0;
     while i < xs.len() { f.call(xs[i]); i = i + 1 }
 }
 
 fn run_once<F>(f: F) -> Int
-    require F is CallableOnce<Void, Int> {
+    require F is FnOnce0<Int> {
     return f.call();
 }
 ```
 
-For multi-argument callables, `Args` is a tuple (e.g., `(Int, String)`); for zero-argument callables, use `Void` as the parameter type and call with `f.call()`.
+### 22.5. CallbackN interfaces (opt-in erasure)
 
-### 22.5. Dynamic callable interface (opt-in erasure)
-
-When you need runtime dispatch, use an explicit interface:
+When you need runtime dispatch, use explicit callback interfaces:
 
 ```drift
-interface CallableDyn<Args, R> {
-    fn call(self: &CallableDyn<Args, R>, args: Args) -> R
+interface Callback0<R> {
+    fn call(self: &Callback0<R>) -> R
 }
 
-fn erase<F, Args, R>(f: F) -> CallableDyn<Args, R>
-    require F is Callable<Args, R> {
+interface Callback1<A, R> {
+    fn call(self: &Callback1<A, R>, a: A) -> R
+}
+
+fn erase1<F, A, R>(f: F) -> Callback1<A, R>
+    require F is Fn1<A, R> {
     // implementation-defined boxing/adaptation
 }
 ```

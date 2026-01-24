@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace, fields, is_dataclass
 from enum import Enum, auto
-from typing import Dict, List, Optional, Mapping, Tuple
+from typing import Dict, List, Optional, Mapping, Sequence, Tuple
 
 from lang2.driftc import stage1 as H
 from lang2.driftc.stage1.call_info import CallInfo, CallSig, CallTarget, CallTargetKind, IntrinsicKind
@@ -27,6 +27,10 @@ from lang2.driftc.stage1.place_expr import place_expr_from_lvalue_expr
 from lang2.driftc.checker import FnSignature, TypeParam
 from lang2.driftc.checker.typed_validator import validate_typed_hir
 from lang2.driftc.core.diagnostics import Diagnostic
+from lang2.driftc.core.function_id import FunctionId
+from lang2.driftc.core.generic_type_expr import GenericTypeExpr
+from lang2.driftc.core.types_core import TypeParamId
+from lang2.driftc.instantiation.key import build_instantiation_key, instantiation_key_hash
 
 
 # Typecheck diagnostics should always carry phase.
@@ -92,7 +96,7 @@ from lang2.driftc.borrow_checker import (
 	places_overlap,
 )
 from lang2.driftc.method_registry import CallableDecl, CallableKind, CallableRegistry, CallableSignature, ModuleId, SelfMode, Visibility
-from lang2.driftc.impl_index import GlobalImplIndex
+from lang2.driftc.impl_index import GlobalImplIndex, ImplMeta
 from lang2.driftc.infer import (
 	InferConstraint,
 	InferConstraintOrigin,
@@ -498,6 +502,227 @@ class TypeChecker:
 			out.append(f"`{arm.name}({', '.join(field_parts)})`")
 		return out
 
+	def validate_interface_schemas(self, *, diagnostics: list[Diagnostic]) -> None:
+		def _fixed_width_allowed(module_name: str | None) -> bool:
+			if module_name is None:
+				return False
+			return module_name.startswith("lang.abi.") or module_name.startswith("std.")
+
+		def _scan_generic(expr: object, *, module_name: str | None, span: Span | None) -> None:
+			if not isinstance(expr, GenericTypeExpr):
+				return
+			if expr.param_index is not None:
+				return
+			if expr.name in FIXED_WIDTH_TYPE_NAMES and not _fixed_width_allowed(module_name):
+				diagnostics.append(
+					_tc_diag(
+						message=f"fixed-width type '{expr.name}' is reserved in v1; use Int/Uint/Float or Byte",
+						code="E_FIXED_WIDTH_RESERVED",
+						severity="error",
+						span=span or Span(),
+					)
+				)
+			for arg in expr.args:
+				_scan_generic(arg, module_name=module_name, span=span)
+
+		for _base_id, schema in (getattr(self.type_table, "interface_bases", {}) or {}).items():
+			module_id = schema.module_id
+			methods = list(getattr(schema, "methods", []) or [])
+			for method in methods:
+				seen_params: set[str] = set()
+				for param in method.params:
+					if param.name in seen_params:
+						diagnostics.append(
+							_tc_diag(
+								message=f"duplicate parameter '{param.name}' in interface method '{method.name}'",
+								code="E_DUPLICATE_PARAM",
+								severity="error",
+								span=None,
+							)
+						)
+						continue
+					seen_params.add(param.name)
+					_scan_generic(param.type_expr, module_name=module_id, span=None)
+				_scan_generic(method.return_type, module_name=module_id, span=None)
+
+				total_params = len(schema.type_params) + len(method.type_params)
+				if total_params:
+					owner = FunctionId(
+						module="lang.__internal",
+						name=f"__interface_{schema.module_id}::{schema.name}::{method.name}",
+						ordinal=0,
+					)
+					type_args = [
+						self.type_table.ensure_typevar(TypeParamId(owner=owner, index=i))
+						for i in range(total_params)
+					]
+				else:
+					type_args = []
+
+				for param in method.params:
+					ty = self.type_table._eval_generic_type_expr(param.type_expr, type_args, module_id=schema.module_id)
+					if self.type_table.get(ty).kind is TypeKind.UNKNOWN:
+						diagnostics.append(
+							_tc_diag(
+								message=f"unknown type in interface method '{method.name}' parameter '{param.name}'",
+								code="E_TYPE_UNKNOWN",
+								severity="error",
+								span=None,
+							)
+						)
+				ret_ty = self.type_table._eval_generic_type_expr(method.return_type, type_args, module_id=schema.module_id)
+				if self.type_table.get(ret_ty).kind is TypeKind.UNKNOWN:
+					diagnostics.append(
+						_tc_diag(
+							message=f"unknown return type in interface method '{method.name}'",
+							code="E_TYPE_UNKNOWN",
+							severity="error",
+							span=None,
+						)
+					)
+
+	def validate_interface_impls(
+		self,
+		impls: Sequence[ImplMeta],
+		*,
+		signatures_by_id: Mapping[FunctionId, FnSignature],
+		diagnostics: list[Diagnostic],
+	) -> None:
+		for impl in impls:
+			if impl.trait_expr is None:
+				continue
+			impl_type_param_ids: dict[str, TypeParamId] = {}
+			if impl.methods:
+				first_sig = signatures_by_id.get(impl.methods[0].fn_id)
+				if first_sig is not None:
+					for tp in getattr(first_sig, "impl_type_params", []) or []:
+						impl_type_param_ids[tp.name] = tp.id
+			trait_type_id = resolve_opaque_type(
+				impl.trait_expr,
+				self.type_table,
+				module_id=impl.def_module,
+				type_params=impl_type_param_ids or None,
+			)
+			interface_inst = self.type_table.get_interface_instance(trait_type_id)
+			trait_td = self.type_table.get(trait_type_id)
+			if trait_td.kind is not TypeKind.INTERFACE:
+				if interface_inst is None:
+					continue
+				trait_type_id = interface_inst.base_id
+				trait_td = self.type_table.get(trait_type_id)
+				if trait_td.kind is not TypeKind.INTERFACE:
+					continue
+			schema = self.type_table.interface_bases.get(trait_type_id)
+			if schema is None:
+				continue
+			interface_type_args = list(getattr(interface_inst, "type_args", []) or [])
+			method_schemas = {m.name: m for m in (schema.methods or [])}
+			impl_method_names = {m.name for m in impl.methods}
+			for method_name in method_schemas:
+				if method_name not in impl_method_names:
+					diagnostics.append(
+						_tc_diag(
+							message=f"interface impl for '{schema.name}' missing method '{method_name}'",
+							code="E_INTERFACE_METHOD_MISSING",
+							severity="error",
+							span=impl.loc or Span(),
+						)
+					)
+			if schema.type_params and not interface_type_args:
+				diagnostics.append(
+					_tc_diag(
+						message=f"interface impl for '{schema.name}' must specify type arguments",
+						code="E_INTERFACE_IMPL_MISSING_TYPE_ARGS",
+						severity="error",
+						span=impl.loc or Span(),
+					)
+				)
+				continue
+			for method in impl.methods:
+				method_schema = method_schemas.get(method.name)
+				if method_schema is None:
+					diagnostics.append(
+						_tc_diag(
+							message=f"method '{method.name}' not declared in interface '{schema.name}'",
+							code="E_INTERFACE_METHOD_UNKNOWN",
+							severity="error",
+							span=method.loc or impl.loc or Span(),
+						)
+					)
+					continue
+				if method_schema.type_params:
+					diagnostics.append(
+						_tc_diag(
+							message=f"interface method '{method.name}' type parameters are not supported in impls yet",
+							code="E_INTERFACE_METHOD_TYPE_PARAMS_UNSUPPORTED",
+							severity="error",
+							span=method.loc or impl.loc or Span(),
+						)
+					)
+					continue
+				sig = signatures_by_id.get(method.fn_id)
+				if sig is None or sig.param_type_ids is None or sig.return_type_id is None:
+					continue
+				if len(sig.param_type_ids) != len(method_schema.params):
+					diagnostics.append(
+						_tc_diag(
+							message=f"interface method '{method.name}' parameter count does not match interface '{schema.name}'",
+							code="E_INTERFACE_METHOD_PARAM_COUNT",
+							severity="error",
+							span=method.loc or impl.loc or Span(),
+						)
+					)
+					continue
+				type_args = list(interface_type_args)
+				for idx, param in enumerate(method_schema.params):
+					if param.name == "self":
+						if sig.param_names and idx < len(sig.param_names) and sig.param_names[idx] != "self":
+							diagnostics.append(
+								_tc_diag(
+									message=f"interface method '{method.name}' must use 'self' as the receiver parameter",
+									code="E_INTERFACE_METHOD_SELF_NAME",
+									severity="error",
+									span=method.loc or impl.loc or Span(),
+								)
+							)
+						continue
+					expected = self.type_table._eval_generic_type_expr(
+						param.type_expr,
+						type_args,
+						module_id=schema.module_id,
+					)
+					if expected != sig.param_type_ids[idx]:
+						diagnostics.append(
+							_tc_diag(
+								message=(
+									f"interface method '{method.name}' parameter '{param.name}' "
+									f"expects {self._pretty_type_name(expected, current_module=schema.module_id)} "
+									f"but got {self._pretty_type_name(sig.param_type_ids[idx], current_module=schema.module_id)}"
+								),
+								code="E_INTERFACE_METHOD_PARAM_MISMATCH",
+								severity="error",
+								span=method.loc or impl.loc or Span(),
+							)
+						)
+				expected_ret = self.type_table._eval_generic_type_expr(
+					method_schema.return_type,
+					type_args,
+					module_id=schema.module_id,
+				)
+				if expected_ret != sig.return_type_id:
+					diagnostics.append(
+						_tc_diag(
+							message=(
+								f"interface method '{method.name}' return type expects "
+								f"{self._pretty_type_name(expected_ret, current_module=schema.module_id)} "
+								f"but got {self._pretty_type_name(sig.return_type_id, current_module=schema.module_id)}"
+							),
+							code="E_INTERFACE_METHOD_RETURN_MISMATCH",
+							severity="error",
+							span=method.loc or impl.loc or Span(),
+						)
+					)
+
 	def check_function(
 		self,
 		fn_id: FunctionId,
@@ -535,6 +760,7 @@ class TypeChecker:
 		current_module_name: str | None = None
 		current_module_name = fn_id.module or "main"
 		sig = signatures_by_id.get(fn_id) if signatures_by_id is not None else None
+
 		def _fixed_width_allowed(module_name: str | None) -> bool:
 			if module_name is None:
 				return False
@@ -954,6 +1180,7 @@ class TypeChecker:
 			param_types: list[TypeId],
 			*,
 			span: Span,
+			skip_first: bool = False,
 		) -> tuple[list[TypeId], bool]:
 			def _can_autoborrow_mut(place_expr: H.HExpr, place: Place) -> bool:
 				has_deref = any(isinstance(p, DerefProj) for p in place.projections)
@@ -992,6 +1219,30 @@ class TypeChecker:
 						if td.kind is not TypeKind.ARRAY or not td.param_types:
 							return False
 						cur = td.param_types[0]
+				return True
+
+			def _try_borrow_coerce(
+				idx: int,
+				arg_ty: TypeId,
+				param_ty: TypeId,
+				arg_expr: H.HExpr,
+				ref_mut: bool,
+			) -> bool:
+				method_name = "borrow_mut" if ref_mut else "borrow"
+				call_expr = H.HMethodCall(
+					receiver=arg_expr,
+					method_name=method_name,
+					args=[],
+				)
+				call_expr.callsite_id = _alloc_callsite_id()
+				_assign_node_id(call_expr)
+				start = len(diagnostics)
+				coerced_ty = type_expr(call_expr, expected_type=param_ty)
+				if coerced_ty is None or coerced_ty != param_ty:
+					del diagnostics[start:]
+					return False
+				args[idx] = call_expr
+				updated_types[idx] = coerced_ty
 				return True
 
 			if len(args) != len(param_types) or len(arg_types) != len(param_types):
@@ -1041,6 +1292,9 @@ class TypeChecker:
 				ref_mut, inner = ref_info
 				if arg_ty == param_ty:
 					continue
+				if not (skip_first and idx == 0):
+					if _try_borrow_coerce(idx, arg_ty, param_ty, arg_expr, ref_mut):
+						continue
 				if arg_ty != inner:
 					continue
 				place_expr = place_expr_from_lvalue_expr(arg_expr)
@@ -1324,6 +1578,8 @@ class TypeChecker:
 					inst = self.type_table.get_struct_instance(cur)
 				elif td.kind is TypeKind.VARIANT:
 					inst = self.type_table.get_variant_instance(cur)
+				elif td.kind is TypeKind.INTERFACE:
+					inst = self.type_table.get_interface_instance(cur)
 				if inst is not None:
 					stack.extend(list(inst.type_args))
 				for child in getattr(td, "param_types", []) or []:
@@ -1499,13 +1755,34 @@ class TypeChecker:
 			extra: list[TraitKey] = []
 			for scope in guard_trait_scopes:
 				extra.extend(scope)
+			core_borrow = trait_key_from_expr(
+				parser_ast.TypeExpr(name="Borrow", module_id="std.core"),
+				default_module=current_module_name,
+				default_package=default_package,
+				module_packages=module_packages,
+			)
+			core_borrow_mut = trait_key_from_expr(
+				parser_ast.TypeExpr(name="BorrowMut", module_id="std.core"),
+				default_module=current_module_name,
+				default_package=default_package,
+				module_packages=module_packages,
+			)
 			if trait_scope_by_module:
 				traits = list(trait_scope_by_module.get(current_module_name, []))
 				for trait in extra:
 					if trait not in traits:
 						traits.append(trait)
+				if core_borrow not in traits:
+					traits.append(core_borrow)
+				if core_borrow_mut not in traits:
+					traits.append(core_borrow_mut)
 				return traits
-			return extra
+			traits = list(extra)
+			if core_borrow not in traits:
+				traits.append(core_borrow)
+			if core_borrow_mut not in traits:
+				traits.append(core_borrow_mut)
+			return traits
 
 		def _resolve_self_type_id() -> TypeId | None:
 			if param_types and "self" in param_types:
@@ -1591,7 +1868,20 @@ class TypeChecker:
 			callee_mod = fn_id.module if fn_id and fn_id.module else getattr(sig, "module", None)
 			if callee_mod is None:
 				return False
-			return callee_mod != current_module_name
+			if callee_mod == "lang.core" or callee_mod.startswith("std."):
+				return False
+			caller_mod = current_module_name
+			if caller_mod is None:
+				return False
+			if module_packages is None:
+				return False
+			caller_pkg = module_packages.get(caller_mod)
+			callee_pkg = module_packages.get(callee_mod)
+			if caller_pkg is None or callee_pkg is None:
+				return False
+			if caller_pkg == callee_pkg:
+				return False
+			return True
 
 		def _apply_method_boundary(
 			expr: H.HMethodCall,
@@ -1600,6 +1890,12 @@ class TypeChecker:
 			sig_for_throw: FnSignature | None,
 			call_can_throw: bool,
 		) -> tuple[FunctionId, bool] | None:
+			if __debug__:
+				if sig_for_throw is not None and sig_for_throw.declared_can_throw is False:
+					if not _method_boundary_visible(sig_for_throw, target_fn_id):
+						assert call_can_throw is False, "internal: nothrow method call marked can_throw without boundary"
+			if sig_for_throw is not None and (sig_for_throw.type_params or sig_for_throw.impl_type_params):
+				return target_fn_id, call_can_throw
 			if not _method_boundary_visible(sig_for_throw, target_fn_id):
 				return target_fn_id, call_can_throw
 			wrapper_id = method_wrapper_by_target.get(target_fn_id)
@@ -1843,12 +2139,20 @@ class TypeChecker:
 		def _lambda_can_throw(lam: H.HLambda, call_info: Mapping[int, CallInfo] | None) -> bool:
 			if call_info is None:
 				call_info = {}
+			def _treat_can_throw(info: CallInfo) -> bool:
+				if not info.sig.can_throw:
+					return False
+				if info.target.kind is CallTargetKind.DIRECT and signatures_by_id is not None and info.target.symbol is not None:
+					sig = signatures_by_id.get(info.target.symbol)
+					if sig is not None and not bool(getattr(sig, "declared_can_throw", False)):
+						return False
+				return True
 			def expr_can_throw(expr: H.HExpr) -> bool:
 				if isinstance(expr, H.HCall):
 					info = call_info.get(getattr(expr, "callsite_id", None))
 					if info is None:
 						return True
-					if info.sig.can_throw:
+					if _treat_can_throw(info):
 						return True
 					if isinstance(expr.fn, H.HLambda):
 						return _lambda_can_throw(expr.fn, call_info)
@@ -1857,7 +2161,7 @@ class TypeChecker:
 					info = call_info.get(getattr(expr, "callsite_id", None))
 					if info is None:
 						return True
-					if info.sig.can_throw:
+					if _treat_can_throw(info):
 						return True
 					if expr_can_throw(expr.receiver):
 						return True
@@ -1866,7 +2170,7 @@ class TypeChecker:
 					info = call_info.get(getattr(expr, "callsite_id", None))
 					if info is None:
 						return True
-					if info.sig.can_throw:
+					if _treat_can_throw(info):
 						return True
 					if isinstance(expr.callee, H.HLambda):
 						return _lambda_can_throw(expr.callee, call_info)
@@ -3344,6 +3648,23 @@ class TypeChecker:
 			csid = getattr(expr, "callsite_id", None)
 			if isinstance(csid, int):
 				call_info_by_callsite_id[csid] = info
+				inst = instantiations_by_callsite_id.get(csid)
+				if inst is not None:
+					key = getattr(inst, "target_key", None)
+					type_args = tuple(getattr(inst, "type_args", ()) or ())
+					if isinstance(key, FunctionKey) and type_args:
+						inst_key = build_instantiation_key(
+							key,
+							type_args,
+							type_table=self.type_table,
+							can_throw=bool(info.sig.can_throw),
+						)
+						inst_name = f"{key.name}__inst__{instantiation_key_hash(inst_key)}"
+						inst_fn_id = FunctionId(module=key.module_path, name=inst_name, ordinal=0)
+						call_info_by_callsite_id[csid] = CallInfo(
+							target=CallTarget.direct(inst_fn_id),
+							sig=info.sig,
+						)
 			elif callable_registry is not None:
 				diagnostics.append(
 					_tc_diag(
@@ -3370,6 +3691,30 @@ class TypeChecker:
 				return
 			if isinstance(callsite_id, int):
 				instantiations_by_callsite_id[callsite_id] = CallInstantiation(target_key=key, type_args=type_args)
+				info = call_info_by_callsite_id.get(callsite_id)
+				if info is not None:
+					inst_can_throw = info.sig.can_throw
+					if signatures_by_id is not None:
+						sig = signatures_by_id.get(target_fn_id)
+						if sig is not None and sig.declared_can_throw is not None:
+							inst_can_throw = bool(sig.declared_can_throw)
+					inst_key = build_instantiation_key(
+						key,
+						type_args,
+						type_table=self.type_table,
+						can_throw=bool(inst_can_throw),
+					)
+					inst_name = f"{key.name}__inst__{instantiation_key_hash(inst_key)}"
+					inst_fn_id = FunctionId(module=key.module_path, name=inst_name, ordinal=0)
+					call_info_by_callsite_id[callsite_id] = CallInfo(
+						target=CallTarget.direct(inst_fn_id),
+						sig=CallSig(
+							param_types=info.sig.param_types,
+							user_ret_type=info.sig.user_ret_type,
+							can_throw=bool(inst_can_throw),
+							includes_callee=info.sig.includes_callee,
+						),
+					)
 			elif callable_registry is not None:
 				diagnostics.append(
 					_tc_diag(
@@ -3753,13 +4098,13 @@ class TypeChecker:
 								)
 							)
 							lambda_type_error = True
-						scope_env[-1][param.name] = param_type
-						scope_bindings[-1][param.name] = param.binding_id
-						binding_types[param.binding_id] = param_type
-						binding_names[param.binding_id] = param.name
-						binding_mutable[param.binding_id] = bool(getattr(param, "is_mutable", False))
-						binding_place_kind[param.binding_id] = PlaceKind.PARAM
-						lambda_param_types.append(param_type)
+					scope_env[-1][param.name] = param_type
+					scope_bindings[-1][param.name] = param.binding_id
+					binding_types[param.binding_id] = param_type
+					binding_names[param.binding_id] = param.name
+					binding_mutable[param.binding_id] = bool(getattr(param, "is_mutable", False))
+					binding_place_kind[param.binding_id] = PlaceKind.PARAM
+					lambda_param_types.append(param_type)
 				capture_kinds: dict[int, str] = {}
 				if expr.explicit_captures is not None:
 					for cap in expr.explicit_captures:
@@ -3984,6 +4329,7 @@ class TypeChecker:
 					base_id = (
 						self.type_table.get_nominal(kind=TypeKind.STRUCT, module_id=origin_mod, name=name)
 						or self.type_table.get_nominal(kind=TypeKind.VARIANT, module_id=origin_mod, name=name)
+						or self.type_table.get_nominal(kind=TypeKind.INTERFACE, module_id=origin_mod, name=name)
 						or self.type_table.ensure_named(name, module_id=origin_mod)
 					)
 					if expr.args:
@@ -4001,6 +4347,18 @@ class TypeChecker:
 								return self._unknown
 						elif base_id in self.type_table.variant_schemas:
 							schema = self.type_table.variant_schemas.get(base_id)
+							if schema is not None and not schema.type_params:
+								diagnostics.append(
+									_tc_diag(
+										message=f"type '{name}' is not generic",
+										code="E-TYPE-NOT-GENERIC",
+										severity="error",
+										span=Span.from_loc(getattr(expr, "loc", None)),
+									)
+								)
+								return self._unknown
+						elif base_id in self.type_table.interface_bases:
+							schema = self.type_table.interface_bases.get(base_id)
 							if schema is not None and not schema.type_params:
 								diagnostics.append(
 									_tc_diag(
@@ -4037,6 +4395,10 @@ class TypeChecker:
 									)
 								return type_cache[key]
 							return self.type_table.ensure_instantiated(base_id, arg_ids)
+						if base_id in self.type_table.interface_bases:
+							if any(self.type_table.get(a).kind is TypeKind.TYPEVAR for a in arg_ids):
+								return self.type_table.ensure_interface_template(base_id, arg_ids)
+							return self.type_table.ensure_interface_instantiated(base_id, arg_ids)
 					return base_id
 
 				param_type_ids: list[TypeId] = []
@@ -4898,7 +5260,7 @@ class TypeChecker:
 				if callee_def.kind in (TypeKind.CALLABLE, TypeKind.CALLABLE_DYN):
 					diagnostics.append(
 						_tc_diag(
-							message="calling Callable values is not supported yet; use Fn(...) values in MVP",
+							message="calling Callback values is not supported yet; use FnN values in MVP",
 							severity="error",
 							span=getattr(expr, "loc", Span()),
 						)
@@ -4948,6 +5310,13 @@ class TypeChecker:
 				call_ctx = make_call_ctx(type_table=self.type_table, diagnostics=diagnostics, current_module_name=current_module_name, current_module=current_module, default_package=default_package, module_packages=module_packages, type_param_map=type_param_map, preseed_type_params=preseed, type_param_names=type_param_names, current_fn_id=fn_id, int_ty=self._int, uint_ty=self._uint, uint64_ty=self._uint64, byte_ty=self.type_table.ensure_byte(), bool_ty=self._bool, float_ty=self._float, string_ty=self._string, void_ty=self._void, error_ty=self._error, dv_ty=self._dv, unknown_ty=self._unknown, signatures_by_id=signatures_by_id, callable_registry=callable_registry, trait_index=trait_index, trait_impl_index=trait_impl_index, impl_index=impl_index, visible_modules=visible_modules, visible_trait_world=visible_trait_world, global_trait_world=global_trait_world, trait_scope_by_module=trait_scope_by_module, require_env_local=require_env_local, fn_require_assumed=fn_require_assumed, binding_mutable=binding_mutable, traits_in_scope=_traits_in_scope, trait_key_for_id=trait_key_for_id, tc_diag=_tc_diag, type_expr=type_expr, optional_variant_type=self._optional_variant_type, unwrap_ref_type=_unwrap_ref_type, struct_base_and_args=_struct_base_and_args, receiver_place=_receiver_place, receiver_can_mut_borrow=_receiver_can_mut_borrow, receiver_compat=_receiver_compat, receiver_preference=_receiver_preference, args_match_params=_args_match_params, coerce_args_for_params=_coerce_args_for_params, infer_receiver_arg_type=_infer_receiver_arg_type, instantiate_sig_with_subst=_instantiate_sig_with_subst, apply_autoborrow_args=_apply_autoborrow_args, label_typeid=_label_typeid, trait_label=_trait_label, require_for_fn=_require_for_fn, extract_conjunctive_facts=_extract_conjunctive_facts, subject_name=_subject_name, normalize_type_key=_normalize_type_key, collect_trait_subjects=_collect_trait_subjects, require_failure=_require_failure, format_failure_message=_format_failure_message, failure_code=_failure_code, requirement_notes=_requirement_notes, pick_best_failure=_pick_best_failure, param_scope_map=_param_scope_map, candidate_key_for_decl=_candidate_key_for_decl, visibility_note=_visibility_note, intrinsic_method_fn_id=_intrinsic_method_fn_id, instantiate_sig=_instantiate_sig, self_mode_from_sig=_self_mode_from_sig, match_impl_type_args=_match_impl_type_args, fixed_width_allowed=_fixed_width_allowed, reject_zst_array=_reject_zst_array, pretty_type_name=self._pretty_type_name, format_ctor_signature_list=self._format_ctor_signature_list, enforce_struct_requires=_enforce_struct_requires, ensure_field_visible=_ensure_field_visible, visible_modules_for_free_call=_visible_modules_for_free_call, module_ids_by_name=module_ids_by_name, visibility_provenance=visibility_provenance, infer=_infer, format_infer_failure=_format_infer_failure, lambda_can_throw=_lambda_can_throw, record_call_resolution=record_call_resolution, record_instantiation=record_instantiation, allow_unsafe=unsafe_allowed_module, unsafe_context=unsafe_context, allow_unsafe_without_block=allow_unsafe_without_block_local, allow_rawbuffer=self._is_toolchain_trusted_module(current_module_name))
 				method_ctx = make_method_ctx(call_ctx, diagnostics=diagnostics, traits_in_scope=_traits_in_scope, trait_key=None)
 				method_res = resolve_method_call(method_ctx, expr, expected_type=expected_type)
+				if method_res.call_info is not None:
+					param_types = list(method_res.call_info.sig.param_types)
+					if method_res.call_info.sig.includes_callee:
+						param_types = param_types[1:]
+					for idx, arg in enumerate(expr.args):
+						if idx < len(param_types):
+							type_expr(arg, expected_type=param_types[idx])
 				if method_res.call_info is not None and method_res.resolution is not None and getattr(method_res.resolution, "decl", None) is not None:
 					decl = method_res.resolution.decl
 					fn_id_local = getattr(decl, "fn_id", None)
@@ -4965,6 +5334,34 @@ class TypeChecker:
 				if method_res.call_info is not None:
 					if isinstance(csid, int):
 						call_info_by_callsite_id[csid] = method_res.call_info
+						inst = instantiations_by_callsite_id.get(csid)
+						if inst is not None:
+							key = getattr(inst, "target_key", None)
+							type_args = tuple(getattr(inst, "type_args", ()) or ())
+							if isinstance(key, FunctionKey) and type_args:
+								inst_key = build_instantiation_key(
+									key,
+									type_args,
+									type_table=self.type_table,
+									can_throw=bool(method_res.call_info.sig.can_throw),
+								)
+								inst_name = f"{key.name}__inst__{instantiation_key_hash(inst_key)}"
+								inst_fn_id = FunctionId(module=key.module_path, name=inst_name, ordinal=0)
+								inst_can_throw = method_res.call_info.sig.can_throw
+								if signatures_by_id is not None and method_res.resolution is not None:
+									base_fn_id = getattr(method_res.resolution.decl, "fn_id", None)
+									sig_for_throw = signatures_by_id.get(base_fn_id) if base_fn_id is not None else None
+									if sig_for_throw is not None and sig_for_throw.declared_can_throw is not None:
+										inst_can_throw = bool(sig_for_throw.declared_can_throw)
+								call_info_by_callsite_id[csid] = CallInfo(
+									target=CallTarget.direct(inst_fn_id),
+									sig=CallSig(
+										param_types=method_res.call_info.sig.param_types,
+										user_ret_type=method_res.call_info.sig.user_ret_type,
+										can_throw=bool(inst_can_throw),
+										includes_callee=method_res.call_info.sig.includes_callee,
+									),
+								)
 					elif callable_registry is not None:
 						diagnostics.append(_tc_diag(message="internal: missing callsite_id on method call node", severity="error", span=getattr(expr, "loc", Span())))
 				return record_expr(expr, method_res.return_type)
@@ -6071,6 +6468,10 @@ class TypeChecker:
 					if isinstance(expr.fn, H.HVar) and expr.fn.module_id == "std.mem" and expr.fn.name in ("ptr_at_ref", "ptr_at_mut"):
 						if expr.args:
 							return _return_origin(expr.args[0])
+				if isinstance(expr, H.HMethodCall):
+					origin = _return_origin(expr.receiver)
+					if origin is not None:
+						return origin
 				# Returning an existing reference value (param or local ref).
 				if isinstance(expr, H.HVar) and getattr(expr, "binding_id", None) is not None:
 					return ref_origin_param.get(expr.binding_id)

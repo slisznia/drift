@@ -18,6 +18,7 @@ from lang2.driftc.type_checker import TypeChecker
 from lang2.driftc.core.function_id import function_id_from_obj
 from lang2.driftc.checker import FnSignature, TypeParam
 from lang2.driftc.core.types_core import TypeKind, TypeParamId
+from lang2.tests.support.module_packages import mk_module
 
 
 def _write_file(path: Path, content: str) -> None:
@@ -328,11 +329,16 @@ fn main() nothrow -> Int{
 """.lstrip(),
 	)
 	paths = sorted(src_root.rglob("*.drift"))
+	module_packages = {}
+	mk_module(module_packages, "main", "app")
+	mk_module(module_packages, "acme.pointm", "acme.pointm")
 	modules, type_table, _exc_catalog, module_exports, module_deps, diagnostics = parse_drift_workspace_to_hir(
 		paths,
 		module_paths=[src_root],
 		external_module_exports=external_exports,
+		external_module_packages=module_packages,
 		stdlib_root=stdlib_root(),
+		test_build_only=True,
 	)
 	assert diagnostics == []
 	func_hirs, signatures, fn_ids_by_name = flatten_modules(modules)
@@ -524,3 +530,77 @@ fn main() -> Int {
 	assert len(calls) == 1
 	info = result.typed_fn.call_info_by_callsite_id.get(calls[0].callsite_id)
 	assert info is not None
+
+
+def test_std_method_call_nothrow_not_boundary(tmp_path: Path) -> None:
+	src_root = tmp_path / "src"
+	_write_file(
+		src_root / "std" / "foo.drift",
+		"""
+module std.foo
+
+export { S };
+
+pub struct S { pub x: Int }
+
+implement S {
+\tpub fn clone(self: &S) nothrow -> S { return S(x = self.x); }
+}
+""".lstrip(),
+	)
+	_write_file(
+		src_root / "main.drift",
+		"""
+module main
+
+import std.foo as foo;
+
+fn drift_main() nothrow -> Int {
+\tval s = foo.S(x = 1);
+\tval s2 = s.clone();
+\treturn s2.x;
+}
+""".lstrip(),
+	)
+	paths = sorted(src_root.rglob("*.drift"))
+	modules, type_table, _exc_catalog, module_exports, module_deps, diagnostics = parse_drift_workspace_to_hir(
+		paths,
+		module_paths=[src_root],
+		stdlib_root=stdlib_root(),
+	)
+	assert diagnostics == []
+	func_hirs, signatures, fn_ids_by_name = flatten_modules(modules)
+	registry, module_ids = _build_registry(signatures)
+	impl_index = GlobalImplIndex.from_module_exports(
+		module_exports=dict(module_exports),
+		type_table=type_table,
+		module_ids=module_ids,
+	)
+	main_ids = fn_ids_by_name.get("drift_main") or []
+	assert len(main_ids) == 1
+	main_id = main_ids[0]
+	main_block = func_hirs[main_id]
+	main_sig = signatures[main_id]
+	param_types = {}
+	if main_sig.param_names and main_sig.param_type_ids:
+		param_types = {pname: pty for pname, pty in zip(main_sig.param_names, main_sig.param_type_ids)}
+	visible_mods = _visible_modules_for("main", module_deps, module_ids)
+	tc = TypeChecker(type_table=type_table)
+	result = tc.check_function(
+		main_id,
+		main_block,
+		param_types=param_types,
+		return_type=main_sig.return_type_id,
+		signatures_by_id=signatures,
+		callable_registry=registry,
+		impl_index=impl_index,
+		visible_modules=visible_mods,
+		current_module=module_ids.setdefault(main_sig.module, len(module_ids)),
+	)
+	assert not result.diagnostics
+	calls = _collect_method_calls(result.typed_fn.body)
+	assert len(calls) == 1
+	call = calls[0]
+	info = result.typed_fn.call_info_by_callsite_id.get(call.callsite_id)
+	assert info is not None
+	assert info.sig.can_throw is False

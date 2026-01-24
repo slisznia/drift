@@ -1,4 +1,4 @@
-# Callables, function pointers, and binding in Drift
+# FnNs, function pointers, and binding in Drift
 
 This document captures the decisions around **function values**, **static vs dynamic callables**, **binding**, and **borrowed vs owned erasure** in Drift, plus implementation guidance for a production compiler.
 
@@ -12,7 +12,7 @@ This document captures the decisions around **function values**, **static vs dyn
 * Preserve the **two worlds rule**:
 
   * `Fn(...) [nothrow] -> ...` = **function pointers** (no captures, always safe to retain).
-  * `Callable` / `CallableDyn` = **may capture** (subject to retaining/non-retaining analysis).
+  * `FnN` / `CallbackN` = **may capture** (subject to retaining/non-retaining analysis).
 * Keep **ABI correctness** for can-throw calls (FnResult-style ABI).
 * Avoid dual truths: the compiler must keep a **single authoritative source** for:
 
@@ -48,7 +48,7 @@ Throw-mode:
   * NOTHROW: returns `R`
   * CAN_THROW: returns `FnResult<R, Error>` (canonical `Error` TypeId)
 
-### 2.2 Static callables: `Callable<Fn(P...) [nothrow] -> R>`
+### 2.2 Static callables: `FnN<P..., R>`
 
 A static callable is a **concrete type** (usually a struct) that implements a trait/interface for a specific signature.
 
@@ -57,11 +57,11 @@ Properties:
 * May capture values (receiver, bound args, remap tables).
 * Calls are statically dispatched when monomorphized; can inline.
 
-### 2.3 Dynamic callables: `CallableDyn<Fn(P...) [nothrow] -> R>`
+### 2.3 Dynamic callables: `CallbackN<P..., R>`
 
 A dynamic callable is a **type-erased callable** used for:
 
-* heterogeneous storage (`Array<CallableDyn<sig>>`)
+* heterogeneous storage (`Array<CallbackN<sig>>`)
 * plugin boundaries
 * long-lived registries where static generic explosion is undesirable
 
@@ -97,7 +97,7 @@ Bound method values *capture* a receiver (and possibly other bound args). They a
 
 Decision:
 
-* Bound method values produce a **static Callable**, not a `fn` pointer.
+* Bound method values produce a **static FnN**, not a `fn` pointer.
 
 This keeps the two-worlds rule clean:
 
@@ -109,7 +109,7 @@ This keeps the two-worlds rule clean:
 Decision:
 
 * `bind` is a **standard library** feature, not compiler magic.
-* It returns a concrete type implementing `Callable<Fn(P...) [nothrow] -> R>`.
+* It returns a concrete type implementing `FnN<P..., R>`.
 
 Basic form:
 
@@ -131,10 +131,10 @@ Example intent:
 
 Decision (pinned):
 
-* `std.callable<Sig>(c)` → **owned** dynamic callable (may box/allocate)
-* `std.callable_ref<Sig>(&c)` → **borrowed** dynamic callable (no box)
+* `std.callback(c)` → **owned** dynamic callback (may box/allocate)
+* `std.callback_ref(&c)` → **borrowed** dynamic callback (no box)
 
-These are explicit operations that convert any `T: Callable<Sig>` (and also `fn` pointers) into the dynamic form.
+These are explicit operations that convert any `T: FnN<...>` (and also `fn` pointers) into the dynamic form.
 
 ### 4.2 What “erasure” means
 
@@ -150,10 +150,10 @@ This enables heterogeneous storage:
 
 ### 4.3 Ownership model
 
-* Owned `CallableDyn` must be safe to store long-term.
+* Owned `CallbackN` must be safe to store long-term.
 
   * It must own its environment (commonly via boxing), and carry a drop hook if needed.
-* Borrowed `CallableDynRef`-style value is safe only within the referenced object’s lifetime.
+* Borrowed `CallbackNRef`-style value is safe only within the referenced object’s lifetime.
 
 ---
 
@@ -230,16 +230,16 @@ Implementation hint:
 
 1. **Static/dynamic callable type definitions**
 
-   * Define `Callable<Sig>` trait + `CallableDyn<Sig>` representation.
+   * Define `FnN` traits + `CallbackN` interface family.
 2. **Unbound method references**
 
    * Resolve `S.method` as a function value of type `Fn(&S, ...) -> ...`.
 3. **`bind` library**
 
-   * Implement bind objects as concrete structs implementing `Callable<Sig>`.
+   * Implement bind objects as concrete structs implementing `FnN<...>`.
 4. **Dynamic erasure**
 
-   * Implement `std.callable<Sig>(c)` and `std.callable_ref<Sig>(&c)` conversions.
+   * Implement `std.callback(c)` and `std.callback_ref(&c)` conversions.
 5. **Thunking**
 
    * Add NOTHROW → CAN_THROW thunk generation for typed assignment.
@@ -252,20 +252,20 @@ Implementation hint:
 * Function values preserve canonical identity (wrapper vs impl) across modules.
 * Typed call pipeline uses CallInfo/CallSig everywhere (no name guessing).
 * Thunking creates stable wrapper identities and produces correct FnResult ABI.
-* `bind` returns static Callable; dynamic erasure is explicit and produces correct call behavior.
+* `bind` returns static FnN; dynamic erasure is explicit and produces correct call behavior.
 * Borrowed vs owned dynamic callables enforce lifetime/ownership expectations.
 
 ---
 
 ## 8. Summary of pinned choices
 
-* `bind` returns **static**: `Callable<Fn(P...) [nothrow] -> R>`
+* `bind` returns **static**: `FnN<...>`
 * Dynamic callable creation is explicit:
 
-  * `std.callable<Sig>(c)` → owned (may box)
-  * `std.callable_ref<Sig>(&c)` → borrowed (no box)
+  * `std.callback(c)` → owned (may box)
+  * `std.callback_ref(&c)` → borrowed (no box)
 * Function pointer casts use `cast<T>(expr)` (strict, single type arg)
-* Bound methods produce `Callable`, not `fn` pointers
+* Bound methods produce `FnN`, not `fn` pointers
 * Unbound methods are compatible with `fn` pointers by explicit receiver-first parameter
 * Throw-mode is part of function pointer types and determines ABI; adaptation uses explicit thunks (Ok-wrap)
 

@@ -99,21 +99,24 @@ def resolve_opaque_type(raw: object, table: TypeTable, *, module_id: str | None 
 			return table.new_ptr(inner, module_id=origin_mod)
 		if name == "Void":
 			return table.ensure_void()
-		# Generic nominal instantiation (MVP: variants only). Example: Optional<Int>.
+		# Generic nominal instantiation (MVP: variants/structs/interfaces). Example: Optional<Int>.
 		if args:
 			base = None
 			if origin_mod is not None:
 				base = table.get_variant_base(module_id=origin_mod, name=str(name))
 				if base is None:
 					base = table.get_struct_base(module_id=origin_mod, name=str(name))
+				if base is None:
+					base = table.get_interface_base(module_id=origin_mod, name=str(name))
 			if base is None:
 				if name == "Optional":
 					base = table.ensure_optional_base()
 				elif name in _CORE_VARIANT_ALLOWLIST:
 					base = table.get_variant_base(module_id="lang.core", name=str(name))
 			if base is not None:
+				arg_mod = module_id if module_id is not None else origin_mod
 				arg_ids = [
-					resolve_opaque_type(a, table, module_id=origin_mod, type_params=type_params, alias_stack=alias_stack)
+					resolve_opaque_type(a, table, module_id=arg_mod, type_params=type_params, alias_stack=alias_stack)
 					for a in list(args)
 				]
 				if base in table.variant_schemas:
@@ -128,6 +131,13 @@ def resolve_opaque_type(raw: object, table: TypeTable, *, module_id: str | None 
 						if any(table.has_typevar(a) for a in arg_ids):
 							return table.ensure_struct_template(base, arg_ids)
 						return table.ensure_struct_instantiated(base, arg_ids)
+					except ValueError:
+						return table.ensure_unknown()
+				if base in table.interface_bases:
+					try:
+						if any(table.has_typevar(a) for a in arg_ids):
+							return table.ensure_interface_template(base, arg_ids)
+						return table.ensure_interface_instantiated(base, arg_ids)
 					except ValueError:
 						return table.ensure_unknown()
 			if name not in {"Array", "Optional", "FnResult", "fn"}:
@@ -173,7 +183,7 @@ def resolve_opaque_type(raw: object, table: TypeTable, *, module_id: str | None 
 			return table.ensure_float()
 		if name == "Error":
 			return table.ensure_error()
-		# User-defined nominal types (structs/variants) and unknown names.
+		# User-defined nominal types (structs/variants/interfaces) and unknown names.
 		if origin_mod is not None:
 			ty = table.get_nominal(kind=TypeKind.STRUCT, module_id=origin_mod, name=str(name))
 			if ty is not None:
@@ -186,6 +196,13 @@ def resolve_opaque_type(raw: object, table: TypeTable, *, module_id: str | None 
 			if ty is not None:
 				if not args and ty in table.variant_schemas:
 					schema = table.variant_schemas.get(ty)
+					if schema is not None and schema.type_params and not allow_generic_base:
+						return table.ensure_unknown()
+				return ty
+			ty = table.get_nominal(kind=TypeKind.INTERFACE, module_id=origin_mod, name=str(name))
+			if ty is not None:
+				if not args and ty in table.interface_bases:
+					schema = table.interface_bases.get(ty)
 					if schema is not None and schema.type_params and not allow_generic_base:
 						return table.ensure_unknown()
 				return ty
@@ -315,7 +332,7 @@ def resolve_opaque_type(raw: object, table: TypeTable, *, module_id: str | None 
 				return table.ensure_variant_instantiated(base_id, [inner_ty])
 			except ValueError:
 				return table.ensure_unknown()
-		# User-defined nominal types (e.g. structs/variants) and unknown names.
+		# User-defined nominal types (e.g. structs/variants/interfaces) and unknown names.
 		if module_id is not None:
 			ty = table.get_nominal(kind=TypeKind.STRUCT, module_id=module_id, name=str(raw))
 			if ty is not None:
@@ -328,6 +345,13 @@ def resolve_opaque_type(raw: object, table: TypeTable, *, module_id: str | None 
 			if ty is not None:
 				if ty in table.variant_schemas and not allow_generic_base:
 					schema = table.variant_schemas.get(ty)
+					if schema is not None and schema.type_params:
+						return table.ensure_unknown()
+				return ty
+			ty = table.get_nominal(kind=TypeKind.INTERFACE, module_id=module_id, name=str(raw))
+			if ty is not None:
+				if ty in table.interface_bases and not allow_generic_base:
+					schema = table.interface_bases.get(ty)
 					if schema is not None and schema.type_params:
 						return table.ensure_unknown()
 				return ty

@@ -20,6 +20,7 @@ struct DriftString;
 
 void *drift_alloc_array(size_t elem_size, size_t elem_align, drift_isize len, drift_isize cap);
 void drift_free_array(void *data);
+void drift_cb_env_free(void *data);
 void drift_bounds_check(struct DriftString container_id, drift_isize idx, drift_isize len);
 __attribute__((noreturn))
 void drift_bounds_check_fail(struct DriftString container_id, drift_isize idx, drift_isize len);

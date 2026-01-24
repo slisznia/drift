@@ -1,0 +1,13 @@
+{
+  "description": "e2e: borrow coercion rejected without Borrow/BorrowMut",
+  "diagnostics": [
+    {
+      "message_contains": "no matching overload for function 'inc'"
+    },
+    {
+      "message_contains": "no matching overload for function 'read'"
+    }
+  ],
+  "exit_code": 1,
+  "phase": "typecheck"
+}

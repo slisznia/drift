@@ -364,6 +364,7 @@ def discover_captures(lambda_expr: H.HLambda) -> CaptureDiscoveryResult:
 		return CaptureDiscoveryResult(captures=explicit_list, diagnostics=diags)
 
 	captures: list[C.HCapture] = []
+	capture_as_move = bool(getattr(lambda_expr, "capture_as_move", False))
 	for key, use in usage.items():
 		if use.move and key.proj:
 			diags.append(
@@ -396,7 +397,7 @@ def discover_captures(lambda_expr: H.HLambda) -> CaptureDiscoveryResult:
 		elif use.borrow_shared:
 			kind = C.HCaptureKind.REF
 		elif use.read:
-			kind = C.HCaptureKind.REF
+			kind = C.HCaptureKind.MOVE if capture_as_move else C.HCaptureKind.REF
 		else:
 			continue
 		captures.append(C.HCapture(kind=kind, key=key, span=use.span))

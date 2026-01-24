@@ -1,0 +1,31 @@
+module main
+
+import std.containers as containers;
+
+fn run() -> Int {
+	var m = containers.hash_map<type Int, Int>();
+	m.insert(1, 10);
+	val k: Int = 1;
+	val ok: Bool = match m.get_mut(&k) {
+		None => { false },
+		Some(v) => {
+			*v = 42;
+			true
+		}
+	};
+	if not ok {
+		return 1;
+	}
+	val v: Int = match m.get_mut(&k) {
+		None => { -1 },
+		Some(p) => { *p }
+	};
+	if v != 42 {
+		return 2;
+	}
+	return 0;
+}
+
+fn main() nothrow -> Int {
+	return try run() catch { 99 };
+}
