@@ -167,6 +167,7 @@ class TypedFn:
 	call_resolutions: Dict[int, CallableDecl | MethodResolution] = field(default_factory=dict)
 	call_info_by_callsite_id: Dict[int, "CallInfo"] = field(default_factory=dict)
 	instantiations_by_callsite_id: Dict[int, "CallInstantiation"] = field(default_factory=dict)
+	iface_coercions: Dict[int, TypeId] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -511,6 +512,8 @@ class TypeChecker:
 		def _scan_generic(expr: object, *, module_name: str | None, span: Span | None) -> None:
 			if not isinstance(expr, GenericTypeExpr):
 				return
+			if expr.name == "Self":
+				return
 			if expr.param_index is not None:
 				return
 			if expr.name in FIXED_WIDTH_TYPE_NAMES and not _fixed_width_allowed(module_name):
@@ -542,8 +545,42 @@ class TypeChecker:
 						)
 						continue
 					seen_params.add(param.name)
+					if param.name == "self":
+						if not isinstance(param.type_expr, GenericTypeExpr) or param.type_expr.name not in {"&", "&mut"}:
+							diagnostics.append(
+								_tc_diag(
+									message=f"interface method '{method.name}' must take self by reference",
+									severity="error",
+									span=None,
+								)
+							)
+						elif not param.type_expr.args or param.type_expr.args[0].name != "Self":
+							diagnostics.append(
+								_tc_diag(
+									message=f"interface method '{method.name}' must use '&Self' or '&mut Self' for self",
+									severity="error",
+									span=None,
+								)
+							)
+					else:
+						if isinstance(param.type_expr, GenericTypeExpr) and param.type_expr.name == "Self":
+							diagnostics.append(
+								_tc_diag(
+									message=f"interface method '{method.name}' parameter '{param.name}' cannot use Self",
+									severity="error",
+									span=None,
+								)
+							)
 					_scan_generic(param.type_expr, module_name=module_id, span=None)
 				_scan_generic(method.return_type, module_name=module_id, span=None)
+				if isinstance(method.return_type, GenericTypeExpr) and method.return_type.name == "Self":
+					diagnostics.append(
+						_tc_diag(
+							message=f"interface method '{method.name}' return type cannot be Self in MVP",
+							severity="error",
+							span=None,
+						)
+					)
 
 				total_params = len(schema.type_params) + len(method.type_params)
 				if total_params:
@@ -560,6 +597,8 @@ class TypeChecker:
 					type_args = []
 
 				for param in method.params:
+					if param.name == "self":
+						continue
 					ty = self.type_table._eval_generic_type_expr(param.type_expr, type_args, module_id=schema.module_id)
 					if self.type_table.get(ty).kind is TypeKind.UNKNOWN:
 						diagnostics.append(
@@ -580,6 +619,52 @@ class TypeChecker:
 							span=None,
 						)
 					)
+			parent_ids = list(getattr(schema, "parent_base_ids", []) or [])
+			if len(parent_ids) != len(set(parent_ids)):
+				diagnostics.append(
+					_tc_diag(
+						message=f"interface '{schema.name}' has duplicate parent entries",
+						severity="error",
+						span=None,
+					)
+				)
+			for pid in parent_ids:
+				pdef = self.type_table.get(pid)
+				if pdef.kind is not TypeKind.INTERFACE:
+					diagnostics.append(
+						_tc_diag(
+							message=f"interface '{schema.name}' parent must be an interface type",
+							severity="error",
+							span=None,
+						)
+					)
+			try:
+				linear = self.type_table.interface_linearization(_base_id)
+			except ValueError as err:
+				diagnostics.append(
+					_tc_diag(
+						message=str(err),
+						severity="error",
+						span=None,
+					)
+				)
+				continue
+			seen_methods: dict[str, TypeId] = {}
+			for owner_id in linear:
+				owner_schema = self.type_table.interface_bases.get(owner_id)
+				for m in list(getattr(owner_schema, "methods", []) or []):
+					prev = seen_methods.get(m.name)
+					if prev is None:
+						seen_methods[m.name] = owner_id
+						continue
+					if prev != owner_id:
+						diagnostics.append(
+							_tc_diag(
+								message=f"interface '{schema.name}' has duplicate method '{m.name}' across parents",
+								severity="error",
+								span=None,
+							)
+						)
 
 	def validate_interface_impls(
 		self,
@@ -616,7 +701,20 @@ class TypeChecker:
 			if schema is None:
 				continue
 			interface_type_args = list(getattr(interface_inst, "type_args", []) or [])
-			method_schemas = {m.name: m for m in (schema.methods or [])}
+			try:
+				linear = self.type_table.interface_linearization(trait_type_id)
+			except Exception:
+				linear = [trait_type_id]
+			inst_map: dict[TypeId, TypeId] = {}
+			try:
+				inst_map = self.type_table.interface_instance_view_map(trait_type_id)
+			except Exception:
+				inst_map = {}
+			method_schemas: dict[str, tuple[TypeId, InterfaceMethodSchema]] = {}
+			for owner_id in linear:
+				owner_schema = self.type_table.interface_bases.get(owner_id)
+				for m in list(getattr(owner_schema, "methods", []) or []):
+					method_schemas.setdefault(m.name, (owner_id, m))
 			impl_method_names = {m.name for m in impl.methods}
 			for method_name in method_schemas:
 				if method_name not in impl_method_names:
@@ -639,8 +737,8 @@ class TypeChecker:
 				)
 				continue
 			for method in impl.methods:
-				method_schema = method_schemas.get(method.name)
-				if method_schema is None:
+				method_owner = method_schemas.get(method.name)
+				if method_owner is None:
 					diagnostics.append(
 						_tc_diag(
 							message=f"method '{method.name}' not declared in interface '{schema.name}'",
@@ -650,6 +748,7 @@ class TypeChecker:
 						)
 					)
 					continue
+				owner_id, method_schema = method_owner
 				if method_schema.type_params:
 					diagnostics.append(
 						_tc_diag(
@@ -674,6 +773,11 @@ class TypeChecker:
 					)
 					continue
 				type_args = list(interface_type_args)
+				owner_inst_id = inst_map.get(owner_id)
+				if owner_inst_id is not None:
+					owner_inst = self.type_table.get_interface_instance(owner_inst_id)
+					if owner_inst is not None:
+						type_args = list(owner_inst.type_args)
 				for idx, param in enumerate(method_schema.params):
 					if param.name == "self":
 						if sig.param_names and idx < len(sig.param_names) and sig.param_names[idx] != "self":
@@ -689,7 +793,7 @@ class TypeChecker:
 					expected = self.type_table._eval_generic_type_expr(
 						param.type_expr,
 						type_args,
-						module_id=schema.module_id,
+						module_id=self.type_table.interface_bases.get(owner_id).module_id if self.type_table.interface_bases.get(owner_id) is not None else schema.module_id,
 					)
 					if expected != sig.param_type_ids[idx]:
 						diagnostics.append(
@@ -704,10 +808,12 @@ class TypeChecker:
 								span=method.loc or impl.loc or Span(),
 							)
 						)
+				owner_schema = self.type_table.interface_bases.get(owner_id)
+				owner_module = owner_schema.module_id if owner_schema is not None else schema.module_id
 				expected_ret = self.type_table._eval_generic_type_expr(
 					method_schema.return_type,
 					type_args,
-					module_id=schema.module_id,
+					module_id=owner_module,
 				)
 				if expected_ret != sig.return_type_id:
 					diagnostics.append(
@@ -966,6 +1072,7 @@ class TypeChecker:
 		scope_env: List[Dict[str, TypeId]] = [dict()]
 		scope_bindings: List[Dict[str, int]] = [dict()]
 		expr_types: Dict[int, TypeId] = {}
+		iface_coercions: Dict[int, TypeId] = {}
 		binding_for_var: Dict[int, int] = {}
 		binding_types: Dict[int, TypeId] = {}
 		binding_names: Dict[int, str] = {}
@@ -1150,6 +1257,9 @@ class TypeChecker:
 			for idx, (param_ty, arg_ty) in enumerate(zip(params, args)):
 				if arg_ty is None:
 					continue
+				if arg_ty != param_ty and self.type_table.get(param_ty).kind is TypeKind.INTERFACE:
+					coerced[idx] = param_ty
+					continue
 				ref_info = _ref_param_info(param_ty)
 				if ref_info is None:
 					continue
@@ -1286,6 +1396,16 @@ class TypeChecker:
 					args[idx] = borrow_expr
 					updated_types[idx] = type_expr(borrow_expr)
 					continue
+				if arg_ty is not None and arg_ty != param_ty and self.type_table.get(param_ty).kind is TypeKind.INTERFACE:
+					if self.type_table.get(arg_ty).kind is TypeKind.INTERFACE:
+						if iface_assignable(arg_ty, param_ty):
+							record_iface_coercion(arg_expr, param_ty)
+							updated_types[idx] = param_ty
+							continue
+					else:
+						record_iface_coercion(arg_expr, param_ty)
+						updated_types[idx] = param_ty
+						continue
 				ref_info = _ref_param_info(param_ty)
 				if ref_info is None:
 					continue
@@ -3565,6 +3685,24 @@ class TypeChecker:
 			expr_types[expr.node_id] = ty
 			return ty
 
+		def record_iface_coercion(expr: H.HExpr, target_iface: TypeId) -> None:
+			iface_coercions[expr.node_id] = target_iface
+
+		def iface_assignable(src: TypeId, dst: TypeId) -> bool:
+			if src == dst:
+				return True
+			src_def = self.type_table.get(src)
+			dst_def = self.type_table.get(dst)
+			if src_def.kind is not TypeKind.INTERFACE or dst_def.kind is not TypeKind.INTERFACE:
+				return False
+			try:
+				dst_inst = self.type_table.get_interface_instance(dst)
+				dst_base = dst_inst.base_id if dst_inst is not None else dst
+				view_map = self.type_table.interface_instance_view_map(src)
+				return view_map.get(dst_base) == dst
+			except Exception:
+				return False
+
 		def record_call_info(
 			expr: H.HCall,
 			*,
@@ -3971,6 +4109,12 @@ class TypeChecker:
 				if expr.binding_id is not None:
 					bound = binding_types.get(expr.binding_id)
 					if bound is not None:
+						cap_kind = _explicit_capture_kind(expr.binding_id)
+						if cap_kind in ("ref", "ref_mut"):
+							if used_as_value:
+								bound = bound
+							else:
+								bound = self.type_table.ensure_ref_mut(bound) if cap_kind == "ref_mut" else self.type_table.ensure_ref(bound)
 						binding_for_var[expr.node_id] = expr.binding_id
 						_require_copy_value(bound, span=getattr(expr, "loc", Span()), name=expr.name, used_as_value=used_as_value)
 						return record_expr(expr, bound)
@@ -5849,17 +5993,32 @@ class TypeChecker:
 					# Numeric literals are allowed to flow into Int/Uint without requiring
 					# an explicit cast.
 					if inferred_ty is not None and inferred_ty != declared_ty:
-						is_int_lit = isinstance(stmt.value, H.HLiteralInt)
-						decl_name = self.type_table.get(declared_ty).name
-						inf_name = self.type_table.get(inferred_ty).name
-						if not (is_int_lit and decl_name in ("Int", "Uint") and inf_name == "Int"):
-							diagnostics.append(
-								_tc_diag(
-									message=f"initializer type '{inf_name}' does not match declared type '{decl_name}'",
-									severity="error",
-									span=getattr(stmt, "loc", Span()),
+						if self.type_table.get(declared_ty).kind is TypeKind.INTERFACE:
+							if self.type_table.get(inferred_ty).kind is TypeKind.INTERFACE:
+								if iface_assignable(inferred_ty, declared_ty):
+									record_iface_coercion(stmt.value, declared_ty)
+								else:
+									diagnostics.append(
+										_tc_diag(
+											message=f"initializer type '{self.type_table.get(inferred_ty).name}' does not match declared type '{self.type_table.get(declared_ty).name}'",
+											severity="error",
+											span=getattr(stmt, "loc", Span()),
+										)
+									)
+							else:
+								record_iface_coercion(stmt.value, declared_ty)
+						else:
+							is_int_lit = isinstance(stmt.value, H.HLiteralInt)
+							decl_name = self.type_table.get(declared_ty).name
+							inf_name = self.type_table.get(inferred_ty).name
+							if not (is_int_lit and decl_name in ("Int", "Uint") and inf_name == "Int"):
+								diagnostics.append(
+									_tc_diag(
+										message=f"initializer type '{inf_name}' does not match declared type '{decl_name}'",
+										severity="error",
+										span=getattr(stmt, "loc", Span()),
+									)
 								)
-							)
 					val_ty = declared_ty
 				scope_env[-1][stmt.name] = val_ty
 				scope_bindings[-1][stmt.name] = stmt.binding_id
@@ -6109,7 +6268,22 @@ class TypeChecker:
 				type_expr(stmt.expr, used_as_value=False)
 			elif isinstance(stmt, H.HReturn):
 				if stmt.value is not None:
-					type_expr(stmt.value, expected_type=return_type)
+					inferred = type_expr(stmt.value, expected_type=return_type)
+					if return_type is not None and inferred is not None and inferred != return_type:
+						if self.type_table.get(return_type).kind is TypeKind.INTERFACE:
+							if self.type_table.get(inferred).kind is TypeKind.INTERFACE:
+								if iface_assignable(inferred, return_type):
+									record_iface_coercion(stmt.value, return_type)
+								else:
+									diagnostics.append(
+										_tc_diag(
+											message=f"return type '{self.type_table.get(inferred).name}' does not match declared type '{self.type_table.get(return_type).name}'",
+											severity="error",
+											span=getattr(stmt, "loc", Span()),
+										)
+									)
+							else:
+								record_iface_coercion(stmt.value, return_type)
 			elif isinstance(stmt, H.HIf):
 				if isinstance(stmt.cond, H.HTraitExpr):
 					parser_expr = _trait_expr_to_parser(stmt.cond)
@@ -6351,6 +6525,7 @@ class TypeChecker:
 			call_resolutions=call_resolutions,
 			call_info_by_callsite_id=call_info_by_callsite_id,
 			instantiations_by_callsite_id=instantiations_by_callsite_id,
+			iface_coercions=iface_coercions,
 		)
 
 		if callable_registry is not None:

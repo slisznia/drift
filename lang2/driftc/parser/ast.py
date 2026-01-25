@@ -611,6 +611,7 @@ class InterfaceDef:
 	name: str
 	methods: List[InterfaceMethodSig]
 	loc: Located
+	parents: List["TypeExpr"] = field(default_factory=list)
 	is_pub: bool = False
 	test_build_only: bool = False
 	type_params: List[str] = field(default_factory=list)

@@ -1266,6 +1266,10 @@ class Checker:
 				finally:
 					self.locals = prev_locals
 			if isinstance(expr, H.HCall) and isinstance(expr.fn, H.HQualifiedMember):
+				if self.call_info_by_callsite_id is not None:
+					info = self.call_info_by_callsite_id.get(getattr(expr, "callsite_id", None))
+					if info is not None:
+						return info.sig.user_ret_type
 				# Qualified member calls like `Optional<Int>::Some(1)` produce an
 				# instance of the referenced variant type. This is used for match
 				# scrutinee typing and basic argument checks in the stub pipeline.
@@ -2088,58 +2092,80 @@ class Checker:
 		def walk_stmt(stmt: H.HStmt) -> None:
 			if on_stmt:
 				on_stmt(stmt, ctx)
-				if isinstance(stmt, H.HReturn) and stmt.value is not None:
-					walk_expr(stmt.value)
-				elif isinstance(stmt, H.HExprStmt):
-					walk_expr(stmt.expr)
-				elif isinstance(stmt, H.HLet):
-					walk_expr(stmt.value)
-					decl_ty: Optional[TypeId] = None
-					if getattr(stmt, "declared_type_expr", None) is not None:
-						mod = getattr(ctx.current_fn.signature, "module", None) if ctx.current_fn and ctx.current_fn.signature else None
-						decl_ty = self._resolve_typeexpr(stmt.declared_type_expr, module_id=mod)
-					value_ty = ctx.infer(stmt.value)
-					# MVP: allow `Uint` locals to be initialized from an integer literal.
-					if (
-						decl_ty is not None
-						and decl_ty == self._type_table.ensure_uint()
-						and isinstance(stmt.value, H.HLiteralInt)
-					):
-						value_ty = decl_ty
-					if decl_ty is not None and value_ty is not None and decl_ty != value_ty:
+			if isinstance(stmt, H.HExprStmt):
+				walk_expr(stmt.expr)
+			elif isinstance(stmt, H.HLet):
+				walk_expr(stmt.value)
+				decl_ty: Optional[TypeId] = None
+				if getattr(stmt, "declared_type_expr", None) is not None:
+					mod = getattr(ctx.current_fn.signature, "module", None) if ctx.current_fn and ctx.current_fn.signature else None
+					decl_ty = self._resolve_typeexpr(stmt.declared_type_expr, module_id=mod)
+				value_ty = ctx.infer(stmt.value)
+
+				def _iface_assignable(src: TypeId, dst: TypeId) -> bool:
+					if src == dst:
+						return True
+					src_def = self._type_table.get(src)
+					dst_def = self._type_table.get(dst)
+					if src_def.kind is not TypeKind.INTERFACE or dst_def.kind is not TypeKind.INTERFACE:
+						return False
+					try:
+						dst_inst = self._type_table.get_interface_instance(dst)
+						dst_base = dst_inst.base_id if dst_inst is not None else dst
+						view_map = self._type_table.interface_instance_view_map(src)
+						return view_map.get(dst_base) == dst
+					except Exception:
+						return False
+
+				# MVP: allow `Uint` locals to be initialized from an integer literal.
+				if (
+					decl_ty is not None
+					and decl_ty == self._type_table.ensure_uint()
+					and isinstance(stmt.value, H.HLiteralInt)
+				):
+					value_ty = decl_ty
+				if decl_ty is not None and value_ty is not None and decl_ty != value_ty:
+					if self._type_table.get(decl_ty).kind is TypeKind.INTERFACE:
+						if self._type_table.get(value_ty).kind is TypeKind.INTERFACE:
+							if _iface_assignable(value_ty, decl_ty):
+								ctx.locals[stmt.name] = decl_ty
+								return
+						else:
+							ctx.locals[stmt.name] = decl_ty
+							return
+					ctx._append_diag(
+						_chk_diag(
+							message="let-binding type does not match declared type",
+							severity="error",
+							span=getattr(stmt, "loc", Span()),
+						)
+					)
+				ctx.locals[stmt.name] = decl_ty or value_ty or self._unknown_type
+			elif isinstance(stmt, H.HAssign):
+				walk_expr(stmt.value)
+				value_ty = ctx.infer(stmt.value)
+				walk_expr(stmt.target)
+				if isinstance(stmt.target, H.HIndex):
+					target_ty = ctx.infer(stmt.target)
+					if target_ty is not None and value_ty is not None and target_ty != value_ty:
 						ctx._append_diag(
 							_chk_diag(
-								message="let-binding type does not match declared type",
+								message="assignment type mismatch for indexed array element",
 								severity="error",
-								span=getattr(stmt, "loc", Span()),
+								span=getattr(stmt.target, "loc", getattr(stmt, "loc", Span())),
 							)
 						)
-					ctx.locals[stmt.name] = decl_ty or value_ty or self._unknown_type
-				elif isinstance(stmt, H.HAssign):
-					walk_expr(stmt.value)
-					value_ty = ctx.infer(stmt.value)
-					walk_expr(stmt.target)
-					if isinstance(stmt.target, H.HIndex):
-						target_ty = ctx.infer(stmt.target)
-						if target_ty is not None and value_ty is not None and target_ty != value_ty:
-							ctx._append_diag(
-								_chk_diag(
-									message="assignment type mismatch for indexed array element",
-									severity="error",
-									span=getattr(stmt.target, "loc", getattr(stmt, "loc", Span())),
-								)
-							)
-					elif isinstance(stmt.target, H.HVar) and value_ty is not None:
-						ctx.locals[stmt.target.name] = value_ty
-				elif isinstance(stmt, H.HIf):
-					walk_expr(stmt.cond)
-					walk_block(stmt.then_block)
-					if stmt.else_block:
-						walk_block(stmt.else_block)
-				elif hasattr(H, "HMatchExpr") and isinstance(stmt, getattr(H, "HMatchExpr")):
-					# Defensive: match is an expression node; it should appear under
-					# HExprStmt, but allow traversal if a legacy shape places it as a stmt.
-					walk_expr(stmt)
+				elif isinstance(stmt.target, H.HVar) and value_ty is not None:
+					ctx.locals[stmt.target.name] = value_ty
+			elif isinstance(stmt, H.HIf):
+				walk_expr(stmt.cond)
+				walk_block(stmt.then_block)
+				if stmt.else_block:
+					walk_block(stmt.else_block)
+			elif hasattr(H, "HMatchExpr") and isinstance(stmt, getattr(H, "HMatchExpr")):
+				# Defensive: match is an expression node; it should appear under
+				# HExprStmt, but allow traversal if a legacy shape places it as a stmt.
+				walk_expr(stmt)
 			elif isinstance(stmt, H.HLoop):
 				walk_block(stmt.body)
 			elif isinstance(stmt, H.HReturn):
@@ -2176,6 +2202,17 @@ class Checker:
 
 		scrut_ty = ctx.infer(expr.scrutinee)
 		if scrut_ty is None:
+			needs_indices = False
+			for arm in expr.arms:
+				binders = list(getattr(arm, "binders", []) or [])
+				if not binders:
+					continue
+				field_indices = list(getattr(arm, "binder_field_indices", []) or [])
+				if len(field_indices) < len(binders):
+					needs_indices = True
+					break
+			if not needs_indices:
+				return
 			ctx._append_diag(
 				_chk_diag(
 					message="match scrutinee type is unknown",

@@ -1,0 +1,20 @@
+module m
+
+interface Adder {
+	fn add(self: &Self, x: Int) nothrow -> Int;
+}
+
+struct Box {
+	base: Int
+}
+
+implement Adder for Box {
+	fn add(self: &Box, x: Int) nothrow -> Int {
+		return self.base + x;
+	}
+}
+
+fn main() nothrow -> Int {
+	val a: Adder = Box(base = 40);
+	return a.add(2);
+}

@@ -1,0 +1,25 @@
+module m
+
+exception Boom()
+
+interface Thrower {
+	fn blow(self: &Self, x: Int) -> Int;
+}
+
+struct Bomb {
+}
+
+implement Thrower for Bomb {
+	fn blow(self: &Bomb, x: Int) -> Int {
+		throw Boom();
+	}
+}
+
+fn run(t: Thrower) -> Int {
+	return t.blow(1);
+}
+
+fn main() nothrow -> Int {
+	val b: Thrower = Bomb();
+	return try run(b) catch { 99 };
+}

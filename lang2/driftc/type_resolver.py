@@ -128,6 +128,9 @@ def resolve_program_signatures(
 				resolve_opaque_type(raw_ty, table, module_id=module_name, type_params=local_type_params)
 			)
 			param_nonretaining.append(None)
+		if intrinsic_kind in {IntrinsicKind.CALLBACK0, IntrinsicKind.CALLBACK1, IntrinsicKind.CALLBACK2}:
+			if param_nonretaining:
+				param_nonretaining[0] = False
 
 		# Return
 		raw_ret = getattr(decl, "return_type", None)

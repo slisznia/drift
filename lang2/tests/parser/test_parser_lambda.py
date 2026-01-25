@@ -58,4 +58,4 @@ def test_parse_lambda_with_captures_list() -> None:
 	assert isinstance(expr, Lambda)
 	assert expr.captures is not None
 	assert [cap.name for cap in expr.captures] == ["i", "y", "z"]
-	assert [cap.kind for cap in expr.captures] == ["copy", "ref_mut", "ref"]
+	assert [cap.kind for cap in expr.captures] == ["copy", "ref_mut", "auto"]

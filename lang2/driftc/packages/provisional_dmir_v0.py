@@ -495,6 +495,10 @@ def encode_type_table(table: TypeTable, *, package_id: str) -> dict[str, Any]:
 				"module_id": base_def.module_id,
 				"name": schema.name,
 				"type_params": list(schema.type_params),
+				"parents": [
+					_encode_generic_type_expr(p)
+					for p in (getattr(schema, "parents", None) or [])
+				],
 				"methods": [
 					{
 						"name": m.name,

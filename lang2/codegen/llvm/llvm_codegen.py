@@ -42,7 +42,10 @@ from typing import Dict, List, Mapping, Optional
 
 from lang2.driftc.checker import FnInfo
 from lang2.driftc.core.function_id import FunctionId, FunctionRefId, function_symbol, function_ref_symbol
+from lang2.driftc.core.generic_type_expr import GenericTypeExpr
 from lang2.driftc.core.container_ids import ARRAY_CONTAINER_ID, RAW_BUFFER_CONTAINER_ID, STRING_CONTAINER_ID
+from lang2.driftc.impl_index import ImplMeta
+from lang2.driftc.type_resolver import resolve_opaque_type
 
 ARRAY_LEN_IDX = 0
 ARRAY_CAP_IDX = 1
@@ -103,6 +106,8 @@ from lang2.driftc.stage2 import (
 	ConstString,
 	FnPtrConst,
 	ConstructIface,
+	ConstructIfaceValue,
+	IfaceUpcast,
 	ZeroValue,
 	StringRetain,
 	StringRelease,
@@ -164,7 +169,12 @@ DRIFT_U64_TYPE = "i64"
 DRIFT_ERROR_CODE_TYPE = DRIFT_U64_TYPE
 DRIFT_STRING_TYPE = "%DriftString"
 DRIFT_IFACE_TYPE = "%DriftIface"
-DRIFT_VTABLE_TYPE = "%DriftVTable"
+DRIFT_CALLBACK_VTABLE_TYPE = "%DriftCallbackVTable"
+DRIFT_IFACE_INLINE_WORDS = 4
+DRIFT_IFACE_DATA_IDX = 0
+DRIFT_IFACE_VTABLE_IDX = 1
+DRIFT_IFACE_INLINE_IDX = 2
+DRIFT_IFACE_INLINE_FLAG_IDX = 3
 
 # --- LLVM identifier helpers ---
 #
@@ -236,11 +246,47 @@ def lower_ssa_func_to_llvm(
 	return mod.render()
 
 
+def _build_interface_impl_index(
+	module_exports: Mapping[str, dict[str, object]] | None,
+	type_table: Optional[TypeTable],
+) -> Dict[tuple[TypeId, TypeId], Dict[str, FunctionId]]:
+	if module_exports is None or type_table is None:
+		return {}
+	index: Dict[tuple[TypeId, TypeId], Dict[str, FunctionId]] = {}
+	for exp in module_exports.values():
+		if not isinstance(exp, dict):
+			continue
+		impls = exp.get("impls")
+		if not isinstance(impls, list):
+			continue
+		for impl in impls:
+			if not isinstance(impl, ImplMeta):
+				continue
+			if impl.trait_expr is None:
+				continue
+			if getattr(impl, "impl_type_params", None):
+				continue
+			try:
+				trait_ty = resolve_opaque_type(impl.trait_expr, type_table, module_id=impl.def_module)
+			except Exception:
+				continue
+			inst = type_table.get_interface_instance(trait_ty)
+			iface_base = inst.base_id if inst is not None else trait_ty
+			if type_table.get(iface_base).kind is not TypeKind.INTERFACE:
+				continue
+			key = (iface_base, impl.target_type_id)
+			method_map = index.setdefault(key, {})
+			for method in list(getattr(impl, "methods", []) or []):
+				method_map.setdefault(method.name, method.fn_id)
+	return index
+
+
 def lower_module_to_llvm(
 	funcs: Mapping[FunctionId, MirFunc],
 	ssa_funcs: Mapping[FunctionId, SsaFunc],
 	fn_infos: Mapping[FunctionId, FnInfo],
 	type_table: Optional[TypeTable] = None,
+	module_exports: Optional[Mapping[str, dict[str, object]]] = None,
 	rename_map: Optional[Mapping[FunctionId, str]] = None,
 	argv_wrapper: Optional[str] = None,
 	word_bits: int | None = None,
@@ -257,6 +303,7 @@ def lower_module_to_llvm(
 	if word_bits is None:
 		raise AssertionError("LLVM codegen requires explicit word_bits")
 	mod = LlvmModuleBuilder(word_bits=word_bits, float_bits=float_bits or 64)
+	mod.iface_impls = _build_interface_impl_index(module_exports, type_table)
 
 	# --- ABI-boundary export wrappers (Milestone 4) --------------------------
 	#
@@ -460,6 +507,7 @@ class LlvmModuleBuilder:
 	funcs: List[str] = field(default_factory=list)
 	comdats: set[str] = field(default_factory=set)
 	needs_array_helpers: bool = False
+	needs_iface_helpers: bool = False
 	needs_string_eq: bool = False
 	needs_string_cmp: bool = False
 	needs_string_concat: bool = False
@@ -486,6 +534,8 @@ class LlvmModuleBuilder:
 	string_literal_cache: Dict[str, tuple[str, str, int]] = field(default_factory=dict)
 	iface_vtables: Dict[str, str] = field(default_factory=dict)
 	iface_thunks: Dict[str, str] = field(default_factory=dict)
+	iface_impls: Dict[tuple[TypeId, TypeId], Dict[str, FunctionId]] = field(default_factory=dict)
+	iface_vtable_sizes: Dict[str, int] = field(default_factory=dict)
 
 	def _llty(self, ty: str) -> str:
 		if ty in (DRIFT_INT_TYPE, DRIFT_USIZE_TYPE):
@@ -493,12 +543,13 @@ class LlvmModuleBuilder:
 		return ty
 
 	def __post_init__(self) -> None:
+		inline_storage = f"[{DRIFT_IFACE_INLINE_WORDS} x {self._llty(DRIFT_USIZE_TYPE)}]"
 		self.type_decls.extend(
 			[
 				f"{DRIFT_STRING_TYPE} = type {{ {self._llty(DRIFT_INT_TYPE)}, i8* }}",
 				f"{DRIFT_ERROR_TYPE} = type {{ {DRIFT_ERROR_CODE_TYPE}, {DRIFT_STRING_TYPE}, i8*, {self._llty(DRIFT_USIZE_TYPE)}, i8*, {self._llty(DRIFT_USIZE_TYPE)} }}",
-				f"{DRIFT_IFACE_TYPE} = type {{ i8*, i8* }}",
-				f"{DRIFT_VTABLE_TYPE} = type {{ i8*, i8* }}",
+				f"{DRIFT_IFACE_TYPE} = type {{ i8*, i8*, {inline_storage}, i8 }}",
+				f"{DRIFT_CALLBACK_VTABLE_TYPE} = type [2 x i8*]",
 				f"{FNRESULT_INT_ERROR} = type {{ i1, {self._llty(DRIFT_INT_TYPE)}, {DRIFT_ERROR_PTR} }}",
 				f"{DRIFT_DV_TYPE} = type {{ i8, [7 x i8], [2 x i64] }}",
 				f"%DriftArrayHeader = type {{ {self._llty(DRIFT_INT_TYPE)}, {self._llty(DRIFT_INT_TYPE)}, {self._llty(DRIFT_INT_TYPE)}, i8* }}",
@@ -762,6 +813,14 @@ class LlvmModuleBuilder:
 					"declare void @drift_cb_env_free(i8*)",
 					f"declare void @drift_bounds_check({DRIFT_STRING_TYPE}, {self._llty(DRIFT_INT_TYPE)}, {self._llty(DRIFT_INT_TYPE)})",
 					f"declare void @drift_bounds_check_fail({DRIFT_STRING_TYPE}, {self._llty(DRIFT_INT_TYPE)}, {self._llty(DRIFT_INT_TYPE)})",
+					"",
+				]
+			)
+		if self.needs_iface_helpers:
+			lines.extend(
+				[
+					f"declare i8* @drift_iface_alloc({self._llty(DRIFT_USIZE_TYPE)}, {self._llty(DRIFT_USIZE_TYPE)})",
+					"declare void @drift_iface_free(i8*)",
 					"",
 				]
 			)
@@ -1637,6 +1696,10 @@ class _FuncBuilder:
 			self.value_types[dest] = f"{emit_field_llty}*"
 		elif isinstance(instr, ConstructIface):
 			self._lower_construct_iface(instr)
+		elif isinstance(instr, ConstructIfaceValue):
+			self._lower_construct_iface_value(instr)
+		elif isinstance(instr, IfaceUpcast):
+			self._lower_iface_upcast(instr)
 		elif isinstance(instr, ConstructStruct):
 			if self.type_table is None:
 				raise NotImplementedError("LLVM codegen v1: ConstructStruct requires a TypeTable")
@@ -1650,7 +1713,13 @@ class _FuncBuilder:
 			if len(instr.args) != len(field_types):
 				raise AssertionError("ConstructStruct arg/field length mismatch (MIR bug)")
 			if not field_types:
-				raise NotImplementedError("LLVM codegen v1: empty struct construction not supported yet")
+				tmp_ptr = self._fresh("struct_tmp")
+				self.lines.append(f"  {tmp_ptr} = alloca {struct_llty}")
+				self.lines.append(f"  store {struct_llty} zeroinitializer, {struct_llty}* {tmp_ptr}")
+				dest = self._map_value(instr.dest)
+				self.lines.append(f"  {dest} = load {struct_llty}, {struct_llty}* {tmp_ptr}")
+				self.value_types[dest] = struct_llty
+				return
 			for idx, (arg, field_ty) in enumerate(zip(instr.args, field_types)):
 				arg_val = self._map_value(arg)
 				field_val_llty = self._llvm_type_for_typeid(field_ty)
@@ -2391,36 +2460,7 @@ class _FuncBuilder:
 		callee_val = self._map_value(instr.callee)
 		have_ty = self.value_types.get(callee_val)
 		if have_ty == DRIFT_IFACE_TYPE or have_ty == self._llty(DRIFT_IFACE_TYPE):
-			if instr.can_throw:
-				raise NotImplementedError("LLVM codegen v1: interface calls cannot throw in MVP")
-			data_ptr = self._fresh("iface_data")
-			vtable_i8 = self._fresh("iface_vtable")
-			self.lines.append(f"  {data_ptr} = extractvalue {DRIFT_IFACE_TYPE} {callee_val}, 0")
-			self.lines.append(f"  {vtable_i8} = extractvalue {DRIFT_IFACE_TYPE} {callee_val}, 1")
-			vtable_ptr = self._fresh("vtable_ptr")
-			self.lines.append(f"  {vtable_ptr} = bitcast i8* {vtable_i8} to {DRIFT_VTABLE_TYPE}*")
-			call_ptr_ptr = self._fresh("call_ptr_ptr")
-			self.lines.append(
-				f"  {call_ptr_ptr} = getelementptr inbounds {DRIFT_VTABLE_TYPE}, {DRIFT_VTABLE_TYPE}* {vtable_ptr}, i32 0, i32 0"
-			)
-			call_ptr_i8 = self._fresh("call_ptr")
-			self.lines.append(f"  {call_ptr_i8} = load i8*, i8** {call_ptr_ptr}")
-			fn_ptr_ty = self._callback_thunk_ptr_llty(instr.param_types, instr.user_ret_type, instr.can_throw)
-			callee_fn = self._fresh("callee_fn")
-			self.lines.append(f"  {callee_fn} = bitcast i8* {call_ptr_i8} to {fn_ptr_ty}")
-			arg_parts = [f"i8* {data_ptr}"]
-			for ty_id, arg in zip(instr.param_types, instr.args):
-				llty = self._llvm_type_for_typeid(ty_id)
-				arg_val = self._map_value(arg)
-				arg_parts.append(f"{self._llty(llty)} {arg_val}")
-			args = ", ".join(arg_parts)
-			if instr.dest:
-				dest = self._map_value(instr.dest)
-				self.lines.append(f"  {dest} = call {emit_ret_llty} {callee_fn}({args})")
-				self.value_types[dest] = ret_llty
-			else:
-				self.lines.append(f"  call {emit_ret_llty} {callee_fn}({args})")
-			return
+			raise AssertionError("LLVM codegen v1: interface value in CallIndirect (MIR bug)")
 		fn_ptr_ty = self._fn_ptr_lltype(instr.param_types, instr.user_ret_type, instr.can_throw)
 		if have_ty != fn_ptr_ty:
 			src_ty = have_ty or "i8*"
@@ -2443,8 +2483,6 @@ class _FuncBuilder:
 			self.lines.append(f"  call {emit_ret_llty} {callee_val}({args})")
 
 	def _lower_call_iface(self, instr: CallIface) -> None:
-		if instr.can_throw:
-			raise NotImplementedError("LLVM codegen v1: interface calls cannot throw in MVP")
 		if self.type_table is None:
 			raise NotImplementedError("LLVM codegen v1: interface calls require a TypeTable")
 		iface_val = self._map_value(instr.iface)
@@ -2466,13 +2504,33 @@ class _FuncBuilder:
 
 		data_val = self._fresh("iface_data")
 		vtable_val = self._fresh("iface_vtable")
-		self.lines.append(f"  {data_val} = extractvalue {emit_iface_llty} {iface_val}, 0")
-		self.lines.append(f"  {vtable_val} = extractvalue {emit_iface_llty} {iface_val}, 1")
+		inline_flag = self._fresh("iface_inline")
+		self.lines.append(f"  {data_val} = extractvalue {emit_iface_llty} {iface_val}, {DRIFT_IFACE_DATA_IDX}")
+		self.lines.append(f"  {vtable_val} = extractvalue {emit_iface_llty} {iface_val}, {DRIFT_IFACE_VTABLE_IDX}")
+		self.lines.append(f"  {inline_flag} = extractvalue {emit_iface_llty} {iface_val}, {DRIFT_IFACE_INLINE_FLAG_IDX}")
+		is_inline = self._fresh("iface_is_inline")
+		self.lines.append(f"  {is_inline} = icmp ne i8 {inline_flag}, 0")
+		inline_tmp = self._fresh("iface_inline_tmp")
+		self.lines.append(f"  {inline_tmp} = alloca {emit_iface_llty}")
+		self.lines.append(f"  store {emit_iface_llty} {iface_val}, {emit_iface_llty}* {inline_tmp}")
+		inline_field = self._fresh("iface_inline_field")
+		inline_word = self._fresh("iface_inline_word")
+		inline_i8 = self._fresh("iface_inline_i8")
+		inline_storage = f"[{DRIFT_IFACE_INLINE_WORDS} x {self._llty(DRIFT_USIZE_TYPE)}]"
+		self.lines.append(
+			f"  {inline_field} = getelementptr inbounds {emit_iface_llty}, {emit_iface_llty}* {inline_tmp}, i32 0, i32 {DRIFT_IFACE_INLINE_IDX}"
+		)
+		self.lines.append(
+			f"  {inline_word} = getelementptr inbounds {inline_storage}, {inline_storage}* {inline_field}, i32 0, i32 0"
+		)
+		self.lines.append(f"  {inline_i8} = bitcast {self._llty(DRIFT_USIZE_TYPE)}* {inline_word} to i8*")
+		data_val_eff = self._fresh("iface_data_eff")
+		self.lines.append(f"  {data_val_eff} = select i1 {is_inline}, i8* {inline_i8}, i8* {data_val}")
 		vtable_ptr = self._fresh("vtable_ptr")
-		self.lines.append(f"  {vtable_ptr} = bitcast i8* {vtable_val} to {DRIFT_VTABLE_TYPE}*")
+		self.lines.append(f"  {vtable_ptr} = bitcast i8* {vtable_val} to i8**")
 		call_slot = self._fresh("call_slot")
 		self.lines.append(
-			f"  {call_slot} = getelementptr inbounds {DRIFT_VTABLE_TYPE}, {DRIFT_VTABLE_TYPE}* {vtable_ptr}, i32 0, i32 0"
+			f"  {call_slot} = getelementptr inbounds i8*, i8** {vtable_ptr}, i32 {int(instr.slot_index)}"
 		)
 		call_ptr_i8 = self._fresh("call_ptr")
 		self.lines.append(f"  {call_ptr_i8} = load i8*, i8** {call_slot}")
@@ -2484,7 +2542,7 @@ class _FuncBuilder:
 		callee_val = self._fresh("callee")
 		self.lines.append(f"  {callee_val} = bitcast i8* {call_ptr_i8} to {fn_ptr_ty}")
 
-		arg_parts: list[str] = [f"i8* {data_val}"]
+		arg_parts: list[str] = [f"i8* {data_val_eff}"]
 		for ty_id, arg in zip(instr.param_types, instr.args):
 			llty = self._llvm_type_for_typeid(ty_id)
 			arg_val = self._map_value(arg)
@@ -2492,7 +2550,10 @@ class _FuncBuilder:
 		args = ", ".join(arg_parts)
 
 		ret_tid = instr.user_ret_type
-		if self.type_table.is_void(ret_tid):
+		if instr.can_throw:
+			err_tid = self.type_table.ensure_error()
+			ret_tid = self.type_table.ensure_fnresult(ret_tid, err_tid)
+		if not instr.can_throw and self.type_table.is_void(ret_tid):
 			ret_llty = "void"
 		else:
 			ret_llty = self._llvm_type_for_typeid(ret_tid)
@@ -2523,12 +2584,14 @@ class _FuncBuilder:
 	def _callback_thunk_ptr_llty(self, param_types: list[TypeId], user_ret_type: TypeId, can_throw: bool) -> str:
 		if self.type_table is None:
 			raise NotImplementedError("LLVM codegen v1: callback thunks require a TypeTable")
+		ret_tid = user_ret_type
 		if can_throw:
-			raise NotImplementedError("LLVM codegen v1: callback thunks cannot throw in MVP")
-		if self.type_table.is_void(user_ret_type):
+			err_tid = self.type_table.ensure_error()
+			ret_tid = self.type_table.ensure_fnresult(user_ret_type, err_tid)
+		if not can_throw and self.type_table.is_void(ret_tid):
 			ret_llty = "void"
 		else:
-			ret_llty = self._llvm_type_for_typeid(user_ret_type)
+			ret_llty = self._llvm_type_for_typeid(ret_tid)
 		emit_ret_llty = self._llty(ret_llty)
 		arg_lltys = ["i8*"]
 		for ty_id in param_types:
@@ -2625,10 +2688,180 @@ class _FuncBuilder:
 			drop_ptr = f"i8* bitcast (void (i8*)* @{drop_name} to i8*)"
 		fn_ptr_ty = self._callback_thunk_ptr_llty(list(call_sig.param_types), call_sig.user_ret_type, call_sig.can_throw)
 		self.module.consts.append(
-			f"@{vtable_name} = private constant {DRIFT_VTABLE_TYPE} {{ i8* bitcast ({fn_ptr_ty} @{thunk_name} to i8*), {drop_ptr} }}"
+			f"@{vtable_name} = private constant {DRIFT_CALLBACK_VTABLE_TYPE} [ {drop_ptr}, i8* bitcast ({fn_ptr_ty} @{thunk_name} to i8*) ]"
 		)
 		self.module.iface_vtables[raw_key] = vtable_name
 		return vtable_name
+
+	def _emit_iface_drop_thunk(self, thunk_name: str, value_ty: TypeId) -> None:
+		if self.type_table is None:
+			raise NotImplementedError("LLVM codegen v1: interface drops require a TypeTable")
+		lines: list[str] = []
+		prev_lines = self.lines
+		prev_value_types = self.value_types
+		self.lines = lines
+		self.value_types = {}
+		lines.append(f"define internal void @{thunk_name}(i8* %data) {{")
+		lines.append("entry:")
+		val_llty = self._llvm_type_for_typeid(value_ty)
+		emit_val_llty = self._llty(val_llty)
+		val_ptr = self._fresh("val_ptr")
+		lines.append(f"  {val_ptr} = bitcast i8* %data to {emit_val_llty}*")
+		val = self._fresh("val")
+		lines.append(f"  {val} = load {emit_val_llty}, {emit_val_llty}* {val_ptr}")
+		self.value_types[val] = val_llty
+		self._emit_drop_value(value_ty, val)
+		self.module.needs_array_helpers = True
+		self.module.needs_iface_helpers = True
+		lines.append("  call void @drift_iface_free(i8* %data)")
+		lines.append("  ret void")
+		lines.append("}")
+		self.lines = prev_lines
+		self.value_types = prev_value_types
+		self.module.emit_func("\n".join(lines))
+
+	def _emit_iface_method_thunk(
+		self,
+		thunk_name: str,
+		fn_id: FunctionId,
+		param_types: list[TypeId],
+		user_ret_type: TypeId,
+		can_throw: bool,
+	) -> None:
+		if self.type_table is None:
+			raise NotImplementedError("LLVM codegen v1: interface thunks require a TypeTable")
+		if not param_types:
+			raise AssertionError("interface method thunk missing self param (checker bug)")
+		self_ty = param_types[0]
+		self_def = self.type_table.get(self_ty)
+		if self_def.kind is not TypeKind.REF:
+			raise NotImplementedError("interface method self param must be &Self or &mut Self in MVP")
+		ret_tid = user_ret_type
+		if can_throw:
+			err_tid = self.type_table.ensure_error()
+			ret_tid = self.type_table.ensure_fnresult(user_ret_type, err_tid)
+		if not can_throw and self.type_table.is_void(ret_tid):
+			ret_llty = "void"
+		else:
+			ret_llty = self._llvm_type_for_typeid(ret_tid)
+		emit_ret_llty = self._llty(ret_llty)
+		arg_defs = ["i8* %data"]
+		call_args: list[str] = []
+		for idx, ty_id in enumerate(param_types[1:]):
+			llty = self._llty(self._llvm_type_for_typeid(ty_id))
+			arg_name = f"%a{idx}"
+			arg_defs.append(f"{llty} {arg_name}")
+			call_args.append(f"{llty} {arg_name}")
+		lines: list[str] = []
+		lines.append(f"define internal {emit_ret_llty} @{thunk_name}({', '.join(arg_defs)}) {{")
+		lines.append("entry:")
+		self_llty = self._llty(self._llvm_type_for_typeid(self_ty))
+		self_arg = "%self_arg"
+		lines.append(f"  {self_arg} = bitcast i8* %data to {self_llty}")
+		call_args.insert(0, f"{self_llty} {self_arg}")
+		target_sym = function_symbol(fn_id)
+		if ret_llty == "void":
+			lines.append(f"  call {emit_ret_llty} {_llvm_fn_sym(target_sym)}({', '.join(call_args)})")
+			lines.append("  ret void")
+		else:
+			lines.append(f"  %res = call {emit_ret_llty} {_llvm_fn_sym(target_sym)}({', '.join(call_args)})")
+			lines.append(f"  ret {emit_ret_llty} %res")
+		lines.append("}")
+		self.module.emit_func("\n".join(lines))
+
+	def _ensure_interface_vtable(self, iface_ty: TypeId, value_ty: TypeId) -> tuple[str, int]:
+		if self.type_table is None:
+			raise NotImplementedError("LLVM codegen v1: interface vtables require a TypeTable")
+		iface_inst = self.type_table.get_interface_instance(iface_ty)
+		iface_base = iface_inst.base_id if iface_inst is not None else iface_ty
+		schema = self.type_table.interface_bases.get(iface_base)
+		if schema is None:
+			raise NotImplementedError("interface schema missing for vtable emission")
+		key = f"iface|{self.type_table.type_key_string(iface_ty)}|{self.type_table.type_key_string(value_ty)}"
+		existing = self.module.iface_vtables.get(key)
+		if existing is not None:
+			return existing, self.module.iface_vtable_sizes.get(existing, 0)
+		suffix = f"{hash64(key.encode()):016x}"
+		vtable_name = f"__drift_iface_vtable_{suffix}"
+		drop_name = f"__drift_iface_drop_{suffix}"
+		self._emit_iface_drop_thunk(drop_name, value_ty)
+		drop_ptr = f"i8* bitcast (void (i8*)* @{drop_name} to i8*)"
+		method_map = self.module.iface_impls.get((iface_base, value_ty))
+		if method_map is None:
+			raise NotImplementedError("interface impl not found for interface value")
+		linear = self.type_table.interface_linearization(iface_base)
+		inst_map: dict[TypeId, TypeId] = {}
+		try:
+			inst_map = self.type_table.interface_instance_view_map(iface_ty)
+		except Exception:
+			inst_map = {}
+		slots: list[str] = []
+		for owner_id in linear:
+			owner_schema = self.type_table.interface_bases.get(owner_id)
+			for m in list(getattr(owner_schema, "methods", []) or []):
+				if m.name not in method_map:
+					raise NotImplementedError(
+						f"interface method '{m.name}' missing in impl for {self.type_table.type_key_string(value_ty)}"
+					)
+			# Segment: drop slot + method slots
+			slots.append(drop_ptr)
+			for m in list(getattr(owner_schema, "methods", []) or []):
+				thunk_key = f"iface|{suffix}|{owner_schema.name}|{m.name}"
+				thunk_name = self.module.iface_thunks.get(thunk_key)
+				if thunk_name is None:
+					thunk_name = f"__drift_iface_thunk_{hash64(thunk_key.encode()):016x}"
+					fn_id = method_map[m.name]
+					owner_inst_id = inst_map.get(owner_id)
+					owner_inst = self.type_table.get_interface_instance(owner_inst_id) if owner_inst_id is not None else None
+					owner_args = list(owner_inst.type_args) if owner_inst is not None else []
+					param_types: list[TypeId] = []
+					for p in m.params:
+						if p.name == "self":
+							ref_name = p.type_expr.name if isinstance(p.type_expr, GenericTypeExpr) else ""
+							if ref_name == "&mut":
+								param_types.append(self.type_table.ensure_ref_mut(value_ty))
+							else:
+								param_types.append(self.type_table.ensure_ref(value_ty))
+							continue
+						param_types.append(
+							self.type_table._eval_generic_type_expr(p.type_expr, owner_args, module_id=owner_schema.module_id)
+						)
+					user_ret_type = self.type_table._eval_generic_type_expr(
+						m.return_type, owner_args, module_id=owner_schema.module_id
+					)
+					self._emit_iface_method_thunk(
+						thunk_name,
+						fn_id,
+						param_types=param_types,
+						user_ret_type=user_ret_type,
+						can_throw=not bool(m.declared_nothrow),
+					)
+					self.module.iface_thunks[thunk_key] = thunk_name
+				owner_inst_id = inst_map.get(owner_id)
+				owner_inst = self.type_table.get_interface_instance(owner_inst_id) if owner_inst_id is not None else None
+				owner_args = list(owner_inst.type_args) if owner_inst is not None else []
+				arg_types = [
+					self.type_table._eval_generic_type_expr(p.type_expr, owner_args, module_id=owner_schema.module_id)
+					for p in m.params
+					if p.name != "self"
+				]
+				user_ret_type = self.type_table._eval_generic_type_expr(
+					m.return_type, owner_args, module_id=owner_schema.module_id
+				)
+				fn_ptr_ty = self._callback_thunk_ptr_llty(
+					arg_types,
+					user_ret_type,
+					not bool(m.declared_nothrow),
+				)
+				slots.append(f"i8* bitcast ({fn_ptr_ty} @{thunk_name} to i8*)")
+		slot_count = len(slots)
+		vtable_llty = f"[{slot_count} x i8*]"
+		self.module.consts.append(
+			f"@{vtable_name} = private constant {vtable_llty} [ {', '.join(slots)} ]"
+		)
+		self.module.iface_vtables[key] = vtable_name
+		self.module.iface_vtable_sizes[vtable_name] = slot_count
+		return vtable_name, slot_count
 
 	def _lower_construct_iface(self, instr: ConstructIface) -> None:
 		if self.type_table is None:
@@ -2645,10 +2878,125 @@ class _FuncBuilder:
 		else:
 			data_i8 = "null"
 		vtable_i8 = self._fresh("vtable_i8")
-		self.lines.append(f"  {vtable_i8} = bitcast {DRIFT_VTABLE_TYPE}* @{vtable_name} to i8*")
-		tmp = self._fresh("iface_tmp")
-		self.lines.append(f"  {tmp} = insertvalue {DRIFT_IFACE_TYPE} undef, i8* {data_i8}, 0")
-		self.lines.append(f"  {dest} = insertvalue {DRIFT_IFACE_TYPE} {tmp}, i8* {vtable_i8}, 1")
+		self.lines.append(f"  {vtable_i8} = bitcast {DRIFT_CALLBACK_VTABLE_TYPE}* @{vtable_name} to i8*")
+		tmp_ptr = self._fresh("iface_tmp")
+		self.lines.append(f"  {tmp_ptr} = alloca {DRIFT_IFACE_TYPE}")
+		self.lines.append(f"  store {DRIFT_IFACE_TYPE} zeroinitializer, {DRIFT_IFACE_TYPE}* {tmp_ptr}")
+		data_ptr = self._fresh("iface_data_ptr")
+		self.lines.append(
+			f"  {data_ptr} = getelementptr inbounds {DRIFT_IFACE_TYPE}, {DRIFT_IFACE_TYPE}* {tmp_ptr}, i32 0, i32 {DRIFT_IFACE_DATA_IDX}"
+		)
+		self.lines.append(f"  store i8* {data_i8}, i8** {data_ptr}")
+		vtable_ptr = self._fresh("iface_vtable_ptr")
+		self.lines.append(
+			f"  {vtable_ptr} = getelementptr inbounds {DRIFT_IFACE_TYPE}, {DRIFT_IFACE_TYPE}* {tmp_ptr}, i32 0, i32 {DRIFT_IFACE_VTABLE_IDX}"
+		)
+		self.lines.append(f"  store i8* {vtable_i8}, i8** {vtable_ptr}")
+		flag_ptr = self._fresh("iface_flag_ptr")
+		self.lines.append(
+			f"  {flag_ptr} = getelementptr inbounds {DRIFT_IFACE_TYPE}, {DRIFT_IFACE_TYPE}* {tmp_ptr}, i32 0, i32 {DRIFT_IFACE_INLINE_FLAG_IDX}"
+		)
+		self.lines.append(f"  store i8 0, i8* {flag_ptr}")
+		self.lines.append(f"  {dest} = load {DRIFT_IFACE_TYPE}, {DRIFT_IFACE_TYPE}* {tmp_ptr}")
+		self.value_types[dest] = DRIFT_IFACE_TYPE
+
+	def _lower_construct_iface_value(self, instr: ConstructIfaceValue) -> None:
+		if self.type_table is None:
+			raise NotImplementedError("LLVM codegen v1: ConstructIfaceValue requires a TypeTable")
+		vtable_name, slot_count = self._ensure_interface_vtable(instr.iface_ty, instr.value_ty)
+		dest = self._map_value(instr.dest)
+		value_val = self._map_value(instr.value)
+		value_llty = self._llvm_type_for_typeid(instr.value_ty)
+		emit_value_llty = self._llty(value_llty)
+		size, align = self._size_align_typeid(instr.value_ty)
+		inline_bytes = (self.module.word_bits // 8) * DRIFT_IFACE_INLINE_WORDS
+		inline_ok = size <= inline_bytes and align <= (self.module.word_bits // 8)
+		tmp_ptr = self._fresh("iface_tmp")
+		self.lines.append(f"  {tmp_ptr} = alloca {DRIFT_IFACE_TYPE}")
+		self.lines.append(f"  store {DRIFT_IFACE_TYPE} zeroinitializer, {DRIFT_IFACE_TYPE}* {tmp_ptr}")
+		vtable_i8 = self._fresh("vtable_i8")
+		vtable_llty = f"[{slot_count} x i8*]"
+		self.lines.append(f"  {vtable_i8} = bitcast {vtable_llty}* @{vtable_name} to i8*")
+		vtable_ptr = self._fresh("iface_vtable_ptr")
+		self.lines.append(
+			f"  {vtable_ptr} = getelementptr inbounds {DRIFT_IFACE_TYPE}, {DRIFT_IFACE_TYPE}* {tmp_ptr}, i32 0, i32 {DRIFT_IFACE_VTABLE_IDX}"
+		)
+		self.lines.append(f"  store i8* {vtable_i8}, i8** {vtable_ptr}")
+		flag_ptr = self._fresh("iface_flag_ptr")
+		self.lines.append(
+			f"  {flag_ptr} = getelementptr inbounds {DRIFT_IFACE_TYPE}, {DRIFT_IFACE_TYPE}* {tmp_ptr}, i32 0, i32 {DRIFT_IFACE_INLINE_FLAG_IDX}"
+		)
+		if inline_ok:
+			self.lines.append(f"  store i8 1, i8* {flag_ptr}")
+			inline_field = self._fresh("iface_inline_field")
+			inline_word = self._fresh("iface_inline_word")
+			inline_storage = f"[{DRIFT_IFACE_INLINE_WORDS} x {self._llty(DRIFT_USIZE_TYPE)}]"
+			self.lines.append(
+				f"  {inline_field} = getelementptr inbounds {DRIFT_IFACE_TYPE}, {DRIFT_IFACE_TYPE}* {tmp_ptr}, i32 0, i32 {DRIFT_IFACE_INLINE_IDX}"
+			)
+			self.lines.append(
+				f"  {inline_word} = getelementptr inbounds {inline_storage}, {inline_storage}* {inline_field}, i32 0, i32 0"
+			)
+			if size > 0:
+				inline_val_ptr = self._fresh("iface_inline_val_ptr")
+				self.lines.append(f"  {inline_val_ptr} = bitcast {self._llty(DRIFT_USIZE_TYPE)}* {inline_word} to {emit_value_llty}*")
+				self.lines.append(f"  store {emit_value_llty} {value_val}, {emit_value_llty}* {inline_val_ptr}")
+		else:
+			self.lines.append(f"  store i8 0, i8* {flag_ptr}")
+			self.module.needs_iface_helpers = True
+			tmp_alloc = self._fresh("iface_alloc")
+			self.lines.append(
+				f"  {tmp_alloc} = call i8* @drift_iface_alloc({self._llty(DRIFT_USIZE_TYPE)} {size}, {self._llty(DRIFT_USIZE_TYPE)} {align})"
+			)
+			data_ptr = self._fresh("iface_ptr")
+			self.lines.append(f"  {data_ptr} = bitcast i8* {tmp_alloc} to {emit_value_llty}*")
+			self.lines.append(f"  store {emit_value_llty} {value_val}, {emit_value_llty}* {data_ptr}")
+			data_slot = self._fresh("iface_data_ptr")
+			self.lines.append(
+				f"  {data_slot} = getelementptr inbounds {DRIFT_IFACE_TYPE}, {DRIFT_IFACE_TYPE}* {tmp_ptr}, i32 0, i32 {DRIFT_IFACE_DATA_IDX}"
+			)
+			self.lines.append(f"  store i8* {tmp_alloc}, i8** {data_slot}")
+		self.lines.append(f"  {dest} = load {DRIFT_IFACE_TYPE}, {DRIFT_IFACE_TYPE}* {tmp_ptr}")
+		self.value_types[dest] = DRIFT_IFACE_TYPE
+
+	def _lower_iface_upcast(self, instr: IfaceUpcast) -> None:
+		iface_val = self._map_value(instr.iface)
+		iface_llty = self.value_types.get(iface_val) or self.param_value_types.get(iface_val)
+		emit_iface_llty = self._llty(DRIFT_IFACE_TYPE)
+		if iface_llty == f"{emit_iface_llty}*":
+			loaded = self._fresh("iface_val")
+			self.lines.append(f"  {loaded} = load {emit_iface_llty}, {emit_iface_llty}* {iface_val}")
+			self.value_types[loaded] = DRIFT_IFACE_TYPE
+			iface_val = loaded
+			iface_llty = DRIFT_IFACE_TYPE
+		elif iface_llty is None:
+			iface_llty = DRIFT_IFACE_TYPE
+			self.value_types[iface_val] = DRIFT_IFACE_TYPE
+		elif iface_llty != DRIFT_IFACE_TYPE:
+			raise NotImplementedError("LLVM codegen v1: iface upcast expects iface value")
+
+		data_val = self._fresh("iface_data")
+		vtable_val = self._fresh("iface_vtable")
+		self.lines.append(f"  {data_val} = extractvalue {emit_iface_llty} {iface_val}, {DRIFT_IFACE_DATA_IDX}")
+		self.lines.append(f"  {vtable_val} = extractvalue {emit_iface_llty} {iface_val}, {DRIFT_IFACE_VTABLE_IDX}")
+		vtable_ptr = self._fresh("iface_vptr")
+		self.lines.append(f"  {vtable_ptr} = bitcast i8* {vtable_val} to i8**")
+		offset_ptr = self._fresh("iface_off")
+		self.lines.append(
+			f"  {offset_ptr} = getelementptr inbounds i8*, i8** {vtable_ptr}, i32 {int(instr.slot_offset)}"
+		)
+		offset_i8 = self._fresh("iface_vtable_i8")
+		self.lines.append(f"  {offset_i8} = bitcast i8** {offset_ptr} to i8*")
+		dest = self._map_value(instr.dest)
+		tmp_ptr = self._fresh("iface_tmp")
+		self.lines.append(f"  {tmp_ptr} = alloca {DRIFT_IFACE_TYPE}")
+		self.lines.append(f"  store {DRIFT_IFACE_TYPE} {iface_val}, {DRIFT_IFACE_TYPE}* {tmp_ptr}")
+		vtable_slot = self._fresh("iface_vtable_ptr")
+		self.lines.append(
+			f"  {vtable_slot} = getelementptr inbounds {DRIFT_IFACE_TYPE}, {DRIFT_IFACE_TYPE}* {tmp_ptr}, i32 0, i32 {DRIFT_IFACE_VTABLE_IDX}"
+		)
+		self.lines.append(f"  store i8* {offset_i8}, i8** {vtable_slot}")
+		self.lines.append(f"  {dest} = load {DRIFT_IFACE_TYPE}, {DRIFT_IFACE_TYPE}* {tmp_ptr}")
 		self.value_types[dest] = DRIFT_IFACE_TYPE
 
 	def _lower_fnptr_const(self, instr: FnPtrConst) -> None:
@@ -3468,9 +3816,9 @@ class _FuncBuilder:
 			self.value_types[dest] = DRIFT_STRING_TYPE
 			return
 		if td.kind is TypeKind.INTERFACE:
-			tmp0 = self._fresh("zero_iface")
-			self.lines.append(f"  {tmp0} = insertvalue {DRIFT_IFACE_TYPE} undef, i8* null, 0")
-			self.lines.append(f"  {dest} = insertvalue {DRIFT_IFACE_TYPE} {tmp0}, i8* null, 1")
+			self.lines.append(
+				f"  {dest} = select i1 1, {DRIFT_IFACE_TYPE} zeroinitializer, {DRIFT_IFACE_TYPE} zeroinitializer"
+			)
 			self.value_types[dest] = DRIFT_IFACE_TYPE
 			return
 
@@ -4189,6 +4537,9 @@ class _FuncBuilder:
 		if td.kind is TypeKind.REF:
 			self._drop_cache[ty_id] = False
 			return False
+		if td.kind is TypeKind.INTERFACE:
+			self._drop_cache[ty_id] = True
+			return True
 		if hasattr(self.type_table, "is_destructible"):
 			try:
 				if bool(self.type_table.is_destructible(ty_id)):
@@ -4255,6 +4606,50 @@ class _FuncBuilder:
 				self.lines.append(f"  call void @{helper}({self._llty(DRIFT_INT_TYPE)} {len_tmp}, {elem_llty}* {data_ptr})")
 			self.module.needs_array_helpers = True
 			self.lines.append(f"  call void @drift_free_array(i8* {data_tmp})")
+			return
+		if td.kind is TypeKind.INTERFACE:
+			iface_llty = self._llty(DRIFT_IFACE_TYPE)
+			data_tmp = self._fresh("iface_data")
+			vtable_tmp = self._fresh("iface_vtable")
+			inline_flag = self._fresh("iface_inline")
+			self.lines.append(f"  {data_tmp} = extractvalue {iface_llty} {value}, {DRIFT_IFACE_DATA_IDX}")
+			self.lines.append(f"  {vtable_tmp} = extractvalue {iface_llty} {value}, {DRIFT_IFACE_VTABLE_IDX}")
+			self.lines.append(f"  {inline_flag} = extractvalue {iface_llty} {value}, {DRIFT_IFACE_INLINE_FLAG_IDX}")
+			is_inline = self._fresh("iface_is_inline")
+			self.lines.append(f"  {is_inline} = icmp ne i8 {inline_flag}, 0")
+			inline_tmp = self._fresh("iface_inline_tmp")
+			self.lines.append(f"  {inline_tmp} = alloca {iface_llty}")
+			self.lines.append(f"  store {iface_llty} {value}, {iface_llty}* {inline_tmp}")
+			inline_field = self._fresh("iface_inline_field")
+			inline_word = self._fresh("iface_inline_word")
+			inline_i8 = self._fresh("iface_inline_i8")
+			inline_storage = f"[{DRIFT_IFACE_INLINE_WORDS} x {self._llty(DRIFT_USIZE_TYPE)}]"
+			self.lines.append(
+				f"  {inline_field} = getelementptr inbounds {iface_llty}, {iface_llty}* {inline_tmp}, i32 0, i32 {DRIFT_IFACE_INLINE_IDX}"
+			)
+			self.lines.append(
+				f"  {inline_word} = getelementptr inbounds {inline_storage}, {inline_storage}* {inline_field}, i32 0, i32 0"
+			)
+			self.lines.append(f"  {inline_i8} = bitcast {self._llty(DRIFT_USIZE_TYPE)}* {inline_word} to i8*")
+			data_eff = self._fresh("iface_data_eff")
+			self.lines.append(f"  {data_eff} = select i1 {is_inline}, i8* {inline_i8}, i8* {data_tmp}")
+			vtable_ptr = self._fresh("iface_vptr")
+			self.lines.append(f"  {vtable_ptr} = bitcast i8* {vtable_tmp} to i8**")
+			drop_slot = self._fresh("iface_drop_slot")
+			self.lines.append(f"  {drop_slot} = getelementptr inbounds i8*, i8** {vtable_ptr}, i32 0")
+			drop_ptr = self._fresh("iface_drop_ptr")
+			self.lines.append(f"  {drop_ptr} = load i8*, i8** {drop_slot}")
+			cond = self._fresh("iface_drop_has")
+			self.lines.append(f"  {cond} = icmp ne i8* {drop_ptr}, null")
+			call_block = self._fresh("iface_drop_call")
+			done_block = self._fresh("iface_drop_done")
+			self.lines.append(f"  br i1 {cond}, label {call_block}, label {done_block}")
+			self.lines.append(f"{call_block[1:]}:")
+			drop_fn = self._fresh("iface_drop_fn")
+			self.lines.append(f"  {drop_fn} = bitcast i8* {drop_ptr} to void (i8*)*")
+			self.lines.append(f"  call void {drop_fn}(i8* {data_eff})")
+			self.lines.append(f"  br label {done_block}")
+			self.lines.append(f"{done_block[1:]}:")
 			return
 		if td.kind is TypeKind.STRUCT:
 			inst = self.type_table.get_struct_instance(ty_id)

@@ -1,0 +1,26 @@
+module m_main
+
+exception Boom()
+
+interface I {
+	fn call(self: &Self, v: Int) -> Int;
+}
+
+struct Box {
+	value: Int
+}
+
+implement I for Box {
+	fn call(self: &Box, v: Int) -> Int {
+		if v == 1 {
+			throw Boom();
+		}
+		return self.value + v;
+	}
+}
+
+fn main() nothrow -> Int {
+	var b = Box(value = 40);
+	val r: Int = try b.call(1) catch { 99 };
+	return r;
+}

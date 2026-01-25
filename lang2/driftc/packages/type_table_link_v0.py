@@ -76,7 +76,7 @@ class DecodedTypeTable:
 	defs: dict[TypeId, DecodedTypeDef]
 	struct_schemas: dict[NominalKey, tuple[list[StructFieldSchema], list[str], TypeId | None]]
 	struct_instances: dict[TypeId, tuple[TypeId, list[TypeId]]]
-	interface_schemas: dict[NominalKey, tuple[list[str], list["InterfaceMethodSchema"], TypeId | None]]
+	interface_schemas: dict[NominalKey, tuple[list[str], list["InterfaceMethodSchema"], list[GenericTypeExpr], TypeId | None]]
 	interface_instances: dict[TypeId, tuple[TypeId, list[TypeId]]]
 	exception_schemas: dict[str, tuple[str, list[str]]]
 	variant_schemas: dict[TypeId, VariantSchema]
@@ -257,7 +257,7 @@ def decode_type_table_obj(obj: Mapping[str, Any]) -> DecodedTypeTable:
 			key = NominalKey(package_id=type_pkg, module_id=type_mod, name=type_name, kind=TypeKind.STRUCT)
 			struct_schemas[key] = (field_schemas, type_params, base_id)
 	interface_schemas_obj = obj.get("interface_schemas")
-	interface_schemas: dict[NominalKey, tuple[list[str], list[InterfaceMethodSchema], TypeId | None]] = {}
+	interface_schemas: dict[NominalKey, tuple[list[str], list[InterfaceMethodSchema], list[GenericTypeExpr], TypeId | None]] = {}
 	if interface_schemas_obj is not None:
 		if not isinstance(interface_schemas_obj, list):
 			raise ValueError("invalid type_table.interface_schemas")
@@ -283,6 +283,7 @@ def decode_type_table_obj(obj: Mapping[str, Any]) -> DecodedTypeTable:
 			module_id = entry.get("module_id")
 			name = entry.get("name")
 			type_params_obj = entry.get("type_params")
+			parents_obj = entry.get("parents")
 			methods_obj = entry.get("methods")
 			if not isinstance(module_id, str) or not isinstance(name, str):
 				raise ValueError("invalid interface_schemas entry fields")
@@ -343,8 +344,14 @@ def decode_type_table_obj(obj: Mapping[str, Any]) -> DecodedTypeTable:
 							is_unsafe=is_unsafe,
 						)
 					)
+			parents: list[GenericTypeExpr] = []
+			if parents_obj is not None:
+				if not isinstance(parents_obj, list):
+					raise ValueError("invalid interface_schemas entry parents")
+				for pobj in parents_obj:
+					parents.append(_decode_generic_type_expr(pobj))
 			key = NominalKey(package_id=type_pkg, module_id=type_mod, name=type_name, kind=TypeKind.INTERFACE)
-			interface_schemas[key] = (type_params, methods, base_id)
+			interface_schemas[key] = (type_params, methods, parents, base_id)
 
 	exc_schemas_obj = obj.get("exception_schemas")
 	exception_schemas: dict[str, tuple[str, list[str]]] = {}
@@ -792,7 +799,7 @@ def import_type_tables_and_build_typeid_maps(pkg_tt_objs: list[Mapping[str, Any]
 				raise ValueError(f"struct schema collision for '{key.module_id}:{key.name}'")
 
 	# Phase A: merge/validate interface schemas by nominal identity.
-	merged_interface_schemas: dict[NominalKey, tuple[list[str], list[InterfaceMethodSchema]]] = {}
+	merged_interface_schemas: dict[NominalKey, tuple[list[str], list[InterfaceMethodSchema], list[GenericTypeExpr]]] = {}
 	for pkg_idx, pkg in enumerate(pkgs):
 		pkg_interface_ids: dict[NominalKey, list[TypeId]] = {}
 		for tid, td in pkg.defs.items():
@@ -802,7 +809,7 @@ def import_type_tables_and_build_typeid_maps(pkg_tt_objs: list[Mapping[str, Any]
 				pkg_id = _normalized_pkg_id_for_module(pkg.package_id, td.module_id)
 				key = NominalKey(package_id=pkg_id, module_id=td.module_id, name=td.name, kind=TypeKind.INTERFACE)
 				pkg_interface_ids.setdefault(key, []).append(tid)
-		for key, (type_params, methods, base_id) in pkg.interface_schemas.items():
+		for key, (type_params, methods, parents, base_id) in pkg.interface_schemas.items():
 			candidates = pkg_interface_ids.get(key)
 			if not candidates:
 				raise ValueError(f"interface schema '{key.module_id}:{key.name}' missing INTERFACE TypeDef in package type table")
@@ -815,8 +822,8 @@ def import_type_tables_and_build_typeid_maps(pkg_tt_objs: list[Mapping[str, Any]
 				raise ValueError(f"interface schema '{key.module_id}:{key.name}' base_id mismatch")
 			prev = merged_interface_schemas.get(key)
 			if prev is None:
-				merged_interface_schemas[key] = (list(type_params), list(methods))
-			elif prev != (list(type_params), list(methods)):
+				merged_interface_schemas[key] = (list(type_params), list(methods), list(parents))
+			elif prev != (list(type_params), list(methods), list(parents)):
 				raise ValueError(f"interface schema collision for '{key.module_id}:{key.name}'")
 
 	# Phase B: allocate/import host TypeIds in canonical order (no discovery dependence).
@@ -902,12 +909,14 @@ def import_type_tables_and_build_typeid_maps(pkg_tt_objs: list[Mapping[str, Any]
 			else:
 				host.declare_variant(schema.module_id, schema.name, schema.type_params, schema.arms)
 		elif nk.kind is TypeKind.INTERFACE:
-			type_params, methods = merged_interface_schemas[nk]
+			type_params, methods, parents = merged_interface_schemas[nk]
 			base_id = host.get_interface_base(module_id=mid, name=nk.name)
 			if base_id is not None:
 				schema = host.interface_bases.get(base_id)
 				if schema is not None and (
-					list(schema.type_params) != list(type_params) or list(schema.methods) != list(methods)
+					list(schema.type_params) != list(type_params)
+					or list(schema.methods) != list(methods)
+					or list(schema.parents) != list(parents)
 				):
 					raise ValueError(f"interface type parameter mismatch for '{mid}:{nk.name}'")
 			else:
@@ -915,7 +924,20 @@ def import_type_tables_and_build_typeid_maps(pkg_tt_objs: list[Mapping[str, Any]
 			if base_id is None:
 				base_id = host.get_interface_base(module_id=mid, name=nk.name)
 			if base_id is not None:
-				host.define_interface_schema_methods(base_id, list(methods))
+				parent_base_ids: list[TypeId] = []
+				for pexpr in parents:
+					if pexpr.param_index is not None:
+						raise ValueError(f"interface '{mid}:{nk.name}' parent cannot be a type parameter")
+					parent_mod = pexpr.module_id or mid
+					parent_base_ids.append(
+						host.require_nominal(kind=TypeKind.INTERFACE, module_id=parent_mod, name=pexpr.name)
+					)
+				host.define_interface_schema_methods(
+					base_id,
+					list(methods),
+					parents=list(parents),
+					parent_base_ids=parent_base_ids,
+				)
 		elif nk.kind is TypeKind.SCALAR:
 			host.declare_scalar(nk.module_id or "", nk.name)
 

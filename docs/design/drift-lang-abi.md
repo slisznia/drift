@@ -118,6 +118,82 @@ Where `fqn` is the canonical fully-qualified name `"module.sub:Event"` (dot-sepa
 
 ---
 
+# 4. Interface Values and Vtables (v1)
+
+## 4.1 Interface value representation
+
+All interface values are fat pointers with inline storage:
+
+```
+%DriftIface = { i8* data_ptr, i8* vtable_ptr, [INLINE_WORDS x usize] inline_payload, i8 is_inline }
+```
+
+`INLINE_WORDS = 4`, so `INLINE_BYTES = pointer_width * 4`.
+
+* `data_ptr` points to the boxed concrete value (owned by the interface value) when `is_inline == 0`.
+* `vtable_ptr` points to the **start of the segment** for the *static interface type* of the value.
+* When `is_inline == 1`, the concrete value is stored in `inline_payload` and `data_ptr` is ignored.
+
+## 4.2 Vtable layout: segment-per-interface
+
+Each interface `I` has a **segment**:
+
+```
+Segment(I) = [ drop_ptr, I.method0, I.method1, ... ]
+```
+
+* **Slot 0** is the drop function pointer (`void (i8*)*`) for the boxed value.
+* Method slots follow in **declared method order**.
+
+A vtable object for a boxed value of static interface type `C` is the **concatenation** of segments for `C` and its ancestors:
+
+```
+VTable(C) = Segment(C) | Segment(parent1) | Segment(parent2) | ...
+```
+
+The concatenation order is deterministic (see §4.4).
+
+## 4.3 Method dispatch
+
+* The call site computes the slot index for the **static interface type**:
+
+```
+slot = offset(segment_of_owner_interface) + 1 + method_index
+```
+
+* `vtable_ptr` points at the start of the segment for the static interface type, so `slot=1` is the first method of that interface.
+
+## 4.4 Interface inheritance linearization
+
+For an interface `C` that extends parents `P1, P2, ...`:
+
+* Build the ancestor DAG with edges `Child -> Parent`.
+* Compute a **deterministic topological order** of the ancestor set:
+  1. Primary tie-break: **declared parent order** at the closest common child.
+  2. Secondary tie-break: **fully-qualified interface name** lexical order.
+* `linearization(C) = [C] + ordered_unique_ancestors`.
+
+Diamonds are **deduped**: each ancestor appears at most once.
+
+## 4.5 Upcast rule
+
+Upcasting `C -> A` **retargets** the vtable pointer:
+
+```
+vtable_ptr = vtable_ptr + offset(Segment(A) in VTable(C))
+```
+
+`data_ptr` is unchanged.
+
+## 4.6 Ownership and drop
+
+Interface values **own** their boxed data. Dropping an interface value:
+
+* loads `drop_ptr` from slot 0 of the current segment,
+* calls `drop_ptr(data_ptr)` if non-null.
+
+---
+
 # 4. Result<T, Error> and FnResult<T, Error> ABI
 
 ### 4.1 Conceptual model

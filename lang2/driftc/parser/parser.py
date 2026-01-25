@@ -1224,6 +1224,12 @@ def _build_interface_def(tree: Tree) -> InterfaceDef:
 			if isinstance(tok, Token) and tok.type == "NAME":
 				type_params.append(tok.value)
 				type_param_locs.append(_loc_from_token(tok))
+	parents: list[TypeExpr] = []
+	parents_node = next((c for c in tree.children if isinstance(c, Tree) and _name(c) == "interface_parents"), None)
+	if parents_node is not None:
+		for child in parents_node.children:
+			if isinstance(child, Tree) and _name(child) == "type_expr":
+				parents.append(_build_type_expr(child))
 	body_node = next((c for c in tree.children if isinstance(c, Tree) and _name(c) == "interface_body"), None)
 	methods: list[InterfaceMethodSig] = []
 	if body_node is not None:
@@ -1239,6 +1245,7 @@ def _build_interface_def(tree: Tree) -> InterfaceDef:
 	return InterfaceDef(
 		name=name_token.value,
 		methods=methods,
+		parents=parents,
 		loc=loc,
 		type_params=type_params,
 		type_param_locs=type_param_locs,
@@ -1444,22 +1451,29 @@ def _build_lambda(tree: Tree) -> Lambda:
 	captures: list[LambdaCapture] | None = None
 
 	def _build_lambda_capture(node: Tree) -> LambdaCapture:
-		kind = "ref"
+		kind = "auto"
+		seen_kind = False
 		name_tok: Token | None = None
 		for child in node.children:
 			if isinstance(child, Token):
 				if child.type == "COPY":
 					kind = "copy"
+					seen_kind = True
 				elif child.type == "MOVE":
 					kind = "move"
+					seen_kind = True
 				elif child.type == "AMP":
 					kind = "ref"
+					seen_kind = True
 				elif child.type == "MUT":
 					kind = "ref_mut"
+					seen_kind = True
 				elif child.type == "NAME":
 					name_tok = child
 			elif isinstance(child, Tree) and _name(child) == "lambda_capture_item":
 				return _build_lambda_capture(child)
+		if not seen_kind:
+			kind = "auto"
 		if name_tok is None:
 			raise ValueError("lambda capture item missing name")
 		return LambdaCapture(loc=_loc(node), name=name_tok.value, kind=kind)

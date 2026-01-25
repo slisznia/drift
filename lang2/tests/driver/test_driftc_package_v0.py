@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from lang2.codegen.llvm.test_utils import host_word_bits
-from lang2.driftc.driftc import main as driftc_main
+from lang2.driftc.driftc import _abi_fingerprint, main as driftc_main
 from lang2.driftc.packages import dmir_pkg_v0
 from lang2.driftc.packages.provider_v0 import discover_package_files
 from lang2.driftc.packages.provider_v0 import load_package_v0
@@ -1808,6 +1808,7 @@ def test_driftc_rejects_signature_missing_module_in_strict_mode(tmp_path: Path, 
 			"unstable_format": True,
 			"payload_kind": "provisional-dmir",
 			"payload_version": 0,
+			"abi_fingerprint": _abi_fingerprint("test-target", word_bits=host_word_bits()),
 			"modules": [
 				{
 					"module_id": "acme.badmod",

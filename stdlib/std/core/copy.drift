@@ -1,6 +1,7 @@
 module std.core
 
 import std.core.hash as hash;
+import std.mem as mem;
 
 use trait hash.Hasher;
 
@@ -16,6 +17,8 @@ export {
 	Callback0,
 	Callback1,
 	Callback2,
+	Cell,
+	cell,
 	drop_value,
 	callback0,
 	callback1,
@@ -53,6 +56,27 @@ pub trait Fn1<A, R> {
 
 pub trait Fn2<A, B, R> {
 	fn call(self: &Self, a: A, b: B) -> R;
+}
+
+pub struct Cell<T> {
+	value: T
+}
+
+pub fn cell<T>(var value: T) nothrow -> Cell<T> {
+	return Cell<type T>(value = move value);
+}
+
+implement<T> Cell<T> {
+	pub fn get(self: &Cell<T>) nothrow -> T require T is Copy {
+		return self.value;
+	}
+
+	pub fn set(self: &Cell<T>, var value: T) nothrow -> Void {
+		unsafe {
+			val ptr = mem.ptr_from_ref<type T>(&self.value);
+			mem.ptr_write<type T>(ptr, move value);
+		}
+	}
 }
 
 pub interface Callback0<R> {
@@ -100,6 +124,9 @@ implement<T> Copy for &T {
 }
 
 implement<T> Copy for Optional<T> require T is Copy {
+}
+
+implement<T> Copy for mem.Ptr<T> {
 }
 
 implement Diagnostic for Int {

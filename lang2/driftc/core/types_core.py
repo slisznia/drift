@@ -143,6 +143,8 @@ class InterfaceSchema:
 	module_id: str
 	name: str
 	type_params: list[str]
+	parents: list[GenericTypeExpr]
+	parent_base_ids: list[TypeId]
 	methods: list["InterfaceMethodSchema"]
 
 
@@ -297,6 +299,10 @@ class TypeTable:
 		self._interface_instantiation_cache: dict[tuple[TypeId, tuple[TypeId, ...]], TypeId] = {}
 		# Interface template cache: (base_id, args...) -> template TypeId.
 		self._interface_template_cache: dict[tuple[TypeId, tuple[TypeId, ...]], TypeId] = {}
+		# Interface linearization cache: base_id -> linearized base ids.
+		self._interface_linearization_cache: dict[TypeId, list[TypeId]] = {}
+		# Interface segment offset cache: base_id -> base_id -> slot offset.
+		self._interface_segment_offsets_cache: dict[TypeId, dict[TypeId, int]] = {}
 		# Type parameter cache: TypeParamId -> TypeId.
 		self._typevar_cache: dict[TypeParamId, TypeId] = {}
 		# Array cache: elem TypeId -> Array<elem> TypeId.
@@ -506,7 +512,14 @@ class TypeTable:
 				module_id=module_id,
 			)
 			self._nominal[key] = ty_id
-			self.interface_bases[ty_id] = InterfaceSchema(module_id=module_id, name=name, type_params=type_params, methods=[])
+			self.interface_bases[ty_id] = InterfaceSchema(
+				module_id=module_id,
+				name=name,
+				type_params=type_params,
+				parents=[],
+				parent_base_ids=[],
+				methods=[],
+			)
 			if ty_id not in self.interface_type_param_ids:
 				owner = FunctionId(module="lang.__internal", name=f"__interface_{module_id}::{name}", ordinal=0)
 				self.interface_type_param_ids[ty_id] = [
@@ -526,7 +539,14 @@ class TypeTable:
 				return ty_id
 			raise ValueError(f"type name '{name}' already defined as {td.kind}")
 		ty_id = self._add(TypeKind.INTERFACE, name, [], register_named=True, module_id=module_id)
-		self.interface_bases[ty_id] = InterfaceSchema(module_id=module_id, name=name, type_params=type_params, methods=[])
+		self.interface_bases[ty_id] = InterfaceSchema(
+			module_id=module_id,
+			name=name,
+			type_params=type_params,
+			parents=[],
+			parent_base_ids=[],
+			methods=[],
+		)
 		if ty_id not in self.interface_type_param_ids:
 			owner = FunctionId(module="lang.__internal", name=f"__interface_{module_id}::{name}", ordinal=0)
 			self.interface_type_param_ids[ty_id] = [
@@ -698,7 +718,14 @@ class TypeTable:
 			return self.interface_bases.get(inst.base_id)
 		return None
 
-	def define_interface_schema_methods(self, interface_id: TypeId, methods: list[InterfaceMethodSchema]) -> None:
+	def define_interface_schema_methods(
+		self,
+		interface_id: TypeId,
+		methods: list[InterfaceMethodSchema],
+		*,
+		parents: list[GenericTypeExpr] | None = None,
+		parent_base_ids: list[TypeId] | None = None,
+	) -> None:
 		"""Define interface method schemas for a declared interface base."""
 		schema = self.interface_bases.get(interface_id)
 		if schema is None:
@@ -708,6 +735,10 @@ class TypeTable:
 			if list(existing) != list(methods):
 				raise ValueError(
 					f"interface '{schema.module_id}::{schema.name}' method schema mismatch"
+				)
+			if parents is not None and list(getattr(schema, "parents", []) or []) != list(parents):
+				raise ValueError(
+					f"interface '{schema.module_id}::{schema.name}' parent schema mismatch"
 				)
 			return
 		seen: set[str] = set()
@@ -719,8 +750,175 @@ class TypeTable:
 			module_id=schema.module_id,
 			name=schema.name,
 			type_params=list(schema.type_params),
+			parents=list(parents or []),
+			parent_base_ids=list(parent_base_ids or []),
 			methods=list(methods),
 		)
+		# Reject ambiguous method names across parents (and parent vs child).
+		base_schema = self.interface_bases.get(interface_id)
+		if base_schema is not None:
+			seen: dict[str, TypeId] = {}
+			linear = self.interface_linearization(interface_id)
+			for tid in linear:
+				parent_schema = self.interface_bases.get(tid)
+				for m in list(getattr(parent_schema, "methods", []) or []):
+					prev = seen.get(m.name)
+					if prev is None:
+						seen[m.name] = tid
+						continue
+					if prev == tid:
+						continue
+					prev_schema = self.interface_bases.get(prev)
+					prev_name = f"{prev_schema.module_id}::{prev_schema.name}" if prev_schema else str(prev)
+					cur_name = f"{parent_schema.module_id}::{parent_schema.name}" if parent_schema else str(tid)
+					raise ValueError(
+						f"interface '{base_schema.module_id}::{base_schema.name}' inherits duplicate method '{m.name}' from '{prev_name}' and '{cur_name}'"
+					)
+		# Parent/method changes invalidate cached linearization/offsets.
+		self._interface_linearization_cache.pop(interface_id, None)
+		self._interface_segment_offsets_cache.pop(interface_id, None)
+
+	def interface_linearization(self, base_id: TypeId) -> list[TypeId]:
+		"""
+		Return deterministic linearization for an interface base.
+
+		Linearization rule:
+		- [base_id] + topological order of unique ancestors
+		- primary tie-break: first-seen order from declared parent traversal
+		- secondary tie-break: fully-qualified interface name
+		"""
+		cached = self._interface_linearization_cache.get(base_id)
+		if cached is not None:
+			return list(cached)
+		if base_id not in self.interface_bases:
+			raise ValueError("interface_linearization requires an interface base id")
+		ancestors: set[TypeId] = set()
+		first_seen: dict[TypeId, int] = {}
+		visiting: set[TypeId] = set()
+		visited: set[TypeId] = set()
+
+		def _walk(cur: TypeId) -> None:
+			if cur in visiting:
+				raise ValueError("interface inheritance cycle detected")
+			if cur in visited:
+				return
+			visiting.add(cur)
+			schema = self.interface_bases.get(cur)
+			for parent_id in list(getattr(schema, "parent_base_ids", []) or []):
+				if parent_id not in first_seen:
+					first_seen[parent_id] = len(first_seen)
+				ancestors.add(parent_id)
+				_walk(parent_id)
+			visiting.remove(cur)
+			visited.add(cur)
+
+		_walk(base_id)
+		if not ancestors:
+			out = [base_id]
+			self._interface_linearization_cache[base_id] = list(out)
+			return list(out)
+
+		def _iface_key(tid: TypeId) -> tuple[int, str]:
+			order = first_seen.get(tid, 1 << 30)
+			schema = self.interface_bases.get(tid)
+			if schema is None:
+				return (order, "")
+			mod = schema.module_id or ""
+			return (order, f"{mod}::{schema.name}")
+
+		# Build child->parent edges within ancestor set.
+		edges: dict[TypeId, set[TypeId]] = {tid: set() for tid in ancestors}
+		indegree: dict[TypeId, int] = {tid: 0 for tid in ancestors}
+		for child in list(ancestors):
+			schema = self.interface_bases.get(child)
+			for parent in list(getattr(schema, "parent_base_ids", []) or []):
+				if parent not in ancestors:
+					continue
+				if parent in edges[child]:
+					continue
+				edges[child].add(parent)
+				indegree[parent] += 1
+
+		ready = [tid for tid, deg in indegree.items() if deg == 0]
+		ready.sort(key=_iface_key)
+		order: list[TypeId] = []
+		while ready:
+			cur = ready.pop(0)
+			order.append(cur)
+			for parent in sorted(edges.get(cur, set()), key=_iface_key):
+				indegree[parent] -= 1
+				if indegree[parent] == 0:
+					ready.append(parent)
+			ready.sort(key=_iface_key)
+		if len(order) != len(ancestors):
+			raise ValueError("interface inheritance cycle detected")
+		out = [base_id] + order
+		self._interface_linearization_cache[base_id] = list(out)
+		return list(out)
+
+	def interface_segment_offsets(self, base_id: TypeId) -> dict[TypeId, int]:
+		cached = self._interface_segment_offsets_cache.get(base_id)
+		if cached is not None:
+			return dict(cached)
+		linear = self.interface_linearization(base_id)
+		offsets: dict[TypeId, int] = {}
+		cur = 0
+		for tid in linear:
+			offsets[tid] = cur
+			schema = self.interface_bases.get(tid)
+			method_count = len(getattr(schema, "methods", []) or [])
+			cur += 1 + method_count
+		self._interface_segment_offsets_cache[base_id] = dict(offsets)
+		return dict(offsets)
+
+	def interface_method_lookup(self, base_id: TypeId, method_name: str) -> tuple[TypeId, InterfaceMethodSchema]:
+		linear = self.interface_linearization(base_id)
+		for tid in linear:
+			schema = self.interface_bases.get(tid)
+			for m in list(getattr(schema, "methods", []) or []):
+				if m.name == method_name:
+					return tid, m
+		raise KeyError(method_name)
+
+	def interface_method_vtable_slot(self, receiver_base: TypeId, owner_base: TypeId, method_name: str) -> int:
+		schema = self.interface_bases.get(owner_base)
+		if schema is None:
+			raise ValueError("interface method owner schema missing")
+		methods = list(getattr(schema, "methods", []) or [])
+		for idx, m in enumerate(methods):
+			if m.name == method_name:
+				return 1 + idx
+		raise ValueError("interface method not found in owner schema")
+
+	def interface_instance_view_map(self, iface_ty: TypeId) -> dict[TypeId, TypeId]:
+		"""
+		Return base_id -> concrete interface TypeId for a given interface instance.
+		"""
+		inst = self.get_interface_instance(iface_ty)
+		base_id = inst.base_id if inst is not None else iface_ty
+		type_args = list(inst.type_args) if inst is not None else []
+		out: dict[TypeId, TypeId] = {}
+		visiting: set[TypeId] = set()
+
+		def _walk(cur_base: TypeId, cur_args: list[TypeId]) -> None:
+			if cur_base in visiting:
+				raise ValueError("interface inheritance cycle detected")
+			if cur_base in out:
+				return
+			visiting.add(cur_base)
+			cur_inst = self.ensure_interface_instantiated(cur_base, cur_args)
+			out[cur_base] = cur_inst
+			schema = self.interface_bases.get(cur_base)
+			for parent_expr in list(getattr(schema, "parents", []) or []):
+				parent_ty = self._eval_generic_type_expr(parent_expr, cur_args, module_id=schema.module_id)
+				parent_inst = self.get_interface_instance(parent_ty)
+				parent_base = parent_inst.base_id if parent_inst is not None else parent_ty
+				parent_args = list(parent_inst.type_args) if parent_inst is not None else []
+				_walk(parent_base, parent_args)
+			visiting.remove(cur_base)
+
+		_walk(base_id, type_args)
+		return out
 
 	def get_interface_type_param_ids(self, base_id: TypeId) -> list[TypeParamId] | None:
 		"""Return interface type parameter ids for a base TypeId, if known."""

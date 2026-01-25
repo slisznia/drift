@@ -162,7 +162,8 @@ trait_body: "{" (trait_item | TERMINATOR)* "}"
 trait_item: trait_method_sig TERMINATOR*
 trait_method_sig: UNSAFE? FN_KW ident type_params? "(" [params] ")" NOTHROW? return_sig
 
-interface_def: INTERFACE NAME type_params? interface_body
+interface_def: INTERFACE NAME type_params? interface_parents? interface_body
+interface_parents: ":" type_expr ("," type_expr)*
 interface_body: "{" (interface_item | TERMINATOR)* "}"
 interface_item: interface_method_sig TERMINATOR*
 interface_method_sig: UNSAFE? FN_KW ident type_params? "(" [params] ")" NOTHROW? return_sig

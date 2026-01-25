@@ -223,6 +223,8 @@ def insert_string_arc(
 			yield instr.subject
 		elif isinstance(instr, M.VariantGetField):
 			yield instr.variant
+		elif isinstance(instr, M.ConstructIfaceValue):
+			yield instr.value
 		elif isinstance(instr, M.LoadLocal):
 			yield instr.local
 		elif isinstance(instr, M.LoadRef):
@@ -235,6 +237,8 @@ def insert_string_arc(
 		elif isinstance(instr, M.CallIface):
 			yield instr.iface
 			yield from instr.args
+		elif isinstance(instr, M.IfaceUpcast):
+			yield instr.iface
 		elif isinstance(instr, M.StringConcat):
 			yield instr.left
 			yield instr.right
@@ -613,6 +617,23 @@ def insert_string_arc(
 						M.ConstructVariant(dest=instr.dest, variant_ty=instr.variant_ty, ctor=instr.ctor, args=args)
 					)
 					continue
+			if isinstance(instr, M.ConstructIfaceValue):
+				val = instr.value
+				if _is_string_tid(instr.value_ty):
+					if val in move_only_values:
+						_note_use(val, consume=True)
+					else:
+						val = _ensure_owned(val, owned_values, new_instrs)
+						_note_use(val, consume=True)
+				new_instrs.append(
+					M.ConstructIfaceValue(
+						dest=instr.dest,
+						iface_ty=instr.iface_ty,
+						value=val,
+						value_ty=instr.value_ty,
+					)
+				)
+				continue
 
 			if isinstance(instr, M.ConstructResultOk) and instr.value is not None:
 				val = instr.value
@@ -726,6 +747,7 @@ def insert_string_arc(
 						param_types=instr.param_types,
 						user_ret_type=instr.user_ret_type,
 						can_throw=instr.can_throw,
+						slot_index=instr.slot_index,
 					)
 				)
 				continue

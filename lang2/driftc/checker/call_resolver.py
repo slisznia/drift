@@ -1072,20 +1072,28 @@ def resolve_method_call(ctx: MethodResolverContext, expr: object, *, expected_ty
 		if call_type_args:
 			diagnostics.append(_tc_diag(message="interface methods do not accept type arguments in MVP", severity="error", span=call_type_args_span or getattr(expr, "loc", Span())))
 			return MethodCallResult(ctx.unknown_ty, None)
-		method_schema = {m.name: m for m in (schema.methods or [])}.get(expr.method_name)
-		if method_schema is None:
+		try:
+			owner_id, method_schema = ctx.type_table.interface_method_lookup(base_id, expr.method_name)
+		except KeyError:
 			diagnostics.append(_tc_diag(message=f"unknown method '{expr.method_name}' on interface '{schema.name}'", severity="error", span=getattr(expr, "loc", Span())))
 			return MethodCallResult(ctx.unknown_ty, None)
 		if method_schema.type_params:
 			diagnostics.append(_tc_diag(message=f"interface method '{expr.method_name}' type parameters are not supported in MVP", severity="error", span=getattr(expr, "loc", Span())))
 			return MethodCallResult(ctx.unknown_ty, None)
 		type_args = list(getattr(interface_inst, "type_args", []) or [])
+		try:
+			inst_map = ctx.type_table.interface_instance_view_map(recv_nominal)
+			owner_inst = ctx.type_table.get_interface_instance(inst_map.get(owner_id)) if inst_map else None
+			if owner_inst is not None:
+				type_args = list(owner_inst.type_args)
+		except Exception:
+			pass
 		param_types = []
 		for param in method_schema.params:
 			if param.name == "self":
 				continue
-			param_types.append(ctx.type_table._eval_generic_type_expr(param.type_expr, type_args, module_id=schema.module_id))
-		ret_ty = ctx.type_table._eval_generic_type_expr(method_schema.return_type, type_args, module_id=schema.module_id)
+			param_types.append(ctx.type_table._eval_generic_type_expr(param.type_expr, type_args, module_id=ctx.type_table.interface_bases.get(owner_id).module_id if ctx.type_table.interface_bases.get(owner_id) is not None else schema.module_id))
+		ret_ty = ctx.type_table._eval_generic_type_expr(method_schema.return_type, type_args, module_id=ctx.type_table.interface_bases.get(owner_id).module_id if ctx.type_table.interface_bases.get(owner_id) is not None else schema.module_id)
 		if len(arg_types) != len(param_types):
 			diagnostics.append(_tc_diag(message=f"{schema.name}.{expr.method_name} expects {len(param_types)} argument(s)", severity="error", span=getattr(expr, "loc", Span())))
 			return MethodCallResult(ctx.unknown_ty, None)
@@ -2699,6 +2707,13 @@ def resolve_call_expr(
 		if td.kind is TypeKind.REF and td.ref_mut and td.param_types:
 			return td.param_types[0]
 		return None
+	def _ref_inner(tid: TypeId | None) -> TypeId | None:
+		if tid is None:
+			return None
+		td = ctx.type_table.get(tid)
+		if td.kind is TypeKind.REF and not td.ref_mut and td.param_types:
+			return td.param_types[0]
+		return None
 	def _maybe_uninit_inner(tid: TypeId | None) -> TypeId | None:
 		if tid is None:
 			return None
@@ -3228,6 +3243,7 @@ def resolve_call_expr(
 		if not param_types:
 			diagnostics.append(_tc_diag(message=f"{expr.fn.name} expects a function value", severity="error", span=getattr(expr.args[0], "loc", getattr(expr, "loc", Span()))))
 			return record_expr(expr, ctx.unknown_ty)
+		ret_ty = param_types[-1]
 		argc = len(param_types) - 1
 		if argc != want_args:
 			diagnostics.append(_tc_diag(message=f"{expr.fn.name} expects a function with {want_args} argument(s)", severity="error", span=getattr(expr.args[0], "loc", getattr(expr, "loc", Span()))))
@@ -3235,7 +3251,6 @@ def resolve_call_expr(
 		if arg_def.fn_throws:
 			diagnostics.append(_tc_diag(message=f"{expr.fn.name} requires a nothrow function", severity="error", span=getattr(expr.args[0], "loc", getattr(expr, "loc", Span()))))
 			return record_expr(expr, ctx.unknown_ty)
-		ret_ty = param_types[-1]
 		if expr.fn.name == "callback0":
 			type_args = [ret_ty]
 		elif expr.fn.name == "callback1":

@@ -77,6 +77,14 @@ void drift_cb_env_free(void *data) {
 	drift_free_array(data);
 }
 
+void *drift_iface_alloc(size_t size, size_t align) {
+	return drift_alloc_array(size, align, 1, 1);
+}
+
+void drift_iface_free(void *data) {
+	drift_free_array(data);
+}
+
 void drift_bounds_check(struct DriftString container_id, drift_isize idx, drift_isize len) {
 	if (idx < 0 || idx >= len) {
 		drift_bounds_check_fail(container_id, idx, len);

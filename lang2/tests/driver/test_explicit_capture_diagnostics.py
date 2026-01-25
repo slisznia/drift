@@ -91,7 +91,7 @@ module m_main
 
 fn main() nothrow -> Int{
 	var x = 1;
-	return (| | captures(x) => { x += 1; return 0; })();
+	return (| | captures(&x) => { x += 1; return 0; })();
 }
 """
 	rc, payload = _compile_single_module(tmp_path, capsys, source)

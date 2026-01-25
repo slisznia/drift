@@ -70,3 +70,16 @@ interface I<T> {
 """
 	_module, _type_table, _exc_catalog, diagnostics = _parse(tmp_path, src)
 	assert _has_error(diagnostics, "interface method 'f' shadows interface type parameter 'T'")
+
+
+def test_interface_duplicate_method_from_parent_error(tmp_path: Path) -> None:
+	src = """
+interface A {
+	fn f() -> Int
+}
+interface B: A {
+	fn f() -> Int
+}
+"""
+	_module, _type_table, _exc_catalog, diagnostics = _parse(tmp_path, src)
+	assert _has_error(diagnostics, "inherits duplicate method 'f'")

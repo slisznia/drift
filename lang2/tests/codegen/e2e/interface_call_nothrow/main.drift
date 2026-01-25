@@ -1,0 +1,20 @@
+module m_main
+
+interface I {
+	fn call(self: &Self, v: Int) nothrow -> Int;
+}
+
+struct Box {
+	value: Int
+}
+
+implement I for Box {
+	fn call(self: &Box, v: Int) nothrow -> Int {
+		return self.value + v;
+	}
+}
+
+fn main() nothrow -> Int {
+	var b = Box(value = 40);
+	return b.call(2);
+}

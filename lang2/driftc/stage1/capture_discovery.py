@@ -254,6 +254,8 @@ def discover_captures(lambda_expr: H.HLambda) -> CaptureDiscoveryResult:
 			return C.HCaptureKind.COPY
 		if kind == "move":
 			return C.HCaptureKind.MOVE
+		if kind == "auto":
+			return C.HCaptureKind.REF
 		diags.append(
 			_cap_diag(
 				message="unsupported explicit capture kind",
@@ -274,6 +276,19 @@ def discover_captures(lambda_expr: H.HLambda) -> CaptureDiscoveryResult:
 		_walk_expr(lambda_expr.body_expr)
 
 	if explicit_caps is not None:
+		root_usage: dict[int, _CaptureUsage] = {}
+		for key, use in usage.items():
+			root = key.root_local
+			if root is None:
+				continue
+			entry = root_usage.setdefault(int(root), _CaptureUsage())
+			entry.read = entry.read or use.read
+			entry.borrow_shared = entry.borrow_shared or use.borrow_shared
+			entry.borrow_mut = entry.borrow_mut or use.borrow_mut
+			entry.move = entry.move or use.move
+			entry.write = entry.write or use.write
+			if entry.span == Span():
+				entry.span = use.span
 		seen_names: set[str] = set()
 		explicit_roots: set[int] = set()
 		explicit_names: dict[int, str] = {}
@@ -301,6 +316,22 @@ def discover_captures(lambda_expr: H.HLambda) -> CaptureDiscoveryResult:
 			kind = _kind_from_explicit(cap.kind, cap.span)
 			if kind is None:
 				continue
+			if cap.kind == "auto":
+				use = root_usage.get(int(cap.binding_id))
+				if use is not None:
+					if use.move:
+						diags.append(
+							_cap_diag(
+								message=f"capture '{cap.name}' moves value; capture move {cap.name} to move",
+								severity="error",
+								span=use.span if use.span != Span() else cap.span,
+							)
+						)
+						continue
+					if use.write or use.borrow_mut:
+						kind = C.HCaptureKind.REF_MUT
+					elif use.borrow_shared or use.read:
+						kind = C.HCaptureKind.REF
 			explicit_roots.add(int(cap.binding_id))
 			explicit_names[int(cap.binding_id)] = cap.name
 			explicit_list.append(
@@ -330,19 +361,6 @@ def discover_captures(lambda_expr: H.HLambda) -> CaptureDiscoveryResult:
 					span=span,
 				)
 			)
-		root_usage: dict[int, _CaptureUsage] = {}
-		for key, use in usage.items():
-			root = key.root_local
-			if root is None:
-				continue
-			entry = root_usage.setdefault(int(root), _CaptureUsage())
-			entry.read = entry.read or use.read
-			entry.borrow_shared = entry.borrow_shared or use.borrow_shared
-			entry.borrow_mut = entry.borrow_mut or use.borrow_mut
-			entry.move = entry.move or use.move
-			entry.write = entry.write or use.write
-			if entry.span == Span():
-				entry.span = use.span
 		for cap in explicit_list:
 			if cap.kind is not C.HCaptureKind.REF:
 				continue

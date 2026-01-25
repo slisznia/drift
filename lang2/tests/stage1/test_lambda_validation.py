@@ -151,6 +151,34 @@ def test_lambda_in_call_arg_allowed_for_nonretaining_param() -> None:
 	assert res.diagnostics == []
 
 
+def test_borrowed_capture_allowed_for_nonretaining_param() -> None:
+	lam = H.HLambda(
+		params=[],
+		body_expr=H.HVar(name="x", binding_id=1),
+		body_block=None,
+		explicit_captures=[H.HExplicitCapture(name="x", kind="ref_mut", binding_id=1)],
+	)
+	call = H.HCall(fn=H.HVar(name="f"), args=[lam], kwargs=[])
+	fn_id = FunctionId(module="main", name="f", ordinal=0)
+	signatures_by_id = {fn_id: FnSignature(name="f", param_names=["f"])}
+	typed_fns = {fn_id: _typed_fn_with_direct_call(fn_id, param_name="f")}
+	signatures = _analyze_signatures(signatures_by_id, typed_fns)
+	assign_node_ids(call)
+	call_resolutions = {
+		call.node_id: CallableDecl(
+			callable_id=1,
+			name="f",
+			kind=CallableKind.FREE_FUNCTION,
+			module_id=0,
+			visibility=Visibility.public(),
+			signature=CallableSignature(param_types=(), result_type=0),
+			fn_id=fn_id,
+		)
+	}
+	res = validate_lambdas_non_retaining(call, signatures_by_id=signatures, call_resolutions=call_resolutions)
+	assert res.diagnostics == []
+
+
 def test_lambda_immediate_call_nested_in_expr_allowed() -> None:
 	inner = H.HCall(fn=H.HLambda(params=[], body_expr=H.HLiteralInt(1), body_block=None), args=[], kwargs=[])
 	outer = H.HCall(fn=H.HVar(name="g"), args=[inner], kwargs=[])

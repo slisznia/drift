@@ -236,6 +236,29 @@ Distribution packages (DMP/DMIR-PKG) are signed at the container level; the
 signature covers the container bytes, which include the DMIR blobs and the
 package manifest metadata.
 
+## ABI fingerprint (package manifest)
+Package manifests include an `abi_fingerprint` object. It is a **hard
+compatibility key**: all packages loaded in a build must share the exact same
+fingerprint or the linker/toolchain must reject the build.
+
+Required fields (v1):
+
+```
+abi_fingerprint = {
+  "drift_abi_version": 1,
+  "target": "<target triple>",
+  "word_bits": 32 | 64,
+  "iface_inline_bytes": word_bits * 4,
+  "iface_inline_align": word_bits / 8,
+  "iface_layout": "iface-v1-sbo",
+  "fnresult_layout": "fnresult-v1",
+  "call_conv": "drift-v1"
+}
+```
+
+The fingerprint is checked at package load time; mixing mismatched ABI
+fingerprints is a hard error.
+
 ## Surface → DMIR → SSA MIR examples (annotated)
 
 ### Example 1: ternary call

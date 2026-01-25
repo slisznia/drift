@@ -178,10 +178,8 @@ fn drift_main() nothrow -> Int {
 		prelude_enabled=False,
 	)
 	assert checked.diagnostics == []
-	vtable_lines = [line for line in ir.splitlines() if "DriftVTable" in line]
-	assert any("getelementptr inbounds %DriftVTable" in line for line in vtable_lines)
-	assert any("i32 0, i32 0" in line for line in vtable_lines)
-	assert not any("i32 0, i32 1" in line for line in vtable_lines)
+	vtable_lines = [line for line in ir.splitlines() if "getelementptr inbounds i8*, i8**" in line]
+	assert any("i32 1" in line for line in vtable_lines)
 	exit_code = _run_ir_with_clang(ir)
 	assert exit_code == 42
 
@@ -571,7 +569,7 @@ fn drift_main() nothrow -> Int {
 	needles = [
 		"extractvalue %DriftIface",
 		"bitcast i8*",
-		"getelementptr inbounds %DriftVTable",
+		"getelementptr inbounds i8*, i8**",
 		"load i8*",
 		"bitcast i8*",
 		"call",
@@ -655,7 +653,7 @@ fn drift_main() nothrow -> Int {
 	needles = [
 		"extractvalue %DriftIface",
 		"bitcast i8*",
-		"getelementptr inbounds %DriftVTable",
+		"getelementptr inbounds i8*, i8**",
 		"load i8*",
 		"bitcast i8*",
 		"call",

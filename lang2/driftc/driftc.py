@@ -2930,6 +2930,7 @@ def compile_stubbed_funcs(
 				exc_env=exc_env,
 				param_types=param_types,
 				expr_types=getattr(typed_fns_by_id.get(fn_id), "expr_types", None),
+				iface_coercions=getattr(typed_fns_by_id.get(fn_id), "iface_coercions", None),
 				signatures_by_id=signatures_by_id,
 				current_fn_id=fn_id,
 				call_info_by_callsite_id=getattr(typed_fns_by_id.get(fn_id), "call_info_by_callsite_id", {}),
@@ -3287,6 +3288,7 @@ def compile_stubbed_funcs(
 			exc_env=exc_env,
 			param_types=param_types,
 			expr_types=getattr(hidden_typed_fn, "expr_types", None),
+			iface_coercions=getattr(hidden_typed_fn, "iface_coercions", None),
 			signatures_by_id=signatures_by_id,
 			current_fn_id=spec.fn_id,
 			call_info_by_callsite_id=hidden_typed_fn.call_info_by_callsite_id,
@@ -3446,6 +3448,7 @@ def compile_stubbed_funcs(
 			exc_env=exc_env,
 			param_types=param_types,
 			expr_types=getattr(lambda_typed_fn, "expr_types", None),
+			iface_coercions=getattr(lambda_typed_fn, "iface_coercions", None),
 			signatures_by_id=signatures_by_id,
 			current_fn_id=spec.fn_id,
 			call_info_by_callsite_id=lambda_call_info or lambda_typed_fn.call_info_by_callsite_id,
@@ -3509,6 +3512,8 @@ def compile_stubbed_funcs(
 	_validate_mir_call_invariants(mir_funcs_by_id)
 	_validate_mir_array_alloc_invariants(mir_funcs_by_id)
 	_validate_mir_wrapping_u64_invariants(mir_funcs_by_id, shared_type_table)
+	if shared_type_table is not None:
+		_validate_mir_iface_init_invariants(mir_funcs_by_id, signatures_by_id, shared_type_table)
 	if shared_type_table is not None:
 		_validate_mir_array_copy_invariants(mir_funcs_by_id, shared_type_table)
 	if shared_type_table is not None:
@@ -3707,6 +3712,7 @@ def compile_to_llvm_ir_for_tests(
 		ssa_funcs,
 		fn_infos,
 		type_table=checked.type_table,
+		module_exports=module_exports,
 		rename_map=rename_map,
 		argv_wrapper=argv_wrapper,
 		word_bits=host_word_bits(),
@@ -3981,6 +3987,147 @@ def _validate_mir_wrapping_u64_invariants(
 						)
 
 
+def _validate_mir_iface_init_invariants(
+	funcs: Mapping[FunctionId, M.MirFunc],
+	signatures_by_id: Mapping[FunctionId, FnSignature],
+	type_table: TypeTable,
+) -> None:
+	"""Ensure interface values are initialized before DropValue."""
+	def _is_iface(ty_id: TypeId) -> bool:
+		return type_table.get(ty_id).kind is TypeKind.INTERFACE
+
+	for fn_id, func in funcs.items():
+		sig = signatures_by_id.get(fn_id)
+		iface_params: set[M.ValueId] = set()
+		iface_param_locals: set[M.LocalId] = set()
+		if sig is not None and sig.param_type_ids:
+			for name, ty_id in zip(func.params, sig.param_type_ids):
+				if _is_iface(ty_id):
+					iface_params.add(name)
+					iface_param_locals.add(name)
+
+		value_iface_type: dict[M.ValueId, bool] = {}
+		for block in func.blocks.values():
+			for instr in block.instructions:
+				dest = getattr(instr, "dest", None)
+				if not isinstance(dest, str):
+					continue
+				ty_id: TypeId | None = None
+				if isinstance(instr, (M.ConstructIface, M.ConstructIfaceValue)):
+					ty_id = instr.iface_ty
+				elif isinstance(instr, M.ZeroValue):
+					ty_id = instr.ty
+				elif isinstance(instr, (M.CopyValue, M.MoveOut)):
+					ty_id = instr.ty
+				elif isinstance(instr, M.Call):
+					call_sig = signatures_by_id.get(instr.fn_id)
+					if call_sig is not None:
+						ty_id = call_sig.return_type_id
+				elif isinstance(instr, (M.CallIndirect, M.CallIface)):
+					ty_id = instr.user_ret_type
+				if isinstance(instr, M.IfaceUpcast):
+					value_iface_type[dest] = True
+					continue
+				if ty_id is not None and _is_iface(ty_id):
+					value_iface_type[dest] = True
+
+		# Build CFG.
+		succs: dict[str, list[str]] = {}
+		for name, block in func.blocks.items():
+			term = block.terminator
+			if isinstance(term, M.Goto):
+				succs[name] = [term.target]
+			elif isinstance(term, M.IfTerminator):
+				succs[name] = [term.then_target, term.else_target]
+			else:
+				succs[name] = []
+		preds: dict[str, list[str]] = {name: [] for name in func.blocks.keys()}
+		for name, targets in succs.items():
+			for tgt in targets:
+				preds.setdefault(tgt, []).append(name)
+
+		inited_in: dict[str, set[M.LocalId]] = {name: set() for name in func.blocks.keys()}
+		out_inited: dict[str, set[M.LocalId]] = {name: set() for name in func.blocks.keys()}
+		changed = True
+		order = list(func.blocks.keys())
+		while changed:
+			changed = False
+			for name in order:
+				if preds.get(name):
+					new_in = set.intersection(*(out_inited[p] for p in preds[name])) if preds[name] else set()
+				else:
+					new_in = set(iface_param_locals)
+				if new_in != inited_in[name]:
+					inited_in[name] = set(new_in)
+					changed = True
+				cur_locals = set(inited_in[name])
+				cur_values: set[M.ValueId] = set(iface_params)
+
+				for instr in func.blocks[name].instructions:
+					if isinstance(instr, M.LoadLocal):
+						if instr.local in cur_locals:
+							cur_values.add(instr.dest)
+						continue
+					if isinstance(instr, M.StoreLocal):
+						val_is_iface = instr.value in cur_values or instr.value in iface_params or value_iface_type.get(instr.value, False)
+						if val_is_iface:
+							if instr.value not in cur_values and instr.value not in iface_params:
+								raise AssertionError(
+									f"MIR invariant violation: storing uninitialized iface value in {function_symbol(fn_id)}"
+								)
+							cur_locals.add(instr.local)
+						else:
+							if instr.local in cur_locals:
+								cur_locals.discard(instr.local)
+						continue
+					if isinstance(instr, M.IfaceUpcast):
+						if instr.iface not in cur_values and instr.iface not in iface_params:
+							raise AssertionError(
+								f"MIR invariant violation: IfaceUpcast of uninitialized iface value in {function_symbol(fn_id)}"
+							)
+						cur_values.add(instr.dest)
+						continue
+					if isinstance(instr, M.CopyValue) and _is_iface(instr.ty):
+						if instr.value not in cur_values and instr.value not in iface_params:
+							raise AssertionError(
+								f"MIR invariant violation: CopyValue of uninitialized iface value in {function_symbol(fn_id)}"
+							)
+						cur_values.add(instr.dest)
+						continue
+					if isinstance(instr, M.MoveOut) and _is_iface(instr.ty):
+						if instr.local not in cur_locals:
+							raise AssertionError(
+								f"MIR invariant violation: MoveOut of uninitialized iface local in {function_symbol(fn_id)}"
+							)
+						cur_values.add(instr.dest)
+						cur_locals.add(instr.local)
+						continue
+					if isinstance(instr, (M.ConstructIface, M.ConstructIfaceValue)):
+						cur_values.add(instr.dest)
+						continue
+					if isinstance(instr, M.ZeroValue) and _is_iface(instr.ty):
+						cur_values.add(instr.dest)
+						continue
+					if isinstance(instr, (M.CallIndirect, M.CallIface)) and _is_iface(instr.user_ret_type):
+						if instr.dest is not None:
+							cur_values.add(instr.dest)
+						continue
+					if isinstance(instr, M.Call):
+						call_sig = signatures_by_id.get(instr.fn_id)
+						if call_sig is not None and _is_iface(call_sig.return_type_id) and instr.dest is not None:
+							cur_values.add(instr.dest)
+						continue
+					if isinstance(instr, M.DropValue) and _is_iface(instr.ty):
+						if instr.value not in cur_values and instr.value not in iface_params:
+							raise AssertionError(
+								f"MIR invariant violation: DropValue of uninitialized iface value in {function_symbol(fn_id)}"
+							)
+						continue
+				if cur_locals != out_inited[name]:
+					out_inited[name] = set(cur_locals)
+					changed = True
+
+
 __all__ = ["compile_stubbed_funcs", "compile_to_llvm_ir_for_tests"]
 
 
@@ -4013,6 +4160,20 @@ def _source_label() -> str:
 
 def _package_label() -> str:
 	return "<package>"
+
+
+def _abi_fingerprint(target: str, *, word_bits: int) -> dict[str, object]:
+	inline_bytes = (word_bits // 8) * 4
+	return {
+		"drift_abi_version": 1,
+		"target": target,
+		"word_bits": int(word_bits),
+		"iface_inline_bytes": int(inline_bytes),
+		"iface_inline_align": int(word_bits // 8),
+		"iface_layout": "iface-v1-sbo",
+		"fnresult_layout": "fnresult-v1",
+		"call_conv": "drift-v1",
+	}
 
 
 def _trust_label() -> str:
@@ -4316,6 +4477,44 @@ def main(argv: list[str] | None = None) -> int:
 				return 1
 			if pkg_sha != prev_sha and pkg.path != prev_path:
 				msg = f"duplicate package id '{pkg_id}' in build from different artifacts"
+				if args.json:
+					print(json.dumps({"exit_code": 1, "diagnostics": [{"phase": "package", "message": msg, "severity": "error", "file": "<package>", "line": None, "column": None}]}))
+				else:
+					print(f"{_package_label()}:?:?: error: {msg}", file=sys.stderr)
+				return 1
+
+		abi_expected: dict[str, object] | None = None
+		for pkg in loaded_pkgs:
+			abi = pkg.manifest.get("abi_fingerprint")
+			if not isinstance(abi, dict):
+				msg = f"package '{pkg.manifest.get('package_id')}' missing abi_fingerprint"
+				if args.json:
+					print(json.dumps({"exit_code": 1, "diagnostics": [{"phase": "package", "message": msg, "severity": "error", "file": "<package>", "line": None, "column": None}]}))
+				else:
+					print(f"{_package_label()}:?:?: error: {msg}", file=sys.stderr)
+				return 1
+			if abi_expected is None:
+				abi_expected = abi
+				continue
+			if abi != abi_expected:
+				msg = "ABI fingerprint mismatch across packages in build"
+				if args.json:
+					print(json.dumps({"exit_code": 1, "diagnostics": [{"phase": "package", "message": msg, "severity": "error", "file": "<package>", "line": None, "column": None}]}))
+				else:
+					print(f"{_package_label()}:?:?: error: {msg}", file=sys.stderr)
+				return 1
+		if abi_expected is not None:
+			target = args.package_target if args.package_target is not None else abi_expected.get("target")
+			if not isinstance(target, str):
+				msg = "ABI fingerprint missing target"
+				if args.json:
+					print(json.dumps({"exit_code": 1, "diagnostics": [{"phase": "package", "message": msg, "severity": "error", "file": "<package>", "line": None, "column": None}]}))
+				else:
+					print(f"{_package_label()}:?:?: error: {msg}", file=sys.stderr)
+				return 1
+			local_abi = _abi_fingerprint(str(target), word_bits=host_word_bits())
+			if local_abi != abi_expected:
+				msg = "ABI fingerprint mismatch between toolchain target and loaded packages"
 				if args.json:
 					print(json.dumps({"exit_code": 1, "diagnostics": [{"phase": "package", "message": msg, "severity": "error", "file": "<package>", "line": None, "column": None}]}))
 				else:
@@ -6196,6 +6395,7 @@ def main(argv: list[str] | None = None) -> int:
 			"package_id": package_id,
 			"package_version": str(args.package_version),
 			"target": str(args.package_target),
+			"abi_fingerprint": _abi_fingerprint(str(args.package_target), word_bits=host_word_bits()),
 			"build_epoch": str(args.package_build_epoch) if args.package_build_epoch else None,
 			"unsigned": True,
 			"unstable_format": True,
@@ -6407,6 +6607,7 @@ def main(argv: list[str] | None = None) -> int:
 			ssa_all,
 			fn_infos,
 			type_table=checked_src.type_table,
+			module_exports=module_exports,
 			rename_map={},
 			argv_wrapper=None,
 			word_bits=_target_word_bits(args.target_word_bits),

@@ -1,0 +1,25 @@
+module m
+
+interface A {
+	fn first(self: &Self) nothrow -> Int;
+	fn second(self: &Self) nothrow -> Int;
+}
+
+struct Box {
+	base: Int
+}
+
+implement A for Box {
+	fn first(self: &Box) nothrow -> Int {
+		return self.base + 1;
+	}
+
+	fn second(self: &Box) nothrow -> Int {
+		return self.base + 2;
+	}
+}
+
+fn main() nothrow -> Int {
+	val a: A = Box(base = 10);
+	return a.second() * 10 + a.first();
+}

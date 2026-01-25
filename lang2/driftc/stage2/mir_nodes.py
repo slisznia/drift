@@ -141,6 +141,23 @@ class ConstructIface(MInstr):
 
 
 @dataclass
+class ConstructIfaceValue(MInstr):
+	"""dest = interface value by boxing a concrete value."""
+	dest: ValueId
+	iface_ty: TypeId
+	value: ValueId
+	value_ty: TypeId
+
+
+@dataclass
+class IfaceUpcast(MInstr):
+	"""dest = interface value with vtable pointer retargeted to parent segment."""
+	dest: ValueId
+	iface: ValueId
+	slot_offset: int
+
+
+@dataclass
 class ZeroValue(MInstr):
 	"""
 	dest = 0-value of a type (zero / null / zero-initialized aggregate).
@@ -792,6 +809,7 @@ class CallIface(MInstr):
 	param_types: List[TypeId]
 	user_ret_type: TypeId
 	can_throw: bool
+	slot_index: int
 
 
 @dataclass
@@ -1065,6 +1083,8 @@ __all__ = [
 	"ConstFloat",
 	"FnPtrConst",
 	"ConstructIface",
+	"ConstructIfaceValue",
+	"IfaceUpcast",
 	"ZeroValue",
 	"StringRetain",
 	"StringRelease",

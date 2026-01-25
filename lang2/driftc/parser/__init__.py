@@ -2694,6 +2694,38 @@ def parse_drift_workspace_to_hir(
 					_i.name,
 					list(getattr(_i, "type_params", []) or []),
 				)
+				interface_type_params = list(getattr(_i, "type_params", []) or [])
+				parent_exprs = [
+					_generic_type_expr_from_parser(p, type_params=interface_type_params)
+					for p in getattr(_i, "parents", []) or []
+				]
+				parent_base_ids: list[TypeId] = []
+				for pexpr in parent_exprs:
+					if pexpr.param_index is not None:
+						diagnostics.append(
+							_p_diag(
+								message=f"interface '{_i.name}' parent cannot be a type parameter",
+								severity="error",
+								span=Span.from_loc(getattr(_i, "loc", None)),
+							)
+						)
+						continue
+					parent_mod = pexpr.module_id or _mid
+					try:
+						base_id = shared_type_table.require_nominal(
+							kind=TypeKind.INTERFACE,
+							module_id=parent_mod,
+							name=pexpr.name,
+						)
+						parent_base_ids.append(base_id)
+					except ValueError as err:
+						diagnostics.append(
+							_p_diag(
+								message=str(err),
+								severity="error",
+								span=Span.from_loc(getattr(_i, "loc", None)),
+							)
+						)
 				methods = _build_interface_method_schemas(
 					_i,
 					module_id=_mid,
@@ -2701,7 +2733,12 @@ def parse_drift_workspace_to_hir(
 					diagnostics=diagnostics,
 				)
 				interface_id = shared_type_table.require_nominal(kind=TypeKind.INTERFACE, module_id=_mid, name=_i.name)
-				shared_type_table.define_interface_schema_methods(interface_id, methods)
+				shared_type_table.define_interface_schema_methods(
+					interface_id,
+					methods,
+					parents=parent_exprs,
+					parent_base_ids=parent_base_ids,
+				)
 			except ValueError as err:
 				diagnostics.append(_p_diag(message=str(err), severity="error", span=Span.from_loc(getattr(_i, "loc", None))))
 		for _v in getattr(_prog, "variants", []) or []:
@@ -3585,6 +3622,38 @@ def _lower_parsed_program_to_hir(
 				i.name,
 				list(getattr(i, "type_params", []) or []),
 			)
+			interface_type_params = list(getattr(i, "type_params", []) or [])
+			parent_exprs = [
+				_generic_type_expr_from_parser(p, type_params=interface_type_params)
+				for p in getattr(i, "parents", []) or []
+			]
+			parent_base_ids: list[TypeId] = []
+			for pexpr in parent_exprs:
+				if pexpr.param_index is not None:
+					diagnostics.append(
+						_p_diag(
+							message=f"interface '{i.name}' parent cannot be a type parameter",
+							severity="error",
+							span=Span.from_loc(getattr(i, "loc", None)),
+						)
+					)
+					continue
+				parent_mod = pexpr.module_id or module_id
+				try:
+					base_id = type_table.require_nominal(
+						kind=TypeKind.INTERFACE,
+						module_id=parent_mod,
+						name=pexpr.name,
+					)
+					parent_base_ids.append(base_id)
+				except ValueError as err:
+					diagnostics.append(
+						_p_diag(
+							message=str(err),
+							severity="error",
+							span=Span.from_loc(getattr(i, "loc", None)),
+						)
+					)
 			methods = _build_interface_method_schemas(
 				i,
 				module_id=module_id,
@@ -3592,7 +3661,12 @@ def _lower_parsed_program_to_hir(
 				diagnostics=diagnostics,
 			)
 			interface_id = type_table.require_nominal(kind=TypeKind.INTERFACE, module_id=module_id, name=i.name)
-			type_table.define_interface_schema_methods(interface_id, methods)
+			type_table.define_interface_schema_methods(
+				interface_id,
+				methods,
+				parents=parent_exprs,
+				parent_base_ids=parent_base_ids,
+			)
 		except ValueError as err:
 			diagnostics.append(_p_diag(message=str(err), severity="error", span=Span.from_loc(getattr(i, "loc", None))))
 	# Declare all variant names/schemas next so type resolution can instantiate

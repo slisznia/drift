@@ -192,6 +192,7 @@ class HIRToMIR:
 		exc_env: Mapping[str, int] | None = None,
 		param_types: Mapping[str, TypeId] | None = None,
 		expr_types: Mapping[int, TypeId] | None = None,
+		iface_coercions: Mapping[int, TypeId] | None = None,
 		signatures_by_id: Mapping[FunctionId, FnSignature] | None = None,
 		current_fn_id: FunctionId | None = None,
 		call_info_by_callsite_id: Mapping[int, CallInfo] | None = None,
@@ -241,6 +242,7 @@ class HIRToMIR:
 		self._signatures_by_id = signatures_by_id or {}
 		self._current_fn_id = current_fn_id
 		self._expr_types: dict[int, TypeId] = dict(expr_types) if expr_types else {}
+		self._iface_coercions: dict[int, TypeId] = dict(iface_coercions) if iface_coercions else {}
 		self._call_info_by_callsite_id: dict[int, CallInfo] = (
 			dict(call_info_by_callsite_id) if call_info_by_callsite_id else {}
 		)
@@ -677,7 +679,7 @@ class HIRToMIR:
 		self.b.emit(M.LoadLocal(dest=dest, local=result_local))
 		return dest
 
-	def lower_expr(self, expr: H.HExpr, *, expected_type: TypeId | None = None) -> M.ValueId:
+	def _lower_expr_raw(self, expr: H.HExpr, *, expected_type: TypeId | None = None) -> M.ValueId:
 		"""
 		Entry point: lower a single HIR expression to a MIR ValueId.
 
@@ -692,6 +694,38 @@ class HIRToMIR:
 			return method(expr)
 		finally:
 			self._expected_type_stack.pop()
+
+	def lower_expr(self, expr: H.HExpr, *, expected_type: TypeId | None = None) -> M.ValueId:
+		if getattr(expr, "node_id", None) in self._iface_coercions:
+			target_iface = self._iface_coercions[expr.node_id]
+			value = self._lower_expr_raw(expr, expected_type=expected_type)
+			value_ty = self._infer_expr_type(expr)
+			if value_ty is None:
+				raise AssertionError("interface coercion missing source type (checker bug)")
+			if self._type_table.get(value_ty).kind is TypeKind.INTERFACE:
+				src_inst = self._type_table.get_interface_instance(value_ty)
+				src_base = src_inst.base_id if src_inst is not None else value_ty
+				tgt_inst = self._type_table.get_interface_instance(target_iface)
+				tgt_base = tgt_inst.base_id if tgt_inst is not None else target_iface
+				offsets = self._type_table.interface_segment_offsets(src_base)
+				if tgt_base not in offsets:
+					raise AssertionError("interface upcast target not in linearization (checker bug)")
+				dest = self.b.new_temp()
+				self.b.emit(M.IfaceUpcast(dest=dest, iface=value, slot_offset=offsets[tgt_base]))
+				self._local_types[dest] = target_iface
+				return dest
+			dest = self.b.new_temp()
+			self.b.emit(
+				M.ConstructIfaceValue(
+					dest=dest,
+					iface_ty=target_iface,
+					value=value,
+					value_ty=value_ty,
+				)
+			)
+			self._local_types[dest] = target_iface
+			return dest
+		return self._lower_expr_raw(expr, expected_type=expected_type)
 
 	def _current_expected_type(self) -> TypeId | None:
 		"""Return the current expected type hint for expression lowering."""
@@ -938,7 +972,22 @@ class HIRToMIR:
 		if self._lambda_capture_slots is not None:
 			key = self._capture_key_for_expr(expr)
 			if key is not None and key in self._lambda_capture_slots:
-				return self._load_capture_from_env(self._lambda_capture_slots[key])
+				slot = self._lambda_capture_slots[key]
+				kind = None
+				if self._lambda_capture_kinds is not None and slot < len(self._lambda_capture_kinds):
+					kind = self._lambda_capture_kinds[slot]
+				if kind in (C.HCaptureKind.REF, C.HCaptureKind.REF_MUT):
+					field_ty = self._lambda_env_field_types[slot] if self._lambda_env_field_types is not None else None
+					ptr_val = self._load_capture_slot_value(slot)
+					inner_ty = field_ty or self._infer_expr_type(expr) or unknown
+					if field_ty is not None:
+						td = self._type_table.get(field_ty)
+						if td.kind is TypeKind.REF and td.param_types:
+							inner_ty = td.param_types[0]
+					dest = self.b.new_temp()
+					self.b.emit(M.LoadRef(dest=dest, ptr=ptr_val, inner_ty=inner_ty))
+					return dest
+				return self._load_capture_from_env(slot)
 		local_name = self._canonical_local(getattr(expr, "binding_id", None), expr.name)
 		self.b.ensure_local(local_name)
 		# Treat String.EMPTY as a builtin zero-length string literal.
@@ -3611,6 +3660,39 @@ class HIRToMIR:
 		# except for the trivial "local = value" case which keeps the `StoreLocal`
 		# primitive (important for SSA/local-type tracking).
 		if not stmt.target.projections:
+			if self._lambda_capture_slots is not None:
+				key = self._capture_key_for_expr(stmt.target.base)
+				if key is not None and self._lambda_env_field_types is not None and key in self._lambda_capture_slots:
+					slot = self._lambda_capture_slots[key]
+					kind = None
+					if self._lambda_capture_kinds is not None and slot < len(self._lambda_capture_kinds):
+						kind = self._lambda_capture_kinds[slot]
+					if kind in (C.HCaptureKind.REF, C.HCaptureKind.REF_MUT):
+						field_ty = self._lambda_env_field_types[slot]
+						ptr_val = self._load_capture_slot_value(slot)
+						inner_ty = field_ty
+						td = self._type_table.get(field_ty)
+						if td.kind is TypeKind.REF and td.param_types:
+							inner_ty = td.param_types[0]
+						self.b.emit(M.StoreRef(ptr=ptr_val, value=val, inner_ty=inner_ty))
+						return
+			base_ty = self._infer_expr_type(stmt.target.base)
+			if base_ty is not None:
+				td = self._type_table.get(base_ty)
+				if td.kind is TypeKind.REF and td.param_types:
+					val_ty = self._infer_expr_type(stmt.value)
+					if val_ty is not None and val_ty == base_ty:
+						local_name = self._canonical_local(getattr(stmt.target.base, "binding_id", None), stmt.target.base.name)
+						self.b.ensure_local(local_name)
+						self.b.emit(M.StoreLocal(local=local_name, value=val))
+						self._moved_locals.discard(local_name)
+						return
+					local_name = self._canonical_local(getattr(stmt.target.base, "binding_id", None), stmt.target.base.name)
+					self.b.ensure_local(local_name)
+					ptr_val = self.b.new_temp()
+					self.b.emit(M.LoadLocal(dest=ptr_val, local=local_name))
+					self.b.emit(M.StoreRef(ptr=ptr_val, value=val, inner_ty=td.param_types[0]))
+					return
 			local_name = self._canonical_local(getattr(stmt.target.base, "binding_id", None), stmt.target.base.name)
 			self.b.ensure_local(local_name)
 			val_ty = self._infer_expr_type(stmt.value)
@@ -3688,6 +3770,18 @@ class HIRToMIR:
 		if not stmt.target.projections:
 			local_name = self._canonical_local(getattr(stmt.target.base, "binding_id", None), stmt.target.base.name)
 			self.b.ensure_local(local_name)
+			base_ty = self._infer_expr_type(stmt.target.base)
+			if base_ty is not None:
+				td = self._type_table.get(base_ty)
+				if td.kind is TypeKind.REF and td.param_types:
+					ptr_val = self.b.new_temp()
+					self.b.emit(M.LoadLocal(dest=ptr_val, local=local_name))
+					old = self.b.new_temp()
+					self.b.emit(M.LoadRef(dest=old, ptr=ptr_val, inner_ty=td.param_types[0]))
+					new = self.b.new_temp()
+					self.b.emit(M.BinaryOpInstr(dest=new, op=bin_op, left=old, right=rhs))
+					self.b.emit(M.StoreRef(ptr=ptr_val, value=new, inner_ty=td.param_types[0]))
+					return
 			old = self.b.new_temp()
 			self.b.emit(M.LoadLocal(dest=old, local=local_name))
 			new = self.b.new_temp()
@@ -4419,6 +4513,9 @@ class HIRToMIR:
 		args: list[H.HExpr],
 		info: CallInfo,
 	) -> M.ValueId | None:
+		callee_ty = self._infer_expr_type(callee_expr)
+		if callee_ty is not None and self._type_table.get(callee_ty).kind is TypeKind.INTERFACE:
+			raise AssertionError("interface calls must lower to CallIface, not CallIndirect")
 		callee_val = self.lower_expr(callee_expr)
 		arg_vals = [self.lower_expr(a) for a in args]
 		param_types = list(info.sig.param_types)
@@ -4466,13 +4563,30 @@ class HIRToMIR:
 		self,
 		iface_expr: H.HExpr,
 		args: list[H.HExpr],
+		method_name: str,
 		info: CallInfo,
 	) -> M.ValueId | None:
-		if info.sig.can_throw:
-			raise NotImplementedError("interface calls cannot throw in MVP")
 		iface_val = self.lower_expr(iface_expr)
 		arg_vals = [self.lower_expr(a) for a in args]
 		param_types = list(info.sig.param_types)
+		iface_ty = self._infer_expr_type(iface_expr)
+		if iface_ty is None:
+			raise AssertionError("interface call missing receiver type (checker bug)")
+		if self._type_table.get(iface_ty).kind is not TypeKind.INTERFACE:
+			raise AssertionError("interface call expects interface receiver (checker bug)")
+		iface_inst = self._type_table.get_interface_instance(iface_ty)
+		iface_base = iface_inst.base_id if iface_inst is not None else iface_ty
+		owner_base, _method_schema = self._type_table.interface_method_lookup(iface_base, method_name)
+		if owner_base != iface_base:
+			offsets = self._type_table.interface_segment_offsets(iface_base)
+			if owner_base not in offsets:
+				raise AssertionError("interface method owner not in linearization (checker bug)")
+			dest = self.b.new_temp()
+			self.b.emit(M.IfaceUpcast(dest=dest, iface=iface_val, slot_offset=offsets[owner_base]))
+			view_map = self._type_table.interface_instance_view_map(iface_ty)
+			self._local_types[dest] = view_map.get(owner_base, iface_ty)
+			iface_val = dest
+		slot_index = self._type_table.interface_method_vtable_slot(iface_base, owner_base, method_name)
 		if self._type_table.is_void(info.sig.user_ret_type):
 			self.b.emit(
 				M.CallIface(
@@ -4481,7 +4595,8 @@ class HIRToMIR:
 					args=arg_vals,
 					param_types=param_types,
 					user_ret_type=info.sig.user_ret_type,
-					can_throw=False,
+					can_throw=info.sig.can_throw,
+					slot_index=slot_index,
 				)
 			)
 			return None
@@ -4493,7 +4608,8 @@ class HIRToMIR:
 				args=arg_vals,
 				param_types=param_types,
 				user_ret_type=info.sig.user_ret_type,
-				can_throw=False,
+				can_throw=info.sig.can_throw,
+				slot_index=slot_index,
 			)
 		)
 		self._local_types[dest] = info.sig.user_ret_type
@@ -4518,7 +4634,7 @@ class HIRToMIR:
 		if info.target.kind is CallTargetKind.INDIRECT:
 			recv_ty = self._infer_expr_type(expr.receiver)
 			if recv_ty is not None and self._type_table.get(recv_ty).kind is TypeKind.INTERFACE:
-				return self._lower_iface_call(expr.receiver, expr.args, info), info
+				return self._lower_iface_call(expr.receiver, expr.args, expr.method_name, info), info
 			return self._lower_indirect_call(expr.receiver, expr.args, info), info
 		if info.target.kind is not CallTargetKind.DIRECT or not info.target.symbol:
 			raise AssertionError("method call missing direct CallTarget (typecheck/call-info bug)")

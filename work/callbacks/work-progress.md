@@ -25,6 +25,26 @@ Completed
 - Fix: for-loop UFCS calls now record instantiations for Iterable::iter/SinglePassIterator::next; codegen no longer sees typevars.
 - Tests: for-loop borrow semantics updated to deref items or use `move` where iteration consumes.
 - Fix: callback env drop thunks now call `drift_cb_env_free` (paired runtime API) instead of hard-wiring `drift_free_array`.
+- Fix: interface call lowering now permits can-throw; thunk pointer type accounts for FnResult return when can_throw is true.
+- Interfaces now support parent lists; schema stores parent base ids and validates duplicates/cycles.
+- Interface vtables use per-interface segments with slot-0 drop; deterministic linearization with diamond dedupe.
+- Interface upcast lowers to vtable_ptr retarget (segment offset) via `IfaceUpcast` in MIR.
+- Dynamic interface values now supported (non-callback): boxed iface values + `CallIface` slot lookup; drop uses slot-0.
+- ABI doc updated with interface value layout, segment rules, and upcast semantics.
+- E2E: dynamic interface nothrow/throw calls (`interface_dynamic_call_nothrow`, `interface_dynamic_call_throw`).
+- E2E: interface parent/upcast/diamond/slot ordering (`interface_parent_method_via_child`, `interface_upcast_parent`, `interface_diamond_upcast`, `interface_method_slot_order`).
+- Fix: interface coercion is now validated for interface→interface assignments (parent upcast allowed, mismatched interface rejected), both in typed checker and stubbed checker.
+- Fix: restored callsite CallInfo emission after indentation regression in type checker/stub checker.
+- Fix: stub checker now infers HQualifiedMember calls via CallInfo when available (keeps for-loop UFCS/trait calls typed).
+- Fix: stub match validator skips scrutinee-type errors when binder_field_indices are already present (avoids false errors on normalized matches).
+- Fix: stub checker now walks statements even when on_stmt hooks are set, so void/array/match validators run for let-bound expressions.
+- Fix: CallIface lowering now uses FnResult carrier for can-throw interface calls; empty struct construction supported in LLVM v1.
+- Update: ABI now defines interface inline storage (`INLINE_BYTES = pointer_width * 4`), and codegen supports inline storage for ConstructIfaceValue with an `is_inline` flag.
+- Update: ABI fingerprint emitted in package manifest and enforced as hard-fail on mismatch across packages and vs toolchain target.
+- Tests: package ABI fingerprint mismatch rejection; manifest asserts `iface_inline_bytes = pointer_width * 4`; updated strict-mode package test to include abi_fingerprint in manual manifest.
+- Update: callback0/1/2 intrinsic signatures now mark param 0 as retaining (param_nonretaining=False) to reject borrowed captures at boxing.
+- E2E: borrowed_capture_interface_coercion_rejected compile-fail added (borrowed capture to CallbackN rejected).
+- Stage1: borrowed capture allowed when passed to a non-retaining param (lambda validation test).
 
 In progress / open
 - None.

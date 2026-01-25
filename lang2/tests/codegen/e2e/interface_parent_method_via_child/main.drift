@@ -1,0 +1,28 @@
+module m
+
+interface A {
+	fn a(self: &Self) nothrow -> Int;
+}
+
+interface B: A {
+	fn b(self: &Self) nothrow -> Int;
+}
+
+struct Box {
+	base: Int
+}
+
+implement B for Box {
+	fn a(self: &Box) nothrow -> Int {
+		return self.base + 1;
+	}
+
+	fn b(self: &Box) nothrow -> Int {
+		return self.base + 2;
+	}
+}
+
+fn main() nothrow -> Int {
+	val b: B = Box(base = 10);
+	return b.a() + b.b();
+}
