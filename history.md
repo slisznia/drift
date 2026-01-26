@@ -268,3 +268,13 @@
 - Centralized unsafe gating into `checker/unsafe_gate.py` and removed std.* prefix trust; unsafe/rawbuffer access now uses trusted-module list + explicit flags/unsafe blocks.
 - std.mem `swap/replace` signatures corrected to `&mut` forms; capacity reverted to a normal stdlib function (no intrinsic fast path).
 - Clarified index-as-place in spec (`&arr[i]`/`&mut arr[i]`), kept `arr[i]` Copy-only; added borrow/move/for-iteration regression tests.
+## 2026-01-26 – Callbacks, dynamic interfaces, ABI hardening, and compiler guardrails
+- Added static `Fn0/Fn1/Fn2` traits and dynamic `Callback0/1/2` interfaces in std.core, plus explicit `callback0/1/2` intrinsics for owned-only boxing.
+- Implemented dynamic interface values with vtable-backed dispatch, per-interface segments (drop slot 0), deterministic linearization, and upcast via vtable-pointer retargeting; added e2e coverage for inheritance/diamond/upcast/slot order and throwing interface calls.
+- Added Arc/Mutex MVP stubs (single-threaded semantics) and Borrow/BorrowMut traits with argument coercion; updated effective-drift emitter example and e2e for callback + Arc<Mutex<...>> patterns.
+- Hardened callback safety: borrowed captures rejected for owned callbacks (retaining param metadata), compile-fail e2e for borrowed capture boxing, and stage2 guard against REF/REF_MUT in callback envs.
+- Added MIR guardrails: call invariants (can_throw/CallIface), call-type TypeVar checks for concrete calls, and interface init invariants; added Array Copy/alloc and wrapping-u64 invariants.
+- ABI updates: interface inline storage (`INLINE_BYTES = pointer_width * 4`), ABI fingerprinting enforced across packages/toolchain, and dedicated runtime hooks for callback env frees.
+- Package/boundary fixes: boundary upgrades use package identity only; module_packages now enforced centrally, with stdlib ownership derived from stdlib_root path (no std.* name heuristics); added regression tests.
+- Resolver cleanup: qualified-member ctor resolution now relies on `resolve_opaque_type` (no lang.core/std.core fallbacks), plus new ctor-resolution tests (positive and error cases).
+- For-loop lowering: borrow-by-default preserved with deterministic temp binding for borrowed temporaries; added stage1 regression.
