@@ -555,6 +555,36 @@ def _normalize_func_maps(
 	return func_hirs_by_id, signatures_by_id, fn_ids_by_name
 
 
+def _ensure_module_packages(
+	type_table: TypeTable | None,
+	*,
+	modules: Iterable[str],
+	package_id: str | None,
+	allow_fill: bool,
+	context: str,
+) -> None:
+	if type_table is None:
+		return
+	module_packages = getattr(type_table, "module_packages", None)
+	if module_packages is None:
+		if not allow_fill:
+			raise ValueError(f"{context}: module_packages missing")
+		module_packages = {}
+		type_table.module_packages = module_packages
+	if not isinstance(module_packages, dict):
+		raise ValueError(f"{context}: module_packages must be dict")
+	default_pkg = package_id or "__local__"
+	missing: list[str] = []
+	for mod in sorted(set(m for m in modules if isinstance(m, str) and m)):
+		if mod not in module_packages:
+			if allow_fill:
+				module_packages[mod] = default_pkg
+			else:
+				missing.append(mod)
+	if missing:
+		raise ValueError(f"{context}: module_packages missing entries for {missing}")
+
+
 def _collect_call_nodes_by_id(root: H.HNode) -> dict[int, H.HExpr]:
 	seen: set[int] = set()
 	found: dict[int, H.HExpr] = {}
@@ -1371,6 +1401,14 @@ def compile_stubbed_funcs(
 	  from parsed sources instead of the shims here.
 	"""
 	func_hirs_by_id, signatures_by_id, fn_ids_by_name = _normalize_func_maps(func_hirs, signatures)
+	_required_modules: set[str] = {fid.module for fid in func_hirs_by_id.keys() if isinstance(fid, FunctionId)}
+	_required_modules.update({fid.module for fid in signatures_by_id.keys() if isinstance(fid, FunctionId)})
+	if module_exports:
+		_required_modules.update({m for m in module_exports.keys() if isinstance(m, str)})
+	if module_deps:
+		_required_modules.update({m for m in module_deps.keys() if isinstance(m, str)})
+	for deps in (module_deps or {}).values():
+		_required_modules.update({m for m in deps if isinstance(m, str)})
 	declared_can_throw_by_id: Dict[FunctionId, bool] | None = None
 	if declared_can_throw:
 		declared_can_throw_by_id = {}
@@ -1454,6 +1492,13 @@ def compile_stubbed_funcs(
 
 	derived_signatures_by_id: dict[FunctionId, FnSignature] = {}
 	base_signatures_by_id = MappingProxyType(dict(base_signatures_by_id))
+	_ensure_module_packages(
+		shared_type_table,
+		modules=_required_modules,
+		package_id=package_id,
+		allow_fill=True,
+		context="compile_stubbed_funcs",
+	)
 	signatures_by_id: Mapping[FunctionId, FnSignature] = ChainMap(
 		derived_signatures_by_id,
 		base_signatures_by_id,
@@ -3510,6 +3555,8 @@ def compile_stubbed_funcs(
 		mir_funcs_by_id[spec.wrapper_fn_id] = builder.func
 
 	_validate_mir_call_invariants(mir_funcs_by_id)
+	if shared_type_table is not None:
+		_validate_mir_call_types(mir_funcs_by_id, signatures_by_id, shared_type_table)
 	_validate_mir_array_alloc_invariants(mir_funcs_by_id)
 	_validate_mir_wrapping_u64_invariants(mir_funcs_by_id, shared_type_table)
 	if shared_type_table is not None:
@@ -3790,6 +3837,49 @@ def _validate_mir_call_invariants(funcs: Mapping[FunctionId, M.MirFunc]) -> None
 					if not isinstance(instr.can_throw, bool):
 						raise AssertionError(
 							f"MIR CallIndirect missing can_throw in {function_symbol(fn_id)}"
+						)
+				elif isinstance(instr, M.CallIface):
+					if not isinstance(instr.can_throw, bool):
+						raise AssertionError(
+							f"MIR CallIface missing can_throw in {function_symbol(fn_id)}"
+						)
+
+
+def _validate_mir_call_types(
+	funcs: Mapping[FunctionId, M.MirFunc],
+	signatures_by_id: Mapping[FunctionId, FnSignature],
+	type_table: TypeTable,
+) -> None:
+	"""Ensure no call-related MIR types carry TypeVar into codegen."""
+	def _no_typevars(ty_id: TypeId) -> bool:
+		return not type_table.has_typevar(ty_id)
+	for fn_id, func in funcs.items():
+		for block in func.blocks.values():
+			for instr in block.instructions:
+				if isinstance(instr, M.Call):
+					sig = signatures_by_id.get(instr.fn_id)
+					if sig is None or sig.param_type_ids is None or sig.return_type_id is None:
+						raise AssertionError(
+							f"MIR invariant violation: unresolved call signature for {function_symbol(instr.fn_id)}"
+						)
+					if sig.type_params or getattr(sig, "impl_type_params", None):
+						continue
+					if any(type_table.has_typevar(t) for t in sig.param_type_ids):
+						raise AssertionError(
+							f"MIR invariant violation: unresolved typevars in call params for {function_symbol(instr.fn_id)}"
+						)
+					if type_table.has_typevar(sig.return_type_id):
+						raise AssertionError(
+							f"MIR invariant violation: unresolved typevars in call return for {function_symbol(instr.fn_id)}"
+						)
+				elif isinstance(instr, (M.CallIndirect, M.CallIface)):
+					if any(not _no_typevars(t) for t in instr.param_types):
+						raise AssertionError(
+							f"MIR invariant violation: unresolved typevars in call param types for {function_symbol(fn_id)}"
+						)
+					if not _no_typevars(instr.user_ret_type):
+						raise AssertionError(
+							f"MIR invariant violation: unresolved typevars in call return type for {function_symbol(fn_id)}"
 						)
 
 
@@ -4630,6 +4720,19 @@ def main(argv: list[str] | None = None) -> int:
 				loc = f"{getattr(d.span, 'line', '?')}:{getattr(d.span, 'column', '?')}" if d.span else "?:?"
 				print(f"{_source_label()}:{loc}: {d.severity}: {d.message}", file=sys.stderr)
 		return 1
+
+	_required_modules_main: set[str] = {m for m in modules.keys() if isinstance(m, str)}
+	if module_deps:
+		_required_modules_main.update({m for m in module_deps.keys() if isinstance(m, str)})
+		for deps in module_deps.values():
+			_required_modules_main.update({m for m in deps if isinstance(m, str)})
+	_ensure_module_packages(
+		type_table,
+		modules=_required_modules_main,
+		package_id=package_id,
+		allow_fill=False,
+		context="driftc",
+	)
 
 	if not args.dev:
 		reserved = [mid for mid in modules.keys() if mid.startswith(("std.", "lang.", "drift."))]

@@ -240,6 +240,33 @@ def test_for_evaluates_iterable_once():
 	assert total == 1
 
 
+def test_for_borrowed_temporary_is_bound_to_local():
+	l = AstToHIR()
+	for_ast = ast.ForStmt(
+		iter_var="i",
+		iterable=ast.Unary(op="&", operand=ast.Call(func=ast.Name("make_items"), args=[], kwargs=[])),
+		body=[ast.ExprStmt(expr=ast.Name("i"))],
+	)
+	hir = l.lower_stmt(for_ast)
+	assert isinstance(hir, HBlock)
+	iterable_let = None
+	iter_let = None
+	for stmt in hir.statements:
+		if isinstance(stmt, HLet) and stmt.name.startswith("__for_iterable"):
+			iterable_let = stmt
+		if isinstance(stmt, HLet) and stmt.name.startswith("__for_iter"):
+			iter_let = stmt
+	assert iterable_let is not None
+	assert isinstance(iterable_let.value, HCall)
+	assert isinstance(iterable_let.value.fn, HVar)
+	assert iterable_let.value.fn.name == "make_items"
+	assert iter_let is not None
+	assert isinstance(iter_let.value, HCall)
+	assert isinstance(iter_let.value.args[0], HBorrow)
+	assert isinstance(iter_let.value.args[0].subject, HVar)
+	assert iter_let.value.args[0].subject.name == iterable_let.name
+
+
 def test_for_with_missing_cond_step_defaults():
 	l = AstToHIR()
 	for_ast = ast.ForStmt(iter_var="x", iterable=ast.Name("it"), body=[ast.ExprStmt(expr=ast.Literal(1))])

@@ -2193,6 +2193,8 @@ class HIRToMIR:
 			discover_captures(lam)
 		if lam.captures:
 			lam.captures = sort_captures(lam.captures)
+		if any(cap.kind in (C.HCaptureKind.REF, C.HCaptureKind.REF_MUT) for cap in (lam.captures or [])):
+			raise AssertionError("borrowed capture in owned callback env (compiler bug)")
 
 		lambda_id = self._lambda_counter
 		self._lambda_counter += 1

@@ -528,6 +528,8 @@ def encode_type_table(table: TypeTable, *, package_id: str) -> dict[str, Any]:
 			continue
 		if key.module_id is None:
 			continue
+		if key.module_id == "lang.core" and package_id != "lang.core":
+			continue
 		item = (key.kind.name, key.module_id, key.name)
 		if item in seen_provided:
 			continue

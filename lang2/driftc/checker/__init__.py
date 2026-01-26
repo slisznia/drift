@@ -757,7 +757,14 @@ class Checker:
 			return False
 		if not (info.signature.is_exported_entrypoint or info.signature.is_extern):
 			return False
-		return callee_id.module != caller_id.module
+		module_packages = getattr(self._type_table, "module_packages", None)
+		if module_packages is None:
+			raise AssertionError("module_packages missing for boundary check (checker bug)")
+		callee_pkg = module_packages.get(callee_id.module)
+		caller_pkg = module_packages.get(caller_id.module)
+		if callee_pkg is None or caller_pkg is None:
+			raise AssertionError("module_packages missing entry for boundary check (checker bug)")
+		return callee_pkg != caller_pkg
 
 	def _function_may_throw(
 		self,

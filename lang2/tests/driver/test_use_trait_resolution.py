@@ -51,7 +51,7 @@ fn main() nothrow -> Int{ return 0; }
 	)
 	assert diagnostics == []
 	scope = module_exports.get("m_main", {}).get("trait_scope", [])
-	assert TraitKey(package_id=None, module="m_traits", name="Show") in scope
+	assert TraitKey(package_id="__local__", module="m_traits", name="Show") in scope
 
 
 def test_use_trait_unknown_trait_is_error(tmp_path: Path) -> None:

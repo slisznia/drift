@@ -45,6 +45,15 @@ Completed
 - Update: callback0/1/2 intrinsic signatures now mark param 0 as retaining (param_nonretaining=False) to reject borrowed captures at boxing.
 - E2E: borrowed_capture_interface_coercion_rejected compile-fail added (borrowed capture to CallbackN rejected).
 - Stage1: borrowed capture allowed when passed to a non-retaining param (lambda validation test).
+- Cleanup: boundary decisions now require package ids (no std/lang.core string exemptions); parser assigns package ids consistently (std.* local for workspace builds, lang.core pinned) and asserts on missing module_packages.
+- Package linking: prevent duplicate lang.core Optional during type-table import; packages no longer claim lang.core nominals in provided_nominals.
+- Cleanup: stdlib ownership now derived from stdlib_root path (not module name); added regression test that a workspace module named std.fake stays in the local package.
+- Cleanup: qualified-member ctor resolution now relies on resolve_opaque_type (no hard-coded lang.core/std.core fallbacks in call_resolver).
+- Cleanup: centralized module_packages guard added at driftc entry; compile_stubbed_funcs auto-populates module_packages for known modules, driftc main fails fast if entries are missing.
+- Tests: driver guard verifies driftc workspace module_packages are present; stage2 stubbed compile fills module_packages for ad-hoc tests.
+- MIR: added pre-codegen call-type invariant to reject unresolved TypeVar signatures on concrete calls (skips generic defs; enforces on CallIndirect/CallIface and concrete Call).
+- Guardrail: stage2 callback lowering now asserts that owned callback envs never include borrowed captures (REF/REF_MUT).
+- For-loop: added stage1 regression ensuring borrowed temporary iterables are bound to a hidden local before iteration.
 
 In progress / open
 - None.

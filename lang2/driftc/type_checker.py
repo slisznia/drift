@@ -1976,9 +1976,16 @@ class TypeChecker:
 				if not (getattr(sig, "is_exported_entrypoint", False) or getattr(sig, "is_extern", False)):
 					return False
 			callee_mod = fn_id.module if fn_id and fn_id.module else getattr(sig, "module", None)
-			if callee_mod is None:
+			caller_mod = current_module_name
+			if callee_mod is None or caller_mod is None:
 				return False
-			return callee_mod != current_module_name
+			if module_packages is None:
+				raise AssertionError("module_packages missing for boundary check (checker bug)")
+			callee_pkg = module_packages.get(callee_mod)
+			caller_pkg = module_packages.get(caller_mod)
+			if callee_pkg is None or caller_pkg is None:
+				raise AssertionError("module_packages missing entry for boundary check (checker bug)")
+			return callee_pkg != caller_pkg
 
 		def _method_boundary_visible(sig: FnSignature | None, fn_id: FunctionId | None) -> bool:
 			if sig is None or not getattr(sig, "is_method", False):
@@ -1988,17 +1995,15 @@ class TypeChecker:
 			callee_mod = fn_id.module if fn_id and fn_id.module else getattr(sig, "module", None)
 			if callee_mod is None:
 				return False
-			if callee_mod == "lang.core" or callee_mod.startswith("std."):
-				return False
 			caller_mod = current_module_name
 			if caller_mod is None:
 				return False
 			if module_packages is None:
-				return False
+				raise AssertionError("module_packages missing for boundary check (checker bug)")
 			caller_pkg = module_packages.get(caller_mod)
 			callee_pkg = module_packages.get(callee_mod)
 			if caller_pkg is None or callee_pkg is None:
-				return False
+				raise AssertionError("module_packages missing entry for boundary check (checker bug)")
 			if caller_pkg == callee_pkg:
 				return False
 			return True

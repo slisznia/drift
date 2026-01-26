@@ -901,6 +901,9 @@ def import_type_tables_and_build_typeid_maps(pkg_tt_objs: list[Mapping[str, Any]
 				host.declare_struct(mid, nk.name, list(field_names), list(type_params))
 		elif nk.kind is TypeKind.VARIANT:
 			schema = merged_variant_schemas[nk]
+			if schema.module_id == "lang.core" and schema.name == "Optional":
+				host.ensure_optional_base()
+				continue
 			host_base = host.get_variant_base(module_id=schema.module_id, name=schema.name)
 			if host_base is not None:
 				host_schema = host.get_variant_schema(host_base)

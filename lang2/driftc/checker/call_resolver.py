@@ -387,28 +387,8 @@ def resolve_qualified_member_call(
 	base_kind = None
 	base_name = getattr(base_te, "name", None)
 	base_module = getattr(base_te, "module_id", None) or ctx.current_module_name
-	if isinstance(base_name, str):
-		if (
-			ctx.type_table.get_nominal(kind=TypeKind.VARIANT, module_id=base_module, name=base_name) is not None
-			or ctx.type_table.get_variant_base(module_id=base_module, name=base_name) is not None
-			or ctx.type_table.get_variant_base(module_id="lang.core", name=base_name) is not None
-			or ctx.type_table.get_variant_base(module_id="std.core", name=base_name) is not None
-			or ctx.type_table.get_nominal(kind=TypeKind.VARIANT, module_id="std.core", name=base_name) is not None
-		):
-			base_kind = TypeKind.VARIANT
-		elif (
-			ctx.type_table.get_nominal(kind=TypeKind.STRUCT, module_id=base_module, name=base_name) is not None
-			or ctx.type_table.get_struct_base(module_id=base_module, name=base_name) is not None
-			or ctx.type_table.get_struct_base(module_id="lang.core", name=base_name) is not None
-			or ctx.type_table.get_struct_base(module_id="std.core", name=base_name) is not None
-			or ctx.type_table.get_nominal(kind=TypeKind.STRUCT, module_id="std.core", name=base_name) is not None
-		):
-			base_kind = TypeKind.STRUCT
 	if base_kind is None:
-		try:
-			base_tid = resolve_opaque_type(base_te, ctx.type_table, module_id=base_module, type_params=ctx.type_param_map, allow_generic_base=True)
-		except Exception:
-			base_tid = None
+		base_tid = resolve_opaque_type(base_te, ctx.type_table, module_id=base_module, type_params=ctx.type_param_map, allow_generic_base=True)
 		if base_tid is not None:
 			base_def = ctx.type_table.get(base_tid)
 			if base_def.kind is TypeKind.VARIANT:
@@ -455,21 +435,23 @@ def resolve_variant_ctor(
 			)
 		)
 		return None
-	base_tid = ctx.type_table.get_nominal(
-		kind=TypeKind.VARIANT,
+	base_tid = resolve_opaque_type(
+		base_te,
+		ctx.type_table,
 		module_id=getattr(base_te, "module_id", None) or ctx.current_module_name,
-		name=getattr(base_te, "name", ""),
+		type_params=ctx.type_param_map,
+		allow_generic_base=True,
 	)
 	if base_tid is None:
-		name = getattr(base_te, "name", None)
-		if isinstance(name, str):
-			base_tid = (
-				ctx.type_table.get_variant_base(module_id=ctx.current_module_name, name=name)
-				or ctx.type_table.get_variant_base(module_id="lang.core", name=name)
-				or ctx.type_table.get_variant_base(module_id="std.core", name=name)
-				or ctx.type_table.get_nominal(kind=TypeKind.VARIANT, module_id="std.core", name=name)
+		ctx.diagnostics.append(
+			ctx.tc_diag(
+				message="E-QMEM-NONVARIANT: qualified member base is not a variant type",
+				severity="error",
+				span=getattr(qm, "loc", Span()),
 			)
-	if base_tid is None:
+		)
+		return None
+	if ctx.type_table.get(base_tid).kind is not TypeKind.VARIANT:
 		ctx.diagnostics.append(
 			ctx.tc_diag(
 				message="E-QMEM-NONVARIANT: qualified member base is not a variant type",
@@ -2065,16 +2047,15 @@ def resolve_method_call(ctx: MethodResolverContext, expr: object, *, expected_ty
 					if getattr(fn_sig, "is_pub", False) and fn_sig.declared_can_throw is False:
 						callee_mod = getattr(cand.fn_id, "module", None)
 						caller_mod = ctx.current_module_name
-						if (
-							callee_mod is not None
-							and caller_mod is not None
-							and callee_mod != "lang.core"
-							and not callee_mod.startswith("std.")
-						):
-							module_packages = ctx.module_packages or {}
+						if callee_mod is not None and caller_mod is not None:
+							if ctx.module_packages is None:
+								raise AssertionError("module_packages missing for boundary check (checker bug)")
+							module_packages = ctx.module_packages
 							caller_pkg = module_packages.get(caller_mod)
 							callee_pkg = module_packages.get(callee_mod)
-							if caller_pkg is not None and callee_pkg is not None and caller_pkg != callee_pkg:
+							if caller_pkg is None or callee_pkg is None:
+								raise AssertionError("module_packages missing entry for boundary check (checker bug)")
+							if caller_pkg != callee_pkg:
 								upgrade_boundary = True
 					if upgrade_boundary:
 						wrapper_id = method_wrapper_id(cand.fn_id)

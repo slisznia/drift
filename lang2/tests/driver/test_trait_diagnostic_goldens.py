@@ -172,9 +172,9 @@ fn f(x: Box<Int>) -> Int{ return 0; }
 	assert _diag_snapshot(result.diagnostics) == [
 		{
 			"code": "E_REQUIREMENT_NOT_SATISFIED",
-			"message": "requirement not satisfied: Int is main.Show (required by struct 'Box')",
+			"message": "requirement not satisfied: Int is __local__::main.Show (required by struct 'Box')",
 			"notes": [
-				"requirement_trait=main.Show",
+				"requirement_trait=__local__::main.Show",
 				"requirement_subject=Int",
 				"requirement_reason=no_impl",
 				"requirement_origin=struct 'Box'",
@@ -269,7 +269,7 @@ implement Debug for Box<U> { fn fmt(self: Box<U>) -> Int { return 2; } }
 	assert _diag_snapshot(diagnostics) == [
 		{
 			"code": "E-IMPL-OVERLAP",
-			"message": "overlapping impls for trait 'm_main.Debug' on 'm_main.Box'",
+			"message": "overlapping impls for trait '__local__::m_main.Debug' on '__local__::m_main.Box'",
 			"notes": [],
 			"phase": "parser",
 		}
@@ -316,8 +316,8 @@ fn main() nothrow -> Int{
 		{
 			"code": "E-METHOD-AMBIGUOUS",
 			"message": (
-				"ambiguous method 'show' for receiver m_box.Box<Int> and args [];"
-				" candidates from traits: m_a.Show@m_a, m_b.Show@m_b"
+				"ambiguous method 'show' for receiver __local__::m_box.Box<Int> and args [];"
+				" candidates from traits: __local__::m_a.Show@m_a, __local__::m_b.Show@m_b"
 			),
 			"notes": [],
 			"phase": "typecheck",

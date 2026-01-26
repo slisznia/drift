@@ -1459,6 +1459,27 @@ def parse_drift_workspace_to_hir(
 	if any(d.severity == "error" for d in diagnostics):
 		return {}, TypeTable(), {}, {}, {}, diagnostics
 
+	module_source_path: dict[str, Path] = {}
+	for mid, files in by_module.items():
+		if files:
+			module_source_path[mid] = files[0][0]
+
+	std_root_resolved: Path | None = None
+	if stdlib_root is not None:
+		std_root_resolved = stdlib_root.resolve()
+
+	def _is_stdlib_module(mid: str) -> bool:
+		if std_root_resolved is None:
+			return False
+		path = module_source_path.get(mid)
+		if path is None:
+			return False
+		try:
+			path.resolve().relative_to(std_root_resolved)
+		except ValueError:
+			return False
+		return True
+
 	# When module roots are used, reject ambiguous module ids coming from
 	# multiple roots (prevents accidental shadowing/selection by search order).
 	if module_paths:
@@ -2107,6 +2128,9 @@ def parse_drift_workspace_to_hir(
 	trait_scope_by_module: dict[str, list[TraitKey]] = {mid: [] for mid in merged_programs}
 	trait_scope_seen_by_module: dict[str, set[TraitKey]] = {mid: set() for mid in merged_programs}
 	module_packages_for_scope: dict[str, str] = {}
+	local_pkg = package_id or "__local__"
+	has_stdlib = stdlib_root is not None
+	std_pkg = "std" if package_id is not None else local_pkg
 	if isinstance(external_module_packages, dict):
 		for mod, pkg in external_module_packages.items():
 			if mod in merged_programs:
@@ -2114,11 +2138,13 @@ def parse_drift_workspace_to_hir(
 			if isinstance(mod, str) and isinstance(pkg, str):
 				module_packages_for_scope.setdefault(mod, pkg)
 	for mod in merged_programs:
-		if mod.startswith("std."):
-			module_packages_for_scope.setdefault(mod, "std")
-		elif package_id is not None:
-			module_packages_for_scope.setdefault(mod, package_id)
-	module_packages_for_scope.setdefault("lang.core", "lang.core")
+		if has_stdlib and _is_stdlib_module(mod):
+			module_packages_for_scope.setdefault(mod, std_pkg)
+		elif mod == "lang.core":
+			module_packages_for_scope.setdefault(mod, "lang.core" if has_stdlib else local_pkg)
+		else:
+			module_packages_for_scope.setdefault(mod, local_pkg)
+	module_packages_for_scope.setdefault("lang.core", "lang.core" if has_stdlib else local_pkg)
 
 	def _check_alias_binding_conflicts(path: Path, file_aliases: dict[str, str], prog: parser_ast.Program) -> None:
 		if not file_aliases:
@@ -2641,6 +2667,8 @@ def parse_drift_workspace_to_hir(
 	shared_type_table = TypeTable()
 	if package_id is not None:
 		shared_type_table.package_id = package_id
+	local_pkg = package_id or "__local__"
+	has_stdlib = stdlib_root is not None
 	if isinstance(external_module_packages, dict):
 		for mod, pkg in external_module_packages.items():
 			if mod in merged_programs and not test_build_only:
@@ -2649,9 +2677,13 @@ def parse_drift_workspace_to_hir(
 				continue
 			shared_type_table.module_packages.setdefault(mod, pkg)
 	for mod in merged_programs:
-		if mod.startswith("std."):
-			shared_type_table.module_packages.setdefault(mod, "std")
-	shared_type_table.module_packages.setdefault("lang.core", "lang.core")
+		if has_stdlib and _is_stdlib_module(mod):
+			shared_type_table.module_packages.setdefault(mod, std_pkg)
+		elif mod == "lang.core":
+			shared_type_table.module_packages.setdefault(mod, "lang.core" if has_stdlib else local_pkg)
+		else:
+			shared_type_table.module_packages.setdefault(mod, local_pkg)
+	shared_type_table.module_packages.setdefault("lang.core", "lang.core" if has_stdlib else local_pkg)
 	_prime_builtins(shared_type_table)
 	# Pre-declare all nominal type names across the workspace before lowering any
 	# individual module.

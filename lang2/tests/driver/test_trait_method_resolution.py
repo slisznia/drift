@@ -1195,7 +1195,7 @@ fn main() nothrow -> Int{
 	main_block = func_hirs[main_id]
 	visible_modules = _visible_modules_for("m_main", module_deps, module_ids)
 	trait_index = GlobalTraitIndex()
-	trait_index.mark_missing(TraitKey(package_id=None, module="m_traits", name="Show"))
+	trait_index.mark_missing(TraitKey(package_id="__local__", module="m_traits", name="Show"))
 	trait_impl_index = GlobalTraitImplIndex()
 	linked_world, require_env = build_linked_world(type_table)
 	type_checker = TypeChecker(type_table=type_table)
