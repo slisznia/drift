@@ -25,7 +25,7 @@ fn run() -> Int {
 				if idx >= expected.len {
 					return 1;
 				}
-				val want: Int = expected[idx];
+				val want = expected[idx];
 				if *item.key != want {
 					return 2;
 				}
@@ -36,8 +36,8 @@ fn run() -> Int {
 	if idx != expected.len {
 		return 3;
 	}
-	val k3: Int = 3;
-	val k7: Int = 7;
+	val k3 = 3;
+	val k7 = 7;
 	val _r1 = m.remove(&k3);
 	val _r2 = m.remove(&k7);
 	m.insert(1, 10);
@@ -54,7 +54,7 @@ fn run() -> Int {
 				if idx2 >= expected2.len {
 					return 4;
 				}
-				val want2: Int = expected2[idx2];
+				val want2 = expected2[idx2];
 				if *item.key != want2 {
 					return 5;
 				}

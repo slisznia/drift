@@ -61,7 +61,7 @@ def test_dv_ctor_rejects_unsupported_arg_type():
 	assert any("unsupported DiagnosticValue constructor argument type" in d.message for d in res.diagnostics)
 
 
-def test_exception_ctor_outside_throw_is_rejected():
+def test_exception_ctor_outside_throw_is_allowed():
 	tc = _tc_with_exception_schema("m:Exc", ["detail"])
 	exc_init = H.HExceptionInit(
 		event_fqn="m:Exc",
@@ -70,7 +70,7 @@ def test_exception_ctor_outside_throw_is_rejected():
 	)
 	block = H.HBlock(statements=[H.HLet(name="x", value=exc_init)])
 	res = tc.check_function(_fn_id("f"), block)
-	assert any("exception constructors are only valid as throw payloads" in d.message for d in res.diagnostics)
+	assert res.diagnostics == []
 
 
 def test_non_exception_throw_payload_is_rejected():

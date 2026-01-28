@@ -1,0 +1,6 @@
+{
+  "description": "e2e: spawn_future infers T from captured lambda in loop",
+  "exit_code": 6,
+  "stdout": "",
+  "stderr": ""
+}

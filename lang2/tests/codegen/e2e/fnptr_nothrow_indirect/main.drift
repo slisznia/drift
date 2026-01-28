@@ -5,7 +5,7 @@ fn add1(x: Int) nothrow -> Int {
 }
 
 fn main() nothrow -> Int{
-	val fp: Fn(Int) nothrow -> Int = add1;
+	val fp = add1;
 	val y = fp(3);
 	return y;
 }

@@ -58,6 +58,15 @@ def apply_subst(type_id: TypeId, subst: Subst, table: TypeTable) -> TypeId:
 			if any(table.has_typevar(a) for a in new_args):
 				return table.ensure_variant_template(base, list(new_args))
 			return table.ensure_variant_instantiated(base, list(new_args))
+	if td.kind is TypeKind.INTERFACE:
+		inst = table.get_interface_instance(type_id)
+		if inst is not None:
+			new_args = [apply_subst(a, subst, table) for a in inst.type_args]
+			if new_args != inst.type_args:
+				if any(table.has_typevar(a) for a in new_args):
+					return table.ensure_interface_template(inst.base_id, list(new_args))
+				return table.ensure_interface_instantiated(inst.base_id, list(new_args))
+			return type_id
 	if not td.param_types:
 		return type_id
 	new_params = [apply_subst(p, subst, table) for p in td.param_types]

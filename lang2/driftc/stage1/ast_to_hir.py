@@ -560,6 +560,7 @@ class AstToHIR:
 				body_expr=body_expr,
 				body_block=body_block,
 				explicit_captures=explicit_captures,
+				declared_nothrow=bool(getattr(expr, "declared_nothrow", False)),
 				span=Span.from_loc(getattr(expr, "loc", None)),
 			)
 		finally:
@@ -710,6 +711,10 @@ class AstToHIR:
 				return H.HField(subject=_rename_expr(e.subject, mapping), name=e.name)
 			if isinstance(e, H.HIndex):
 				return H.HIndex(subject=_rename_expr(e.subject, mapping), index=_rename_expr(e.index, mapping))
+			if hasattr(H, "HMove") and isinstance(e, getattr(H, "HMove")):
+				return H.HMove(subject=_rename_expr(e.subject, mapping), loc=e.loc)
+			if hasattr(H, "HCopy") and isinstance(e, getattr(H, "HCopy")):
+				return H.HCopy(subject=_rename_expr(e.subject, mapping), loc=e.loc)
 			if isinstance(e, H.HUnary):
 				return H.HUnary(op=e.op, expr=_rename_expr(e.expr, mapping))
 			if isinstance(e, H.HBinary):
@@ -753,6 +758,7 @@ class AstToHIR:
 							ctor=arm.ctor,
 							pattern_arg_form=getattr(arm, "pattern_arg_form", "positional"),
 							binders=arm.binders,
+							binder_is_mutable=getattr(arm, "binder_is_mutable", None),
 							binder_fields=getattr(arm, "binder_fields", None),
 							binder_field_indices=getattr(arm, "binder_field_indices", []),
 							block=renamed_block,
@@ -819,11 +825,15 @@ class AstToHIR:
 			# even though HIR locals are function-scoped.
 			rename_map: dict[str, str] = {}
 			new_binders: list[str] = []
+			new_binder_is_mutable: list[bool] = []
 			for b in list(getattr(arm, "binders", []) or []):
 				self._match_binder_counter += 1
 				internal = f"__match_binder_{self._match_binder_counter}_{b}"
 				rename_map[b] = internal
 				new_binders.append(internal)
+			binder_is_mutable = list(getattr(arm, "binder_is_mutable", []) or [])
+			if binder_is_mutable:
+				new_binder_is_mutable = binder_is_mutable
 
 			arm_result: Optional[H.HExpr] = None
 			stmts = list(arm.block)
@@ -840,6 +850,7 @@ class AstToHIR:
 					ctor=arm.ctor,
 					pattern_arg_form=getattr(arm, "pattern_arg_form", "positional"),
 					binders=new_binders,
+					binder_is_mutable=new_binder_is_mutable if new_binder_is_mutable else None,
 					binder_fields=getattr(arm, "binder_fields", None),
 					# Seed positional binder indices structurally so stage2 lowering has a
 					# stable mapping even in pipelines that don't run the typed checker.

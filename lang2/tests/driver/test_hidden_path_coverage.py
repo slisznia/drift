@@ -61,6 +61,59 @@ fn main() -> Int {
 	assert payload.get("diagnostics", []) == []
 
 
+def test_generic_impl_array_literal_fuzz_fixed_seed(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+	rng = random.Random(4242)
+	types = ["Int", "Bool", "Byte"]
+	uses: list[str] = []
+	for idx in range(6):
+		ty = rng.choice(types)
+		uses.append(
+			"\n".join(
+				[
+					f"fn use_{idx}() -> Int {{",
+					f"\tvar items: Array<{ty}> = [];",
+					f"\tvar b: Box<{ty}> = Box(items = items);",
+					"\tvar v = b.make();",
+					"\treturn v;",
+					"}",
+				]
+			)
+		)
+	src = tmp_path / "main" / "main.drift"
+	_write_file(
+		src,
+		"\n".join(
+			[
+				"module main",
+				"",
+				"struct Box<T> {",
+				"\titems: Array<T>",
+				"}",
+				"",
+				"implement<T> Box<T> {",
+				"\tfn make(self: &Box<T>) nothrow -> Int {",
+				"\t\tvar out: Array<T> = [];",
+				"\t\treturn out.len;",
+				"\t}",
+				"}",
+				"",
+				*uses,
+				"",
+				"fn main() -> Int {",
+				"\tval a = use_0();",
+				"\tval b = use_1();",
+				"\tval c = use_2();",
+				"\treturn a + b + c;",
+				"}",
+				"",
+			]
+		),
+	)
+	rc, payload = _run_driftc_json(["-M", str(tmp_path), "--stdlib-root", str(stdlib_root()), str(src)], capsys)
+	assert rc == 0
+	assert payload.get("diagnostics", []) == []
+
+
 def test_optional_ctor_without_expected_type_errors(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
 	src = tmp_path / "main" / "main.drift"
 	_write_file(

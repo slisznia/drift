@@ -1,7 +1,7 @@
 module main
 
 fn main() nothrow -> Int {
-	var s: String = "hello";
+	var s = "hello";
 	s = "world";
 	return 0;
 }

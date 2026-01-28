@@ -1,0 +1,6 @@
+{
+  "description": "e2e: cancel after start does not kill running task",
+  "exit_code": 0,
+  "stderr": "",
+  "stdout": ""
+}

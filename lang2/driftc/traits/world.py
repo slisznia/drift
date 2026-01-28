@@ -24,6 +24,8 @@ class TypeKey:
 	module: Optional[str]
 	name: str
 	args: Tuple["TypeKey", ...] = ()
+	# Only meaningful when name == "fn"; None means non-function types.
+	fn_throws: Optional[bool] = None
 
 	def head(self) -> "TypeHeadKey":
 		return TypeHeadKey(package_id=self.package_id, module=self.module, name=self.name)
@@ -118,6 +120,7 @@ def type_key_from_expr(
 		pkg = (module_packages or {}).get(mod, default_package)
 	elif name not in BUILTIN_TYPE_NAMES:
 		pkg = default_package
+	fn_throws = typ.fn_throws_raw() if getattr(typ, "name", None) == "fn" else None
 	return TypeKey(
 		package_id=pkg,
 		module=mod,
@@ -131,6 +134,7 @@ def type_key_from_expr(
 			)
 			for a in getattr(typ, "args", []) or []
 		),
+		fn_throws=fn_throws,
 	)
 
 
@@ -153,7 +157,10 @@ def type_key_from_typeid(type_table: object, tid: int) -> TypeKey:
 			args = tuple(type_key_from_typeid(type_table, t) for t in inst.type_args)
 			return TypeKey(package_id=package_id, module=module_id, name=getattr(td, "name", ""), args=args)
 	args = tuple(type_key_from_typeid(type_table, t) for t in getattr(td, "param_types", []) or [])
-	return TypeKey(package_id=package_id, module=module_id, name=getattr(td, "name", ""), args=args)
+	fn_throws = None
+	if td.kind is TypeKind.FUNCTION:
+		fn_throws = bool(getattr(td, "fn_throws", True))
+	return TypeKey(package_id=package_id, module=module_id, name=getattr(td, "name", ""), args=args, fn_throws=fn_throws)
 
 
 def normalize_type_key(
@@ -172,11 +179,11 @@ def normalize_type_key(
 		if key.name in BUILTIN_TYPE_NAMES:
 			return key
 		pkg = key.package_id or (module_packages or {}).get(module_name, default_package)
-		return TypeKey(package_id=pkg, module=module_name, name=key.name, args=key.args)
+		return TypeKey(package_id=pkg, module=module_name, name=key.name, args=key.args, fn_throws=key.fn_throws)
 	if key.package_id is None:
 		pkg = (module_packages or {}).get(key.module, default_package)
 		if pkg is not None:
-			return TypeKey(package_id=pkg, module=key.module, name=key.name, args=key.args)
+			return TypeKey(package_id=pkg, module=key.module, name=key.name, args=key.args, fn_throws=key.fn_throws)
 	return key
 
 

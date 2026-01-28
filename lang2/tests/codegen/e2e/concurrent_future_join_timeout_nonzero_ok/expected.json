@@ -1,0 +1,6 @@
+{
+  "description": "e2e: future join_timeout succeeds for non-zero duration",
+  "exit_code": 0,
+  "stderr": "",
+  "stdout": ""
+}

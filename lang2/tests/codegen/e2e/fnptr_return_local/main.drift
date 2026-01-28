@@ -5,6 +5,6 @@ fn g(x: Int) nothrow -> Int { return x; }
 fn make() nothrow -> Fn(Int) nothrow -> Int { return g; }
 
 fn main() nothrow -> Int {
-	val fp: Fn(Int) nothrow -> Int = make();
+	val fp = make();
 	return fp(3);
 }

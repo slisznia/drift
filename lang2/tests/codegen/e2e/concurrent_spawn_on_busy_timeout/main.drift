@@ -1,0 +1,48 @@
+module main
+
+import std.concurrent as conc;
+import std.core as core;
+import lang.thread as thread;
+
+fn main() nothrow -> Int {
+	var exec = conc.default_executor();
+
+	thread.exec_submit_test_override(1);
+	val res_busy = conc.spawn_on(exec, | | => { return 1; });
+	var ok_busy = match res_busy {
+		Err(err) => {
+			var ok = false;
+			match err {
+				Busy => { ok = true; },
+				default => { }
+			}
+			ok
+		},
+		Ok(_t) => { false },
+		default => { false },
+	};
+
+	thread.exec_submit_test_override(2);
+	val res_timeout = conc.spawn_on(exec, | | => { return 1; });
+	var ok_timeout = match res_timeout {
+		Err(err) => {
+			var ok = false;
+			match err {
+				Timeout => { ok = true; },
+				default => { }
+			}
+			ok
+		},
+		Ok(_t) => { false },
+		default => { false },
+	};
+
+	thread.exec_submit_test_override(-1);
+
+	if ok_busy {
+		if ok_timeout {
+			return 0;
+		}
+	}
+	return 1;
+}

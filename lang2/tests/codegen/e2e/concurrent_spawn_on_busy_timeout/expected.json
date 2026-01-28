@@ -1,0 +1,6 @@
+{
+  "description": "e2e: spawn_on returns Busy/Timeout on submit failure",
+  "exit_code": 0,
+  "stderr": "",
+  "stdout": ""
+}

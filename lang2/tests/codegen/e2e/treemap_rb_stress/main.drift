@@ -3,9 +3,9 @@ module main
 import std.containers as containers;
 
 fn lcg_next(x: Int) -> Int {
-	val a: Int = 1103515245;
-	val c: Int = 12345;
-	val m: Int = 2147483648;
+val a = 1103515245;
+val c = 12345;
+val m = 2147483648;
 	var v = a * x + c;
 	if v < 0 {
 		v = -v;

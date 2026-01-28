@@ -3159,7 +3159,7 @@ Drift’s standard concurrency module exposes straightforward helpers:
 ```drift
 import std.concurrent as conc
 
-val t = conc.spawn(| | => compute_answer());
+val t = conc.spawn(| | => compute_answer()); // lambdas are wrapped as core.callback0(...)
 
 val ans = t.join();
 ```
@@ -3181,7 +3181,7 @@ val policy = ExecutorPolicy.builder()
 
 val exec = conc.make_executor(policy);
 
-val t = conc.spawn_on(exec, | | => handle_connection());
+val t = conc.spawn_on(exec, | | => handle_connection()); // wrapped as core.callback0(...)
 ```
 
 #### 19.2.2. Structured concurrency
@@ -3190,8 +3190,8 @@ val t = conc.spawn_on(exec, | | => handle_connection());
 
 ```drift
 conc.scope(|scope: conc.Scope| => {
-    val u = scope.spawn(| | => load_user(42));
-    val d = scope.spawn(| | => fetch_data());
+    val u = scope.spawn(| | => load_user(42)); // wrapped as core.callback0(...)
+    val d = scope.spawn(| | => fetch_data());  // wrapped as core.callback0(...)
 
     val user = u.join();
     val data = d.join();
@@ -3257,7 +3257,7 @@ At the bottom layer the runtime exposes a minimal intrinsic surface to the stand
 ```drift
 module lang.thread
 
-@intrinsic fn vt_spawn(entry: Fn() -> Void, exec: ExecutorHandle);
+@intrinsic fn vt_spawn(entry: core.Callback0<Void>, exec: ExecutorHandle) nothrow -> VtHandle;
 @intrinsic fn vt_park() -> Void;
 @intrinsic fn vt_unpark(thread: VirtualThreadHandle) -> Void;
 @intrinsic fn current_executor() -> ExecutorHandle;
@@ -3274,9 +3274,9 @@ Structured scopes ensure children finish (or are cancelled) before scope exit:
 
 ```drift
 conc.scope(|scope: conc.Scope| => {
-    val a = scope.spawn(| | => slow_calc());
-    val b = scope.spawn(| | => slow_calc());
-    val c = scope.spawn(| | => slow_calc());
+val a = scope.spawn(| | => slow_calc()); // wrapped as core.callback0(...)
+val b = scope.spawn(| | => slow_calc()); // wrapped as core.callback0(...)
+val c = scope.spawn(| | => slow_calc()); // wrapped as core.callback0(...)
 
     val ra = a.join();
     val rb = b.join();

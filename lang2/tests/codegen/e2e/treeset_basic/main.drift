@@ -13,7 +13,7 @@ fn run() -> Int {
 	if s.insert(1) {
 		return 3;
 	}
-	val k1: Int = 1;
+	val k1 = 1;
 	if not s.contains(&k1) {
 		return 4;
 	}

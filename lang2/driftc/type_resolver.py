@@ -119,14 +119,15 @@ def resolve_program_signatures(
 		param_nonretaining: list[Optional[bool]] = []
 		local_type_params = dict(impl_type_param_map)
 		local_type_params.update(type_param_map)
-		for p in getattr(decl, "params", []):
+		for idx, p in enumerate(getattr(decl, "params", [])):
 			raw_ty = getattr(p, "type", None)
 			raw_params.append(raw_ty)
 			param_names.append(getattr(p, "name", f"p{len(param_names)}"))
 			param_mutable.append(bool(getattr(p, "mutable", False)))
-			param_type_ids.append(
-				resolve_opaque_type(raw_ty, table, module_id=module_name, type_params=local_type_params)
-			)
+			resolved_param: TypeId | None = None
+			if resolved_param is None:
+				resolved_param = resolve_opaque_type(raw_ty, table, module_id=module_name, type_params=local_type_params)
+			param_type_ids.append(resolved_param)
 			param_nonretaining.append(None)
 		if intrinsic_kind in {IntrinsicKind.CALLBACK0, IntrinsicKind.CALLBACK1, IntrinsicKind.CALLBACK2}:
 			if param_nonretaining:

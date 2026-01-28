@@ -21,6 +21,7 @@ import argparse
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -44,7 +45,12 @@ ROOT = Path(__file__).resolve().parents[4]
 BUILD_ROOT = ROOT / "build" / "tests" / "lang2" / "tests" / "codegen" / "e2e"
 
 
-def _run_ir_with_clang(ir: str, build_dir: Path, argv: list[str] | None = None) -> tuple[int, str, str]:
+def _run_ir_with_clang(
+	ir: str,
+	build_dir: Path,
+	argv: list[str] | None = None,
+	timeout_s: int = 30,
+) -> tuple[int, str, str]:
 	"""Compile the provided LLVM IR with clang and return (exit, stdout, stderr)."""
 	clang = shutil.which("clang-15") or shutil.which("clang")
 	if clang is None:
@@ -59,37 +65,46 @@ def _run_ir_with_clang(ir: str, build_dir: Path, argv: list[str] | None = None) 
 	# The runtime sources include vendored C code (e.g. Ryu) that expects the
 	# directory containing the `ryu/` folder to be on the include path.
 	runtime_include = ROOT / "lang2" / "drift_core" / "runtime"
-	compile_res = subprocess.run(
-		[
-			clang,
-			"-I",
-			str(runtime_include),
-			"-x",
-			"ir",
-			str(ir_path),
-			"-x",
-			"c",
-			*(str(p) for p in runtime_sources),
-			"-o",
-			str(bin_path),
-		],
-		capture_output=True,
-		text=True,
-		cwd=ROOT,
-	)
+	try:
+		compile_res = subprocess.run(
+			[
+				clang,
+				"-pthread",
+				"-I",
+				str(runtime_include),
+				"-x",
+				"ir",
+				str(ir_path),
+				"-x",
+				"c",
+				*(str(p) for p in runtime_sources),
+				"-o",
+				str(bin_path),
+			],
+			capture_output=True,
+			text=True,
+			cwd=ROOT,
+			timeout=timeout_s,
+		)
+	except subprocess.TimeoutExpired:
+		return 124, "", "timeout during clang compile"
 	if compile_res.returncode != 0:
 		return compile_res.returncode, "", compile_res.stderr
 
-	run_res = subprocess.run(
-		[str(bin_path), *(argv or [])],
-		capture_output=True,
-		text=True,
-		cwd=ROOT,
-	)
+	try:
+		run_res = subprocess.run(
+			[str(bin_path), *(argv or [])],
+			capture_output=True,
+			text=True,
+			cwd=ROOT,
+			timeout=timeout_s,
+		)
+	except subprocess.TimeoutExpired:
+		return 124, "", "timeout during execution"
 	return run_res.returncode, run_res.stdout, run_res.stderr
 
 
-def _run_case(case_dir: Path) -> str:
+def _run_case(case_dir: Path, timeout_s: int) -> str:
 	expected_path = case_dir / "expected.json"
 	source_path = case_dir / "main.drift"
 	drift_files = sorted(case_dir.rglob("*.drift"))
@@ -315,9 +330,11 @@ def _run_case(case_dir: Path) -> str:
 	run_args = expected.get("args", [])
 	if needs_argv and not run_args:
 		return "FAIL (argv main requires args in expected.json)"
-	exit_code, stdout, stderr = _run_ir_with_clang(ir, build_dir, argv=run_args)
+	exit_code, stdout, stderr = _run_ir_with_clang(ir, build_dir, argv=run_args, timeout_s=timeout_s)
 	if exit_code != 0 and stderr == "clang not available":
 		return "FAIL (clang not available)"
+	if exit_code == 124 and "timeout" in stderr:
+		return f"FAIL (timeout: {stderr})"
 
 	if checked.diagnostics:
 		actual_exit = 1
@@ -343,19 +360,32 @@ def _run_case(case_dir: Path) -> str:
 	return "ok"
 
 
-def _run_case_worker(case_dir: str) -> tuple[str, str]:
+def _run_case_worker(case_dir: str, timeout_s: int) -> tuple[str, str]:
 	path = Path(case_dir)
+	old_handler = None
+	if timeout_s:
+		def _on_timeout(signum, frame) -> None:
+			raise TimeoutError(f"timeout after {timeout_s}s")
+		old_handler = signal.signal(signal.SIGALRM, _on_timeout)
+		signal.alarm(timeout_s)
 	try:
-		status = _run_case(path)
+		status = _run_case(path, timeout_s)
+	except TimeoutError:
+		return path.name, f"FAIL (timeout after {timeout_s}s)"
 	except Exception as err:  # pragma: no cover - worker guardrail
 		return path.name, f"FAIL (worker exception: {err})"
+	finally:
+		if timeout_s:
+			signal.alarm(0)
+			if old_handler is not None:
+				signal.signal(signal.SIGALRM, old_handler)
 	return path.name, status
 
 
-def _run_case_chunk(case_dirs: list[str]) -> list[tuple[str, str]]:
+def _run_case_chunk(case_dirs: list[str], timeout_s: int) -> list[tuple[str, str]]:
 	results: list[tuple[str, str]] = []
 	for case_dir in case_dirs:
-		results.append(_run_case_worker(case_dir))
+		results.append(_run_case_worker(case_dir, timeout_s))
 	return results
 
 
@@ -383,6 +413,12 @@ def main(argv: Iterable[str] | None = None) -> int:
 		"--ordered",
 		action="store_true",
 		help="Print results in deterministic case order instead of as they finish",
+	)
+	ap.add_argument(
+		"--timeout",
+		type=int,
+		default=30,
+		help="Per-case timeout in seconds (default: 30)",
 	)
 	ap.add_argument(
 		"--summarize",
@@ -422,7 +458,7 @@ def main(argv: Iterable[str] | None = None) -> int:
 			return 2
 	if jobs == 1 or len(case_dirs) <= 1:
 		for case_dir in case_dirs:
-			status = _run_case(case_dir)
+			status = _run_case(case_dir, args.timeout)
 			print(f"{case_dir.name}: {status}")
 			if status.startswith("FAIL"):
 				failures.append((case_dir, status))
@@ -437,7 +473,7 @@ def main(argv: Iterable[str] | None = None) -> int:
 		for i in range(0, len(case_dirs), chunk_size):
 			chunks.append([str(p) for p in case_dirs[i : i + chunk_size]])
 		with ProcessPoolExecutor(max_workers=jobs) as executor:
-			futures = [executor.submit(_run_case_chunk, chunk) for chunk in chunks]
+			futures = [executor.submit(_run_case_chunk, chunk, args.timeout) for chunk in chunks]
 			if args.ordered:
 				results: dict[str, str] = {}
 				next_idx = 0

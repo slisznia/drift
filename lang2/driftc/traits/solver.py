@@ -358,6 +358,15 @@ def prove_is(
 		res = ProofResult(status=ProofStatus.UNKNOWN, reasons=["unknown subject type"])
 		cache[cache_key] = res
 		return res
+	if trait_key.name in ("Fn0", "Fn1", "Fn2") and subject_ty.name == "fn":
+		if trait_key.module in (None, "std.core", "lang.core") or str(trait_key.module).endswith("std.core") or str(trait_key.module).endswith("lang.core"):
+			if subject_ty.fn_throws is True:
+				res = ProofResult(status=ProofStatus.REFUTED, reasons=["fn can throw"])
+				cache[cache_key] = res
+				return res
+			res = ProofResult(status=ProofStatus.PROVED, reasons=["fn pointer impl"])
+			cache[cache_key] = res
+			return res
 	if trait_key not in world.traits:
 		res = ProofResult(status=ProofStatus.REFUTED, reasons=["unknown trait"])
 		cache[cache_key] = res

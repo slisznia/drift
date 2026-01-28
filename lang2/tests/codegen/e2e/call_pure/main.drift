@@ -3,6 +3,6 @@ fn add_one(x: Int) nothrow -> Int {
 }
 
 fn main() nothrow -> Int{
-	val r: Int = add_one(41);
+	val r = add_one(41);
 	return r;
 }

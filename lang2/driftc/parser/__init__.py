@@ -439,6 +439,7 @@ def _convert_expr(expr: parser_ast.Expr) -> s0.Expr:
 			captures=captures,
 			body_expr=body_expr,
 			body_block=body_block,
+			declared_nothrow=bool(getattr(expr, "declared_nothrow", False)),
 			loc=Span.from_loc(getattr(expr, "loc", None)),
 		)
 	if isinstance(expr, parser_ast.Call):
@@ -536,6 +537,7 @@ def _convert_expr(expr: parser_ast.Expr) -> s0.Expr:
 				pattern_arg_form=getattr(arm, "pattern_arg_form", "positional"),
 				binders=list(arm.binders),
 				binder_fields=list(arm.binder_fields) if getattr(arm, "binder_fields", None) is not None else None,
+				binder_is_mutable=list(arm.binder_is_mutable) if getattr(arm, "binder_is_mutable", None) is not None else None,
 				block=_convert_block(arm.block),
 				loc=Span.from_loc(getattr(arm, "loc", None)),
 			)
@@ -2145,6 +2147,7 @@ def parse_drift_workspace_to_hir(
 		else:
 			module_packages_for_scope.setdefault(mod, local_pkg)
 	module_packages_for_scope.setdefault("lang.core", "lang.core" if has_stdlib else local_pkg)
+	module_packages_for_scope.setdefault("lang.__internal", local_pkg)
 
 	def _check_alias_binding_conflicts(path: Path, file_aliases: dict[str, str], prog: parser_ast.Program) -> None:
 		if not file_aliases:
@@ -2684,6 +2687,7 @@ def parse_drift_workspace_to_hir(
 		else:
 			shared_type_table.module_packages.setdefault(mod, local_pkg)
 	shared_type_table.module_packages.setdefault("lang.core", "lang.core" if has_stdlib else local_pkg)
+	shared_type_table.module_packages.setdefault("lang.__internal", local_pkg)
 	_prime_builtins(shared_type_table)
 	# Pre-declare all nominal type names across the workspace before lowering any
 	# individual module.

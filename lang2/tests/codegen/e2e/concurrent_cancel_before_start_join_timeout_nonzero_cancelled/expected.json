@@ -1,0 +1,6 @@
+{
+  "description": "e2e: cancel before start makes join_timeout(>0) return Cancelled",
+  "exit_code": 0,
+  "stderr": "",
+  "stdout": ""
+}

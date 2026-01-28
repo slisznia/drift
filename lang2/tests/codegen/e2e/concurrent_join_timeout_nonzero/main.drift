@@ -1,0 +1,20 @@
+module main
+
+import std.concurrent as conc;
+import std.core as core;
+import lang.thread as thread;
+
+fn main() nothrow -> Int {
+	var t = conc.spawn(| | => { thread.vt_park_until(thread.now_ms() + 50); return 1; });
+	var res = t.join_timeout(conc.Duration(millis = 1));
+	return match res {
+		Err(err) => {
+			match err {
+				Timeout => { 0 },
+				default => { 1 },
+			}
+		},
+		Ok(_v) => { 2 },
+		default => { 2 },
+	};
+}

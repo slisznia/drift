@@ -352,9 +352,10 @@ match_pat: DEFAULT              -> match_default
          | NAME "(" match_named_binders ")"  -> match_ctor_named
          | NAME "(" match_binders ")"  -> match_ctor
          | NAME                  -> match_ctor0
-match_binders: NAME (COMMA NAME)*
+match_binders: match_binder (COMMA match_binder)*
+match_binder: binder? NAME
 match_named_binders: match_named_binder (COMMA match_named_binder)*
-match_named_binder: NAME EQUAL NAME
+match_named_binder: NAME EQUAL match_binder
 match_expr_arm_body: value_block
 match_stmt_arm_body: block
 
@@ -440,7 +441,8 @@ primary: literal
 
 cast_expr: CAST LT type_expr GT "(" expr ")"
 
-lambda_expr: BAR lambda_params? BAR lambda_captures? lambda_returns? FATARROW lambda_body
+lambda_expr: BAR lambda_params? BAR lambda_captures? lambda_nothrow? lambda_returns? FATARROW lambda_body
+lambda_nothrow: NOTHROW
 lambda_returns: ARROW type_expr
 lambda_params: lambda_param (COMMA lambda_param)*
 lambda_param: (VAR | VAL)? NAME (COLON type_expr)?

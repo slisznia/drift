@@ -101,6 +101,12 @@ class ConstBool(MInstr):
 
 
 @dataclass
+class ConstVoid(MInstr):
+	"""dest = constant void value (placeholder)."""
+	dest: ValueId
+
+
+@dataclass
 class ConstString(MInstr):
 	"""dest = constant string (UTF-8 bytes as-is)."""
 	dest: ValueId
@@ -1079,6 +1085,7 @@ __all__ = [
 	"UintFromInt",
 	"CastScalar",
 	"ConstBool",
+	"ConstVoid",
 	"ConstString",
 	"ConstFloat",
 	"FnPtrConst",

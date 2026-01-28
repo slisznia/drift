@@ -6,7 +6,7 @@ fn run() -> Int {
 	val arr = [10, 20];
 	var it = iter.Iterable::iter(&arr);
 
-	val p0: Optional<&Int> = iter.BidirectionalIterator::prev(&mut it);
+	val p0 = iter.BidirectionalIterator::prev(&mut it);
 	var p0_hit = false;
 	val _ = match p0{
 		Some(_) => { p0_hit = true; 0 },
@@ -14,7 +14,7 @@ fn run() -> Int {
 	};
 	if p0_hit { return 1; }
 
-	val n0: Optional<&Int> = iter.SinglePassIterator::next(&mut it);
+	val n0 = iter.SinglePassIterator::next(&mut it);
 	var x0 = -1;
 	val _ = match n0{
 		Some(v) => { x0 = *v; 0 },
@@ -23,7 +23,7 @@ fn run() -> Int {
 	if x0 < 0 { return 2; }
 	if x0 != 10 { return 3; }
 
-	val p1: Optional<&Int> = iter.BidirectionalIterator::prev(&mut it);
+	val p1 = iter.BidirectionalIterator::prev(&mut it);
 	var y0 = -1;
 	val _ = match p1{
 		Some(v) => { y0 = *v; 0 },
@@ -32,7 +32,7 @@ fn run() -> Int {
 	if y0 < 0 { return 4; }
 	if y0 != 10 { return 5; }
 
-	val n1: Optional<&Int> = iter.SinglePassIterator::next(&mut it);
+	val n1 = iter.SinglePassIterator::next(&mut it);
 	var x1 = -1;
 	val _ = match n1{
 		Some(v) => { x1 = *v; 0 },
@@ -41,7 +41,7 @@ fn run() -> Int {
 	if x1 < 0 { return 6; }
 	if x1 != 10 { return 7; }
 
-	val n2: Optional<&Int> = iter.SinglePassIterator::next(&mut it);
+	val n2 = iter.SinglePassIterator::next(&mut it);
 	var x2 = -1;
 	val _ = match n2{
 		Some(v) => { x2 = *v; 0 },
@@ -50,7 +50,7 @@ fn run() -> Int {
 	if x2 < 0 { return 8; }
 	if x2 != 20 { return 9; }
 
-	val n3: Optional<&Int> = iter.SinglePassIterator::next(&mut it);
+	val n3 = iter.SinglePassIterator::next(&mut it);
 	var n3_hit = false;
 	val _ = match n3{
 		Some(_) => { n3_hit = true; 0 },
@@ -58,7 +58,7 @@ fn run() -> Int {
 	};
 	if n3_hit { return 10; }
 
-	val p2: Optional<&Int> = iter.BidirectionalIterator::prev(&mut it);
+	val p2 = iter.BidirectionalIterator::prev(&mut it);
 	var z = -1;
 	val _ = match p2{
 		Some(v) => { z = *v; 0 },
@@ -71,6 +71,6 @@ fn run() -> Int {
 }
 
 fn main() nothrow -> Int {
-	val r: Int = try run() catch { 1 };
+	val r = try run() catch { 1 };
 	return r;
 }

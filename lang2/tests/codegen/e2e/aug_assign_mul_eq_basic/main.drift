@@ -1,7 +1,7 @@
 module m
 
 fn main() nothrow -> Int{
-	var x: Int = 6;
+	var x = 6;
 	x *= 7;
 	return x;
 }

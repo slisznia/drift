@@ -11,7 +11,7 @@ from lang2.driftc.stage1.call_info import CallInfo, CallSig, CallTarget, call_ab
 from lang2.driftc.stage1.node_ids import assign_node_ids, assign_callsite_ids
 from lang2.driftc.stage2 import HIRToMIR, Call, CallIndirect, make_builder
 from lang2.driftc.stage2 import mir_nodes as M
-from lang2.driftc.driftc import _validate_mir_call_invariants
+from lang2.driftc.mir_validate import validate_mir_call_invariants
 
 
 def _fn_id(name: str) -> FunctionId:
@@ -424,4 +424,4 @@ def test_mir_call_requires_can_throw_flag() -> None:
 	dest = builder.new_temp()
 	builder.emit(M.Call(dest=dest, fn_id=fn_id, args=[], can_throw=None))
 	with pytest.raises(AssertionError, match=r"missing can_throw"):
-		_validate_mir_call_invariants({fn_id: builder.func})
+		validate_mir_call_invariants({fn_id: builder.func})

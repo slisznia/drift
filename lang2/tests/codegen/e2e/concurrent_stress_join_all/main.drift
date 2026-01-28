@@ -1,0 +1,16 @@
+module main
+
+import std.concurrent as conc;
+import std.core as core;
+import lang.thread as thread;
+
+fn main() nothrow -> Int {
+var g = conc.future_group<type Int>();
+	var i = 0;
+	while i < 32 {
+		g.add(conc.spawn_future(| | => { thread.vt_park_until(thread.now_ms() + 5); return 1; }));
+		i = i + 1;
+	}
+	val _res: core.Result<Array<Int>, conc.ConcurrencyError> = g.join_all();
+	return 32;
+}

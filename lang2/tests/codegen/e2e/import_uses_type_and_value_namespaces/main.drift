@@ -3,6 +3,6 @@ import lib as lib;
 
 
 fn main() nothrow -> Int{
-	val p: lib.Point = try lib.make() catch { lib.Point(x = 0, y = 0) };
+	val p = try lib.make() catch { lib.Point(x = 0, y = 0) };
 	return 0;
 }

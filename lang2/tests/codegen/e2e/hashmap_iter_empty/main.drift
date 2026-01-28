@@ -4,7 +4,7 @@ import std.containers as containers;
 import std.iter as iter;
 
 fn next_once<I>(it: &mut I) -> Int require I is iter.SinglePassIterator<containers.HashMapItemRef<Int, Int> > {
-	val out: Optional<containers.HashMapItemRef<Int, Int> > = iter.SinglePassIterator::next(it);
+	val out = iter.SinglePassIterator::next(it);
 	return match out {
 		None => { 0 },
 		Some(_v) => { 1 }

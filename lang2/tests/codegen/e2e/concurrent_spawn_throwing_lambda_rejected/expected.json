@@ -1,0 +1,10 @@
+{
+  "description": "e2e: concurrent spawn rejects throwing lambda",
+  "diagnostics": [
+    {
+      "message_contains": "lambda can throw but is expected to be nothrow"
+    }
+  ],
+  "exit_code": 1,
+  "phase": "typecheck"
+}

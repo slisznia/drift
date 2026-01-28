@@ -199,6 +199,7 @@ class HIRToMIR:
 		call_resolutions: Mapping[int, object] | None = None,
 		can_throw_by_id: Mapping[FunctionId, bool] | None = None,
 		return_type: TypeId | None = None,
+		binding_names: Mapping[int, str] | None = None,
 		typed_mode: str | bool = False,
 	):
 		"""
@@ -241,6 +242,14 @@ class HIRToMIR:
 		self._dv_type = self._type_table.ensure_diagnostic_value()
 		self._signatures_by_id = signatures_by_id or {}
 		self._current_fn_id = current_fn_id
+		self._type_param_subst: dict[str, TypeId] = {}
+		if self._current_fn_id is not None and self._signatures_by_id:
+			sig = self._signatures_by_id.get(self._current_fn_id)
+			if sig is not None and sig.impl_target_type_id and sig.impl_target_type_args:
+				schema = self._type_table.get_struct_schema(sig.impl_target_type_id)
+				if schema is not None and schema.type_params:
+					for name, arg in zip(schema.type_params, sig.impl_target_type_args):
+						self._type_param_subst[name] = arg
 		self._expr_types: dict[int, TypeId] = dict(expr_types) if expr_types else {}
 		self._iface_coercions: dict[int, TypeId] = dict(iface_coercions) if iface_coercions else {}
 		self._call_info_by_callsite_id: dict[int, CallInfo] = (
@@ -291,7 +300,7 @@ class HIRToMIR:
 		# BindingId -> local name mapping (for shadowing-aware lowering).
 		self._binding_locals: dict[int, str] = {}
 		# BindingId -> source name mapping (for capture reconstruction).
-		self._binding_names: dict[int, str] = {}
+		self._binding_names: dict[int, str] = dict(binding_names) if binding_names else {}
 		# Lambda lowering context (hidden fn + env).
 		self._lambda_env_local: str | None = None
 		self._lambda_env_ty: TypeId | None = None
@@ -633,6 +642,12 @@ class HIRToMIR:
 
 			# Lower the arm body statements regardless of pattern kind.
 			self.lower_block(arm.block)
+
+			# In statement position, still evaluate any arm result expression and
+			# discard its value (side effects must run).
+			if not want_value and arm.result is not None:
+				if self.b.block.terminator is None:
+					self.lower_stmt(H.HExprStmt(expr=arm.result))
 
 			# If this match is used as a value, store the arm's resulting expression.
 			did_store_result = False
@@ -1277,6 +1292,32 @@ class HIRToMIR:
 			exp_def = self._type_table.get(expected)
 			if exp_def.kind is TypeKind.ARRAY and exp_def.param_types:
 				elem_ty = exp_def.param_types[0]
+		if elem_ty is not None:
+			kind = self._type_table.get(elem_ty).kind
+			if kind in (TypeKind.UNKNOWN, TypeKind.TYPEVAR, TypeKind.FORWARD_NOMINAL):
+				elem_ty = None
+		if elem_ty is None and self._type_param_subst:
+			known = self._expr_types.get(expr.node_id) if self._expr_types else None
+			if known is not None:
+				known_def = self._type_table.get(known)
+				if known_def.kind is TypeKind.ARRAY and known_def.param_types:
+					elem_ty = known_def.param_types[0]
+			if elem_ty is None:
+				# Best-effort substitution when the expected type carries forward nominals.
+				expected = self._current_expected_type()
+				if expected is not None:
+					exp_def = self._type_table.get(expected)
+					if exp_def.kind is TypeKind.ARRAY and exp_def.param_types:
+						elem_ty = exp_def.param_types[0]
+						td = self._type_table.get(elem_ty)
+						if td.kind is TypeKind.FORWARD_NOMINAL and td.name in self._type_param_subst:
+							elem_ty = self._type_param_subst[td.name]
+		if elem_ty is None and self._expr_types and getattr(expr, "node_id", None) is not None:
+			known = self._expr_types.get(expr.node_id)
+			if known is not None:
+				known_def = self._type_table.get(known)
+				if known_def.kind is TypeKind.ARRAY and known_def.param_types:
+					elem_ty = known_def.param_types[0]
 		if elem_ty is None:
 			elem_ty = self._infer_array_literal_elem_type(expr)
 		dest = self.b.new_temp()
@@ -1759,6 +1800,9 @@ class HIRToMIR:
 				if info is not None:
 					result = self._lower_call_with_info(expr, info)
 					if result is None:
+						expected = self._current_expected_type()
+						if expected is not None and self._type_table.is_void(expected):
+							return self._void_value()
 						raise AssertionError("Void-returning call used in expression context (checker bug)")
 					if info.sig.can_throw:
 						ok_tid = info.sig.user_ret_type
@@ -2081,7 +2125,20 @@ class HIRToMIR:
 						env_vals.append(self.lower_expr(expr))
 						env_field_types.append(self._infer_expr_type(expr) or unknown)
 					else:
-						env_vals.append(self._visit_expr_HMove(H.HMove(subject=place)))
+						if not (hasattr(H, "HPlaceExpr") and isinstance(place, getattr(H, "HPlaceExpr"))):
+							raise AssertionError("non-canonical move capture place (compiler bug)")
+						if place.projections:
+							raise AssertionError("move capture of projected place (compiler bug)")
+						subj_name = self._canonical_local(getattr(place.base, "binding_id", None), place.base.name)
+						self.b.ensure_local(subj_name)
+						inner_ty = self._infer_expr_type(expr)
+						if inner_ty is None:
+							raise AssertionError("move capture operand type unknown in MIR lowering (checker bug)")
+						moved_val = self.b.new_temp()
+						self.b.emit(M.MoveOut(dest=moved_val, local=subj_name, ty=inner_ty))
+						self._local_types[moved_val] = inner_ty
+						self._moved_locals.add(subj_name)
+						env_vals.append(moved_val)
 						env_field_types.append(self._infer_expr_type(expr) or unknown)
 				else:
 					env_vals.append(self.lower_expr(expr))
@@ -2230,7 +2287,20 @@ class HIRToMIR:
 						env_vals.append(self.lower_expr(expr))
 						env_field_types.append(self._infer_expr_type(expr) or unknown)
 					else:
-						env_vals.append(self._visit_expr_HMove(H.HMove(subject=place)))
+						if not (hasattr(H, "HPlaceExpr") and isinstance(place, getattr(H, "HPlaceExpr"))):
+							raise AssertionError("non-canonical move capture place (compiler bug)")
+						if place.projections:
+							raise AssertionError("move capture of projected place (compiler bug)")
+						subj_name = self._canonical_local(getattr(place.base, "binding_id", None), place.base.name)
+						self.b.ensure_local(subj_name)
+						inner_ty = self._infer_expr_type(expr)
+						if inner_ty is None:
+							raise AssertionError("move capture operand type unknown in MIR lowering (checker bug)")
+						moved_val = self.b.new_temp()
+						self.b.emit(M.MoveOut(dest=moved_val, local=subj_name, ty=inner_ty))
+						self._local_types[moved_val] = inner_ty
+						self._moved_locals.add(subj_name)
+						env_vals.append(moved_val)
 						env_field_types.append(self._infer_expr_type(expr) or unknown)
 				else:
 					env_vals.append(self.lower_expr(expr))
@@ -2404,6 +2474,8 @@ class HIRToMIR:
 				return dest
 		result, info = self._lower_method_call(expr)
 		if result is None:
+			if self._type_table.is_void(info.sig.user_ret_type):
+				return self._void_value()
 			raise AssertionError("Void-returning method call used in expression context (checker bug)")
 		if info.sig.can_throw:
 			ok_tid = info.sig.user_ret_type
@@ -2436,6 +2508,12 @@ class HIRToMIR:
 	def _const_bool(self, value: bool) -> M.ValueId:
 		dest = self.b.new_temp()
 		self.b.emit(M.ConstBool(dest=dest, value=value))
+		return dest
+
+	def _void_value(self) -> M.ValueId:
+		dest = self.b.new_temp()
+		self.b.emit(M.ConstVoid(dest=dest))
+		self._local_types[dest] = self._void_type
 		return dest
 
 	def _addr_taken_local(self, name_hint: str, ty: TypeId, init_value: M.ValueId) -> str:
@@ -3160,7 +3238,7 @@ class HIRToMIR:
 
 
 	def _visit_expr_HDVInit(self, expr: H.HDVInit) -> M.ValueId:
-		arg_vals = [self.lower_expr(a) for a in expr.args]
+		arg_vals = [self.lower_expr(arg) for arg in expr.args]
 		if len(expr.args) == 1 and self._expr_types:
 			arg_expr = expr.args[0]
 			arg_ty = self._expr_types.get(arg_expr.node_id)
@@ -3176,10 +3254,91 @@ class HIRToMIR:
 
 	def _visit_expr_HExceptionInit(self, expr: H.HExceptionInit) -> M.ValueId:
 		"""
-		Exception init is only valid as a throw payload in v1; fail loudly if it
-		reaches expression position.
+		Lower exception init into an Error value.
 		"""
-		raise NotImplementedError("ExceptionInit is only valid as a throw payload")
+		return self._construct_error_from_exception_init(expr)
+
+	def _construct_error_from_exception_init(self, expr: H.HExceptionInit) -> M.ValueId:
+		from lang2.driftc.core.exception_ctor_args import KwArg as _KwArg, resolve_exception_ctor_args
+
+		err_val = self.b.new_temp()
+		self._local_types[err_val] = self._type_table.ensure_error()
+
+		code_const = self._lookup_error_code(event_fqn=expr.event_fqn)
+		code_val = self.b.new_temp()
+		self.b.emit(M.ConstUint64(dest=code_val, value=code_const))
+		self._local_types[code_val] = self._uint64_type
+
+		event_fqn_val = self.b.new_temp()
+		self.b.emit(M.ConstString(dest=event_fqn_val, value=expr.event_fqn))
+
+		schema = self._exception_schemas.get(expr.event_fqn)
+		if schema is None:
+			raise AssertionError(f"missing exception schema for {expr.event_fqn!r} (checker bug)")
+		_decl_fqn, schema_fields = schema
+
+		resolved, diags = resolve_exception_ctor_args(
+			event_fqn=expr.event_fqn,
+			declared_fields=schema_fields,
+			pos_args=[(a, getattr(a, "loc", Span())) for a in expr.pos_args],
+			kw_args=[
+				_KwArg(name=kw.name, value=kw.value, name_span=getattr(kw, "loc", Span()))
+				for kw in expr.kw_args
+			],
+			span=getattr(expr, "loc", Span()),
+		)
+		if diags:
+			raise AssertionError("exception ctor args reached MIR lowering with diagnostics (checker bug)")
+
+		if not resolved:
+			self.b.emit(
+				M.ConstructError(
+					dest=err_val,
+					code=code_val,
+					event_fqn=event_fqn_val,
+					payload=None,
+					attr_key=None,
+				)
+			)
+			return err_val
+
+		field_dvs: list[tuple[str, M.ValueId]] = []
+		for name, field_expr in resolved:
+			if isinstance(field_expr, H.HDVInit):
+				dv_val = self.lower_expr(field_expr)
+			elif isinstance(field_expr, (H.HLiteralInt, H.HLiteralBool, H.HLiteralString)):
+				inner_val = self.lower_expr(field_expr)
+				dv_val = self.b.new_temp()
+				kind_name = "Int" if isinstance(field_expr, H.HLiteralInt) else "Bool"
+				if isinstance(field_expr, H.HLiteralString):
+					kind_name = "String"
+				self.b.emit(M.ConstructDV(dest=dv_val, dv_type_name=kind_name, args=[inner_val]))
+			else:
+				dv_val = self.lower_expr(field_expr)
+				dv_ty = self._local_types.get(dv_val)
+				if dv_ty != self._dv_type:
+					raise AssertionError(
+						f"exception field {name!r} must lower to DiagnosticValue (checker bug)"
+					)
+			field_dvs.append((name, dv_val))
+
+		first_name, first_dv = field_dvs[0]
+		first_key = self.b.new_temp()
+		self.b.emit(M.ConstString(dest=first_key, value=first_name))
+		self.b.emit(
+			M.ConstructError(
+				dest=err_val,
+				code=code_val,
+				event_fqn=event_fqn_val,
+				payload=first_dv,
+				attr_key=first_key,
+			)
+		)
+		for name, dv in field_dvs[1:]:
+			key = self.b.new_temp()
+			self.b.emit(M.ConstString(dest=key, value=name))
+			self.b.emit(M.ErrorAddAttrDV(error=err_val, key=key, value=dv))
+		return err_val
 
 	def _visit_expr_HResultOk(self, expr: H.HResultOk) -> M.ValueId:
 		"""
@@ -3639,11 +3798,14 @@ class HIRToMIR:
 					stmt.declared_type_expr,
 					self._type_table,
 					module_id=self._current_module_name(),
+					type_params=self._type_param_subst or None,
 				)
 			except Exception:
 				declared_ty = None
-		val = self.lower_expr(stmt.value, expected_type=declared_ty)
-		val_ty = declared_ty or self._infer_expr_type(stmt.value)
+		inferred_ty = self._infer_expr_type(stmt.value)
+		expected_ty = declared_ty if declared_ty is not None else inferred_ty
+		val = self.lower_expr(stmt.value, expected_type=expected_ty)
+		val_ty = declared_ty if declared_ty is not None else inferred_ty
 		if val_ty is not None:
 			self._local_types[local_name] = val_ty
 			self._register_drop_local(local_name, val_ty)
@@ -3940,88 +4102,8 @@ class HIRToMIR:
 			return
 		can_throw = self._fn_can_throw()
 
-		err_val = self.b.new_temp()
 		if isinstance(stmt.value, H.HExceptionInit):
-			from lang2.driftc.core.exception_ctor_args import KwArg as _KwArg, resolve_exception_ctor_args
-
-			code_const = self._lookup_error_code(event_fqn=stmt.value.event_fqn)
-			code_val = self.b.new_temp()
-			self.b.emit(M.ConstUint64(dest=code_val, value=code_const))
-			self._local_types[code_val] = self._uint64_type
-
-			event_fqn_val = self.b.new_temp()
-			self.b.emit(M.ConstString(dest=event_fqn_val, value=stmt.value.event_fqn))
-
-			schema = self._exception_schemas.get(stmt.value.event_fqn)
-			if schema is None:
-				raise AssertionError(f"missing exception schema for {stmt.value.event_fqn!r} (checker bug)")
-			_decl_fqn, schema_fields = schema
-
-			resolved, diags = resolve_exception_ctor_args(
-				event_fqn=stmt.value.event_fqn,
-				declared_fields=schema_fields,
-				pos_args=[(a, getattr(a, "loc", Span())) for a in stmt.value.pos_args],
-				kw_args=[
-					_KwArg(name=kw.name, value=kw.value, name_span=getattr(kw, "loc", Span()))
-					for kw in stmt.value.kw_args
-				],
-				span=getattr(stmt.value, "loc", Span()),
-			)
-			if diags:
-				# The checker is responsible for reporting these to the user.
-				raise AssertionError("exception ctor args reached MIR lowering with diagnostics (checker bug)")
-
-			if not resolved:
-				# No declared fields: build error with no attrs.
-				self.b.emit(
-					M.ConstructError(
-						dest=err_val,
-						code=code_val,
-						event_fqn=event_fqn_val,
-						payload=None,
-						attr_key=None,
-					)
-				)
-			else:
-				field_dvs: list[tuple[str, M.ValueId]] = []
-				for name, field_expr in resolved:
-					if isinstance(field_expr, H.HDVInit):
-						dv_val = self.lower_expr(field_expr)
-					elif isinstance(field_expr, (H.HLiteralInt, H.HLiteralBool, H.HLiteralString)):
-						inner_val = self.lower_expr(field_expr)
-						dv_val = self.b.new_temp()
-						# Only primitive literals are auto-wrapped into DiagnosticValue. This
-						# keeps exception field attrs aligned with the DV ABI and avoids
-						# silently accepting unsupported payload shapes.
-						kind_name = "Int" if isinstance(field_expr, H.HLiteralInt) else "Bool"
-						if isinstance(field_expr, H.HLiteralString):
-							kind_name = "String"
-						self.b.emit(M.ConstructDV(dest=dv_val, dv_type_name=kind_name, args=[inner_val]))
-					else:
-						dv_val = self.lower_expr(field_expr)
-						dv_ty = self._local_types.get(dv_val)
-						if dv_ty != self._dv_type:
-							raise AssertionError(
-								f"exception field {name!r} must lower to DiagnosticValue (checker bug)"
-							)
-					field_dvs.append((name, dv_val))
-
-				first_name, first_dv = field_dvs[0]
-				first_key = self.b.new_temp()
-				self.b.emit(M.ConstString(dest=first_key, value=first_name))
-				self.b.emit(
-					M.ConstructError(
-						dest=err_val,
-						code=code_val,
-						event_fqn=event_fqn_val,
-						payload=first_dv,
-						attr_key=first_key,
-					)
-				)
-				for name, dv in field_dvs[1:]:
-					key = self.b.new_temp()
-					self.b.emit(M.ConstString(dest=key, value=name))
-					self.b.emit(M.ErrorAddAttrDV(error=err_val, key=key, value=dv))
+			err_val = self._construct_error_from_exception_init(stmt.value)
 		else:
 			# Throwing an existing Error value (e.g., from try-result sugar unwrap_err).
 			err_val = self.lower_expr(stmt.value)
@@ -4382,7 +4464,10 @@ class HIRToMIR:
 		if info.target.kind is not CallTargetKind.DIRECT or not info.target.symbol:
 			raise AssertionError("call missing direct CallTarget (typecheck/call-info bug)")
 		target_fn_id = info.target.symbol
-		arg_vals = [self.lower_expr(a) for a in expr.args]
+		arg_vals: list[M.ValueId] = []
+		for idx, arg in enumerate(expr.args):
+			param_ty = info.sig.param_types[idx] if idx < len(info.sig.param_types) else None
+			arg_vals.append(self._lower_call_arg(arg, param_ty))
 		if info.sig.can_throw:
 			dest = self.b.new_temp()
 			self.b.emit(M.Call(dest=dest, fn_id=target_fn_id, args=arg_vals, can_throw=True))
@@ -4395,6 +4480,30 @@ class HIRToMIR:
 		self.b.emit(M.Call(dest=dest, fn_id=target_fn_id, args=arg_vals, can_throw=False))
 		self._local_types[dest] = info.sig.user_ret_type
 		return dest
+
+	def _lower_call_arg(self, arg: H.HExpr, param_ty: TypeId | None) -> M.ValueId:
+		"""
+		Lower a call argument, moving out of locals for non-Copy params.
+
+		MVP rule: passing a non-Copy local by value consumes it. We only move
+		out of plain locals (HVar) here; projected places must be moved
+		explicitly via `move`.
+		"""
+		if param_ty is not None:
+			ptd = self._type_table.get(param_ty)
+			if ptd.kind is TypeKind.REF:
+				return self.lower_expr(arg)
+		if isinstance(arg, H.HVar):
+			arg_ty = self._infer_expr_type(arg) or param_ty
+			if arg_ty is not None and not self._type_table.is_copy(arg_ty):
+				subj_name = self._canonical_local(getattr(arg, "binding_id", None), arg.name)
+				self.b.ensure_local(subj_name)
+				moved_val = self.b.new_temp()
+				self.b.emit(M.MoveOut(dest=moved_val, local=subj_name, ty=arg_ty))
+				self._local_types[moved_val] = arg_ty
+				self._moved_locals.add(subj_name)
+				return moved_val
+		return self.lower_expr(arg)
 
 	def _lower_constructor_call(self, expr: H.HCall, info: CallInfo) -> M.ValueId:
 		variant_ty = info.target.variant_type_id
@@ -4439,23 +4548,34 @@ class HIRToMIR:
 		if ctor_arg_field_indices is not None:
 			if len(pos_args) != len(ctor_arg_field_indices):
 				raise AssertionError("constructor arg mapping arity mismatch reached MIR lowering (checker bug)")
-			arg_vals = [self.lower_expr(arg_expr) for arg_expr in pos_args]
-			if len(arg_vals) != len(ctor_arg_field_indices):
-				raise AssertionError("constructor arg mapping length mismatch (checker bug)")
 			ordered = [None] * len(field_types)
-			for arg_val, field_idx in zip(arg_vals, ctor_arg_field_indices):
+			for arg_expr, field_idx in zip(pos_args, ctor_arg_field_indices):
 				if field_idx < 0 or field_idx >= len(field_types):
 					raise AssertionError("constructor field index out of range (checker bug)")
 				if ordered[field_idx] is not None:
 					raise AssertionError("constructor arg mapping duplicates field (checker bug)")
+				field_ty = field_types[field_idx]
+				arg_val = self.lower_expr(arg_expr, expected_type=field_ty)
+				if arg_val is None:
+					if self._type_table.is_void(field_ty):
+						ordered[field_idx] = None
+						continue
+					raise AssertionError("Void-returning call used in expression context (checker bug)")
 				ordered[field_idx] = arg_val
 		else:
 			if len(pos_args) != len(field_types):
 				raise AssertionError("constructor arity mismatch reached MIR lowering (checker bug)")
 			for idx, (arg_expr, fty) in enumerate(zip(pos_args, field_types)):
-				ordered[idx] = self.lower_expr(arg_expr, expected_type=fty)
-		if any(v is None for v in ordered):
-			raise AssertionError("missing constructor field reached MIR lowering (checker bug)")
+				arg_val = self.lower_expr(arg_expr, expected_type=fty)
+				if arg_val is None:
+					if self._type_table.is_void(fty):
+						ordered[idx] = None
+						continue
+					raise AssertionError("Void-returning call used in expression context (checker bug)")
+				ordered[idx] = arg_val
+		for idx, v in enumerate(ordered):
+			if v is None and not self._type_table.is_void(field_types[idx]):
+				raise AssertionError("missing constructor field reached MIR lowering (checker bug)")
 		arg_vals = [v for v in ordered if v is not None]
 		dest = self.b.new_temp()
 		if variant_ty is not None:
@@ -4519,7 +4639,10 @@ class HIRToMIR:
 		if callee_ty is not None and self._type_table.get(callee_ty).kind is TypeKind.INTERFACE:
 			raise AssertionError("interface calls must lower to CallIface, not CallIndirect")
 		callee_val = self.lower_expr(callee_expr)
-		arg_vals = [self.lower_expr(a) for a in args]
+		arg_vals: list[M.ValueId] = []
+		for idx, arg in enumerate(args):
+			param_ty = info.sig.param_types[idx] if idx < len(info.sig.param_types) else None
+			arg_vals.append(self._lower_call_arg(arg, param_ty))
 		param_types = list(info.sig.param_types)
 		if info.sig.can_throw:
 			dest = self.b.new_temp()
@@ -4635,6 +4758,8 @@ class HIRToMIR:
 		info = self._call_info_for_method(expr)
 		if info.target.kind is CallTargetKind.INDIRECT:
 			recv_ty = self._infer_expr_type(expr.receiver)
+			if recv_ty is None and self._expr_types and getattr(expr.receiver, "node_id", None) is not None:
+				recv_ty = self._expr_types.get(expr.receiver.node_id)
 			if recv_ty is not None and self._type_table.get(recv_ty).kind is TypeKind.INTERFACE:
 				return self._lower_iface_call(expr.receiver, expr.args, expr.method_name, info), info
 			return self._lower_indirect_call(expr.receiver, expr.args, info), info
@@ -4659,9 +4784,11 @@ class HIRToMIR:
 		# - ref/ref_mut: pass a pointer (`&T` / `&mut T`). If the receiver is a
 		#   reference already, pass it directly; otherwise take the address of the
 		#   receiver place (auto-borrow from lvalues only).
+		param_types = list(getattr(info.sig, "param_types", []) or [])
+		receiver_param_ty = param_types[0] if param_types else None
 		receiver_arg: M.ValueId
 		if self_mode == "value":
-			receiver_arg = self.lower_expr(expr.receiver)
+			receiver_arg = self._lower_call_arg(expr.receiver, receiver_param_ty)
 		else:
 			recv_def = self._type_table.get(recv_ty)
 			if recv_def.kind is TypeKind.REF:
@@ -4679,7 +4806,10 @@ class HIRToMIR:
 					raise NotImplementedError("method auto-borrow requires an lvalue receiver in MVP")
 				receiver_arg, _inner = self._lower_addr_of_place(place_expr, is_mut=(self_mode == "ref_mut"))
 
-		arg_vals = [receiver_arg] + [self.lower_expr(a) for a in expr.args]
+		arg_vals: list[M.ValueId] = [receiver_arg]
+		for idx, arg in enumerate(expr.args):
+			param_ty = param_types[idx + 1] if idx + 1 < len(param_types) else None
+			arg_vals.append(self._lower_call_arg(arg, param_ty))
 
 		# Can-throw calls always return an internal FnResult carrier value.
 		if info.sig.can_throw:

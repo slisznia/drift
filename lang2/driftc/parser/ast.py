@@ -386,6 +386,7 @@ class Lambda(Expr):
     captures: List["LambdaCapture"] | None
     body_expr: Expr | None
     body_block: Block | None
+    declared_nothrow: bool = False
 
 
 @dataclass
@@ -790,6 +791,8 @@ class MatchArm:
 	# Field names for named binders, parallel to `binders`. Only meaningful when
 	# `pattern_arg_form == "named"`.
 	binder_fields: Optional[List[str]] = None
+	# Mutability flags for binders, parallel to `binders`.
+	binder_is_mutable: Optional[List[bool]] = None
 
 
 @dataclass

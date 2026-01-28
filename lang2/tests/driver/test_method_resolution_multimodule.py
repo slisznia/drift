@@ -7,7 +7,8 @@ from pathlib import Path
 from lang2.driftc import stage1 as H
 from lang2.driftc.core.function_id import FunctionId, method_wrapper_id
 from lang2.driftc.driftc import _inject_method_boundary_wrappers
-from lang2.driftc.method_registry import CallableRegistry, CallableSignature, SelfMode, Visibility
+from lang2.driftc.method_registry import CallableDecl, CallableRegistry, CallableSignature, SelfMode, Visibility
+from lang2.driftc.method_resolver import MethodResolution
 from lang2.driftc.impl_index import GlobalImplIndex, find_impl_method_conflicts
 from lang2.driftc.driftc import main as driftc_main
 from lang2.driftc.parser import parse_drift_workspace_to_hir, stdlib_root
@@ -140,6 +141,54 @@ def _collect_method_calls(block: H.HBlock) -> list[H.HMethodCall]:
 	return calls
 
 
+def _collect_calls(block: H.HBlock) -> list[H.HCall]:
+	calls: list[H.HCall] = []
+
+	def walk_expr(expr: H.HExpr) -> None:
+		if isinstance(expr, H.HCall):
+			calls.append(expr)
+		for child in getattr(expr, "__dict__", {}).values():
+			if isinstance(child, H.HExpr):
+				walk_expr(child)
+			elif isinstance(child, H.HBlock):
+				walk_block(child)
+			elif isinstance(child, list):
+				for it in child:
+					if isinstance(it, H.HExpr):
+						walk_expr(it)
+					elif isinstance(it, H.HBlock):
+						walk_block(it)
+
+	def walk_block(b: H.HBlock) -> None:
+		for stmt in b.statements:
+			if isinstance(stmt, H.HExprStmt):
+				walk_expr(stmt.expr)
+			elif isinstance(stmt, H.HLet):
+				walk_expr(stmt.value)
+			elif isinstance(stmt, H.HReturn) and stmt.value is not None:
+				walk_expr(stmt.value)
+			elif isinstance(stmt, H.HIf):
+				walk_expr(stmt.cond)
+				walk_block(stmt.then_block)
+				if stmt.else_block is not None:
+					walk_block(stmt.else_block)
+			elif isinstance(stmt, H.HLoop):
+				walk_block(stmt.body)
+			elif isinstance(stmt, H.HTry):
+				walk_block(stmt.body)
+				for arm in stmt.catches:
+					walk_block(arm.block)
+			elif isinstance(stmt, H.HMatch):
+				walk_expr(stmt.scrutinee)
+				for arm in stmt.arms:
+					walk_block(arm.block)
+					if arm.result is not None:
+						walk_expr(arm.result)
+
+	walk_block(block)
+	return calls
+
+
 def _resolve_main_block(
 	tmp_path: Path, files: dict[Path, str], *, main_module: str
 ) -> tuple[H.HBlock, dict[int, object], dict[FunctionId, object], dict[str, set[str]], dict[object, int]]:
@@ -228,6 +277,38 @@ fn main() nothrow -> Int{
 	assert res is not None and res.decl.fn_id is not None
 	assert res.decl.fn_id.module == "m_box"
 	assert signatures[res.decl.fn_id].is_method
+
+
+def test_module_alias_call_resolves_as_free_call(tmp_path: Path) -> None:
+	files = {
+		Path("m_lib/lib.drift"): """
+module m_lib
+
+export { spawn };
+
+pub fn spawn() nothrow -> Int { return 1; }
+""",
+		Path("m_main/main.drift"): """
+module m_main
+
+import m_lib as conc;
+
+fn main() nothrow -> Int {
+	return conc.spawn();
+}
+""",
+	}
+	main_block, call_resolutions, _signatures, _deps, _module_ids = _resolve_main_block(
+		tmp_path, files, main_module="m_main"
+	)
+	method_calls = _collect_method_calls(main_block)
+	free_calls = _collect_calls(main_block)
+	assert len(method_calls) == 0
+	assert len(free_calls) == 1
+	res = call_resolutions.get(free_calls[0].node_id)
+	assert isinstance(res, CallableDecl)
+	assert not isinstance(res, MethodResolution)
+	assert res.fn_id is not None and res.fn_id.module == "m_lib"
 
 
 def test_method_resolution_ambiguity_across_modules(tmp_path: Path) -> None:

@@ -59,3 +59,9 @@ def test_parse_lambda_with_captures_list() -> None:
 	assert expr.captures is not None
 	assert [cap.name for cap in expr.captures] == ["i", "y", "z"]
 	assert [cap.kind for cap in expr.captures] == ["copy", "ref_mut", "auto"]
+
+
+def test_parse_lambda_with_nothrow_modifier() -> None:
+	expr = p._parse_expr_fragment("| | nothrow => 1")
+	assert isinstance(expr, Lambda)
+	assert expr.declared_nothrow is True

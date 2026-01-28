@@ -20,6 +20,6 @@ implement A for Box {
 }
 
 fn main() nothrow -> Int {
-	val a: A = Box(base = 10);
+	val a = Box(base = 10);
 	return a.second() * 10 + a.first();
 }

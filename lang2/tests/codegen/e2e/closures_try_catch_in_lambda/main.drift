@@ -11,7 +11,7 @@ fn may_fail(flag: Int) -> Int {
 
 fn main() nothrow -> Int{
 	return (|| => {
-		val x: Int = try may_fail(0) catch { 0 };
+		val x = try may_fail(0) catch { 0 };
 		return x + 1;
 	})();
 }

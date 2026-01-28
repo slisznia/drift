@@ -1,0 +1,21 @@
+module main
+
+import std.concurrent as conc;
+
+fn main() nothrow -> Int {
+	var i = 0;
+	var sum = 0;
+	while i < 3 {
+		val v = i + 1;
+		var f = conc.spawn_future(| | captures(move v) => { return v; });
+		var r = f.join();
+		val add = match r {
+			Ok(x) => { x },
+			Err(_e) => { 0 },
+			default => { 0 }
+		};
+		sum = sum + add;
+		i = i + 1;
+	}
+	return sum;
+}

@@ -1,6 +1,6 @@
 fn main() nothrow -> Int{
     val cond = true;
-    var s: String = "x";
+    var s = "x";
     if cond {
         s = "a" + "b";
     } else {

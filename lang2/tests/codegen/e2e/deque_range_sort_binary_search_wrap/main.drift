@@ -1,10 +1,10 @@
 module main
 
 import std.algo as algo;
-import std.containers;
+import std.containers as containers;
 
 fn main() nothrow -> Int {
-var dq: std.containers.Deque<Int> = std.containers.deque_new<type Int>();
+var dq = containers.deque_new<type Int>();
 	dq.push_back(4);
 	dq.push_back(5);
 	dq.push_back(6);
@@ -17,9 +17,10 @@ var dq: std.containers.Deque<Int> = std.containers.deque_new<type Int>();
 	algo.sort_in_place(&mut rm);
 	var r = dq.range();
 	val idx = algo.binary_search(&r, &5);
-	val out: Int = match idx {
+	val out = match idx {
 		Some(i) => {
-			(*dq.at(i) == 5) ? 0 : 1
+			val got = try { *dq.at(i) } catch std.err:IndexError(_) { -1 } catch { -1 };
+			(got == 5) ? 0 : 1
 		},
 		None => {
 			2

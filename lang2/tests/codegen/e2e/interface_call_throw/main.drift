@@ -21,6 +21,6 @@ implement I for Box {
 
 fn main() nothrow -> Int {
 	var b = Box(value = 40);
-	val r: Int = try b.call(1) catch { 99 };
+	val r = try b.call(1) catch { 99 };
 	return r;
 }

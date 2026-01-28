@@ -111,6 +111,49 @@ def _collect_trait_subjects(expr: parser_ast.TraitExpr, out: Set[object]) -> Non
 		_collect_trait_subjects(expr.expr, out)
 
 
+def _infer_lambda_fn_type(
+	lam: H.HLambda,
+	*,
+	expr_types: dict[int, object],
+	type_table: object,
+	module_name: str | None,
+) -> object | None:
+	if getattr(lam, "explicit_captures", None):
+		return None
+	captures = getattr(lam, "captures", []) or []
+	if captures:
+		return None
+	param_types: list[object] = []
+	for p in getattr(lam, "params", []) or []:
+		p_ty = None
+		if getattr(p, "type", None) is not None:
+			try:
+				p_ty = resolve_opaque_type(p.type, type_table, module_id=module_name)
+			except Exception:
+				p_ty = None
+		param_types.append(p_ty if p_ty is not None else type_table.ensure_unknown())
+	ret_ty = None
+	if getattr(lam, "ret_type", None) is not None:
+		try:
+			ret_ty = resolve_opaque_type(lam.ret_type, type_table, module_id=module_name)
+		except Exception:
+			ret_ty = None
+	if ret_ty is None and lam.body_expr is not None:
+		ret_ty = expr_types.get(lam.body_expr.node_id)
+	if ret_ty is None and lam.body_block is not None:
+		for st in lam.body_block.statements:
+			if isinstance(st, H.HReturn) and st.value is not None:
+				ret_ty = expr_types.get(st.value.node_id)
+				if ret_ty is not None:
+					break
+	if ret_ty is None:
+		ret_ty = type_table.ensure_void()
+	can_throw = getattr(lam, "can_throw_effective", None)
+	if can_throw is None:
+		can_throw = True
+	return type_table.ensure_function(list(param_types), ret_ty, can_throw=bool(can_throw))
+
+
 def _extract_conjunctive_facts(expr: parser_ast.TraitExpr) -> List[parser_ast.TraitIs]:
 	if isinstance(expr, parser_ast.TraitIs):
 		return [expr]
@@ -159,7 +202,8 @@ def enforce_struct_requires(
 		default_package=require_env.default_package,
 		module_packages=require_env.module_packages,
 	)
-	world = linked_world.visible_world(visible_modules) if visible_modules is not None else linked_world.global_world
+	base_visible = set(visible_modules) if visible_modules is not None else None
+	world = linked_world.global_world if base_visible is None else linked_world.visible_world(base_visible)
 	for ty in used_types:
 		ty_norm = normalize_type_key(
 			ty,
@@ -232,7 +276,8 @@ def enforce_fn_requires(
 				assumed_true.add((key, trait_key))
 	seen: Set[Tuple[FunctionId, Tuple[TypeKey, ...], Tuple[TypeKey, ...]]] = set()
 	symbol_to_id = {function_symbol(fid): fid for fid in signatures.keys()}
-	world = linked_world.visible_world(visible_modules) if visible_modules is not None else linked_world.global_world
+	base_visible = set(visible_modules) if visible_modules is not None else None
+	world = linked_world.global_world if base_visible is None else linked_world.visible_world(base_visible)
 
 	def _infer_type_args_from_call(sig: object, arg_type_ids: List[object]) -> Dict[TypeParamId, object] | None:
 		type_params = list(getattr(sig, "type_params", []) or [])
@@ -318,6 +363,19 @@ def enforce_fn_requires(
 		req = require_env.requires_by_fn.get(fn_id)
 		if req is None:
 			continue
+		if base_visible is not None:
+			trait_mods: Set[str] = set()
+			for atom in _extract_conjunctive_facts(req):
+				trait_key = trait_key_from_expr(
+					atom.trait,
+					default_module=module_name,
+					default_package=require_env.default_package,
+					module_packages=require_env.module_packages,
+				)
+				if trait_key.module:
+					trait_mods.add(trait_key.module)
+			if trait_mods:
+				world = linked_world.visible_world(base_visible | trait_mods)
 		env = Env(
 			assumed_true=set(assumed_true),
 			default_module=callee_mod,
@@ -334,6 +392,8 @@ def enforce_fn_requires(
 		arg_type_ids: List[object] = []
 		for arg in expr.args:
 			tid = expr_types.get(arg.node_id)
+			if tid is None and isinstance(arg, H.HLambda):
+				tid = _infer_lambda_fn_type(arg, expr_types=expr_types, type_table=type_table, module_name=module_name)
 			if tid is None:
 				continue
 			arg_type_ids.append(tid)
@@ -375,6 +435,51 @@ def enforce_fn_requires(
 					bindings[tp.id] = ty_id
 			else:
 				bindings = _infer_type_args_from_call(sig, arg_type_ids)
+			if bindings is None and req is not None and getattr(sig, "type_params", None) and arg_type_ids:
+				type_params = list(getattr(sig, "type_params", []) or [])
+				type_param_ids = {tp.id for tp in type_params}
+				name_to_id = {tp.name: tp.id for tp in type_params if getattr(tp, "name", None)}
+				bindings = {}
+				if sig.param_type_ids and len(sig.param_type_ids) == len(arg_type_ids):
+					for idx, pty in enumerate(sig.param_type_ids):
+						pdef = type_table.get(pty)
+						if pdef.kind is TypeKind.TYPEVAR and pdef.type_param_id in type_param_ids:
+							if pdef.type_param_id not in bindings:
+								bindings[pdef.type_param_id] = arg_type_ids[idx]
+				for atom in _extract_conjunctive_facts(req):
+					if not isinstance(atom, parser_ast.TraitIs):
+						continue
+					trait_name = getattr(atom.trait, "name", None)
+					if trait_name not in ("Fn0", "Fn1", "Fn2"):
+						continue
+					subj_id = None
+					if isinstance(atom.subject, TypeParamId):
+						subj_id = atom.subject
+					elif isinstance(atom.subject, parser_ast.TypeNameRef):
+						subj_id = name_to_id.get(atom.subject.name)
+					if subj_id is None:
+						continue
+					subj_ty = bindings.get(subj_id)
+					if subj_ty is None:
+						continue
+					subj_def = type_table.get(subj_ty)
+					if subj_def.kind is not TypeKind.FUNCTION or not subj_def.param_types:
+						continue
+					fn_parts = list(subj_def.param_types)
+					trait_args = list(getattr(atom.trait, "args", []) or [])
+					if len(trait_args) != len(fn_parts):
+						continue
+					for targ, farg in zip(trait_args, fn_parts):
+						tp_id = None
+						if isinstance(targ, parser_ast.TypeExpr):
+							if isinstance(getattr(targ, "name", None), str) and not getattr(targ, "args", None):
+								tp_id = name_to_id.get(targ.name)
+						elif isinstance(targ, parser_ast.TypeNameRef):
+							tp_id = name_to_id.get(targ.name)
+						if tp_id is not None and tp_id not in bindings:
+							bindings[tp_id] = farg
+				if not bindings or any(tp.id not in bindings for tp in type_params):
+					bindings = None
 			if bindings:
 				for tp_id, ty_id in bindings.items():
 					tp_name = type_param_names.get(tp_id)

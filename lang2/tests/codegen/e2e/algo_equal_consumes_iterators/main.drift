@@ -27,11 +27,11 @@ fn run() -> Int {
 
 	val a1 = [1, 2];
 	val b1 = [1, 2];
-	var it1: containers.ArrayBorrowIter<Int> = iter.Iterable::iter(&a1);
-	var it2: containers.ArrayBorrowIter<Int> = iter.Iterable::iter(&b1);
+	var it1 = iter.Iterable::iter(&a1);
+	var it2 = iter.Iterable::iter(&b1);
 	val ok1 = try equal(&mut it1, &mut it2) catch { false };
 	if ok1 { score = score + 1; }
-	val n1: Optional<&Int> = iter.SinglePassIterator::next(&mut it1);
+	val n1 = iter.SinglePassIterator::next(&mut it1);
 	val _ = match n1 {
 		None => { score = score + 2; 0 },
 		Some(_x) => { score = score + 10; 0 },
@@ -39,11 +39,11 @@ fn run() -> Int {
 
 	val a2 = [1, 3];
 	val b2 = [1, 2];
-	var it3: containers.ArrayBorrowIter<Int> = iter.Iterable::iter(&a2);
-	var it4: containers.ArrayBorrowIter<Int> = iter.Iterable::iter(&b2);
+	var it3 = iter.Iterable::iter(&a2);
+	var it4 = iter.Iterable::iter(&b2);
 	val ok2 = try equal(&mut it3, &mut it4) catch { false };
 	if not ok2 { score = score + 4; }
-	val n2: Optional<&Int> = iter.SinglePassIterator::next(&mut it3);
+	val n2 = iter.SinglePassIterator::next(&mut it3);
 	val _ = match n2 {
 		None => { score = score + 8; 0 },
 		Some(_x) => { score = score + 20; 0 },
@@ -51,11 +51,11 @@ fn run() -> Int {
 
 	val a3 = [1];
 	val b3 = [1, 2];
-	var it5: containers.ArrayBorrowIter<Int> = iter.Iterable::iter(&a3);
-	var it6: containers.ArrayBorrowIter<Int> = iter.Iterable::iter(&b3);
+	var it5 = iter.Iterable::iter(&a3);
+	var it6 = iter.Iterable::iter(&b3);
 	val ok3 = try equal(&mut it5, &mut it6) catch { false };
 	if not ok3 { score = score + 16; }
-	val n3: Optional<&Int> = iter.SinglePassIterator::next(&mut it5);
+	val n3 = iter.SinglePassIterator::next(&mut it5);
 	val _ = match n3 {
 		None => { score = score + 32; 0 },
 		Some(_x) => { score = score + 40; 0 },

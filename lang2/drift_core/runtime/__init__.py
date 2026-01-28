@@ -12,6 +12,7 @@ def get_runtime_sources(root: Path) -> List[Path]:
 		base / "string_runtime.c",
 		base / "argv_runtime.c",
 		base / "console_runtime.c",
+		base / "thread_runtime.c",
 		# Diagnostic/Error runtime lives alongside lang2/ for now; include it so
 		# e2e codegen links DV/exception helpers.
 		runtime / "diagnostic_runtime.c",

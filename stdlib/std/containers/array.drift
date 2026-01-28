@@ -279,7 +279,7 @@ implement DequeRangeMut<Int> {
 	}
 }
 
-pub fn deque_new<T>() -> Deque<T> {
+pub fn deque_new<T>() nothrow -> Deque<T> {
 	unsafe {
 		var b = mem.alloc_uninit<type T>(0);
 		return Deque<type T>(buf = move b, head = 0, len = 0, gen = 0);
@@ -287,26 +287,23 @@ pub fn deque_new<T>() -> Deque<T> {
 }
 
 implement<T> Deque<T> {
-	pub fn len(self: &Deque<T>) -> Int {
+	pub fn len(self: &Deque<T>) nothrow -> Int {
 		return self.len;
 	}
 
-	fn cap(self: &Deque<T>) -> Int {
+	fn cap(self: &Deque<T>) nothrow -> Int {
 		return mem.capacity(&self.buf);
 	}
 
-	fn phys(self: &Deque<T>, i: Int) -> Int {
+	fn phys(self: &Deque<T>, i: Int) nothrow -> Int {
 		val cap = self.cap();
 		return (self.head + i) % cap;
 	}
 
-	fn ensure_capacity(self: &mut Deque<T>, needed: Int) -> Void {
+	fn ensure_capacity(self: &mut Deque<T>, needed: Int) nothrow -> Void {
 		val cap0 = self.cap();
 		if cap0 >= needed {
 			return;
-		}
-		if cap0 == 0 and self.len != 0 {
-			throw std.err:IndexError(container_id = DEQUE_CONTAINER_ID, index = 0);
 		}
 		var new_cap = (cap0 == 0) ? 1 : cap0 * 2;
 		while new_cap < needed {
@@ -328,7 +325,7 @@ implement<T> Deque<T> {
 		}
 	}
 
-	pub fn push_back(self: &mut Deque<T>, var value: T) -> Void {
+	pub fn push_back(self: &mut Deque<T>, var value: T) nothrow -> Void {
 		val needed = self.len + 1;
 		self.ensure_capacity(needed);
 		val cap = self.cap();
@@ -338,7 +335,7 @@ implement<T> Deque<T> {
 		self.gen = self.gen + 1;
 	}
 
-	pub fn push_front(self: &mut Deque<T>, var value: T) -> Void {
+	pub fn push_front(self: &mut Deque<T>, var value: T) nothrow -> Void {
 		val needed = self.len + 1;
 		self.ensure_capacity(needed);
 		val cap = self.cap();
@@ -348,7 +345,7 @@ implement<T> Deque<T> {
 		self.gen = self.gen + 1;
 	}
 
-	pub fn pop_back(self: &mut Deque<T>) -> Optional<T> {
+	pub fn pop_back(self: &mut Deque<T>) nothrow -> Optional<T> {
 		if self.len == 0 {
 			return Optional::None();
 		}
@@ -366,7 +363,7 @@ implement<T> Deque<T> {
 		}
 	}
 
-	pub fn pop_front(self: &mut Deque<T>) -> Optional<T> {
+	pub fn pop_front(self: &mut Deque<T>) nothrow -> Optional<T> {
 		if self.len == 0 {
 			return Optional::None();
 		}
@@ -383,11 +380,11 @@ implement<T> Deque<T> {
 		}
 	}
 
-	pub fn range(self: &Deque<T>) -> DequeRange<T> {
+	pub fn range(self: &Deque<T>) nothrow -> DequeRange<T> {
 		return DequeRange<type T>(dq = self, gen_snapshot = self.gen);
 	}
 
-	pub fn range_mut(self: &mut Deque<T>) -> DequeRangeMut<T> {
+	pub fn range_mut(self: &mut Deque<T>) nothrow -> DequeRangeMut<T> {
 		val gen = self.gen;
 		return DequeRangeMut<type T>(dq = self, gen_snapshot = gen);
 	}

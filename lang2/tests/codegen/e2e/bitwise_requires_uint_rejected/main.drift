@@ -1,8 +1,8 @@
 module m
 
 fn main() nothrow -> Int{
-	var x: Int = 1;
-	var y: Int = 2;
+	var x = 1;
+	var y = 2;
 	// Bitwise ops require Uint operands.
 	return x & y;
 }

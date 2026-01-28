@@ -1,0 +1,6 @@
+{
+  "description": "e2e: spawn default executor submit failure returns Failed",
+  "exit_code": 0,
+  "stderr": "",
+  "stdout": ""
+}

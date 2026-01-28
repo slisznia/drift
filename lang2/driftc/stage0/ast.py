@@ -174,6 +174,7 @@ class Lambda(Expr):
 	captures: Optional[List["CaptureItem"]] = None
 	body_expr: Expr | None = None
 	body_block: "Block" | None = None
+	declared_nothrow: bool = False
 	loc: Optional[object] = None
 
 
@@ -335,6 +336,8 @@ class MatchArm:
 	# Field names for named binders, parallel to `binders`. Only meaningful when
 	# `pattern_arg_form == "named"`.
 	binder_fields: Optional[List[str]] = None
+	# Mutability flags for binders, parallel to `binders`.
+	binder_is_mutable: Optional[List[bool]] = None
 	loc: Span = field(default_factory=Span)
 
 

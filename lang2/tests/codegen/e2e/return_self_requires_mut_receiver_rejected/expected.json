@@ -1,0 +1,10 @@
+{
+  "description": "e2e: return self requires mut receiver rejected",
+  "diagnostics": [
+    {
+      "message_contains": "mutable reference return must derive from an &mut parameter",
+      "phase": "typecheck"
+    }
+  ],
+  "exit_code": 1
+}

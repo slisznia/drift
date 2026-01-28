@@ -9,6 +9,7 @@ export {
 	Copy,
 	Destructible,
 	Diagnostic,
+	Result,
 	Fn0,
 	Fn1,
 	Fn2,
@@ -19,6 +20,7 @@ export {
 	Callback2,
 	Cell,
 	cell,
+	void_value,
 	drop_value,
 	callback0,
 	callback1,
@@ -46,16 +48,25 @@ pub trait BorrowMut<T> {
 	fn borrow_mut(self: &mut Self) nothrow -> &mut T;
 }
 
+pub variant Result<T, E> {
+	Ok(value: T),
+	Err(err: E),
+}
+
 pub trait Fn0<R> {
-	fn call(self: &Self) -> R;
+	fn call(self: &Self) nothrow -> R;
 }
 
 pub trait Fn1<A, R> {
-	fn call(self: &Self, a: A) -> R;
+	fn call(self: &Self, a: A) nothrow -> R;
 }
 
 pub trait Fn2<A, B, R> {
-	fn call(self: &Self, a: A, b: B) -> R;
+	fn call(self: &Self, a: A, b: B) nothrow -> R;
+}
+
+pub fn void_value() nothrow -> Void {
+	return;
 }
 
 pub struct Cell<T> {
@@ -91,9 +102,9 @@ pub interface Callback2<A, B, R> {
 	fn call(self: &Self, a: A, b: B) nothrow -> R;
 }
 
-@intrinsic pub fn callback0<F, R>(f: F) -> Callback0<R> require F is Fn0<R>;
-@intrinsic pub fn callback1<F, A, R>(f: F) -> Callback1<A, R> require F is Fn1<A, R>;
-@intrinsic pub fn callback2<F, A, B, R>(f: F) -> Callback2<A, B, R> require F is Fn2<A, B, R>;
+@intrinsic pub fn callback0<F, R>(f: F) nothrow -> Callback0<R> require F is Fn0<R>;
+@intrinsic pub fn callback1<F, A, R>(f: F) nothrow -> Callback1<A, R> require F is Fn1<A, R>;
+@intrinsic pub fn callback2<F, A, B, R>(f: F) nothrow -> Callback2<A, B, R> require F is Fn2<A, B, R>;
 @intrinsic pub fn drop_value<T>(value: T) nothrow -> Void;
 
 implement Copy for Int {

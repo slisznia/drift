@@ -1,0 +1,17 @@
+module main
+
+import std.concurrent as conc;
+import lang.thread as thread;
+
+fn main() nothrow -> Int {
+	var f = conc.spawn_future(| | => {
+		thread.vt_park_until(10);
+		return 7;
+	});
+	var res = f.join();
+	return match res {
+		Ok(v) => { v },
+		Err(_e) => { 1 },
+		default => { 1 },
+	};
+}

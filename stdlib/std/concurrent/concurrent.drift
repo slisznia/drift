@@ -1,0 +1,525 @@
+module std.concurrent
+
+import std.core as core;
+import std.mem as mem;
+import lang.thread as thread;
+
+use trait core.Fn0;
+use trait core.Fn1;
+use trait core.Copy;
+
+export {
+	Duration,
+	ConcurrencyError,
+	VtResultNotAvailable,
+	ExecSubmitFailed,
+	InvalidDuration,
+	SaturationPolicy,
+	ExecutorPolicy,
+	ExecutorPolicyBuilder,
+	Executor,
+	VirtualThread,
+	Future,
+	FutureGroup,
+	Scope,
+	executor_policy_builder,
+	build_executor,
+	spawn,
+	spawn_cb,
+	spawn_on,
+	spawn_future,
+	spawn_future_on,
+	future_group,
+	scope,
+	sleep,
+	block_on_io,
+	default_executor,
+	set_default_executor
+};
+
+pub struct Duration {
+	// Invariant: millis >= 0 (negative durations are invalid; runtime should assert).
+	pub millis: Int
+}
+
+implement core.Copy for Duration {
+}
+
+pub variant ConcurrencyError {
+	Timeout,
+	Cancelled,
+	Closed,
+	Busy,
+	Failed(err: Error),
+}
+
+pub exception VtResultNotAvailable();
+pub exception ExecSubmitFailed(code: Int);
+pub exception InvalidDuration(millis: Int);
+
+pub variant SaturationPolicy {
+	Block,
+	ReturnBusy,
+}
+
+pub struct ExecutorPolicy {
+	min_threads: Int,
+	max_threads: Int,
+	queue_limit: Int,
+	timeout: Duration,
+	on_saturation: SaturationPolicy,
+}
+
+implement core.Copy for ExecutorPolicy {
+}
+
+pub struct ExecutorPolicyBuilder {
+	min_threads: Int,
+	max_threads: Int,
+	queue_limit: Int,
+	timeout: Duration,
+	on_saturation: SaturationPolicy,
+}
+
+pub struct Executor {
+	policy: ExecutorPolicy,
+	handle: Int
+}
+
+implement core.Copy for Executor {
+}
+
+pub struct VirtualThread<T> {
+	joined: Bool,
+	handle: Int,
+	result: mem.RawBuffer<T>,
+	cancelled: Bool,
+	submit_error: Int
+}
+
+pub struct Scope {
+}
+
+pub struct Future<T> {
+	vt: VirtualThread<T>
+}
+
+pub struct FutureGroup<T> {
+	items: Array<Future<T>>
+}
+
+pub fn executor_policy_builder() nothrow -> ExecutorPolicyBuilder {
+	return ExecutorPolicyBuilder(
+		min_threads = 1,
+		max_threads = 1,
+		queue_limit = 0,
+		timeout = Duration(millis = 0),
+		on_saturation = SaturationPolicy::ReturnBusy()
+	);
+}
+
+implement ExecutorPolicyBuilder {
+	pub fn min_threads(self: &mut ExecutorPolicyBuilder, v: Int) nothrow -> &mut ExecutorPolicyBuilder {
+		self.min_threads = v;
+		return self;
+	}
+
+	pub fn max_threads(self: &mut ExecutorPolicyBuilder, v: Int) nothrow -> &mut ExecutorPolicyBuilder {
+		self.max_threads = v;
+		return self;
+	}
+
+	pub fn queue_limit(self: &mut ExecutorPolicyBuilder, v: Int) nothrow -> &mut ExecutorPolicyBuilder {
+		self.queue_limit = v;
+		return self;
+	}
+
+	pub fn timeout(self: &mut ExecutorPolicyBuilder, v: Duration) nothrow -> &mut ExecutorPolicyBuilder {
+		self.timeout = v;
+		return self;
+	}
+
+	pub fn on_saturation(self: &mut ExecutorPolicyBuilder, var v: SaturationPolicy) nothrow -> &mut ExecutorPolicyBuilder {
+		self.on_saturation = move v;
+		return self;
+	}
+
+	pub fn build(self: &ExecutorPolicyBuilder) nothrow -> ExecutorPolicy {
+		return ExecutorPolicy(
+			min_threads = self.min_threads,
+			max_threads = self.max_threads,
+			queue_limit = self.queue_limit,
+			timeout = self.timeout,
+			on_saturation = self.on_saturation
+		);
+	}
+
+	pub fn build_executor(self: &ExecutorPolicyBuilder) nothrow -> Executor {
+		var policy = self.build();
+		var sat = 0;
+		match policy.on_saturation {
+			ReturnBusy => { sat = 1; },
+			default => { sat = 0; },
+		}
+		var handle = thread.exec_create(
+			policy.min_threads,
+			policy.max_threads,
+			policy.queue_limit,
+			policy.timeout.millis,
+			sat
+		);
+		return Executor(policy = policy, handle = handle);
+	}
+}
+
+pub fn default_executor() nothrow -> Executor {
+	var b = executor_policy_builder();
+	var h = thread.exec_default_get();
+	if h == 0 {
+		var exec = b.build_executor();
+		thread.exec_default_set(exec.handle);
+		return exec;
+	}
+	return Executor(policy = b.build(), handle = h);
+}
+
+pub fn build_executor(policy: ExecutorPolicy) nothrow -> Executor {
+	var sat = 0;
+	match policy.on_saturation {
+		ReturnBusy => { sat = 1; },
+		default => { sat = 0; },
+	}
+	var handle = thread.exec_create(
+		policy.min_threads,
+		policy.max_threads,
+		policy.queue_limit,
+		policy.timeout.millis,
+		sat
+	);
+	return Executor(policy = policy, handle = handle);
+}
+
+pub fn set_default_executor(exec: Executor) nothrow -> Void {
+	thread.exec_default_set(exec.handle);
+	return;
+}
+
+pub fn spawn<T>(var cb: core.Callback0<T>) nothrow -> VirtualThread<T> {
+	var exec = default_executor();
+	unsafe {
+		var buf = mem.alloc_uninit<type T>(1);
+		val ptr = mem.rawbuffer_ptr<type T>(&buf);
+		val cap = mem.rawbuffer_cap<type T>(&buf);
+		var buf_for_cb = mem.rawbuffer_from_parts<type T>(ptr, cap);
+		var buf_for_join = mem.rawbuffer_from_parts<type T>(ptr, cap);
+		var thunk: core.Callback0<Void> = core.callback0(| | captures(move cb, move buf_for_cb) => {
+			unsafe {
+				var v = cb.call();
+				mem.write(&mut buf_for_cb, 0, move v);
+			}
+			return;
+		});
+		var h = thread.vt_spawn(thunk, exec.handle);
+		val submit_code = thread.exec_submit(exec.handle, h);
+		if submit_code != 0 {
+			val ptr2 = mem.rawbuffer_ptr<type T>(&buf_for_join);
+			val cap2 = mem.rawbuffer_cap<type T>(&buf_for_join);
+			var buf2 = mem.rawbuffer_from_parts<type T>(ptr2, cap2);
+			mem.dealloc<type T>(buf2);
+			thread.vt_drop(h);
+			return VirtualThread<type T>(joined = false, handle = 0, result = move buf_for_join, cancelled = false, submit_error = submit_code);
+		}
+		return VirtualThread<type T>(joined = false, handle = h, result = move buf_for_join, cancelled = false, submit_error = 0);
+	}
+}
+
+pub fn spawn_cb<T>(var cb: core.Callback0<T>) nothrow -> VirtualThread<T> {
+	var exec = default_executor();
+	unsafe {
+		var buf = mem.alloc_uninit<type T>(1);
+		val ptr = mem.rawbuffer_ptr<type T>(&buf);
+		val cap = mem.rawbuffer_cap<type T>(&buf);
+		var buf_for_cb = mem.rawbuffer_from_parts<type T>(ptr, cap);
+		var buf_for_join = mem.rawbuffer_from_parts<type T>(ptr, cap);
+		var thunk: core.Callback0<Void> = core.callback0(| | captures(move cb, move buf_for_cb) => {
+			unsafe {
+				var v = cb.call();
+				mem.write(&mut buf_for_cb, 0, move v);
+			}
+			return;
+		});
+		var h = thread.vt_spawn(thunk, exec.handle);
+		val submit_code = thread.exec_submit(exec.handle, h);
+		if submit_code != 0 {
+			val ptr2 = mem.rawbuffer_ptr<type T>(&buf_for_join);
+			val cap2 = mem.rawbuffer_cap<type T>(&buf_for_join);
+			var buf2 = mem.rawbuffer_from_parts<type T>(ptr2, cap2);
+			mem.dealloc<type T>(buf2);
+			thread.vt_drop(h);
+			return VirtualThread<type T>(joined = false, handle = 0, result = move buf_for_join, cancelled = false, submit_error = submit_code);
+		}
+		return VirtualThread<type T>(joined = false, handle = h, result = move buf_for_join, cancelled = false, submit_error = 0);
+	}
+}
+
+pub fn spawn_on<T>(exec: Executor, var cb: core.Callback0<T>) nothrow -> core.Result<VirtualThread<T>, ConcurrencyError> {
+	unsafe {
+		var buf = mem.alloc_uninit<type T>(1);
+		val ptr = mem.rawbuffer_ptr<type T>(&buf);
+		val cap = mem.rawbuffer_cap<type T>(&buf);
+		var buf_for_cb = mem.rawbuffer_from_parts<type T>(ptr, cap);
+		var buf_for_join = mem.rawbuffer_from_parts<type T>(ptr, cap);
+		var thunk: core.Callback0<Void> = core.callback0(| | captures(move cb, move buf_for_cb) => {
+			unsafe {
+				var v = cb.call();
+				mem.write(&mut buf_for_cb, 0, move v);
+			}
+			return;
+		});
+		var h = thread.vt_spawn(thunk, exec.handle);
+		var submit_code = thread.exec_submit(exec.handle, h);
+		if submit_code == 0 {
+			return core.Result::Ok(VirtualThread<type T>(joined = false, handle = h, result = move buf_for_join, cancelled = false, submit_error = 0));
+		}
+		val ptr2 = mem.rawbuffer_ptr<type T>(&buf_for_join);
+		val cap2 = mem.rawbuffer_cap<type T>(&buf_for_join);
+		var buf2 = mem.rawbuffer_from_parts<type T>(ptr2, cap2);
+		mem.dealloc<type T>(buf2);
+		thread.vt_drop(h);
+		if submit_code == 1 {
+			return core.Result::Err(ConcurrencyError::Busy());
+		}
+		if submit_code == 2 {
+			return core.Result::Err(ConcurrencyError::Timeout());
+		}
+		try {
+			throw ExecSubmitFailed(code = submit_code);
+		} catch e {
+			return core.Result::Err(ConcurrencyError::Failed(e));
+		}
+	}
+}
+
+pub fn spawn_future<T>(var cb: core.Callback0<T>) nothrow -> Future<T> {
+	var vt = spawn<type T>(move cb);
+	return Future<type T>(move vt);
+}
+
+pub fn spawn_future_on<T>(exec: Executor, var cb: core.Callback0<T>) nothrow -> core.Result<Future<T>, ConcurrencyError> {
+	var res = spawn_on<type T>(exec, move cb);
+	return match res {
+		Ok(vt) => { core.Result::Ok(Future<type T>(vt)) },
+		Err(err) => { core.Result::Err(err) },
+		default => { core.Result::Err(ConcurrencyError::Busy()) }
+	};
+}
+
+pub fn future_group<T>() nothrow -> FutureGroup<T> {
+	var items: Array<Future<T>> = [];
+	return FutureGroup<type T>(move items);
+}
+
+fn _check_duration(d: Duration) nothrow -> core.Result<Void, ConcurrencyError> {
+	if d.millis < 0 {
+		try {
+			throw InvalidDuration(millis = d.millis);
+		} catch e {
+			return core.Result::Err(ConcurrencyError::Failed(e));
+		}
+	}
+	return core.Result::Ok(core.void_value());
+}
+
+
+implement<T> VirtualThread<T> {
+	pub fn join(self: &mut VirtualThread<T>) nothrow -> core.Result<T, ConcurrencyError> {
+		if self.joined {
+			return core.Result::Err(ConcurrencyError::Closed());
+		}
+		if self.submit_error != 0 {
+			var code = self.submit_error;
+			self.joined = true;
+			try {
+				throw ExecSubmitFailed(code = code);
+			} catch e {
+				return core.Result::Err(ConcurrencyError::Failed(e));
+			}
+		}
+		if self.cancelled {
+			thread.vt_join(self.handle);
+			self.joined = true;
+			return core.Result::Err(ConcurrencyError::Cancelled());
+		}
+		thread.vt_join(self.handle);
+		self.joined = true;
+		unsafe {
+			var v = mem.read<type T>(&mut self.result, 0);
+			val ptr = mem.rawbuffer_ptr<type T>(&self.result);
+			val cap = mem.rawbuffer_cap<type T>(&self.result);
+			var buf = mem.rawbuffer_from_parts<type T>(ptr, cap);
+			mem.dealloc<type T>(buf);
+			return core.Result::Ok(move v);
+		}
+	}
+
+	pub fn join_timeout(self: &mut VirtualThread<T>, d: Duration) nothrow -> core.Result<T, ConcurrencyError> {
+		var ok = _check_duration(d);
+		match ok {
+			Err(err) => { return core.Result::Err(err); },
+			Ok(_) => { }
+		}
+		if self.joined {
+			return core.Result::Err(ConcurrencyError::Closed());
+		}
+		if self.submit_error != 0 {
+			var code = self.submit_error;
+			self.joined = true;
+			try {
+				throw ExecSubmitFailed(code = code);
+			} catch e {
+				return core.Result::Err(ConcurrencyError::Failed(e));
+			}
+		}
+		if self.cancelled {
+			thread.vt_join_timeout(self.handle, d.millis);
+			self.joined = true;
+			return core.Result::Err(ConcurrencyError::Cancelled());
+		}
+		if d.millis == 0 {
+			return core.Result::Err(ConcurrencyError::Timeout());
+		}
+		var code = thread.vt_join_timeout(self.handle, d.millis);
+		if code != 0 {
+			return core.Result::Err(ConcurrencyError::Timeout());
+		}
+		self.joined = true;
+		unsafe {
+			var v = mem.read<type T>(&mut self.result, 0);
+			val ptr = mem.rawbuffer_ptr<type T>(&self.result);
+			val cap = mem.rawbuffer_cap<type T>(&self.result);
+			var buf = mem.rawbuffer_from_parts<type T>(ptr, cap);
+			mem.dealloc<type T>(buf);
+			return core.Result::Ok(move v);
+		}
+	}
+
+	pub fn cancel(self: &mut VirtualThread<T>) nothrow -> Void {
+		var ok = thread.vt_cancel(self.handle);
+		if ok == 0 {
+			self.cancelled = true;
+		}
+		return;
+	}
+}
+
+implement<T> Future<T> {
+	pub fn join(self: &mut Future<T>) nothrow -> core.Result<T, ConcurrencyError> {
+		return self.vt.join();
+	}
+
+	pub fn join_timeout(self: &mut Future<T>, d: Duration) nothrow -> core.Result<T, ConcurrencyError> {
+		return self.vt.join_timeout(d);
+	}
+
+	pub fn cancel(self: &mut Future<T>) nothrow -> Void {
+		self.vt.cancel();
+		return;
+	}
+
+	pub fn is_done(self: &Future<T>) nothrow -> Bool {
+		return self.vt.joined;
+	}
+}
+
+implement<T> FutureGroup<T> require T is core.Copy {
+	pub fn add(self: &mut FutureGroup<T>, var f: Future<T>) nothrow -> Void {
+		self.items.push(move f);
+		return;
+	}
+
+	pub fn join_all(self: &mut FutureGroup<T>) nothrow -> core.Result<Array<T>, ConcurrencyError> {
+		var out: Array<T> = [];
+		var i: Int = 0;
+		while i < self.items.len {
+			var res = self.items[i].join();
+			match res {
+				Ok(v) => { out.push(v); },
+				Err(err) => { return core.Result::Err(err); },
+				default => { return core.Result::Err(ConcurrencyError::Busy()); }
+			}
+			i += 1;
+		}
+		return core.Result::Ok(out);
+	}
+
+	pub fn join_any(self: &mut FutureGroup<T>) nothrow -> core.Result<T, ConcurrencyError> {
+		if self.items.len == 0 {
+			return core.Result::Err(ConcurrencyError::Timeout());
+		}
+		while true {
+			var i: Int = 0;
+			var pending: Bool = false;
+			while i < self.items.len {
+				var f = &mut self.items[i];
+				if f.vt.joined {
+					i += 1;
+					continue;
+				}
+				pending = true;
+				var done = thread.vt_is_completed(f.vt.handle);
+				if done != 0 {
+					unsafe {
+						var v = mem.read<type T>(&mut f.vt.result, 0);
+						return core.Result::Ok(v);
+					}
+				}
+				i += 1;
+			}
+			if !pending {
+				return core.Result::Err(ConcurrencyError::Closed());
+			}
+			thread.vt_park_until(1);
+		}
+		return core.Result::Err(ConcurrencyError::Timeout());
+	}
+}
+
+pub fn scope<F>(f: F) -> core.Result<Void, ConcurrencyError> require F is core.Fn1<Scope, Void> {
+	var s = Scope();
+	f.call(move s);
+	return core.Result::Ok(core.void_value());
+}
+
+pub fn sleep(d: Duration) nothrow -> core.Result<Void, ConcurrencyError> {
+	var ok = _check_duration(d);
+	match ok {
+		Err(err) => { return core.Result::Err(err); },
+		Ok(_) => { }
+	}
+	if d.millis == 0 {
+		return core.Result::Err(ConcurrencyError::Timeout());
+	}
+	var vt = thread.vt_current();
+	if vt == 0 {
+		thread.vt_park_until(d.millis);
+		return core.Result::Ok(core.void_value());
+	}
+	var deadline = thread.now_ms() + d.millis;
+	thread.reactor_register_timer(deadline, vt);
+	thread.vt_park_until(d.millis);
+	return core.Result::Ok(core.void_value());
+}
+
+pub fn block_on_io(fd: Int, interest: Int, deadline_ms: Int) nothrow -> Void {
+	var vt = thread.vt_current();
+	if vt == 0 {
+		return;
+	}
+	thread.reactor_register_io(fd, interest, vt, deadline_ms);
+	if deadline_ms > 0 {
+		thread.vt_park_until(deadline_ms);
+	} else {
+		thread.vt_park(0);
+	}
+	return;
+}

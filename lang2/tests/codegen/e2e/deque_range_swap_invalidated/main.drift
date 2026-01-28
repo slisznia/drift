@@ -2,15 +2,15 @@ module main
 
 import std.err;
 import std.iter as iter;
-import std.containers;
+import std.containers as containers;
 
 fn main() -> Int {
-val dq: std.containers.Deque<Int> = std.containers.deque_new<type Int>();
+var dq = containers.deque_new<type Int>();
 	dq.push_back(1);
 	dq.push_back(2);
 	var r = dq.range_mut();
 	r.__test_invalidate();
-	val out: Int = try {
+	val out = try {
 		iter.RandomAccessPermutable::swap(&mut r, 0, 0);
 		0
 	} catch std.err:IteratorInvalidated(e) {
@@ -18,15 +18,15 @@ val dq: std.containers.Deque<Int> = std.containers.deque_new<type Int>();
 		val dv_o = e.attrs["op_id"];
 		val c = dv_c.as_string();
 		val o = dv_o.as_int();
-		val c_code: Int = match c {
+		val c_code = match c {
 			Some(s) => {
-				(s != "std.containers:Deque") ? 10 : 0
+				(not (s == "std.containers:Deque")) ? 10 : 0
 			},
 			None => {
 				11
 			},
 		};
-		val o_code: Int = match o {
+		val o_code = match o {
 			Some(v) => {
 				(v != 4) ? 12 : 0
 			},

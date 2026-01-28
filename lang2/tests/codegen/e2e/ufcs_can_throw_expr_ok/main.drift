@@ -19,8 +19,8 @@ fn use_value(s: &S) -> Int {
 }
 
 fn main() nothrow -> Int{
-	val s: S = S(1);
-	val r: &S = &s;
-	val x: Int = try use_value(r) catch { 3 };
+	val s = S(1);
+	val r = &s;
+	val x = try use_value(r) catch { 3 };
 	return x;
 }

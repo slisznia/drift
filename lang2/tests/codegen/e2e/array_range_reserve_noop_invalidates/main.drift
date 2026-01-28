@@ -18,12 +18,12 @@ fn main() nothrow -> Int {
 	}
 	// Reserve that forces growth should invalidate.
 	arr.reserve(10);
-	val out: Int = try iter.RandomAccessReadable::len(&r) catch std.err:IteratorInvalidated(e) {
+	val out = try iter.RandomAccessReadable::len(&r) catch std.err:IteratorInvalidated(e) {
 		val dv_c = e.attrs["container_id"];
 		val dv_o = e.attrs["op_id"];
 		val c = dv_c.as_string();
 		val o = dv_o.as_int();
-		val c_code: Int = match c {
+		val c_code = match c {
 			Some(s) => {
 				(s != "std.containers:Array") ? 20 : 0
 			},
@@ -31,7 +31,7 @@ fn main() nothrow -> Int {
 				21
 			},
 		};
-		val o_code: Int = match o {
+		val o_code = match o {
 			Some(v) => {
 				(v != 2) ? 22 : 0
 			},

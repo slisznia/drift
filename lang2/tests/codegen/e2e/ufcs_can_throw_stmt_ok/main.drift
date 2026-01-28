@@ -15,8 +15,8 @@ implement Boom for S {
 }
 
 fn main() nothrow -> Int{
-	val s: S = S(1);
-	val r: &S = &s;
+	val s = S(1);
+	val r = &s;
 	try {
 		Boom::boom(r);
 		return 0;

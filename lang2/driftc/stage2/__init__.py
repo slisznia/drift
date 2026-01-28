@@ -22,6 +22,7 @@ from .mir_nodes import (
 	UintFromInt,
 	CastScalar,
 	ConstBool,
+	ConstVoid,
 	ConstString,
 	ConstFloat,
 	FnPtrConst,

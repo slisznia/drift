@@ -1,10 +1,10 @@
 module main
 
-import std.containers;
+import std.containers as containers;
 import std.err;
 
 fn main() nothrow -> Int {
-val dq: std.containers.Deque<Int> = std.containers.deque_new<type Int>();
+var dq = containers.deque_new<type Int>();
 	dq.push_back(1);
 	try {
 		val _ = dq.at(3);
@@ -16,7 +16,7 @@ val dq: std.containers.Deque<Int> = std.containers.deque_new<type Int>();
 		val i = dv_i.as_int();
 		match c {
 			Some(s) => {
-				if s != "std.containers:Deque" {
+				if not (s == "std.containers:Deque") {
 					return 20;
 				}
 			},
@@ -35,5 +35,7 @@ val dq: std.containers.Deque<Int> = std.containers.deque_new<type Int>();
 			},
 		}
 		return 0;
+	} catch {
+		return 98;
 	}
 }

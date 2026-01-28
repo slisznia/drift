@@ -17,8 +17,8 @@ fn run() -> Int {
 		return 1;
 	}
 	// remove leaf
-	val k3: Int = 3;
-	val v3: Int = match m.remove(&k3) {
+	val k3 = 3;
+	val v3 = match m.remove(&k3) {
 		None => { -1 },
 		Some(v) => { v }
 	};
@@ -29,8 +29,8 @@ fn run() -> Int {
 		return 3;
 	}
 	// remove node with one child (left-only)
-	val k7: Int = 7;
-	val v7: Int = match m.remove(&k7) {
+	val k7 = 7;
+	val v7 = match m.remove(&k7) {
 		None => { -1 },
 		Some(v) => { v }
 	};
@@ -41,8 +41,8 @@ fn run() -> Int {
 		return 5;
 	}
 	// remove node with one child (right-only)
-	val k12: Int = 12;
-	val v12: Int = match m.remove(&k12) {
+	val k12 = 12;
+	val v12 = match m.remove(&k12) {
 		None => { -1 },
 		Some(v) => { v }
 	};
@@ -53,8 +53,8 @@ fn run() -> Int {
 		return 7;
 	}
 	// remove node with two children (root)
-	val k10: Int = 10;
-	val v10: Int = match m.remove(&k10) {
+	val k10 = 10;
+	val v10 = match m.remove(&k10) {
 		None => { -1 },
 		Some(v) => { v }
 	};
@@ -68,7 +68,7 @@ fn run() -> Int {
 	val keys = [5, 6, 13, 15, 18];
 	var i = 0;
 	while i < keys.len {
-		val k: Int = keys[i];
+		val k = keys[i];
 		val _v = m.remove(&k);
 		i = i + 1;
 	}

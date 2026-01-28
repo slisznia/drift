@@ -6,8 +6,8 @@ fn run() -> Int {
 	val arr = [10, 20];
 	var it0 = iter.Iterable::iter(&arr);
 	var it1 = it0;
-	val a: Optional<&Int> = iter.SinglePassIterator::next(&mut it0);
-	val b: Optional<&Int> = iter.SinglePassIterator::next(&mut it1);
+	val a = iter.SinglePassIterator::next(&mut it0);
+	val b = iter.SinglePassIterator::next(&mut it1);
 	var ax = -1;
 	var bx = -1;
 	val _ = match a{
@@ -26,6 +26,6 @@ fn run() -> Int {
 }
 
 fn main() nothrow -> Int {
-	val r: Int = try run() catch { 1 };
+	val r = try run() catch { 1 };
 	return r;
 }

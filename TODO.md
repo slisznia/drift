@@ -26,6 +26,12 @@
 [Operators]
 - Pin operator overloading MVP: define operator->trait desugar rules (e.g., `a + b` -> `Add::add(...)`), scope/prelude policy, and by-ref/by-value signature contract; add tests. Keep this aligned with the "free function vs receiver" resolution decision.
 
+[Concurrency]
+- Concurrency primitives + runtime MVP:
+  - scheduler (virtual threads + carrier threads), reactor integration, and stack management.
+  - blocking I/O boundary helpers for std.io/std.net (park/unpark on would-block).
+  - std.concurrent public API per virtual_threads_concurrency_spec.md (spawn/join/scope/sleep).
+
 ## Post MVP
 [Concurrency]
 - Add ReentrantMutex (distinct from Mutex); define semantics and API surface.

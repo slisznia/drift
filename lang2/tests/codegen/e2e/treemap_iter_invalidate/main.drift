@@ -14,7 +14,7 @@ fn run() -> Int {
 	m.insert(1, 1);
 	var it = m.iter();
 	m.insert(2, 2);
-	val out1: Int = try next_once(&mut it) catch std.err:IteratorInvalidated(_) {
+	val out1 = try next_once(&mut it) catch std.err:IteratorInvalidated(_) {
 		0
 	} catch {
 		2
@@ -23,9 +23,9 @@ fn run() -> Int {
 		return 1;
 	}
 	var it2 = m.iter();
-	val k1: Int = 1;
+	val k1 = 1;
 	val _g = m.get_mut(&k1);
-	val out2: Int = try next_once(&mut it2) catch std.err:IteratorInvalidated(_) {
+	val out2 = try next_once(&mut it2) catch std.err:IteratorInvalidated(_) {
 		3
 	} catch {
 		4
@@ -35,7 +35,7 @@ fn run() -> Int {
 	}
 	var it3 = m.iter();
 	m.clear();
-	val out3: Int = try next_once(&mut it3) catch std.err:IteratorInvalidated(_) {
+	val out3 = try next_once(&mut it3) catch std.err:IteratorInvalidated(_) {
 		0
 	} catch {
 		5

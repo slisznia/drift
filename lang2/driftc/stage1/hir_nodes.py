@@ -304,6 +304,7 @@ class HLambda(HExpr):
 	body_expr: Optional[HExpr] = None
 	body_block: Optional["HBlock"] = None
 	explicit_captures: Optional[list[HExplicitCapture]] = None
+	declared_nothrow: bool = False
 	captures: list["HCapture"] = field(default_factory=list)
 	span: Span = field(default_factory=Span)
 
@@ -448,6 +449,8 @@ class HMatchArm(HNode):
 	# `pattern_arg_form == "named"`.
 	block: "HBlock"
 	result: Optional[HExpr]
+	# Mutability flags for binders, parallel to `binders`.
+	binder_is_mutable: Optional[list[bool]] = None
 	# Pattern argument form:
 	# - "bare": `Ctor` (allowed only for zero-field constructors)
 	# - "paren": `Ctor()` (tag-only match, ignores payload)

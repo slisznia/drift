@@ -10,7 +10,7 @@ implement Point {
 }
 
 fn main() nothrow -> Int{
-	var p: Point = Point(1, 2);
+	var p = Point(1, 2);
 	p.move_by(10, 20);
 	return p.x + p.y;
 }

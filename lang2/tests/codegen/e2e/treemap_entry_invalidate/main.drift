@@ -13,10 +13,10 @@ fn run() -> Int {
 	var m = containers.tree_map<type Int, Int>();
 	m.insert(1, 1);
 	var it = m.iter();
-	val k2: Int = 2;
+	val k2 = 2;
 	var e0 = m.entry_mut(&k2);
 	val _ins = e0.or_insert(2, 2);
-	val out1: Int = try next_once(&mut it) catch std.err:IteratorInvalidated(_) {
+	val out1 = try next_once(&mut it) catch std.err:IteratorInvalidated(_) {
 		0
 	} catch {
 		2
@@ -25,10 +25,10 @@ fn run() -> Int {
 		return 1;
 	}
 	var it2 = m.iter();
-	val k1: Int = 1;
+	val k1 = 1;
 	var e1 = m.entry_mut(&k1);
 	val _rm = e1.remove();
-	val out2: Int = try next_once(&mut it2) catch std.err:IteratorInvalidated(_) {
+	val out2 = try next_once(&mut it2) catch std.err:IteratorInvalidated(_) {
 		0
 	} catch {
 		3

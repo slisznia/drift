@@ -1,0 +1,15 @@
+struct B {
+	x: Int
+}
+
+implement B {
+	fn bad(self: &B) nothrow -> &mut B {
+		return self;
+	}
+}
+
+fn main() nothrow -> Int{
+	var b = B(x = 1);
+	var _r = b.bad();
+	return 0;
+}

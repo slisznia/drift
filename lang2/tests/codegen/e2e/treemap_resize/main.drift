@@ -14,7 +14,7 @@ fn run() -> Int {
 	}
 	var j = 0;
 	while j < 20 {
-		val k: Int = j;
+		val k = j;
 		if not m.contains_key(&k) {
 			return 2;
 		}

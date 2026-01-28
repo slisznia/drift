@@ -12,12 +12,12 @@ fn run() -> Int {
 	if m.len() != 200 {
 		return 1;
 	}
-	val k0: Int = 0;
-	val k50: Int = 50;
-	val k199: Int = 199;
-	val r0: Int = match m.get_mut(&k0) { None => { -1 }, Some(v) => { *v } };
-	val r50: Int = match m.get_mut(&k50) { None => { -1 }, Some(v) => { *v } };
-	val r199: Int = match m.get_mut(&k199) { None => { -1 }, Some(v) => { *v } };
+	val k0 = 0;
+	val k50 = 50;
+	val k199 = 199;
+	val r0 = match m.get_mut(&k0) { None => { -1 }, Some(v) => { *v } };
+	val r50 = match m.get_mut(&k50) { None => { -1 }, Some(v) => { *v } };
+	val r199 = match m.get_mut(&k199) { None => { -1 }, Some(v) => { *v } };
 	if r0 == -1 {
 		return 2;
 	}
@@ -44,10 +44,10 @@ fn run() -> Int {
 	if m.len() != 240 {
 		return 8;
 	}
-	val k210: Int = 210;
-	val k239: Int = 239;
-	val r210: Int = match m.get_mut(&k210) { None => { -1 }, Some(v) => { *v } };
-	val r239: Int = match m.get_mut(&k239) { None => { -1 }, Some(v) => { *v } };
+	val k210 = 210;
+	val k239 = 239;
+	val r210 = match m.get_mut(&k210) { None => { -1 }, Some(v) => { *v } };
+	val r239 = match m.get_mut(&k239) { None => { -1 }, Some(v) => { *v } };
 	if r210 == -1 {
 		return 9;
 	}
@@ -60,7 +60,7 @@ fn run() -> Int {
 	if r239 != 244 {
 		return 12;
 	}
-	val r50b: Int = match m.get_mut(&k50) { None => { -1 }, Some(v) => { *v } };
+	val r50b = match m.get_mut(&k50) { None => { -1 }, Some(v) => { *v } };
 	if r50b == -1 {
 		return 13;
 	}

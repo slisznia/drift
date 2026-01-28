@@ -11,10 +11,10 @@ fn maybe_boom(x: Int) -> Int {
 
 fn main() nothrow -> Int{
 	val xs = [1, 2, 3];
-	var sum: Int = 0;
+	var sum = 0;
 
 	for x in xs {
-		val v: Int = try maybe_boom(*x) catch { 100 };
+		val v = try maybe_boom(*x) catch { 100 };
 		sum = sum + v;
 	}
 

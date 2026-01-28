@@ -1,0 +1,6 @@
+{
+  "description": "e2e: concurrent spawn executes",
+  "exit_code": 0,
+  "stderr": "spawned\n",
+  "stdout": "done\n"
+}

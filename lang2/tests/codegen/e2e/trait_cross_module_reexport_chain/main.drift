@@ -6,6 +6,6 @@ import m_box;
 use trait m_api.Show;
 
 fn main() nothrow -> Int{
-	val b: m_box.Box = try m_box.make_box(3) catch { m_box.Box(value = 0) };
+	val b = try m_box.make_box(3) catch { m_box.Box(value = 0) };
 	return try b.show() catch { 0 };
 }

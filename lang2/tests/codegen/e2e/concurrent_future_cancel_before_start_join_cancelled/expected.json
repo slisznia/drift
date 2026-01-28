@@ -1,0 +1,6 @@
+{
+  "description": "e2e: future cancel before start makes join return Cancelled",
+  "exit_code": 0,
+  "stderr": "",
+  "stdout": ""
+}

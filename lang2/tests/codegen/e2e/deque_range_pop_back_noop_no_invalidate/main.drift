@@ -2,13 +2,13 @@ module main
 
 import std.err;
 import std.iter as iter;
-import std.containers;
+import std.containers as containers;
 
 fn main() nothrow -> Int {
-val dq: std.containers.Deque<Int> = std.containers.deque_new<type Int>();
+var dq = containers.deque_new<type Int>();
 	var r = dq.range();
 	val _p = dq.pop_back();
-	val out: Int = try iter.RandomAccessReadable::len(&r) catch std.err:IteratorInvalidated(_e) {
+	val out = try iter.RandomAccessReadable::len(&r) catch std.err:IteratorInvalidated(_e) {
 		99
 	} catch {
 		98

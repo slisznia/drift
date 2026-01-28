@@ -1,0 +1,27 @@
+module main
+
+import std.concurrent as conc;
+import lang.thread as thread;
+
+fn main() nothrow -> Int {
+	var t = conc.spawn(| | => { thread.vt_park_until(5); return 9; });
+	thread.vt_park_until(1);
+	t.cancel();
+	var res = t.join();
+	return match res {
+		Ok(v) => {
+			var out = 1;
+			if v == 9 {
+				out = 0;
+			}
+			out
+		},
+		Err(err) => {
+			match err {
+				Cancelled => { 0 },
+				default => { 2 },
+			}
+		},
+		default => { 2 },
+	};
+}

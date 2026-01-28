@@ -1,0 +1,6 @@
+{
+  "description": "e2e: cancel is idempotent and join returns Cancelled",
+  "exit_code": 0,
+  "stderr": "",
+  "stdout": ""
+}

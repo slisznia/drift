@@ -15,7 +15,7 @@ fn run() -> Int {
 	var it = s.iter();
 	var j = 0;
 	while j < expected.len {
-		val got_opt: Optional<&Int> = iter.SinglePassIterator::next(&mut it);
+		val got_opt = iter.SinglePassIterator::next(&mut it);
 		var got_val = 0;
 		var got_ok = false;
 		val _ = match got_opt {
@@ -30,7 +30,7 @@ fn run() -> Int {
 		}
 		j = j + 1;
 	}
-	val end: Optional<&Int> = iter.SinglePassIterator::next(&mut it);
+	val end = iter.SinglePassIterator::next(&mut it);
 	var end_has = false;
 	val _ = match end {
 		Some(_v) => { end_has = true; 0 },

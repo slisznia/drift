@@ -1,0 +1,25 @@
+module main
+
+import std.concurrent as conc;
+
+fn main() nothrow -> Int {
+	var t = conc.spawn(| | => { return 7; });
+	var res1 = t.join();
+	match res1 {
+		Ok(v) => { if v != 7 { return 1; } },
+		Err(_e) => { return 2; },
+		default => { return 2; },
+	}
+	t.cancel();
+	var res2 = t.join();
+	return match res2 {
+		Err(err) => {
+			match err {
+				Closed => { 0 },
+				default => { 3 },
+			}
+		},
+		Ok(_v) => { 4 },
+		default => { 4 },
+	};
+}

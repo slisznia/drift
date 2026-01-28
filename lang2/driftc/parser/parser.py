@@ -1449,6 +1449,7 @@ def _build_lambda(tree: Tree) -> Lambda:
 	body_block: Block | None = None
 	ret_type: TypeExpr | None = None
 	captures: list[LambdaCapture] | None = None
+	declared_nothrow = False
 
 	def _build_lambda_capture(node: Tree) -> LambdaCapture:
 		kind = "auto"
@@ -1511,6 +1512,10 @@ def _build_lambda(tree: Tree) -> Lambda:
 		elif isinstance(child, Tree) and _name(child) == "lambda_returns":
 			type_node = next((c for c in child.children if isinstance(c, Tree) and _name(c) == "type_expr"), None)
 			ret_type = _build_type_expr(type_node) if type_node is not None else None
+		elif isinstance(child, Token) and child.type == "NOTHROW":
+			declared_nothrow = True
+		elif isinstance(child, Tree) and _name(child) == "lambda_nothrow":
+			declared_nothrow = True
 		elif isinstance(child, Tree):
 			# lambda_body or direct expr/block if the parser simplified.
 			target = child
@@ -1529,6 +1534,7 @@ def _build_lambda(tree: Tree) -> Lambda:
 		captures=captures,
 		body_expr=body_expr,
 		body_block=body_block,
+		declared_nothrow=declared_nothrow,
 	)
 
 
@@ -2567,9 +2573,29 @@ def _build_match_expr(tree: Tree, *, arm_node_names: tuple[str, ...] = ("match_e
 		if pat is None:
 			raise ValueError("match_arm missing pattern")
 
+		def _parse_match_binder(node: object) -> tuple[str, bool]:
+			if isinstance(node, Token) and node.type == "NAME":
+				return (node.value, False)
+			if isinstance(node, Tree) and _name(node) == "match_binder":
+				name_tok = next((c for c in node.children if isinstance(c, Token) and c.type == "NAME"), None)
+				if name_tok is None:
+					raise ValueError("match_binder missing NAME token")
+				is_mut = False
+				for c in node.children:
+					if isinstance(c, Token) and c.type == "VAR":
+						is_mut = True
+						break
+					if isinstance(c, Tree) and _name(c) == "binder":
+						is_mut = _binder_is_mutable(c)
+						if is_mut:
+							break
+				return (name_tok.value, is_mut)
+			raise ValueError("unexpected match_binder node")
+
 		pat_kind = _name(pat)
 		ctor: Optional[str] = None
 		binders: list[str] = []
+		binder_is_mutable: list[bool] = []
 		binder_fields: list[str] | None = None
 		pattern_arg_form = "positional"
 		if pat_kind == "match_default":
@@ -2580,7 +2606,16 @@ def _build_match_expr(tree: Tree, *, arm_node_names: tuple[str, ...] = ("match_e
 			ctor = name_tok.value
 			binders_node = next((c for c in pat.children if isinstance(c, Tree) and _name(c) == "match_binders"), None)
 			if binders_node is not None:
-				binders = [c.value for c in binders_node.children if isinstance(c, Token) and c.type == "NAME"]
+				binders = []
+				binder_is_mutable = []
+				for c in binders_node.children:
+					if isinstance(c, Tree) and _name(c) == "match_binder":
+						bname, is_mut = _parse_match_binder(c)
+						binders.append(bname)
+						binder_is_mutable.append(is_mut)
+					elif isinstance(c, Token) and c.type == "NAME":
+						binders.append(c.value)
+						binder_is_mutable.append(False)
 			pattern_arg_form = "positional"
 		elif pat_kind == "match_ctor_named":
 			name_tok = next(c for c in pat.children if isinstance(c, Token) and c.type == "NAME")
@@ -2589,14 +2624,24 @@ def _build_match_expr(tree: Tree, *, arm_node_names: tuple[str, ...] = ("match_e
 			if fields_node is None:
 				raise ValueError("match_ctor_named missing match_named_binders")
 			binders = []
+			binder_is_mutable = []
 			binder_fields = []
 			for nb in (c for c in fields_node.children if isinstance(c, Tree) and _name(c) == "match_named_binder"):
 				parts = [c for c in nb.children if isinstance(c, Token) and c.type == "NAME"]
-				if len(parts) != 2:
-					raise ValueError("match_named_binder expects two NAME tokens")
-				field_name, binder_name = parts[0].value, parts[1].value
+				if len(parts) < 1:
+					raise ValueError("match_named_binder expects field NAME token")
+				field_name = parts[0].value
+				binder_node = next((c for c in nb.children if isinstance(c, Tree) and _name(c) == "match_binder"), None)
+				if binder_node is None:
+					if len(parts) != 2:
+						raise ValueError("match_named_binder expects field NAME and binder NAME tokens")
+					binder_name = parts[1].value
+					is_mut = False
+				else:
+					binder_name, is_mut = _parse_match_binder(binder_node)
 				binder_fields.append(field_name)
 				binders.append(binder_name)
+				binder_is_mutable.append(is_mut)
 			pattern_arg_form = "named"
 		elif pat_kind == "match_ctor_paren":
 			name_tok = next(c for c in pat.children if isinstance(c, Token) and c.type == "NAME")
@@ -2632,6 +2677,7 @@ def _build_match_expr(tree: Tree, *, arm_node_names: tuple[str, ...] = ("match_e
 				ctor=ctor,
 				pattern_arg_form=pattern_arg_form,
 				binders=binders,
+				binder_is_mutable=binder_is_mutable if binder_is_mutable else None,
 				binder_fields=binder_fields,
 				block=block,
 			)

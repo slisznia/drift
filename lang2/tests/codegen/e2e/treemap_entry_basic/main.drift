@@ -4,7 +4,7 @@ import std.containers as containers;
 
 fn run() -> Int {
 	var m = containers.tree_map<type Int, Int>();
-	val k0: Int = 5;
+	val k0 = 5;
 	var e0 = m.entry_mut(&k0);
 	if e0.is_occupied() {
 		return 1;

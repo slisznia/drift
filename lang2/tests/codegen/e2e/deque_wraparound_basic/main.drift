@@ -1,9 +1,9 @@
 module main
 
-import std.containers;
+import std.containers as containers;
 
 fn main() nothrow -> Int {
-var dq: std.containers.Deque<Int> = std.containers.deque_new<type Int>();
+var dq = containers.deque_new<type Int>();
 	dq.push_back(1);
 	dq.push_back(2);
 	dq.push_back(3);
@@ -15,9 +15,16 @@ var dq: std.containers.Deque<Int> = std.containers.deque_new<type Int>();
 	dq.push_back(7);
 	var i = 0;
 	var acc = 0;
-	while i < dq.len() {
-		acc = acc * 10 + *dq.at(i);
-		i = i + 1;
-	}
-	return acc;
+	val out = try {
+		while i < dq.len() {
+			acc = acc * 10 + *dq.at(i);
+			i = i + 1;
+		}
+		acc
+	} catch std.err:IndexError(_) {
+		-1
+	} catch {
+		-1
+	};
+	return out;
 }

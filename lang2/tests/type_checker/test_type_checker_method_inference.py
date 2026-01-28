@@ -148,3 +148,4 @@ fn main() -> Optional<Int> {
 	assert optional_base is not None
 	expected = type_table.ensure_instantiated(optional_base, [type_table.ensure_int()])
 	assert call_ty == expected
+

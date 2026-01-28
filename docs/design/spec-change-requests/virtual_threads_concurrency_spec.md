@@ -82,7 +82,7 @@ From top to bottom:
    Calls `std.io`, `std.net`, `std.concurrent` blocking APIs.
 
 2. **Stdlib blocking API implementation**  
-   `InputStream.read`, `Socket.write`, `ThreadHandle.join`, `sleep`, etc.  
+   `InputStream.read`, `Socket.write`, `VirtualThread.join`, `sleep`, etc.  
    All I/O and sleep delegate to internal runtime helpers that know about VTs.
 
 3. **Internal runtime layer (language intrinsics)**  
@@ -108,14 +108,13 @@ From top to bottom:
 ```drift
 module std.concurrent
 
-struct ThreadHandle<T>
+struct VirtualThread<T>
     // opaque
 {
-    fn join(self: &mut ThreadHandle<T>) -> T
+    fn join(self: &mut VirtualThread<T>) -> Result<T, ConcurrencyError>
 }
 
-fn spawn<F, R>(f: F) -> ThreadHandle<R>
-    where F is Fn0<R>, F is Send, R is Send
+fn spawn<R>(cb: Callback0<R>) -> VirtualThread<R>
 ```
 
 Usage:
@@ -130,20 +129,18 @@ fn worker(id: Int) -> Int {
 }
 
 fn main() -> Int {
-    val handles = Array<conc.ThreadHandle<Int>>()
+    val handles = Array<conc.VirtualThread<Int>>()
 
     var i = 0
     while i < 10 {
         let id = i
-        handles.push(conc.spawn(fn () -> Int {
-            return worker(id)
-        }))
+        handles.push(conc.spawn(| | => worker(id)))
         i = i + 1
     }
 
     var sum = 0
     for h in handles {
-        sum = sum + h.join()
+        sum = sum + h.join().unwrap()
     }
     return sum
 }
@@ -163,7 +160,7 @@ struct Scope {
     // opaque
 }
 
-fn scope<F>(body: F) -> Void
+fn scope<F>(body: F) -> Result<Void, ConcurrencyError>
     where F is Fn1<Scope, Void>, F is Send
 ```
 
@@ -176,16 +173,16 @@ fn main() -> Int {
     var total = 0
 
     conc.scope(fn (s: conc.Scope) -> Void {
-        val h1 = s.spawn(fn () -> Int {
+        val h1 = s.spawn(| | => {
             std.concurrent.sleep(Duration::millis(100))
             return 1
         })
-        val h2 = s.spawn(fn () -> Int {
+        val h2 = s.spawn(| | => {
             std.concurrent.sleep(Duration::millis(50))
             return 2
         })
 
-        total = h1.join() + h2.join()
+        total = h1.join().unwrap() + h2.join().unwrap()
     })
 
     return total
@@ -247,7 +244,7 @@ fn main() -> Int {
 
     loop {
         let conn = listener.accept()
-        conc.spawn(fn () -> Void {
+        conc.spawn(| | => {
             handle_client(conn)
         })
     }
@@ -304,7 +301,7 @@ struct VThreadHandle { /* ... */ }
 struct ExecutorHandle { /* ... */ }
 
 // Spawn a new virtual thread on the current executor.
-extern fn vt_spawn(entry: Fn(), exec: ExecutorHandle) -> VThreadHandle
+extern fn vt_spawn(entry: Callback0<Void>, exec: ExecutorHandle) -> VThreadHandle
 
 // Park the current virtual thread, yielding the carrier thread.
 extern fn vt_park() -> Void
@@ -313,7 +310,7 @@ extern fn vt_park() -> Void
 extern fn vt_unpark(handle: VThreadHandle) -> Void
 
 // Get handle to the current VT.
-extern fn current_vthread() -> VThreadHandle
+extern fn vt_current() -> VThreadHandle
 
 // Get handle to the current executor.
 extern fn current_executor() -> ExecutorHandle
@@ -368,14 +365,14 @@ Internal shape (not public):
 module runtime.io
 
 fn block_on_io<F, R>(op: F) -> R
-    where F is Fn0<R>
+    where F is Callback0<R>
 ```
 
 Logic (Drift pseudocode over intrinsics):
 
 ```drift
 fn block_on_io<F, R>(op: F) -> R
-    where F is Fn0<R>
+    where F is Callback0<R>
 {
     // Fast path: not on a virtual thread.
     if !runtime.is_virtual_thread() {
@@ -387,7 +384,7 @@ fn block_on_io<F, R>(op: F) -> R
 
         if res is IoWouldBlock {
             let meta = res.io_meta()  // fd, interest mask
-            let me = lang.thread.current_vthread()
+            let me = lang.thread.vt_current()
 
             // Register I/O and park.
             lang.thread.register_io(meta.fd, meta.events, me)
@@ -742,7 +739,7 @@ Parking (`vt_park`) from Drift invokes a small C stub:
 ```c
 // Called from Drift when current VT decides to park.
 void lang_thread_vt_park(void) {
-    VThread *vt = current_vthread();  // TLS or other mechanism
+    VThread *vt = vt_current();  // TLS or other mechanism
     Executor *exec = vt->executor;
 
     vt->state = VT_PARKED;
@@ -861,7 +858,7 @@ For `Scope` and similar constructs:
    - All tests are written against blocking APIs.
 
 2. **Phase 1: Introduce `lang.thread` intrinsics and VT data structures**
-   - Implement `vt_spawn`, `vt_park`, `vt_unpark`, `current_vthread`, `current_executor`.
+   - Implement `vt_spawn`, `vt_park`, `vt_unpark`, `vt_current`, `current_executor`.
    - Replace `spawn`/`join` implementation with VTs + executor, but keep I/O blocking the carrier threads.
 
 3. **Phase 2: Implement epoll-based reactor and timers**

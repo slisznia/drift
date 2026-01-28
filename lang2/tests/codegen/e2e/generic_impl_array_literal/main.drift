@@ -1,0 +1,19 @@
+module m
+
+struct Box<T> {
+	items: Array<T>
+}
+
+implement<T> Box<T> {
+	fn make(self: &Box<T>) nothrow -> Int {
+		var out: Array<T> = [];
+		return out.len;
+	}
+}
+
+fn main() nothrow -> Int {
+	var items: Array<Int> = [];
+	var b: Box<Int> = Box(items = items);
+	var arr = b.make();
+	return arr;
+}

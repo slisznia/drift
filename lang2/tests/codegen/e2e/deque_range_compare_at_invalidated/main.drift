@@ -2,28 +2,28 @@ module main
 
 import std.err;
 import std.iter as iter;
-import std.containers;
+import std.containers as containers;
 
 fn main() nothrow -> Int {
-val dq: std.containers.Deque<Int> = std.containers.deque_new<type Int>();
+var dq = containers.deque_new<type Int>();
 	dq.push_back(1);
 	dq.push_back(2);
 	var r = dq.range();
 	dq.push_back(3);
-	val out: Int = try iter.RandomAccessReadable::compare_at(&r, 0, 0) catch std.err:IteratorInvalidated(e) {
+	val out = try iter.RandomAccessReadable::compare_at(&r, 0, 0) catch std.err:IteratorInvalidated(e) {
 		val dv_c = e.attrs["container_id"];
 		val dv_o = e.attrs["op_id"];
 		val c = dv_c.as_string();
 		val o = dv_o.as_int();
-		val c_code: Int = match c {
+		val c_code = match c {
 			Some(s) => {
-				(s != "std.containers:Deque") ? 10 : 0
+				(not (s == "std.containers:Deque")) ? 10 : 0
 			},
 			None => {
 				11
 			},
 		};
-		val o_code: Int = match o {
+		val o_code = match o {
 			Some(v) => {
 				(v != 3) ? 12 : 0
 			},

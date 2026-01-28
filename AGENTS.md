@@ -7,3 +7,8 @@
 - **Do not** perform any mutating git operations without explicit permission (including `git commit`, `git merge`, `git rebase`, `git cherry-pick`, `git reset`, `git checkout/switch`, `git stash`, and tag/branch operations).
 - **Do not** wrap long lines (calls with many arguments, long expressions) for readability; avoid indentation churn, specially if code is deeply nested.
 - **Do not** edit exisit tests without a clear confirmation it's OK. No bending around tests to patch compiler/infra deficiencies.
+
+## Regression-first workflow (must follow)
+- When a bug is found or suspected, first add a minimal test that reproduces it.
+- Use that test as the regression (it must fail before the fix and pass after).
+- Only then research and fix the underlying cause.

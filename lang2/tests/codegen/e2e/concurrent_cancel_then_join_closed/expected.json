@@ -1,0 +1,6 @@
+{
+  "description": "e2e: join after cancel returns Closed",
+  "exit_code": 0,
+  "stderr": "",
+  "stdout": ""
+}

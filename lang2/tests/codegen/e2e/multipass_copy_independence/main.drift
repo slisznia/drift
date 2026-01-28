@@ -33,8 +33,8 @@ implement iter.Iterable<CounterIter, Int, CounterIter> for CounterIter {
 fn main() nothrow -> Int {
 	var it0 = CounterIter(idx = 0);
 	var it1 = it0;
-	var ax: Int = -1;
-	var bx: Int = -1;
+	var ax = -1;
+	var bx = -1;
 	for x0 in move it0 {
 		ax = x0;
 	}

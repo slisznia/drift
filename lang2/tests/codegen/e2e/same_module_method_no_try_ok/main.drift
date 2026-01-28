@@ -11,7 +11,7 @@ implement Point {
 }
 
 fn main() nothrow -> Int {
-	var p: Point = Point(x = 1);
+	var p = Point(x = 1);
 	p.bump(1);
 	return p.x;
 }

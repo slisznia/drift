@@ -23,6 +23,6 @@ implement B for Box {
 }
 
 fn main() nothrow -> Int {
-	val b: B = Box(base = 10);
+	val b = Box(base = 10);
 	return b.a() + b.b();
 }

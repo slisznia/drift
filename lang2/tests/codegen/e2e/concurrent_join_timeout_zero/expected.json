@@ -1,0 +1,6 @@
+{
+  "description": "e2e: concurrent join_timeout zero returns Timeout",
+  "exit_code": 0,
+  "stderr": "",
+  "stdout": ""
+}

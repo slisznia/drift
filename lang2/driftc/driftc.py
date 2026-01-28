@@ -62,6 +62,16 @@ from lang2.driftc.stage2.string_arc import insert_string_arc
 from lang2.driftc.stage3.throw_summary import ThrowSummaryBuilder
 from lang2.driftc.stage4 import run_throw_checks
 from lang2.driftc.stage4 import MirToSSA
+from lang2.driftc.mir_validate import (
+	validate_mir_array_alloc_invariants,
+	validate_mir_array_copy_invariants,
+	validate_mir_call_byvalue_moves,
+	validate_mir_call_invariants,
+	validate_mir_call_types,
+	validate_mir_concrete_layout_types,
+	validate_mir_iface_init_invariants,
+	validate_mir_wrapping_u64_invariants,
+)
 from lang2.driftc.checker.type_env_builder import build_minimal_checker_type_env
 from lang2.driftc.checker import (
 	Checker,
@@ -650,7 +660,7 @@ def _validate_intrinsic_callinfo(typed_fn: "TypedFn") -> None:
 		node_id = callsite_to_node.get(key)
 		call = call_nodes.get(node_id) if node_id is not None else None
 		if call is None:
-			raise AssertionError("intrinsic CallInfo without call node (checker bug)")
+			raise AssertionError(f"intrinsic CallInfo without call node (checker bug): fn={function_symbol(getattr(typed_fn, 'fn_id', None))} callsite_id={key} kind={kind.value}")
 		kwargs = getattr(call, "kwargs", None) or []
 		if kind is IntrinsicKind.BYTE_LENGTH:
 			if kwargs or len(call.args) != 1:
@@ -2982,6 +2992,7 @@ def compile_stubbed_funcs(
 				call_resolutions=getattr(typed_fns_by_id.get(fn_id), "call_resolutions", {}),
 				can_throw_by_id=declared_by_id,
 				return_type=sig.return_type_id if sig is not None else None,
+				binding_names=getattr(typed_fns_by_id.get(fn_id), "binding_names", None),
 				typed_mode=typed_mode,
 			)
 			lower.lower_function_body(hir_norm)
@@ -3554,15 +3565,18 @@ def compile_stubbed_funcs(
 		builder.set_terminator(M.Return(value=ok_dest))
 		mir_funcs_by_id[spec.wrapper_fn_id] = builder.func
 
-	_validate_mir_call_invariants(mir_funcs_by_id)
+	validate_mir_call_invariants(mir_funcs_by_id)
 	if shared_type_table is not None:
-		_validate_mir_call_types(mir_funcs_by_id, signatures_by_id, shared_type_table)
-	_validate_mir_array_alloc_invariants(mir_funcs_by_id)
-	_validate_mir_wrapping_u64_invariants(mir_funcs_by_id, shared_type_table)
+		validate_mir_call_types(mir_funcs_by_id, signatures_by_id, shared_type_table)
+		validate_mir_concrete_layout_types(mir_funcs_by_id, shared_type_table)
+	validate_mir_array_alloc_invariants(mir_funcs_by_id)
+	validate_mir_wrapping_u64_invariants(mir_funcs_by_id, shared_type_table)
 	if shared_type_table is not None:
-		_validate_mir_iface_init_invariants(mir_funcs_by_id, signatures_by_id, shared_type_table)
+		validate_mir_iface_init_invariants(mir_funcs_by_id, signatures_by_id, shared_type_table)
 	if shared_type_table is not None:
-		_validate_mir_array_copy_invariants(mir_funcs_by_id, shared_type_table)
+		validate_mir_array_copy_invariants(mir_funcs_by_id, shared_type_table)
+	if shared_type_table is not None:
+		validate_mir_call_byvalue_moves(mir_funcs_by_id, signatures_by_id, shared_type_table)
 	if shared_type_table is not None:
 		for fn_id, func in mir_funcs_by_id.items():
 			mir_funcs_by_id[fn_id] = insert_string_arc(
@@ -3822,400 +3836,6 @@ def _fake_decls_from_hirs(hirs: Mapping[FunctionId, H.HBlock]) -> list[object]:
 		decls.append(FakeDecl(fn_id=fn_id, name=fn_id.name, params=[], return_type=ret_ty))
 	return decls
 
-
-def _validate_mir_call_invariants(funcs: Mapping[FunctionId, M.MirFunc]) -> None:
-	"""Ensure MIR call instructions carry explicit can_throw flags and stable ids."""
-	for fn_id, func in funcs.items():
-		for block in func.blocks.values():
-			for instr in block.instructions:
-				if isinstance(instr, M.Call):
-					if not isinstance(instr.fn_id, FunctionId):
-						raise AssertionError(f"MIR Call missing fn_id in {function_symbol(fn_id)}")
-					if not isinstance(instr.can_throw, bool):
-						raise AssertionError(f"MIR Call missing can_throw in {function_symbol(fn_id)}")
-				elif isinstance(instr, M.CallIndirect):
-					if not isinstance(instr.can_throw, bool):
-						raise AssertionError(
-							f"MIR CallIndirect missing can_throw in {function_symbol(fn_id)}"
-						)
-				elif isinstance(instr, M.CallIface):
-					if not isinstance(instr.can_throw, bool):
-						raise AssertionError(
-							f"MIR CallIface missing can_throw in {function_symbol(fn_id)}"
-						)
-
-
-def _validate_mir_call_types(
-	funcs: Mapping[FunctionId, M.MirFunc],
-	signatures_by_id: Mapping[FunctionId, FnSignature],
-	type_table: TypeTable,
-) -> None:
-	"""Ensure no call-related MIR types carry TypeVar into codegen."""
-	def _no_typevars(ty_id: TypeId) -> bool:
-		return not type_table.has_typevar(ty_id)
-	for fn_id, func in funcs.items():
-		for block in func.blocks.values():
-			for instr in block.instructions:
-				if isinstance(instr, M.Call):
-					sig = signatures_by_id.get(instr.fn_id)
-					if sig is None or sig.param_type_ids is None or sig.return_type_id is None:
-						raise AssertionError(
-							f"MIR invariant violation: unresolved call signature for {function_symbol(instr.fn_id)}"
-						)
-					if sig.type_params or getattr(sig, "impl_type_params", None):
-						continue
-					if any(type_table.has_typevar(t) for t in sig.param_type_ids):
-						raise AssertionError(
-							f"MIR invariant violation: unresolved typevars in call params for {function_symbol(instr.fn_id)}"
-						)
-					if type_table.has_typevar(sig.return_type_id):
-						raise AssertionError(
-							f"MIR invariant violation: unresolved typevars in call return for {function_symbol(instr.fn_id)}"
-						)
-				elif isinstance(instr, (M.CallIndirect, M.CallIface)):
-					if any(not _no_typevars(t) for t in instr.param_types):
-						raise AssertionError(
-							f"MIR invariant violation: unresolved typevars in call param types for {function_symbol(fn_id)}"
-						)
-					if not _no_typevars(instr.user_ret_type):
-						raise AssertionError(
-							f"MIR invariant violation: unresolved typevars in call return type for {function_symbol(fn_id)}"
-						)
-
-
-def _validate_mir_array_copy_invariants(
-	funcs: Mapping[FunctionId, M.MirFunc],
-	type_table: TypeTable,
-) -> None:
-	"""Ensure array ops observe CopyValue/MoveOut invariants for Copy elements."""
-	for fn_id, func in funcs.items():
-		defs: dict[M.ValueId, M.MirInstr] = {}
-		for block in func.blocks.values():
-			for instr in block.instructions:
-				dest = getattr(instr, "dest", None)
-				if isinstance(dest, str):
-					defs[dest] = instr
-		for block in func.blocks.values():
-			instrs = block.instructions
-			for idx, instr in enumerate(instrs):
-				if isinstance(instr, M.ArrayIndexLoad):
-					elem_ty = instr.elem_ty
-					if type_table.is_copy(elem_ty) and not type_table.is_bitcopy(elem_ty):
-						if idx + 1 >= len(instrs):
-							raise AssertionError(
-								f"MIR invariant violation: ArrayIndexLoad in {function_symbol(fn_id)} must be followed by CopyValue for Copy element type"
-							)
-						next_instr = instrs[idx + 1]
-						if not isinstance(next_instr, M.CopyValue) or next_instr.value != instr.dest:
-							raise AssertionError(
-								f"MIR invariant violation: ArrayIndexLoad in {function_symbol(fn_id)} must be immediately wrapped in CopyValue for Copy element type"
-							)
-				if isinstance(instr, (M.ArrayElemInit, M.ArrayElemInitUnchecked, M.ArrayElemAssign, M.ArrayIndexStore)):
-					elem_ty = instr.elem_ty
-					if type_table.is_copy(elem_ty) and not type_table.is_bitcopy(elem_ty):
-						src = defs.get(instr.value)
-						if isinstance(src, (M.CopyValue, M.MoveOut, M.ArrayElemTake)):
-							continue
-						if isinstance(
-							src,
-							(
-								M.LoadLocal,
-								M.LoadRef,
-								M.ArrayIndexLoad,
-								M.StructGetField,
-								M.VariantGetField,
-							),
-						):
-							raise AssertionError(
-								f"MIR invariant violation: array store in {function_symbol(fn_id)} must use CopyValue or MoveOut for Copy element type"
-							)
-
-
-def _validate_mir_array_alloc_invariants(funcs: Mapping[FunctionId, M.MirFunc]) -> None:
-	"""Ensure ArrayAlloc length is zero in v1 (length must be set via ArraySetLen)."""
-	for fn_id, func in funcs.items():
-		defs: dict[M.ValueId, M.MirInstr] = {}
-		for block in func.blocks.values():
-			for instr in block.instructions:
-				dest = getattr(instr, "dest", None)
-				if isinstance(dest, str):
-					defs[dest] = instr
-		for block in func.blocks.values():
-			for instr in block.instructions:
-				if not isinstance(instr, M.ArrayAlloc):
-					continue
-				src = defs.get(instr.length)
-				if isinstance(src, (M.ConstUint, M.ConstInt, M.ConstUint64)) and src.value == 0:
-					continue
-				raise AssertionError(
-					f"MIR invariant violation: ArrayAlloc in {function_symbol(fn_id)} must use length=0 in v1"
-				)
-
-
-def _validate_mir_wrapping_u64_invariants(
-	funcs: Mapping[FunctionId, M.MirFunc],
-	type_table: TypeTable,
-) -> None:
-	"""Ensure wrapping u64 ops only consume Uint64-typed values."""
-	uint64_ty = type_table.ensure_uint64()
-	int_ty = type_table.ensure_int()
-	uint_ty = type_table.ensure_uint()
-	bool_ty = type_table.ensure_bool()
-	byte_ty = type_table.ensure_byte()
-	string_ty = type_table.ensure_string()
-	float_ty = type_table.ensure_float()
-
-	for fn_id, func in funcs.items():
-		local_types = dict(getattr(func, "local_types", {}) or {})
-		value_types: dict[M.ValueId, TypeId] = {}
-
-		def set_value(val: M.ValueId | None, ty: TypeId | None) -> None:
-			if val is None or ty is None:
-				return
-			if value_types.get(val) != ty:
-				value_types[val] = ty
-
-		def ty_for(val: M.ValueId | None) -> TypeId | None:
-			if val is None:
-				return None
-			return value_types.get(val)
-
-		for _ in range(3):
-			changed = False
-			for block in func.blocks.values():
-				for instr in block.instructions:
-					dest = getattr(instr, "dest", None)
-					if isinstance(instr, M.ConstUint64):
-						if value_types.get(dest) != uint64_ty:
-							value_types[dest] = uint64_ty
-							changed = True
-					elif isinstance(instr, M.ConstUint):
-						if value_types.get(dest) != uint_ty:
-							value_types[dest] = uint_ty
-							changed = True
-					elif isinstance(instr, M.ConstInt):
-						if value_types.get(dest) != int_ty:
-							value_types[dest] = int_ty
-							changed = True
-					elif isinstance(instr, M.ConstBool):
-						if value_types.get(dest) != bool_ty:
-							value_types[dest] = bool_ty
-							changed = True
-					elif isinstance(instr, M.ConstString):
-						if value_types.get(dest) != string_ty:
-							value_types[dest] = string_ty
-							changed = True
-					elif isinstance(instr, M.ConstFloat):
-						if value_types.get(dest) != float_ty:
-							value_types[dest] = float_ty
-							changed = True
-					elif isinstance(instr, M.CastScalar):
-						if value_types.get(dest) != instr.dst_ty:
-							value_types[dest] = instr.dst_ty
-							changed = True
-					elif isinstance(instr, M.IntFromUint):
-						if value_types.get(dest) != int_ty:
-							value_types[dest] = int_ty
-							changed = True
-					elif isinstance(instr, M.UintFromInt):
-						if value_types.get(dest) != uint_ty:
-							value_types[dest] = uint_ty
-							changed = True
-					elif isinstance(instr, M.LoadLocal):
-						local_ty = local_types.get(instr.local)
-						if local_ty is not None and value_types.get(dest) != local_ty:
-							value_types[dest] = local_ty
-							changed = True
-					elif isinstance(instr, M.StoreLocal):
-						src_ty = ty_for(instr.value)
-						if src_ty is not None and local_types.get(instr.local) != src_ty:
-							local_types[instr.local] = src_ty
-							changed = True
-					elif isinstance(instr, M.AssignSSA):
-						src_ty = ty_for(instr.src)
-						if src_ty is not None and value_types.get(dest) != src_ty:
-							value_types[dest] = src_ty
-							changed = True
-					elif isinstance(instr, M.UnaryOpInstr):
-						operand_ty = ty_for(instr.operand)
-						if operand_ty is not None and value_types.get(dest) != operand_ty:
-							value_types[dest] = operand_ty
-							changed = True
-					elif isinstance(instr, M.BinaryOpInstr):
-						left_ty = ty_for(instr.left)
-						right_ty = ty_for(instr.right)
-						if left_ty is not None and left_ty == right_ty and value_types.get(dest) != left_ty:
-							value_types[dest] = left_ty
-							changed = True
-					elif isinstance(instr, M.StringLen):
-						if value_types.get(dest) != int_ty:
-							value_types[dest] = int_ty
-							changed = True
-					elif isinstance(instr, M.StringByteAt):
-						if value_types.get(dest) != byte_ty:
-							value_types[dest] = byte_ty
-							changed = True
-					elif isinstance(instr, M.WrappingAddU64):
-						if value_types.get(dest) != uint64_ty:
-							value_types[dest] = uint64_ty
-							changed = True
-					elif isinstance(instr, M.WrappingMulU64):
-						if value_types.get(dest) != uint64_ty:
-							value_types[dest] = uint64_ty
-							changed = True
-			if not changed:
-				break
-
-		for block in func.blocks.values():
-			for instr in block.instructions:
-				if isinstance(instr, (M.WrappingAddU64, M.WrappingMulU64)):
-					left_ty = ty_for(instr.left)
-					right_ty = ty_for(instr.right)
-					if left_ty != uint64_ty or right_ty != uint64_ty:
-						raise AssertionError(
-							f"MIR invariant violation: WrappingU64 operands must be Uint64 in {function_symbol(fn_id)}"
-						)
-
-
-def _validate_mir_iface_init_invariants(
-	funcs: Mapping[FunctionId, M.MirFunc],
-	signatures_by_id: Mapping[FunctionId, FnSignature],
-	type_table: TypeTable,
-) -> None:
-	"""Ensure interface values are initialized before DropValue."""
-	def _is_iface(ty_id: TypeId) -> bool:
-		return type_table.get(ty_id).kind is TypeKind.INTERFACE
-
-	for fn_id, func in funcs.items():
-		sig = signatures_by_id.get(fn_id)
-		iface_params: set[M.ValueId] = set()
-		iface_param_locals: set[M.LocalId] = set()
-		if sig is not None and sig.param_type_ids:
-			for name, ty_id in zip(func.params, sig.param_type_ids):
-				if _is_iface(ty_id):
-					iface_params.add(name)
-					iface_param_locals.add(name)
-
-		value_iface_type: dict[M.ValueId, bool] = {}
-		for block in func.blocks.values():
-			for instr in block.instructions:
-				dest = getattr(instr, "dest", None)
-				if not isinstance(dest, str):
-					continue
-				ty_id: TypeId | None = None
-				if isinstance(instr, (M.ConstructIface, M.ConstructIfaceValue)):
-					ty_id = instr.iface_ty
-				elif isinstance(instr, M.ZeroValue):
-					ty_id = instr.ty
-				elif isinstance(instr, (M.CopyValue, M.MoveOut)):
-					ty_id = instr.ty
-				elif isinstance(instr, M.Call):
-					call_sig = signatures_by_id.get(instr.fn_id)
-					if call_sig is not None:
-						ty_id = call_sig.return_type_id
-				elif isinstance(instr, (M.CallIndirect, M.CallIface)):
-					ty_id = instr.user_ret_type
-				if isinstance(instr, M.IfaceUpcast):
-					value_iface_type[dest] = True
-					continue
-				if ty_id is not None and _is_iface(ty_id):
-					value_iface_type[dest] = True
-
-		# Build CFG.
-		succs: dict[str, list[str]] = {}
-		for name, block in func.blocks.items():
-			term = block.terminator
-			if isinstance(term, M.Goto):
-				succs[name] = [term.target]
-			elif isinstance(term, M.IfTerminator):
-				succs[name] = [term.then_target, term.else_target]
-			else:
-				succs[name] = []
-		preds: dict[str, list[str]] = {name: [] for name in func.blocks.keys()}
-		for name, targets in succs.items():
-			for tgt in targets:
-				preds.setdefault(tgt, []).append(name)
-
-		inited_in: dict[str, set[M.LocalId]] = {name: set() for name in func.blocks.keys()}
-		out_inited: dict[str, set[M.LocalId]] = {name: set() for name in func.blocks.keys()}
-		changed = True
-		order = list(func.blocks.keys())
-		while changed:
-			changed = False
-			for name in order:
-				if preds.get(name):
-					new_in = set.intersection(*(out_inited[p] for p in preds[name])) if preds[name] else set()
-				else:
-					new_in = set(iface_param_locals)
-				if new_in != inited_in[name]:
-					inited_in[name] = set(new_in)
-					changed = True
-				cur_locals = set(inited_in[name])
-				cur_values: set[M.ValueId] = set(iface_params)
-
-				for instr in func.blocks[name].instructions:
-					if isinstance(instr, M.LoadLocal):
-						if instr.local in cur_locals:
-							cur_values.add(instr.dest)
-						continue
-					if isinstance(instr, M.StoreLocal):
-						val_is_iface = instr.value in cur_values or instr.value in iface_params or value_iface_type.get(instr.value, False)
-						if val_is_iface:
-							if instr.value not in cur_values and instr.value not in iface_params:
-								raise AssertionError(
-									f"MIR invariant violation: storing uninitialized iface value in {function_symbol(fn_id)}"
-								)
-							cur_locals.add(instr.local)
-						else:
-							if instr.local in cur_locals:
-								cur_locals.discard(instr.local)
-						continue
-					if isinstance(instr, M.IfaceUpcast):
-						if instr.iface not in cur_values and instr.iface not in iface_params:
-							raise AssertionError(
-								f"MIR invariant violation: IfaceUpcast of uninitialized iface value in {function_symbol(fn_id)}"
-							)
-						cur_values.add(instr.dest)
-						continue
-					if isinstance(instr, M.CopyValue) and _is_iface(instr.ty):
-						if instr.value not in cur_values and instr.value not in iface_params:
-							raise AssertionError(
-								f"MIR invariant violation: CopyValue of uninitialized iface value in {function_symbol(fn_id)}"
-							)
-						cur_values.add(instr.dest)
-						continue
-					if isinstance(instr, M.MoveOut) and _is_iface(instr.ty):
-						if instr.local not in cur_locals:
-							raise AssertionError(
-								f"MIR invariant violation: MoveOut of uninitialized iface local in {function_symbol(fn_id)}"
-							)
-						cur_values.add(instr.dest)
-						cur_locals.add(instr.local)
-						continue
-					if isinstance(instr, (M.ConstructIface, M.ConstructIfaceValue)):
-						cur_values.add(instr.dest)
-						continue
-					if isinstance(instr, M.ZeroValue) and _is_iface(instr.ty):
-						cur_values.add(instr.dest)
-						continue
-					if isinstance(instr, (M.CallIndirect, M.CallIface)) and _is_iface(instr.user_ret_type):
-						if instr.dest is not None:
-							cur_values.add(instr.dest)
-						continue
-					if isinstance(instr, M.Call):
-						call_sig = signatures_by_id.get(instr.fn_id)
-						if call_sig is not None and _is_iface(call_sig.return_type_id) and instr.dest is not None:
-							cur_values.add(instr.dest)
-						continue
-					if isinstance(instr, M.DropValue) and _is_iface(instr.ty):
-						if instr.value not in cur_values and instr.value not in iface_params:
-							raise AssertionError(
-								f"MIR invariant violation: DropValue of uninitialized iface value in {function_symbol(fn_id)}"
-							)
-						continue
-				if cur_locals != out_inited[name]:
-					out_inited[name] = set(cur_locals)
-					changed = True
 
 
 __all__ = ["compile_stubbed_funcs", "compile_to_llvm_ir_for_tests"]

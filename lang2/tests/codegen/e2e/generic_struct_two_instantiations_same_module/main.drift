@@ -3,9 +3,9 @@ module main
 import m_box;
 
 fn main() nothrow -> Int {
-	val a: m_box.Box<Int> = m_box.Box<type Int>(41);
-	val b: m_box.Box<String> = m_box.Box<type String>("x");
-	val x: Int = a.get();
-	val y: Int = string_eq(b.get(), "x") ? 1 : 0;
+val a = m_box.Box<type Int>(41);
+val b = m_box.Box<type String>("x");
+	val x = a.get();
+	val y = string_eq(b.get(), "x") ? 1 : 0;
 	return x + y;
 }

@@ -1,0 +1,29 @@
+module main
+
+	import std.concurrent as conc;
+	import std.core as core;
+
+	fn main() nothrow -> Int {
+		var counter = core.cell(0);
+		var t = conc.spawn(| | => { return; });
+		counter.set(0);
+		t.cancel();
+		var res = t.join();
+		var v = counter.get();
+	return match res {
+		Err(err) => {
+			match err {
+				Cancelled => {
+					var out = 2;
+					if v == 0 {
+						out = 0;
+					}
+					out
+				},
+				default => { 3 },
+			}
+		},
+		Ok(_v) => { 4 },
+		default => { 4 },
+	};
+}

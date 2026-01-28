@@ -1,0 +1,6 @@
+{
+  "description": "e2e: join_timeout nonzero returns Ok when task completes",
+  "exit_code": 0,
+  "stderr": "",
+  "stdout": ""
+}

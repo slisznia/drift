@@ -5,7 +5,7 @@ fn g(x: Int) nothrow -> Int { return x; }
 fn make() -> Fn(Int) -> Int { return g; }
 
 fn main() nothrow -> Int {
-	val fp: Fn(Int) -> Int = try make() catch { g };
-	val v: Int = try fp(3) catch { 0 };
+	val fp = try make() catch { g };
+	val v = try fp(3) catch { 0 };
 	return v;
 }

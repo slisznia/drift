@@ -4,8 +4,8 @@ import std.containers as containers;
 
 fn run() -> Int {
 	var s = containers.hash_set<type Int>();
-	val k1: Int = 1;
-	val k2: Int = 2;
+	val k1 = 1;
+	val k2 = 2;
 	if not s.insert(1) {
 		return 1;
 	}

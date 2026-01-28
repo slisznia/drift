@@ -1,0 +1,46 @@
+module main
+
+import std.concurrent as conc;
+import std.core as core;
+
+fn is_failed_void(res: core.Result<Void, conc.ConcurrencyError>) nothrow -> Bool {
+	return match res {
+		Err(err) => {
+			match err {
+				Failed(_e) => { true },
+				default => { false },
+			}
+		},
+		Ok(_v) => { false },
+		default => { false },
+	};
+}
+
+fn is_failed_int(res: core.Result<Int, conc.ConcurrencyError>) nothrow -> Bool {
+	return match res {
+		Err(err) => {
+			match err {
+				Failed(_e) => { true },
+				default => { false },
+			}
+		},
+		Ok(_v) => { false },
+		default => { false },
+	};
+}
+
+fn main() nothrow -> Int {
+	var sd = conc.sleep(conc.Duration(millis = -1));
+	var ok_sleep = is_failed_void(sd);
+
+	var t = conc.spawn(| | => { return 1; });
+	var jd = t.join_timeout(conc.Duration(millis = -1));
+	var ok_join = is_failed_int(jd);
+
+	if ok_sleep {
+		if ok_join {
+			return 0;
+		}
+	}
+	return 1;
+}

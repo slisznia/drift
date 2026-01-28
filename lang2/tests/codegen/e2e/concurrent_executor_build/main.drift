@@ -1,0 +1,19 @@
+module main
+
+import std.concurrent as conc;
+
+fn main() nothrow -> Int {
+	var b = conc.executor_policy_builder();
+	b.min_threads(1)
+		.max_threads(1)
+		.queue_limit(8)
+		.timeout(conc.Duration(millis = 5))
+		.on_saturation(conc.SaturationPolicy::ReturnBusy());
+	var exec = b.build_executor();
+	var res = conc.spawn_on(move exec, | | => { return 7; });
+	return match res {
+		Ok(_t) => { 7 },
+		Err(_e) => { 3 },
+		default => { 4 },
+	};
+}

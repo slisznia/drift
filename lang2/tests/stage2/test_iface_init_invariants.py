@@ -6,7 +6,7 @@ import pytest
 from lang2.driftc.core.function_id import FunctionId
 from lang2.driftc.core.generic_type_expr import GenericTypeExpr
 from lang2.driftc.core.types_core import InterfaceMethodSchema, TypeTable
-from lang2.driftc.driftc import _validate_mir_iface_init_invariants
+from lang2.driftc.mir_validate import validate_mir_iface_init_invariants
 from lang2.driftc.checker import FnSignature
 from lang2.driftc.stage2 import BasicBlock, DropValue, MirFunc, Return, ZeroValue
 
@@ -49,7 +49,7 @@ def test_iface_drop_requires_initialized_value() -> None:
 	)
 	sig = FnSignature(name="f", param_type_ids=[], return_type_id=table.ensure_void(), declared_can_throw=False)
 	with pytest.raises(AssertionError, match="DropValue of uninitialized iface value"):
-		_validate_mir_iface_init_invariants({fn_id: mir}, {fn_id: sig}, table)
+		validate_mir_iface_init_invariants({fn_id: mir}, {fn_id: sig}, table)
 
 
 def test_iface_drop_allows_zero_value() -> None:
@@ -74,4 +74,4 @@ def test_iface_drop_allows_zero_value() -> None:
 		entry="entry",
 	)
 	sig = FnSignature(name="f", param_type_ids=[], return_type_id=table.ensure_void(), declared_can_throw=False)
-	_validate_mir_iface_init_invariants({fn_id: mir}, {fn_id: sig}, table)
+	validate_mir_iface_init_invariants({fn_id: mir}, {fn_id: sig}, table)

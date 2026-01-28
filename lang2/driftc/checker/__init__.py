@@ -1130,6 +1130,24 @@ class Checker:
 			if hasattr(H, "HLiteralString") and isinstance(expr, getattr(H, "HLiteralString")):
 				return checker._string_type
 
+			if hasattr(H, "HMatchExpr") and isinstance(expr, getattr(H, "HMatchExpr")):
+				match_ty: Optional[TypeId] = None
+				for arm in expr.arms:
+					arm_ty: Optional[TypeId] = None
+					if getattr(arm, "result", None) is not None:
+						arm_ty = self._infer_expr_type(arm.result)
+					else:
+						last = arm.block.statements[-1] if arm.block.statements else None
+						if isinstance(last, H.HExprStmt):
+							arm_ty = self._infer_expr_type(last.expr)
+					if arm_ty is None:
+						continue
+					if match_ty is None:
+						match_ty = arm_ty
+					elif match_ty != arm_ty:
+						return None
+				return match_ty
+
 			if hasattr(H, "HFString") and isinstance(expr, getattr(H, "HFString")):
 				for hole in expr.holes:
 					if hole.spec.strip():
@@ -1188,6 +1206,8 @@ class Checker:
 						)
 					)
 					return None
+				if info.sig.user_ret_type == checker._unknown_type and getattr(expr, "force_inferred_type", None) is not None:
+					return expr.force_inferred_type
 				return info.sig.user_ret_type
 			if isinstance(expr, (H.HMethodCall, H.HInvoke)):
 				if self.call_info_by_callsite_id is None:
@@ -1209,6 +1229,8 @@ class Checker:
 						)
 					)
 					return None
+				if info.sig.user_ret_type == checker._unknown_type and getattr(expr, "force_inferred_type", None) is not None:
+					return expr.force_inferred_type
 				return info.sig.user_ret_type
 			if isinstance(expr, H.HCall) and isinstance(expr.fn, H.HLambda):
 				lam = expr.fn
@@ -1752,6 +1774,16 @@ class Checker:
 				arg_type_ids = [
 					self._infer_hir_expr_type(a, fn_infos, current_fn, diagnostics) for a in arg_exprs
 				]
+				uses_forced = False
+				for idx, arg_expr in enumerate(arg_exprs):
+					forced = getattr(arg_expr, "force_inferred_type", None)
+					if forced is None:
+						continue
+					uses_forced = True
+					if idx < len(arg_type_ids) and arg_type_ids[idx] == self._unknown_type:
+						arg_type_ids[idx] = forced
+				if uses_forced:
+					skip_type_check = True
 				callee_name = None
 				if info.target.kind is CallTargetKind.DIRECT and info.target.symbol is not None:
 					callee_name = function_symbol(info.target.symbol)
@@ -2485,9 +2517,16 @@ class Checker:
 			return
 
 		if isinstance(expr, H.HCall):
-			for arg in expr.args:
+			call_info = None
+			if ctx.call_info_by_callsite_id is not None:
+				call_info = ctx.call_info_by_callsite_id.get(getattr(expr, "callsite_id", None))
+			param_types = list(call_info.sig.param_types) if call_info is not None else []
+			for idx, arg in enumerate(expr.args):
 				arg_ty = ctx.infer(arg)
 				if is_void(arg_ty):
+					expected = param_types[idx] if idx < len(param_types) else None
+					if expected is not None and is_void(expected):
+						continue
 					ctx._append_diag(
 						_chk_diag(
 							message="Void value is not allowed as a function argument",
@@ -2498,6 +2537,8 @@ class Checker:
 			for kw in getattr(expr, "kwargs", []) or []:
 				arg_ty = ctx.infer(kw.value)
 				if is_void(arg_ty):
+					# Keyword args are not mapped to params here; keep strict unless
+					# call info is missing.
 					ctx._append_diag(
 						_chk_diag(
 							message="Void value is not allowed as a function argument",
@@ -2508,9 +2549,18 @@ class Checker:
 			return
 
 		if isinstance(expr, H.HMethodCall):
-			for arg in expr.args:
+			call_info = None
+			if ctx.call_info_by_callsite_id is not None:
+				call_info = ctx.call_info_by_callsite_id.get(getattr(expr, "callsite_id", None))
+			param_types = list(call_info.sig.param_types) if call_info is not None else []
+			offset = 1 if len(param_types) == len(expr.args) + 1 else 0
+			for idx, arg in enumerate(expr.args):
 				arg_ty = ctx.infer(arg)
 				if is_void(arg_ty):
+					expected_idx = idx + offset
+					expected = param_types[expected_idx] if expected_idx < len(param_types) else None
+					if expected is not None and is_void(expected):
+						continue
 					ctx._append_diag(
 						_chk_diag(
 							message="Void value is not allowed as a method argument",

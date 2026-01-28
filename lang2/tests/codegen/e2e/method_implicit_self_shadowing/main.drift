@@ -5,7 +5,7 @@ struct Point(x: Int);
 implement Point {
 	fn bump_and_sum(self: &mut Point) nothrow -> Int {
 		// Local bindings shadow implicit `self` members.
-		val x: Int = 1;
+		val x = 1;
 
 		// Explicit member-through-reference access remains available when the
 		// local name shadows a field.
@@ -16,6 +16,6 @@ implement Point {
 }
 
 fn main() nothrow -> Int{
-	var p: Point = Point(1);
+	var p = Point(1);
 	return p.bump_and_sum();
 }

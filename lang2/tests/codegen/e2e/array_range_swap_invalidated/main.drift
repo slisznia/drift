@@ -7,7 +7,7 @@ fn main() -> Int {
 	var arr = [1, 2];
 	var r = arr.range_mut();
 	r.__test_invalidate();
-	val out: Int = try {
+	val out = try {
 		iter.RandomAccessPermutable::swap(&mut r, 0, 0);
 		0
 	} catch std.err:IteratorInvalidated(e) {
@@ -15,7 +15,7 @@ fn main() -> Int {
 		val dv_o = e.attrs["op_id"];
 		val c = dv_c.as_string();
 		val o = dv_o.as_int();
-		val c_code: Int = match c {
+		val c_code = match c {
 			Some(s) => {
 				(s != "std.containers:Array") ? 10 : 0
 			},
@@ -23,7 +23,7 @@ fn main() -> Int {
 				11
 			},
 		};
-		val o_code: Int = match o {
+		val o_code = match o {
 			Some(v) => {
 				(v != 4) ? 12 : 0
 			},

@@ -1,0 +1,22 @@
+module main
+
+import std.concurrent as conc;
+
+fn main() nothrow -> Int {
+	var t = conc.spawn(| | => { return 1; });
+	var res = t.join_timeout(conc.Duration(millis = 0));
+	return match res {
+		Err(err) => {
+			match err {
+				Timeout => { 0 },
+				Busy => { 1 },
+				Cancelled => { 1 },
+				Closed => { 1 },
+				Failed(_e) => { 1 },
+				default => { 1 },
+			}
+		},
+		Ok(_v) => { 2 },
+		default => { 2 },
+	};
+}
