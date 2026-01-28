@@ -3,7 +3,7 @@
 Reference: `docs/design/spec-change-requests/virtual_threads_concurrency_spec.md`
 
 ## Status
-Phase 0 stubs landed (stdlib only).
+Phase 2 runtime (scheduler + reactor + VT lifecycle) complete.
 
 ## Decisions (pinned)
 - MVP concurrency includes runtime primitives: scheduler, reactor integration, and stack management.
@@ -153,16 +153,7 @@ Phase 0 stubs landed (stdlib only).
 3) Integrate blocking boundary: non-blocking syscall → if EAGAIN/EWOULDBLOCK, park VT and register interest.
 
 ## Phase 2 remaining tasks (detailed)
-- Scheduler core: run queue + task states (Ready/Running/Parked/Finished/Cancelled).
-- VT lifecycle plumbing: `vt_spawn` creates task record; `exec_submit` enqueues; `vt_current`; `vt_join` returns stored result.
-- Park/unpark: `vt_park`/`vt_park_until` block only the VT, with executor wait queues.
-- Reactor integration: real `reactor_register_timer`/`reactor_register_io` to unpark VTs on readiness/deadlines.
-- `sleep` path: wire through reactor timer + park (no OS sleep).
-- Cancellation semantics: `cancel()` flags task, wakes if parked, `join`/`join_timeout` return `Cancelled`.
-- Result propagation: store task result or failure in runtime state; `join()` returns `Ok(T)` when completed.
-- Executor policy enforcement: queue limits, saturation policy (Busy/Timeout), worker pool sizing.
-- Runtime threading model: event loop + worker threads driving scheduler/reactor.
-- ABI/runtime glue: stable `drift_*` runtime calls; keep interface/callback ABI compatible.
+- (none) Phase 2 is complete; next work is Phase 3 wiring + tests and Post‑MVP items.
 
 ### Phase 3: stdlib wiring + correctness tests
 1) `std.net` sockets and `std.io` streams call boundary helpers.

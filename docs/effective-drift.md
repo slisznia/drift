@@ -89,6 +89,26 @@ fn update_user(db: &mut Db, id: Int, patch: Patch) -> Bool {
 
 The inner block makes it obvious when the borrow ends.
 
+## Prefer structs for product data; use variants to tag meaning
+
+If a type is just “some fields grouped together,” use a `struct`. If you want a
+named constructor, pattern-matching boundary, or future extensibility, use a
+`variant` (even with a single arm).
+
+```drift
+struct Point { x: Int, y: Int }
+// Construct: Point(x = 2, y = 3)
+
+variant UserId {
+    UserId(Int),
+}
+// Construct: UserId(42); match on UserId(...)
+```
+
+Single-arm variants are useful for semantic tagging (“this Int is a UserId”),
+and they keep the door open to add more cases later without changing the type’s
+name or its call sites.
+
 ## Prefer “own the data” for long-lived callbacks
 
 If a callback will live longer than the scope it was created in, capture owned
