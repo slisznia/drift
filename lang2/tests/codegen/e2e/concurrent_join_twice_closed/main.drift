@@ -1,0 +1,27 @@
+module m
+
+import std.concurrent as conc;
+import std.core as core;
+
+pub fn main() nothrow -> Int {
+	var t = conc.spawn_cb(core.callback0(| | nothrow => { return 7; }));
+	var r1 = t.join();
+	var acc = 0;
+	match r1 {
+		Ok(v) => { acc = acc + v; },
+		Err(_) => { return 1; },
+		default => { return 2; }
+	}
+	var r2 = t.join();
+	var out = match r2 {
+		Err(e) => {
+			match e {
+				conc.ConcurrencyError::Closed() => { acc },
+				default => { 3 }
+			}
+		},
+		Ok(_) => { 4 },
+		default => { 5 }
+	};
+	return out;
+}

@@ -654,10 +654,16 @@ class QualifiedTypeArgInserter:
                         type_square_depth -= 1
                     yield _emit(token)
                     continue
-                if tt == "SHR" and type_angle_depth >= 2:
-                    for _ in range(2):
-                        type_angle_depth -= 1
+                if tt == "SHR" and type_angle_depth >= 1:
+                    for i in range(2):
+                        if type_angle_depth > 0:
+                            type_angle_depth -= 1
                         yield _emit(Token.new_borrow_pos("GT", ">", token))
+                        if type_angle_depth == 0 and type_square_depth == 0:
+                            type_mode = False
+                            if i == 0:
+                                pushback.append(Token.new_borrow_pos("GT", ">", token))
+                            break
                     continue
                 yield _emit(token)
                 if type_angle_depth == 0 and type_square_depth == 0 and tt in type_mode_end:
@@ -2567,6 +2573,10 @@ def _build_match_expr(tree: Tree, *, arm_node_names: tuple[str, ...] = ("match_e
 				"match_ctor0",
 				"match_ctor_named",
 				"match_ctor_paren",
+				"match_ctor_qualified",
+				"match_ctor0_qualified",
+				"match_ctor_named_qualified",
+				"match_ctor_paren_qualified",
 			):
 				pat = child
 				break
@@ -2594,12 +2604,69 @@ def _build_match_expr(tree: Tree, *, arm_node_names: tuple[str, ...] = ("match_e
 
 		pat_kind = _name(pat)
 		ctor: Optional[str] = None
+		ctor_base: Optional[TypeExpr] = None
 		binders: list[str] = []
 		binder_is_mutable: list[bool] = []
 		binder_fields: list[str] | None = None
 		pattern_arg_form = "positional"
+		def _parse_qualified_ctor(pat_node: Tree) -> tuple[str, TypeExpr]:
+			qnode = next((c for c in pat_node.children if isinstance(c, Tree) and _name(c) == "qualified_member"), None)
+			if qnode is None:
+				raise ValueError("match qualified ctor missing qualified_member")
+			qm = _build_expr(qnode)
+			if not isinstance(qm, QualifiedMember):
+				raise ValueError("match qualified ctor did not parse as QualifiedMember")
+			return (qm.member, qm.base_type)
 		if pat_kind == "match_default":
 			ctor = None
+			pattern_arg_form = "bare"
+		elif pat_kind == "match_ctor_qualified":
+			ctor, ctor_base = _parse_qualified_ctor(pat)
+			binders_node = next((c for c in pat.children if isinstance(c, Tree) and _name(c) == "match_binders"), None)
+			if binders_node is not None:
+				binders = []
+				binder_is_mutable = []
+				for c in binders_node.children:
+					if isinstance(c, Tree) and _name(c) == "match_binder":
+						bname, is_mut = _parse_match_binder(c)
+						binders.append(bname)
+						binder_is_mutable.append(is_mut)
+					elif isinstance(c, Token) and c.type == "NAME":
+						binders.append(c.value)
+						binder_is_mutable.append(False)
+			pattern_arg_form = "positional"
+		elif pat_kind == "match_ctor_named_qualified":
+			ctor, ctor_base = _parse_qualified_ctor(pat)
+			fields_node = next((c for c in pat.children if isinstance(c, Tree) and _name(c) == "match_named_binders"), None)
+			if fields_node is None:
+				raise ValueError("match_ctor_named_qualified missing match_named_binders")
+			binders = []
+			binder_is_mutable = []
+			binder_fields = []
+			for nb in (c for c in fields_node.children if isinstance(c, Tree) and _name(c) == "match_named_binder"):
+				parts = [c for c in nb.children if isinstance(c, Token) and c.type == "NAME"]
+				if len(parts) < 1:
+					raise ValueError("match_named_binder expects field NAME token")
+				field_name = parts[0].value
+				binder_node = next((c for c in nb.children if isinstance(c, Tree) and _name(c) == "match_binder"), None)
+				if binder_node is None:
+					if len(parts) != 2:
+						raise ValueError("match_named_binder expects field NAME and binder NAME tokens")
+					binder_name = parts[1].value
+					is_mut = False
+				else:
+					binder_name, is_mut = _parse_match_binder(binder_node)
+				binder_fields.append(field_name)
+				binders.append(binder_name)
+				binder_is_mutable.append(is_mut)
+			pattern_arg_form = "named"
+		elif pat_kind == "match_ctor_paren_qualified":
+			ctor, ctor_base = _parse_qualified_ctor(pat)
+			binders = []
+			binder_fields = None
+			pattern_arg_form = "paren"
+		elif pat_kind == "match_ctor0_qualified":
+			ctor, ctor_base = _parse_qualified_ctor(pat)
 			pattern_arg_form = "bare"
 		elif pat_kind == "match_ctor":
 			name_tok = next(c for c in pat.children if isinstance(c, Token) and c.type == "NAME")
@@ -2675,6 +2742,7 @@ def _build_match_expr(tree: Tree, *, arm_node_names: tuple[str, ...] = ("match_e
 			MatchArm(
 				loc=_loc(arm_node),
 				ctor=ctor,
+				ctor_base=ctor_base,
 				pattern_arg_form=pattern_arg_form,
 				binders=binders,
 				binder_is_mutable=binder_is_mutable if binder_is_mutable else None,

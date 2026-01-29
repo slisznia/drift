@@ -1,0 +1,29 @@
+module m
+
+import std.concurrent as conc;
+import std.core as core;
+import lang.thread as thread;
+
+pub fn main() nothrow -> Int {
+	var b = conc.executor_policy_builder();
+	b.queue_limit(1);
+	b.min_threads(1);
+	b.max_threads(1);
+	var exec = b.build_executor();
+	conc.set_default_executor(exec);
+
+	var t1 = conc.spawn_cb(core.callback0(| | nothrow => { thread.vt_park_until(20); return 1; }));
+	var t2 = conc.spawn_cb(core.callback0(| | nothrow => { return 2; }));
+	var res2 = t2.join();
+	var ok = match res2 {
+		Err(_e) => { true },
+		Ok(_v) => { false },
+		default => { false }
+	};
+	t1.cancel();
+	var _ = t1.join();
+	if ok {
+		return 0;
+	}
+	return 1;
+}

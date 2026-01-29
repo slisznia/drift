@@ -1,0 +1,4 @@
+{
+  "description": "e2e: join_timeout after completion returns Ok",
+  "exit_code": 7
+}

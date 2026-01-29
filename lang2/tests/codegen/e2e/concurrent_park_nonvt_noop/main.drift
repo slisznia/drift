@@ -1,0 +1,8 @@
+module m
+
+import lang.thread as thread;
+
+pub fn main() nothrow -> Int {
+	thread.vt_park_until(1);
+	return 7;
+}

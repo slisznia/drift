@@ -1,0 +1,4 @@
+{
+  "description": "e2e: join twice returns Closed",
+  "exit_code": 7
+}

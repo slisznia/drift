@@ -19,7 +19,7 @@ export {
 	ArrayRange,
 	ArrayRangeMut,
 	Deque,
-	deque_new,
+	deque,
 	DequeRange,
 	DequeRangeMut,
 	HASH_MAP_CONTAINER_ID,
@@ -279,7 +279,7 @@ implement DequeRangeMut<Int> {
 	}
 }
 
-pub fn deque_new<T>() nothrow -> Deque<T> {
+pub fn deque<T>() nothrow -> Deque<T> {
 	unsafe {
 		var b = mem.alloc_uninit<type T>(0);
 		return Deque<type T>(buf = move b, head = 0, len = 0, gen = 0);

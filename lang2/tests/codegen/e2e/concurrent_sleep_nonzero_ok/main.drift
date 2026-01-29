@@ -1,0 +1,12 @@
+module m
+
+import std.concurrent as conc;
+
+pub fn main() nothrow -> Int {
+	var r = conc.sleep(conc.Duration(millis = 1));
+	match r {
+		Ok(_) => { return 9; },
+		Err(_) => { return 1; },
+		default => { return 2; }
+	}
+}

@@ -5182,6 +5182,53 @@ class TypeChecker:
 							)
 						seen_ctors.add(arm.ctor)
 
+					# If the pattern uses a qualified constructor base, validate it.
+					arm_ctor_base = getattr(arm, "ctor_base", None)
+					if arm.ctor is not None and arm_ctor_base is not None:
+						base_tid = resolve_opaque_type(
+							arm_ctor_base,
+							self.type_table,
+							module_id=current_module_name,
+							allow_generic_base=True,
+						)
+						base_td = None
+						try:
+							base_td = self.type_table.get(base_tid)
+						except Exception:
+							base_td = None
+						if base_td is None or base_td.kind is not TypeKind.VARIANT:
+							diagnostics.append(
+								_tc_diag(
+									message=f"qualified constructor base '{arm_ctor_base}' is not a variant type",
+									severity="error",
+									span=getattr(arm, "loc", Span()),
+								)
+							)
+						else:
+							base_inst = self.type_table.get_variant_instance(base_tid)
+							if base_inst is None:
+								diagnostics.append(
+									_tc_diag(
+										message=f"qualified constructor base '{arm_ctor_base}' could not be resolved",
+										severity="error",
+										span=getattr(arm, "loc", Span()),
+									)
+								)
+							else:
+								if inst is None:
+									inst = base_inst
+								elif inst.base_id != base_inst.base_id:
+									diagnostics.append(
+										_tc_diag(
+											message=(
+												f"constructor '{arm.ctor}' is qualified by '{arm_ctor_base}', "
+												"which does not match the match scrutinee type"
+											),
+											severity="error",
+											span=getattr(arm, "loc", Span()),
+										)
+									)
+
 					# Type-check arm body under a scope that includes constructor binders.
 					scope_env.append(dict())
 					scope_bindings.append(dict())

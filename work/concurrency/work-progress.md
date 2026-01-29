@@ -123,6 +123,10 @@ Phase 2 runtime (scheduler + reactor + VT lifecycle) complete.
 - Runtime executor now has a queue + worker threads; `exec_submit` enqueues VTs and workers run callbacks (no per‑VT pthread creation).
 - Added test intrinsics for reactor IO (`test_eventfd_*`, `test_timerfd_*`) and e2e tests for IO‑driven unpark.
 - Added `std.concurrent.block_on_io` helper (register + park) and e2e `concurrent_block_on_io_eventfd`.
+- Added `std.io.block_on_read/write` and `std.net` stream/listener helpers wired to `std.concurrent.block_on_io`.
+- Added e2e `std_io_block_on_read_eventfd` and `std_net_block_on_read_eventfd`.
+- Added e2e `std_net_block_on_write_eventfd` and `std_net_block_on_accept_eventfd`.
+- Added e2e `std_io_block_on_write_eventfd`.
 - NOTE: `concurrent_block_on_io_eventfd` and `concurrent_reactor_eventfd_unpark` currently annotate `var t: VirtualThread<Int>` due to `spawn` inference failing to infer `T` from lambda return; add a compiler fix and remove these annotations.
 - Added e2e `concurrent_spawn_infers` to lock spawn() inference from lambda return (expected to pass once compiler fix lands).
 - Added e2e `concurrent_spawn_future_capture_infers` to lock capture inference for `spawn_future` inside loops.
@@ -156,13 +160,24 @@ Phase 2 runtime (scheduler + reactor + VT lifecycle) complete.
 - (none) Phase 2 is complete; next work is Phase 3 wiring + tests and Post‑MVP items.
 
 ### Phase 3: stdlib wiring + correctness tests
-1) `std.net` sockets and `std.io` streams call boundary helpers.
+1) `std.net` sockets and `std.io` streams call boundary helpers. (done)
 2) `std.concurrent.sleep` uses timer wheel + park/unpark.
 3) Tests:
    - spawn/join correctness (ordering + return values)
-   - scope cancellation on throw (once exception policy is pinned)
    - blocking I/O parking (mock fd readiness)
    - sleep timing (coarse assertions)
+4) Phase‑3 correctness test suite (planned):
+   - spawn/join ordering: multiple tasks, join reverse order; join single‑use returns Closed.
+   - cancellation: idempotent, cancel‑after‑completion, cancel‑before‑start join_timeout(0) → Cancelled.
+   - IO parking: deadline timeout path (no readiness) + existing eventfd readiness tests.
+   - timing: sleep(0) → Timeout, sleep(>0) → Ok, join_timeout(0) → Timeout, join_timeout(>0) → Ok.
+   - Added: `concurrent_spawn_join_ordering`, `concurrent_join_twice_closed`, `concurrent_sleep_zero_timeout`,
+     `concurrent_sleep_nonzero_ok`, `concurrent_block_on_io_deadline_timeout`.
+   - Added: `concurrent_vt_current_in_task`, `concurrent_block_on_io_deadline_then_signal`,
+     `concurrent_block_on_io_multiple_waits`, `concurrent_many_short_tasks` (500 tasks, sum check), `concurrent_park_nonvt_noop`.
+   - Added: `concurrent_join_timeout_after_completion`.
+   - Added: `concurrent_cancel_join_timeout_zero`.
+   - Added: `concurrent_queue_limit_enforced`, `concurrent_default_executor_override`.
 
 ## Post‑MVP
 - ReentrantMutex.

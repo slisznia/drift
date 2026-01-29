@@ -336,6 +336,8 @@ class MatchArm:
 	# Field names for named binders, parallel to `binders`. Only meaningful when
 	# `pattern_arg_form == "named"`.
 	binder_fields: Optional[List[str]] = None
+	# Qualified constructor base type (e.g., `pkg.Mod::Ctor`), if specified.
+	ctor_base: Optional[TypeExpr] = None
 	# Mutability flags for binders, parallel to `binders`.
 	binder_is_mutable: Optional[List[bool]] = None
 	loc: Span = field(default_factory=Span)

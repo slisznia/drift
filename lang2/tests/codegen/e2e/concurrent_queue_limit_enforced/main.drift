@@ -1,0 +1,38 @@
+module m
+
+import std.concurrent as conc;
+import std.core as core;
+import lang.thread as thread;
+
+pub fn main() nothrow -> Int {
+	var b = conc.executor_policy_builder();
+	b.queue_limit(1);
+	b.min_threads(1);
+	b.max_threads(1);
+	var exec = b.build_executor();
+
+	var t1 = conc.spawn_on(exec, | | => { thread.vt_park_until(20); return 1; });
+	var ok1 = match t1 {
+		Ok(_t) => { true },
+		Err(_) => { false },
+		default => { false }
+	};
+	if not ok1 {
+		return 2;
+	}
+	val t2 = conc.spawn_on(exec, | | => { return 2; });
+	var ok2 = match t2 {
+		Err(err) => {
+			match err {
+				Busy => { true },
+				default => { false },
+			}
+		},
+		Ok(_t) => { false },
+		default => { false },
+	};
+	if ok2 {
+		return 0;
+	}
+	return 1;
+}

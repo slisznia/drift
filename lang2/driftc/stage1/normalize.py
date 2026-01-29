@@ -175,12 +175,14 @@ class DVInitRewriter:
 				new_arms.append(
 					H.HMatchArm(
 						ctor=arm.ctor,
+						ctor_base=getattr(arm, "ctor_base", None),
 						binders=list(arm.binders),
 						block=self.rewrite_block(arm.block),
 						result=self._rewrite_expr(arm.result) if arm.result is not None else None,
 						pattern_arg_form=arm.pattern_arg_form,
 						binder_fields=arm.binder_fields,
 						binder_field_indices=list(arm.binder_field_indices),
+						binder_is_mutable=getattr(arm, "binder_is_mutable", None),
 					)
 				)
 			return H.HMatchExpr(scrutinee=self._rewrite_expr(expr.scrutinee), arms=new_arms)

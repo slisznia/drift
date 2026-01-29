@@ -756,6 +756,7 @@ class AstToHIR:
 					renamed_arms.append(
 						H.HMatchArm(
 							ctor=arm.ctor,
+							ctor_base=getattr(arm, "ctor_base", None),
 							pattern_arg_form=getattr(arm, "pattern_arg_form", "positional"),
 							binders=arm.binders,
 							binder_is_mutable=getattr(arm, "binder_is_mutable", None),
@@ -848,6 +849,7 @@ class AstToHIR:
 			arms.append(
 				H.HMatchArm(
 					ctor=arm.ctor,
+					ctor_base=getattr(arm, "ctor_base", None),
 					pattern_arg_form=getattr(arm, "pattern_arg_form", "positional"),
 					binders=new_binders,
 					binder_is_mutable=new_binder_is_mutable if new_binder_is_mutable else None,
@@ -1053,8 +1055,8 @@ class AstToHIR:
 		arms: list[H.HMatchArm] = [
 			# `for` desugaring matches `Optional<T>::Some(value: T)` positionally,
 			# so the single binder always maps to field index 0.
-			H.HMatchArm(ctor="Some", binders=[stmt.iter_var], binder_field_indices=[0], block=body_block, result=None),
-			H.HMatchArm(ctor=None, binders=[], block=H.HBlock(statements=[H.HBreak()]), result=None),
+			H.HMatchArm(ctor="Some", ctor_base=None, binders=[stmt.iter_var], binder_field_indices=[0], block=body_block, result=None),
+			H.HMatchArm(ctor=None, ctor_base=None, binders=[], block=H.HBlock(statements=[H.HBreak()]), result=None),
 		]
 		match_expr = H.HMatchExpr(scrutinee=next_call, arms=arms)
 		loop_body = H.HBlock(statements=[H.HExprStmt(expr=match_expr)])

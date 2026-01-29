@@ -53,6 +53,10 @@
 ### Call resolution (module alias)
 - Added regression test to ensure `module_alias.fn()` resolves as a free call (not a method call on a value).
 
+### Match patterns
+- Added qualified constructor patterns in match arms (e.g., `mod.Type::Ctor()`), with module-alias resolution.
+- Added e2e `match_qualified_ctor_pattern` to lock qualified ctor matching.
+
 ### Call resolver refactor (CallIntent)
 - Introduced a minimal `CallIntent` and propagated expected arg types for method calls after resolution (first step toward explicit expected-type plumbing).
 - Extended expected-type propagation to free/UFCS calls in `resolve_call_expr` and added driver regression `test_expected_type_propagation_method_arg.py`.
@@ -71,3 +75,9 @@
 
 ### Concurrency (executor plumbing)
 - Added `exec_create` runtime hook and `build_executor` API; default executor is lazily created with single-thread policy; `Executor`/`ExecutorPolicy` are `Copy`.
+- Added `std.io`/`std.net` boundary helpers wired to `std.concurrent.block_on_io` plus e2e tests for read/write/accept readiness.
+- Added Phase‑3 correctness e2e tests for spawn/join ordering, join‑twice error path, sleep timing, and IO deadline timeout.
+- Added Phase‑3 correctness e2e tests for vt_current behavior, IO readiness before deadline, repeated IO waits, many short tasks, and non‑VT park.
+- Added Phase‑3 correctness e2e test for join_timeout after completion.
+- Added Phase‑3 correctness e2e test for cancel then join_timeout(0).
+- Added Phase‑3 correctness e2e tests for executor queue limit and default executor override.

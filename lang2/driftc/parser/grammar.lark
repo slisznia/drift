@@ -348,6 +348,10 @@ match_expr_arm: match_pat FATARROW match_expr_arm_body
 ?match_stmt_arms: match_stmt_arm (COMMA match_stmt_arm)* COMMA?
 match_stmt_arm: match_pat FATARROW match_stmt_arm_body
 match_pat: DEFAULT              -> match_default
+         | qualified_member "(" ")"         -> match_ctor_paren_qualified
+         | qualified_member "(" match_named_binders ")"  -> match_ctor_named_qualified
+         | qualified_member "(" match_binders ")"  -> match_ctor_qualified
+         | qualified_member                  -> match_ctor0_qualified
          | NAME "(" ")"         -> match_ctor_paren
          | NAME "(" match_named_binders ")"  -> match_ctor_named
          | NAME "(" match_binders ")"  -> match_ctor

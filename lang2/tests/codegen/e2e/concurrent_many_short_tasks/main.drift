@@ -1,0 +1,35 @@
+module m
+
+import std.concurrent as conc;
+import std.core as core;
+import std.containers as containers;
+
+pub fn main() nothrow -> Int {
+	var dq = containers.deque<type conc.VirtualThread<Int>>();
+	var i = 1;
+	while i <= 500 {
+		var t = conc.spawn_cb(core.callback0(| | captures(copy i) => { return i; }));
+		dq.push_back(move t);
+		i = i + 1;
+	}
+	var sum = 0;
+	var ok = true;
+	while dq.len() > 0 {
+		var opt = dq.pop_front();
+		match opt {
+			Some(var vt) => {
+				var r = vt.join();
+				val out = match r {
+					Ok(v) => { v },
+					default => { 0 }
+				};
+				sum = sum + out;
+			},
+			default => { return 1; }
+		}
+	}
+	if sum == 125250 {
+		return 0;
+	}
+	return 2;
+}

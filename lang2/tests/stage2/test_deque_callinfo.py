@@ -23,7 +23,7 @@ module m_main
 import std.containers as containers;
 
 fn run() -> Int {
-	var dq = containers.deque_new<type Int>();
+	var dq = containers.deque<type Int>();
 	dq.push_back(1);
 	val _ = dq.at(0);
 	return 0;

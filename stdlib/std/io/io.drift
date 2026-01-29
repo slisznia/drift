@@ -1,0 +1,22 @@
+module std.io
+
+import std.concurrent as conc;
+
+export {
+	IoInterest,
+	block_on_read,
+	block_on_write
+};
+
+pub variant IoInterest {
+	Read,
+	Write
+}
+
+pub fn block_on_read(fd: Int, deadline_ms: Int) nothrow -> Void {
+	conc.block_on_io(fd, 1, deadline_ms);
+}
+
+pub fn block_on_write(fd: Int, deadline_ms: Int) nothrow -> Void {
+	conc.block_on_io(fd, 4, deadline_ms);
+}

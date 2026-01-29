@@ -534,6 +534,7 @@ def _convert_expr(expr: parser_ast.Expr) -> s0.Expr:
 		arms = [
 			s0.MatchArm(
 				ctor=arm.ctor,
+				ctor_base=getattr(arm, "ctor_base", None),
 				pattern_arg_form=getattr(arm, "pattern_arg_form", "positional"),
 				binders=list(arm.binders),
 				binder_fields=list(arm.binder_fields) if getattr(arm, "binder_fields", None) is not None else None,
@@ -2488,6 +2489,7 @@ def parse_drift_workspace_to_hir(
 				if isinstance(expr, parser_ast.MatchExpr):
 					_resolve_types_in_expr(expr.scrutinee)
 					for arm in getattr(expr, "arms", []) or []:
+						_resolve_type_expr_in_file(path, file_aliases, getattr(arm, "ctor_base", None), allow_traits=True)
 						_resolve_types_in_block(path, file_aliases, arm.block)
 					return
 				if isinstance(expr, parser_ast.ExceptionCtor):

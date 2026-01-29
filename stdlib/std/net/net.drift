@@ -1,0 +1,42 @@
+module std.net
+
+import std.concurrent as conc;
+
+export {
+	TcpStream,
+	TcpListener,
+	tcp_stream,
+	tcp_listener
+};
+
+pub struct TcpStream {
+	pub fd: Int
+}
+
+pub struct TcpListener {
+	pub fd: Int
+}
+
+pub fn tcp_stream(fd: Int) nothrow -> TcpStream {
+	return TcpStream(fd = fd);
+}
+
+pub fn tcp_listener(fd: Int) nothrow -> TcpListener {
+	return TcpListener(fd = fd);
+}
+
+implement TcpStream {
+	pub fn block_on_read(self: &TcpStream, deadline_ms: Int) nothrow -> Void {
+		conc.block_on_io(self.fd, 1, deadline_ms);
+	}
+
+	pub fn block_on_write(self: &TcpStream, deadline_ms: Int) nothrow -> Void {
+		conc.block_on_io(self.fd, 4, deadline_ms);
+	}
+}
+
+implement TcpListener {
+	pub fn block_on_accept(self: &TcpListener, deadline_ms: Int) nothrow -> Void {
+		conc.block_on_io(self.fd, 1, deadline_ms);
+	}
+}

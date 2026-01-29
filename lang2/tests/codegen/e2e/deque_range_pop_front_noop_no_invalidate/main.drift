@@ -5,7 +5,7 @@ import std.iter as iter;
 import std.containers as containers;
 
 fn main() nothrow -> Int {
-var dq = containers.deque_new<type Int>();
+var dq = containers.deque<type Int>();
 	var r = dq.range();
 	val _p = dq.pop_front();
 	val out = try iter.RandomAccessReadable::len(&r) catch std.err:IteratorInvalidated(_e) {

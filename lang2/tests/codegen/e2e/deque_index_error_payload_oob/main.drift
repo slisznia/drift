@@ -4,7 +4,7 @@ import std.containers as containers;
 import std.err;
 
 fn main() nothrow -> Int {
-var dq = containers.deque_new<type Int>();
+var dq = containers.deque<type Int>();
 	dq.push_back(1);
 	try {
 		val _ = dq.at(3);
